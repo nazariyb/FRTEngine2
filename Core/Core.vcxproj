@@ -73,9 +73,12 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="Source\Core.h" />
+    <ClInclude Include="Source\GameInstance.h" />
+    <ClInclude Include="Source\Singleton.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Source\Core.cpp" />
+    <ClCompile Include="Source\GameInstance.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

@@ -4,8 +4,11 @@
 #include "..\framework.h"
 #include "..\Demo.h"
 #include "Core.h"
+#include "DemoGame.h"
 
 #define MAX_LOADSTRING 100
+
+using namespace frt;
 
 // Global Variables:
 HINSTANCE hInst;                                // current instance
@@ -26,7 +29,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     UNREFERENCED_PARAMETER(hPrevInstance);
     UNREFERENCED_PARAMETER(lpCmdLine);
 
-    // TODO: Place code here.
+    new DemoGame();
+    DemoGame::GetInstance().TestFunc();
 
     // Initialize global strings
     LoadStringW(hInstance, IDS_APP_TITLE, szTitle, MAX_LOADSTRING);

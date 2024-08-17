@@ -95,10 +95,12 @@
     <ClInclude Include="Demo.h" />
     <ClInclude Include="framework.h" />
     <ClInclude Include="Resource.h" />
+    <ClInclude Include="Source\DemoGame.h" />
     <ClInclude Include="targetver.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Source\Demo.cpp" />
+    <ClCompile Include="Source\DemoGame.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="Demo.rc" />

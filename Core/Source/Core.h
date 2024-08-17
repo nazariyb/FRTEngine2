@@ -6,4 +6,7 @@
 #define FRT_CORE_API __declspec(dllimport)
 #endif
 
+#define NAMESPACE_FRT_START namespace frt{
+#define NAMESPACE_FRT_END }
+
 int FRT_CORE_API test();
