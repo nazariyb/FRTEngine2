@@ -30,3 +30,12 @@
 *.exe
 *.out
 *.app
+
+# IDE
+.vs/*
+.idea/*
+
+# Build results
+Core/x64/*
+Demo/x64/*
+x64/*
