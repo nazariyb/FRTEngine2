@@ -1,9 +1,14 @@
 #pragma once
 
+#include <memory>
+
 #include "Core.h"
 #include "Singleton.h"
 
+
 NAMESPACE_FRT_START
+
+class Window;
 
 class FRT_CORE_API GameInstance : public Singleton<GameInstance>
 {
@@ -12,6 +17,9 @@ public:
 	virtual ~GameInstance();
 
 	FRT_SINGLETON_GETTERS(GameInstance)
+
+protected:
+	std::unique_ptr<Window> _window;
 };
 
 NAMESPACE_FRT_END

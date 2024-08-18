@@ -15,5 +15,4 @@ public:
 
 	FRT_SINGLETON_GETTERS(DemoGame)
 
-	int TestFunc();
 };
