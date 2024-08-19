@@ -32,6 +32,12 @@ Window::Window(const WindowParams& Params)
 	UpdateWindow(_hWnd);
 }
 
+void Window::UpdateTitle(const std::wstring& NewTitleDetails) const
+{
+	std::wstring newTitle = _title + NewTitleDetails;
+	SetWindowText(_hWnd, newTitle.c_str());
+}
+
 void Window::RegisterWinAPIClass()
 {
 	WNDCLASSEX wcex;

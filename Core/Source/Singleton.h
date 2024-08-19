@@ -13,6 +13,9 @@
 		return dynamic_cast<Type*>(_instance);\
 	}
 
+#define FRT_SINGLETON_DEFINE_INSTANCE(Type)\
+	Type* Singleton<Type>::_instance(nullptr);
+
 
 NAMESPACE_FRT_START
 

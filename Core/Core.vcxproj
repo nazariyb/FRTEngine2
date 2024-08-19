@@ -77,11 +77,13 @@
     <ClInclude Include="Source\Core.h" />
     <ClInclude Include="Source\GameInstance.h" />
     <ClInclude Include="Source\Singleton.h" />
+    <ClInclude Include="Source\Timer.h" />
     <ClInclude Include="Source\Window.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Source\Core.cpp" />
     <ClCompile Include="Source\GameInstance.cpp" />
+    <ClCompile Include="Source\Timer.cpp" />
     <ClCompile Include="Source\Window.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

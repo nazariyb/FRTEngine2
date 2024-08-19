@@ -6,9 +6,13 @@
 #include "Singleton.h"
 
 
-NAMESPACE_FRT_START
+namespace frt
+{
+	class Timer;
+	class Window;
+}
 
-class Window;
+NAMESPACE_FRT_START
 
 class FRT_CORE_API GameInstance : public Singleton<GameInstance>
 {
@@ -18,8 +22,20 @@ public:
 
 	FRT_SINGLETON_GETTERS(GameInstance)
 
+	Timer& GetTime() const;
+
+	virtual void Tick(float DeltaSeconds);
+
+	long long GetFrameCount() const;
+
 protected:
-	std::unique_ptr<Window> _window;
+	void CalculateFrameStats() const;
+
+protected:
+	Timer* _timer;
+	Window* _window;
+
+	long long _frameCount;
 };
 
 NAMESPACE_FRT_END

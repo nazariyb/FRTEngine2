@@ -1,10 +1,9 @@
 ﻿#pragma once
 
 #include <string>
+#include <Windows.h>
 
 #include "Core.h"
-
-#include <Windows.h>
 
 
 NAMESPACE_FRT_START
@@ -31,6 +30,8 @@ public:
 	Window& operator=(Window&&) = delete;
 
 	Window(const WindowParams& Params);
+
+	void UpdateTitle(const std::wstring& NewTitleDetails) const;
 
 protected:
 	void RegisterWinAPIClass();
