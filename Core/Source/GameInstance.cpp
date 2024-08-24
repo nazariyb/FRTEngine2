@@ -1,5 +1,6 @@
 #include "GameInstance.h"
 
+#include "Graphics.h"
 #include "Timer.h"
 #include "Window.h"
 
@@ -20,15 +21,19 @@ GameInstance::GameInstance()
 	windowParams.className = L"FrtWindowClass";
 	windowParams.hInst = GetModuleHandle(nullptr);
 	_window = new Window(windowParams);
+
+	_graphics = new Graphics(_window);
 }
 
 GameInstance::~GameInstance()
 {
 	delete _timer;
 	delete _window;
+	delete _graphics;
 
 	_timer = nullptr;
 	_window = nullptr;
+	_graphics = nullptr;
 }
 
 Timer& GameInstance::GetTime() const
@@ -40,6 +45,11 @@ void GameInstance::Tick(float DeltaSeconds)
 {
 	++_frameCount;
 	CalculateFrameStats();
+}
+
+void GameInstance::Draw(float DeltaSeconds)
+{
+	_graphics->Draw();
 }
 
 long long GameInstance::GetFrameCount() const

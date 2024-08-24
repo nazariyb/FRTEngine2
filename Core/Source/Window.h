@@ -31,6 +31,8 @@ public:
 
 	Window(const WindowParams& Params);
 
+	HWND GetHandle() const;
+
 	void UpdateTitle(const std::wstring& NewTitleDetails) const;
 
 protected:

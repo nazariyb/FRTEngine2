@@ -32,6 +32,11 @@ Window::Window(const WindowParams& Params)
 	UpdateWindow(_hWnd);
 }
 
+HWND Window::GetHandle() const
+{
+	return _hWnd;
+}
+
 void Window::UpdateTitle(const std::wstring& NewTitleDetails) const
 {
 	std::wstring newTitle = _title + NewTitleDetails;

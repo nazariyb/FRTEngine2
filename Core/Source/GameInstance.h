@@ -8,6 +8,11 @@
 
 namespace frt
 {
+	class Graphics;
+}
+
+namespace frt
+{
 	class Timer;
 	class Window;
 }
@@ -24,7 +29,11 @@ public:
 
 	Timer& GetTime() const;
 
+	// Update
+	// virtual void Input(float DeltaSeconds);
 	virtual void Tick(float DeltaSeconds);
+	virtual void Draw(float DeltaSeconds);
+	// ~Update
 
 	long long GetFrameCount() const;
 
@@ -34,6 +43,7 @@ protected:
 protected:
 	Timer* _timer;
 	Window* _window;
+	Graphics* _graphics;
 
 	long long _frameCount;
 };

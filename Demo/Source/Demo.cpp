@@ -38,6 +38,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 		{
 			time.Tick();
 			game->Tick(time.GetDeltaSeconds());
+			game->Draw(time.GetDeltaSeconds());
 		}
 	}
 
