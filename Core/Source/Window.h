@@ -4,11 +4,11 @@
 #include <Windows.h>
 
 #include "Core.h"
+#include "Math/Math.h"
 
 
 NAMESPACE_FRT_START
-
-struct FRT_CORE_API WindowParams
+	struct FRT_CORE_API WindowParams
 {
 	HINSTANCE hInst = nullptr;
 	int startX = 0;
@@ -32,6 +32,7 @@ public:
 	Window(const WindowParams& Params);
 
 	HWND GetHandle() const;
+	Vector2f GetWindowSize() const;
 
 	void UpdateTitle(const std::wstring& NewTitleDetails) const;
 

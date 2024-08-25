@@ -1,5 +1,7 @@
 ﻿#include "Window.h"
 
+#include "Math/Math.h"
+
 NAMESPACE_FRT_START
 
 Window::~Window()
@@ -35,6 +37,11 @@ Window::Window(const WindowParams& Params)
 HWND Window::GetHandle() const
 {
 	return _hWnd;
+}
+
+Vector2f Window::GetWindowSize() const
+{
+	return { static_cast<float>(_params.width), static_cast<float>(_params.height) };
 }
 
 void Window::UpdateTitle(const std::wstring& NewTitleDetails) const
