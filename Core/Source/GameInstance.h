@@ -6,7 +6,7 @@
 #include "Singleton.h"
 
 
-namespace frt
+namespace frt::graphics
 {
 	class Graphics;
 }
@@ -43,7 +43,7 @@ protected:
 protected:
 	Timer* _timer;
 	Window* _window;
-	Graphics* _graphics;
+	graphics::Graphics* _graphics;
 
 	long long _frameCount;
 };

@@ -1,12 +1,14 @@
 #include "GameInstance.h"
 
-#include "Graphics.h"
+#include "Graphics/Graphics.h"
 #include "Timer.h"
 #include "Window.h"
 
 NAMESPACE_FRT_START
 
 FRT_SINGLETON_DEFINE_INSTANCE(GameInstance)
+
+using namespace graphics;
 
 GameInstance::GameInstance()
 	: _frameCount(0)

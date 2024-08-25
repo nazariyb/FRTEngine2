@@ -2,7 +2,8 @@
 
 #include "Window.h"
 
-NAMESPACE_FRT_START
+namespace frt::graphics
+{
 
 static void GetHardwareAdapter(IDXGIFactory4* pFactory, IDXGIAdapter1** ppAdapter)
 {
@@ -96,27 +97,36 @@ Graphics::Graphics(Window* Window)
 	_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&_fence));
 
 	{
-		// Describe and create a render target view (RTV) descriptor heap.
-		D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
-		rtvHeapDesc.NumDescriptors = FrameBufferSize;
-		rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-		rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-		/*THROW_IF_FAILED*/
-		(_device->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&_rtvHeap)));
+		_rtvArena = DX12_Arena(_device, D3D12_HEAP_TYPE_DEFAULT, 50 * MegaByte, D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES);
+		_dsvHeap = DX12_DescriptorHeap(_device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1);
 
-		_rtvDescriptorSize = _device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+		D3D12_RESOURCE_DESC resourceDesc = {};
+		resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+		resourceDesc.Width = static_cast<UINT>(drawRect.x);
+		resourceDesc.Height = static_cast<UINT>(drawRect.y);
+		resourceDesc.DepthOrArraySize = 1;
+		resourceDesc.MipLevels = 1;
+		resourceDesc.Format = DXGI_FORMAT_D32_FLOAT;
+		resourceDesc.SampleDesc.Count = 1;
+		resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+		resourceDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+
+		D3D12_CLEAR_VALUE clearValue = {};
+		clearValue.Format = resourceDesc.Format;
+		clearValue.DepthStencil.Depth = 1.0f;
+
+		_depthStencilBuffer = _rtvArena.Allocate(resourceDesc, D3D12_RESOURCE_STATE_DEPTH_WRITE, clearValue);
+
+		_depthStencilDescriptor = _dsvHeap.Allocate();
+		_device->CreateDepthStencilView(_depthStencilBuffer, nullptr, _depthStencilDescriptor);
+	}
+
+	{
+		_rtvHeap = DX12_DescriptorHeap(_device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, FrameBufferSize);
 
 		for (unsigned frameIndex = 0; frameIndex < FrameBufferSize; ++frameIndex)
 		{
-			if (frameIndex == 0)
-			{
-				_frameBufferDescriptors[frameIndex] = _rtvHeap->GetCPUDescriptorHandleForHeapStart();
-			}
-			else
-			{
-				_frameBufferDescriptors[frameIndex].ptr = _frameBufferDescriptors[frameIndex - 1].ptr +
-					_rtvDescriptorSize;
-			}
+			_frameBufferDescriptors[frameIndex] = _rtvHeap.Allocate();
 			_device->CreateRenderTargetView(_frameBuffer[frameIndex], nullptr, _frameBufferDescriptors[frameIndex]);
 		}
 	}
@@ -136,6 +146,7 @@ void Graphics::Draw()
 
 	FLOAT Color[] = { 0.1f, 0.2f, 0.3f, 1.f };
 	_commandList->ClearRenderTargetView(_frameBufferDescriptors[_currentFrameBufferIndex], Color, 0,  nullptr);
+	_commandList->ClearDepthStencilView(_depthStencilDescriptor, D3D12_CLEAR_FLAG_DEPTH, 1, 0, 0, nullptr);
 
 	{
 		D3D12_RESOURCE_BARRIER resourceBarrier = {};
@@ -167,4 +178,4 @@ void Graphics::Draw()
 	_currentFrameBufferIndex = (_currentFrameBufferIndex + 1) % FrameBufferSize;
 }
 
-NAMESPACE_FRT_END
+}

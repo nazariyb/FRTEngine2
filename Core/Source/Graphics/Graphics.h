@@ -4,6 +4,7 @@
 #include <dxgi1_4.h>
 
 #include "Core.h"
+#include "GraphicsUtility.h"
 
 
 namespace frt
@@ -11,8 +12,10 @@ namespace frt
 	class Window;
 }
 
-NAMESPACE_FRT_START
-	class FRT_CORE_API Graphics
+namespace frt::graphics
+{
+
+class FRT_CORE_API Graphics
 {
 public:
 	Graphics() = delete;
@@ -39,8 +42,12 @@ private:
 	ID3D12CommandAllocator* _commandAllocator;
 	ID3D12GraphicsCommandList* _commandList;
 
-	ID3D12DescriptorHeap* _rtvHeap;
-	unsigned _rtvDescriptorSize;
+	DX12_DescriptorHeap _rtvHeap;
+	DX12_Arena _rtvArena;
+
+	DX12_DescriptorHeap _dsvHeap;
+	ID3D12Resource* _depthStencilBuffer;
+	D3D12_CPU_DESCRIPTOR_HANDLE _depthStencilDescriptor;
 	// ~Pipeline
 
 	// Synchronization
@@ -50,4 +57,4 @@ private:
 	// ~Synchronization
 };
 
-NAMESPACE_FRT_END
+}
