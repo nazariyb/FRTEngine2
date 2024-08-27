@@ -58,6 +58,26 @@ namespace frt::graphics
 		ID3D12DescriptorHeap* _heap;
 	};
 
+	struct DX12_UploadArena
+	{
+		DX12_UploadArena() : _sizeTotal(0), _sizeUsed(0), _gpuBuffer(nullptr), _cpuBuffer(nullptr) {}
+		DX12_UploadArena(DX12_UploadArena&&) = default;
+		DX12_UploadArena& operator=(DX12_UploadArena&&) = default;
+		DX12_UploadArena(const DX12_UploadArena&) = delete;
+		DX12_UploadArena& operator=(const DX12_UploadArena&) = delete;
+
+		DX12_UploadArena(ID3D12Device* Device, uint64 Size);
+		~DX12_UploadArena();
+
+		uint8* Allocate(uint64 Size);
+
+	private:
+		uint64 _sizeTotal;
+		uint64 _sizeUsed;
+		ID3D12Resource* _gpuBuffer;
+		uint8* _cpuBuffer;
+	};
+
 	inline uint64 AlignAddress(uint64 Location, uint64 Alignment)
 	{
 		return (Location + Alignment - 1) & ~(Alignment - 1);

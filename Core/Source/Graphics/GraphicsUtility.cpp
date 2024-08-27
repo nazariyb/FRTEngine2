@@ -75,4 +75,49 @@ namespace frt::graphics
 		_currNum++;
 		return descHandle;
 	}
+
+	DX12_UploadArena::DX12_UploadArena(ID3D12Device* Device, uint64 Size)
+		: _sizeTotal(Size)
+		, _sizeUsed(0)
+		, _gpuBuffer(nullptr)
+		, _cpuBuffer(nullptr)
+	{
+		D3D12_HEAP_PROPERTIES heapProps = {};
+		heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+		heapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+		heapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+
+		D3D12_RESOURCE_DESC resourceDesc = {};
+		resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+		resourceDesc.Width = _sizeTotal;
+		resourceDesc.Height = 1;
+		resourceDesc.DepthOrArraySize = 1;
+		resourceDesc.MipLevels = 1;
+		resourceDesc.SampleDesc.Count = 1;
+		resourceDesc.Format = DXGI_FORMAT_UNKNOWN;
+		resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+		/*Throw*/Device->CreateCommittedResource(
+			&heapProps, D3D12_HEAP_FLAG_NONE, &resourceDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&_gpuBuffer));
+
+		_gpuBuffer->Map(0, nullptr, reinterpret_cast<void**>(&_cpuBuffer));
+	}
+
+	DX12_UploadArena::~DX12_UploadArena()
+	{
+		_gpuBuffer->Unmap(0, nullptr);
+		_gpuBuffer = nullptr;
+		_cpuBuffer = nullptr;
+	}
+
+	uint8* DX12_UploadArena::Allocate(uint64 Size)
+	{
+		uint64 alignedMemory = AlignAddress(_sizeUsed, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
+		//assert
+
+		uint8* result = _cpuBuffer + alignedMemory;
+		_sizeUsed = alignedMemory + Size;
+
+		return result;
+	}
 }
