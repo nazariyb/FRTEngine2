@@ -78,6 +78,7 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="Source\Asserts.h" />
     <ClInclude Include="Source\Core.h" />
     <ClInclude Include="Source\CoreTypes.h" />
     <ClInclude Include="Source\GameInstance.h" />

@@ -1,5 +1,7 @@
 #include "GraphicsUtility.h"
 
+#include "Asserts.h"
+
 namespace frt::graphics
 {
 
@@ -35,7 +37,7 @@ namespace frt::graphics
 
 		D3D12_RESOURCE_ALLOCATION_INFO allocationInfo = _device->GetResourceAllocationInfo(0,  1, &ResourceDesc);
 		uint64 alignedAddress = AlignAddress(_sizeUsed, allocationInfo.Alignment);
-		//assert(alignedAddress + allocationInfo.SizeInBytes < _sizeTotal);
+		frt_assert(alignedAddress + allocationInfo.SizeInBytes < _sizeTotal);
 
 		/*Throw*/_device->CreatePlacedResource(
 			_heap, alignedAddress, &ResourceDesc, InitialState, &ClearValue, IID_PPV_ARGS(&resource));
@@ -68,7 +70,7 @@ namespace frt::graphics
 
 	D3D12_CPU_DESCRIPTOR_HANDLE DX12_DescriptorHeap::Allocate()
 	{
-		//assert(_currNum < _maxNum);
+		frt_assert(_currNum < _maxNum);
 
 		D3D12_CPU_DESCRIPTOR_HANDLE descHandle = _heap->GetCPUDescriptorHandleForHeapStart();
 		descHandle.ptr += _stepSize * _currNum;
@@ -113,7 +115,7 @@ namespace frt::graphics
 	uint8* DX12_UploadArena::Allocate(uint64 Size)
 	{
 		uint64 alignedMemory = AlignAddress(_sizeUsed, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
-		//assert
+		frt_assert(alignedMemory + Size < _sizeTotal);
 
 		uint8* result = _cpuBuffer + alignedMemory;
 		_sizeUsed = alignedMemory + Size;
