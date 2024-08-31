@@ -37,5 +37,8 @@
 
 # Build results
 Core/x64/*
+Core-Test/x64/*
 Demo/x64/*
 x64/*
+
+packages/*

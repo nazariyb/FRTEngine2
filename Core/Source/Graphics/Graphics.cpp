@@ -1,6 +1,7 @@
 ﻿#include "Graphics.h"
 
 #include "Window.h"
+#include "Memory/MemoryUtility.h"
 
 namespace frt::graphics
 {
@@ -97,7 +98,7 @@ Graphics::Graphics(Window* Window)
 	_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&_fence));
 
 	{
-		_rtvArena = DX12_Arena(_device, D3D12_HEAP_TYPE_DEFAULT, 50 * MegaByte, D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES);
+		_rtvArena = DX12_Arena(_device, D3D12_HEAP_TYPE_DEFAULT, 50 * memory::MegaByte, D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES);
 		_dsvHeap = DX12_DescriptorHeap(_device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1);
 
 		D3D12_RESOURCE_DESC resourceDesc = {};

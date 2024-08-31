@@ -88,6 +88,9 @@
     <ClInclude Include="Source\Math\MathUtility.h" />
     <ClInclude Include="Source\Math\TVector2.h" />
     <ClInclude Include="Source\Math\TVector3.h" />
+    <ClInclude Include="Source\Memory\Memory.h" />
+    <ClInclude Include="Source\Memory\MemoryUtility.h" />
+    <ClInclude Include="Source\Memory\PoolAllocator.h" />
     <ClInclude Include="Source\Singleton.h" />
     <ClInclude Include="Source\Timer.h" />
     <ClInclude Include="Source\Window.h" />
@@ -172,6 +175,7 @@
     </ClCompile>
     <ClCompile Include="Source\Graphics\GraphicsUtility.cpp" />
     <ClCompile Include="Source\Math\Math.cpp" />
+    <ClCompile Include="Source\Memory\PoolAllocator.cpp" />
     <ClCompile Include="Source\Timer.cpp" />
     <ClCompile Include="Source\Window.cpp" />
   </ItemGroup>

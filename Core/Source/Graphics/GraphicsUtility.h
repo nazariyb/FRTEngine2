@@ -9,12 +9,6 @@ struct ID3D12Heap;
 
 namespace frt::graphics
 {
-
-	static constexpr uint64 KiloByte = 1024LL;
-	static constexpr uint64 MegaByte = KiloByte * 1024LL;
-	static constexpr uint64 GigaByte = MegaByte * 1024LL;
-	static constexpr uint64 TeraByte = GigaByte * 1024LL;
-
 	struct DX12_Arena
 	{
 		DX12_Arena() : _sizeTotal(0), _sizeUsed(0), _heap(nullptr), _device(nullptr) {}

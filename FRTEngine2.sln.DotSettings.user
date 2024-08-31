@@ -1,2 +1,22 @@
 ﻿<wpf:ResourceDictionary xml:space="preserve" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:s="clr-namespace:System;assembly=mscorlib" xmlns:ss="urn:shemas-jetbrains-com:settings-storage-xaml" xmlns:wpf="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
-	<s:String x:Key="/Default/CodeInspection/ExcludedFiles/FilesAndFoldersToSkip2/=7020124F_002D9FFC_002D4AC3_002D8F3D_002DAAB8E0240759_002Ff_003ABihurot_002Easm_002Fl_003AC_0021_003FUsers_003Fuser_003FAppData_003FLocal_003FTemp_003FSandboxFiles_003FHuriqut_003FBihurot_002Easm/@EntryIndexedValue">ForceIncluded</s:String></wpf:ResourceDictionary>
+	<s:String x:Key="/Default/CodeInspection/ExcludedFiles/FilesAndFoldersToSkip2/=7020124F_002D9FFC_002D4AC3_002D8F3D_002DAAB8E0240759_002Ff_003ABihurot_002Easm_002Fl_003AC_0021_003FUsers_003Fuser_003FAppData_003FLocal_003FTemp_003FSandboxFiles_003FHuriqut_003FBihurot_002Easm/@EntryIndexedValue">ForceIncluded</s:String>
+	<s:String x:Key="/Default/CodeInspection/ExcludedFiles/FilesAndFoldersToSkip2/=7020124F_002D9FFC_002D4AC3_002D8F3D_002DAAB8E0240759_002Ff_003ALasotor_002Easm_002Fl_003AC_0021_003FUsers_003Fuser_003FAppData_003FLocal_003FTemp_003FSandboxFiles_003FLobijaj_003FLasotor_002Easm/@EntryIndexedValue">ForceIncluded</s:String>
+	<s:String x:Key="/Default/CodeInspection/ExcludedFiles/FilesAndFoldersToSkip2/=7020124F_002D9FFC_002D4AC3_002D8F3D_002DAAB8E0240759_002Ff_003AWivurom_002Easm_002Fl_003AC_0021_003FUsers_003Fuser_003FAppData_003FLocal_003FTemp_003FSandboxFiles_003FHyfytig_003FWivurom_002Easm/@EntryIndexedValue">ForceIncluded</s:String>
+	
+	<s:String x:Key="/Default/Environment/UnitTesting/UnitTestSessionStore/Sessions/=24b11d70_002Debee_002D48d6_002D8fc5_002Db79bbeb441a2/@EntryIndexedValue">&lt;SessionState ContinuousTestingMode="0" IsActive="True" Name="TestName" xmlns="urn:schemas-jetbrains-com:jetbrains-ut-session"&gt;&#xD;
+  &lt;TestAncestor&gt;&#xD;
+    &lt;TestId&gt;GTest::D1443268-060B-4F42-988E-B34B7BA8A711::Windows,Version=v10.0.22621::TestCaseName.TestName&lt;/TestId&gt;&#xD;
+    &lt;TestId&gt;GTest::D1443268-060B-4F42-988E-B34B7BA8A711::Windows,Version=v10.0.22621::MemoryAllocation.BasicAllocation&lt;/TestId&gt;&#xD;
+    &lt;TestId&gt;GTest::D1443268-060B-4F42-988E-B34B7BA8A711::Windows,Version=v10.0.22621::MemoryAllocation.MultipleAllocations&lt;/TestId&gt;&#xD;
+    &lt;TestId&gt;GTest::D1443268-060B-4F42-988E-B34B7BA8A711::Windows,Version=v10.0.22621::MemoryAllocation.Deallocation&lt;/TestId&gt;&#xD;
+    &lt;TestId&gt;GTest::D1443268-060B-4F42-988E-B34B7BA8A711::Windows,Version=v10.0.22621::MemoryAllocation.MultipleRefs&lt;/TestId&gt;&#xD;
+    &lt;TestId&gt;GTest::D1443268-060B-4F42-988E-B34B7BA8A711::Windows,Version=v10.0.22621::MemoryAllocation.Release&lt;/TestId&gt;&#xD;
+    &lt;TestId&gt;GTest::D1443268-060B-4F42-988E-B34B7BA8A711::Windows,Version=v10.0.22621::MemoryAlocation.CopyHandle&lt;/TestId&gt;&#xD;
+    &lt;TestId&gt;GTest::D1443268-060B-4F42-988E-B34B7BA8A711::Windows,Version=v10.0.22621::MemoryAlocation.MoveHandle&lt;/TestId&gt;&#xD;
+    &lt;TestId&gt;GTest::D1443268-060B-4F42-988E-B34B7BA8A711::Windows,Version=v10.0.22621::MemoryAllocation.CopyHandle&lt;/TestId&gt;&#xD;
+    &lt;TestId&gt;GTest::D1443268-060B-4F42-988E-B34B7BA8A711::Windows,Version=v10.0.22621::MemoryAllocation.MoveHandle&lt;/TestId&gt;&#xD;
+    &lt;TestId&gt;GTest::D1443268-060B-4F42-988E-B34B7BA8A711::Windows,Version=v10.0.22621::MemoryAllocation.CopyHandleOperator&lt;/TestId&gt;&#xD;
+    &lt;TestId&gt;GTest::D1443268-060B-4F42-988E-B34B7BA8A711::Windows,Version=v10.0.22621::MemoryAllocation.MoveHandleOperator&lt;/TestId&gt;&#xD;
+    &lt;TestId&gt;GTest::D1443268-060B-4F42-988E-B34B7BA8A711::Windows,Version=v10.0.22621::MemoryAllocation.FindEmptySpace&lt;/TestId&gt;&#xD;
+  &lt;/TestAncestor&gt;&#xD;
+&lt;/SessionState&gt;</s:String></wpf:ResourceDictionary>
