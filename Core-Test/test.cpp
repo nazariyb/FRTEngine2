@@ -172,3 +172,26 @@ TEST(MemoryAllocation, FindEmptySpace)
   const uint64 newPtr = reinterpret_cast<uint64>(allocated3.Get());
   EXPECT_EQ(oldPtr, newPtr);
 }
+
+TEST(MemoryAllocation, ArrayWithInit)
+{
+  using namespace frt::memory;
+  PoolAllocator testAllocator(100 * MegaByte);
+  EXPECT_EQ(testAllocator.AlignmentSize, 8);
+  EXPECT_EQ(testAllocator.GetMemoryUsed(), 0);
+
+  { 
+    auto allocatedArray = NewArray<TestStruct, DefaultAllocator, true>(5, &testAllocator);
+    EXPECT_TRUE(allocatedArray);
+    EXPECT_EQ(allocatedArray.GetNum(), 5);
+    EXPECT_EQ(allocatedArray.GetSize(), 5 * sizeof(TestStruct));
+    EXPECT_EQ(testAllocator.GetMemoryUsed(), 5 * sizeof(TestStruct) + 8);
+
+    EXPECT_EQ(allocatedArray[0].a, 1);
+    EXPECT_EQ(allocatedArray[0].b, 2);
+    EXPECT_EQ(allocatedArray[4].a, 1);
+    EXPECT_EQ(allocatedArray[4].b, 2);
+  }
+
+  EXPECT_EQ(testAllocator.GetMemoryUsed(), 0);
+}

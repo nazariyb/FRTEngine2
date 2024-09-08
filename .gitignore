@@ -42,3 +42,4 @@ Demo/x64/*
 x64/*
 
 packages/*
+vendor/Assimp/include/assimp/.editorconfig

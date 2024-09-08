@@ -1,4 +1,4 @@
-#include "GraphicsUtility.h"
+#include "GraphicsCoreTypes.h"
 
 #include "Asserts.h"
 
@@ -28,10 +28,10 @@ namespace frt::graphics
 		_device = nullptr;
 	}
 
-	ID3D12Resource* DX12_Arena::Allocate
-	(const D3D12_RESOURCE_DESC& ResourceDesc,
+	ID3D12Resource* DX12_Arena::Allocate(
+		const D3D12_RESOURCE_DESC& ResourceDesc,
 		D3D12_RESOURCE_STATES InitialState,
-		const D3D12_CLEAR_VALUE& ClearValue)
+		const D3D12_CLEAR_VALUE* ClearValue)
 	{
 		ID3D12Resource* resource = nullptr;
 
@@ -40,7 +40,7 @@ namespace frt::graphics
 		frt_assert(alignedAddress + allocationInfo.SizeInBytes < _sizeTotal);
 
 		/*Throw*/_device->CreatePlacedResource(
-			_heap, alignedAddress, &ResourceDesc, InitialState, &ClearValue, IID_PPV_ARGS(&resource));
+			_heap, alignedAddress, &ResourceDesc, InitialState, ClearValue, IID_PPV_ARGS(&resource));
 
 		_sizeUsed = alignedAddress + allocationInfo.SizeInBytes;
 
@@ -112,14 +112,20 @@ namespace frt::graphics
 		_cpuBuffer = nullptr;
 	}
 
-	uint8* DX12_UploadArena::Allocate(uint64 Size)
+	uint8* DX12_UploadArena::Allocate(uint64 Size, uint64* OutOffset)
 	{
 		uint64 alignedMemory = AlignAddress(_sizeUsed, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
 		frt_assert(alignedMemory + Size < _sizeTotal);
 
 		uint8* result = _cpuBuffer + alignedMemory;
 		_sizeUsed = alignedMemory + Size;
+		*OutOffset = alignedMemory;
 
 		return result;
+	}
+
+	void DX12_UploadArena::Clear()
+	{
+		_sizeUsed = 0;
 	}
 }

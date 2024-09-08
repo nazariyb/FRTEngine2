@@ -1,9 +1,15 @@
 ﻿<wpf:ResourceDictionary xml:space="preserve" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:s="clr-namespace:System;assembly=mscorlib" xmlns:ss="urn:shemas-jetbrains-com:settings-storage-xaml" xmlns:wpf="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
 	<s:String x:Key="/Default/CodeInspection/ExcludedFiles/FilesAndFoldersToSkip2/=7020124F_002D9FFC_002D4AC3_002D8F3D_002DAAB8E0240759_002Ff_003ABihurot_002Easm_002Fl_003AC_0021_003FUsers_003Fuser_003FAppData_003FLocal_003FTemp_003FSandboxFiles_003FHuriqut_003FBihurot_002Easm/@EntryIndexedValue">ForceIncluded</s:String>
+	<s:String x:Key="/Default/CodeInspection/ExcludedFiles/FilesAndFoldersToSkip2/=7020124F_002D9FFC_002D4AC3_002D8F3D_002DAAB8E0240759_002Ff_003ACucywen_002Easm_002Fl_003AC_0021_003FUsers_003Fuser_003FAppData_003FLocal_003FTemp_003FSandboxFiles_003FGudozor_003FCucywen_002Easm/@EntryIndexedValue">ForceIncluded</s:String>
 	<s:String x:Key="/Default/CodeInspection/ExcludedFiles/FilesAndFoldersToSkip2/=7020124F_002D9FFC_002D4AC3_002D8F3D_002DAAB8E0240759_002Ff_003ALasotor_002Easm_002Fl_003AC_0021_003FUsers_003Fuser_003FAppData_003FLocal_003FTemp_003FSandboxFiles_003FLobijaj_003FLasotor_002Easm/@EntryIndexedValue">ForceIncluded</s:String>
 	<s:String x:Key="/Default/CodeInspection/ExcludedFiles/FilesAndFoldersToSkip2/=7020124F_002D9FFC_002D4AC3_002D8F3D_002DAAB8E0240759_002Ff_003AWivurom_002Easm_002Fl_003AC_0021_003FUsers_003Fuser_003FAppData_003FLocal_003FTemp_003FSandboxFiles_003FHyfytig_003FWivurom_002Easm/@EntryIndexedValue">ForceIncluded</s:String>
+	<s:String x:Key="/Default/Environment/UnitTesting/UnitTestSessionStore/Sessions/=03e22b2b_002Df64e_002D47b7_002Dba76_002Dd2ceba7a549b/@EntryIndexedValue">&lt;SessionState ContinuousTestingMode="0" Name="MemoryAllocation #4" xmlns="urn:schemas-jetbrains-com:jetbrains-ut-session"&gt;&#xD;
+  &lt;TestAncestor&gt;&#xD;
+    &lt;TestId&gt;GTest::D1443268-060B-4F42-988E-B34B7BA8A711::Windows,Version=v10.0.22621::MemoryAllocation&lt;/TestId&gt;&#xD;
+  &lt;/TestAncestor&gt;&#xD;
+&lt;/SessionState&gt;</s:String>
 	
-	<s:String x:Key="/Default/Environment/UnitTesting/UnitTestSessionStore/Sessions/=24b11d70_002Debee_002D48d6_002D8fc5_002Db79bbeb441a2/@EntryIndexedValue">&lt;SessionState ContinuousTestingMode="0" IsActive="True" Name="TestName" xmlns="urn:schemas-jetbrains-com:jetbrains-ut-session"&gt;&#xD;
+	<s:String x:Key="/Default/Environment/UnitTesting/UnitTestSessionStore/Sessions/=24b11d70_002Debee_002D48d6_002D8fc5_002Db79bbeb441a2/@EntryIndexedValue">&lt;SessionState ContinuousTestingMode="0" Name="TestName" xmlns="urn:schemas-jetbrains-com:jetbrains-ut-session"&gt;&#xD;
   &lt;TestAncestor&gt;&#xD;
     &lt;TestId&gt;GTest::D1443268-060B-4F42-988E-B34B7BA8A711::Windows,Version=v10.0.22621::TestCaseName.TestName&lt;/TestId&gt;&#xD;
     &lt;TestId&gt;GTest::D1443268-060B-4F42-988E-B34B7BA8A711::Windows,Version=v10.0.22621::MemoryAllocation.BasicAllocation&lt;/TestId&gt;&#xD;
@@ -18,5 +24,20 @@
     &lt;TestId&gt;GTest::D1443268-060B-4F42-988E-B34B7BA8A711::Windows,Version=v10.0.22621::MemoryAllocation.CopyHandleOperator&lt;/TestId&gt;&#xD;
     &lt;TestId&gt;GTest::D1443268-060B-4F42-988E-B34B7BA8A711::Windows,Version=v10.0.22621::MemoryAllocation.MoveHandleOperator&lt;/TestId&gt;&#xD;
     &lt;TestId&gt;GTest::D1443268-060B-4F42-988E-B34B7BA8A711::Windows,Version=v10.0.22621::MemoryAllocation.FindEmptySpace&lt;/TestId&gt;&#xD;
+  &lt;/TestAncestor&gt;&#xD;
+&lt;/SessionState&gt;</s:String>
+	<s:String x:Key="/Default/Environment/UnitTesting/UnitTestSessionStore/Sessions/=41a7bc7d_002D7ec1_002D4961_002Da625_002D0cd2665dbc47/@EntryIndexedValue">&lt;SessionState ContinuousTestingMode="0" Name="MemoryAllocation" xmlns="urn:schemas-jetbrains-com:jetbrains-ut-session"&gt;&#xD;
+  &lt;TestAncestor&gt;&#xD;
+    &lt;TestId&gt;GTest::D1443268-060B-4F42-988E-B34B7BA8A711::Windows,Version=v10.0.22621::MemoryAllocation&lt;/TestId&gt;&#xD;
+  &lt;/TestAncestor&gt;&#xD;
+&lt;/SessionState&gt;</s:String>
+	<s:String x:Key="/Default/Environment/UnitTesting/UnitTestSessionStore/Sessions/=d3bba908_002Dc4e3_002D48a4_002D9725_002Db851adfcaf83/@EntryIndexedValue">&lt;SessionState ContinuousTestingMode="0" Name="MemoryAllocation #2" xmlns="urn:schemas-jetbrains-com:jetbrains-ut-session"&gt;&#xD;
+  &lt;TestAncestor&gt;&#xD;
+    &lt;TestId&gt;GTest::D1443268-060B-4F42-988E-B34B7BA8A711::Windows,Version=v10.0.22621::MemoryAllocation&lt;/TestId&gt;&#xD;
+  &lt;/TestAncestor&gt;&#xD;
+&lt;/SessionState&gt;</s:String>
+	<s:String x:Key="/Default/Environment/UnitTesting/UnitTestSessionStore/Sessions/=e85fb9a2_002Db55e_002D4467_002D870e_002Deaf211c02c91/@EntryIndexedValue">&lt;SessionState ContinuousTestingMode="0" IsActive="True" Name="MemoryAllocation #3" xmlns="urn:schemas-jetbrains-com:jetbrains-ut-session"&gt;&#xD;
+  &lt;TestAncestor&gt;&#xD;
+    &lt;TestId&gt;GTest::D1443268-060B-4F42-988E-B34B7BA8A711::Windows,Version=v10.0.22621::MemoryAllocation&lt;/TestId&gt;&#xD;
   &lt;/TestAncestor&gt;&#xD;
 &lt;/SessionState&gt;</s:String></wpf:ResourceDictionary>

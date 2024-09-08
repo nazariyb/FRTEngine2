@@ -9,7 +9,7 @@
 #include "Asserts.h"
 #include "Core.h"
 #include "CoreTypes.h"
-#include "MemoryUtility.h"
+#include "MemoryCoreTypes.h"
 
 
 namespace frt::memory
@@ -18,20 +18,24 @@ namespace frt::memory
 	{
 		MemoryHandleRef() = delete;
 
-		template <typename T, typename TAllocator>
-		MemoryHandleRef(const TMemoryHandle<T, TAllocator>& Handle)
+		template <typename THandle>
+		MemoryHandleRef(const THandle& Handle)
 		{
 			MemoryHandlePtr = reinterpret_cast<uint64>(&Handle);
-			TypeSize = sizeof(T);
+		}
+
+		template <typename THandle>
+		[[nodiscard]] THandle& Get() const
+		{
+			return *reinterpret_cast<THandle*>(MemoryHandlePtr);
 		}
 
 		bool operator==(const MemoryHandleRef& Other) const
 		{
-			return MemoryHandlePtr == Other.MemoryHandlePtr && TypeSize == Other.TypeSize;
+			return MemoryHandlePtr == Other.MemoryHandlePtr;
 		}
 
 		uint64 MemoryHandlePtr;
-		uint64 TypeSize; // this should be part of a key in _handles
 	};
 
 
@@ -59,22 +63,22 @@ namespace frt::memory
 		static PoolAllocator& GetMasterInstance();
 
 		void* Allocate(uint64 Size);
-		void Free(void* Memory, uint64 Size); // should not use Size?
 
 		template <typename T>
-		void Free(T* Memory);
+		void Free(T* Memory, uint64 Size);
 
-		template <typename T>
-		void AddRef(const TMemoryHandle<T, PoolAllocator>& MemoryHandle);
+		template <typename THandle>
+		void AddRef(const THandle& MemoryHandle);
 
-		template <typename T, bool bTAuthority = false>
-		void RemoveRef(const TMemoryHandle<T, PoolAllocator>& MemoryHandle);
+		template <typename THandle, bool bTAuthority = false>
+		void RemoveRef(const THandle& MemoryHandle);
+
+		static int64 GetShiftForAlignedPtr(uint8* AlignedPtr);
 
 		static constexpr uint64 AlignmentSize = 8;
 
 	private:
 		void* FindFreeMemoryBlock(uint64 Size);
-		static int64 GetShiftForAlignedPtr(uint8* AlignedPtr);
 
 	private:
 		uint8* _memory = nullptr;
@@ -82,7 +86,16 @@ namespace frt::memory
 		uint64 _memoryUsed = 0;
 
 		// TODO: use more optimized container for this?
-		std::map<uint64, std::vector<MemoryHandleRef>> _handles;
+		struct HandleKey
+		{
+			uint64 Ptr;
+			uint64 Size;
+			bool operator<(const HandleKey& Other) const
+			{
+				return Ptr < Other.Ptr;
+			}
+		};
+		std::map<HandleKey, std::vector<MemoryHandleRef>> _handles;
 
 		static PoolAllocator* _masterInstance;
 	};
@@ -144,38 +157,28 @@ namespace frt::memory
 
 	}
 
-	inline void PoolAllocator::Free(void* Memory, uint64 Size)
-	{
-		if (!Memory)
-		{
-			return;
-		}
-
-		_memoryUsed -= (Size + AlignmentSize);
-	}
-
 	inline void* PoolAllocator::FindFreeMemoryBlock(const uint64 Size)
 	{
 		frt_assert(Size < (_memorySize - _memoryUsed));
 
 		const auto usedAddresses = std::views::keys(_handles);
-		uint64 allocatedBlocksNum = usedAddresses.size();
+		const uint64 allocatedBlocksNum = usedAddresses.size();
 		if (allocatedBlocksNum == 0)
 		{
 			return _memory;
 		}
 
-		const std::vector<uint64> addrs{ usedAddresses.begin(), usedAddresses.end() };
+		const std::vector<HandleKey> addrs{ usedAddresses.begin(), usedAddresses.end() };
 		uint64 prevFreeBlock = reinterpret_cast<uint64>(_memory);
 		for (uint64 i = 0; i < allocatedBlocksNum; ++i)
 		{
-			const uint64 alignedPtr = addrs[i];
+			const uint64 alignedPtr = addrs[i].Ptr;
 			const uint64 nextUsedBlock = alignedPtr - GetShiftForAlignedPtr(reinterpret_cast<uint8*>(alignedPtr));
 			if (nextUsedBlock - prevFreeBlock >= Size)
 			{
 				return reinterpret_cast<void*>(prevFreeBlock);
 			}
-			prevFreeBlock = nextUsedBlock + _handles.at(addrs[i])[0].TypeSize + AlignmentSize;
+			prevFreeBlock = nextUsedBlock + addrs[i].Size;
 		}
 
 		if (_memorySize - prevFreeBlock >= Size)
@@ -197,62 +200,70 @@ namespace frt::memory
 	}
 
 	template <typename T>
-	void PoolAllocator::Free(T* Memory)
+	void PoolAllocator::Free(T* Memory, uint64 Size)
 	{
 		if (!Memory)
 		{
 			return;
 		}
 
-		Memory->~T();
-		Free(reinterpret_cast<void*>(Memory), sizeof(T));
+		const uint64 elementsNum = Size / sizeof(T);
+		for (uint64 i = 0; i < elementsNum; ++i)
+		{
+			(Memory + i)->~T();
+		}
+
+		_memoryUsed -= (Size + AlignmentSize);
 	}
 
-	template <typename T>
-	void PoolAllocator::AddRef(const TMemoryHandle<T, PoolAllocator>& MemoryHandle)
+	template <typename THandle>
+	void PoolAllocator::AddRef(const THandle& MemoryHandle)
 	{
 		MemoryHandleRef MemoryRef (MemoryHandle);
 		uint64 memPtr = reinterpret_cast<uint64>(MemoryHandle.Ptr);
-		if (_handles.contains(memPtr))
+
+		HandleKey newKey{ memPtr, MemoryHandle.GetRealSize() };
+		if (_handles.contains(newKey))
 		{
-			_handles.at(memPtr).push_back(MemoryRef);
+			_handles.at(newKey).push_back(MemoryRef);
 		}
 		else
 		{
-			_handles.insert({memPtr, std::vector{MemoryRef}});
+			_handles.insert({ newKey, std::vector{ MemoryRef } });
 		}
 	}
 
-	template <typename T, bool bTAuthority = false>
-	void PoolAllocator::RemoveRef(const TMemoryHandle<T, PoolAllocator>& MemoryHandle)
+	template <typename THandle, bool bTAuthority = false>
+	void PoolAllocator::RemoveRef(const THandle& MemoryHandle)
 	{
 		frt_assert(MemoryHandle.Ptr);
 
 		uint64 memPtr = reinterpret_cast<uint64>(MemoryHandle.Ptr);
-		if (!_handles.contains(memPtr))
+		HandleKey handleKey{ memPtr, MemoryHandle.GetRealSize() };
+		if (!_handles.contains(handleKey))
 		{
 			return;
 		}
 
-		auto& memRefs = _handles.at(memPtr);
+		auto& memRefs = _handles.at(handleKey);
 
 		if (bTAuthority)
 		{
-			Free(MemoryHandle.Ptr);
-			for (MemoryHandleRef memRef : memRefs)
+			Free(MemoryHandle.Ptr, MemoryHandle.GetSize());
+			for (MemoryHandleRef& memRef : memRefs)
 			{
-				reinterpret_cast<TMemoryHandle<T, PoolAllocator>*>(memRef.MemoryHandlePtr)->Ptr = nullptr;
+				memRef.Get<THandle>().Ptr = nullptr;
 			}
 			memRefs.clear();
-			_handles.erase(memPtr);
+			_handles.erase(handleKey);
 		}
 		else
 		{
 			std::erase(memRefs, MemoryHandleRef(MemoryHandle));
 			if (memRefs.empty())
 			{
-				Free(MemoryHandle.Ptr);
-				_handles.erase(memPtr);
+				Free(MemoryHandle.Ptr, MemoryHandle.GetSize());
+				_handles.erase(handleKey);
 			}
 		}
 	}

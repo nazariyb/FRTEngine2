@@ -29,6 +29,9 @@ public:
 
 	Timer& GetTime() const;
 
+	bool HasGraphics() const;
+	graphics::Graphics& GetGraphics() const;
+
 	// Update
 	// virtual void Input(float DeltaSeconds);
 	virtual void Tick(float DeltaSeconds);

@@ -3,6 +3,7 @@
 #include "Graphics/Graphics.h"
 #include "Timer.h"
 #include "Window.h"
+#include "Memory/Memory.h"
 
 NAMESPACE_FRT_START
 
@@ -24,6 +25,7 @@ GameInstance::GameInstance()
 	windowParams.hInst = GetModuleHandle(nullptr);
 	_window = new Window(windowParams);
 
+	memory::DefaultAllocator::InitMasterInstance(1 * memory::GigaByte);
 	_graphics = new Graphics(_window);
 }
 
@@ -41,6 +43,17 @@ GameInstance::~GameInstance()
 Timer& GameInstance::GetTime() const
 {
 	return *_timer;
+}
+
+bool GameInstance::HasGraphics() const
+{
+	return !!_graphics;
+}
+
+Graphics& GameInstance::GetGraphics() const
+{
+	frt_assert(_graphics);
+	return *_graphics;
 }
 
 void GameInstance::Tick(float DeltaSeconds)

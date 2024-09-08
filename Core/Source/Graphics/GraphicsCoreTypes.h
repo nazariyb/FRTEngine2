@@ -9,6 +9,14 @@ struct ID3D12Heap;
 
 namespace frt::graphics
 {
+	#pragma pack(push, 1)
+	struct Vertex
+	{
+		float position[3];
+		float uv[2];
+	};
+	#pragma pack(pop)
+
 	struct DX12_Arena
 	{
 		DX12_Arena() : _sizeTotal(0), _sizeUsed(0), _heap(nullptr), _device(nullptr) {}
@@ -23,7 +31,7 @@ namespace frt::graphics
 		ID3D12Resource* Allocate(
 			const D3D12_RESOURCE_DESC& ResourceDesc,
 			D3D12_RESOURCE_STATES InitialState,
-			const D3D12_CLEAR_VALUE& ClearValue);
+			const D3D12_CLEAR_VALUE* ClearValue);
 
 	private:
 		uint64 _sizeTotal;
@@ -63,7 +71,10 @@ namespace frt::graphics
 		DX12_UploadArena(ID3D12Device* Device, uint64 Size);
 		~DX12_UploadArena();
 
-		uint8* Allocate(uint64 Size);
+		uint8* Allocate(uint64 Size, uint64* OutOffset);
+		void Clear();
+
+		ID3D12Resource* GetGPUBuffer() const { return _gpuBuffer; }
 
 	private:
 		uint64 _sizeTotal;

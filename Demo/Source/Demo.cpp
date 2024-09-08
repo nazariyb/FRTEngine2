@@ -6,6 +6,7 @@
 #include "Core.h"
 #include "DemoGame.h"
 #include "Timer.h"
+#include "Graphics/Graphics.h"
 
 using namespace frt;
 
@@ -18,8 +19,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 	UNREFERENCED_PARAMETER(lpCmdLine);
 
 	auto game = new DemoGame();
+
 	Timer& time = game->GetTime();
 	time.Reset();
+
+	game->GetGraphics().LoadAssets();
 
 	// Initialize global strings
 	// LoadStringW(hInstance, IDS_APP_TITLE, szTitle, MAX_LOADSTRING);
