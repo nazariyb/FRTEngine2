@@ -5,6 +5,7 @@
 
 #include "Core.h"
 #include "GraphicsCoreTypes.h"
+#include "Model.h"
 
 
 namespace frt
@@ -28,11 +29,15 @@ public:
 
 	ID3D12Resource* CreateBufferAsset(const D3D12_RESOURCE_DESC& Desc, D3D12_RESOURCE_STATES InitialState, void* BufferData);
 	ID3D12Resource* CreateTextureAsset(const D3D12_RESOURCE_DESC& Desc, D3D12_RESOURCE_STATES InitialState, void* Texels);
+	void CreateShaderResourceView(ID3D12Resource* Texture, const D3D12_SHADER_RESOURCE_VIEW_DESC& Desc,
+		D3D12_CPU_DESCRIPTOR_HANDLE* OutCpuHandle, D3D12_GPU_DESCRIPTOR_HANDLE* OutGpuHandle);
 
 private:
 	static constexpr unsigned FrameBufferSize = 2;
 
 	Window* _window;
+	uint32 _renderWidth;
+	uint32 _renderHeight;
 
 	// Pipeline
 	IDXGIAdapter1* _adapter;
@@ -47,9 +52,15 @@ private:
 	ID3D12CommandAllocator* _commandAllocator;
 	ID3D12GraphicsCommandList* _commandList;
 
+	ID3D12RootSignature* _rootSignature;
+	ID3D12PipelineState* _pipelineState;
 	// temp
 	ID3D12Resource* _vertexBuffer;
 	D3D12_VERTEX_BUFFER_VIEW _vertexBufferView;
+	Model _models[2];
+
+	ID3D12Resource* _transformBuffer;
+	D3D12_GPU_DESCRIPTOR_HANDLE _transformBufferDescriptor;
 	// ~temp
 
 	DX12_DescriptorHeap _rtvHeap;
@@ -57,6 +68,8 @@ private:
 	DX12_UploadArena _uploadArena;
 	DX12_Arena _bufferArena;
 	DX12_Arena _textureArena;
+
+	DX12_DescriptorHeap _shaderDescriptorHeap;
 
 	DX12_DescriptorHeap _dsvHeap;
 	ID3D12Resource* _depthStencilBuffer;

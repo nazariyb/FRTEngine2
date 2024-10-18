@@ -1,5 +1,6 @@
 ﻿#include "Graphics.h"
 
+#include "GraphicsUtility.h"
 #include "Model.h"
 #include "Window.h"
 #include "Memory/MemoryCoreTypes.h"
@@ -41,6 +42,7 @@ Graphics::Graphics(Window* Window)
 	, _commandAllocator(nullptr)
 	, _commandList(nullptr)
 	, _vertexBuffer(nullptr)
+	, _vertexBufferView()
 	, _fenceValue(0)
 	, _fenceEvent(nullptr)
 {
@@ -48,10 +50,14 @@ Graphics::Graphics(Window* Window)
 	// Enable the D3D12 debug layer.
 	{
 		ID3D12Debug* debugController = nullptr;
-		/*ThrowIfFailed*/(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)));
+		/*ThrowIfFailed*/
+		(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)));
 		debugController->EnableDebugLayer();
 	}
 #endif
+
+	_renderWidth = Window->GetWindowSize().x;
+	_renderHeight = Window->GetWindowSize().y;
 
 	IDXGIFactory4* factory = nullptr;
 	CreateDXGIFactory2(0, IID_PPV_ARGS(&factory));
@@ -100,7 +106,8 @@ Graphics::Graphics(Window* Window)
 	_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&_fence));
 
 	{
-		_rtvArena = DX12_Arena(_device, D3D12_HEAP_TYPE_DEFAULT, 50 * memory::MegaByte, D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES);
+		_rtvArena = DX12_Arena(_device, D3D12_HEAP_TYPE_DEFAULT, 50 * memory::MegaByte,
+								D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES);
 		_dsvHeap = DX12_DescriptorHeap(_device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1);
 
 		D3D12_RESOURCE_DESC resourceDesc = {};
@@ -120,86 +127,185 @@ Graphics::Graphics(Window* Window)
 
 		_depthStencilBuffer = _rtvArena.Allocate(resourceDesc, D3D12_RESOURCE_STATE_DEPTH_WRITE, &clearValue);
 
-		_depthStencilDescriptor = _dsvHeap.Allocate();
+		_dsvHeap.Allocate(&_depthStencilDescriptor, nullptr);
 		_device->CreateDepthStencilView(_depthStencilBuffer, nullptr, _depthStencilDescriptor);
 	}
 
 	_uploadArena = DX12_UploadArena(_device, 1 * memory::GigaByte);
-	_bufferArena = DX12_Arena(_device, D3D12_HEAP_TYPE_DEFAULT, 500 * memory::MegaByte, D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS);
-	_textureArena = DX12_Arena(_device, D3D12_HEAP_TYPE_DEFAULT, 500 * memory::MegaByte, D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES);
+	_bufferArena = DX12_Arena(_device, D3D12_HEAP_TYPE_DEFAULT, 500 * memory::MegaByte,
+							D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS);
+	_textureArena = DX12_Arena(_device, D3D12_HEAP_TYPE_DEFAULT, 500 * memory::MegaByte,
+								D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES);
+
+	_shaderDescriptorHeap = DX12_DescriptorHeap(
+		_device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 50, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE);
 
 	{
 		_rtvHeap = DX12_DescriptorHeap(_device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, FrameBufferSize);
 
 		for (unsigned frameIndex = 0; frameIndex < FrameBufferSize; ++frameIndex)
 		{
-			_frameBufferDescriptors[frameIndex] = _rtvHeap.Allocate();
+			_rtvHeap.Allocate(&_frameBufferDescriptors[frameIndex], nullptr);
 			_device->CreateRenderTargetView(_frameBuffer[frameIndex], nullptr, _frameBufferDescriptors[frameIndex]);
 		}
 	}
 
-	// TEMP: for test
-	// struct Vertex
-	// {
-	// 	float Position[3];
-	// 	float Color[4];
-	// };
-	//
-	// const float aspectRatio = 1.f;
-	// const Vertex vertices[] =
-	// 	{
-	// 	{ {   0.0f,  0.25f * aspectRatio, 0.f }, { 1.f, 0.f, 0.f, 1.f } },
-	// 	{ {  0.25f, -0.25f * aspectRatio, 0.f }, { 1.f, 0.f, 0.f, 1.f } },
-	// 	{ { -0.25f, -0.25f * aspectRatio, 0.f }, { 1.f, 0.f, 0.f, 1.f } },
-	// };
-	//
-	// const uint32 vertexBufferSize = sizeof(Vertex) * 3;
-	//
-	// D3D12_HEAP_PROPERTIES heapProperties = {};
-	// heapProperties.Type = D3D12_HEAP_TYPE_UPLOAD;
-	// heapProperties.CreationNodeMask = 1;
-	// heapProperties.VisibleNodeMask = 1;
-	// heapProperties.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
-	// heapProperties.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
-	//
-	// D3D12_RESOURCE_DESC resourceDesc = {};
-	// resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-	// resourceDesc.Alignment = 0;
-	// resourceDesc.Width = vertexBufferSize;
-	// resourceDesc.Height = 1;
-	// resourceDesc.DepthOrArraySize = 1;
-	// resourceDesc.MipLevels = 1;
-	// resourceDesc.Format = DXGI_FORMAT_UNKNOWN;
-	// resourceDesc.SampleDesc.Count = 1;
-	// resourceDesc.SampleDesc.Quality = 0;
-	// resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-	// resourceDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
-	//
-	// _device->CreateCommittedResource(
-	// 	&heapProperties,
-	// 	D3D12_HEAP_FLAG_NONE,
-	// 	&resourceDesc,
-	// 	D3D12_RESOURCE_STATE_GENERIC_READ,
-	// 	nullptr,
-	// 	IID_PPV_ARGS(&_vertexBuffer));
-	//
-	// uint8* vertexData;
-	// D3D12_RANGE readRange = {};
-	// readRange.Begin = 0;
-	// readRange.End = 0;
-	// _vertexBuffer->Map(0, &readRange, reinterpret_cast<void**>(&vertexData));
-	// memcpy(vertexData, vertices, vertexBufferSize);
-	// _vertexBuffer->Unmap(0, nullptr);
-	//
-	// _vertexBufferView.BufferLocation = _vertexBuffer->GetGPUVirtualAddress();
-	// _vertexBufferView.StrideInBytes = sizeof(Vertex);
-	// _vertexBufferView.SizeInBytes = vertexBufferSize;
-	// ~TEMP: for test
+	{
+		{
+			D3D12_ROOT_PARAMETER rootParameters[2];
+
+			D3D12_DESCRIPTOR_RANGE tableRange1[1] = {};
+			{
+				tableRange1[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+				tableRange1[0].NumDescriptors = 1;
+				tableRange1[0].BaseShaderRegister = 0;
+				tableRange1[0].RegisterSpace = 0;
+				tableRange1[0].OffsetInDescriptorsFromTableStart = 0;
+
+				rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+				rootParameters[0].DescriptorTable.NumDescriptorRanges = 1;
+				rootParameters[0].DescriptorTable.pDescriptorRanges = tableRange1;
+				rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+			}
+
+			D3D12_DESCRIPTOR_RANGE tableRange2[1] = {};
+			{
+				tableRange2[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
+				tableRange2[0].NumDescriptors = 1;
+				tableRange2[0].BaseShaderRegister = 0;
+				tableRange2[0].RegisterSpace = 0;
+				tableRange2[0].OffsetInDescriptorsFromTableStart = 0;
+
+				rootParameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+				rootParameters[1].DescriptorTable.NumDescriptorRanges = 1;
+				rootParameters[1].DescriptorTable.pDescriptorRanges = tableRange2;
+				rootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+			}
+
+			D3D12_STATIC_SAMPLER_DESC samplerDesc = {};
+			{
+				samplerDesc.Filter = D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+				samplerDesc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+				samplerDesc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+				samplerDesc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+				samplerDesc.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+				samplerDesc.ShaderRegister = 0;
+				samplerDesc.RegisterSpace = 0;
+				samplerDesc.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+			}
+
+			D3D12_ROOT_SIGNATURE_DESC rootSignatureDesc = {};
+			rootSignatureDesc.NumParameters = 2;
+			rootSignatureDesc.pParameters = rootParameters;
+			rootSignatureDesc.NumStaticSamplers = 1;
+			rootSignatureDesc.pStaticSamplers = &samplerDesc;
+			rootSignatureDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+
+			ID3DBlob* serializedRootSignature = nullptr;
+			ID3DBlob* errorMessage = nullptr;
+			/*Throw*/
+			D3D12SerializeRootSignature(
+				&rootSignatureDesc, D3D_ROOT_SIGNATURE_VERSION_1_0, &serializedRootSignature, &errorMessage);
+
+			/*Throw*/
+			_device->CreateRootSignature(
+				0,
+				serializedRootSignature->GetBufferPointer(),
+				serializedRootSignature->GetBufferSize(),
+				IID_PPV_ARGS(&_rootSignature));
+
+			if (serializedRootSignature)
+			{
+				serializedRootSignature->Release();
+			}
+			if (errorMessage)
+			{
+				errorMessage->Release();
+			}
+		}
+
+		D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+		psoDesc.pRootSignature = _rootSignature;
+
+		psoDesc.VS = Dx12LoadShader(R"(P:\Edu\FRTEngine2\Core\Content\Shaders\Bin\VertexShader.shader)");
+		psoDesc.PS = Dx12LoadShader(R"(P:\Edu\FRTEngine2\Core\Content\Shaders\Bin\PixelShader.shader)");
+
+		psoDesc.BlendState.RenderTarget[0].BlendEnable = true;
+		psoDesc.BlendState.RenderTarget[0].LogicOpEnable = false;
+		psoDesc.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_ONE;
+		psoDesc.BlendState.RenderTarget[0].DestBlend = D3D12_BLEND_ZERO;
+		psoDesc.BlendState.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+		psoDesc.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+		psoDesc.BlendState.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ZERO;
+		psoDesc.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+		psoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+		psoDesc.SampleMask = UINT_MAX;
+		psoDesc.SampleDesc.Count = 1;
+		psoDesc.SampleDesc.Quality = 0;
+
+		psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+		psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+		psoDesc.RasterizerState.FrontCounterClockwise = false;
+		psoDesc.RasterizerState.DepthClipEnable = true;
+
+		psoDesc.DepthStencilState.DepthEnable = true;
+		psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+		psoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+
+		D3D12_INPUT_ELEMENT_DESC inputElementDescs[2] = {};
+		inputElementDescs[0].SemanticName = "SV_POSITION";
+		inputElementDescs[0].SemanticIndex = 0;
+		inputElementDescs[0].Format = DXGI_FORMAT_R32G32B32_FLOAT;
+		inputElementDescs[0].InputSlot = 0;
+		inputElementDescs[0].AlignedByteOffset = 0;
+		inputElementDescs[0].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
+
+		inputElementDescs[1].SemanticName = "TEXCOORD";
+		inputElementDescs[1].SemanticIndex = 0;
+		inputElementDescs[1].Format = DXGI_FORMAT_R32G32_FLOAT;
+		inputElementDescs[1].InputSlot = 0;
+		inputElementDescs[1].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
+		inputElementDescs[1].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
+
+		psoDesc.InputLayout.pInputElementDescs = inputElementDescs;
+		psoDesc.InputLayout.NumElements = 2;
+
+		psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+		psoDesc.NumRenderTargets = 1;
+		psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+		psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+
+		/*Throw*/
+		_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&_pipelineState));
+	}
+
+	{
+		D3D12_RESOURCE_DESC cbDesc = {};
+		cbDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+		cbDesc.Width = AlignAddress(sizeof(Vertex/*TODO: actual matrix*/), 256);
+		cbDesc.Height = 1;
+		cbDesc.DepthOrArraySize = 1;
+		cbDesc.MipLevels = 1;
+		cbDesc.Format = DXGI_FORMAT_UNKNOWN;
+		cbDesc.SampleDesc.Count = 1;
+		cbDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+		_transformBuffer = _bufferArena.Allocate(cbDesc, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, nullptr);
+
+		D3D12_CONSTANT_BUFFER_VIEW_DESC cbViewDesc = {};
+		cbViewDesc.BufferLocation = _transformBuffer->GetGPUVirtualAddress();
+		cbViewDesc.SizeInBytes = cbDesc.Width * cbDesc.Height * cbDesc.DepthOrArraySize;
+
+		D3D12_CPU_DESCRIPTOR_HANDLE cpuDesc = {};
+		_shaderDescriptorHeap.Allocate(&cpuDesc, &_transformBufferDescriptor);
+		_device->CreateConstantBufferView(&cbViewDesc, cpuDesc);
+	}
 }
 
 void Graphics::LoadAssets()
 {
-	Model skull = Model::LoadFromFile("P:\\Edu\\FRTEngine2\\Core\\Content\\Models\\Skull\\scene.gltf");
+	_models[0] = Model::LoadFromFile(R"(P:\Edu\FRTEngine2\Core\Content\Models\Skull\scene.gltf)");
+	_models[1] = Model::CreateCube();
 
 	{
 		_commandList->Close();
@@ -237,11 +343,53 @@ void Graphics::Draw()
 	_commandList->ClearRenderTargetView(_frameBufferDescriptors[_currentFrameBufferIndex], Color, 0,  nullptr);
 	_commandList->ClearDepthStencilView(_depthStencilDescriptor, D3D12_CLEAR_FLAG_DEPTH, 1, 0, 0, nullptr);
 
-	// TEMP: for test
-	// _commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-	// _commandList->IASetVertexBuffers(0, 1, &_vertexBufferView);
-	// _commandList->DrawInstanced(3, 1, 0, 0);
-	// ~TEMP: for test
+	D3D12_VIEWPORT viewport = {};
+	viewport.TopLeftX = 0;
+	viewport.TopLeftY = 0;
+	viewport.Width = _renderWidth;
+	viewport.Height = _renderHeight;
+	viewport.MinDepth = 0.0f;
+	viewport.MaxDepth = 1.0f;
+	_commandList->RSSetViewports(1, &viewport);
+
+	D3D12_RECT scissorRect = {};
+	scissorRect.left = 0;
+	scissorRect.right = _renderWidth;
+	scissorRect.top = 0;
+	scissorRect.bottom = _renderHeight;
+	_commandList->RSSetScissorRects(1, &scissorRect);
+
+	Model curModel = _models[0];
+	{
+		D3D12_INDEX_BUFFER_VIEW indexBufferView = {};
+		indexBufferView.BufferLocation = curModel.indexBuffer->GetGPUVirtualAddress();
+		indexBufferView.SizeInBytes = curModel.indices.GetSize();
+		indexBufferView.Format = DXGI_FORMAT_R32_UINT;
+		_commandList->IASetIndexBuffer(&indexBufferView);
+	}
+	{
+		D3D12_VERTEX_BUFFER_VIEW vertexBufferViews[1] = {};
+		vertexBufferViews[0].BufferLocation = curModel.vertexBuffer->GetGPUVirtualAddress();
+		vertexBufferViews[0].SizeInBytes = curModel.vertices.GetSize();
+		vertexBufferViews[0].StrideInBytes = sizeof(Vertex);
+		_commandList->IASetVertexBuffers(0, 1, vertexBufferViews);
+	}
+
+	_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	_commandList->SetGraphicsRootSignature(_rootSignature);
+	_commandList->SetPipelineState(_pipelineState);
+
+	_commandList->SetDescriptorHeaps(1, &_shaderDescriptorHeap._heap);
+	_commandList->SetGraphicsRootDescriptorTable(1, _transformBufferDescriptor);
+
+	for (uint32 meshId = 0; meshId < curModel.meshes.GetNum(); ++meshId)
+	{
+		Mesh& mesh = curModel.meshes[meshId];
+		Texture& texture = curModel.textures[mesh.textureIndex];
+
+		_commandList->SetGraphicsRootDescriptorTable(0, texture.gpuDescriptor);
+		_commandList->DrawIndexedInstanced(mesh.indexCount, 1, mesh.indexOffset, mesh.vertexOffset, 0);
+	}
 
 	{
 		D3D12_RESOURCE_BARRIER resourceBarrier = {};
@@ -253,7 +401,7 @@ void Graphics::Draw()
 		_commandList->ResourceBarrier(1, &resourceBarrier);
 	}
 
-	_commandList->Close();
+	/*Throw*/_commandList->Close();
 	_commandQueue->ExecuteCommandLists(1, (ID3D12CommandList**)&_commandList);
 
 	_swapChain->Present(1, 0);
@@ -350,5 +498,12 @@ ID3D12Resource* Graphics::CreateTextureAsset(
 	}
 
 	return resoruce;
+}
+
+void Graphics::CreateShaderResourceView(ID3D12Resource* Texture, const D3D12_SHADER_RESOURCE_VIEW_DESC& Desc,
+	D3D12_CPU_DESCRIPTOR_HANDLE* OutCpuHandle, D3D12_GPU_DESCRIPTOR_HANDLE* OutGpuHandle)
+{
+	_shaderDescriptorHeap.Allocate(OutCpuHandle, OutGpuHandle);
+	_device->CreateShaderResourceView(Texture, &Desc, *OutCpuHandle);
 }
 }

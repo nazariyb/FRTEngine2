@@ -43,3 +43,4 @@ x64/*
 
 packages/*
 vendor/Assimp/include/assimp/.editorconfig
+/Core/Content/Shaders/Bin

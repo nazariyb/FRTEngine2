@@ -102,4 +102,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
+  <ItemGroup>
+    <FxCompile Include="Content\Shaders\CoreTypes.hlsli" />
+    <FxCompile Include="Content\Shaders\FragmentShader.hlsl" />
+    <FxCompile Include="Content\Shaders\VertexShader.hlsl" />
+  </ItemGroup>
 </Project>

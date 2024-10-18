@@ -14,5 +14,6 @@ namespace frt::graphics
 		uint32* texels;
 
 		ID3D12Resource* gpuTexture;
+		D3D12_GPU_DESCRIPTOR_HANDLE gpuDescriptor;
 	};
 }

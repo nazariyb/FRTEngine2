@@ -42,16 +42,22 @@ namespace frt::graphics
 
 	struct DX12_DescriptorHeap
 	{
+		friend class Graphics;
+
 		DX12_DescriptorHeap() : _stepSize(0), _maxNum(0), _currNum(0), _heap(nullptr) {}
 		DX12_DescriptorHeap(DX12_DescriptorHeap&&) = default;
 		DX12_DescriptorHeap& operator=(DX12_DescriptorHeap&&) = default;
 		DX12_DescriptorHeap(const DX12_DescriptorHeap&) = delete;
 		DX12_DescriptorHeap& operator=(const DX12_DescriptorHeap&) = delete;
 
-		DX12_DescriptorHeap(ID3D12Device* Device, D3D12_DESCRIPTOR_HEAP_TYPE Type, uint32 Num);
+		DX12_DescriptorHeap(
+			ID3D12Device* Device,
+			D3D12_DESCRIPTOR_HEAP_TYPE Type,
+			uint32 Num,
+			D3D12_DESCRIPTOR_HEAP_FLAGS Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE);
 		~DX12_DescriptorHeap();
 
-		D3D12_CPU_DESCRIPTOR_HANDLE Allocate();
+		void Allocate(D3D12_CPU_DESCRIPTOR_HANDLE* OutCpuHandle, D3D12_GPU_DESCRIPTOR_HANDLE* OutGpuHandle);
 
 	private:
 		uint64 _stepSize;

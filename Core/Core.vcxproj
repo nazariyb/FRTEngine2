@@ -58,6 +58,11 @@
       <AdditionalDependencies>d3d12.lib;dxgi.lib;d3dcompiler.lib;assimp-vc143-mt.lib;$(CoreLibraryDependencies);%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(SolutionDir)vendor\Assimp\lib\$(Platform);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
+    <PreBuildEvent>
+      <Command>
+        $(SolutionDir)vendor\Dxc\bin\$(Platform)\dxc.exe -E main -Fo $(ProjectDir)Content\Shaders\Bin\VertexShader.shader -T vs_6_0 -Zi -Zpc -Qembed_debug $(ProjectDir)Content\Shaders\VertexShader.hlsl
+        $(SolutionDir)vendor\Dxc\bin\$(Platform)\dxc.exe -E main -Fo $(ProjectDir)Content\Shaders\Bin\PixelShader.shader -T ps_6_0 -Zi -Zpc -Qembed_debug $(ProjectDir)Content\Shaders\PixelShader.hlsl</Command>
+    </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
@@ -78,14 +83,25 @@
       <AdditionalDependencies>d3d12.lib;dxgi.lib;d3dcompiler.lib;assimp-vc143-mt.lib;$(CoreLibraryDependencies);%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(SolutionDir)vendor\Assimp\lib\$(Platform);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
+    <PreBuildEvent>
+      <Command>
+        $(SolutionDir)vendor\Dxc\bin\$(Platform)\dxc.exe -E main -Fo $(ProjectDir)Content\Shaders\Bin\VertexShader.shader -T vs_6_0 -Zi -Zpc -Qembed_debug $(ProjectDir)Content\Shaders\VertexShader.hlsl
+        $(SolutionDir)vendor\Dxc\bin\$(Platform)\dxc.exe -E main -Fo $(ProjectDir)Content\Shaders\Bin\PixelShader.shader -T ps_6_0 -Zi -Zpc -Qembed_debug $(ProjectDir)Content\Shaders\PixelShader.hlsl</Command>
+    </PreBuildEvent>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <FxCompile Include="Content\Shaders\CoreTypes.hlsli">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
+      <FileType>Document</FileType>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
+    </FxCompile>
     <ClInclude Include="Source\Asserts.h" />
     <ClInclude Include="Source\Core.h" />
     <ClInclude Include="Source\CoreTypes.h" />
     <ClInclude Include="Source\GameInstance.h" />
     <ClInclude Include="Source\Graphics\Graphics.h" />
     <ClInclude Include="Source\Graphics\GraphicsCoreTypes.h" />
+    <ClInclude Include="Source\Graphics\GraphicsUtility.h" />
     <ClInclude Include="Source\Graphics\Mesh.h" />
     <ClInclude Include="Source\Graphics\Model.h" />
     <ClInclude Include="Source\Graphics\Texture.h" />
@@ -101,6 +117,16 @@
     <ClInclude Include="Source\Window.h" />
   </ItemGroup>
   <ItemGroup>
+    <FxCompile Include="Content\Shaders\PixelShader.hlsl">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
+      <FileType>Document</FileType>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
+    </FxCompile>
+    <FxCompile Include="Content\Shaders\VertexShader.hlsl">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
+      <FileType>Document</FileType>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
+    </FxCompile>
     <ClCompile Include="Source\Core.cpp" />
     <ClCompile Include="Source\GameInstance.cpp" />
     <ClCompile Include="Source\Graphics\Graphics.cpp">
@@ -179,11 +205,19 @@
       <LinkCompiled>true</LinkCompiled>
     </ClCompile>
     <ClCompile Include="Source\Graphics\GraphicsCoreTypes.cpp" />
+    <ClCompile Include="Source\Graphics\GraphicsUtility.cpp" />
     <ClCompile Include="Source\Graphics\Model.cpp" />
     <ClCompile Include="Source\Math\Math.cpp" />
     <ClCompile Include="Source\Memory\PoolAllocator.cpp" />
     <ClCompile Include="Source\Timer.cpp" />
     <ClCompile Include="Source\Window.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="Content\Models\Skull\license.txt" />
+    <Content Include="Content\Models\Skull\scene.bin" />
+    <Content Include="Content\Models\Skull\scene.gltf" />
+    <Content Include="Content\Models\Skull\textures\defaultMat_baseColor.jpeg" />
+    <Content Include="Content\Models\Skull\textures\defaultMat_normal.jpeg" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

@@ -48,7 +48,8 @@ namespace frt::graphics
 	}
 
 
-	DX12_DescriptorHeap::DX12_DescriptorHeap(ID3D12Device* Device, D3D12_DESCRIPTOR_HEAP_TYPE Type, uint32 Num)
+	DX12_DescriptorHeap::DX12_DescriptorHeap(
+		ID3D12Device* Device, D3D12_DESCRIPTOR_HEAP_TYPE Type, uint32 Num, D3D12_DESCRIPTOR_HEAP_FLAGS Flags)
 		: _stepSize(0)
 		, _maxNum(Num)
 		, _currNum(0)
@@ -59,7 +60,7 @@ namespace frt::graphics
 		D3D12_DESCRIPTOR_HEAP_DESC heapDesc = {};
 		heapDesc.Type = Type;
 		heapDesc.NumDescriptors = Num;
-		heapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+		heapDesc.Flags = Flags;
 		/*Throw*/Device->CreateDescriptorHeap(&heapDesc, IID_PPV_ARGS(&_heap));
 	}
 
@@ -68,14 +69,25 @@ namespace frt::graphics
 		_heap = nullptr;
 	}
 
-	D3D12_CPU_DESCRIPTOR_HANDLE DX12_DescriptorHeap::Allocate()
+	void DX12_DescriptorHeap::Allocate(D3D12_CPU_DESCRIPTOR_HANDLE* OutCpuHandle, D3D12_GPU_DESCRIPTOR_HANDLE* OutGpuHandle)
 	{
 		frt_assert(_currNum < _maxNum);
 
-		D3D12_CPU_DESCRIPTOR_HANDLE descHandle = _heap->GetCPUDescriptorHandleForHeapStart();
-		descHandle.ptr += _stepSize * _currNum;
+		if (OutCpuHandle)
+		{
+			D3D12_CPU_DESCRIPTOR_HANDLE descHandle = _heap->GetCPUDescriptorHandleForHeapStart();
+			descHandle.ptr += _stepSize * _currNum;
+			*OutCpuHandle = descHandle;
+		}
+
+		if (OutGpuHandle)
+		{
+			D3D12_GPU_DESCRIPTOR_HANDLE descHandle = _heap->GetGPUDescriptorHandleForHeapStart();
+			descHandle.ptr += _stepSize * _currNum;
+			*OutGpuHandle = descHandle;
+		}
+
 		_currNum++;
-		return descHandle;
 	}
 
 	DX12_UploadArena::DX12_UploadArena(ID3D12Device* Device, uint64 Size)

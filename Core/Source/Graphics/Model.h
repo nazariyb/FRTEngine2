@@ -32,5 +32,7 @@ namespace frt::graphics
 		ID3D12Resource* indexBuffer = nullptr;
 
 		static Model LoadFromFile(const std::string& filename);
+
+		static Model CreateCube();
 	};
 }
