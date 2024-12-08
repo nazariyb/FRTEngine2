@@ -107,8 +107,8 @@
     <ClInclude Include="Source\Graphics\Texture.h" />
     <ClInclude Include="Source\Math\Math.h" />
     <ClInclude Include="Source\Math\MathUtility.h" />
-    <ClInclude Include="Source\Math\TVector2.h" />
-    <ClInclude Include="Source\Math\TVector3.h" />
+    <ClInclude Include="Source\Math\Vector2.h" />
+    <ClInclude Include="Source\Math\Vector3.h" />
     <ClInclude Include="Source\Memory\Memory.h" />
     <ClInclude Include="Source\Memory\MemoryCoreTypes.h" />
     <ClInclude Include="Source\Memory\PoolAllocator.h" />
