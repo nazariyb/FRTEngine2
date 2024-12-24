@@ -64,7 +64,7 @@ void GameInstance::Tick(float DeltaSeconds)
 
 void GameInstance::Draw(float DeltaSeconds)
 {
-	_graphics->Draw();
+	_graphics->Draw(DeltaSeconds);
 }
 
 long long GameInstance::GetFrameCount() const

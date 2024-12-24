@@ -24,6 +24,7 @@ namespace frt::graphics
 		const aiScene* scene = importer.ReadFile(filename, aiProcess_Triangulate | aiProcess_OptimizeMeshes);
 		if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode)
 		{
+			frt_assert(false);
 			return {};
 		}
 
@@ -64,7 +65,8 @@ namespace frt::graphics
 				Texture& texture = result.textures[textureIndex];
 
 				//TODO:temp
-				textureName = "P:\\Edu\\FRTEngine2\\Core\\Content\\Models\\Skull\\textures\\defaultMat_baseColor.jpeg";
+				// textureName = "P:\\Edu\\FRTEngine2\\Core\\Content\\Models\\Skull\\textures\\defaultMat_baseColor.jpeg";
+				textureName = "P:\\Edu\\FRTEngine2\\Core\\Content\\Models\\Cube\\Cube_BaseColor.png";
 
 				int32 channelNum = 0;
 				texture.texels = (uint32*)stbi_load(textureName.C_Str(), &texture.width, &texture.height, &channelNum, 4);
@@ -283,9 +285,9 @@ namespace frt::graphics
 
 			Vertex vertices[3] =
 			{
-				{ {   0.0f,  0.25f, 0.f }, { 0.5f, 1.f } },
-				{ {  0.25f, -0.25f, 0.f }, { 1.f, 0.f } },
-				{ { -0.25f, -0.25f, 0.f }, { 0.f, 0.f } },
+				{ {   0.0f,  0.5f, 0.f }, { 0.5f, 1.f } },
+				{ {  0.5f, -0.5f, 0.f }, { 1.f, 0.f } },
+				{ { -0.5f, -0.5f, 0.f }, { 0.f, 0.f } },
 			};
 			for (int64 vertexIndex = 0; vertexIndex < dstMesh.vertexCount; ++vertexIndex)
 			{

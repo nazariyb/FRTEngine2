@@ -6,6 +6,7 @@
 #include "Core.h"
 #include "GraphicsCoreTypes.h"
 #include "Model.h"
+#include "Math/Transform.h"
 
 
 namespace frt
@@ -25,12 +26,18 @@ public:
 
 	void LoadAssets();
 
-	void Draw();
+	void Draw(float DeltaSeconds);
 
 	ID3D12Resource* CreateBufferAsset(const D3D12_RESOURCE_DESC& Desc, D3D12_RESOURCE_STATES InitialState, void* BufferData);
 	ID3D12Resource* CreateTextureAsset(const D3D12_RESOURCE_DESC& Desc, D3D12_RESOURCE_STATES InitialState, void* Texels);
 	void CreateShaderResourceView(ID3D12Resource* Texture, const D3D12_SHADER_RESOURCE_VIEW_DESC& Desc,
 		D3D12_CPU_DESCRIPTOR_HANDLE* OutCpuHandle, D3D12_GPU_DESCRIPTOR_HANDLE* OutGpuHandle);
+
+	void CopyDataToBuffer(
+		D3D12_RESOURCE_STATES StartState,
+		D3D12_RESOURCE_STATES EndState,
+		void* Data, uint64 DataSize,
+		ID3D12Resource* GpuBuffer);
 
 private:
 	static constexpr unsigned FrameBufferSize = 2;
@@ -58,6 +65,7 @@ private:
 	ID3D12Resource* _vertexBuffer;
 	D3D12_VERTEX_BUFFER_VIEW _vertexBufferView;
 	Model _models[2];
+	math::STransform _transformTemp;
 
 	ID3D12Resource* _transformBuffer;
 	D3D12_GPU_DESCRIPTOR_HANDLE _transformBufferDescriptor;

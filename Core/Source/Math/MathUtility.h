@@ -26,6 +26,12 @@ namespace math
 
 	static constexpr float RadiansToDegrees(float Radians) { return Radians * 180.0f / PI; }
 	static constexpr double RadiansToDegrees(double Radians) { return Radians * 180.0 / PI_DOUBLE; }
+
+	template<typename T>
+	static T Min(const T& A, const T& B) { return A < B ? A : B; }
+
+	template<typename T>
+	static T Max(const T& A, const T& B) { return A > B ? A : B; }
 }
 
 NAMESPACE_FRT_END

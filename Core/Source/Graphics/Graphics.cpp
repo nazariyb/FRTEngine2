@@ -1,8 +1,15 @@
 ﻿#include "Graphics.h"
 
+#include <complex>
+#include <DirectXMath.h>
+#include <iostream>
+
+#include "GameInstance.h"
 #include "GraphicsUtility.h"
 #include "Model.h"
+#include "Timer.h"
 #include "Window.h"
+#include "Math/Transform.h"
 #include "Memory/MemoryCoreTypes.h"
 
 namespace frt::graphics
@@ -249,11 +256,12 @@ Graphics::Graphics(Window* Window)
 		psoDesc.RasterizerState.DepthClipEnable = true;
 
 		psoDesc.DepthStencilState.DepthEnable = true;
+		psoDesc.DepthStencilState.StencilEnable = false;
 		psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
 		psoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
 
 		D3D12_INPUT_ELEMENT_DESC inputElementDescs[2] = {};
-		inputElementDescs[0].SemanticName = "SV_POSITION";
+		inputElementDescs[0].SemanticName = "POSITION";
 		inputElementDescs[0].SemanticIndex = 0;
 		inputElementDescs[0].Format = DXGI_FORMAT_R32G32B32_FLOAT;
 		inputElementDescs[0].InputSlot = 0;
@@ -282,7 +290,7 @@ Graphics::Graphics(Window* Window)
 	{
 		D3D12_RESOURCE_DESC cbDesc = {};
 		cbDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-		cbDesc.Width = AlignAddress(sizeof(Vertex/*TODO: actual matrix*/), 256);
+		cbDesc.Width = AlignAddress(sizeof(math::STransform), 256);
 		cbDesc.Height = 1;
 		cbDesc.DepthOrArraySize = 1;
 		cbDesc.MipLevels = 1;
@@ -304,7 +312,8 @@ Graphics::Graphics(Window* Window)
 
 void Graphics::LoadAssets()
 {
-	_models[0] = Model::LoadFromFile(R"(P:\Edu\FRTEngine2\Core\Content\Models\Skull\scene.gltf)");
+	// _models[0] = Model::LoadFromFile(R"(P:\Edu\FRTEngine2\Core\Content\Models\Skull\scene.gltf)");
+	_models[0] = Model::LoadFromFile(R"(P:\Edu\FRTEngine2\Core\Content\Models\Cube\Cube.gltf)");
 	_models[1] = Model::CreateCube();
 
 	{
@@ -327,8 +336,23 @@ void Graphics::LoadAssets()
 	}
 }
 
-void Graphics::Draw()
+void Graphics::Draw(float DeltaSeconds)
 {
+	const float TimeElapsed = GameInstance::GetInstance().GetTime().GetTotalSeconds();
+	const double scale = std::cos(TimeElapsed) / 8.f + .25f;
+	std::cout << "scale: " << scale << std::endl;
+	_transformTemp.SetScale(.25);
+	_transformTemp.SetTranslation(0.f, 0.f, .5f);
+	_transformTemp.SetRotation(0.f, 0.f, 3.14f * TimeElapsed);
+
+	CopyDataToBuffer(
+		D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
+		D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
+		(void*)_transformTemp.GetMatrix().m,
+		sizeof(math::STransform::RawType),
+		_transformBuffer
+		);
+
 	{
 		D3D12_RESOURCE_BARRIER resourceBarrier = {};
 		resourceBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -339,9 +363,11 @@ void Graphics::Draw()
 		_commandList->ResourceBarrier(1, &resourceBarrier);
 	}
 
-	FLOAT Color[] = { 0.1f, 0.2f, 0.3f, 1.f };
-	_commandList->ClearRenderTargetView(_frameBufferDescriptors[_currentFrameBufferIndex], Color, 0,  nullptr);
+	FLOAT Color[] = { 0.1f, 0.3f, 0.3f, 1.f };
+	_commandList->ClearRenderTargetView(_frameBufferDescriptors[_currentFrameBufferIndex], Color, 0, nullptr);
 	_commandList->ClearDepthStencilView(_depthStencilDescriptor, D3D12_CLEAR_FLAG_DEPTH, 1, 0, 0, nullptr);
+
+	_commandList->OMSetRenderTargets(1, &_frameBufferDescriptors[_currentFrameBufferIndex], false, &_depthStencilDescriptor);
 
 	D3D12_VIEWPORT viewport = {};
 	viewport.TopLeftX = 0;
@@ -360,6 +386,14 @@ void Graphics::Draw()
 	_commandList->RSSetScissorRects(1, &scissorRect);
 
 	Model curModel = _models[0];
+
+	_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	_commandList->SetGraphicsRootSignature(_rootSignature);
+	_commandList->SetPipelineState(_pipelineState);
+
+	_commandList->SetDescriptorHeaps(1, &_shaderDescriptorHeap._heap);
+	_commandList->SetGraphicsRootDescriptorTable(1, _transformBufferDescriptor);
+
 	{
 		D3D12_INDEX_BUFFER_VIEW indexBufferView = {};
 		indexBufferView.BufferLocation = curModel.indexBuffer->GetGPUVirtualAddress();
@@ -374,13 +408,6 @@ void Graphics::Draw()
 		vertexBufferViews[0].StrideInBytes = sizeof(Vertex);
 		_commandList->IASetVertexBuffers(0, 1, vertexBufferViews);
 	}
-
-	_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-	_commandList->SetGraphicsRootSignature(_rootSignature);
-	_commandList->SetPipelineState(_pipelineState);
-
-	_commandList->SetDescriptorHeaps(1, &_shaderDescriptorHeap._heap);
-	_commandList->SetGraphicsRootDescriptorTable(1, _transformBufferDescriptor);
 
 	for (uint32 meshId = 0; meshId < curModel.meshes.GetNum(); ++meshId)
 	{
@@ -419,6 +446,8 @@ void Graphics::Draw()
 	/*Throw*/_commandList->Reset(_commandAllocator, nullptr);
 
 	_currentFrameBufferIndex = (_currentFrameBufferIndex + 1) % FrameBufferSize;
+
+	_uploadArena.Clear();
 }
 
 ID3D12Resource* Graphics::CreateBufferAsset(
@@ -505,5 +534,41 @@ void Graphics::CreateShaderResourceView(ID3D12Resource* Texture, const D3D12_SHA
 {
 	_shaderDescriptorHeap.Allocate(OutCpuHandle, OutGpuHandle);
 	_device->CreateShaderResourceView(Texture, &Desc, *OutCpuHandle);
+}
+
+void Graphics::CopyDataToBuffer(
+	D3D12_RESOURCE_STATES StartState,
+	D3D12_RESOURCE_STATES EndState,
+	void* Data, uint64 DataSize,
+	ID3D12Resource* GpuBuffer)
+{
+	uint64 uploadOffset = 0;
+	{
+		uint8* dest = _uploadArena.Allocate(DataSize, &uploadOffset);
+		memcpy(dest, Data, DataSize);
+	}
+
+	{
+		D3D12_RESOURCE_BARRIER resourceBarrier = {};
+		resourceBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		resourceBarrier.Transition.pResource = GpuBuffer;
+		resourceBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		resourceBarrier.Transition.StateBefore = StartState;
+		resourceBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
+		_commandList->ResourceBarrier(1, &resourceBarrier);
+	}
+
+	_commandList->CopyBufferRegion(
+		GpuBuffer, 0, _uploadArena.GetGPUBuffer(), uploadOffset, DataSize);
+
+	{
+		D3D12_RESOURCE_BARRIER resourceBarrier = {};
+		resourceBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		resourceBarrier.Transition.pResource = GpuBuffer;
+		resourceBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		resourceBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+		resourceBarrier.Transition.StateAfter = EndState;
+		_commandList->ResourceBarrier(1, &resourceBarrier);
+	}
 }
 }
