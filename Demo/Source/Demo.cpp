@@ -6,7 +6,7 @@
 #include "Core.h"
 #include "DemoGame.h"
 #include "Timer.h"
-#include "Graphics/Graphics.h"
+#include "Graphics/Renderer.h"
 
 using namespace frt;
 

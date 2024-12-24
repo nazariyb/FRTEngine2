@@ -8,7 +8,7 @@
 
 namespace frt::graphics
 {
-	class Graphics;
+	class Renderer;
 }
 
 namespace frt
@@ -30,7 +30,7 @@ public:
 	Timer& GetTime() const;
 
 	bool HasGraphics() const;
-	graphics::Graphics& GetGraphics() const;
+	graphics::Renderer& GetGraphics() const;
 
 	// Update
 	// virtual void Input(float DeltaSeconds);
@@ -46,7 +46,7 @@ protected:
 protected:
 	Timer* _timer;
 	Window* _window;
-	graphics::Graphics* _graphics;
+	graphics::Renderer* _graphics;
 
 	long long _frameCount;
 };

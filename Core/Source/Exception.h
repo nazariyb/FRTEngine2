@@ -45,5 +45,5 @@ private:
 #define EXCEPTION( hr ) Exception(__LINE__, __FILE__, hr);
 #define LAST_EXCEPTION( ) Exception(__LINE__, __FILE__, GetLastError());
 
-#define THROW_IF_FAILED( hr ) if (FAILED(hr)) throw EXCEPTION(hr)
+#define THROW_IF_FAILED( hr ) if (!FAILED(hr)) {} else { throw EXCEPTION(hr); }
 

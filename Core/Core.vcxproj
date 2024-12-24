@@ -101,7 +101,7 @@
     <ClInclude Include="Source\Exception.h" />
     <ClInclude Include="Source\GameInstance.h" />
     <ClInclude Include="Source\Graphics\Camera.h" />
-    <ClInclude Include="Source\Graphics\Graphics.h" />
+    <ClInclude Include="Source\Graphics\Renderer.h" />
     <ClInclude Include="Source\Graphics\GraphicsCoreTypes.h" />
     <ClInclude Include="Source\Graphics\GraphicsUtility.h" />
     <ClInclude Include="Source\Graphics\Mesh.h" />
@@ -134,7 +134,7 @@
     <ClCompile Include="Source\Exception.cpp" />
     <ClCompile Include="Source\GameInstance.cpp" />
     <ClCompile Include="Source\Graphics\Camera.cpp" />
-    <ClCompile Include="Source\Graphics\Graphics.cpp">
+    <ClCompile Include="Source\Graphics\Renderer.cpp">
       <RuntimeLibrary>MultiThreadedDebugDll</RuntimeLibrary>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <Optimization>Disabled</Optimization>

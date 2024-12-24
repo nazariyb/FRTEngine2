@@ -42,7 +42,7 @@ namespace frt::graphics
 
 	struct DX12_DescriptorHeap
 	{
-		friend class Graphics;
+		friend class Renderer;
 
 		DX12_DescriptorHeap() : _stepSize(0), _maxNum(0), _currNum(0), _heap(nullptr) {}
 		DX12_DescriptorHeap(DX12_DescriptorHeap&&) = default;

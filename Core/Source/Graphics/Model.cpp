@@ -13,7 +13,7 @@
 #include <stb_image.h>
 
 #include "GameInstance.h"
-#include "Graphics.h"
+#include "Renderer.h"
 
 
 namespace frt::graphics
@@ -165,7 +165,7 @@ namespace frt::graphics
 			}
 		}
 
-		Graphics& graphics = GameInstance::GetInstance().GetGraphics();
+		Renderer& graphics = GameInstance::GetInstance().GetGraphics();
 
 		{
 			D3D12_RESOURCE_DESC vbDesc = {};
@@ -305,7 +305,7 @@ namespace frt::graphics
 			result.indices[2] = 2;
 		}
 
-		Graphics& graphics = GameInstance::GetInstance().GetGraphics();
+		Renderer& graphics = GameInstance::GetInstance().GetGraphics();
 
 		{
 			D3D12_RESOURCE_DESC vbDesc = {};

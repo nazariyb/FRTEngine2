@@ -1,9 +1,10 @@
-﻿#include "Graphics.h"
+﻿#include "Renderer.h"
 
 #include <complex>
 #include <DirectXMath.h>
 #include <iostream>
 
+#include "Exception.h"
 #include "GameInstance.h"
 #include "GraphicsUtility.h"
 #include "Model.h"
@@ -39,7 +40,7 @@ static void GetHardwareAdapter(IDXGIFactory4* pFactory, IDXGIAdapter1** ppAdapte
 }
 
 
-Graphics::Graphics(Window* Window)
+Renderer::Renderer(Window* Window)
 	: _window(Window)
 	, _adapter(nullptr)
 	, _device(nullptr)
@@ -57,8 +58,7 @@ Graphics::Graphics(Window* Window)
 	// Enable the D3D12 debug layer.
 	{
 		ID3D12Debug* debugController = nullptr;
-		/*ThrowIfFailed*/
-		(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)));
+		THROW_IF_FAILED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)));
 		debugController->EnableDebugLayer();
 	}
 #endif
@@ -67,20 +67,18 @@ Graphics::Graphics(Window* Window)
 	_renderHeight = Window->GetWindowSize().y;
 
 	IDXGIFactory4* factory = nullptr;
-	CreateDXGIFactory2(0, IID_PPV_ARGS(&factory));
-	// ThrowIfFailed
+	THROW_IF_FAILED(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)));
 
 	GetHardwareAdapter(factory, &_adapter);
 
-	D3D12CreateDevice(_adapter, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&_device));
+	THROW_IF_FAILED(D3D12CreateDevice(_adapter, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&_device)));
 
 	// Describe and create the command queue.
 	D3D12_COMMAND_QUEUE_DESC queueDesc = {};
 	queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
 	queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
 
-	/*THROW_IF_FAILED*/
-	(_device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&_commandQueue)));
+	THROW_IF_FAILED(_device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&_commandQueue)));
 
 	Vector2f drawRect = _window->GetWindowSize();
 
@@ -94,9 +92,8 @@ Graphics::Graphics(Window* Window)
 	swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
 	swapChainDesc.SampleDesc.Count = 1;
 
-	// Throw if failed
-	factory->CreateSwapChainForHwnd(
-		_commandQueue, _window->GetHandle(), &swapChainDesc, nullptr, nullptr, &_swapChain);
+	THROW_IF_FAILED(factory->CreateSwapChainForHwnd(
+		_commandQueue, _window->GetHandle(), &swapChainDesc, nullptr, nullptr, &_swapChain));
 
 	for (UINT frameIndex = 0; frameIndex < FrameBufferSize; ++frameIndex)
 	{
@@ -105,12 +102,9 @@ Graphics::Graphics(Window* Window)
 
 	// Command allocator and list
 
-	/*Throw*/
-	_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&_commandAllocator));
-	/*Throw*/
-	_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, _commandAllocator, 0, IID_PPV_ARGS(&_commandList));
-	/*Throw*/
-	_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&_fence));
+	THROW_IF_FAILED(_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&_commandAllocator)));
+	THROW_IF_FAILED(_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, _commandAllocator, 0, IID_PPV_ARGS(&_commandList)));
+	THROW_IF_FAILED(_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&_fence)));
 
 	{
 		_rtvArena = DX12_Arena(_device, D3D12_HEAP_TYPE_DEFAULT, 50 * memory::MegaByte,
@@ -210,16 +204,15 @@ Graphics::Graphics(Window* Window)
 
 			ID3DBlob* serializedRootSignature = nullptr;
 			ID3DBlob* errorMessage = nullptr;
-			/*Throw*/
-			D3D12SerializeRootSignature(
-				&rootSignatureDesc, D3D_ROOT_SIGNATURE_VERSION_1_0, &serializedRootSignature, &errorMessage);
 
-			/*Throw*/
-			_device->CreateRootSignature(
+			THROW_IF_FAILED(D3D12SerializeRootSignature(
+				&rootSignatureDesc, D3D_ROOT_SIGNATURE_VERSION_1_0, &serializedRootSignature, &errorMessage));
+
+			THROW_IF_FAILED(_device->CreateRootSignature(
 				0,
 				serializedRootSignature->GetBufferPointer(),
 				serializedRootSignature->GetBufferSize(),
-				IID_PPV_ARGS(&_rootSignature));
+				IID_PPV_ARGS(&_rootSignature)));
 
 			if (serializedRootSignature)
 			{
@@ -283,8 +276,7 @@ Graphics::Graphics(Window* Window)
 		psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
 		psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
 
-		/*Throw*/
-		_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&_pipelineState));
+		THROW_IF_FAILED(_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&_pipelineState)));
 	}
 
 	{
@@ -310,7 +302,7 @@ Graphics::Graphics(Window* Window)
 	}
 }
 
-void Graphics::LoadAssets()
+void Renderer::LoadAssets()
 {
 	// _models[0] = Model::LoadFromFile(R"(P:\Edu\FRTEngine2\Core\Content\Models\Skull\scene.gltf)");
 	_models[0] = Model::LoadFromFile(R"(P:\Edu\FRTEngine2\Core\Content\Models\Cube\Cube.gltf)");
@@ -325,18 +317,18 @@ void Graphics::LoadAssets()
 
 		if (_fence->GetCompletedValue() < _fenceValue)
 		{
-			_fence->SetEventOnCompletion(_fenceValue, _fenceEvent);
+			THROW_IF_FAILED(_fence->SetEventOnCompletion(_fenceValue, _fenceEvent));
 			WaitForSingleObject(_fenceEvent, INFINITE);
 		}
 
-		/*Throw*/_commandAllocator->Reset();
-		/*Throw*/_commandList->Reset(_commandAllocator, nullptr);
+		THROW_IF_FAILED(_commandAllocator->Reset());
+		THROW_IF_FAILED(_commandList->Reset(_commandAllocator, nullptr));
 
 		_uploadArena.Clear();
 	}
 }
 
-void Graphics::Draw(float DeltaSeconds)
+void Renderer::Draw(float DeltaSeconds)
 {
 	const float TimeElapsed = GameInstance::GetInstance().GetTime().GetTotalSeconds();
 	const double scale = std::cos(TimeElapsed) / 8.f + .25f;
@@ -428,7 +420,7 @@ void Graphics::Draw(float DeltaSeconds)
 		_commandList->ResourceBarrier(1, &resourceBarrier);
 	}
 
-	/*Throw*/_commandList->Close();
+	THROW_IF_FAILED(_commandList->Close());
 	_commandQueue->ExecuteCommandLists(1, (ID3D12CommandList**)&_commandList);
 
 	_swapChain->Present(1, 0);
@@ -442,15 +434,15 @@ void Graphics::Draw(float DeltaSeconds)
 		WaitForSingleObject(_fenceEvent, INFINITE);
 	}
 
-	/*Throw*/_commandAllocator->Reset();
-	/*Throw*/_commandList->Reset(_commandAllocator, nullptr);
+	THROW_IF_FAILED(_commandAllocator->Reset());
+	THROW_IF_FAILED(_commandList->Reset(_commandAllocator, nullptr));
 
 	_currentFrameBufferIndex = (_currentFrameBufferIndex + 1) % FrameBufferSize;
 
 	_uploadArena.Clear();
 }
 
-ID3D12Resource* Graphics::CreateBufferAsset(
+ID3D12Resource* Renderer::CreateBufferAsset(
 	const D3D12_RESOURCE_DESC& Desc, D3D12_RESOURCE_STATES InitialState, void* BufferData)
 {
 	uint64 uploadOffset = 0;
@@ -473,7 +465,7 @@ ID3D12Resource* Graphics::CreateBufferAsset(
 	return resource;
 }
 
-ID3D12Resource* Graphics::CreateTextureAsset(
+ID3D12Resource* Renderer::CreateTextureAsset(
 	const D3D12_RESOURCE_DESC& Desc, D3D12_RESOURCE_STATES InitialState, void* Texels)
 {
 	D3D12_RESOURCE_ALLOCATION_INFO allocationInfo = _device->GetResourceAllocationInfo(0, 1, &Desc);
@@ -529,14 +521,14 @@ ID3D12Resource* Graphics::CreateTextureAsset(
 	return resoruce;
 }
 
-void Graphics::CreateShaderResourceView(ID3D12Resource* Texture, const D3D12_SHADER_RESOURCE_VIEW_DESC& Desc,
+void Renderer::CreateShaderResourceView(ID3D12Resource* Texture, const D3D12_SHADER_RESOURCE_VIEW_DESC& Desc,
 	D3D12_CPU_DESCRIPTOR_HANDLE* OutCpuHandle, D3D12_GPU_DESCRIPTOR_HANDLE* OutGpuHandle)
 {
 	_shaderDescriptorHeap.Allocate(OutCpuHandle, OutGpuHandle);
 	_device->CreateShaderResourceView(Texture, &Desc, *OutCpuHandle);
 }
 
-void Graphics::CopyDataToBuffer(
+void Renderer::CopyDataToBuffer(
 	D3D12_RESOURCE_STATES StartState,
 	D3D12_RESOURCE_STATES EndState,
 	void* Data, uint64 DataSize,

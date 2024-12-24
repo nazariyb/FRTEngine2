@@ -1,6 +1,6 @@
 #include "GameInstance.h"
 
-#include "Graphics/Graphics.h"
+#include "Graphics/Renderer.h"
 #include "Timer.h"
 #include "Window.h"
 #include "Memory/Memory.h"
@@ -26,7 +26,7 @@ GameInstance::GameInstance()
 	_window = new Window(windowParams);
 
 	memory::DefaultAllocator::InitMasterInstance(1 * memory::GigaByte);
-	_graphics = new Graphics(_window);
+	_graphics = new Renderer(_window);
 }
 
 GameInstance::~GameInstance()
@@ -50,7 +50,7 @@ bool GameInstance::HasGraphics() const
 	return !!_graphics;
 }
 
-Graphics& GameInstance::GetGraphics() const
+Renderer& GameInstance::GetGraphics() const
 {
 	frt_assert(_graphics);
 	return *_graphics;

@@ -17,12 +17,12 @@ namespace frt
 namespace frt::graphics
 {
 
-class FRT_CORE_API Graphics
+class FRT_CORE_API Renderer
 {
 public:
 
-	Graphics() = delete;
-	explicit Graphics(Window* Window);
+	Renderer() = delete;
+	explicit Renderer(Window* Window);
 
 	void LoadAssets();
 
