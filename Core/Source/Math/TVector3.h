@@ -236,7 +236,7 @@ TVector3<T>& TVector3<T>::NormalizeUnsafe()
 template <typename T>
 TVector3<T> TVector3<T>::GetNormalizedUnsafe() const
 {
-	return TVector3<T>(NormalizeUnsafe());
+	return TVector3<T>().NormalizeUnsafe();
 }
 
 template <typename Real>

@@ -4,6 +4,7 @@
 #include <DirectXMath.h>
 #include <iostream>
 
+#include "Camera.h"
 #include "Exception.h"
 #include "GameInstance.h"
 #include "GraphicsUtility.h"
@@ -300,12 +301,34 @@ Renderer::Renderer(Window* Window)
 		_shaderDescriptorHeap.Allocate(&cpuDesc, &_transformBufferDescriptor);
 		_device->CreateConstantBufferView(&cbViewDesc, cpuDesc);
 	}
+
+	{
+		D3D12_RESOURCE_DESC cbDesc = {};
+		cbDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+		cbDesc.Width = AlignAddress(sizeof(math::STransform), 256);
+		cbDesc.Height = 1;
+		cbDesc.DepthOrArraySize = 1;
+		cbDesc.MipLevels = 1;
+		cbDesc.Format = DXGI_FORMAT_UNKNOWN;
+		cbDesc.SampleDesc.Count = 1;
+		cbDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+		CommonConstantBuffer = _bufferArena.Allocate(cbDesc, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, nullptr);
+
+		D3D12_CONSTANT_BUFFER_VIEW_DESC cbViewDesc = {};
+		cbViewDesc.BufferLocation = CommonConstantBuffer->GetGPUVirtualAddress();
+		cbViewDesc.SizeInBytes = cbDesc.Width * cbDesc.Height * cbDesc.DepthOrArraySize;
+
+		D3D12_CPU_DESCRIPTOR_HANDLE cpuDesc = {};
+		_shaderDescriptorHeap.Allocate(&cpuDesc, &CommonConstantBufferDescriptor);
+		_device->CreateConstantBufferView(&cbViewDesc, cpuDesc);
+	}
 }
 
 void Renderer::LoadAssets()
 {
-	// _models[0] = Model::LoadFromFile(R"(P:\Edu\FRTEngine2\Core\Content\Models\Skull\scene.gltf)");
-	_models[0] = Model::LoadFromFile(R"(P:\Edu\FRTEngine2\Core\Content\Models\Cube\Cube.gltf)");
+	_models[0] = Model::LoadFromFile(R"(P:\Edu\FRTEngine2\Core\Content\Models\Skull\scene.gltf)");
+	// _models[0] = Model::LoadFromFile(R"(P:\Edu\FRTEngine2\Core\Content\Models\Cube\Cube.gltf)");
 	_models[1] = Model::CreateCube();
 
 	{
@@ -328,19 +351,25 @@ void Renderer::LoadAssets()
 	}
 }
 
-void Renderer::Draw(float DeltaSeconds)
+void Renderer::Draw(float DeltaSeconds, CCamera& Camera)
 {
 	const float TimeElapsed = GameInstance::GetInstance().GetTime().GetTotalSeconds();
 	const double scale = std::cos(TimeElapsed) / 8.f + .25f;
 	std::cout << "scale: " << scale << std::endl;
-	_transformTemp.SetScale(.25);
-	_transformTemp.SetTranslation(0.f, 0.f, .5f);
-	_transformTemp.SetRotation(0.f, 0.f, 3.14f * TimeElapsed);
+	_transformTemp.SetScale(.5);
+	_transformTemp.SetTranslation(.5f, 0.f, 0.f);
+	_transformTemp.SetRotation(0.f, math::PI_OVER_FOUR * TimeElapsed, 0.f);
+
+	DirectX::XMMATRIX view = Camera.GetViewMatrix();
+	DirectX::XMMATRIX projection = Camera.GetProjectionMatrix(90.f, _renderWidth / _renderHeight, 1.f, 10'000.f);
+
+	DirectX::XMFLOAT4X4 mvp;
+	DirectX::XMStoreFloat4x4(&mvp, DirectX::XMLoadFloat4x4(&_transformTemp.GetMatrix()) * view * projection);
 
 	CopyDataToBuffer(
 		D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
 		D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
-		(void*)_transformTemp.GetMatrix().m,
+		(void*)mvp.m,
 		sizeof(math::STransform::RawType),
 		_transformBuffer
 		);

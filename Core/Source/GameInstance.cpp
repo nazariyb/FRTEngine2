@@ -3,6 +3,7 @@
 #include "Graphics/Renderer.h"
 #include "Timer.h"
 #include "Window.h"
+#include "Graphics/Camera.h"
 #include "Memory/Memory.h"
 
 NAMESPACE_FRT_START
@@ -26,18 +27,20 @@ GameInstance::GameInstance()
 	_window = new Window(windowParams);
 
 	memory::DefaultAllocator::InitMasterInstance(1 * memory::GigaByte);
-	_graphics = new Renderer(_window);
+	_renderer = new Renderer(_window);
+
+	Camera = memory::New<CCamera>();
 }
 
 GameInstance::~GameInstance()
 {
 	delete _timer;
 	delete _window;
-	delete _graphics;
+	delete _renderer;
 
 	_timer = nullptr;
 	_window = nullptr;
-	_graphics = nullptr;
+	_renderer = nullptr;
 }
 
 Timer& GameInstance::GetTime() const
@@ -47,24 +50,26 @@ Timer& GameInstance::GetTime() const
 
 bool GameInstance::HasGraphics() const
 {
-	return !!_graphics;
+	return !!_renderer;
 }
 
 Renderer& GameInstance::GetGraphics() const
 {
-	frt_assert(_graphics);
-	return *_graphics;
+	frt_assert(_renderer);
+	return *_renderer;
 }
 
 void GameInstance::Tick(float DeltaSeconds)
 {
 	++_frameCount;
 	CalculateFrameStats();
+
+	Camera->Tick(DeltaSeconds);
 }
 
 void GameInstance::Draw(float DeltaSeconds)
 {
-	_graphics->Draw(DeltaSeconds);
+	_renderer->Draw(DeltaSeconds, *Camera);
 }
 
 long long GameInstance::GetFrameCount() const

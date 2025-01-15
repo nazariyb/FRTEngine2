@@ -17,6 +17,6 @@ namespace frt::graphics
 
 	public:
 		Vector3f Position;
-		Vector3f LookAt;
+		Vector3f LookDirection;
 	};
 }

@@ -16,6 +16,7 @@ namespace frt
 
 namespace frt::graphics
 {
+class CCamera;
 
 class FRT_CORE_API Renderer
 {
@@ -26,7 +27,7 @@ public:
 
 	void LoadAssets();
 
-	void Draw(float DeltaSeconds);
+	void Draw(float DeltaSeconds, CCamera& Camera);
 
 	ID3D12Resource* CreateBufferAsset(const D3D12_RESOURCE_DESC& Desc, D3D12_RESOURCE_STATES InitialState, void* BufferData);
 	ID3D12Resource* CreateTextureAsset(const D3D12_RESOURCE_DESC& Desc, D3D12_RESOURCE_STATES InitialState, void* Texels);
@@ -70,6 +71,9 @@ private:
 	ID3D12Resource* _transformBuffer;
 	D3D12_GPU_DESCRIPTOR_HANDLE _transformBufferDescriptor;
 	// ~temp
+
+	ID3D12Resource* CommonConstantBuffer;
+	D3D12_GPU_DESCRIPTOR_HANDLE CommonConstantBufferDescriptor;
 
 	DX12_DescriptorHeap _rtvHeap;
 	DX12_Arena _rtvArena;

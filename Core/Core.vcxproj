@@ -96,6 +96,7 @@
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
     </FxCompile>
     <ClInclude Include="Source\Asserts.h" />
+    <ClInclude Include="Source\Controller.h" />
     <ClInclude Include="Source\Core.h" />
     <ClInclude Include="Source\CoreTypes.h" />
     <ClInclude Include="Source\Exception.h" />
@@ -130,6 +131,7 @@
       <FileType>Document</FileType>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
     </FxCompile>
+    <ClCompile Include="Source\Controller.cpp" />
     <ClCompile Include="Source\Core.cpp" />
     <ClCompile Include="Source\Exception.cpp" />
     <ClCompile Include="Source\GameInstance.cpp" />

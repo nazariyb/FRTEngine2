@@ -4,7 +4,13 @@
 
 #include "Core.h"
 #include "Singleton.h"
+#include "Memory/Memory.h"
 
+
+namespace frt::graphics
+{
+	class CCamera;
+}
 
 namespace frt::graphics
 {
@@ -46,7 +52,9 @@ protected:
 protected:
 	Timer* _timer;
 	Window* _window;
-	graphics::Renderer* _graphics;
+	graphics::Renderer* _renderer;
+
+	memory::TMemoryHandle<graphics::CCamera, memory::DefaultAllocator> Camera;
 
 	long long _frameCount;
 };

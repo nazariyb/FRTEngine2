@@ -14,6 +14,5 @@ PSOutput main(PSInput input)
 	}
 
 	// result.color = float4(input.uv, 0.f, 1.f);
-	// result.color = float4(1.f, 1.f, 1.f, 1.f);
 	return result;
 }

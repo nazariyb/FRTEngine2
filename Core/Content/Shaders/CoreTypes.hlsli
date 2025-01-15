@@ -1,7 +1,8 @@
 cbuffer SceneConstantBuffer : register(b0)
 {
 	float4x4 model;
-	float deltaSeconds;
+	// float4x4 projection;
+	// float deltaSeconds;
 }
 
 struct VSInput
