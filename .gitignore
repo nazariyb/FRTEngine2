@@ -6,6 +6,9 @@
 *.lo
 *.o
 *.obj
+/Binaries/*
+/Intermediate/*
+/Core/Content/Shaders/Bin
 
 # Precompiled Headers
 *.gch
@@ -34,13 +37,3 @@
 # IDE
 .vs/*
 .idea/*
-
-# Build results
-Core/x64/*
-Core-Test/x64/*
-Demo/x64/*
-x64/*
-
-packages/*
-vendor/Assimp/include/assimp/.editorconfig
-/Core/Content/Shaders/Bin
