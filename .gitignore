@@ -37,3 +37,9 @@
 # IDE
 .vs/*
 .idea/*
+
+# Generated project files
+*.sln
+**/*.vcxproj
+**/*.vcxproj.filters
+**/*.vcxproj.user
