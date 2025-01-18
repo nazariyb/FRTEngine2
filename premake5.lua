@@ -6,7 +6,9 @@ local neededPackages =
 	"gtest"
 }
 
-vcpkgRoot = os.getenv("VCPKG_ROOT") or "C:/vcpkg"
+thirdPartyDir = "ThirdParty"
+
+vcpkgRoot = thirdPartyDir.."/vcpkg"
 
 newaction
 {
@@ -67,9 +69,6 @@ workspace "FRTEngine2"
 		buildaction "None"
 
 	filter {}
-
-
-thirdPartyDir = "ThirdParty"
 
 project "Core"
 	location "%{prj.name}"
