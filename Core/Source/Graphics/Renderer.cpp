@@ -327,10 +327,6 @@ Renderer::Renderer(Window* Window)
 
 void Renderer::LoadAssets()
 {
-	_models[0] = Model::LoadFromFile(R"(P:\Edu\FRTEngine2\Core\Content\Models\Skull\scene.gltf)");
-	// _models[0] = Model::LoadFromFile(R"(P:\Edu\FRTEngine2\Core\Content\Models\Cube\Cube.gltf)");
-	_models[1] = Model::CreateCube();
-
 	{
 		_commandList->Close();
 		_commandQueue->ExecuteCommandLists(1, (ID3D12CommandList**)&_commandList);
@@ -351,11 +347,10 @@ void Renderer::LoadAssets()
 	}
 }
 
-void Renderer::Draw(float DeltaSeconds, CCamera& Camera)
+void Renderer::StartFrame(CCamera& Camera)
 {
 	const float TimeElapsed = GameInstance::GetInstance().GetTime().GetTotalSeconds();
 	const double scale = std::cos(TimeElapsed) / 8.f + .25f;
-	std::cout << "scale: " << scale << std::endl;
 	_transformTemp.SetScale(.5);
 	_transformTemp.SetTranslation(.5f, 0.f, 0.f);
 	_transformTemp.SetRotation(0.f, math::PI_OVER_FOUR * TimeElapsed, 0.f);
@@ -406,38 +401,17 @@ void Renderer::Draw(float DeltaSeconds, CCamera& Camera)
 	scissorRect.bottom = _renderHeight;
 	_commandList->RSSetScissorRects(1, &scissorRect);
 
-	Model curModel = _models[0];
-
 	_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 	_commandList->SetGraphicsRootSignature(_rootSignature);
 	_commandList->SetPipelineState(_pipelineState);
 
 	_commandList->SetDescriptorHeaps(1, &_shaderDescriptorHeap._heap);
 	_commandList->SetGraphicsRootDescriptorTable(1, _transformBufferDescriptor);
+}
 
-	{
-		D3D12_INDEX_BUFFER_VIEW indexBufferView = {};
-		indexBufferView.BufferLocation = curModel.indexBuffer->GetGPUVirtualAddress();
-		indexBufferView.SizeInBytes = curModel.indices.GetSize();
-		indexBufferView.Format = DXGI_FORMAT_R32_UINT;
-		_commandList->IASetIndexBuffer(&indexBufferView);
-	}
-	{
-		D3D12_VERTEX_BUFFER_VIEW vertexBufferViews[1] = {};
-		vertexBufferViews[0].BufferLocation = curModel.vertexBuffer->GetGPUVirtualAddress();
-		vertexBufferViews[0].SizeInBytes = curModel.vertices.GetSize();
-		vertexBufferViews[0].StrideInBytes = sizeof(Vertex);
-		_commandList->IASetVertexBuffers(0, 1, vertexBufferViews);
-	}
-
-	for (uint32 meshId = 0; meshId < curModel.meshes.GetNum(); ++meshId)
-	{
-		Mesh& mesh = curModel.meshes[meshId];
-		Texture& texture = curModel.textures[mesh.textureIndex];
-
-		_commandList->SetGraphicsRootDescriptorTable(0, texture.gpuDescriptor);
-		_commandList->DrawIndexedInstanced(mesh.indexCount, 1, mesh.indexOffset, mesh.vertexOffset, 0);
-	}
+void Renderer::Draw(float DeltaSeconds, CCamera& Camera)
+{
+	// 
 
 	{
 		D3D12_RESOURCE_BARRIER resourceBarrier = {};
@@ -469,6 +443,11 @@ void Renderer::Draw(float DeltaSeconds, CCamera& Camera)
 	_currentFrameBufferIndex = (_currentFrameBufferIndex + 1) % FrameBufferSize;
 
 	_uploadArena.Clear();
+}
+
+ID3D12GraphicsCommandList* Renderer::GetCommandList()
+{
+	return _commandList;
 }
 
 ID3D12Resource* Renderer::CreateBufferAsset(

@@ -10,10 +10,12 @@ namespace frt::memory
 	static constexpr uint64 GigaByte = MegaByte * 1024LL;
 	static constexpr uint64 TeraByte = GigaByte * 1024LL;
 
+	class PoolAllocator;
+
 	//*************************//
 	//    TMemoryHandle decl   //
 	//*************************//
-	template <typename T, typename TAllocator>
+	template <typename T, typename TAllocator = PoolAllocator>
 	struct TMemoryHandle
 	{
 		TMemoryHandle();

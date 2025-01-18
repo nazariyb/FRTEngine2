@@ -18,7 +18,7 @@
 
 namespace frt::graphics
 {
-	Model Model::LoadFromFile(const std::string& filename)
+	Model Model::LoadFromFile(const std::string& filename, const std::string& texturePath)
 	{
 		Assimp::Importer importer;
 		const aiScene* scene = importer.ReadFile(filename, aiProcess_Triangulate | aiProcess_OptimizeMeshes | aiProcess_FlipWindingOrder);
@@ -59,17 +59,13 @@ namespace frt::graphics
 
 			if (material->GetTextureCount(aiTextureType_DIFFUSE) > 0)
 			{
-				aiString textureName;
+				aiString textureName; // TODO: this should be used
 				material->GetTexture(aiTextureType_DIFFUSE, 0, &textureName);
 
 				Texture& texture = result.textures[textureIndex];
 
-				//TODO:temp
-				textureName = "P:\\Edu\\FRTEngine2\\Core\\Content\\Models\\Skull\\textures\\defaultMat_baseColor.jpeg";
-				// textureName = "P:\\Edu\\FRTEngine2\\Core\\Content\\Models\\Cube\\Cube_BaseColor.png";
-
 				int32 channelNum = 0;
-				texture.texels = (uint32*)stbi_load(textureName.C_Str(), &texture.width, &texture.height, &channelNum, 4);
+				texture.texels = (uint32*)stbi_load(texturePath.c_str(), &texture.width, &texture.height, &channelNum, 4);
 
 				{
 					D3D12_RESOURCE_DESC Desc = {};

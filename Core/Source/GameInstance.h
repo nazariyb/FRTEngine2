@@ -4,6 +4,7 @@
 
 #include "Core.h"
 #include "Singleton.h"
+#include "World.h"
 #include "Memory/Memory.h"
 
 
@@ -38,6 +39,8 @@ public:
 	bool HasGraphics() const;
 	graphics::Renderer& GetGraphics() const;
 
+	virtual void Load();
+
 	// Update
 	// virtual void Input(float DeltaSeconds);
 	virtual void Tick(float DeltaSeconds);
@@ -54,7 +57,9 @@ protected:
 	Window* _window;
 	graphics::Renderer* _renderer;
 
-	memory::TMemoryHandle<graphics::CCamera, memory::DefaultAllocator> Camera;
+	memory::TMemoryHandle<CWorld> World;
+
+	memory::TMemoryHandle<graphics::CCamera> Camera;
 
 	long long _frameCount;
 };

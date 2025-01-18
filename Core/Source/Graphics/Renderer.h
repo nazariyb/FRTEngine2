@@ -27,7 +27,10 @@ public:
 
 	void LoadAssets();
 
+	void StartFrame(CCamera& Camera);
 	void Draw(float DeltaSeconds, CCamera& Camera);
+
+	ID3D12GraphicsCommandList* GetCommandList();
 
 	ID3D12Resource* CreateBufferAsset(const D3D12_RESOURCE_DESC& Desc, D3D12_RESOURCE_STATES InitialState, void* BufferData);
 	ID3D12Resource* CreateTextureAsset(const D3D12_RESOURCE_DESC& Desc, D3D12_RESOURCE_STATES InitialState, void* Texels);
@@ -65,7 +68,6 @@ private:
 	// temp
 	ID3D12Resource* _vertexBuffer;
 	D3D12_VERTEX_BUFFER_VIEW _vertexBufferView;
-	Model _models[2];
 	math::STransform _transformTemp;
 
 	ID3D12Resource* _transformBuffer;

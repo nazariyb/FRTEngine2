@@ -30,3 +30,4 @@
 **/*.vcxproj
 **/*.vcxproj.filters
 **/*.vcxproj.user
+**/*.DotSettings.user

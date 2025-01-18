@@ -1,5 +1,8 @@
 #include "GameInstance.h"
 
+#include <filesystem>
+#include <iostream>
+
 #include "Graphics/Renderer.h"
 #include "Timer.h"
 #include "Window.h"
@@ -28,6 +31,8 @@ GameInstance::GameInstance()
 
 	memory::DefaultAllocator::InitMasterInstance(1 * memory::GigaByte);
 	_renderer = new Renderer(_window);
+
+	World = memory::New<CWorld>();
 
 	Camera = memory::New<CCamera>();
 }
@@ -59,16 +64,28 @@ Renderer& GameInstance::GetGraphics() const
 	return *_renderer;
 }
 
+void GameInstance::Load()
+{
+	auto skullEnt = World->SpawnEntity();
+	std::cout << std::filesystem::current_path() << std::endl;
+	skullEnt->Model = Model::LoadFromFile(
+		R"(..\Core\Content\Models\Skull\scene.gltf)",
+		R"(..\Core\Content\Models\Skull\textures\defaultMat_baseColor.jpeg)");
+}
+
 void GameInstance::Tick(float DeltaSeconds)
 {
 	++_frameCount;
 	CalculateFrameStats();
 
+	World->Tick(DeltaSeconds);
 	Camera->Tick(DeltaSeconds);
 }
 
 void GameInstance::Draw(float DeltaSeconds)
 {
+	_renderer->StartFrame(*Camera);
+	World->Present(DeltaSeconds, _renderer->GetCommandList());
 	_renderer->Draw(DeltaSeconds, *Camera);
 }
 

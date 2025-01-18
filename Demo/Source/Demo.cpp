@@ -24,6 +24,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 	time.Reset();
 
 	game->GetGraphics().LoadAssets();
+	game->Load();
 
 	// Initialize global strings
 	// LoadStringW(hInstance, IDS_APP_TITLE, szTitle, MAX_LOADSTRING);
