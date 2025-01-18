@@ -64,8 +64,8 @@ Renderer::Renderer(Window* Window)
 	}
 #endif
 
-	_renderWidth = Window->GetWindowSize().x;
-	_renderHeight = Window->GetWindowSize().y;
+	_renderWidth = static_cast<uint32>(Window->GetWindowSize().x);
+	_renderHeight = static_cast<uint32>(Window->GetWindowSize().y);
 
 	IDXGIFactory4* factory = nullptr;
 	THROW_IF_FAILED(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)));
@@ -295,7 +295,7 @@ Renderer::Renderer(Window* Window)
 
 		D3D12_CONSTANT_BUFFER_VIEW_DESC cbViewDesc = {};
 		cbViewDesc.BufferLocation = _transformBuffer->GetGPUVirtualAddress();
-		cbViewDesc.SizeInBytes = cbDesc.Width * cbDesc.Height * cbDesc.DepthOrArraySize;
+		cbViewDesc.SizeInBytes = (uint32)cbDesc.Width * cbDesc.Height * cbDesc.DepthOrArraySize;
 
 		D3D12_CPU_DESCRIPTOR_HANDLE cpuDesc = {};
 		_shaderDescriptorHeap.Allocate(&cpuDesc, &_transformBufferDescriptor);
@@ -317,7 +317,7 @@ Renderer::Renderer(Window* Window)
 
 		D3D12_CONSTANT_BUFFER_VIEW_DESC cbViewDesc = {};
 		cbViewDesc.BufferLocation = CommonConstantBuffer->GetGPUVirtualAddress();
-		cbViewDesc.SizeInBytes = cbDesc.Width * cbDesc.Height * cbDesc.DepthOrArraySize;
+		cbViewDesc.SizeInBytes = (uint32)cbDesc.Width * cbDesc.Height * cbDesc.DepthOrArraySize;
 
 		D3D12_CPU_DESCRIPTOR_HANDLE cpuDesc = {};
 		_shaderDescriptorHeap.Allocate(&cpuDesc, &CommonConstantBufferDescriptor);
@@ -356,7 +356,7 @@ void Renderer::StartFrame(CCamera& Camera)
 	_transformTemp.SetRotation(0.f, math::PI_OVER_FOUR * TimeElapsed, 0.f);
 
 	DirectX::XMMATRIX view = Camera.GetViewMatrix();
-	DirectX::XMMATRIX projection = Camera.GetProjectionMatrix(90.f, _renderWidth / _renderHeight, 1.f, 10'000.f);
+	DirectX::XMMATRIX projection = Camera.GetProjectionMatrix(90.f, (float)_renderWidth / _renderHeight, 1.f, 10'000.f);
 
 	DirectX::XMFLOAT4X4 mvp;
 	DirectX::XMStoreFloat4x4(&mvp, DirectX::XMLoadFloat4x4(&_transformTemp.GetMatrix()) * view * projection);
@@ -388,8 +388,8 @@ void Renderer::StartFrame(CCamera& Camera)
 	D3D12_VIEWPORT viewport = {};
 	viewport.TopLeftX = 0;
 	viewport.TopLeftY = 0;
-	viewport.Width = _renderWidth;
-	viewport.Height = _renderHeight;
+	viewport.Width = static_cast<float>(_renderWidth);
+	viewport.Height = static_cast<float>(_renderHeight);
 	viewport.MinDepth = 0.0f;
 	viewport.MaxDepth = 1.0f;
 	_commandList->RSSetViewports(1, &viewport);
@@ -484,10 +484,10 @@ ID3D12Resource* Renderer::CreateTextureAsset(
 		frt_assert(Desc.DepthOrArraySize == 1);
 		D3D12_SUBRESOURCE_FOOTPRINT footprint = {};
 		footprint.Format = Desc.Format;
-		footprint.Width = Desc.Width;
+		footprint.Width = (uint32)Desc.Width;
 		footprint.Height = Desc.Height;
 		footprint.Depth = 1;
-		footprint.RowPitch = AlignAddress(footprint.Width * bytesPerPixel, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
+		footprint.RowPitch = (uint32)AlignAddress(footprint.Width * bytesPerPixel, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
 		placedFootprint.Footprint = footprint;
 
 		uint8* destTexels = _uploadArena.Allocate(footprint.Height * footprint.RowPitch, &placedFootprint.Offset);

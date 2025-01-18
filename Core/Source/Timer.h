@@ -8,7 +8,7 @@
 
 NAMESPACE_FRT_START
 
-class FRT_CORE_API Timer : public Singleton<Timer>
+class Timer : public Singleton<Timer>
 {
 	using TimePoint = std::chrono::high_resolution_clock::time_point;
 public:
@@ -16,13 +16,13 @@ public:
 
 	FRT_SINGLETON_GETTERS(Timer)
 
-	float GetTotalSeconds() const;
-	float GetDeltaSeconds() const;
+	float FRT_CORE_API GetTotalSeconds() const;
+	float FRT_CORE_API GetDeltaSeconds() const;
 
-	void Reset();
-	void Start(bool bReset = false);
-	void Pause();
-	void Tick();
+	void FRT_CORE_API Reset();
+	void FRT_CORE_API Start(bool bReset = false);
+	void FRT_CORE_API Pause();
+	void FRT_CORE_API Tick();
 
 private:
 	static long long GetDurationInMicroSeconds(const TimePoint& Start, const TimePoint& End);

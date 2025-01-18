@@ -5,14 +5,14 @@ void frt::CEntity::Present(float DeltaSeconds, ID3D12GraphicsCommandList* Comman
 	{
 		D3D12_INDEX_BUFFER_VIEW indexBufferView = {};
 		indexBufferView.BufferLocation = Model.indexBuffer->GetGPUVirtualAddress();
-		indexBufferView.SizeInBytes = Model.indices.GetSize();
+		indexBufferView.SizeInBytes = static_cast<uint32>(Model.indices.GetSize());
 		indexBufferView.Format = DXGI_FORMAT_R32_UINT;
 		CommandList->IASetIndexBuffer(&indexBufferView);
 	}
 	{
 		D3D12_VERTEX_BUFFER_VIEW vertexBufferViews[1] = {};
 		vertexBufferViews[0].BufferLocation = Model.vertexBuffer->GetGPUVirtualAddress();
-		vertexBufferViews[0].SizeInBytes = Model.vertices.GetSize();
+		vertexBufferViews[0].SizeInBytes = static_cast<uint32>(Model.vertices.GetSize());
 		vertexBufferViews[0].StrideInBytes = sizeof(graphics::Vertex);
 		CommandList->IASetVertexBuffers(0, 1, vertexBufferViews);
 	}

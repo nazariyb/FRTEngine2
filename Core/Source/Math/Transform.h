@@ -12,8 +12,11 @@ namespace frt::math
 		using RawType = DirectX::XMFLOAT4X4;
 
 	private:
+#pragma warning(push)
+#pragma warning(disable: 4251)
 		DirectX::XMFLOAT4X4 Matrix4x4;
 		DirectX::XMMATRIX MatrixIntr;
+#pragma warning(pop)
 
 		Vector3f Translation;
 		Vector3f Rotation;

@@ -15,7 +15,11 @@ NAMESPACE_FRT_START
 	int startY = 0;
 	int width = 0;
 	int height = 0;
+
+#pragma warning(push)
+#pragma warning(disable: 4251)
 	std::wstring className;
+#pragma warning(pop)
 };
 
 class FRT_CORE_API Window
@@ -54,7 +58,11 @@ protected:
 protected:
 	WindowParams _params;
 	HWND _hWnd;
+
+#pragma warning(push)
+#pragma warning(disable: 4251)
 	std::wstring _title;
+#pragma warning(pop)
 };
 
 NAMESPACE_FRT_END

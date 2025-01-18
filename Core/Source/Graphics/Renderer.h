@@ -18,26 +18,26 @@ namespace frt::graphics
 {
 class CCamera;
 
-class FRT_CORE_API Renderer
+class Renderer
 {
 public:
 
 	Renderer() = delete;
-	explicit Renderer(Window* Window);
+	FRT_CORE_API explicit Renderer(Window* Window);
 
-	void LoadAssets();
+	FRT_CORE_API void LoadAssets();
 
-	void StartFrame(CCamera& Camera);
-	void Draw(float DeltaSeconds, CCamera& Camera);
+	FRT_CORE_API void StartFrame(CCamera& Camera);
+	FRT_CORE_API void Draw(float DeltaSeconds, CCamera& Camera);
 
-	ID3D12GraphicsCommandList* GetCommandList();
+	FRT_CORE_API ID3D12GraphicsCommandList* GetCommandList();
 
-	ID3D12Resource* CreateBufferAsset(const D3D12_RESOURCE_DESC& Desc, D3D12_RESOURCE_STATES InitialState, void* BufferData);
-	ID3D12Resource* CreateTextureAsset(const D3D12_RESOURCE_DESC& Desc, D3D12_RESOURCE_STATES InitialState, void* Texels);
-	void CreateShaderResourceView(ID3D12Resource* Texture, const D3D12_SHADER_RESOURCE_VIEW_DESC& Desc,
+	FRT_CORE_API ID3D12Resource* CreateBufferAsset(const D3D12_RESOURCE_DESC& Desc, D3D12_RESOURCE_STATES InitialState, void* BufferData);
+	FRT_CORE_API ID3D12Resource* CreateTextureAsset(const D3D12_RESOURCE_DESC& Desc, D3D12_RESOURCE_STATES InitialState, void* Texels);
+	FRT_CORE_API void CreateShaderResourceView(ID3D12Resource* Texture, const D3D12_SHADER_RESOURCE_VIEW_DESC& Desc,
 		D3D12_CPU_DESCRIPTOR_HANDLE* OutCpuHandle, D3D12_GPU_DESCRIPTOR_HANDLE* OutGpuHandle);
 
-	void CopyDataToBuffer(
+	FRT_CORE_API void CopyDataToBuffer(
 		D3D12_RESOURCE_STATES StartState,
 		D3D12_RESOURCE_STATES EndState,
 		void* Data, uint64 DataSize,

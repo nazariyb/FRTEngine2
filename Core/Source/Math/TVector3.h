@@ -12,7 +12,7 @@ namespace math
 {
 
 template<typename T>
-struct TVector3
+struct FRT_CORE_API TVector3
 {
 	static_assert(std::is_floating_point_v<T>, "T must be a floating point number");
 
@@ -83,18 +83,18 @@ public:
 	static Real Dist(const TVector3<Real>& lhs, const TVector3<Real>& rhs);
 	static Real DistSquared(const TVector3<Real>& lhs, const TVector3<Real>& rhs);
 
-	FRT_CORE_API static const TVector3<Real> ZeroVector;
-	FRT_CORE_API static const TVector3<Real> OneVector;
-	FRT_CORE_API static const TVector3<Real> UpVector;
-	FRT_CORE_API static const TVector3<Real> DownVector;
-	FRT_CORE_API static const TVector3<Real> ForwardVector;
-	FRT_CORE_API static const TVector3<Real> DownwardVector;
-	FRT_CORE_API static const TVector3<Real> RightVector;
-	FRT_CORE_API static const TVector3<Real> LeftVector;
-	FRT_CORE_API static const TVector3<Real> XAxisVector;
-	FRT_CORE_API static const TVector3<Real> YAxisVector;
-	FRT_CORE_API static const TVector3<Real> ZAxisVector;
-	
+	static const TVector3<Real> ZeroVector;
+	static const TVector3<Real> OneVector;
+	static const TVector3<Real> UpVector;
+	static const TVector3<Real> DownVector;
+	static const TVector3<Real> ForwardVector;
+	static const TVector3<Real> DownwardVector;
+	static const TVector3<Real> RightVector;
+	static const TVector3<Real> LeftVector;
+	static const TVector3<Real> XAxisVector;
+	static const TVector3<Real> YAxisVector;
+	static const TVector3<Real> ZAxisVector;
+
 };
 
 template <typename Real>

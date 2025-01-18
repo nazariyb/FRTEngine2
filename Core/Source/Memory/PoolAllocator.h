@@ -95,7 +95,11 @@ namespace frt::memory
 				return Ptr < Other.Ptr;
 			}
 		};
+
+#pragma warning(push)
+#pragma warning(disable: 4251)
 		std::map<HandleKey, std::vector<MemoryHandleRef>> _handles;
+#pragma warning(pop)
 
 		static PoolAllocator* _masterInstance;
 	};
@@ -233,7 +237,7 @@ namespace frt::memory
 		}
 	}
 
-	template <typename THandle, bool bTAuthority = false>
+	template <typename THandle, bool bTAuthority>
 	void PoolAllocator::RemoveRef(const THandle& MemoryHandle)
 	{
 		frt_assert(MemoryHandle.Ptr);
