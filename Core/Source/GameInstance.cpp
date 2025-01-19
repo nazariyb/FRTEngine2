@@ -23,8 +23,8 @@ GameInstance::GameInstance()
 	WindowParams windowParams;
 	windowParams.startX = 1000;
 	windowParams.startY = 1000;
-	windowParams.width = 800;
-	windowParams.height = 600;
+	windowParams.width = 1260;
+	windowParams.height = 720;
 	windowParams.className = L"FrtWindowClass";
 	windowParams.hInst = GetModuleHandle(nullptr);
 	_window = new Window(windowParams);

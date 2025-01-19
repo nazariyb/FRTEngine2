@@ -44,6 +44,9 @@ public:
 		ID3D12Resource* GpuBuffer);
 
 private:
+	void CreateSwapChain();
+
+private:
 	static constexpr unsigned FrameBufferSize = 2;
 
 	Window* _window;
@@ -53,6 +56,7 @@ private:
 	// Pipeline
 	IDXGIAdapter1* _adapter;
 	ID3D12Device* _device;
+	IDXGIFactory4* Factory;
 
 	IDXGISwapChain1* _swapChain;
 	ID3D12Resource* _frameBuffer[FrameBufferSize];

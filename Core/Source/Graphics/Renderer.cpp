@@ -40,6 +40,50 @@ static void GetHardwareAdapter(IDXGIFactory4* pFactory, IDXGIAdapter1** ppAdapte
 	}
 }
 
+static void LogOutputDisplayMode(IDXGIOutput* pOutput, DXGI_FORMAT format)
+{
+	uint32 count = 0;
+	uint32 flags = 0;
+
+	pOutput->GetDisplayModeList(format, flags, &count, nullptr);
+
+	std::vector<DXGI_MODE_DESC> displayModes(count);
+	pOutput->GetDisplayModeList(format, flags, &count, displayModes.data());
+
+	for (auto& mode : displayModes)
+	{
+		uint32 n = mode.RefreshRate.Numerator;
+		uint32 d = mode.RefreshRate.Denominator;
+		std::wstring message =
+			L"Width = " + std::to_wstring(mode.Width) + L" " +
+			L"Height = " + std::to_wstring(mode.Height) + L" " +
+			L"RefreshRate = " + std::to_wstring(n) + L"/" + std::to_wstring(d) +
+			L"\n";
+
+		std::wcout << message;
+	}
+}
+
+static void LogAdapterOutputs(IDXGIAdapter1* pAdapter)
+{
+	uint8 i = 0;
+	IDXGIOutput* output = nullptr;
+
+	while (pAdapter->EnumOutputs(i, &output) != DXGI_ERROR_NOT_FOUND)
+	{
+		DXGI_OUTPUT_DESC outputDesc = {};
+		output->GetDesc(&outputDesc);
+
+		std::wstring message = L"";
+		message += outputDesc.DeviceName;
+		message += L"\n";
+		std::wcout << message;
+
+		if (false) LogOutputDisplayMode(output, DXGI_FORMAT_R8G8B8A8_UNORM);
+
+		++i;
+	}
+}
 
 Renderer::Renderer(Window* Window)
 	: _window(Window)
@@ -67,12 +111,35 @@ Renderer::Renderer(Window* Window)
 	_renderWidth = static_cast<uint32>(Window->GetWindowSize().x);
 	_renderHeight = static_cast<uint32>(Window->GetWindowSize().y);
 
-	IDXGIFactory4* factory = nullptr;
-	THROW_IF_FAILED(CreateDXGIFactory2(0, IID_PPV_ARGS(&factory)));
+	// Initialization
 
-	GetHardwareAdapter(factory, &_adapter);
+	THROW_IF_FAILED(CreateDXGIFactory2(0, IID_PPV_ARGS(&Factory)));
 
-	THROW_IF_FAILED(D3D12CreateDevice(_adapter, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&_device)));
+	GetHardwareAdapter(Factory, &_adapter);
+	LogAdapterOutputs(_adapter);
+
+	if (FAILED(D3D12CreateDevice(_adapter, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&_device))))
+	{
+		IDXGIAdapter* pWarpAdapter = nullptr;
+		THROW_IF_FAILED(Factory->EnumWarpAdapter(IID_PPV_ARGS(&pWarpAdapter)));
+		THROW_IF_FAILED(D3D12CreateDevice(pWarpAdapter, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&_device)));
+	}
+
+	// Check supported features
+
+	D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS multisampleQualityLevels = {};
+	multisampleQualityLevels.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	multisampleQualityLevels.SampleCount = 4;
+	multisampleQualityLevels.Flags = D3D12_MULTISAMPLE_QUALITY_LEVELS_FLAG_NONE;
+	multisampleQualityLevels.NumQualityLevels = 0;
+	THROW_IF_FAILED(_device->CheckFeatureSupport(
+		D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS,
+		&multisampleQualityLevels,
+		sizeof(multisampleQualityLevels)));
+
+	// TODO: save as member
+	uint32 msaaQuality = multisampleQualityLevels.NumQualityLevels;
+	frt_assert(msaaQuality > 0);
 
 	// Describe and create the command queue.
 	D3D12_COMMAND_QUEUE_DESC queueDesc = {};
@@ -81,51 +148,48 @@ Renderer::Renderer(Window* Window)
 
 	THROW_IF_FAILED(_device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&_commandQueue)));
 
+	// Command allocator and list
+
+	THROW_IF_FAILED(_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&_commandAllocator)));
+	THROW_IF_FAILED(_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, _commandAllocator, nullptr, IID_PPV_ARGS(&_commandList)));
+	THROW_IF_FAILED(_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&_fence)));
+
 	Vector2f drawRect = _window->GetWindowSize();
 
 	// Describe and create swap chain
-	DXGI_SWAP_CHAIN_DESC1 swapChainDesc = {};
-	swapChainDesc.BufferCount = FrameBufferSize;
-	swapChainDesc.Width = static_cast<unsigned int>(drawRect.x);
-	swapChainDesc.Height = static_cast<unsigned int>(drawRect.y);
-	swapChainDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-	swapChainDesc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-	swapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
-	swapChainDesc.SampleDesc.Count = 1;
-
-	THROW_IF_FAILED(factory->CreateSwapChainForHwnd(
-		_commandQueue, _window->GetHandle(), &swapChainDesc, nullptr, nullptr, &_swapChain));
+	CreateSwapChain();
 
 	for (UINT frameIndex = 0; frameIndex < FrameBufferSize; ++frameIndex)
 	{
 		_swapChain->GetBuffer(frameIndex, IID_PPV_ARGS(&_frameBuffer[frameIndex]));
 	}
 
-	// Command allocator and list
-
-	THROW_IF_FAILED(_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&_commandAllocator)));
-	THROW_IF_FAILED(_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, _commandAllocator, 0, IID_PPV_ARGS(&_commandList)));
-	THROW_IF_FAILED(_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&_fence)));
+	_rtvArena = DX12_Arena(_device, D3D12_HEAP_TYPE_DEFAULT, 50 * memory::MegaByte,
+						D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES);
+	_dsvHeap = DX12_DescriptorHeap(_device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1);
 
 	{
-		_rtvArena = DX12_Arena(_device, D3D12_HEAP_TYPE_DEFAULT, 50 * memory::MegaByte,
-								D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES);
-		_dsvHeap = DX12_DescriptorHeap(_device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1);
+		// depth stencil
 
-		D3D12_RESOURCE_DESC resourceDesc = {};
-		resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-		resourceDesc.Width = static_cast<UINT>(drawRect.x);
-		resourceDesc.Height = static_cast<UINT>(drawRect.y);
-		resourceDesc.DepthOrArraySize = 1;
-		resourceDesc.MipLevels = 1;
-		resourceDesc.Format = DXGI_FORMAT_D32_FLOAT;
-		resourceDesc.SampleDesc.Count = 1;
-		resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-		resourceDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
+		D3D12_RESOURCE_DESC resourceDesc =
+			{
+				.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+				.Alignment = 0,
+				.Width = static_cast<UINT>(drawRect.x),
+				.Height = static_cast<UINT>(drawRect.y),
+				.DepthOrArraySize = 1,
+				.MipLevels = 1,
+				.Format = DXGI_FORMAT_D32_FLOAT,
+				.SampleDesc = DXGI_SAMPLE_DESC{ .Count = 1, .Quality = 0 }, // TODO
+				.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN,
+				.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
+			};
 
-		D3D12_CLEAR_VALUE clearValue = {};
-		clearValue.Format = resourceDesc.Format;
-		clearValue.DepthStencil.Depth = 1.0f;
+		D3D12_CLEAR_VALUE clearValue =
+			{
+				.Format = resourceDesc.Format,
+				.DepthStencil = D3D12_DEPTH_STENCIL_VALUE{ .Depth = 1.0f, .Stencil = 0 },
+			};
 
 		_depthStencilBuffer = _rtvArena.Allocate(resourceDesc, D3D12_RESOURCE_STATE_DEPTH_WRITE, &clearValue);
 
@@ -228,8 +292,8 @@ Renderer::Renderer(Window* Window)
 		D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
 		psoDesc.pRootSignature = _rootSignature;
 
-		psoDesc.VS = Dx12LoadShader(R"(P:\Edu\FRTEngine2\Core\Content\Shaders\Bin\VertexShader.shader)");
-		psoDesc.PS = Dx12LoadShader(R"(P:\Edu\FRTEngine2\Core\Content\Shaders\Bin\PixelShader.shader)");
+		psoDesc.VS = Dx12LoadShader(R"(..\Core\Content\Shaders\Bin\VertexShader.shader)");
+		psoDesc.PS = Dx12LoadShader(R"(..\Core\Content\Shaders\Bin\PixelShader.shader)");
 
 		psoDesc.BlendState.RenderTarget[0].BlendEnable = true;
 		psoDesc.BlendState.RenderTarget[0].LogicOpEnable = false;
@@ -379,27 +443,34 @@ void Renderer::StartFrame(CCamera& Camera)
 		_commandList->ResourceBarrier(1, &resourceBarrier);
 	}
 
-	FLOAT Color[] = { 0.1f, 0.3f, 0.3f, 1.f };
-	_commandList->ClearRenderTargetView(_frameBufferDescriptors[_currentFrameBufferIndex], Color, 0, nullptr);
-	_commandList->ClearDepthStencilView(_depthStencilDescriptor, D3D12_CLEAR_FLAG_DEPTH, 1, 0, 0, nullptr);
+	D3D12_VIEWPORT viewport =
+		{
+			.TopLeftX = 0,
+			.TopLeftY = 0,
+			.Width = static_cast<float>(_renderWidth),
+			.Height = static_cast<float>(_renderHeight),
+			.MinDepth = 0.0f,
+			.MaxDepth = 1.0f
+		};
 
-	_commandList->OMSetRenderTargets(1, &_frameBufferDescriptors[_currentFrameBufferIndex], false, &_depthStencilDescriptor);
-
-	D3D12_VIEWPORT viewport = {};
-	viewport.TopLeftX = 0;
-	viewport.TopLeftY = 0;
-	viewport.Width = static_cast<float>(_renderWidth);
-	viewport.Height = static_cast<float>(_renderHeight);
-	viewport.MinDepth = 0.0f;
-	viewport.MaxDepth = 1.0f;
 	_commandList->RSSetViewports(1, &viewport);
 
-	D3D12_RECT scissorRect = {};
-	scissorRect.left = 0;
-	scissorRect.right = _renderWidth;
-	scissorRect.top = 0;
-	scissorRect.bottom = _renderHeight;
+	D3D12_RECT scissorRect =
+		{
+			.left = 0,
+			.top = 0,
+			.right = static_cast<long>(_renderWidth),
+			.bottom = static_cast<long>(_renderHeight)
+		};
+
 	_commandList->RSSetScissorRects(1, &scissorRect);
+
+	FLOAT Color[] = { 0.1f, 0.3f, 0.3f, 1.f };
+	_commandList->ClearRenderTargetView(_frameBufferDescriptors[_currentFrameBufferIndex], Color, 0, nullptr);
+	_commandList->ClearDepthStencilView(
+		_depthStencilDescriptor, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1, 0, 0, nullptr);
+
+	_commandList->OMSetRenderTargets(1, &_frameBufferDescriptors[_currentFrameBufferIndex], false, &_depthStencilDescriptor);
 
 	_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 	_commandList->SetGraphicsRootSignature(_rootSignature);
@@ -570,5 +641,39 @@ void Renderer::CopyDataToBuffer(
 		resourceBarrier.Transition.StateAfter = EndState;
 		_commandList->ResourceBarrier(1, &resourceBarrier);
 	}
+}
+
+void Renderer::CreateSwapChain()
+{
+	// _swapChain.Reset();
+	_swapChain = nullptr;
+
+	Vector2f drawRect = _window->GetWindowSize();
+
+	DXGI_SWAP_CHAIN_DESC1 swapChainDesc =
+		{
+			.Width = static_cast<unsigned int>(drawRect.x),
+			.Height = static_cast<unsigned int>(drawRect.y),
+			.Format = DXGI_FORMAT_R8G8B8A8_UNORM,
+			.Stereo = false,
+			.SampleDesc = DXGI_SAMPLE_DESC { .Count = 1, .Quality = 0 }, // TODO: use sampling
+			.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT,
+			.BufferCount = FrameBufferSize,
+			.Scaling = DXGI_SCALING_NONE,
+			.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD,
+			.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED,
+			.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH,
+		};
+
+	DXGI_SWAP_CHAIN_FULLSCREEN_DESC fullscreenDesc =
+		{
+			.RefreshRate = 60, // TODO
+			.ScanlineOrdering = DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED,
+			.Scaling = DXGI_MODE_SCALING_UNSPECIFIED,
+			.Windowed = true, // TODO
+		};
+
+	THROW_IF_FAILED(Factory->CreateSwapChainForHwnd(
+		_commandQueue, _window->GetHandle(), &swapChainDesc, &fullscreenDesc, nullptr, &_swapChain));
 }
 }
