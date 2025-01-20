@@ -9,6 +9,10 @@
 #include "Graphics/Camera.h"
 #include "Memory/Memory.h"
 
+#include "imgui.h"
+#include "backends/imgui_impl_win32.h"
+#include "backends/imgui_impl_dx12.h"
+
 NAMESPACE_FRT_START
 
 FRT_SINGLETON_DEFINE_INSTANCE(GameInstance)
@@ -35,10 +39,44 @@ GameInstance::GameInstance()
 	World = memory::New<CWorld>();
 
 	Camera = memory::New<CCamera>();
+
+	IMGUI_CHECKVERSION();
+	ImGui::CreateContext();
+
+	ImGuiIO& io = ImGui::GetIO();
+	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+	io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+	io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+
+	ImGui_ImplWin32_Init(_window->GetHandle());
+
+	ImGui_ImplDX12_InitInfo imguiDx12InitInfo;
+	imguiDx12InitInfo.Device = _renderer->GetDevice();
+	imguiDx12InitInfo.CommandQueue = _renderer->GetCommandQueue();
+	imguiDx12InitInfo.NumFramesInFlight = _renderer->FrameBufferSize;
+	imguiDx12InitInfo.RTVFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+	imguiDx12InitInfo.DSVFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+	imguiDx12InitInfo.UserData = _renderer;
+	imguiDx12InitInfo.SrvDescriptorHeap = _renderer->ShaderDescriptorHeap.GetHeap();
+	imguiDx12InitInfo.SrvDescriptorAllocFn =
+		[](ImGui_ImplDX12_InitInfo* InitInfo, D3D12_CPU_DESCRIPTOR_HANDLE* OutCpuHandle, D3D12_GPU_DESCRIPTOR_HANDLE* OutGpuHandle)
+		{
+			return ((Renderer*)InitInfo->UserData)->ShaderDescriptorHeap.Allocate(OutCpuHandle, OutGpuHandle);
+		};
+	imguiDx12InitInfo.SrvDescriptorFreeFn =
+		[](ImGui_ImplDX12_InitInfo*, D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle, D3D12_GPU_DESCRIPTOR_HANDLE GpuHandle)
+		{
+			// TODO
+		};
+	ImGui_ImplDX12_Init(&imguiDx12InitInfo);
 }
 
 GameInstance::~GameInstance()
 {
+	ImGui_ImplDX12_Shutdown();
+	ImGui_ImplWin32_Shutdown();
+	ImGui::DestroyContext();
+
 	delete _timer;
 	delete _window;
 	delete _renderer;
@@ -78,6 +116,11 @@ void GameInstance::Tick(float DeltaSeconds)
 	++_frameCount;
 	CalculateFrameStats();
 
+	ImGui_ImplDX12_NewFrame();
+	ImGui_ImplWin32_NewFrame();
+	ImGui::NewFrame();
+	ImGui::ShowDemoWindow();
+
 	World->Tick(DeltaSeconds);
 	Camera->Tick(DeltaSeconds);
 }
@@ -85,7 +128,12 @@ void GameInstance::Tick(float DeltaSeconds)
 void GameInstance::Draw(float DeltaSeconds)
 {
 	_renderer->StartFrame(*Camera);
+
 	World->Present(DeltaSeconds, _renderer->GetCommandList());
+
+	ImGui::Render();
+	ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), _renderer->GetCommandList());
+
 	_renderer->Draw(DeltaSeconds, *Camera);
 }
 

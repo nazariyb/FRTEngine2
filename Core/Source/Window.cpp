@@ -2,6 +2,8 @@
 
 #include "Math/Math.h"
 
+#include "imgui.h"
+
 NAMESPACE_FRT_START
 
 Window::~Window()
@@ -73,6 +75,12 @@ void Window::RegisterWinAPIClass()
 
 LRESULT CALLBACK Window::WindowProcessMessage(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
+	extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+	if (ImGui_ImplWin32_WndProcHandler(hWnd, message, wParam, lParam))
+	{
+		return true;
+	}
+
 	switch (message)
 	{
 		// WM_ACTIVATE is sent when the window is activated or deactivated.  

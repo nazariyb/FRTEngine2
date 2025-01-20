@@ -203,7 +203,7 @@ Renderer::Renderer(Window* Window)
 	_textureArena = DX12_Arena(_device, D3D12_HEAP_TYPE_DEFAULT, 500 * memory::MegaByte,
 								D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES);
 
-	_shaderDescriptorHeap = DX12_DescriptorHeap(
+	ShaderDescriptorHeap = DX12_DescriptorHeap(
 		_device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 50, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE);
 
 	{
@@ -362,7 +362,7 @@ Renderer::Renderer(Window* Window)
 		cbViewDesc.SizeInBytes = (uint32)cbDesc.Width * cbDesc.Height * cbDesc.DepthOrArraySize;
 
 		D3D12_CPU_DESCRIPTOR_HANDLE cpuDesc = {};
-		_shaderDescriptorHeap.Allocate(&cpuDesc, &_transformBufferDescriptor);
+		ShaderDescriptorHeap.Allocate(&cpuDesc, &_transformBufferDescriptor);
 		_device->CreateConstantBufferView(&cbViewDesc, cpuDesc);
 	}
 
@@ -384,7 +384,7 @@ Renderer::Renderer(Window* Window)
 		cbViewDesc.SizeInBytes = (uint32)cbDesc.Width * cbDesc.Height * cbDesc.DepthOrArraySize;
 
 		D3D12_CPU_DESCRIPTOR_HANDLE cpuDesc = {};
-		_shaderDescriptorHeap.Allocate(&cpuDesc, &CommonConstantBufferDescriptor);
+		ShaderDescriptorHeap.Allocate(&cpuDesc, &CommonConstantBufferDescriptor);
 		_device->CreateConstantBufferView(&cbViewDesc, cpuDesc);
 	}
 }
@@ -476,7 +476,7 @@ void Renderer::StartFrame(CCamera& Camera)
 	_commandList->SetGraphicsRootSignature(_rootSignature);
 	_commandList->SetPipelineState(_pipelineState);
 
-	_commandList->SetDescriptorHeaps(1, &_shaderDescriptorHeap._heap);
+	_commandList->SetDescriptorHeaps(1, &ShaderDescriptorHeap._heap);
 	_commandList->SetGraphicsRootDescriptorTable(1, _transformBufferDescriptor);
 }
 
@@ -514,6 +514,16 @@ void Renderer::Draw(float DeltaSeconds, CCamera& Camera)
 	_currentFrameBufferIndex = (_currentFrameBufferIndex + 1) % FrameBufferSize;
 
 	_uploadArena.Clear();
+}
+
+ID3D12Device* Renderer::GetDevice()
+{
+	return _device;
+}
+
+ID3D12CommandQueue* Renderer::GetCommandQueue()
+{
+	return _commandQueue;
 }
 
 ID3D12GraphicsCommandList* Renderer::GetCommandList()
@@ -603,7 +613,7 @@ ID3D12Resource* Renderer::CreateTextureAsset(
 void Renderer::CreateShaderResourceView(ID3D12Resource* Texture, const D3D12_SHADER_RESOURCE_VIEW_DESC& Desc,
 	D3D12_CPU_DESCRIPTOR_HANDLE* OutCpuHandle, D3D12_GPU_DESCRIPTOR_HANDLE* OutGpuHandle)
 {
-	_shaderDescriptorHeap.Allocate(OutCpuHandle, OutGpuHandle);
+	ShaderDescriptorHeap.Allocate(OutCpuHandle, OutGpuHandle);
 	_device->CreateShaderResourceView(Texture, &Desc, *OutCpuHandle);
 }
 

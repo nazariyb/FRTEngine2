@@ -58,6 +58,7 @@ namespace frt::graphics
 		~DX12_DescriptorHeap();
 
 		void Allocate(D3D12_CPU_DESCRIPTOR_HANDLE* OutCpuHandle, D3D12_GPU_DESCRIPTOR_HANDLE* OutGpuHandle);
+		ID3D12DescriptorHeap* GetHeap() const { return _heap; }
 
 	private:
 		uint64 _stepSize;

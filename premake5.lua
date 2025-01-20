@@ -92,7 +92,19 @@ project "Core"
 		"%{prj.name}/Source/**.cpp",
 		"%{prj.name}/Content/Shaders/**.hlsl",
 		"%{prj.name}/Content/Shaders/**.hlsli",
+		thirdPartyDir.."/Imgui/*.h",
+		thirdPartyDir.."/Imgui/*.cpp",
+		thirdPartyDir.."/Imgui/backends/imgui_impl_dx12.*",
+		thirdPartyDir.."/Imgui/backends/imgui_impl_win32.*",
+		thirdPartyDir.."/Imgui/misc/cpp/imgui_stdlib.*",
 	}
+
+	filter "action:vs*"
+		files
+		{
+			thirdPartyDir.."/Imgui/misc/debuggers/imgui.natvis",
+			thirdPartyDir.."/Imgui/misc/debuggers/imgui.natstepfilter",
+		}
 
 	filter "files:**.hlsl"
 		buildaction "None"
@@ -104,6 +116,7 @@ project "Core"
 		vcpkgRoot .. "/installed/" .. triplet .. "/include",
 		"%{prj.name}/Source",
 		thirdPartyDir .. "/Stb",
+		thirdPartyDir.."/Imgui",
 	}
 
 	libdirs

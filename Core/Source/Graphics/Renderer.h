@@ -30,6 +30,8 @@ public:
 	FRT_CORE_API void StartFrame(CCamera& Camera);
 	FRT_CORE_API void Draw(float DeltaSeconds, CCamera& Camera);
 
+	FRT_CORE_API ID3D12Device* GetDevice();
+	FRT_CORE_API ID3D12CommandQueue* GetCommandQueue();
 	FRT_CORE_API ID3D12GraphicsCommandList* GetCommandList();
 
 	FRT_CORE_API ID3D12Resource* CreateBufferAsset(const D3D12_RESOURCE_DESC& Desc, D3D12_RESOURCE_STATES InitialState, void* BufferData);
@@ -46,9 +48,12 @@ public:
 private:
 	void CreateSwapChain();
 
-private:
+public:
 	static constexpr unsigned FrameBufferSize = 2;
 
+	DX12_DescriptorHeap ShaderDescriptorHeap;
+
+private:
 	Window* _window;
 	uint32 _renderWidth;
 	uint32 _renderHeight;
@@ -86,8 +91,6 @@ private:
 	DX12_UploadArena _uploadArena;
 	DX12_Arena _bufferArena;
 	DX12_Arena _textureArena;
-
-	DX12_DescriptorHeap _shaderDescriptorHeap;
 
 	DX12_DescriptorHeap _dsvHeap;
 	ID3D12Resource* _depthStencilBuffer;
