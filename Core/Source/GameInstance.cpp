@@ -114,12 +114,14 @@ void GameInstance::Load()
 void GameInstance::Tick(float DeltaSeconds)
 {
 	++_frameCount;
-	CalculateFrameStats();
 
 	ImGui_ImplDX12_NewFrame();
 	ImGui_ImplWin32_NewFrame();
 	ImGui::NewFrame();
+
 	ImGui::ShowDemoWindow();
+
+	CalculateFrameStats();
 
 	World->Tick(DeltaSeconds);
 	Camera->Tick(DeltaSeconds);
@@ -149,22 +151,21 @@ void GameInstance::CalculateFrameStats() const
 
 	++frameCount;
 
+	static float fps = 0.f, msPerFrame = 0.f;
+
 	if (_timer->GetTotalSeconds() - timeElapsed >= 1.f)
 	{
-		float fps = static_cast<float>(frameCount);
-		float msPerFrame = 1000.f / fps;
-
-		std::wstring fpsStr = std::to_wstring(fps);
-		std::wstring msPerFrameStr = std::to_wstring(msPerFrame);
-
-		std::wstring windowText =
-			L"         FPS: " + fpsStr +
-			L"    ms/frame: " + msPerFrameStr;
-		_window->UpdateTitle(windowText);
+		fps = static_cast<float>(frameCount);
+		msPerFrame = 1000.f / fps;
 
 		frameCount = 0;
 		timeElapsed += 1.f;
 	}
+
+	ImGui::Begin("Stats", nullptr, ImGuiWindowFlags_NoResize);
+	ImGui::Text("FPS: %.2f", fps);
+	ImGui::Text("MS/frame: %.2f", msPerFrame);
+	ImGui::End();
 }
 
 NAMESPACE_FRT_END
