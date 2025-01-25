@@ -16,7 +16,7 @@ namespace frt::memory
 	//    TMemoryHandle decl   //
 	//*************************//
 	template <typename T, typename TAllocator = PoolAllocator>
-	struct FRT_CORE_API TMemoryHandle
+	struct TMemoryHandle
 	{
 		TMemoryHandle();
 		TMemoryHandle(const TMemoryHandle& Other);
@@ -55,7 +55,7 @@ namespace frt::memory
 	//    TMemoryHandleArray decl   //
 	//******************************//
 	template <typename T, typename TAllocator>
-	struct FRT_CORE_API TMemoryHandleArray : public TMemoryHandle<T, TAllocator>
+	struct TMemoryHandleArray : public TMemoryHandle<T, TAllocator>
 	{
 		TMemoryHandleArray();
 		TMemoryHandleArray(const TMemoryHandleArray& Other);

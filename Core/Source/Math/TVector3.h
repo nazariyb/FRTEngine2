@@ -12,7 +12,7 @@ namespace math
 {
 
 template<typename T>
-struct FRT_CORE_API TVector3
+struct TVector3
 {
 	static_assert(std::is_floating_point_v<T>, "T must be a floating point number");
 
