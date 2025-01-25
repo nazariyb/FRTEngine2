@@ -8,7 +8,7 @@ local neededPackages =
 
 thirdPartyDir = "ThirdParty"
 
-vcpkgRoot = thirdPartyDir.."/vcpkg"
+vcpkgRoot = thirdPartyDir.."\\vcpkg"
 
 newaction
 {
@@ -17,7 +17,7 @@ newaction
 	execute = function ()
 		for _, pkg in ipairs(neededPackages) do
 			local command = string.format(
-				"\"%s/vcpkg\" install %s:%s",
+				"\".\\%s\\vcpkg.exe\" install %s:%s",
 				vcpkgRoot, pkg, triplet
 			)
 			print(command)
@@ -155,10 +155,10 @@ project "Core"
 
 	prebuildcommands
 	{
-		"{COPYFILE} %[%{vcpkgRoot}/installed/%{triplet}/bin/*.dll] %[%{cfg.buildtarget.directory}]",
+		"{COPYFILE} %[%{wks.location}%{vcpkgRoot}/installed/%{triplet}/bin/*.dll] %[%{cfg.buildtarget.directory}]",
 		-- temporary
-		"%{wks.location}%{thirdPartyDir}/Dxc/bin/x64/dxc.exe -E main -Fo %{prj.location}Content/Shaders/Bin/VertexShader.shader -T vs_6_0 -Zi -Zpc -Qembed_debug %{prj.location}/Content/Shaders/VertexShader.hlsl",
-		"%{wks.location}%{thirdPartyDir}/Dxc/bin/x64/dxc.exe -E main -Fo %{prj.location}Content/Shaders/Bin/PixelShader.shader -T ps_6_0 -Zi -Zpc -Qembed_debug %{prj.location}/Content/Shaders/PixelShader.hlsl"
+		"%{wks.location}%{thirdPartyDir}/Dxc/bin/x64/dxc.exe -E main -Fo %{prj.location}Content/Shaders/Bin/VertexShader.shader -T vs_6_0 -Zi -Zpc -Qembed_debug %{prj.location}Content/Shaders/VertexShader.hlsl",
+		"%{wks.location}%{thirdPartyDir}/Dxc/bin/x64/dxc.exe -E main -Fo %{prj.location}Content/Shaders/Bin/PixelShader.shader -T ps_6_0 -Zi -Zpc -Qembed_debug %{prj.location}Content/Shaders/PixelShader.hlsl"
 	}
 
 	filter "configurations:Debug"
