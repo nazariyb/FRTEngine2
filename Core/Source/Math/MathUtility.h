@@ -32,6 +32,19 @@ namespace math
 
 	template<typename T>
 	static T Max(const T& A, const T& B) { return A > B ? A : B; }
+
+	template<typename TSrc, typename TDst>
+	TDst EncodeTwoIntoOne(TSrc InA, TSrc InB) requires (sizeof(TSrc) * 2 == sizeof(TDst))
+	{
+		return InA + (((TDst)InB) << (sizeof(TSrc) * 8));
+	}
+
+	template<typename TSrc, typename TDst>
+	void DecodeTwoFromOne(TDst InValue, TSrc& OutA, TSrc& OutB) requires (sizeof(TSrc) * 2 == sizeof(TDst))
+	{
+		OutA = (TSrc)InValue;
+		OutB = (InValue >> (sizeof(TSrc) * 8));
+	}
 }
 
 NAMESPACE_FRT_END

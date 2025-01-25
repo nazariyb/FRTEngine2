@@ -6,6 +6,7 @@
 #include "Singleton.h"
 #include "World.h"
 #include "Memory/Memory.h"
+#include "User/UserSettings.h"
 
 
 namespace frt::graphics
@@ -52,6 +53,8 @@ public:
 protected:
 	void CalculateFrameStats() const;
 
+	virtual void DisplayUserSettings();
+
 protected:
 	Timer* _timer;
 	Window* _window;
@@ -60,6 +63,8 @@ protected:
 	memory::TMemoryHandle<CWorld> World;
 
 	memory::TMemoryHandle<graphics::CCamera> Camera;
+
+	SUserSettings UserSettings;
 
 	long long _frameCount;
 };

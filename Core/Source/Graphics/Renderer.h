@@ -30,6 +30,7 @@ public:
 	FRT_CORE_API void StartFrame(CCamera& Camera);
 	FRT_CORE_API void Draw(float DeltaSeconds, CCamera& Camera);
 
+	FRT_CORE_API IDXGIAdapter1* GetAdapter();
 	FRT_CORE_API ID3D12Device* GetDevice();
 	FRT_CORE_API ID3D12CommandQueue* GetCommandQueue();
 	FRT_CORE_API ID3D12GraphicsCommandList* GetCommandList();

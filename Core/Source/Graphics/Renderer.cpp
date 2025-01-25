@@ -40,51 +40,6 @@ static void GetHardwareAdapter(IDXGIFactory4* pFactory, IDXGIAdapter1** ppAdapte
 	}
 }
 
-static void LogOutputDisplayMode(IDXGIOutput* pOutput, DXGI_FORMAT format)
-{
-	uint32 count = 0;
-	uint32 flags = 0;
-
-	pOutput->GetDisplayModeList(format, flags, &count, nullptr);
-
-	std::vector<DXGI_MODE_DESC> displayModes(count);
-	pOutput->GetDisplayModeList(format, flags, &count, displayModes.data());
-
-	for (auto& mode : displayModes)
-	{
-		uint32 n = mode.RefreshRate.Numerator;
-		uint32 d = mode.RefreshRate.Denominator;
-		std::wstring message =
-			L"Width = " + std::to_wstring(mode.Width) + L" " +
-			L"Height = " + std::to_wstring(mode.Height) + L" " +
-			L"RefreshRate = " + std::to_wstring(n) + L"/" + std::to_wstring(d) +
-			L"\n";
-
-		std::wcout << message;
-	}
-}
-
-static void LogAdapterOutputs(IDXGIAdapter1* pAdapter)
-{
-	uint8 i = 0;
-	IDXGIOutput* output = nullptr;
-
-	while (pAdapter->EnumOutputs(i, &output) != DXGI_ERROR_NOT_FOUND)
-	{
-		DXGI_OUTPUT_DESC outputDesc = {};
-		output->GetDesc(&outputDesc);
-
-		std::wstring message = L"";
-		message += outputDesc.DeviceName;
-		message += L"\n";
-		std::wcout << message;
-
-		if (false) LogOutputDisplayMode(output, DXGI_FORMAT_R8G8B8A8_UNORM);
-
-		++i;
-	}
-}
-
 Renderer::Renderer(Window* Window)
 	: _window(Window)
 	, _adapter(nullptr)
@@ -116,7 +71,6 @@ Renderer::Renderer(Window* Window)
 	THROW_IF_FAILED(CreateDXGIFactory2(0, IID_PPV_ARGS(&Factory)));
 
 	GetHardwareAdapter(Factory, &_adapter);
-	LogAdapterOutputs(_adapter);
 
 	if (FAILED(D3D12CreateDevice(_adapter, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&_device))))
 	{
@@ -514,6 +468,11 @@ void Renderer::Draw(float DeltaSeconds, CCamera& Camera)
 	_currentFrameBufferIndex = (_currentFrameBufferIndex + 1) % FrameBufferSize;
 
 	_uploadArena.Clear();
+}
+
+IDXGIAdapter1* Renderer::GetAdapter()
+{
+	return _adapter;
 }
 
 ID3D12Device* Renderer::GetDevice()

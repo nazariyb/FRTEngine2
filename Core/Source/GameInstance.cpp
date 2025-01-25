@@ -12,6 +12,8 @@
 #include "imgui.h"
 #include "backends/imgui_impl_win32.h"
 #include "backends/imgui_impl_dx12.h"
+#include "Graphics/GraphicsUtility.h"
+#include "Graphics/RenderCommonTypes.h"
 
 NAMESPACE_FRT_START
 
@@ -122,6 +124,7 @@ void GameInstance::Tick(float DeltaSeconds)
 	ImGui::ShowDemoWindow();
 
 	CalculateFrameStats();
+	DisplayUserSettings();
 
 	World->Tick(DeltaSeconds);
 	Camera->Tick(DeltaSeconds);
@@ -166,6 +169,77 @@ void GameInstance::CalculateFrameStats() const
 	ImGui::Text("FPS: %.2f", fps);
 	ImGui::Text("MS/frame: %.2f", msPerFrame);
 	ImGui::End();
+}
+
+void GameInstance::DisplayUserSettings()
+{
+	ImGui::Begin("DisplaySettings");
+
+	std::vector<IDXGIOutput*> monitors;
+	frt::graphics::GetAdapterOutputs(_renderer->GetAdapter(), monitors);
+
+	std::vector<const char*> monitorNames;
+	for (const auto& monitor : monitors)
+	{
+		DXGI_OUTPUT_DESC outputDesc;
+		monitor->GetDesc(&outputDesc);
+		char* newName = new char[32];
+		size_t converted;
+		wcstombs_s(&converted, newName, 32, outputDesc.DeviceName, 32);
+		monitorNames.push_back(newName);
+	}
+
+	const char* label = "Monitor:";
+	ImGui::Combo(label, &UserSettings.MonitorIndex, monitorNames.data(), monitorNames.size());
+
+	std::vector<DXGI_MODE_DESC> modeDescs;
+	modeDescs = GetOutputDisplayModes(monitors[UserSettings.MonitorIndex], DXGI_FORMAT_R8G8B8A8_UNORM, modeDescs);
+
+	std::vector<SOutputModeInfo> modeInfos(modeDescs.size());
+	for (const auto& desc : modeDescs)
+	{
+		modeInfos.emplace_back(SOutputModeInfo
+			{
+				.Width = desc.Width,
+				.Height = desc.Height,
+				.Numerator = desc.RefreshRate.Numerator,
+				.Denominator = desc.RefreshRate.Denominator
+			});
+	}
+
+	std::vector<uint64> resolutions;
+	for (const auto& info : modeInfos)
+	{
+		uint64 resEncoded = info.GetResolutionEncoded();
+		if (std::ranges::find(resolutions, resEncoded) == resolutions.end())
+		{
+			resolutions.emplace_back(resEncoded);
+		}
+	}
+
+	std::vector<std::string> resolutionStrs;
+	resolutionStrs.reserve(resolutions.size());
+	for (const auto& res : resolutions)
+	{
+		uint32 Width, Height;
+		frt::math::DecodeTwoFromOne(res, Width, Height);
+		resolutionStrs.emplace_back(std::format("{}:{}", Width, Height));
+	}
+
+	const char* labelResolution = "Resolution";
+	ImGui::Combo(labelResolution, &UserSettings.ResolutionIndex,
+		[](void* UserData, int Idx) -> const char* { return static_cast<std::string*>(UserData)[Idx].c_str(); },
+		resolutionStrs.data(), (int)resolutionStrs.size());
+
+	std::vector<uint64> refreshRates;
+
+
+	ImGui::End();
+
+	for (const char* name : monitorNames)
+	{
+		delete name;
+	}
 }
 
 NAMESPACE_FRT_END
