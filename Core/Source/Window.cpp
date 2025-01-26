@@ -225,6 +225,7 @@ LRESULT CALLBACK Window::WindowProcessMessage(HWND hWnd, UINT message, WPARAM wP
 	// 		EndPaint(hWnd, &ps);
 	// 	}
 	// 	break;
+	//TODO: case WM_DISPLAYCHANGE :
 	case WM_DESTROY:
 		PostQuitMessage(0);
 		break;

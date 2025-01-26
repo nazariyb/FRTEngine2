@@ -1,12 +1,15 @@
 ﻿#include "GraphicsUtility.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <dxgi.h>
 #include <vector>
+#include <ranges>
 
 #include "Asserts.h"
 #include "CoreTypes.h"
 #include "Exception.h"
+#include "RenderCommonTypes.h"
 
 namespace frt::graphics
 {
@@ -42,16 +45,49 @@ namespace frt::graphics
 		}
 	}
 
-	std::vector<DXGI_MODE_DESC> GetOutputDisplayModes(IDXGIOutput* InOutput, DXGI_FORMAT InFormat, std::vector<DXGI_MODE_DESC>& OutModes)
+	std::vector<DXGI_MODE_DESC> GetOutputDisplayModes(IDXGIOutput* InOutput, DXGI_FORMAT InFormat)
 	{
 		uint32 count = 0;
 		uint32 flags = 0;
 
 		THROW_IF_FAILED(InOutput->GetDisplayModeList(InFormat, flags, &count, nullptr));
-		OutModes.reserve(count);
 
-		std::vector<DXGI_MODE_DESC> outModes(count);
+		std::vector<DXGI_MODE_DESC> outModes;
+		outModes.resize(count);
 		THROW_IF_FAILED(InOutput->GetDisplayModeList(InFormat, flags, &count, outModes.data()));
 		return outModes;
+	}
+
+	SDisplayOptions GetDisplayOptions(IDXGIAdapter1* InAdapter)
+	{
+		SDisplayOptions result;
+
+		IDXGIOutput* output = nullptr;
+
+		result.OutputsNum = 0;
+		while (InAdapter->EnumOutputs(result.OutputsNum, &output) != DXGI_ERROR_NOT_FOUND)
+		{
+			++result.OutputsNum;
+
+			DXGI_OUTPUT_DESC outputDesc;
+			output->GetDesc(&outputDesc);
+			result.OutputsNames.emplace_back(outputDesc.DeviceName);
+			const RECT& rect = outputDesc.DesktopCoordinates;
+			result.OutputsRects.push_back({ rect.left, rect.top, rect.right, rect.bottom });
+
+			auto& outputModes = result.OutputsModes.emplace_back();
+			for (const DXGI_MODE_DESC& mode : GetOutputDisplayModes(output, DXGI_FORMAT_R8G8B8A8_UNORM))
+			{
+				outputModes.emplace_back(SOutputModeInfo
+					{
+						.Width = mode.Width,
+						.Height = mode.Height,
+						.Numerator = mode.RefreshRate.Numerator,
+						.Denominator = mode.RefreshRate.Denominator
+					});
+			}
+		}
+
+		return result;
 	}
 }

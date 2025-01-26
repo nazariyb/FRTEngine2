@@ -5,6 +5,7 @@
 #include "Core.h"
 #include "Singleton.h"
 #include "World.h"
+#include "Graphics/RenderCommonTypes.h"
 #include "Memory/Memory.h"
 #include "User/UserSettings.h"
 
@@ -64,6 +65,7 @@ protected:
 
 	memory::TMemoryHandle<graphics::CCamera> Camera;
 
+	graphics::SDisplayOptions DisplayOptions;
 	SUserSettings UserSettings;
 
 	long long _frameCount;

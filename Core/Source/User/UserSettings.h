@@ -5,11 +5,11 @@
 
 #include "CoreTypes.h"
 
-enum class EDisplayMode : uint8
+enum class EDisplayMode : int32
 {
 	Fullscreen = 0,
 	Windowed,
-	FullscreenWindowed,
+	Borderless,
 };
 
 struct SUserSettings

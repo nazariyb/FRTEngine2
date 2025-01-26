@@ -37,6 +37,7 @@ GameInstance::GameInstance()
 
 	memory::DefaultAllocator::InitMasterInstance(1 * memory::GigaByte);
 	_renderer = new Renderer(_window);
+	DisplayOptions = graphics::GetDisplayOptions(_renderer->GetAdapter());
 
 	World = memory::New<CWorld>();
 
@@ -173,73 +174,68 @@ void GameInstance::CalculateFrameStats() const
 
 void GameInstance::DisplayUserSettings()
 {
+	// TODO: this func is okay for now, but should be revisited later to at least remove reallocations on each frame
+
 	ImGui::Begin("DisplaySettings");
 
-	std::vector<IDXGIOutput*> monitors;
-	frt::graphics::GetAdapterOutputs(_renderer->GetAdapter(), monitors);
-
-	std::vector<const char*> monitorNames;
-	for (const auto& monitor : monitors)
+	const auto strToChar = [](void* UserData, int Idx) -> const char*
 	{
-		DXGI_OUTPUT_DESC outputDesc;
-		monitor->GetDesc(&outputDesc);
-		char* newName = new char[32];
-		size_t converted;
-		wcstombs_s(&converted, newName, 32, outputDesc.DeviceName, 32);
-		monitorNames.push_back(newName);
+		return static_cast<std::string*>(UserData)[Idx].c_str();
+	};
+
+	{
+		const auto monitorNames = DisplayOptions.GetNames();
+		const char* labelMonitor = "Monitor";
+		ImGui::Combo(labelMonitor, &UserSettings.MonitorIndex, strToChar, (void*)monitorNames.data(), (int)monitorNames.size());
 	}
 
-	const char* label = "Monitor:";
-	ImGui::Combo(label, &UserSettings.MonitorIndex, monitorNames.data(), monitorNames.size());
+	std::vector<uint64> resolutions = DisplayOptions.GetResolutionsEncoded(UserSettings.MonitorIndex);
+	UserSettings.ResolutionIndex = math::ClampIndex(UserSettings.ResolutionIndex, resolutions);
 
-	std::vector<DXGI_MODE_DESC> modeDescs;
-	modeDescs = GetOutputDisplayModes(monitors[UserSettings.MonitorIndex], DXGI_FORMAT_R8G8B8A8_UNORM, modeDescs);
-
-	std::vector<SOutputModeInfo> modeInfos(modeDescs.size());
-	for (const auto& desc : modeDescs)
 	{
-		modeInfos.emplace_back(SOutputModeInfo
-			{
-				.Width = desc.Width,
-				.Height = desc.Height,
-				.Numerator = desc.RefreshRate.Numerator,
-				.Denominator = desc.RefreshRate.Denominator
-			});
-	}
-
-	std::vector<uint64> resolutions;
-	for (const auto& info : modeInfos)
-	{
-		uint64 resEncoded = info.GetResolutionEncoded();
-		if (std::ranges::find(resolutions, resEncoded) == resolutions.end())
+		std::vector<std::string> resolutionStrs;
+		resolutionStrs.reserve(resolutions.size());
+		for (const auto& res : resolutions)
 		{
-			resolutions.emplace_back(resEncoded);
+			uint32 width, height;
+			math::DecodeTwoFromOne(res, width, height);
+			resolutionStrs.emplace_back(std::format("{}:{}", width, height));
 		}
+
+		const char* labelResolution = "Resolution";
+		ImGui::Combo(labelResolution, &UserSettings.ResolutionIndex, strToChar, resolutionStrs.data(), (int)resolutionStrs.size());
 	}
 
-	std::vector<std::string> resolutionStrs;
-	resolutionStrs.reserve(resolutions.size());
-	for (const auto& res : resolutions)
 	{
-		uint32 Width, Height;
-		frt::math::DecodeTwoFromOne(res, Width, Height);
-		resolutionStrs.emplace_back(std::format("{}:{}", Width, Height));
+		std::vector<uint64> refreshRates = DisplayOptions.GetRefreshRatesEncoded(
+			UserSettings.MonitorIndex, resolutions[UserSettings.ResolutionIndex]);
+		UserSettings.RefreshRateIndex = math::ClampIndex(UserSettings.RefreshRateIndex, refreshRates);
+
+		std::vector<std::string> rRStrs;
+		rRStrs.reserve(refreshRates.size());
+		for (const auto& rr : refreshRates)
+		{
+			uint32 numerator, denominator;
+			math::DecodeTwoFromOne(rr, numerator, denominator);
+			rRStrs.emplace_back(std::format("{:.2f}", (float)numerator / (float)denominator));
+		}
+
+		const char* labelRR = "RefreshRate";
+		ImGui::Combo(labelRR, &UserSettings.RefreshRateIndex, strToChar, rRStrs.data(), (int)rRStrs.size());
 	}
 
-	const char* labelResolution = "Resolution";
-	ImGui::Combo(labelResolution, &UserSettings.ResolutionIndex,
-		[](void* UserData, int Idx) -> const char* { return static_cast<std::string*>(UserData)[Idx].c_str(); },
-		resolutionStrs.data(), (int)resolutionStrs.size());
-
-	std::vector<uint64> refreshRates;
-
+	{
+		const char* modeNames[] = { "Fullscreen", "Windowed", "Borderless" };
+		const char* labelFullscreen = "Fullscreen";
+		ImGui::SliderInt(
+			labelFullscreen,
+			(int*)&UserSettings.DisplayMode,
+			0, (int32)EDisplayMode::Borderless,
+			modeNames[(int32)UserSettings.DisplayMode],
+			ImGuiSliderFlags_AlwaysClamp);
+	}
 
 	ImGui::End();
-
-	for (const char* name : monitorNames)
-	{
-		delete name;
-	}
 }
 
 NAMESPACE_FRT_END

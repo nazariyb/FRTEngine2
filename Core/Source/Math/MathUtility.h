@@ -34,16 +34,28 @@ namespace math
 	static T Max(const T& A, const T& B) { return A > B ? A : B; }
 
 	template<typename TSrc, typename TDst>
-	TDst EncodeTwoIntoOne(TSrc InA, TSrc InB) requires (sizeof(TSrc) * 2 == sizeof(TDst))
+	TDst EncodeTwoIntoOne(const TSrc& InA, const TSrc& InB) requires (sizeof(TSrc) * 2 == sizeof(TDst))
 	{
 		return InA + (((TDst)InB) << (sizeof(TSrc) * 8));
 	}
 
 	template<typename TSrc, typename TDst>
-	void DecodeTwoFromOne(TDst InValue, TSrc& OutA, TSrc& OutB) requires (sizeof(TSrc) * 2 == sizeof(TDst))
+	void DecodeTwoFromOne(const TDst& InValue, TSrc& OutA, TSrc& OutB) requires (sizeof(TSrc) * 2 == sizeof(TDst))
 	{
 		OutA = (TSrc)InValue;
 		OutB = (InValue >> (sizeof(TSrc) * 8));
+	}
+
+	template<typename T>
+	T Clamp(const T& Value, const T& Min, const T& Max)
+	{
+		return (Value < Min) ? Min : ((Value > Max) ? Max : Value);
+	}
+
+	template<typename T, typename TContainer>
+	T ClampIndex(const T& Value, const TContainer& Container)
+	{
+		return Clamp(Value, (T)0, (T)Container.size() - 1);
 	}
 }
 
