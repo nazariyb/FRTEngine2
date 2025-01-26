@@ -33,6 +33,8 @@ namespace frt::graphics
 			D3D12_RESOURCE_STATES InitialState,
 			const D3D12_CLEAR_VALUE* ClearValue);
 
+		void Free();
+
 	private:
 		uint64 _sizeTotal;
 		uint64 _sizeUsed;

@@ -6,6 +6,12 @@ NAMESPACE_FRT_START
 
 namespace math
 {
+	template<typename T>
+	concept Numerical = requires(T Value)
+	{
+		requires std::is_arithmetic_v<T>;
+	};
+
 	static constexpr float PI = 3.14159265358979323846f;
 	static constexpr float TWO_PI = 6.2831853f;
 	static constexpr float PI_OVER_TWO = PI / 2.0f;

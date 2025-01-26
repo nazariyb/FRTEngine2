@@ -47,6 +47,11 @@ namespace frt::graphics
 		return resource;
 	}
 
+	void DX12_Arena::Free()
+	{
+		_sizeUsed = 0;
+	}
+
 
 	DX12_DescriptorHeap::DX12_DescriptorHeap(
 		ID3D12Device* Device, D3D12_DESCRIPTOR_HEAP_TYPE Type, uint32 Num, D3D12_DESCRIPTOR_HEAP_FLAGS Flags)

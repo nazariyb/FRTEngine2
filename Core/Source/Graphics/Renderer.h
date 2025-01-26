@@ -2,6 +2,7 @@
 
 #include <d3d12.h>
 #include <dxgi1_4.h>
+#include <wrl/client.h>
 
 #include "Core.h"
 #include "GraphicsCoreTypes.h"
@@ -14,6 +15,8 @@ namespace frt
 	class Window;
 }
 
+using Microsoft::WRL::ComPtr;
+
 namespace frt::graphics
 {
 class CCamera;
@@ -25,7 +28,7 @@ public:
 	Renderer() = delete;
 	FRT_CORE_API explicit Renderer(Window* Window);
 
-	FRT_CORE_API void LoadAssets();
+	void Resize();
 
 	FRT_CORE_API void StartFrame(CCamera& Camera);
 	FRT_CORE_API void Draw(float DeltaSeconds, CCamera& Camera);
@@ -48,6 +51,7 @@ public:
 
 private:
 	void CreateSwapChain();
+	void FlushCommandQueue();
 
 public:
 	static constexpr unsigned FrameBufferSize = 2;
@@ -56,16 +60,17 @@ public:
 
 private:
 	Window* _window;
-	uint32 _renderWidth;
-	uint32 _renderHeight;
+
+	D3D12_VIEWPORT Viewport;
+	D3D12_RECT ScissorRect;
 
 	// Pipeline
 	IDXGIAdapter1* _adapter;
 	ID3D12Device* _device;
 	IDXGIFactory4* Factory;
 
-	IDXGISwapChain1* _swapChain;
-	ID3D12Resource* _frameBuffer[FrameBufferSize];
+	ComPtr<IDXGISwapChain1> _swapChain;
+	ComPtr<ID3D12Resource> _frameBuffer[FrameBufferSize];
 	D3D12_CPU_DESCRIPTOR_HANDLE _frameBufferDescriptors[FrameBufferSize];
 	unsigned _currentFrameBufferIndex;
 
@@ -94,7 +99,7 @@ private:
 	DX12_Arena _textureArena;
 
 	DX12_DescriptorHeap _dsvHeap;
-	ID3D12Resource* _depthStencilBuffer;
+	ComPtr<ID3D12Resource> _depthStencilBuffer;
 	D3D12_CPU_DESCRIPTOR_HANDLE _depthStencilDescriptor;
 	// ~Pipeline
 

@@ -4,10 +4,17 @@
 #include <Windows.h>
 
 #include "Core.h"
+#include "CoreTypes.h"
+#include "Event.h"
 #include "Math/Math.h"
 
 
 NAMESPACE_FRT_START
+	namespace graphics
+	{
+		struct SRect;
+	}
+
 	struct FRT_CORE_API WindowParams
 {
 	HINSTANCE hInst = nullptr;
@@ -38,26 +45,22 @@ public:
 	HWND GetHandle() const;
 	Vector2f GetWindowSize() const;
 
+	void Move(const Vector2u& NewSize, const graphics::SRect& MonitorRect);
 	void UpdateTitle(const std::wstring& NewTitleDetails) const;
 
 protected:
 	void RegisterWinAPIClass();
 
-	//
-	//  FUNCTION: WndProc(HWND, UINT, WPARAM, LPARAM)
-	//
-	//  PURPOSE: Processes messages for the main window.
-	//
-	//  WM_COMMAND  - process the application menu
-	//  WM_PAINT    - Paint the main window
-	//  WM_DESTROY  - post a quit message and return
-	//
-	//
-	static LRESULT CALLBACK WindowProcessMessage(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
+	static LRESULT CALLBACK SetupMessageProcessing(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
+	static LRESULT CALLBACK HandleMessageProcessing(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
+	LRESULT CALLBACK WindowProcessMessage(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
+
+public:
+	CEvent<> PostResizeEvent;
 
 protected:
 	WindowParams _params;
-	HWND _hWnd;
+	HWND _hWindow;
 
 #pragma warning(push)
 #pragma warning(disable: 4251)

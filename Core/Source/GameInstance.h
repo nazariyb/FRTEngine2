@@ -54,6 +54,8 @@ public:
 protected:
 	void CalculateFrameStats() const;
 
+	virtual void OnWindowResize();
+
 	virtual void DisplayUserSettings();
 
 protected:
@@ -69,6 +71,8 @@ protected:
 	SUserSettings UserSettings;
 
 	long long _frameCount;
+
+	bool bLoaded = false; // temp
 };
 
 NAMESPACE_FRT_END

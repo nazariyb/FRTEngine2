@@ -3,10 +3,10 @@
 #include "Math/Math.h"
 
 #include "imgui.h"
+#include "Graphics/RenderCommonTypes.h"
 
 NAMESPACE_FRT_START
-
-Window::~Window()
+	Window::~Window()
 {
 }
 
@@ -21,24 +21,24 @@ Window::Window(const WindowParams& Params)
 	AdjustWindowRect(&wr, WS_OVERLAPPEDWINDOW, false);
 
 	_title = L"FRTEngine";
-	_hWnd = CreateWindow(_params.className.c_str(), _title.c_str(),
+	_hWindow = CreateWindow(_params.className.c_str(), _title.c_str(),
 		WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
 		_params.width, _params.height,
 		nullptr /*hWndParent*/, nullptr /*hMenu*/, _params.hInst,
-		nullptr /*lpParam*/);
+		this /*lpParam*/);
 
-	if (!_hWnd) // TODO: move this if outside
+	if (!_hWindow) // TODO: move this if outside
 	{
 		MessageBox(0, L"CreateWindow Failed.", 0, 0);
 	}
 
-	ShowWindow(_hWnd, SW_SHOWDEFAULT);
-	UpdateWindow(_hWnd);
+	ShowWindow(_hWindow, SW_SHOWDEFAULT);
+	UpdateWindow(_hWindow);
 }
 
 HWND Window::GetHandle() const
 {
-	return _hWnd;
+	return _hWindow;
 }
 
 Vector2f Window::GetWindowSize() const
@@ -46,10 +46,17 @@ Vector2f Window::GetWindowSize() const
 	return { static_cast<float>(_params.width), static_cast<float>(_params.height) };
 }
 
+void Window::Move(const Vector2u& NewSize, const graphics::SRect& MonitorRect)
+{
+	const int32 newX = (int)(MonitorRect.Right - MonitorRect.Left) / 2 - NewSize.x / 2 + (int)MonitorRect.Left;
+	const int32 newY = (int)(MonitorRect.Bottom - MonitorRect.Top) / 2 - NewSize.y / 2 + (int)MonitorRect.Top;
+	MoveWindow(_hWindow, newX, newY, (int)NewSize.x, (int)NewSize.y, true);
+}
+
 void Window::UpdateTitle(const std::wstring& NewTitleDetails) const
 {
 	std::wstring newTitle = _title + NewTitleDetails;
-	SetWindowText(_hWnd, newTitle.c_str());
+	SetWindowText(_hWindow, newTitle.c_str());
 }
 
 void Window::RegisterWinAPIClass()
@@ -59,7 +66,7 @@ void Window::RegisterWinAPIClass()
 	wcex.cbSize = sizeof(WNDCLASSEX);
 
 	wcex.style          = CS_HREDRAW | CS_VREDRAW | CS_OWNDC;
-	wcex.lpfnWndProc    = WindowProcessMessage;
+	wcex.lpfnWndProc    = SetupMessageProcessing;
 	wcex.cbClsExtra     = 0;
 	wcex.cbWndExtra     = 0;
 	wcex.hInstance      = _params.hInst;
@@ -71,6 +78,33 @@ void Window::RegisterWinAPIClass()
 	wcex.hIconSm        = nullptr;//LoadIcon(wcex.hInstance, MAKEINTRESOURCE(IDI_SMALL));
 
 	RegisterClassEx(&wcex);
+}
+
+LRESULT Window::SetupMessageProcessing(HWND hWindow, UINT message, WPARAM wParam, LPARAM lParam)
+{
+	// use create parameter passed in from CreateWindow() to store window class pointer at WinAPI side
+	if (message == WM_NCCREATE)
+	{
+		// extract ptr to window class from creation data
+		const CREATESTRUCTW* const pCreate = reinterpret_cast<CREATESTRUCTW*>(lParam);
+		Window* const pWnd = static_cast<Window*>(pCreate->lpCreateParams);
+		// set WinAPI-managed user data to store ptr to window instance
+		SetWindowLongPtr(hWindow, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(pWnd));
+		// set message proc to normal (non-setup) handler now that setup is finished
+		SetWindowLongPtr(hWindow, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&Window::HandleMessageProcessing));
+		// forward message to window instance handler
+		return pWnd->WindowProcessMessage(hWindow, message, wParam, lParam);
+	}
+	// if we get a message before the WM_NCCREATE message, handle with default handler
+	return DefWindowProc(hWindow, message, wParam, lParam);
+}
+
+LRESULT Window::HandleMessageProcessing(HWND hWindow, UINT message, WPARAM wParam, LPARAM lParam)
+{
+	// retrieve ptr to window instance
+	Window* const pWnd = reinterpret_cast<Window*>(GetWindowLongPtr(hWindow, GWLP_USERDATA));
+	// forward message to window instance handler
+	return pWnd->WindowProcessMessage(hWindow, message, wParam, lParam);
 }
 
 LRESULT CALLBACK Window::WindowProcessMessage(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
@@ -104,29 +138,28 @@ LRESULT CALLBACK Window::WindowProcessMessage(HWND hWnd, UINT message, WPARAM wP
 			}
 
 		// WM_SIZE is sent when the user resizes the window.
-		/* TODO:
 		case WM_SIZE:
 			// Save the new client area dimensions.
-			mClientWidth  = LOWORD(lParam);
-			mClientHeight = HIWORD(lParam);
-			if( md3dDevice )
+			_params.width  = LOWORD(lParam);
+			_params.height = HIWORD(lParam);
+			// if( md3dDevice )
 			{
 				if( wParam == SIZE_MINIMIZED )
 				{
-					mAppPaused = true;
-					mMinimized = true;
-					mMaximized = false;
+					// mAppPaused = true;
+					// mMinimized = true;
+					// mMaximized = false;
 				}
 				else if( wParam == SIZE_MAXIMIZED )
 				{
-					mAppPaused = false;
-					mMinimized = false;
-					mMaximized = true;
-					OnResize();
+					// mAppPaused = false;
+					// mMinimized = false;
+					// mMaximized = true;
+					PostResizeEvent.Invoke();
 				}
-				else if( wParam == SIZE_RESTORED )
+				// else if( wParam == SIZE_RESTORED )
 				{
-					
+					/*
 					// Restoring from minimized state?
 					if( mMinimized )
 					{
@@ -154,12 +187,13 @@ LRESULT CALLBACK Window::WindowProcessMessage(HWND hWnd, UINT message, WPARAM wP
 						// sends a WM_EXITSIZEMOVE message.
 					}
 					else // API call such as SetWindowPos or mSwapChain->SetFullscreenState.
+					*/
 					{
-						OnResize();
+						PostResizeEvent.Invoke();
 					}
 				}
 			}
-			return 0;*/
+			return 0;
 
 		// WM_EXITSIZEMOVE is sent when the user grabs the resize bars.
 		/* TODO:

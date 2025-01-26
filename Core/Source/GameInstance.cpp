@@ -35,8 +35,11 @@ GameInstance::GameInstance()
 	windowParams.hInst = GetModuleHandle(nullptr);
 	_window = new Window(windowParams);
 
+	_window->PostResizeEvent += std::bind(&GameInstance::OnWindowResize, this);
+
 	memory::DefaultAllocator::InitMasterInstance(1 * memory::GigaByte);
 	_renderer = new Renderer(_window);
+	_renderer->Resize();
 	DisplayOptions = graphics::GetDisplayOptions(_renderer->GetAdapter());
 
 	World = memory::New<CWorld>();
@@ -135,6 +138,13 @@ void GameInstance::Draw(float DeltaSeconds)
 {
 	_renderer->StartFrame(*Camera);
 
+	// TODO: temp
+	if (!bLoaded)
+	{
+		Load();
+		bLoaded = true;
+	}
+
 	World->Present(DeltaSeconds, _renderer->GetCommandList());
 
 	ImGui::Render();
@@ -170,6 +180,11 @@ void GameInstance::CalculateFrameStats() const
 	ImGui::Text("FPS: %.2f", fps);
 	ImGui::Text("MS/frame: %.2f", msPerFrame);
 	ImGui::End();
+}
+
+void GameInstance::OnWindowResize()
+{
+	_renderer->Resize();
 }
 
 void GameInstance::DisplayUserSettings()
@@ -236,6 +251,11 @@ void GameInstance::DisplayUserSettings()
 	}
 
 	ImGui::End();
+
+	// TODO: check if really changed
+	Vector2u newSize;
+	math::DecodeTwoFromOne(resolutions[UserSettings.ResolutionIndex], newSize.x, newSize.y);
+	_window->Move(newSize, DisplayOptions.OutputsRects[UserSettings.MonitorIndex]);
 }
 
 NAMESPACE_FRT_END

@@ -23,8 +23,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 	Timer& time = game->GetTime();
 	time.Reset();
 
-	game->GetGraphics().LoadAssets();
-	game->Load();
+	// game->Load();
 
 	// Initialize global strings
 	// LoadStringW(hInstance, IDS_APP_TITLE, szTitle, MAX_LOADSTRING);
