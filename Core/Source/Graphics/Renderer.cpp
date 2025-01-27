@@ -87,9 +87,9 @@ Renderer::Renderer(Window* Window)
 
 	THROW_IF_FAILED(CreateDXGIFactory2(0, IID_PPV_ARGS(&Factory)));
 
-	GetHardwareAdapter(Factory, &_adapter);
+	GetHardwareAdapter(Factory.Get(), &_adapter);
 
-	if (FAILED(D3D12CreateDevice(_adapter, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&_device))))
+	if (FAILED(D3D12CreateDevice(_adapter.Get(), D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&_device))))
 	{
 		IDXGIAdapter* pWarpAdapter = nullptr;
 		THROW_IF_FAILED(Factory->EnumWarpAdapter(IID_PPV_ARGS(&pWarpAdapter)));
@@ -122,27 +122,27 @@ Renderer::Renderer(Window* Window)
 	// Command allocator and list
 
 	THROW_IF_FAILED(_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&_commandAllocator)));
-	THROW_IF_FAILED(_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, _commandAllocator, nullptr, IID_PPV_ARGS(&_commandList)));
+	THROW_IF_FAILED(_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, _commandAllocator.Get(), nullptr, IID_PPV_ARGS(&_commandList)));
 	THROW_IF_FAILED(_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&_fence)));
 	_commandList->Close();
 
 	// Describe and create swap chain
 	CreateSwapChain();
 
-	_rtvArena = DX12_Arena(_device, D3D12_HEAP_TYPE_DEFAULT, 50 * memory::MegaByte,
+	_rtvArena = DX12_Arena(_device.Get(), D3D12_HEAP_TYPE_DEFAULT, 50 * memory::MegaByte,
 						D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES);
-	_dsvHeap = DX12_DescriptorHeap(_device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1);
+	_dsvHeap = DX12_DescriptorHeap(_device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1);
 
-	_uploadArena = DX12_UploadArena(_device, 1 * memory::GigaByte);
-	_bufferArena = DX12_Arena(_device, D3D12_HEAP_TYPE_DEFAULT, 500 * memory::MegaByte,
+	_uploadArena = DX12_UploadArena(_device.Get(), 1 * memory::GigaByte);
+	_bufferArena = DX12_Arena(_device.Get(), D3D12_HEAP_TYPE_DEFAULT, 500 * memory::MegaByte,
 							D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS);
-	_textureArena = DX12_Arena(_device, D3D12_HEAP_TYPE_DEFAULT, 500 * memory::MegaByte,
+	_textureArena = DX12_Arena(_device.Get(), D3D12_HEAP_TYPE_DEFAULT, 500 * memory::MegaByte,
 								D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES);
 
 	ShaderDescriptorHeap = DX12_DescriptorHeap(
-		_device, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 50, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE);
+		_device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 50, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE);
 
-	_rtvHeap = DX12_DescriptorHeap(_device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, FrameBufferSize);
+	_rtvHeap = DX12_DescriptorHeap(_device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_RTV, FrameBufferSize);
 
 	for (unsigned frameIndex = 0; frameIndex < FrameBufferSize; ++frameIndex)
 	{
@@ -225,7 +225,7 @@ Renderer::Renderer(Window* Window)
 		}
 
 		D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
-		psoDesc.pRootSignature = _rootSignature;
+		psoDesc.pRootSignature = _rootSignature.Get();
 
 		psoDesc.VS = Dx12LoadShader(R"(..\Core\Content\Shaders\Bin\VertexShader.shader)");
 		psoDesc.PS = Dx12LoadShader(R"(..\Core\Content\Shaders\Bin\PixelShader.shader)");
@@ -329,7 +329,7 @@ void Renderer::Resize()
 	// Flush before changing any resources.
 	FlushCommandQueue();
 
-	THROW_IF_FAILED(_commandList->Reset(_commandAllocator, nullptr));
+	THROW_IF_FAILED(_commandList->Reset(_commandAllocator.Get(), nullptr));
 
 	// Release the previous resources we will be recreating.
 	for (int i = 0; i < FrameBufferSize; ++i)
@@ -387,7 +387,7 @@ void Renderer::Resize()
 
 	// Execute the resize commands.
 	THROW_IF_FAILED(_commandList->Close());
-	ID3D12CommandList* cmdsLists[] = { _commandList };
+	ID3D12CommandList* cmdsLists[] = { _commandList.Get() };
 	_commandQueue->ExecuteCommandLists(_countof(cmdsLists), cmdsLists);
 
 	// Wait until resize is complete.
@@ -410,7 +410,7 @@ void Renderer::Resize()
 void Renderer::StartFrame(CCamera& Camera)
 {
 	THROW_IF_FAILED(_commandAllocator->Reset());
-	THROW_IF_FAILED(_commandList->Reset(_commandAllocator, nullptr));
+	THROW_IF_FAILED(_commandList->Reset(_commandAllocator.Get(), nullptr));
 
 	const float TimeElapsed = GameInstance::GetInstance().GetTime().GetTotalSeconds();
 	const double scale = std::cos(TimeElapsed) / 8.f + .25f;
@@ -431,7 +431,7 @@ void Renderer::StartFrame(CCamera& Camera)
 		D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
 		(void*)mvp.m,
 		sizeof(math::STransform::RawType),
-		_transformBuffer
+		_transformBuffer.Get()
 		);
 
 	{
@@ -455,8 +455,8 @@ void Renderer::StartFrame(CCamera& Camera)
 	_commandList->OMSetRenderTargets(1, &_frameBufferDescriptors[_currentFrameBufferIndex], false, &_depthStencilDescriptor);
 
 	_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-	_commandList->SetGraphicsRootSignature(_rootSignature);
-	_commandList->SetPipelineState(_pipelineState);
+	_commandList->SetGraphicsRootSignature(_rootSignature.Get());
+	_commandList->SetPipelineState(_pipelineState.Get());
 
 	_commandList->SetDescriptorHeaps(1, &ShaderDescriptorHeap._heap);
 	_commandList->SetGraphicsRootDescriptorTable(1, _transformBufferDescriptor);
@@ -477,7 +477,7 @@ void Renderer::Draw(float DeltaSeconds, CCamera& Camera)
 	}
 
 	THROW_IF_FAILED(_commandList->Close());
-	_commandQueue->ExecuteCommandLists(1, (ID3D12CommandList**)&_commandList);
+	_commandQueue->ExecuteCommandLists(1, (ID3D12CommandList**)_commandList.GetAddressOf());
 
 	_swapChain->Present(1, 0);
 	_currentFrameBufferIndex = (_currentFrameBufferIndex + 1) % FrameBufferSize;
@@ -489,22 +489,22 @@ void Renderer::Draw(float DeltaSeconds, CCamera& Camera)
 
 IDXGIAdapter1* Renderer::GetAdapter()
 {
-	return _adapter;
+	return _adapter.Get();
 }
 
 ID3D12Device* Renderer::GetDevice()
 {
-	return _device;
+	return _device.Get();
 }
 
 ID3D12CommandQueue* Renderer::GetCommandQueue()
 {
-	return _commandQueue;
+	return _commandQueue.Get();
 }
 
 ID3D12GraphicsCommandList* Renderer::GetCommandList()
 {
-	return _commandList;
+	return _commandList.Get();
 }
 
 ID3D12Resource* Renderer::CreateBufferAsset(
@@ -659,13 +659,13 @@ void Renderer::CreateSwapChain()
 		};
 
 	THROW_IF_FAILED(Factory->CreateSwapChainForHwnd(
-		_commandQueue, _window->GetHandle(), &swapChainDesc, &fullscreenDesc, nullptr, &_swapChain));
+		_commandQueue.Get(), _window->GetHandle(), &swapChainDesc, &fullscreenDesc, nullptr, &_swapChain));
 }
 
 void Renderer::FlushCommandQueue()
 {
 	_fenceValue++;
-	_commandQueue->Signal(_fence, _fenceValue);
+	_commandQueue->Signal(_fence.Get(), _fenceValue);
 
 	if (_fence->GetCompletedValue() < _fenceValue)
 	{

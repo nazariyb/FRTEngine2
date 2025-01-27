@@ -65,31 +65,31 @@ private:
 	D3D12_RECT ScissorRect;
 
 	// Pipeline
-	IDXGIAdapter1* _adapter;
-	ID3D12Device* _device;
-	IDXGIFactory4* Factory;
+	ComPtr<IDXGIAdapter1> _adapter;
+	ComPtr<ID3D12Device> _device;
+	ComPtr<IDXGIFactory4> Factory;
 
 	ComPtr<IDXGISwapChain1> _swapChain;
 	ComPtr<ID3D12Resource> _frameBuffer[FrameBufferSize];
 	D3D12_CPU_DESCRIPTOR_HANDLE _frameBufferDescriptors[FrameBufferSize];
 	unsigned _currentFrameBufferIndex;
 
-	ID3D12CommandQueue* _commandQueue;
-	ID3D12CommandAllocator* _commandAllocator;
-	ID3D12GraphicsCommandList* _commandList;
+	ComPtr<ID3D12CommandQueue> _commandQueue;
+	ComPtr<ID3D12CommandAllocator> _commandAllocator;
+	ComPtr<ID3D12GraphicsCommandList> _commandList;
 
-	ID3D12RootSignature* _rootSignature;
-	ID3D12PipelineState* _pipelineState;
+	ComPtr<ID3D12RootSignature> _rootSignature;
+	ComPtr<ID3D12PipelineState> _pipelineState;
 	// temp
-	ID3D12Resource* _vertexBuffer;
+	ComPtr<ID3D12Resource> _vertexBuffer;
 	D3D12_VERTEX_BUFFER_VIEW _vertexBufferView;
 	math::STransform _transformTemp;
 
-	ID3D12Resource* _transformBuffer;
+	ComPtr<ID3D12Resource> _transformBuffer;
 	D3D12_GPU_DESCRIPTOR_HANDLE _transformBufferDescriptor;
 	// ~temp
 
-	ID3D12Resource* CommonConstantBuffer;
+	ComPtr<ID3D12Resource> CommonConstantBuffer;
 	D3D12_GPU_DESCRIPTOR_HANDLE CommonConstantBufferDescriptor;
 
 	DX12_DescriptorHeap _rtvHeap;
@@ -104,7 +104,7 @@ private:
 	// ~Pipeline
 
 	// Synchronization
-	ID3D12Fence* _fence;
+	ComPtr<ID3D12Fence> _fence;
 	unsigned long long _fenceValue;
 	HANDLE _fenceEvent;
 	// ~Synchronization
