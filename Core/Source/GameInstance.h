@@ -55,6 +55,10 @@ protected:
 	void CalculateFrameStats() const;
 
 	virtual void OnWindowResize();
+	virtual void OnLoseFocus();
+	virtual void OnGainFocus();
+	virtual void OnMinimize();
+	virtual void OnRestoreFromMinimize();
 
 	virtual void DisplayUserSettings();
 

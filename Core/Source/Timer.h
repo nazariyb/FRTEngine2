@@ -18,6 +18,7 @@ public:
 
 	float FRT_CORE_API GetTotalSeconds() const;
 	float FRT_CORE_API GetDeltaSeconds() const;
+	bool FRT_CORE_API IsPaused() const;
 
 	void FRT_CORE_API Reset();
 	void FRT_CORE_API Start(bool bReset = false);

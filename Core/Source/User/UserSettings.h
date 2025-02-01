@@ -5,19 +5,31 @@
 
 #include "CoreTypes.h"
 
-enum class EDisplayMode : int32
+namespace frt
 {
-	Fullscreen = 0,
-	Windowed,
-	Borderless,
-};
+	enum class EFullscreenMode : int32
+	{
+		Minimized = 0,
+		Fullscreen,
+		Windowed,
+		Borderless,
+	};
 
-struct SUserSettings
-{
-	int32 MonitorIndex = 0;
-	std::vector<std::wstring> MonitorNames;
-	int32 ResolutionIndex = 0;
-	int32 RefreshRateIndex = 0;
+	struct SDisplaySettings
+	{
+		int32 MonitorIndex = 0;
+		int32 ResolutionIndex = 0;
+		int32 RefreshRateIndex = 0;
 
-	EDisplayMode DisplayMode = EDisplayMode::Fullscreen;
-};
+		EFullscreenMode FullscreenMode = EFullscreenMode::Windowed;
+
+		bool IsFullscreen() const { return FullscreenMode == EFullscreenMode::Fullscreen; }
+	};
+
+	struct SUserSettings
+	{
+		SDisplaySettings DisplaySettings;
+	};
+}
+
+bool operator==(const frt::SDisplaySettings& Lhs, const frt::SDisplaySettings& Rhs);

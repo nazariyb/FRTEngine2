@@ -28,7 +28,7 @@ public:
 	Renderer() = delete;
 	FRT_CORE_API explicit Renderer(Window* Window);
 
-	void Resize();
+	void Resize(bool bNewFullscreenState);
 
 	FRT_CORE_API void StartFrame(CCamera& Camera);
 	FRT_CORE_API void Draw(float DeltaSeconds, CCamera& Camera);
@@ -50,7 +50,7 @@ public:
 		ID3D12Resource* GpuBuffer);
 
 private:
-	void CreateSwapChain();
+	void CreateSwapChain(bool bFullscreen);
 	void FlushCommandQueue();
 
 public:

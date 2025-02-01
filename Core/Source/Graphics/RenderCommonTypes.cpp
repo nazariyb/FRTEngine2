@@ -35,6 +35,19 @@ std::vector<uint64> frt::graphics::SDisplayOptions::GetResolutionsEncoded(uint8 
 	return resolutions;
 }
 
+uint64 frt::graphics::SDisplayOptions::GetFullscreenResolutionEncoded(uint8 OutputIndex) const
+{
+	frt_assert(OutputIndex > -1);
+	frt_assert(OutputIndex < OutputsNum);
+
+	const SRect& monitorRect = OutputsRects[OutputIndex];
+	const int32 width = (int32)(monitorRect.Right - monitorRect.Left);
+	const int32 height = (int32)(monitorRect.Bottom - monitorRect.Top);
+	frt_assert(width > 0 && height > 0);
+
+	return math::EncodeTwoIntoOne<int32, uint64>(width, height);
+}
+
 std::vector<uint64> frt::graphics::SDisplayOptions::GetRefreshRatesEncoded(uint8 OutputIndex, uint64 Resolution) const
 {
 	frt_assert(OutputIndex > -1);
@@ -55,6 +68,7 @@ std::vector<uint64> frt::graphics::SDisplayOptions::GetRefreshRatesEncoded(uint8
 		}
 	}
 
+	// TODO: cache result
 	return refreshRates;
 }
 

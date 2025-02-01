@@ -127,7 +127,7 @@ Renderer::Renderer(Window* Window)
 	_commandList->Close();
 
 	// Describe and create swap chain
-	CreateSwapChain();
+	CreateSwapChain(false); // TODO: create & use startup display settings
 
 	_rtvArena = DX12_Arena(_device.Get(), D3D12_HEAP_TYPE_DEFAULT, 50 * memory::MegaByte,
 						D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES);
@@ -324,7 +324,7 @@ Renderer::Renderer(Window* Window)
 	}
 }
 
-void Renderer::Resize()
+void Renderer::Resize(bool bNewFullscreenState)
 {
 	// Flush before changing any resources.
 	FlushCommandQueue();
@@ -336,31 +336,55 @@ void Renderer::Resize()
 	{
 		_frameBuffer[i].Reset();
 	}
-
 	_depthStencilBuffer.Reset();
+
+	// start logic
+
+	BOOL bWasInFullscreen = false;
+	if (_swapChain)
+	{
+		THROW_IF_FAILED(_swapChain->GetFullscreenState(&bWasInFullscreen, nullptr));
+	}
+
+	const bool bExitingFullscreen = bWasInFullscreen && !bNewFullscreenState;
+	const bool bEnteringFullscreen = !bWasInFullscreen && bNewFullscreenState;
 
 	Vector2f drawRect = _window->GetWindowSize();
 
-	// Resize the swap chain.
-	THROW_IF_FAILED(_swapChain->ResizeBuffers(
-		FrameBufferSize, 
-		drawRect.x, drawRect.y, 
-		DXGI_FORMAT_R8G8B8A8_UNORM, 
-		DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH));
-
-	_currentFrameBufferIndex = 0;
-
-	for (unsigned frameIndex = 0; frameIndex < FrameBufferSize; ++frameIndex)
+	if (_swapChain && bExitingFullscreen)
 	{
-		_swapChain->GetBuffer(frameIndex, IID_PPV_ARGS(&_frameBuffer[frameIndex]));
-		_device->CreateRenderTargetView(_frameBuffer[frameIndex].Get(), nullptr, _frameBufferDescriptors[frameIndex]);
+		_swapChain->SetFullscreenState(bNewFullscreenState, nullptr);
 	}
 
+	if (drawRect.x > 0.f && drawRect.y > 0.f)
 	{
-		// depth stencil
+		if (!_swapChain || (bWasInFullscreen != bNewFullscreenState))
+		{
+			CreateSwapChain(bNewFullscreenState);
+		}
+		else
+		{
+			// Resize the swap chain.
+			THROW_IF_FAILED(_swapChain->ResizeBuffers(
+				FrameBufferSize, 
+				drawRect.x, drawRect.y, 
+				DXGI_FORMAT_R8G8B8A8_UNORM, 
+				DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH));
+		}
 
-		D3D12_RESOURCE_DESC resourceDesc =
-			{
+		_currentFrameBufferIndex = 0;
+
+		for (unsigned frameIndex = 0; frameIndex < FrameBufferSize; ++frameIndex)
+		{
+			_swapChain->GetBuffer(frameIndex, IID_PPV_ARGS(&_frameBuffer[frameIndex]));
+			_device->CreateRenderTargetView(_frameBuffer[frameIndex].Get(), nullptr, _frameBufferDescriptors[frameIndex]);
+		}
+
+		{
+			// depth stencil
+
+			D3D12_RESOURCE_DESC resourceDesc =
+				{
 				.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D,
 				.Alignment = 0,
 				.Width = static_cast<UINT>(drawRect.x),
@@ -373,16 +397,22 @@ void Renderer::Resize()
 				.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
 			};
 
-		D3D12_CLEAR_VALUE clearValue =
-			{
+			D3D12_CLEAR_VALUE clearValue =
+				{
 				.Format = resourceDesc.Format,
 				.DepthStencil = D3D12_DEPTH_STENCIL_VALUE{ .Depth = 1.0f, .Stencil = 0 },
 			};
 
-		_rtvArena.Free();
-		_depthStencilBuffer = _rtvArena.Allocate(resourceDesc, D3D12_RESOURCE_STATE_DEPTH_WRITE, &clearValue);
+			_rtvArena.Free();
+			_depthStencilBuffer = _rtvArena.Allocate(resourceDesc, D3D12_RESOURCE_STATE_DEPTH_WRITE, &clearValue);
 
-		_device->CreateDepthStencilView(_depthStencilBuffer.Get(), nullptr, _depthStencilDescriptor);
+			_device->CreateDepthStencilView(_depthStencilBuffer.Get(), nullptr, _depthStencilDescriptor);
+		}
+	}
+	else
+	{
+		_swapChain->SetFullscreenState(bNewFullscreenState, nullptr);
+		_swapChain.Reset();
 	}
 
 	// Execute the resize commands.
@@ -629,7 +659,7 @@ void Renderer::CopyDataToBuffer(
 	}
 }
 
-void Renderer::CreateSwapChain()
+void Renderer::CreateSwapChain(bool bFullscreen)
 {
 	_swapChain.Reset();
 
@@ -652,10 +682,10 @@ void Renderer::CreateSwapChain()
 
 	DXGI_SWAP_CHAIN_FULLSCREEN_DESC fullscreenDesc =
 		{
-			.RefreshRate = 60, // TODO
+			.RefreshRate = { 0, 1 }, // TODO
 			.ScanlineOrdering = DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED,
 			.Scaling = DXGI_MODE_SCALING_UNSPECIFIED,
-			.Windowed = true, // TODO
+			.Windowed = !bFullscreen,
 		};
 
 	THROW_IF_FAILED(Factory->CreateSwapChainForHwnd(

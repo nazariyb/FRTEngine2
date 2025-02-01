@@ -1,5 +1,8 @@
 ﻿#include "Window.h"
 
+#include <iostream>
+
+#include "CoreUtils.h"
 #include "Math/Math.h"
 
 #include "imgui.h"
@@ -32,6 +35,13 @@ Window::Window(const WindowParams& Params)
 		MessageBox(0, L"CreateWindow Failed.", 0, 0);
 	}
 
+	DisplaySettings = SDisplaySettings
+		{
+			.MonitorIndex = -1,
+			.ResolutionIndex = -1,
+			.RefreshRateIndex = -1
+		};
+
 	ShowWindow(_hWindow, SW_SHOWDEFAULT);
 	UpdateWindow(_hWindow);
 }
@@ -46,11 +56,112 @@ Vector2f Window::GetWindowSize() const
 	return { static_cast<float>(_params.width), static_cast<float>(_params.height) };
 }
 
-void Window::Move(const Vector2u& NewSize, const graphics::SRect& MonitorRect)
+void Window::SetDisplaySettings(const SDisplaySettings& NewSettings, const graphics::SDisplayOptions& Options)
 {
-	const int32 newX = (int)(MonitorRect.Right - MonitorRect.Left) / 2 - NewSize.x / 2 + (int)MonitorRect.Left;
-	const int32 newY = (int)(MonitorRect.Bottom - MonitorRect.Top) / 2 - NewSize.y / 2 + (int)MonitorRect.Top;
-	MoveWindow(_hWindow, newX, newY, (int)NewSize.x, (int)NewSize.y, true);
+	if (NewSettings == DisplaySettings)
+	{
+		return;
+	}
+
+	const bool bMonitorChangedInFullscreen = (NewSettings.MonitorIndex != DisplaySettings.MonitorIndex)
+		&& DisplaySettings.IsFullscreen();
+	if (DisplaySettings.FullscreenMode != NewSettings.FullscreenMode || bMonitorChangedInFullscreen)
+	{
+		UpdateFullscreenMode(NewSettings.FullscreenMode, Options.OutputsRects[NewSettings.MonitorIndex]);
+	}
+	else
+	{
+		const auto& resolutions = Options.GetResolutionsEncoded((uint32)NewSettings.MonitorIndex);
+		Vector2u newSize;
+		math::DecodeTwoFromOne(resolutions[NewSettings.ResolutionIndex], newSize.x, newSize.y);
+		ResizeWithMove(newSize, Options.OutputsRects[NewSettings.MonitorIndex]);
+	}
+
+	DisplaySettings = NewSettings;
+}
+
+// TODO: change physical resolution in fullscreen
+void SetResolution(int width, int height, int refreshRate = 60)
+{
+	DEVMODE devMode = {};
+	devMode.dmSize = sizeof(DEVMODE);
+	devMode.dmPelsWidth = width;
+	devMode.dmPelsHeight = height;
+	devMode.dmBitsPerPel = 32;
+	devMode.dmFields = DM_PELSWIDTH | DM_PELSHEIGHT | DM_BITSPERPEL | DM_DISPLAYFREQUENCY;
+	devMode.dmDisplayFrequency = refreshRate;
+
+	ChangeDisplaySettings(&devMode, CDS_FULLSCREEN);
+}
+
+void Window::ResizeWithMove(const Vector2u& NewSize, const graphics::SRect& MonitorRect) const
+{
+	const auto [pos, size] = CalcPositionAndSize(NewSize, MonitorRect);
+	MoveWindow(_hWindow, pos.x, pos.y, size.x, size.y, true);
+}
+
+void Window::ResizeWithSetPos(const Vector2u& NewSize, const graphics::SRect& MonitorRect) const
+{
+	const auto [pos, size] = CalcPositionAndSize(NewSize, MonitorRect);
+	SetWindowPos(_hWindow, HWND_TOP, pos.x, pos.y, size.x, size.y, SWP_FRAMECHANGED | SWP_NOACTIVATE);
+}
+
+void Window::ResizeWithSetPos(const graphics::SRect& NewRect) const
+{
+	const auto [pos, size] = CalcPositionAndSize(NewRect);
+	SetWindowPos(_hWindow, HWND_TOP, pos.x, pos.y, size.x, size.y, SWP_FRAMECHANGED | SWP_NOACTIVATE);
+}
+
+void Window::UpdateFullscreenMode(EFullscreenMode NewFullscreenMode, const graphics::SRect& MonitorRect)
+{
+	if (NewFullscreenMode == EFullscreenMode::Fullscreen)
+	{
+		{
+			// using guard doesn't look right...
+			TGuardValue GuardIgnoreNextSizeEvent(bIgnoreNextSizeEvent, true);
+			SetWindowLong(_hWindow, GWL_STYLE, WS_POPUP | WS_VISIBLE);
+		}
+		ResizeWithSetPos(MonitorRect);
+		ShowWindow(_hWindow, SW_MAXIMIZE);
+	}
+	else if (NewFullscreenMode == EFullscreenMode::Borderless)
+	{
+		{
+			TGuardValue GuardIgnoreNextSizeEvent(bIgnoreNextSizeEvent, true);
+			SetWindowLong(_hWindow, GWL_STYLE, WS_POPUP);
+		}
+		ResizeWithSetPos(MonitorRect);
+		ShowWindow(_hWindow, SW_MAXIMIZE);
+	}
+	else
+	{
+		{
+			TGuardValue GuardIgnoreNextSizeEvent(bIgnoreNextSizeEvent, true);
+			SetWindowLong(_hWindow, GWL_STYLE, WS_OVERLAPPEDWINDOW);
+		}
+		ResizeWithSetPos(MonitorRect);
+		ShowWindow(_hWindow, SW_NORMAL);
+	}
+}
+
+Window::SPosSize Window::CalcPositionAndSize(const Vector2u& NewSize, const graphics::SRect& MonitorRect)
+{
+	const int32 newX = (int32)(MonitorRect.Right - MonitorRect.Left) / 2 - NewSize.x / 2 + (int32)MonitorRect.Left;
+	const int32 newY = (int32)(MonitorRect.Bottom - MonitorRect.Top) / 2 - NewSize.y / 2 + (int32)MonitorRect.Top;
+	return SPosSize
+		{
+			.Position = { newX, newY },
+			.Size = { (int32)NewSize.x, (int32)NewSize.y }
+		};
+}
+
+Window::SPosSize Window::CalcPositionAndSize(const graphics::SRect& MonitorRect)
+{
+	return SPosSize
+	{
+		.Position = { (int32)MonitorRect.Left, (int32)MonitorRect.Right },
+		.Size = { (int32)(MonitorRect.Right - MonitorRect.Left), (int32)(MonitorRect.Bottom - MonitorRect.Top) }
+	};
 }
 
 void Window::UpdateTitle(const std::wstring& NewTitleDetails) const
@@ -127,70 +238,79 @@ LRESULT CALLBACK Window::WindowProcessMessage(HWND hWnd, UINT message, WPARAM wP
 					// TODO:
 					// mAppPaused = true;
 					// mTimer.Stop();
+					if (DisplaySettings.IsFullscreen())
+					{
+						ShowWindow(_hWindow, SW_MINIMIZE);
+					}
+					PostLoseFocusEvent.Invoke();
 				}
 				else
 				{
 					// TODO:
 					// mAppPaused = false;
 					// mTimer.Start();
+					ShowWindow(_hWindow, SW_RESTORE);
+					PostGainFocusEvent.Invoke();
 				}
 				return 0;
 			}
 
 		// WM_SIZE is sent when the user resizes the window.
 		case WM_SIZE:
+			if (bIgnoreNextSizeEvent)
+			{
+				return 0;
+			}
+
 			// Save the new client area dimensions.
 			_params.width  = LOWORD(lParam);
 			_params.height = HIWORD(lParam);
-			// if( md3dDevice )
+			if( wParam == SIZE_MINIMIZED )
 			{
-				if( wParam == SIZE_MINIMIZED )
+				bMinimized = true;
+				// mMaximized = false;
+				DisplaySettings.FullscreenMode = EFullscreenMode::Minimized;
+				PostMinimizeEvent.Invoke();
+				return 0;
+			}
+			else if( wParam == SIZE_MAXIMIZED )
+			{
+				// mMaximized = true;
+				PostResizeEvent.Invoke();
+			}
+			else if( wParam == SIZE_RESTORED )
+			{
+				// Restoring from minimized state?
+				if (bMinimized)
 				{
-					// mAppPaused = true;
-					// mMinimized = true;
-					// mMaximized = false;
+					bMinimized = false;
+					PostRestoreFromMinimizeEvent.Invoke();
+					return 0;
 				}
-				else if( wParam == SIZE_MAXIMIZED )
-				{
-					// mAppPaused = false;
-					// mMinimized = false;
-					// mMaximized = true;
-					PostResizeEvent.Invoke();
-				}
-				// else if( wParam == SIZE_RESTORED )
-				{
-					/*
-					// Restoring from minimized state?
-					if( mMinimized )
-					{
-						mAppPaused = false;
-						mMinimized = false;
-						OnResize();
-					}
 
-					// Restoring from maximized state?
-					else if( mMaximized )
-					{
-						mAppPaused = false;
-						mMaximized = false;
-						OnResize();
-					}
-					else if( mResizing )
-					{
-						// If user is dragging the resize bars, we do not resize 
-						// the buffers here because as the user continuously 
-						// drags the resize bars, a stream of WM_SIZE messages are
-						// sent to the window, and it would be pointless (and slow)
-						// to resize for each WM_SIZE message received from dragging
-						// the resize bars.  So instead, we reset after the user is 
-						// done resizing the window and releases the resize bars, which 
-						// sends a WM_EXITSIZEMOVE message.
-					}
-					else // API call such as SetWindowPos or mSwapChain->SetFullscreenState.
-					*/
-					{
-						PostResizeEvent.Invoke();
-					}
+				/*
+				// Restoring from maximized state?
+				else if( mMaximized )
+				{
+					mAppPaused = false;
+					mMaximized = false;
+					OnResize();
+				}
+				else if( mResizing )
+				{
+					// If user is dragging the resize bars, we do not resize 
+					// the buffers here because as the user continuously 
+					// drags the resize bars, a stream of WM_SIZE messages are
+					// sent to the window, and it would be pointless (and slow)
+					// to resize for each WM_SIZE message received from dragging
+					// the resize bars.  So instead, we reset after the user is 
+					// done resizing the window and releases the resize bars, which 
+					// sends a WM_EXITSIZEMOVE message.
+				}
+				else // API call such as SetWindowPos or mSwapChain->SetFullscreenState.
+				*/
+				{
+					PostResizeEvent.Invoke();
 				}
 			}
 			return 0;

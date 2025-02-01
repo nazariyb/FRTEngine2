@@ -36,10 +36,14 @@ GameInstance::GameInstance()
 	_window = new Window(windowParams);
 
 	_window->PostResizeEvent += std::bind(&GameInstance::OnWindowResize, this);
+	_window->PostLoseFocusEvent += std::bind(&GameInstance::OnLoseFocus, this);
+	_window->PostGainFocusEvent += std::bind(&GameInstance::OnGainFocus, this);
+	_window->PostMinimizeEvent += std::bind(&GameInstance::OnMinimize, this);
+	_window->PostRestoreFromMinimizeEvent += std::bind(&GameInstance::OnRestoreFromMinimize, this);
 
 	memory::DefaultAllocator::InitMasterInstance(1 * memory::GigaByte);
 	_renderer = new Renderer(_window);
-	_renderer->Resize();
+	_renderer->Resize(UserSettings.DisplaySettings.FullscreenMode == EFullscreenMode::Fullscreen);
 	DisplayOptions = graphics::GetDisplayOptions(_renderer->GetAdapter());
 
 	World = memory::New<CWorld>();
@@ -184,7 +188,33 @@ void GameInstance::CalculateFrameStats() const
 
 void GameInstance::OnWindowResize()
 {
-	_renderer->Resize();
+	_renderer->Resize(UserSettings.DisplaySettings.IsFullscreen());
+}
+
+void GameInstance::OnLoseFocus()
+{
+}
+
+void GameInstance::OnGainFocus()
+{
+}
+
+void GameInstance::OnMinimize()
+{
+	if (UserSettings.DisplaySettings.IsFullscreen())
+	{
+		_renderer->Resize(false);
+		_timer->Pause();
+	}
+}
+
+void GameInstance::OnRestoreFromMinimize()
+{
+	_window->SetDisplaySettings(UserSettings.DisplaySettings, DisplayOptions);
+	if (UserSettings.DisplaySettings.IsFullscreen())
+	{
+		_timer->Start();
+	}
 }
 
 void GameInstance::DisplayUserSettings()
@@ -198,14 +228,16 @@ void GameInstance::DisplayUserSettings()
 		return static_cast<std::string*>(UserData)[Idx].c_str();
 	};
 
+	SDisplaySettings& displaySettings = UserSettings.DisplaySettings;
+
 	{
 		const auto monitorNames = DisplayOptions.GetNames();
 		const char* labelMonitor = "Monitor";
-		ImGui::Combo(labelMonitor, &UserSettings.MonitorIndex, strToChar, (void*)monitorNames.data(), (int)monitorNames.size());
+		ImGui::Combo(labelMonitor, &displaySettings.MonitorIndex, strToChar, (void*)monitorNames.data(), (int)monitorNames.size());
 	}
 
-	std::vector<uint64> resolutions = DisplayOptions.GetResolutionsEncoded(UserSettings.MonitorIndex);
-	UserSettings.ResolutionIndex = math::ClampIndex(UserSettings.ResolutionIndex, resolutions);
+	std::vector<uint64> resolutions = DisplayOptions.GetResolutionsEncoded(displaySettings.MonitorIndex);
+	displaySettings.ResolutionIndex = math::ClampIndex(displaySettings.ResolutionIndex, resolutions);
 
 	{
 		std::vector<std::string> resolutionStrs;
@@ -218,13 +250,15 @@ void GameInstance::DisplayUserSettings()
 		}
 
 		const char* labelResolution = "Resolution";
-		ImGui::Combo(labelResolution, &UserSettings.ResolutionIndex, strToChar, resolutionStrs.data(), (int)resolutionStrs.size());
+		ImGui::BeginDisabled(displaySettings.IsFullscreen());
+		ImGui::Combo(labelResolution, &displaySettings.ResolutionIndex, strToChar, resolutionStrs.data(), (int)resolutionStrs.size());
+		ImGui::EndDisabled();
 	}
 
 	{
 		std::vector<uint64> refreshRates = DisplayOptions.GetRefreshRatesEncoded(
-			UserSettings.MonitorIndex, resolutions[UserSettings.ResolutionIndex]);
-		UserSettings.RefreshRateIndex = math::ClampIndex(UserSettings.RefreshRateIndex, refreshRates);
+			displaySettings.MonitorIndex, resolutions[displaySettings.ResolutionIndex]);
+		displaySettings.RefreshRateIndex = math::ClampIndex(displaySettings.RefreshRateIndex, refreshRates);
 
 		std::vector<std::string> rRStrs;
 		rRStrs.reserve(refreshRates.size());
@@ -236,26 +270,35 @@ void GameInstance::DisplayUserSettings()
 		}
 
 		const char* labelRR = "RefreshRate";
-		ImGui::Combo(labelRR, &UserSettings.RefreshRateIndex, strToChar, rRStrs.data(), (int)rRStrs.size());
+		ImGui::Combo(labelRR, &displaySettings.RefreshRateIndex, strToChar, rRStrs.data(), (int)rRStrs.size());
 	}
 
 	{
-		const char* modeNames[] = { "Fullscreen", "Windowed", "Borderless" };
+		const char* modeNames[] = { "Minimized", "Fullscreen", "Windowed", "Borderless" };
 		const char* labelFullscreen = "Fullscreen";
 		ImGui::SliderInt(
 			labelFullscreen,
-			(int*)&UserSettings.DisplayMode,
-			0, (int32)EDisplayMode::Borderless,
-			modeNames[(int32)UserSettings.DisplayMode],
+			(int*)&displaySettings.FullscreenMode,
+			1, (int32)EFullscreenMode::Borderless,
+			modeNames[(int32)displaySettings.FullscreenMode],
 			ImGuiSliderFlags_AlwaysClamp);
 	}
 
-	ImGui::End();
+	if (ImGui::Button("Apply"))
+	{
+		if (displaySettings.IsFullscreen())
+		{
+			const uint64 fullscreenResolution = DisplayOptions.GetFullscreenResolutionEncoded(displaySettings.MonitorIndex);
+			const auto resIt = std::ranges::find(resolutions, fullscreenResolution);
+			auto resIndex = std::distance(resolutions.begin(), resIt);
+			resIndex = math::ClampIndex(resIndex, resolutions);
+			displaySettings.ResolutionIndex = resIndex;
+		}
 
-	// TODO: check if really changed
-	Vector2u newSize;
-	math::DecodeTwoFromOne(resolutions[UserSettings.ResolutionIndex], newSize.x, newSize.y);
-	_window->Move(newSize, DisplayOptions.OutputsRects[UserSettings.MonitorIndex]);
+		_window->SetDisplaySettings(displaySettings, DisplayOptions);
+	}
+
+	ImGui::End();
 }
 
 NAMESPACE_FRT_END

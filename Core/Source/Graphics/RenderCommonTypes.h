@@ -18,6 +18,7 @@ namespace frt::graphics
 	public:
 		std::vector<std::string> GetNames() const;
 		std::vector<uint64> GetResolutionsEncoded(uint8 OutputIndex) const;
+		uint64 GetFullscreenResolutionEncoded(uint8 OutputIndex) const;
 		std::vector<uint64> GetRefreshRatesEncoded(uint8 OutputIndex, uint64 Resolution) const;
 	};
 

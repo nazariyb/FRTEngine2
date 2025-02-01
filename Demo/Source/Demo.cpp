@@ -41,8 +41,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 		else
 		{
 			time.Tick();
-			game->Tick(time.GetDeltaSeconds());
-			game->Draw(time.GetDeltaSeconds());
+			if (!time.IsPaused())
+			{
+				game->Tick(time.GetDeltaSeconds());
+				game->Draw(time.GetDeltaSeconds());
+			}
 		}
 	}
 

@@ -55,6 +55,11 @@ float Timer::GetDeltaSeconds() const
 	return static_cast<float>(_deltaSeconds);
 }
 
+bool Timer::IsPaused() const
+{
+	return _bPaused;
+}
+
 void Timer::Reset()
 {
 	const auto currentTimePoint = high_resolution_clock::now();
