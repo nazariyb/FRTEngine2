@@ -47,10 +47,13 @@ newaction
 		removeDirectory("Binaries")
 		removeDirectory("Intermediate")
 
-		os.remove("**.sln")
-		os.remove("**.vcxproj")
-		os.remove("**.vcxproj.filters")
-		os.remove("**.vcxproj.user")
+		for _, folder in ipairs({ ".", "Core", "Core-Test", "Demo" }) do
+			os.remove("*.sln")
+			os.remove("*.vcxproj")
+			os.remove("*.vcxproj.filters")
+			os.remove("*.vcxproj.user")
+			os.remove("*.sln.DotSettings.user")
+		end
 	end
 }
 
@@ -157,6 +160,7 @@ project "Core"
 	{
 		"{COPYFILE} %[%{wks.location}%{vcpkgRoot}/installed/%{triplet}/bin/*.dll] %[%{cfg.buildtarget.directory}]",
 		-- temporary
+		"{MKDIR} %{prj.location}Content/Shaders/Bin",
 		"%{wks.location}%{thirdPartyDir}/Dxc/bin/x64/dxc.exe -E main -Fo %{prj.location}Content/Shaders/Bin/VertexShader.shader -T vs_6_0 -Zi -Zpc -Qembed_debug %{prj.location}Content/Shaders/VertexShader.hlsl",
 		"%{wks.location}%{thirdPartyDir}/Dxc/bin/x64/dxc.exe -E main -Fo %{prj.location}Content/Shaders/Bin/PixelShader.shader -T ps_6_0 -Zi -Zpc -Qembed_debug %{prj.location}Content/Shaders/PixelShader.hlsl"
 	}
