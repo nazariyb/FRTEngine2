@@ -41,19 +41,29 @@ end
 
 newaction
 {
-	trigger = "clean",
+	trigger = "clean-all",
 	description = "Clean generated files and compiled binaries",
 	execute = function ()
 		removeDirectory("Binaries")
 		removeDirectory("Intermediate")
 
 		for _, folder in ipairs({ ".", "Core", "Core-Test", "Demo" }) do
-			os.remove("*.sln")
-			os.remove("*.vcxproj")
-			os.remove("*.vcxproj.filters")
-			os.remove("*.vcxproj.user")
-			os.remove("*.sln.DotSettings.user")
+			os.remove(folder.."/*.sln")
+			os.remove(folder.."/*.vcxproj")
+			os.remove(folder.."/*.vcxproj.filters")
+			os.remove(folder.."/*.vcxproj.user")
+			os.remove(folder.."/*.sln.DotSettings.user")
 		end
+	end
+}
+
+newaction
+{
+	trigger = "clean-compiled",
+	description = "Clean only compiled binaries and intermediate files",
+	execute = function ()
+		removeDirectory("Binaries")
+		removeDirectory("Intermediate")
 	end
 }
 
@@ -73,6 +83,10 @@ workspace "FRTEngine2"
 
 	filter {}
 
+
+-----------------------------------------
+---------------  Core  ------------------
+-----------------------------------------
 project "Core"
 	location "%{prj.name}"
 
@@ -89,6 +103,9 @@ project "Core"
 	targetdir "Binaries/%{cfg.platform}/%{cfg.buildcfg}"
 	objdir "Intermediate/%{cfg.platform}/%{cfg.buildcfg}/%{prj.name}"
 
+	-----------------
+	----- Files -----
+	-----------------
 	files
 	{
 		"%{prj.name}/Source/**.h",
@@ -114,6 +131,9 @@ project "Core"
 
 	filter {}
 
+	--------------------
+	----- Includes -----
+	--------------------
 	includedirs
 	{
 		vcpkgRoot .. "/installed/" .. triplet .. "/include",
@@ -122,15 +142,25 @@ project "Core"
 		thirdPartyDir.."/Imgui",
 	}
 
+	----------------
+	----- Libs -----
+	----------------
 	libdirs
 	{
 		vcpkgRoot .. "/installed/" .. triplet .. "/lib",
 	}
 
-	links
-	{
-		"assimp-vc143-mt"
-	}
+	filter "configurations:Debug"
+		links
+		{
+			"assimp-vc143-mtd"
+		}
+
+	filter "configurations:Release"
+		links
+		{
+			"assimp-vc143-mt"
+		}
 
 	filter "platforms:Win64"
 		libdirs
@@ -143,6 +173,9 @@ project "Core"
 			"d3d12", "dxgi", "d3dcompiler"
 		}
 
+	-------------------
+	----- Defines -----
+	-------------------
 	filter "platforms:Win64"
 		defines { "WIN64", "_WINDOWS" }
 
@@ -156,23 +189,37 @@ project "Core"
 
 	filter {}
 
+	------------------------------
+	----- Custom Build Steps -----
+	------------------------------
 	prebuildcommands
 	{
-		"{COPYFILE} %[%{wks.location}%{vcpkgRoot}/installed/%{triplet}/bin/*.dll] %[%{cfg.buildtarget.directory}]",
 		-- temporary
 		"{MKDIR} %{prj.location}Content/Shaders/Bin",
 		"%{wks.location}%{thirdPartyDir}/Dxc/bin/x64/dxc.exe -E main -Fo %{prj.location}Content/Shaders/Bin/VertexShader.shader -T vs_6_0 -Zi -Zpc -Qembed_debug %{prj.location}Content/Shaders/VertexShader.hlsl",
 		"%{wks.location}%{thirdPartyDir}/Dxc/bin/x64/dxc.exe -E main -Fo %{prj.location}Content/Shaders/Bin/PixelShader.shader -T ps_6_0 -Zi -Zpc -Qembed_debug %{prj.location}Content/Shaders/PixelShader.hlsl"
 	}
 
-	filter "configurations:Debug"
-		postbuildcommands
+	filter "configurations:Release"
+		prebuildcommands
 		{
 			"{COPYFILE} %[%{vcpkgRoot}/installed/%{triplet}/bin/*.pdb] %[%{cfg.buildtarget.directory}]",
+			"{COPYFILE} %[%{vcpkgRoot}/installed/%{triplet}/bin/*.dll] %[%{cfg.buildtarget.directory}]",
+		}
+
+	filter "configurations:Debug"
+		prebuildcommands
+		{
+			"{COPYFILE} %[%{vcpkgRoot}/installed/%{triplet}/debug/bin/*.pdb] %[%{cfg.buildtarget.directory}]",
+			"{COPYFILE} %[%{vcpkgRoot}/installed/%{triplet}/debug/bin/*.dll] %[%{cfg.buildtarget.directory}]",
 		}
 
 	filter {}
 
+
+----------------------------------------------
+---------------  Core-Test  ------------------
+----------------------------------------------
 project "Core-Test"
 	location "%{prj.name}"
 
@@ -189,13 +236,35 @@ project "Core-Test"
 
 	includedirs
 	{
+		vcpkgRoot .. "/installed/" .. triplet .. "/include",
+		"%{prj.name}/Source",
 		"Core/Source",
 	}
 
+	filter "configurations:Debug"
+		libdirs
+		{
+			vcpkgRoot .. "/installed/" .. triplet .. "/debug/lib",
+			vcpkgRoot .. "/installed/" .. triplet .. "/debug/lib/manual-link",
+		}
+
+	filter "configurations:Release"
+		libdirs
+		{
+			vcpkgRoot .. "/installed/" .. triplet .. "/lib",
+			vcpkgRoot .. "/installed/" .. triplet .. "/lib/manual-link",
+		}
+
+	filter {}
+
 	links
 	{
-		"Core"
+		"Core",
+		"gtest",
+		"gtest_main"
 	}
+
+	filter {}
 
 	defines { "_CONSOLE" }
 
@@ -207,7 +276,6 @@ project "Core-Test"
 		defines { "NDEBUG" }
 		optimize "On"
 
-	filter {}
 
 project "Demo"
 	location "%{prj.name}"

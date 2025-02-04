@@ -1,8 +1,7 @@
-#include "pch.h"
-
 #include "Memory/Memory.h"
 #include "Memory/PoolAllocator.h"
 
+#include "gtest/gtest.h"
 
 struct TestStruct
 {
