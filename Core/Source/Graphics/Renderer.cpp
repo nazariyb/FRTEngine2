@@ -1,12 +1,9 @@
 ﻿#include "Renderer.h"
 
 #include <complex>
-#include <DirectXMath.h>
-#include <iostream>
 
 #include "Camera.h"
 #include "Exception.h"
-#include "GameInstance.h"
 #include "GraphicsUtility.h"
 #include "Model.h"
 #include "Timer.h"
@@ -49,8 +46,6 @@ Renderer::Renderer(Window* Window)
 	, _commandQueue(nullptr)
 	, _commandAllocator(nullptr)
 	, _commandList(nullptr)
-	, _vertexBuffer(nullptr)
-	, _vertexBufferView()
 	, _fenceValue(0)
 	, _fenceEvent(nullptr)
 {
@@ -133,7 +128,7 @@ Renderer::Renderer(Window* Window)
 						D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES);
 	_dsvHeap = DX12_DescriptorHeap(_device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1);
 
-	_uploadArena = DX12_UploadArena(_device.Get(), 1 * memory::GigaByte);
+	_uploadArena = DX12_UploadArena<FrameBufferSize>(_device.Get(), 200 * memory::MegaByte);
 	_bufferArena = DX12_Arena(_device.Get(), D3D12_HEAP_TYPE_DEFAULT, 500 * memory::MegaByte,
 							D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS);
 	_textureArena = DX12_Arena(_device.Get(), D3D12_HEAP_TYPE_DEFAULT, 500 * memory::MegaByte,
@@ -290,28 +285,6 @@ Renderer::Renderer(Window* Window)
 		cbDesc.SampleDesc.Count = 1;
 		cbDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 
-		_transformBuffer = _bufferArena.Allocate(cbDesc, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, nullptr);
-
-		D3D12_CONSTANT_BUFFER_VIEW_DESC cbViewDesc = {};
-		cbViewDesc.BufferLocation = _transformBuffer->GetGPUVirtualAddress();
-		cbViewDesc.SizeInBytes = (uint32)cbDesc.Width * cbDesc.Height * cbDesc.DepthOrArraySize;
-
-		D3D12_CPU_DESCRIPTOR_HANDLE cpuDesc = {};
-		ShaderDescriptorHeap.Allocate(&cpuDesc, &_transformBufferDescriptor);
-		_device->CreateConstantBufferView(&cbViewDesc, cpuDesc);
-	}
-
-	{
-		D3D12_RESOURCE_DESC cbDesc = {};
-		cbDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-		cbDesc.Width = AlignAddress(sizeof(math::STransform), 256);
-		cbDesc.Height = 1;
-		cbDesc.DepthOrArraySize = 1;
-		cbDesc.MipLevels = 1;
-		cbDesc.Format = DXGI_FORMAT_UNKNOWN;
-		cbDesc.SampleDesc.Count = 1;
-		cbDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
 		CommonConstantBuffer = _bufferArena.Allocate(cbDesc, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, nullptr);
 
 		D3D12_CONSTANT_BUFFER_VIEW_DESC cbViewDesc = {};
@@ -442,27 +415,7 @@ void Renderer::StartFrame(CCamera& Camera)
 	THROW_IF_FAILED(_commandAllocator->Reset());
 	THROW_IF_FAILED(_commandList->Reset(_commandAllocator.Get(), nullptr));
 
-	const float TimeElapsed = GameInstance::GetInstance().GetTime().GetTotalSeconds();
-	const double scale = std::cos(TimeElapsed) / 8.f + .25f;
-	_transformTemp.SetScale(.5);
-	_transformTemp.SetTranslation(.5f, 0.f, 0.f);
-	_transformTemp.SetRotation(0.f, math::PI_OVER_FOUR * TimeElapsed, 0.f);
-
-	const auto [renderWidth, renderHeight] = _window->GetWindowSize();
-
-	DirectX::XMMATRIX view = Camera.GetViewMatrix();
-	DirectX::XMMATRIX projection = Camera.GetProjectionMatrix(90.f, (float)renderWidth / renderHeight, 1.f, 10'000.f);
-
-	DirectX::XMFLOAT4X4 mvp;
-	DirectX::XMStoreFloat4x4(&mvp, DirectX::XMLoadFloat4x4(&_transformTemp.GetMatrix()) * view * projection);
-
-	CopyDataToBuffer(
-		D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
-		D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
-		(void*)mvp.m,
-		sizeof(math::STransform::RawType),
-		_transformBuffer.Get()
-		);
+	_uploadArena.BeginFrame(_currentFrameBufferIndex);
 
 	{
 		D3D12_RESOURCE_BARRIER resourceBarrier = {};
@@ -489,7 +442,6 @@ void Renderer::StartFrame(CCamera& Camera)
 	_commandList->SetPipelineState(_pipelineState.Get());
 
 	_commandList->SetDescriptorHeaps(1, &ShaderDescriptorHeap._heap);
-	_commandList->SetGraphicsRootDescriptorTable(1, _transformBufferDescriptor);
 }
 
 void Renderer::Draw(float DeltaSeconds, CCamera& Camera)
@@ -535,6 +487,21 @@ ID3D12CommandQueue* Renderer::GetCommandQueue()
 ID3D12GraphicsCommandList* Renderer::GetCommandList()
 {
 	return _commandList.Get();
+}
+
+DX12_UploadArena<Renderer::FrameBufferSize>& Renderer::GetUploadArena()
+{
+	return _uploadArena;
+}
+
+DX12_Arena& Renderer::GetBufferArena()
+{
+	return _bufferArena;
+}
+
+DX12_DescriptorHeap& Renderer::GetDescriptorHeap()
+{
+	return ShaderDescriptorHeap;
 }
 
 ID3D12Resource* Renderer::CreateBufferAsset(
@@ -621,42 +588,6 @@ void Renderer::CreateShaderResourceView(ID3D12Resource* Texture, const D3D12_SHA
 {
 	ShaderDescriptorHeap.Allocate(OutCpuHandle, OutGpuHandle);
 	_device->CreateShaderResourceView(Texture, &Desc, *OutCpuHandle);
-}
-
-void Renderer::CopyDataToBuffer(
-	D3D12_RESOURCE_STATES StartState,
-	D3D12_RESOURCE_STATES EndState,
-	void* Data, uint64 DataSize,
-	ID3D12Resource* GpuBuffer)
-{
-	uint64 uploadOffset = 0;
-	{
-		uint8* dest = _uploadArena.Allocate(DataSize, &uploadOffset);
-		memcpy(dest, Data, DataSize);
-	}
-
-	{
-		D3D12_RESOURCE_BARRIER resourceBarrier = {};
-		resourceBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-		resourceBarrier.Transition.pResource = GpuBuffer;
-		resourceBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-		resourceBarrier.Transition.StateBefore = StartState;
-		resourceBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_DEST;
-		_commandList->ResourceBarrier(1, &resourceBarrier);
-	}
-
-	_commandList->CopyBufferRegion(
-		GpuBuffer, 0, _uploadArena.GetGPUBuffer(), uploadOffset, DataSize);
-
-	{
-		D3D12_RESOURCE_BARRIER resourceBarrier = {};
-		resourceBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-		resourceBarrier.Transition.pResource = GpuBuffer;
-		resourceBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-		resourceBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-		resourceBarrier.Transition.StateAfter = EndState;
-		_commandList->ResourceBarrier(1, &resourceBarrier);
-	}
 }
 
 void Renderer::CreateSwapChain(bool bFullscreen)

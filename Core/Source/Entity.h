@@ -11,6 +11,7 @@ namespace frt
 	{
 	public:
 		// temp implementation
+		void Tick(float DeltaSeconds);
 		void Present(float DeltaSeconds, ID3D12GraphicsCommandList* CommandList);
 
 		math::STransform Transform;

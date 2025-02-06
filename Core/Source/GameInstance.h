@@ -41,6 +41,11 @@ public:
 	bool HasGraphics() const;
 	graphics::Renderer& GetGraphics() const;
 
+	// temp
+	Window& GetWindow() const { return *_window; }
+	graphics::CCamera& GetCamera() const { return *Camera; }
+	// ~temp
+
 	virtual void Load();
 
 	// Update

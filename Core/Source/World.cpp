@@ -4,6 +4,10 @@ using namespace frt;
 
 void CWorld::Tick(float DeltaSeconds)
 {
+	for (auto& entity : Entities)
+	{
+		entity->Tick(DeltaSeconds);
+	}
 }
 
 void CWorld::Present(float DeltaSeconds, ID3D12GraphicsCommandList* CommandList)

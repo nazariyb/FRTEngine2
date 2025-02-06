@@ -1,7 +1,39 @@
 ﻿#include "Entity.h"
 
+#include "GameInstance.h"
+#include "Timer.h"
+#include "Window.h"
+#include "Graphics/Camera.h"
+#include "Graphics/ConstantBuffer.h"
+#include "Graphics/Renderer.h"
+
+void frt::CEntity::Tick(float DeltaSeconds)
+{
+
+}
+
 void frt::CEntity::Present(float DeltaSeconds, ID3D12GraphicsCommandList* CommandList)
 {
+	{
+		const float TimeElapsed = GameInstance::GetInstance().GetTime().GetTotalSeconds();
+		const double scale = std::cos(TimeElapsed) / 8.f + .25f;
+		Transform.SetScale(.5);
+		Transform.SetTranslation(.5f, 0.f, 0.f);
+		Transform.SetRotation(0.f, math::PI_OVER_FOUR * TimeElapsed, 0.f);
+
+		const auto [renderWidth, renderHeight] = GameInstance::GetInstance().GetWindow().GetWindowSize();
+
+		const auto& Camera = GameInstance::GetInstance().GetCamera();
+		DirectX::XMMATRIX view = Camera.GetViewMatrix();
+		DirectX::XMMATRIX projection = Camera.GetProjectionMatrix(90.f, (float)renderWidth / renderHeight, 1.f, 10'000.f);
+
+		DirectX::XMFLOAT4X4 mvp;
+		DirectX::XMStoreFloat4x4(&mvp, DirectX::XMLoadFloat4x4(&Transform.GetMatrix()) * view * projection);
+
+		auto& renderer = GameInstance::GetInstance().GetGraphics();
+		Model.ConstantBuffer.Upload((math::STransform*)&mvp.m, renderer.GetUploadArena(), renderer.GetCommandList());
+	}
+
 	{
 		D3D12_INDEX_BUFFER_VIEW indexBufferView = {};
 		indexBufferView.BufferLocation = Model.indexBuffer->GetGPUVirtualAddress();

@@ -7,7 +7,6 @@
 #include "Core.h"
 #include "GraphicsCoreTypes.h"
 #include "Model.h"
-#include "Math/Transform.h"
 
 
 namespace frt
@@ -37,23 +36,21 @@ public:
 	FRT_CORE_API ID3D12Device* GetDevice();
 	FRT_CORE_API ID3D12CommandQueue* GetCommandQueue();
 	FRT_CORE_API ID3D12GraphicsCommandList* GetCommandList();
+	FRT_CORE_API DX12_UploadArena<>& GetUploadArena();
+	FRT_CORE_API DX12_Arena& GetBufferArena();
+	FRT_CORE_API DX12_DescriptorHeap& GetDescriptorHeap();
 
 	FRT_CORE_API ID3D12Resource* CreateBufferAsset(const D3D12_RESOURCE_DESC& Desc, D3D12_RESOURCE_STATES InitialState, void* BufferData);
 	FRT_CORE_API ID3D12Resource* CreateTextureAsset(const D3D12_RESOURCE_DESC& Desc, D3D12_RESOURCE_STATES InitialState, void* Texels);
 	FRT_CORE_API void CreateShaderResourceView(ID3D12Resource* Texture, const D3D12_SHADER_RESOURCE_VIEW_DESC& Desc,
 		D3D12_CPU_DESCRIPTOR_HANDLE* OutCpuHandle, D3D12_GPU_DESCRIPTOR_HANDLE* OutGpuHandle);
 
-	FRT_CORE_API void CopyDataToBuffer(
-		D3D12_RESOURCE_STATES StartState,
-		D3D12_RESOURCE_STATES EndState,
-		void* Data, uint64 DataSize,
-		ID3D12Resource* GpuBuffer);
-
 private:
 	void CreateSwapChain(bool bFullscreen);
 	void FlushCommandQueue();
 
 public:
+	// TODO: move to frt::render::constants
 	static constexpr unsigned FrameBufferSize = 2;
 
 	DX12_DescriptorHeap ShaderDescriptorHeap;
@@ -80,21 +77,13 @@ private:
 
 	ComPtr<ID3D12RootSignature> _rootSignature;
 	ComPtr<ID3D12PipelineState> _pipelineState;
-	// temp
-	ComPtr<ID3D12Resource> _vertexBuffer;
-	D3D12_VERTEX_BUFFER_VIEW _vertexBufferView;
-	math::STransform _transformTemp;
-
-	ComPtr<ID3D12Resource> _transformBuffer;
-	D3D12_GPU_DESCRIPTOR_HANDLE _transformBufferDescriptor;
-	// ~temp
 
 	ComPtr<ID3D12Resource> CommonConstantBuffer;
 	D3D12_GPU_DESCRIPTOR_HANDLE CommonConstantBufferDescriptor;
 
 	DX12_DescriptorHeap _rtvHeap;
 	DX12_Arena _rtvArena;
-	DX12_UploadArena _uploadArena;
+	DX12_UploadArena<> _uploadArena;
 	DX12_Arena _bufferArena;
 	DX12_Arena _textureArena;
 

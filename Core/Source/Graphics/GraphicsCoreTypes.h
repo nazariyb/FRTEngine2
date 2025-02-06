@@ -2,7 +2,10 @@
 
 #include <d3d12.h>
 
+#include "Asserts.h"
 #include "CoreTypes.h"
+#include "Exception.h"
+#include "RenderConstants.h"
 
 
 struct ID3D12Heap;
@@ -69,27 +72,42 @@ namespace frt::graphics
 		ID3D12DescriptorHeap* _heap;
 	};
 
+	template<int NFrameCount = render::constants::FrameBufferCount>
 	struct DX12_UploadArena
 	{
-		DX12_UploadArena() : _sizeTotal(0), _sizeUsed(0), _gpuBuffer(nullptr), _cpuBuffer(nullptr) {}
+		DX12_UploadArena()
+			: SizeTotal(0)
+			, SizeUsed(0)
+			, GpuBuffer(nullptr)
+			, CpuBuffer(nullptr)
+			, CurrentFrame(0)
+			, AllocationOffsets{}
+		{
+		}
+
 		DX12_UploadArena(DX12_UploadArena&&) = default;
 		DX12_UploadArena& operator=(DX12_UploadArena&&) = default;
 		DX12_UploadArena(const DX12_UploadArena&) = delete;
 		DX12_UploadArena& operator=(const DX12_UploadArena&) = delete;
 
-		DX12_UploadArena(ID3D12Device* Device, uint64 Size);
+		DX12_UploadArena(ID3D12Device* Device, uint64 SizeForFrame);
 		~DX12_UploadArena();
 
+		void BeginFrame(uint8 InCurrentFrame);
 		uint8* Allocate(uint64 Size, uint64* OutOffset);
 		void Clear();
+		uint64 GetSizeUsedAligned() const;
 
-		ID3D12Resource* GetGPUBuffer() const { return _gpuBuffer; }
+		ID3D12Resource* GetGPUBuffer() const { return GpuBuffer; }
 
 	private:
-		uint64 _sizeTotal;
-		uint64 _sizeUsed;
-		ID3D12Resource* _gpuBuffer;
-		uint8* _cpuBuffer;
+		uint64 SizeTotal;
+		uint64 SizeUsed;
+		ID3D12Resource* GpuBuffer;
+		uint8* CpuBuffer;
+
+		uint8 CurrentFrame;
+		uint64 AllocationOffsets[NFrameCount];
 	};
 
 	inline uint64 AlignAddress(uint64 Location, uint64 Alignment)
@@ -97,4 +115,85 @@ namespace frt::graphics
 		return (Location + Alignment - 1) & ~(Alignment - 1);
 	}
 
+}
+
+namespace frt::graphics
+{
+	template <int NFrameCount>
+	DX12_UploadArena<NFrameCount>::DX12_UploadArena(ID3D12Device* Device, uint64 SizeForFrame)
+		: SizeTotal(SizeForFrame * NFrameCount)
+		, SizeUsed(0)
+		, GpuBuffer(nullptr)
+		, CpuBuffer(nullptr)
+		, CurrentFrame(0)
+	{
+		for (int i = 0; i < NFrameCount; ++i)
+		{
+			AllocationOffsets[i] = SizeForFrame * i;
+		}
+
+		D3D12_HEAP_PROPERTIES heapProps = {};
+		heapProps.Type = D3D12_HEAP_TYPE_UPLOAD;
+		heapProps.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_UNKNOWN;
+		heapProps.MemoryPoolPreference = D3D12_MEMORY_POOL_UNKNOWN;
+
+		D3D12_RESOURCE_DESC resourceDesc = {};
+		resourceDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+		resourceDesc.Width = SizeTotal;
+		resourceDesc.Height = 1;
+		resourceDesc.DepthOrArraySize = 1;
+		resourceDesc.MipLevels = 1;
+		resourceDesc.SampleDesc.Count = 1;
+		resourceDesc.Format = DXGI_FORMAT_UNKNOWN;
+		resourceDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+
+		THROW_IF_FAILED(Device->CreateCommittedResource(
+			&heapProps, D3D12_HEAP_FLAG_NONE, &resourceDesc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+			IID_PPV_ARGS(&GpuBuffer)));
+
+		GpuBuffer->Map(0, nullptr, reinterpret_cast<void**>(&CpuBuffer));
+	}
+
+	template <int NFrameCount>
+	DX12_UploadArena<NFrameCount>::~DX12_UploadArena()
+	{
+		GpuBuffer->Unmap(0, nullptr);
+		GpuBuffer = nullptr;
+		CpuBuffer = nullptr;
+	}
+
+	template <int NFrameCount>
+	void DX12_UploadArena<NFrameCount>::BeginFrame(uint8 InCurrentFrame)
+	{
+		frt_assert(InCurrentFrame < NFrameCount, "InCurrentFrame out of range");
+		CurrentFrame = InCurrentFrame;
+		SizeUsed = 0;
+	}
+
+	template <int NFrameCount>
+	uint8* DX12_UploadArena<NFrameCount>::Allocate(uint64 Size, uint64* OutOffset)
+	{
+		const uint64 alignedMemory = AlignAddress(SizeUsed, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
+		frt_assert(alignedMemory + Size < SizeTotal / NFrameCount);
+
+		const uint64 frameOffset = AllocationOffsets[CurrentFrame];
+		uint8* result = CpuBuffer + frameOffset + alignedMemory;
+		SizeUsed = alignedMemory + Size;
+
+		*OutOffset = frameOffset + alignedMemory;
+
+		return result;
+	}
+
+	template <int NFrameCount>
+	void DX12_UploadArena<NFrameCount>::Clear()
+	{
+		SizeUsed = 0;
+	}
+
+	template <int NFrameCount>
+	uint64 DX12_UploadArena<NFrameCount>::GetSizeUsedAligned() const
+	{
+		return AlignAddress(SizeUsed, D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT);
+	}
 }

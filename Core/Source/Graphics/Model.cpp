@@ -18,6 +18,11 @@
 
 namespace frt::graphics
 {
+	void Model::CreateRenderData(ID3D12Device* Device, DX12_Arena& BufferArena, DX12_DescriptorHeap& DescriptorHeap)
+	{
+		ConstantBuffer = SConstantBuffer<math::STransform>(Device, BufferArena, DescriptorHeap);
+	}
+
 	Model Model::LoadFromFile(const std::string& filename, const std::string& texturePath)
 	{
 		Assimp::Importer importer;
@@ -198,6 +203,8 @@ namespace frt::graphics
 			result.indexBuffer = graphics.CreateBufferAsset(
 				ibDesc, D3D12_RESOURCE_STATE_INDEX_BUFFER, result.indices.Get());
 		}
+
+		result.CreateRenderData(graphics.GetDevice(), graphics.GetBufferArena(), graphics.GetDescriptorHeap());
 
 		return result;
 	}

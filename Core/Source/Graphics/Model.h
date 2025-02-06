@@ -2,11 +2,13 @@
 
 #include <string>
 
+#include "ConstantBuffer.h"
 #include "Core.h"
 #include "GraphicsCoreTypes.h"
 #include "Memory/Memory.h"
 #include "Mesh.h"
 #include "Texture.h"
+#include "Math/Transform.h"
 
 struct ID3D12Resource;
 
@@ -30,6 +32,10 @@ namespace frt::graphics
 
 		ID3D12Resource* vertexBuffer = nullptr;
 		ID3D12Resource* indexBuffer = nullptr;
+
+		SConstantBuffer<math::STransform> ConstantBuffer;
+
+		void CreateRenderData(ID3D12Device* Device, DX12_Arena& BufferArena, DX12_DescriptorHeap& DescriptorHeap);
 
 		static Model LoadFromFile(const std::string& filename, const std::string& texturePath);
 
