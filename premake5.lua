@@ -15,6 +15,7 @@ newaction
 	trigger = "install-deps",
 	description = "Install vcpkg dependencies",
 	execute = function ()
+		os.execute(vcpkgRoot.."\\bootstrap-vcpkg.bat")
 		for _, pkg in ipairs(neededPackages) do
 			local command = string.format(
 				"\".\\%s\\vcpkg.exe\" install %s:%s",
