@@ -70,7 +70,7 @@ protected:
 protected:
 	Timer* _timer;
 	Window* _window;
-	graphics::Renderer* _renderer;
+	memory::TMemoryHandle<graphics::Renderer> _renderer;
 
 	memory::TMemoryHandle<CWorld> World;
 

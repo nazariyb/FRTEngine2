@@ -7,6 +7,7 @@
 #include "Core.h"
 #include "GraphicsCoreTypes.h"
 #include "Model.h"
+#include "RenderConstants.h"
 
 
 namespace frt
@@ -30,15 +31,16 @@ public:
 	void Resize(bool bNewFullscreenState);
 
 	FRT_CORE_API void StartFrame(CCamera& Camera);
+	FRT_CORE_API void Tick(float DeltaSeconds);
 	FRT_CORE_API void Draw(float DeltaSeconds, CCamera& Camera);
 
 	FRT_CORE_API IDXGIAdapter1* GetAdapter();
 	FRT_CORE_API ID3D12Device* GetDevice();
 	FRT_CORE_API ID3D12CommandQueue* GetCommandQueue();
 	FRT_CORE_API ID3D12GraphicsCommandList* GetCommandList();
-	FRT_CORE_API DX12_UploadArena<>& GetUploadArena();
 	FRT_CORE_API DX12_Arena& GetBufferArena();
 	FRT_CORE_API DX12_DescriptorHeap& GetDescriptorHeap();
+	FRT_CORE_API SFrameResources& GetCurrentFrameResource();
 
 	FRT_CORE_API ID3D12Resource* CreateBufferAsset(const D3D12_RESOURCE_DESC& Desc, D3D12_RESOURCE_STATES InitialState, void* BufferData);
 	FRT_CORE_API ID3D12Resource* CreateTextureAsset(const D3D12_RESOURCE_DESC& Desc, D3D12_RESOURCE_STATES InitialState, void* Texels);
@@ -50,9 +52,6 @@ private:
 	void FlushCommandQueue();
 
 public:
-	// TODO: move to frt::render::constants
-	static constexpr unsigned FrameBufferSize = 2;
-
 	DX12_DescriptorHeap ShaderDescriptorHeap;
 
 private:
@@ -67,9 +66,12 @@ private:
 	ComPtr<IDXGIFactory4> Factory;
 
 	ComPtr<IDXGISwapChain1> _swapChain;
-	ComPtr<ID3D12Resource> _frameBuffer[FrameBufferSize];
-	D3D12_CPU_DESCRIPTOR_HANDLE _frameBufferDescriptors[FrameBufferSize];
-	unsigned _currentFrameBufferIndex;
+	ComPtr<ID3D12Resource> _frameBuffer[render::constants::SwapChainBufferCount];
+	D3D12_CPU_DESCRIPTOR_HANDLE _frameBufferDescriptors[render::constants::SwapChainBufferCount];
+	unsigned CurrentBackBufferIndex;
+
+	SFrameResources FramesResources[render::constants::FrameResourcesBufferCount];
+	uint8 CurrentFrameResourceIndex = render::constants::FrameResourcesBufferCount - 1;
 
 	ComPtr<ID3D12CommandQueue> _commandQueue;
 	ComPtr<ID3D12CommandAllocator> _commandAllocator;
@@ -83,7 +85,6 @@ private:
 
 	DX12_DescriptorHeap _rtvHeap;
 	DX12_Arena _rtvArena;
-	DX12_UploadArena<> _uploadArena;
 	DX12_Arena _bufferArena;
 	DX12_Arena _textureArena;
 

@@ -18,11 +18,6 @@
 
 namespace frt::graphics
 {
-	void Model::CreateRenderData(ID3D12Device* Device, DX12_Arena& BufferArena, DX12_DescriptorHeap& DescriptorHeap)
-	{
-		ConstantBuffer = SConstantBuffer<math::STransform>(Device, BufferArena, DescriptorHeap);
-	}
-
 	Model Model::LoadFromFile(const std::string& filename, const std::string& texturePath)
 	{
 		Assimp::Importer importer;
@@ -140,19 +135,19 @@ namespace frt::graphics
 			for (int64 vertexIndex = 0; vertexIndex < dstMesh.vertexCount; ++vertexIndex)
 			{
 				Vertex& vertex = result.vertices[dstMesh.vertexOffset + vertexIndex];
-				vertex.position[0] = srcMesh->mVertices[vertexIndex].x;
-				vertex.position[1] = srcMesh->mVertices[vertexIndex].y;
-				vertex.position[2] = srcMesh->mVertices[vertexIndex].z;
+				vertex.position.x = srcMesh->mVertices[vertexIndex].x;
+				vertex.position.y = srcMesh->mVertices[vertexIndex].y;
+				vertex.position.z = srcMesh->mVertices[vertexIndex].z;
 
 				if (srcMesh->mTextureCoords[0])
 				{
-					vertex.uv[0] = srcMesh->mTextureCoords[0][vertexIndex].x;
-					vertex.uv[1] = srcMesh->mTextureCoords[0][vertexIndex].y;
+					vertex.uv.x = srcMesh->mTextureCoords[0][vertexIndex].x;
+					vertex.uv.y = srcMesh->mTextureCoords[0][vertexIndex].y;
 				}
 				else
 				{
-					vertex.uv[0] = 0;
-					vertex.uv[1] = 0;
+					vertex.uv.x = 0;
+					vertex.uv.y = 0;
 				}
 			}
 
@@ -203,8 +198,6 @@ namespace frt::graphics
 			result.indexBuffer = graphics.CreateBufferAsset(
 				ibDesc, D3D12_RESOURCE_STATE_INDEX_BUFFER, result.indices.Get());
 		}
-
-		result.CreateRenderData(graphics.GetDevice(), graphics.GetBufferArena(), graphics.GetDescriptorHeap());
 
 		return result;
 	}
@@ -295,12 +288,12 @@ namespace frt::graphics
 			for (int64 vertexIndex = 0; vertexIndex < dstMesh.vertexCount; ++vertexIndex)
 			{
 				Vertex& vertex = result.vertices[dstMesh.vertexOffset + vertexIndex];
-				vertex.position[0] = vertices[vertexIndex].position[0];
-				vertex.position[1] = vertices[vertexIndex].position[1];
-				vertex.position[2] = vertices[vertexIndex].position[2];
+				vertex.position.x = vertices[vertexIndex].position.x;
+				vertex.position.y = vertices[vertexIndex].position.y;
+				vertex.position.z = vertices[vertexIndex].position.z;
 
-				vertex.uv[0] = vertices[vertexIndex].uv[0];
-				vertex.uv[1] = vertices[vertexIndex].uv[1];
+				vertex.uv.x = vertices[vertexIndex].uv.x;
+				vertex.uv.y = vertices[vertexIndex].uv.y;
 			}
 
 			result.indices[0] = 0;

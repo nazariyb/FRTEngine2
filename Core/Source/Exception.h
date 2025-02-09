@@ -9,7 +9,7 @@
 
 namespace frt
 {
-class Exception : public std::exception
+class FRT_CORE_API Exception : public std::exception
 {
 public:
     Exception(int line, const char* file) noexcept;

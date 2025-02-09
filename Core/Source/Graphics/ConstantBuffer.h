@@ -1,20 +1,32 @@
 ﻿#pragma once
 
-#include "CoreTypes.h"
-#include "GraphicsCoreTypes.h"
+#include <vector>
 
+#include "CoreTypes.h"
+#include "RenderResourceAllocators.h"
 
 namespace frt::graphics
 {
 	template<typename TData>
 	struct SConstantBuffer
 	{
+		static constexpr uint64 DataSize = AlignAddress(sizeof(TData), 256);
+
 		ID3D12Resource* GpuResource = nullptr;
-		D3D12_GPU_DESCRIPTOR_HANDLE DescriptorHeapHandleGpu;
+		std::vector<D3D12_GPU_DESCRIPTOR_HANDLE> DescriptorHeapHandleGpu;
+
+		uint64 UploadOffset = 0;
+		uint16 ObjectCount = 0;
 
 		SConstantBuffer() = default;
-		SConstantBuffer(ID3D12Device* Device, DX12_Arena& BufferArena, DX12_DescriptorHeap& DescriptorHeap);
-		void Upload(TData* Data, DX12_UploadArena<>& UploadArena, ID3D12GraphicsCommandList* CommandList);
+		SConstantBuffer(
+			ID3D12Device* Device,
+			DX12_Arena& BufferArena,
+			DX12_DescriptorHeap& DescriptorHeap,
+			uint16 InObjectCount = 1);
+
+		void CopyBunch(TData* Data, DX12_UploadArena& UploadArena);
+		void Upload(DX12_UploadArena& UploadArena, ID3D12GraphicsCommandList* CommandList);
 	};
 }
 
@@ -22,11 +34,16 @@ namespace frt::graphics
 namespace frt::graphics
 {
 	template <typename TData>
-	SConstantBuffer<TData>::SConstantBuffer(ID3D12Device* Device, DX12_Arena& BufferArena, DX12_DescriptorHeap& DescriptorHeap)
+	SConstantBuffer<TData>::SConstantBuffer(
+		ID3D12Device* Device,
+		DX12_Arena& BufferArena,
+		DX12_DescriptorHeap& DescriptorHeap,
+		uint16 InObjectCount)
+		: ObjectCount(InObjectCount)
 	{
 		D3D12_RESOURCE_DESC cbDesc = {};
 		cbDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-		cbDesc.Width = AlignAddress(sizeof(TData), 256);
+		cbDesc.Width = DataSize * ObjectCount;
 		cbDesc.Height = 1;
 		cbDesc.DepthOrArraySize = 1;
 		cbDesc.MipLevels = 1;
@@ -36,26 +53,38 @@ namespace frt::graphics
 
 		GpuResource = BufferArena.Allocate(cbDesc, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, nullptr);
 
-		D3D12_CONSTANT_BUFFER_VIEW_DESC cbViewDesc = {};
-		cbViewDesc.BufferLocation = GpuResource->GetGPUVirtualAddress();
-		cbViewDesc.SizeInBytes = (uint32)cbDesc.Width * cbDesc.Height * cbDesc.DepthOrArraySize;
+		DescriptorHeapHandleGpu.resize(ObjectCount);
 
-		D3D12_CPU_DESCRIPTOR_HANDLE cpuDesc = {};
-		DescriptorHeap.Allocate(&cpuDesc, &DescriptorHeapHandleGpu);
-		Device->CreateConstantBufferView(&cbViewDesc, cpuDesc);
+		for (uint16 i = 0 ; i < ObjectCount ; ++i)
+		{
+			const D3D12_CONSTANT_BUFFER_VIEW_DESC cbViewDesc
+			{
+				.BufferLocation = GpuResource->GetGPUVirtualAddress() + DataSize * i,
+				.SizeInBytes = DataSize
+			};
+
+			D3D12_CPU_DESCRIPTOR_HANDLE cpuDesc = {};
+			DescriptorHeap.Allocate(&cpuDesc, &DescriptorHeapHandleGpu[i]);
+
+			Device->CreateConstantBufferView(&cbViewDesc, cpuDesc);
+		}
 	}
 
 	template <typename TData>
-	void SConstantBuffer<TData>::Upload(TData* Data, DX12_UploadArena<>& UploadArena, ID3D12GraphicsCommandList* CommandList)
+	void SConstantBuffer<TData>::CopyBunch(TData* Data, DX12_UploadArena& UploadArena)
 	{
-		uint64 DataSize = sizeof(TData);
-
-		uint64 uploadOffset = 0;
+		if (Data)
 		{
-			uint8* dest = UploadArena.Allocate(DataSize, &uploadOffset);
-			memcpy(dest, Data, DataSize);
+			uint8* dest = UploadArena.Allocate(DataSize * ObjectCount, &UploadOffset);
+			memcpy(dest, Data, DataSize * ObjectCount);
 		}
+	}
 
+	template <typename TData>
+	void SConstantBuffer<TData>::Upload(
+		DX12_UploadArena& UploadArena,
+		ID3D12GraphicsCommandList* CommandList)
+	{
 		{
 			D3D12_RESOURCE_BARRIER resourceBarrier = {};
 			resourceBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -66,7 +95,13 @@ namespace frt::graphics
 			CommandList->ResourceBarrier(1, &resourceBarrier);
 		}
 
-		CommandList->CopyBufferRegion(GpuResource, 0, UploadArena.GetGPUBuffer(), uploadOffset, DataSize);
+		CommandList->CopyBufferRegion(
+			GpuResource,
+			0,
+			UploadArena.GetGPUBuffer(),
+			UploadOffset,
+			DataSize * ObjectCount);
+		UploadOffset = 0;
 
 		{
 			D3D12_RESOURCE_BARRIER resourceBarrier = {};
@@ -77,7 +112,5 @@ namespace frt::graphics
 			resourceBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
 			CommandList->ResourceBarrier(1, &resourceBarrier);
 		}
-
-		CommandList->SetGraphicsRootDescriptorTable(1, DescriptorHeapHandleGpu);
 	}
 }

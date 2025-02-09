@@ -42,11 +42,11 @@ GameInstance::GameInstance()
 	_window->PostRestoreFromMinimizeEvent += std::bind(&GameInstance::OnRestoreFromMinimize, this);
 
 	memory::DefaultAllocator::InitMasterInstance(1 * memory::GigaByte);
-	_renderer = new Renderer(_window);
+	_renderer = memory::New<Renderer, memory::DefaultAllocator>(nullptr, _window);
 	_renderer->Resize(UserSettings.DisplaySettings.FullscreenMode == EFullscreenMode::Fullscreen);
 	DisplayOptions = graphics::GetDisplayOptions(_renderer->GetAdapter());
 
-	World = memory::New<CWorld>();
+	World = memory::New<CWorld, memory::DefaultAllocator>(nullptr, _renderer);
 
 	Camera = memory::New<CCamera>();
 
@@ -63,7 +63,7 @@ GameInstance::GameInstance()
 	ImGui_ImplDX12_InitInfo imguiDx12InitInfo;
 	imguiDx12InitInfo.Device = _renderer->GetDevice();
 	imguiDx12InitInfo.CommandQueue = _renderer->GetCommandQueue();
-	imguiDx12InitInfo.NumFramesInFlight = _renderer->FrameBufferSize;
+	imguiDx12InitInfo.NumFramesInFlight = render::constants::FrameResourcesBufferCount;
 	imguiDx12InitInfo.RTVFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 	imguiDx12InitInfo.DSVFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 	imguiDx12InitInfo.UserData = _renderer;
@@ -89,11 +89,9 @@ GameInstance::~GameInstance()
 
 	delete _timer;
 	delete _window;
-	delete _renderer;
 
 	_timer = nullptr;
 	_window = nullptr;
-	_renderer = nullptr;
 }
 
 Timer& GameInstance::GetTime() const
@@ -134,8 +132,9 @@ void GameInstance::Tick(float DeltaSeconds)
 	CalculateFrameStats();
 	DisplayUserSettings();
 
-	World->Tick(DeltaSeconds);
+	_renderer->Tick(DeltaSeconds);
 	Camera->Tick(DeltaSeconds);
+	World->Tick(DeltaSeconds);
 }
 
 void GameInstance::Draw(float DeltaSeconds)

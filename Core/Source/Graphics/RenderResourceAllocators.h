@@ -1,0 +1,98 @@
+#pragma once
+
+#include <d3d12.h>
+
+#include "CoreTypes.h"
+
+namespace frt::graphics
+{
+	struct DX12_Arena
+	{
+		DX12_Arena() : _sizeTotal(0), _sizeUsed(0), _heap(nullptr), _device(nullptr) {}
+		DX12_Arena(DX12_Arena&&) = default;
+		DX12_Arena& operator=(DX12_Arena&&) = default;
+		DX12_Arena(const DX12_Arena&) = delete;
+		DX12_Arena& operator=(const DX12_Arena&) = delete;
+
+		DX12_Arena(ID3D12Device* Device, D3D12_HEAP_TYPE HeapType, uint64 InSize, D3D12_HEAP_FLAGS Flags);
+		~DX12_Arena();
+
+		ID3D12Resource* Allocate(
+			const D3D12_RESOURCE_DESC& ResourceDesc,
+			D3D12_RESOURCE_STATES InitialState,
+			const D3D12_CLEAR_VALUE* ClearValue);
+
+		void Free();
+
+	private:
+		uint64 _sizeTotal;
+		uint64 _sizeUsed;
+		ID3D12Heap* _heap;
+		ID3D12Device* _device;
+	};
+
+	struct DX12_DescriptorHeap
+	{
+		friend class Renderer;
+
+		DX12_DescriptorHeap() : _stepSize(0), _maxNum(0), _currNum(0), _heap(nullptr) {}
+		DX12_DescriptorHeap(DX12_DescriptorHeap&&) = default;
+		DX12_DescriptorHeap& operator=(DX12_DescriptorHeap&&) = default;
+		DX12_DescriptorHeap(const DX12_DescriptorHeap&) = delete;
+		DX12_DescriptorHeap& operator=(const DX12_DescriptorHeap&) = delete;
+
+		DX12_DescriptorHeap(
+			ID3D12Device* Device,
+			D3D12_DESCRIPTOR_HEAP_TYPE Type,
+			uint32 Num,
+			D3D12_DESCRIPTOR_HEAP_FLAGS Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE);
+		~DX12_DescriptorHeap();
+
+		void Allocate(D3D12_CPU_DESCRIPTOR_HANDLE* OutCpuHandle, D3D12_GPU_DESCRIPTOR_HANDLE* OutGpuHandle);
+		ID3D12DescriptorHeap* GetHeap() const { return _heap; }
+
+	private:
+		uint64 _stepSize;
+		uint64 _maxNum;
+		uint64 _currNum;
+		ID3D12DescriptorHeap* _heap;
+	};
+
+	struct DX12_UploadArena
+	{
+		DX12_UploadArena()
+			: SizeTotal(0)
+			, SizeUsed(0)
+			, GpuBuffer(nullptr)
+			, CpuBuffer(nullptr)
+		{
+		}
+
+		DX12_UploadArena(DX12_UploadArena&&) = default;
+		DX12_UploadArena& operator=(DX12_UploadArena&&) = default;
+		DX12_UploadArena(const DX12_UploadArena&) = delete;
+		DX12_UploadArena& operator=(const DX12_UploadArena&) = delete;
+
+		DX12_UploadArena(ID3D12Device* Device, uint64 Size);
+		~DX12_UploadArena();
+
+		uint8* Allocate(uint64 Size, uint64* OutOffset);
+		void Clear();
+		uint64 GetSizeUsedAligned() const;
+
+		ID3D12Resource* GetGPUBuffer() const { return GpuBuffer; }
+
+	private:
+		uint64 SizeTotal;
+		uint64 SizeUsed;
+		ID3D12Resource* GpuBuffer;
+		uint8* CpuBuffer;
+
+	};
+
+	constexpr uint64 AlignAddress(uint64 Location, uint64 Alignment)
+	{
+		return (Location + Alignment - 1) & ~(Alignment - 1);
+	}
+
+}

@@ -3,6 +3,9 @@
 
 #include "..\framework.h"
 #include "..\Demo.h"
+
+#include <iostream>
+
 #include "Core.h"
 #include "DemoGame.h"
 #include "Timer.h"
@@ -31,22 +34,39 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
 	MSG msg{};
 
-	while (msg.message != WM_QUIT)
+	try
 	{
-		if (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE))
+		while (msg.message != WM_QUIT)
 		{
-			TranslateMessage(&msg);
-			DispatchMessage(&msg);
-		}
-		else
-		{
-			time.Tick();
-			if (!time.IsPaused())
+			if (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE))
 			{
-				game->Tick(time.GetDeltaSeconds());
-				game->Draw(time.GetDeltaSeconds());
+				TranslateMessage(&msg);
+				DispatchMessage(&msg);
+			}
+			else
+			{
+				time.Tick();
+				if (!time.IsPaused())
+				{
+					game->Tick(time.GetDeltaSeconds());
+					game->Draw(time.GetDeltaSeconds());
+				}
 			}
 		}
+	}
+	catch (const Exception& e)
+	{
+		std::cout << e.What() << " " << e.GetErrorCode() << " : " << e.GetErrorDescription() << std::endl;
+		// MessageBox(nullptr, e.What(), e.GetType(), MB_OK | MB_ICONEXCLAMATION);
+	}
+	catch (const std::exception& e)
+	{
+		std::cout << e.what() << std::endl;
+		// MessageBox(nullptr, e.what(), L"Standard Exception", MB_OK | MB_ICONEXCLAMATION);
+	}
+	catch (...)
+	{
+		MessageBox(nullptr, L"No details available", L"Unknown Exception", MB_OK | MB_ICONEXCLAMATION);
 	}
 
 	return static_cast<int>(msg.wParam);

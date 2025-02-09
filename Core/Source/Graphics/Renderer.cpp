@@ -1,8 +1,10 @@
 ﻿#include "Renderer.h"
 
 #include <complex>
+#include <iostream>
 
 #include "Camera.h"
+#include "d3dx12.h"
 #include "Exception.h"
 #include "GraphicsUtility.h"
 #include "Model.h"
@@ -42,7 +44,7 @@ Renderer::Renderer(Window* Window)
 	, _adapter(nullptr)
 	, _device(nullptr)
 	, _swapChain(nullptr)
-	, _currentFrameBufferIndex(0)
+	, CurrentBackBufferIndex(0)
 	, _commandQueue(nullptr)
 	, _commandAllocator(nullptr)
 	, _commandList(nullptr)
@@ -128,7 +130,6 @@ Renderer::Renderer(Window* Window)
 						D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES);
 	_dsvHeap = DX12_DescriptorHeap(_device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1);
 
-	_uploadArena = DX12_UploadArena<FrameBufferSize>(_device.Get(), 200 * memory::MegaByte);
 	_bufferArena = DX12_Arena(_device.Get(), D3D12_HEAP_TYPE_DEFAULT, 500 * memory::MegaByte,
 							D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS);
 	_textureArena = DX12_Arena(_device.Get(), D3D12_HEAP_TYPE_DEFAULT, 500 * memory::MegaByte,
@@ -137,9 +138,14 @@ Renderer::Renderer(Window* Window)
 	ShaderDescriptorHeap = DX12_DescriptorHeap(
 		_device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 50, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE);
 
-	_rtvHeap = DX12_DescriptorHeap(_device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_RTV, FrameBufferSize);
+	_rtvHeap = DX12_DescriptorHeap(_device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_RTV, render::constants::FrameResourcesBufferCount);
 
-	for (unsigned frameIndex = 0; frameIndex < FrameBufferSize; ++frameIndex)
+	for (uint8 i = 0; i < render::constants::FrameResourcesBufferCount; ++i)
+	{
+		FramesResources[i].Init(_device.Get(), 1, 1, _bufferArena, GetDescriptorHeap());
+	}
+
+	for (unsigned frameIndex = 0; frameIndex < render::constants::SwapChainBufferCount; ++frameIndex)
 	{
 		_rtvHeap.Allocate(&_frameBufferDescriptors[frameIndex], nullptr);
 	}
@@ -148,54 +154,33 @@ Renderer::Renderer(Window* Window)
 
 	{
 		{
-			D3D12_ROOT_PARAMETER rootParameters[2];
+			CD3DX12_ROOT_PARAMETER rootParameters[3];
 
-			D3D12_DESCRIPTOR_RANGE tableRange1[1] = {};
+			CD3DX12_DESCRIPTOR_RANGE texTable0(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
+
+			rootParameters[0].InitAsDescriptorTable(1, &texTable0);
+
+			CD3DX12_DESCRIPTOR_RANGE objCbvTable0(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0);
+			CD3DX12_DESCRIPTOR_RANGE passCbvTable0(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 1);
+
+			rootParameters[1].InitAsDescriptorTable(1, &objCbvTable0);
+			rootParameters[2].InitAsDescriptorTable(1, &passCbvTable0);
+
+			constexpr D3D12_STATIC_SAMPLER_DESC samplerDesc
 			{
-				tableRange1[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-				tableRange1[0].NumDescriptors = 1;
-				tableRange1[0].BaseShaderRegister = 0;
-				tableRange1[0].RegisterSpace = 0;
-				tableRange1[0].OffsetInDescriptorsFromTableStart = 0;
+				.Filter = D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT,
+				.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+				.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+				.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP,
+				.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER,
+				.ShaderRegister = 0,
+				.RegisterSpace = 0,
+				.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL,
+			};
 
-				rootParameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-				rootParameters[0].DescriptorTable.NumDescriptorRanges = 1;
-				rootParameters[0].DescriptorTable.pDescriptorRanges = tableRange1;
-				rootParameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-			}
-
-			D3D12_DESCRIPTOR_RANGE tableRange2[1] = {};
-			{
-				tableRange2[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
-				tableRange2[0].NumDescriptors = 1;
-				tableRange2[0].BaseShaderRegister = 0;
-				tableRange2[0].RegisterSpace = 0;
-				tableRange2[0].OffsetInDescriptorsFromTableStart = 0;
-
-				rootParameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-				rootParameters[1].DescriptorTable.NumDescriptorRanges = 1;
-				rootParameters[1].DescriptorTable.pDescriptorRanges = tableRange2;
-				rootParameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-			}
-
-			D3D12_STATIC_SAMPLER_DESC samplerDesc = {};
-			{
-				samplerDesc.Filter = D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT;
-				samplerDesc.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-				samplerDesc.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-				samplerDesc.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-				samplerDesc.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
-				samplerDesc.ShaderRegister = 0;
-				samplerDesc.RegisterSpace = 0;
-				samplerDesc.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-			}
-
-			D3D12_ROOT_SIGNATURE_DESC rootSignatureDesc = {};
-			rootSignatureDesc.NumParameters = 2;
-			rootSignatureDesc.pParameters = rootParameters;
-			rootSignatureDesc.NumStaticSamplers = 1;
-			rootSignatureDesc.pStaticSamplers = &samplerDesc;
-			rootSignatureDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+			CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc(
+				3, rootParameters, 1, &samplerDesc,
+				D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
 			ID3DBlob* serializedRootSignature = nullptr;
 			ID3DBlob* errorMessage = nullptr;
@@ -238,8 +223,8 @@ Renderer::Renderer(Window* Window)
 		psoDesc.SampleDesc.Count = 1;
 		psoDesc.SampleDesc.Quality = 0;
 
-		psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-		psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_BACK;
+		psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_WIREFRAME;
+		psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
 		psoDesc.RasterizerState.FrontCounterClockwise = false;
 		psoDesc.RasterizerState.DepthClipEnable = true;
 
@@ -248,7 +233,7 @@ Renderer::Renderer(Window* Window)
 		psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
 		psoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
 
-		D3D12_INPUT_ELEMENT_DESC inputElementDescs[2] = {};
+		D3D12_INPUT_ELEMENT_DESC inputElementDescs[3] = {};
 		inputElementDescs[0].SemanticName = "POSITION";
 		inputElementDescs[0].SemanticIndex = 0;
 		inputElementDescs[0].Format = DXGI_FORMAT_R32G32B32_FLOAT;
@@ -263,8 +248,15 @@ Renderer::Renderer(Window* Window)
 		inputElementDescs[1].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
 		inputElementDescs[1].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
 
+		inputElementDescs[2].SemanticName = "COLOR";
+		inputElementDescs[2].SemanticIndex = 0;
+		inputElementDescs[2].Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+		inputElementDescs[2].InputSlot = 0;
+		inputElementDescs[2].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
+		inputElementDescs[2].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
+
 		psoDesc.InputLayout.pInputElementDescs = inputElementDescs;
-		psoDesc.InputLayout.NumElements = 2;
+		psoDesc.InputLayout.NumElements = 3;
 
 		psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
 		psoDesc.NumRenderTargets = 1;
@@ -272,28 +264,6 @@ Renderer::Renderer(Window* Window)
 		psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
 
 		THROW_IF_FAILED(_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&_pipelineState)));
-	}
-
-	{
-		D3D12_RESOURCE_DESC cbDesc = {};
-		cbDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-		cbDesc.Width = AlignAddress(sizeof(math::STransform), 256);
-		cbDesc.Height = 1;
-		cbDesc.DepthOrArraySize = 1;
-		cbDesc.MipLevels = 1;
-		cbDesc.Format = DXGI_FORMAT_UNKNOWN;
-		cbDesc.SampleDesc.Count = 1;
-		cbDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-
-		CommonConstantBuffer = _bufferArena.Allocate(cbDesc, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, nullptr);
-
-		D3D12_CONSTANT_BUFFER_VIEW_DESC cbViewDesc = {};
-		cbViewDesc.BufferLocation = CommonConstantBuffer->GetGPUVirtualAddress();
-		cbViewDesc.SizeInBytes = (uint32)cbDesc.Width * cbDesc.Height * cbDesc.DepthOrArraySize;
-
-		D3D12_CPU_DESCRIPTOR_HANDLE cpuDesc = {};
-		ShaderDescriptorHeap.Allocate(&cpuDesc, &CommonConstantBufferDescriptor);
-		_device->CreateConstantBufferView(&cbViewDesc, cpuDesc);
 	}
 }
 
@@ -305,7 +275,7 @@ void Renderer::Resize(bool bNewFullscreenState)
 	THROW_IF_FAILED(_commandList->Reset(_commandAllocator.Get(), nullptr));
 
 	// Release the previous resources we will be recreating.
-	for (int i = 0; i < FrameBufferSize; ++i)
+	for (int i = 0; i < render::constants::SwapChainBufferCount; ++i)
 	{
 		_frameBuffer[i].Reset();
 	}
@@ -339,15 +309,15 @@ void Renderer::Resize(bool bNewFullscreenState)
 		{
 			// Resize the swap chain.
 			THROW_IF_FAILED(_swapChain->ResizeBuffers(
-				FrameBufferSize, 
+				render::constants::SwapChainBufferCount,
 				drawRect.x, drawRect.y, 
 				DXGI_FORMAT_R8G8B8A8_UNORM, 
 				DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH));
 		}
 
-		_currentFrameBufferIndex = 0;
+		CurrentBackBufferIndex = 0;
 
-		for (unsigned frameIndex = 0; frameIndex < FrameBufferSize; ++frameIndex)
+		for (unsigned frameIndex = 0; frameIndex < render::constants::SwapChainBufferCount; ++frameIndex)
 		{
 			_swapChain->GetBuffer(frameIndex, IID_PPV_ARGS(&_frameBuffer[frameIndex]));
 			_device->CreateRenderTargetView(_frameBuffer[frameIndex].Get(), nullptr, _frameBufferDescriptors[frameIndex]);
@@ -412,15 +382,17 @@ void Renderer::Resize(bool bNewFullscreenState)
 
 void Renderer::StartFrame(CCamera& Camera)
 {
-	THROW_IF_FAILED(_commandAllocator->Reset());
-	THROW_IF_FAILED(_commandList->Reset(_commandAllocator.Get(), nullptr));
+	auto commandListAllocator = GetCurrentFrameResource().CommandListAllocator;
 
-	_uploadArena.BeginFrame(_currentFrameBufferIndex);
+	THROW_IF_FAILED(commandListAllocator->Reset());
+
+	// TODO: assign different PSO
+	THROW_IF_FAILED(_commandList->Reset(commandListAllocator.Get(), nullptr));
 
 	{
 		D3D12_RESOURCE_BARRIER resourceBarrier = {};
 		resourceBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-		resourceBarrier.Transition.pResource = _frameBuffer[_currentFrameBufferIndex].Get();
+		resourceBarrier.Transition.pResource = _frameBuffer[CurrentBackBufferIndex].Get();
 		resourceBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 		resourceBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
 		resourceBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
@@ -431,11 +403,11 @@ void Renderer::StartFrame(CCamera& Camera)
 	_commandList->RSSetScissorRects(1, &ScissorRect);
 
 	FLOAT Color[] = { 0.1f, 0.3f, 0.3f, 1.f };
-	_commandList->ClearRenderTargetView(_frameBufferDescriptors[_currentFrameBufferIndex], Color, 0, nullptr);
+	_commandList->ClearRenderTargetView(_frameBufferDescriptors[CurrentBackBufferIndex], Color, 0, nullptr);
 	_commandList->ClearDepthStencilView(
 		_depthStencilDescriptor, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1, 0, 0, nullptr);
 
-	_commandList->OMSetRenderTargets(1, &_frameBufferDescriptors[_currentFrameBufferIndex], false, &_depthStencilDescriptor);
+	_commandList->OMSetRenderTargets(1, &_frameBufferDescriptors[CurrentBackBufferIndex], false, &_depthStencilDescriptor);
 
 	_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 	_commandList->SetGraphicsRootSignature(_rootSignature.Get());
@@ -444,14 +416,25 @@ void Renderer::StartFrame(CCamera& Camera)
 	_commandList->SetDescriptorHeaps(1, &ShaderDescriptorHeap._heap);
 }
 
+void Renderer::Tick(float DeltaSeconds)
+{
+	CurrentFrameResourceIndex = (CurrentFrameResourceIndex + 1) % render::constants::FrameResourcesBufferCount;
+
+	if (GetCurrentFrameResource().FenceValue != 0 && _fence->GetCompletedValue() < GetCurrentFrameResource().FenceValue)
+	{
+		HANDLE eventHandle = CreateEventEx(nullptr, nullptr, false, EVENT_ALL_ACCESS);
+		THROW_IF_FAILED(_fence->SetEventOnCompletion(GetCurrentFrameResource().FenceValue, eventHandle));
+		WaitForSingleObject(eventHandle, INFINITE);
+		CloseHandle(eventHandle);
+	}
+}
+
 void Renderer::Draw(float DeltaSeconds, CCamera& Camera)
 {
-	// 
-
 	{
 		D3D12_RESOURCE_BARRIER resourceBarrier = {};
 		resourceBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-		resourceBarrier.Transition.pResource = _frameBuffer[_currentFrameBufferIndex].Get();
+		resourceBarrier.Transition.pResource = _frameBuffer[CurrentBackBufferIndex].Get();
 		resourceBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 		resourceBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
 		resourceBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
@@ -462,11 +445,15 @@ void Renderer::Draw(float DeltaSeconds, CCamera& Camera)
 	_commandQueue->ExecuteCommandLists(1, (ID3D12CommandList**)_commandList.GetAddressOf());
 
 	_swapChain->Present(1, 0);
-	_currentFrameBufferIndex = (_currentFrameBufferIndex + 1) % FrameBufferSize;
+	CurrentBackBufferIndex = (CurrentBackBufferIndex + 1) % render::constants::FrameResourcesBufferCount;
 
-	FlushCommandQueue();
+	// FlushCommandQueue();
 
-	_uploadArena.Clear();
+	++_fenceValue;
+	GetCurrentFrameResource().FenceValue = _fenceValue;
+	_commandQueue->Signal(_fence.Get(), _fenceValue);
+
+	GetCurrentFrameResource().UploadArena.Clear();
 }
 
 IDXGIAdapter1* Renderer::GetAdapter()
@@ -489,11 +476,6 @@ ID3D12GraphicsCommandList* Renderer::GetCommandList()
 	return _commandList.Get();
 }
 
-DX12_UploadArena<Renderer::FrameBufferSize>& Renderer::GetUploadArena()
-{
-	return _uploadArena;
-}
-
 DX12_Arena& Renderer::GetBufferArena()
 {
 	return _bufferArena;
@@ -504,15 +486,20 @@ DX12_DescriptorHeap& Renderer::GetDescriptorHeap()
 	return ShaderDescriptorHeap;
 }
 
+SFrameResources& Renderer::GetCurrentFrameResource()
+{
+	return FramesResources[CurrentFrameResourceIndex];
+}
+
 ID3D12Resource* Renderer::CreateBufferAsset(
 	const D3D12_RESOURCE_DESC& Desc, D3D12_RESOURCE_STATES InitialState, void* BufferData)
 {
 	uint64 uploadOffset = 0;
-	uint8* dest = _uploadArena.Allocate(Desc.Width, &uploadOffset);
+	uint8* dest = GetCurrentFrameResource().UploadArena.Allocate(Desc.Width, &uploadOffset);
 	memcpy(dest, BufferData, Desc.Width);
 
 	ID3D12Resource* resource = _bufferArena.Allocate(Desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr);
-	_commandList->CopyBufferRegion(resource, 0, _uploadArena.GetGPUBuffer(), uploadOffset, Desc.Width);
+	_commandList->CopyBufferRegion(resource, 0, GetCurrentFrameResource().UploadArena.GetGPUBuffer(), uploadOffset, Desc.Width);
 
 	{
 		D3D12_RESOURCE_BARRIER resourceBarrier = {};
@@ -544,7 +531,7 @@ ID3D12Resource* Renderer::CreateTextureAsset(
 		footprint.RowPitch = (uint32)AlignAddress(footprint.Width * bytesPerPixel, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
 		placedFootprint.Footprint = footprint;
 
-		uint8* destTexels = _uploadArena.Allocate(footprint.Height * footprint.RowPitch, &placedFootprint.Offset);
+		uint8* destTexels = GetCurrentFrameResource().UploadArena.Allocate(footprint.Height * footprint.RowPitch, &placedFootprint.Offset);
 
 		for (uint32 Y = 0; Y < Desc.Height; ++Y)
 		{
@@ -558,7 +545,7 @@ ID3D12Resource* Renderer::CreateTextureAsset(
 
 	{
 		D3D12_TEXTURE_COPY_LOCATION srcLocation = {};
-		srcLocation.pResource = _uploadArena.GetGPUBuffer();
+		srcLocation.pResource = GetCurrentFrameResource().UploadArena.GetGPUBuffer();
 		srcLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
 		srcLocation.PlacedFootprint = placedFootprint;
 
@@ -604,7 +591,7 @@ void Renderer::CreateSwapChain(bool bFullscreen)
 			.Stereo = false,
 			.SampleDesc = DXGI_SAMPLE_DESC { .Count = 1, .Quality = 0 }, // TODO: use sampling
 			.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT,
-			.BufferCount = FrameBufferSize,
+			.BufferCount = render::constants::SwapChainBufferCount,
 			.Scaling = DXGI_SCALING_NONE,
 			.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD,
 			.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED,
