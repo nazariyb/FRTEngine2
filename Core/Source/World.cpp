@@ -48,16 +48,20 @@ void CWorld::Present(float DeltaSeconds, ID3D12GraphicsCommandList* CommandList)
 
 void CWorld::CopyConstantData()
 {
-	std::vector<graphics::SObjectConstants> objectsData;
-	objectsData.reserve(Entities.size());
-	for (auto& entity : Entities)
+	// TODO: ideally, CBs should already be stored in one array
+	// TODO: use (when it's implemented) memory pool
+	uint64 alignedSize = memory::AlignAddress(sizeof(graphics::SObjectConstants), 256);
+	auto objectsData = malloc(alignedSize * Entities.size());
+	for (int i = 0; i < Entities.size(); ++i)
 	{
-		objectsData.push_back(graphics::SObjectConstants{ entity->Transform.GetMatrix() });
+		memcpy((uint8*)objectsData + alignedSize * i, &Entities[i]->Transform.GetMatrix(), sizeof(graphics::SObjectConstants));
 	}
 
 	auto& currentFrameResources = Renderer->GetCurrentFrameResource();
 
-	currentFrameResources.ObjectCB.CopyBunch(objectsData.data(), currentFrameResources.UploadArena);
+	currentFrameResources.ObjectCB.CopyBunch((graphics::SObjectConstants*)objectsData, currentFrameResources.UploadArena);
+
+	free(objectsData);
 
 	using namespace DirectX;
 
