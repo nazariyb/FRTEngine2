@@ -14,7 +14,7 @@ struct ID3D12Resource;
 
 namespace frt::graphics
 {
-	struct Mesh;
+	struct SMesh;
 	struct Vertex;
 	struct Texture;
 }
@@ -24,7 +24,7 @@ namespace frt::graphics
 {
 	struct FRT_CORE_API Model
 	{
-		memory::TMemoryHandleArray<Mesh, memory::DefaultAllocator> meshes;
+		memory::TMemoryHandleArray<SMesh, memory::DefaultAllocator> meshes;
 		memory::TMemoryHandleArray<Texture, memory::DefaultAllocator> textures;
 
 		memory::TMemoryHandleArray<Vertex, memory::DefaultAllocator> vertices;

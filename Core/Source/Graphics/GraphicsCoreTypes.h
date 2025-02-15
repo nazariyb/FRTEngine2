@@ -18,8 +18,10 @@ namespace frt::graphics
 #pragma pack(push, 1)
 	struct Vertex
 	{
-		Vector3f position;
-		Vector2f uv;
+		Vector3f Position;
+		Vector2f Uv;
+		Vector3f Normal;
+		Vector3f Tangent;
 		DirectX::XMFLOAT4 Color;
 	};
 #pragma pack(pop)

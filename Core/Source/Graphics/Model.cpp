@@ -99,7 +99,7 @@ namespace frt::graphics
 
 		// Meshes
 		const int32 meshesNum = (int32)scene->mNumMeshes;
-		result.meshes = memory::NewArray<Mesh>(meshesNum);
+		result.meshes = memory::NewArray<SMesh>(meshesNum);
 
 		int32 indexNum = 0;
 		int32 vertexNum = 0;
@@ -108,7 +108,7 @@ namespace frt::graphics
 		{
 			const aiMesh* srcMesh = scene->mMeshes[i];
 			frt_assert(srcMesh);
-			Mesh& dstMesh = result.meshes[i];
+			SMesh& dstMesh = result.meshes[i];
 
 			dstMesh.textureIndex = materialTextureMap[srcMesh->mMaterialIndex];
 
@@ -130,24 +130,24 @@ namespace frt::graphics
 		{
 			const aiMesh* srcMesh = scene->mMeshes[i];
 			frt_assert(srcMesh);
-			Mesh& dstMesh = result.meshes[i];
+			SMesh& dstMesh = result.meshes[i];
 
 			for (int64 vertexIndex = 0; vertexIndex < dstMesh.vertexCount; ++vertexIndex)
 			{
 				Vertex& vertex = result.vertices[dstMesh.vertexOffset + vertexIndex];
-				vertex.position.x = srcMesh->mVertices[vertexIndex].x;
-				vertex.position.y = srcMesh->mVertices[vertexIndex].y;
-				vertex.position.z = srcMesh->mVertices[vertexIndex].z;
+				vertex.Position.x = srcMesh->mVertices[vertexIndex].x;
+				vertex.Position.y = srcMesh->mVertices[vertexIndex].y;
+				vertex.Position.z = srcMesh->mVertices[vertexIndex].z;
 
 				if (srcMesh->mTextureCoords[0])
 				{
-					vertex.uv.x = srcMesh->mTextureCoords[0][vertexIndex].x;
-					vertex.uv.y = srcMesh->mTextureCoords[0][vertexIndex].y;
+					vertex.Uv.x = srcMesh->mTextureCoords[0][vertexIndex].x;
+					vertex.Uv.y = srcMesh->mTextureCoords[0][vertexIndex].y;
 				}
 				else
 				{
-					vertex.uv.x = 0;
-					vertex.uv.y = 0;
+					vertex.Uv.x = 0;
+					vertex.Uv.y = 0;
 				}
 			}
 
@@ -250,14 +250,14 @@ namespace frt::graphics
 
 		// Meshes
 		const int32 meshesNum = 1;
-		result.meshes = memory::NewArray<Mesh>(meshesNum);
+		result.meshes = memory::NewArray<SMesh>(meshesNum);
 
 		int32 indexNum = 0;
 		int32 vertexNum = 0;
 
 		for (int32 i = 0; i < meshesNum; ++i)
 		{
-			Mesh& dstMesh = result.meshes[i];
+			SMesh& dstMesh = result.meshes[i];
 
 			dstMesh.textureIndex = 0;
 
@@ -277,7 +277,7 @@ namespace frt::graphics
 
 		for (int64 i = 0; i < meshesNum; ++i)
 		{
-			Mesh& dstMesh = result.meshes[i];
+			SMesh& dstMesh = result.meshes[i];
 
 			Vertex vertices[3] =
 			{
@@ -288,12 +288,12 @@ namespace frt::graphics
 			for (int64 vertexIndex = 0; vertexIndex < dstMesh.vertexCount; ++vertexIndex)
 			{
 				Vertex& vertex = result.vertices[dstMesh.vertexOffset + vertexIndex];
-				vertex.position.x = vertices[vertexIndex].position.x;
-				vertex.position.y = vertices[vertexIndex].position.y;
-				vertex.position.z = vertices[vertexIndex].position.z;
+				vertex.Position.x = vertices[vertexIndex].Position.x;
+				vertex.Position.y = vertices[vertexIndex].Position.y;
+				vertex.Position.z = vertices[vertexIndex].Position.z;
 
-				vertex.uv.x = vertices[vertexIndex].uv.x;
-				vertex.uv.y = vertices[vertexIndex].uv.y;
+				vertex.Uv.x = vertices[vertexIndex].Uv.x;
+				vertex.Uv.y = vertices[vertexIndex].Uv.y;
 			}
 
 			result.indices[0] = 0;

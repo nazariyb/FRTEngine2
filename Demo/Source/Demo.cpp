@@ -6,8 +6,8 @@
 
 #include <iostream>
 
-#include "Core.h"
 #include "DemoGame.h"
+#include "Exception.h"
 #include "Timer.h"
 #include "Graphics/Renderer.h"
 

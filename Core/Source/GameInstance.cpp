@@ -13,6 +13,7 @@
 #include "backends/imgui_impl_win32.h"
 #include "backends/imgui_impl_dx12.h"
 #include "Graphics/GraphicsUtility.h"
+#include "Graphics/MeshGeneration.h"
 #include "Graphics/RenderCommonTypes.h"
 
 NAMESPACE_FRT_START
@@ -112,11 +113,13 @@ Renderer& GameInstance::GetGraphics() const
 
 void GameInstance::Load()
 {
-	auto skullEnt = World->SpawnEntity();
 	std::cout << std::filesystem::current_path() << std::endl;
-	skullEnt->Model = Model::LoadFromFile(
-		R"(..\Core\Content\Models\Skull\scene.gltf)",
-		R"(..\Core\Content\Models\Skull\textures\defaultMat_baseColor.jpeg)");
+
+	World->SpawnEntity()->Mesh = mesh::GenerateCube(Vector3f(.1f), 1);
+	World->SpawnEntity()->Mesh = mesh::GenerateSphere(1.f, 10u, 10u);
+	// skullEnt->Model = Model::LoadFromFile(
+	// 	R"(..\Core\Content\Models\Skull\scene.gltf)",
+	// 	R"(..\Core\Content\Models\Skull\textures\defaultMat_baseColor.jpeg)");
 }
 
 void GameInstance::Tick(float DeltaSeconds)

@@ -142,7 +142,7 @@ Renderer::Renderer(Window* Window)
 
 	for (uint8 i = 0; i < render::constants::FrameResourcesBufferCount; ++i)
 	{
-		FramesResources[i].Init(_device.Get(), 1, 1, _bufferArena, GetDescriptorHeap());
+		FramesResources[i].Init(_device.Get(), 1, 2, _bufferArena, GetDescriptorHeap());
 	}
 
 	for (unsigned frameIndex = 0; frameIndex < render::constants::SwapChainBufferCount; ++frameIndex)
@@ -233,7 +233,7 @@ Renderer::Renderer(Window* Window)
 		psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
 		psoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
 
-		D3D12_INPUT_ELEMENT_DESC inputElementDescs[3] = {};
+		D3D12_INPUT_ELEMENT_DESC inputElementDescs[5] = {};
 		inputElementDescs[0].SemanticName = "POSITION";
 		inputElementDescs[0].SemanticIndex = 0;
 		inputElementDescs[0].Format = DXGI_FORMAT_R32G32B32_FLOAT;
@@ -248,15 +248,29 @@ Renderer::Renderer(Window* Window)
 		inputElementDescs[1].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
 		inputElementDescs[1].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
 
-		inputElementDescs[2].SemanticName = "COLOR";
+		inputElementDescs[2].SemanticName = "NORMAL";
 		inputElementDescs[2].SemanticIndex = 0;
-		inputElementDescs[2].Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+		inputElementDescs[2].Format = DXGI_FORMAT_R32G32B32_FLOAT;
 		inputElementDescs[2].InputSlot = 0;
 		inputElementDescs[2].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
 		inputElementDescs[2].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
 
+		inputElementDescs[3].SemanticName = "TANGENT";
+		inputElementDescs[3].SemanticIndex = 0;
+		inputElementDescs[3].Format = DXGI_FORMAT_R32G32B32_FLOAT;
+		inputElementDescs[3].InputSlot = 0;
+		inputElementDescs[3].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
+		inputElementDescs[3].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
+
+		inputElementDescs[4].SemanticName = "COLOR";
+		inputElementDescs[4].SemanticIndex = 0;
+		inputElementDescs[4].Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+		inputElementDescs[4].InputSlot = 0;
+		inputElementDescs[4].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
+		inputElementDescs[4].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
+
 		psoDesc.InputLayout.pInputElementDescs = inputElementDescs;
-		psoDesc.InputLayout.NumElements = 3;
+		psoDesc.InputLayout.NumElements = 5;
 
 		psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
 		psoDesc.NumRenderTargets = 1;
