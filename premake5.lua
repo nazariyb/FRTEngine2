@@ -146,10 +146,17 @@ project "Core"
 	----------------
 	----- Libs -----
 	----------------
-	libdirs
-	{
-		vcpkgRoot .. "/installed/" .. triplet .. "/lib",
-	}
+	filter "configurations:Debug"
+		libdirs
+		{
+			vcpkgRoot .. "/installed/" .. triplet .. "/debug/lib",
+		}
+
+	filter "configurations:Release"
+		libdirs
+		{
+			vcpkgRoot .. "/installed/" .. triplet .. "/lib",
+		}
 
 	filter "configurations:Debug"
 		links
@@ -277,7 +284,12 @@ project "Core-Test"
 		defines { "NDEBUG" }
 		optimize "On"
 
+	filter {}
 
+
+-----------------------------------------
+---------------  Demo  ------------------
+-----------------------------------------
 project "Demo"
 	location "%{prj.name}"
 
