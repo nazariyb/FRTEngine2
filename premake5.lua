@@ -109,8 +109,11 @@ project "Core"
 	-----------------
 	files
 	{
-		"%{prj.name}/Source/**.h",
-		"%{prj.name}/Source/**.cpp",
+		"%{prj.name}/Source/**.h", "%{prj.name}/Source/**.hpp", "%{prj.name}/Source/**.hxx", "%{prj.name}/Source/**.hh",
+		"%{prj.name}/Source/**.c", "%{prj.name}/Source/**.cpp", "%{prj.name}/Source/**.cxx", "%{prj.name}/Source/**.cc",
+		"%{prj.name}/../**.lua",
+		"%{prj.name}/../**.txt",
+		"%{prj.name}/../**.bat",
 		"%{prj.name}/Content/Shaders/**.hlsl",
 		"%{prj.name}/Content/Shaders/**.hlsli",
 		thirdPartyDir.."/Imgui/*.h",
@@ -120,9 +123,16 @@ project "Core"
 		thirdPartyDir.."/Imgui/misc/cpp/imgui_stdlib.*",
 	}
 
+	removefiles
+	{
+		"%{wks.location}/Intermediate/**",
+		"**/vcpkg/**",
+	}
+
 	filter "action:vs*"
 		files
 		{
+			"%{prj.name}/**.natvis",
 			thirdPartyDir.."/Imgui/misc/debuggers/imgui.natvis",
 			thirdPartyDir.."/Imgui/misc/debuggers/imgui.natstepfilter",
 		}
