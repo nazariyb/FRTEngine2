@@ -2,6 +2,7 @@
 
 #include "CoreTypes.h"
 #include "GameInstance.h"
+#include "Containers/Array.h"
 
 namespace frt::graphics::mesh
 {
@@ -15,8 +16,8 @@ namespace frt::graphics::mesh
 	namespace _private
 	{
 		void CreateGpuResources(
-			const memory::TMemoryHandleArray<Vertex, memory::DefaultAllocator>& vertices,
-			const memory::TMemoryHandleArray<uint32, memory::DefaultAllocator>& indices,
+			const TArray<Vertex>& vertices,
+			const TArray<uint32>& indices,
 			ComPtr<ID3D12Resource>& outVertexBufferGpu,
 			ComPtr<ID3D12Resource>& outIndexBufferGpu);
 	}

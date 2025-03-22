@@ -12,6 +12,6 @@ namespace frt
 		CController();
 
 	protected:
-		memory::TMemoryHandle<graphics::CCamera, memory::DefaultAllocator> Camera;
+		memory::TRefShared<graphics::CCamera> Camera;
 	};
 }

@@ -3,6 +3,7 @@
 #include <cmath>
 
 #include "Core.h"
+#include "CoreTypes.h"
 #include "MathUtility.h"
 
 
@@ -11,7 +12,7 @@ NAMESPACE_FRT_START
 namespace math
 {
 
-template<Numerical T>
+template<concepts::Numerical T>
 struct TVector2
 {
 public:
@@ -94,13 +95,13 @@ public:
 	
 };
 
-template <Numerical Real>
+template <concepts::Numerical Real>
 TVector2<Real>& TVector2<Real>::operator-()
 {
 	return TVector2<Real>(-x, -y);
 }
 
-template <Numerical Real>
+template <concepts::Numerical Real>
 TVector2<Real>& TVector2<Real>::operator+=(const TVector2<Real>& rhs)
 {
 	x += rhs.x;
@@ -108,7 +109,7 @@ TVector2<Real>& TVector2<Real>::operator+=(const TVector2<Real>& rhs)
 	return *this;
 }
 
-template <Numerical Real>
+template <concepts::Numerical Real>
 TVector2<Real>& TVector2<Real>::operator-=(const TVector2<Real>& rhs)
 {
 	x -= rhs.x;
@@ -116,7 +117,7 @@ TVector2<Real>& TVector2<Real>::operator-=(const TVector2<Real>& rhs)
 	return *this;
 }
 
-template <Numerical Real>
+template <concepts::Numerical Real>
 TVector2<Real>& TVector2<Real>::operator*=(const TVector2<Real>& rhs)
 {
 	x *= rhs.x;
@@ -124,7 +125,7 @@ TVector2<Real>& TVector2<Real>::operator*=(const TVector2<Real>& rhs)
 	return *this;
 }
 
-template <Numerical Real>
+template <concepts::Numerical Real>
 TVector2<Real>& TVector2<Real>::operator/=(const TVector2<Real>& rhs)
 {
 	x /= rhs.x;
@@ -132,7 +133,7 @@ TVector2<Real>& TVector2<Real>::operator/=(const TVector2<Real>& rhs)
 	return *this;
 }
 
-template <Numerical Real>
+template <concepts::Numerical Real>
 TVector2<Real>& TVector2<Real>::operator+=(const Real& rhs)
 {
 	x += rhs;
@@ -140,7 +141,7 @@ TVector2<Real>& TVector2<Real>::operator+=(const Real& rhs)
 	return *this;
 }
 
-template <Numerical Real>
+template <concepts::Numerical Real>
 TVector2<Real>& TVector2<Real>::operator-=(const Real& rhs)
 {
 	x -= rhs;
@@ -148,7 +149,7 @@ TVector2<Real>& TVector2<Real>::operator-=(const Real& rhs)
 	return *this;
 }
 
-template <Numerical Real>
+template <concepts::Numerical Real>
 TVector2<Real>& TVector2<Real>::operator*=(const Real& rhs)
 {
 	x *= rhs;
@@ -156,7 +157,7 @@ TVector2<Real>& TVector2<Real>::operator*=(const Real& rhs)
 	return *this;
 }
 
-template <Numerical Real>
+template <concepts::Numerical Real>
 TVector2<Real>& TVector2<Real>::operator/=(const Real& rhs)
 {
 	x /= rhs;
@@ -164,55 +165,55 @@ TVector2<Real>& TVector2<Real>::operator/=(const Real& rhs)
 	return *this;
 }
 
-template <Numerical Real>
+template <concepts::Numerical Real>
 TVector2<Real>& TVector2<Real>::operator+(const TVector2<Real>& rhs)
 {
 	return TVector2<Real>(x + rhs.x, y + rhs.y);
 }
 
-template <Numerical Real>
+template <concepts::Numerical Real>
 TVector2<Real>& TVector2<Real>::operator-(const TVector2<Real>& rhs)
 {
 	return TVector2<Real>(x - rhs.x, y - rhs.y);
 }
 
-template <Numerical Real>
+template <concepts::Numerical Real>
 TVector2<Real>& TVector2<Real>::operator*(const TVector2<Real>& rhs)
 {
 	return TVector2<Real>(x * rhs.x, y * rhs.y);
 }
 
-template <Numerical Real>
+template <concepts::Numerical Real>
 TVector2<Real>& TVector2<Real>::operator/(const TVector2<Real>& rhs)
 {
 	return TVector2<Real>(x / rhs.x, y / rhs.y);
 }
 
-template <Numerical Real>
+template <concepts::Numerical Real>
 TVector2<Real>& TVector2<Real>::operator+(const Real& rhs)
 {
 	return TVector2<Real>(x + rhs, y + rhs);
 }
 
-template <Numerical Real>
+template <concepts::Numerical Real>
 TVector2<Real>& TVector2<Real>::operator-(const Real& rhs)
 {
 	return TVector2<Real>(x - rhs, y - rhs);
 }
 
-template <Numerical Real>
+template <concepts::Numerical Real>
 TVector2<Real>& TVector2<Real>::operator*(const Real& rhs)
 {
 	return TVector2<Real>(x * rhs, y * rhs);
 }
 
-template <Numerical Real>
+template <concepts::Numerical Real>
 TVector2<Real>& TVector2<Real>::operator/(const Real& rhs)
 {
 	return TVector2<Real>(x / rhs, y / rhs);
 }
 
-template <Numerical T>
+template <concepts::Numerical T>
 TVector2<T>& TVector2<T>::NormalizeUnsafe()
 {
 	const float magnitude = Size();
@@ -221,97 +222,97 @@ TVector2<T>& TVector2<T>::NormalizeUnsafe()
 	return *this;
 }
 
-template <Numerical T>
+template <concepts::Numerical T>
 TVector2<T> TVector2<T>::GetNormalizedUnsafe() const
 {
 	return TVector2<T>(NormalizeUnsafe());
 }
 
-template <Numerical Real>
+template <concepts::Numerical Real>
 Real TVector2<Real>::Dot(const TVector2<Real>& rhs)
 {
 	return x * rhs.x + y * rhs.y;
 }
 
-template <Numerical T>
+template <concepts::Numerical T>
 typename TVector2<T>::Real TVector2<T>::CosDegrees(const TVector2<Real>& rhs)
 {
 	return frt::math::RadiansToDegrees(CosRadians(rhs));
 }
 
-template <Numerical T>
+template <concepts::Numerical T>
 typename TVector2<T>::Real TVector2<T>::CosRadians(const TVector2<Real>& rhs)
 {
 	return Dot(GetNormalizedUnsafe(), rhs.GetNormalizedUnsafe());
 }
 
-template <Numerical T>
+template <concepts::Numerical T>
 typename TVector2<T>::Real TVector2<T>::ProjectOnTo(const TVector2<Real>& rhs)
 {
 	return Dot(rhs);
 }
 
-template <Numerical T>
+template <concepts::Numerical T>
 typename TVector2<T>::Real TVector2<T>::ProjectOnToNormal(const TVector2<Real>& rhs)
 {
 	return Dot(rhs.GetNormalizedUnsafe());
 }
 
-template <Numerical Real>
+template <concepts::Numerical Real>
 TVector2<Real> TVector2<Real>::Cross(const TVector2<Real>& rhs)
 {
 	return TVector2<Real>();
 }
 
-template <Numerical Real>
+template <concepts::Numerical Real>
 Real TVector2<Real>::Dot(const TVector2<Real>& lhs, const TVector2<Real>& rhs)
 {
 	return lhs.x * rhs.x + lhs.y * rhs.y;
 }
 
-template <Numerical Real>
+template <concepts::Numerical Real>
 Real TVector2<Real>::Cos(const TVector2<Real>& lhs, const TVector2<Real>& rhs)
 {
 	return lhs.x * rhs.x + lhs.y * rhs.y;
 }
 
-template <Numerical Real>
+template <concepts::Numerical Real>
 TVector2<Real> TVector2<Real>::Cross(const TVector2<Real>& lhs, const TVector2<Real>& rhs)
 {
 	return lhs.Cross(rhs);
 }
 
-template <Numerical Real>
+template <concepts::Numerical Real>
 Real TVector2<Real>::Size() const
 {
 	return std::sqrt(x * x + y * y);
 }
 
-template <Numerical Real>
+template <concepts::Numerical Real>
 Real TVector2<Real>::SizeSquared() const
 {
 	return x * x + y * y;
 }
 
-template <Numerical Real>
+template <concepts::Numerical Real>
 Real TVector2<Real>::Dist(const TVector2<Real>& rhs) const
 {
 	return std::sqrt(x * x + y * y);
 }
 
-template <Numerical Real>
+template <concepts::Numerical Real>
 Real TVector2<Real>::DistSquared(const TVector2<Real>& rhs) const
 {
 	return (*this - rhs).Size();
 }
 
-template <Numerical Real>
+template <concepts::Numerical Real>
 Real TVector2<Real>::Dist(const TVector2<Real>& lhs, const TVector2<Real>& rhs)
 {
 	return lhs.Dist(rhs);
 }
 
-template <Numerical Real>
+template <concepts::Numerical Real>
 Real TVector2<Real>::DistSquared(const TVector2<Real>& lhs, const TVector2<Real>& rhs)
 {
 	return lhs.DistSquared(rhs);

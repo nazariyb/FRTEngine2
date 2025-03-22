@@ -9,7 +9,7 @@
 
 using namespace frt;
 
-CWorld::CWorld(memory::TMemoryHandle<graphics::Renderer> InRenderer)
+CWorld::CWorld(memory::TRefWeak<graphics::CRenderer> InRenderer)
 	: Renderer(InRenderer)
 {
 }
@@ -36,7 +36,7 @@ void CWorld::Present(float DeltaSeconds, ID3D12GraphicsCommandList* CommandList)
 
 	currentFrameResources.ObjectCB.Upload(currentFrameResources.UploadArena, Renderer->GetCommandList());
 	auto& ObjectDescriptorHandles = currentFrameResources.ObjectCB.DescriptorHeapHandleGpu;
-	for (uint32 i = 0; i < Entities.size(); ++i)
+	for (uint32 i = 0; i < Entities.Count(); ++i)
 	{
 		if (i < ObjectDescriptorHandles.size())
 		{
@@ -51,8 +51,8 @@ void CWorld::CopyConstantData()
 	// TODO: ideally, CBs should already be stored in one array
 	// TODO: use (when it's implemented) memory pool
 	uint64 alignedSize = memory::AlignAddress(sizeof(graphics::SObjectConstants), 256);
-	auto objectsData = malloc(alignedSize * Entities.size());
-	for (int i = 0; i < Entities.size(); ++i)
+	auto objectsData = malloc(alignedSize * Entities.Count());
+	for (int i = 0; i < Entities.Count(); ++i)
 	{
 		memcpy((uint8*)objectsData + alignedSize * i, &Entities[i]->Transform.GetMatrix(), sizeof(graphics::SObjectConstants));
 	}
@@ -68,9 +68,9 @@ void CWorld::CopyConstantData()
 	graphics::SPassConstants passConstants;
 	const auto [renderWidth, renderHeight] = GameInstance::GetInstance().GetWindow().GetWindowSize();
 
-	const auto& Camera = GameInstance::GetInstance().GetCamera();
-	XMMATRIX view = Camera.GetViewMatrix();
-	XMMATRIX projection = Camera.GetProjectionMatrix(90.f, (float)renderWidth / renderHeight, 1.f, 1'000.f);
+	const auto Camera = GameInstance::GetInstance().GetCamera();
+	XMMATRIX view = Camera->GetViewMatrix();
+	XMMATRIX projection = Camera->GetProjectionMatrix(90.f, (float)renderWidth / renderHeight, 1.f, 1'000.f);
 
 	XMMATRIX viewProj = XMMatrixMultiply(view, projection);
 
@@ -89,7 +89,7 @@ void CWorld::CopyConstantData()
 	XMStoreFloat4x4(&passConstants.ProjectionInverse, invProj);
 	XMStoreFloat4x4(&passConstants.ViewProjection, viewProj);
 	XMStoreFloat4x4(&passConstants.ViewProjectionInverse, invViewProj);
-	passConstants.CameraPosition = Camera.Position;
+	passConstants.CameraPosition = Camera->Position;
 	passConstants.RenderTargetSize = Vector2f(renderWidth, renderHeight);
 	passConstants.RenderTargetSizeInverse = Vector2f(1.0f / renderWidth, 1.0f / renderHeight);
 	passConstants.NearPlane = 1.0f;
@@ -100,9 +100,9 @@ void CWorld::CopyConstantData()
 	currentFrameResources.PassCB.CopyBunch(&passConstants, currentFrameResources.UploadArena);
 }
 
-memory::TMemoryHandle<CEntity> CWorld::SpawnEntity()
+memory::TRefShared<CEntity> CWorld::SpawnEntity()
 {
-	auto newEntity = memory::New<CEntity>();
-	Entities.push_back(newEntity);
+	auto newEntity = memory::NewShared<CEntity>();
+	Entities.Add(newEntity);
 	return newEntity;
 }

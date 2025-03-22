@@ -21,10 +21,14 @@ NAMESPACE_FRT_START
 FRT_SINGLETON_DEFINE_INSTANCE(GameInstance)
 
 using namespace graphics;
+using namespace memory::literals;
 
 GameInstance::GameInstance()
 	: _frameCount(0)
 {
+	MemoryPool = memory::CMemoryPool(2_Gb);
+	MemoryPool.MakeThisPrimaryInstance();
+
 	_timer = new Timer;
 
 	WindowParams windowParams;
@@ -42,14 +46,13 @@ GameInstance::GameInstance()
 	_window->PostMinimizeEvent += std::bind(&GameInstance::OnMinimize, this);
 	_window->PostRestoreFromMinimizeEvent += std::bind(&GameInstance::OnRestoreFromMinimize, this);
 
-	memory::DefaultAllocator::InitMasterInstance(1 * memory::GigaByte);
-	_renderer = memory::New<Renderer, memory::DefaultAllocator>(nullptr, _window);
-	_renderer->Resize(UserSettings.DisplaySettings.FullscreenMode == EFullscreenMode::Fullscreen);
-	DisplayOptions = graphics::GetDisplayOptions(_renderer->GetAdapter());
+	Renderer = MemoryPool.NewUnique<CRenderer>(_window);
+	Renderer->Resize(UserSettings.DisplaySettings.FullscreenMode == EFullscreenMode::Fullscreen);
+	DisplayOptions = graphics::GetDisplayOptions(Renderer->GetAdapter());
 
-	World = memory::New<CWorld, memory::DefaultAllocator>(nullptr, _renderer);
+	World = MemoryPool.NewUnique<CWorld>(Renderer.GetWeak());
 
-	Camera = memory::New<CCamera>();
+	Camera = memory::NewShared<CCamera>();
 
 	IMGUI_CHECKVERSION();
 	ImGui::CreateContext();
@@ -62,17 +65,17 @@ GameInstance::GameInstance()
 	ImGui_ImplWin32_Init(_window->GetHandle());
 
 	ImGui_ImplDX12_InitInfo imguiDx12InitInfo;
-	imguiDx12InitInfo.Device = _renderer->GetDevice();
-	imguiDx12InitInfo.CommandQueue = _renderer->GetCommandQueue();
+	imguiDx12InitInfo.Device = Renderer->GetDevice();
+	imguiDx12InitInfo.CommandQueue = Renderer->GetCommandQueue();
 	imguiDx12InitInfo.NumFramesInFlight = render::constants::FrameResourcesBufferCount;
 	imguiDx12InitInfo.RTVFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 	imguiDx12InitInfo.DSVFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
-	imguiDx12InitInfo.UserData = _renderer;
-	imguiDx12InitInfo.SrvDescriptorHeap = _renderer->ShaderDescriptorHeap.GetHeap();
+	imguiDx12InitInfo.UserData = Renderer.GetRawIgnoringLifetime();
+	imguiDx12InitInfo.SrvDescriptorHeap = Renderer->ShaderDescriptorHeap.GetHeap();
 	imguiDx12InitInfo.SrvDescriptorAllocFn =
 		[](ImGui_ImplDX12_InitInfo* InitInfo, D3D12_CPU_DESCRIPTOR_HANDLE* OutCpuHandle, D3D12_GPU_DESCRIPTOR_HANDLE* OutGpuHandle)
 		{
-			return ((Renderer*)InitInfo->UserData)->ShaderDescriptorHeap.Allocate(OutCpuHandle, OutGpuHandle);
+			return ((CRenderer*)InitInfo->UserData)->ShaderDescriptorHeap.Allocate(OutCpuHandle, OutGpuHandle);
 		};
 	imguiDx12InitInfo.SrvDescriptorFreeFn =
 		[](ImGui_ImplDX12_InitInfo*, D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle, D3D12_GPU_DESCRIPTOR_HANDLE GpuHandle)
@@ -102,20 +105,20 @@ Timer& GameInstance::GetTime() const
 
 bool GameInstance::HasGraphics() const
 {
-	return !!_renderer;
+	return !!Renderer;
 }
 
-Renderer& GameInstance::GetGraphics() const
+memory::TRefWeak<graphics::CRenderer> GameInstance::GetGraphics() const
 {
-	frt_assert(_renderer);
-	return *_renderer;
+	frt_assert(Renderer);
+	return Renderer.GetWeak();
 }
 
 void GameInstance::Load()
 {
 	std::cout << std::filesystem::current_path() << std::endl;
 
-	World->SpawnEntity()->Mesh = mesh::GenerateCube(Vector3f(.1f), 1);
+	World->SpawnEntity()->Mesh = mesh::GenerateCube(Vector3f(.3f), 1);
 	World->SpawnEntity()->Mesh = mesh::GenerateSphere(1.f, 10u, 10u);
 	// skullEnt->Model = Model::LoadFromFile(
 	// 	R"(..\Core\Content\Models\Skull\scene.gltf)",
@@ -135,14 +138,14 @@ void GameInstance::Tick(float DeltaSeconds)
 	CalculateFrameStats();
 	DisplayUserSettings();
 
-	_renderer->Tick(DeltaSeconds);
+	Renderer->Tick(DeltaSeconds);
 	Camera->Tick(DeltaSeconds);
 	World->Tick(DeltaSeconds);
 }
 
 void GameInstance::Draw(float DeltaSeconds)
 {
-	_renderer->StartFrame(*Camera);
+	Renderer->StartFrame(*Camera);
 
 	// TODO: temp
 	if (!bLoaded)
@@ -151,12 +154,12 @@ void GameInstance::Draw(float DeltaSeconds)
 		bLoaded = true;
 	}
 
-	World->Present(DeltaSeconds, _renderer->GetCommandList());
+	World->Present(DeltaSeconds, Renderer->GetCommandList());
 
 	ImGui::Render();
-	ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), _renderer->GetCommandList());
+	ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), Renderer->GetCommandList());
 
-	_renderer->Draw(DeltaSeconds, *Camera);
+	Renderer->Draw(DeltaSeconds, *Camera);
 }
 
 long long GameInstance::GetFrameCount() const
@@ -190,7 +193,7 @@ void GameInstance::CalculateFrameStats() const
 
 void GameInstance::OnWindowResize()
 {
-	_renderer->Resize(UserSettings.DisplaySettings.IsFullscreen());
+	Renderer->Resize(UserSettings.DisplaySettings.IsFullscreen());
 }
 
 void GameInstance::OnLoseFocus()
@@ -205,7 +208,7 @@ void GameInstance::OnMinimize()
 {
 	if (UserSettings.DisplaySettings.IsFullscreen())
 	{
-		_renderer->Resize(false);
+		Renderer->Resize(false);
 		_timer->Pause();
 	}
 }
@@ -239,7 +242,7 @@ void GameInstance::DisplayUserSettings()
 	}
 
 	std::vector<uint64> resolutions = DisplayOptions.GetResolutionsEncoded(displaySettings.MonitorIndex);
-	displaySettings.ResolutionIndex = math::ClampIndex(displaySettings.ResolutionIndex, resolutions);
+	displaySettings.ResolutionIndex = math::ClampIndex(displaySettings.ResolutionIndex, resolutions.size() - 1u);
 
 	{
 		std::vector<std::string> resolutionStrs;
@@ -260,7 +263,7 @@ void GameInstance::DisplayUserSettings()
 	{
 		std::vector<uint64> refreshRates = DisplayOptions.GetRefreshRatesEncoded(
 			displaySettings.MonitorIndex, resolutions[displaySettings.ResolutionIndex]);
-		displaySettings.RefreshRateIndex = math::ClampIndex(displaySettings.RefreshRateIndex, refreshRates);
+		displaySettings.RefreshRateIndex = math::ClampIndex(displaySettings.RefreshRateIndex, refreshRates.size() - 1u);
 
 		std::vector<std::string> rRStrs;
 		rRStrs.reserve(refreshRates.size());
@@ -293,7 +296,7 @@ void GameInstance::DisplayUserSettings()
 			const uint64 fullscreenResolution = DisplayOptions.GetFullscreenResolutionEncoded(displaySettings.MonitorIndex);
 			const auto resIt = std::ranges::find(resolutions, fullscreenResolution);
 			auto resIndex = std::distance(resolutions.begin(), resIt);
-			resIndex = math::ClampIndex(resIndex, resolutions);
+			resIndex = math::ClampIndex(resIndex, resolutions.size() - 1u);
 			displaySettings.ResolutionIndex = resIndex;
 		}
 

@@ -1,6 +1,7 @@
 #include "MeshGeneration.h"
 
 #include "Renderer.h"
+#include "Containers/Array.h"
 
 namespace frt::graphics::mesh
 {
@@ -11,8 +12,10 @@ namespace frt::graphics::mesh
 		constexpr uint32 vertexCount = 24u;
 		constexpr uint32 indexCount = 36u;
 
-		result.Vertices = memory::NewArray<Vertex>(vertexCount);
-		result.Indices = memory::NewArray<uint32>(indexCount);
+		result.Vertices = TArray<Vertex>(vertexCount);
+		result.Vertices.SetSizeUninitialized<false>(vertexCount);
+		result.Indices = TArray<uint32>(indexCount);
+		result.Indices.SetSizeUninitialized<false>(indexCount);
 
 		auto& v = result.Vertices;
 		auto& i = result.Indices;
@@ -197,8 +200,10 @@ namespace frt::graphics::mesh
 		const uint32 innerStacksIndexCount = (StackCount - polesCount) * SliceCount * 6u;
 		const uint32 indexCount = poleStacksIndexCount + innerStacksIndexCount;
 
-		result.Vertices = memory::NewArray<Vertex>(vertexCount);
-		result.Indices = memory::NewArray<uint32>(indexCount);
+		result.Vertices = TArray<Vertex>(vertexCount);
+		result.Vertices.SetSize<false>(vertexCount);
+		result.Indices = TArray<uint32>(indexCount);
+		result.Indices.SetSize<false>(indexCount);
 
 		auto& v = result.Vertices;
 		auto& i = result.Indices;
@@ -297,8 +302,8 @@ namespace frt::graphics::mesh
 	SMesh GenerateGeosphere()
 	{
 		SMesh result;
-		result.Vertices = memory::NewArray<Vertex>(24);
-		result.Indices = memory::NewArray<uint32>(36);
+		result.Vertices = TArray<Vertex>(24);
+		result.Indices = TArray<uint32>(36);
 
 		auto& v = result.Vertices;
 		auto& i = result.Indices;
@@ -312,8 +317,8 @@ namespace frt::graphics::mesh
 	SMesh GenerateCylinder()
 	{
 		SMesh result;
-		result.Vertices = memory::NewArray<Vertex>(24);
-		result.Indices = memory::NewArray<uint32>(36);
+		result.Vertices = TArray<Vertex>(24);
+		result.Indices = TArray<uint32>(36);
 
 		auto& v = result.Vertices;
 		auto& i = result.Indices;
@@ -327,8 +332,8 @@ namespace frt::graphics::mesh
 	SMesh GenerateGrid()
 	{
 		SMesh result;
-		result.Vertices = memory::NewArray<Vertex>(24);
-		result.Indices = memory::NewArray<uint32>(36);
+		result.Vertices = TArray<Vertex>(24);
+		result.Indices = TArray<uint32>(36);
 
 		auto& v = result.Vertices;
 		auto& i = result.Indices;
@@ -342,8 +347,8 @@ namespace frt::graphics::mesh
 	SMesh GenerateQuad()
 	{
 		SMesh result;
-		result.Vertices = memory::NewArray<Vertex>(24);
-		result.Indices = memory::NewArray<uint32>(36);
+		result.Vertices = TArray<Vertex>(24);
+		result.Indices = TArray<uint32>(36);
 
 		auto& v = result.Vertices;
 		auto& i = result.Indices;
@@ -355,18 +360,18 @@ namespace frt::graphics::mesh
 	}
 
 	void _private::CreateGpuResources(
-			const memory::TMemoryHandleArray<Vertex, memory::DefaultAllocator>& vertices,
-			const memory::TMemoryHandleArray<uint32, memory::DefaultAllocator>& indices,
+			const TArray<Vertex>& vertices,
+			const TArray<uint32>& indices,
 			ComPtr<ID3D12Resource>& outVertexBufferGpu,
 			ComPtr<ID3D12Resource>& outIndexBufferGpu)
 	{
-		Renderer& renderer = GameInstance::GetInstance().GetGraphics();
+		memory::TRefWeak<CRenderer> renderer = GameInstance::GetInstance().GetGraphics();
 
 		{
 			D3D12_RESOURCE_DESC vbDesc = {};
 			vbDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
 			vbDesc.Alignment = 0;
-			vbDesc.Width = sizeof(Vertex) * vertices.GetNum();
+			vbDesc.Width = sizeof(Vertex) * vertices.Count();
 			vbDesc.Height = 1;
 			vbDesc.DepthOrArraySize = 1;
 			vbDesc.MipLevels = 1;
@@ -376,15 +381,15 @@ namespace frt::graphics::mesh
 			vbDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 			vbDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
 
-			outVertexBufferGpu = renderer.CreateBufferAsset(
-				vbDesc, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, vertices.Get());
+			outVertexBufferGpu = renderer->CreateBufferAsset(
+				vbDesc, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, (void*)vertices.GetData());
 		}
 
 		{
 			D3D12_RESOURCE_DESC ibDesc = {};
 			ibDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
 			ibDesc.Alignment = 0;
-			ibDesc.Width = sizeof(uint32) * indices.GetNum();
+			ibDesc.Width = sizeof(uint32) * indices.Count();
 			ibDesc.Height = 1;
 			ibDesc.DepthOrArraySize = 1;
 			ibDesc.MipLevels = 1;
@@ -394,8 +399,8 @@ namespace frt::graphics::mesh
 			ibDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 			ibDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
 
-			outIndexBufferGpu = renderer.CreateBufferAsset(
-				ibDesc, D3D12_RESOURCE_STATE_INDEX_BUFFER, indices.Get());
+			outIndexBufferGpu = renderer->CreateBufferAsset(
+				ibDesc, D3D12_RESOURCE_STATE_INDEX_BUFFER, (void*)indices.GetData());
 		}
 	}
 }

@@ -1,78 +1,83 @@
 #pragma once
 
-#include "MemoryCoreTypes.h"
-#include "PoolAllocator.h"
+#include "MemoryPool.h"
+#include "Ref.h"
+
+
+namespace frt::memory
+{
+	//*****************//
+	//    Constants    //
+	//*****************//
+
+	static constexpr uint64 KiloByte = 1024ull;
+	static constexpr uint64 MegaByte = KiloByte * 1024ull;
+	static constexpr uint64 GigaByte = MegaByte * 1024ull;
+	static constexpr uint64 TeraByte = GigaByte * 1024ull;
+
+	namespace literals
+	{
+		consteval uint64 operator""_Kb(unsigned long long V) { return V * KiloByte; }
+		consteval uint64 operator""_Kb(long double V) { return (uint64)V * KiloByte; }
+		consteval uint64 operator""_Mb(unsigned long long V) { return V * MegaByte; }
+		consteval uint64 operator""_Mb(long double V) { return (uint64)V * MegaByte; }
+		consteval uint64 operator""_Gb(unsigned long long V) { return V * GigaByte; }
+		consteval uint64 operator""_Gb(long double V) { return (uint64)V * GigaByte; }
+		consteval uint64 operator""_Tb(unsigned long long V) { return V * TeraByte; }
+		consteval uint64 operator""_Tb(long double V) { return (uint64)V * TeraByte; }
+	}
+}
 
 
 namespace frt::memory
 {
 	class PoolAllocator;
-	using DefaultAllocator = PoolAllocator;
+	using DefaultPool = CMemoryPool;
 
-
-	//*****************//
-	//    New decls    //
-	//*****************//
-
-	// New single object
-	template<typename T, typename ... Args>
-	TMemoryHandle<T, DefaultAllocator> New(Args&&... InArgs);
-
-	template<typename T, typename TAllocator, typename ... Args>
-	TMemoryHandle<T, TAllocator> New(TAllocator* AllocatorInstance, Args&&... InArgs);
-	// ~New single object
-
-	// New array
-	template<typename T, bool bTInit = false, typename ... Args>
-	TMemoryHandleArray<T, DefaultAllocator> NewArray(uint64 Num, Args&&... InArgs);
-
-	template<typename T, typename TAllocator, bool bTInit = false, typename ... Args>
-	TMemoryHandleArray<T, TAllocator> NewArray(uint64 Num, TAllocator* AllocatorInstance, Args&&... InArgs);
-	// ~New array
-
-
-	//*****************//
-	//    New impls    //
-	//*****************//
-
-	// New single object
-	template <typename T, typename ... Args>
-	[[nodiscard]] TMemoryHandle<T, DefaultAllocator> New(Args&&... InArgs)
+	template <typename T, typename... Args>
+	[[nodiscard]] T* NewUnmanaged(Args&&... InArgs)
 	{
-		return New<T, DefaultAllocator>(static_cast<DefaultAllocator*>(nullptr), std::forward<Args>(InArgs)...);
+		return DefaultPool::GetPrimaryInstance()->NewUnmanaged<T>(std::forward<Args>(InArgs)...);
 	}
 
-	template <typename T, typename TAllocator, typename ... Args>
-	[[nodiscard]] TMemoryHandle<T, TAllocator> New(TAllocator* AllocatorInstance, Args&&... InArgs)
+	template <typename T, typename... Args>
+	[[nodiscard]] T* NewManaged(Args&&... InArgs)
 	{
-		TAllocator& allocator = AllocatorInstance ? *AllocatorInstance : TAllocator::GetMasterInstance();
-		void* mem = allocator.Allocate(sizeof(T));
-		T* inst = new (mem) T(std::forward<Args>(InArgs)...);
-		return TMemoryHandle<T, TAllocator> (inst, &allocator);
-	}
-	// ~New single object
-
-	// New array
-	template <typename T, bool bTInit, typename ... Args>
-	[[nodiscard]] TMemoryHandleArray<T, DefaultAllocator> NewArray(uint64 Num, Args&&... InArgs)
-	{
-		return NewArray<T, DefaultAllocator, bTInit>(Num, static_cast<DefaultAllocator*>(nullptr), std::forward<Args>(InArgs)...);
+		return DefaultPool::GetPrimaryInstance()->NewManaged<T>(std::forward<Args>(InArgs)...);
 	}
 
-	template <typename T, typename TAllocator, bool bTInit, typename ... Args>
-	[[nodiscard]] TMemoryHandleArray<T, TAllocator> NewArray(uint64 Num, TAllocator* AllocatorInstance, Args&&... InArgs)
+	template <typename T, typename... Args>
+	[[nodiscard]] TRefUnique<T> NewUnique(Args&&... InArgs)
 	{
-		TAllocator& allocator = AllocatorInstance ? *AllocatorInstance : TAllocator::GetMasterInstance();
-		void* mem = allocator.Allocate(sizeof(T) * Num);
-		if (bTInit)
-		{
-			for (uint64 i = 0; i < Num; ++i)
-			{
-				new (reinterpret_cast<T*>(mem) + i) T(std::forward<Args>(InArgs)...);
-			}
-		}
-		T* data = reinterpret_cast<T*>(mem);
-		return TMemoryHandleArray<T, TAllocator> (data, &allocator, Num);
+		return DefaultPool::GetPrimaryInstance()->NewUnique<T>(std::forward<Args>(InArgs)...);
 	}
-	// ~New array
+
+	template <typename T, typename... Args>
+	[[nodiscard]] TRefShared<T> NewShared(Args&&... InArgs)
+	{
+		return DefaultPool::GetPrimaryInstance()->NewShared<T>(std::forward<Args>(InArgs)...);
+	}
+}
+
+
+namespace frt::memory
+{
+	//*****************//
+	//      Utils      //
+	//*****************//
+
+	inline uint64 AlignAddress(const uint64 Address, const uint64 Align)
+	{
+		const uint64 mask = Align - 1;
+		frt_assert((Align & mask) == 0);
+		return (Address + mask) & ~mask;
+	}
+
+	template <typename T>
+	inline T* AlignPointer(T* Ptr, uint64 Align)
+	{
+		const uint64 addr = reinterpret_cast<uint64>(Ptr);
+		const uint64 addrAligned = AlignAddress(addr, Align);
+		return reinterpret_cast<T*>(addrAligned);
+	}
 }

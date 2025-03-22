@@ -1,7 +1,6 @@
 ﻿#include "Renderer.h"
 
 #include <complex>
-#include <iostream>
 
 #include "Camera.h"
 #include "d3dx12.h"
@@ -10,8 +9,6 @@
 #include "Model.h"
 #include "Timer.h"
 #include "Window.h"
-#include "Math/Transform.h"
-#include "Memory/MemoryCoreTypes.h"
 
 namespace frt::graphics
 {
@@ -39,7 +36,9 @@ static void GetHardwareAdapter(IDXGIFactory4* pFactory, IDXGIAdapter1** ppAdapte
 	}
 }
 
-Renderer::Renderer(Window* Window)
+using namespace memory::literals;
+
+CRenderer::CRenderer(Window* Window)
 	: _window(Window)
 	, _adapter(nullptr)
 	, _device(nullptr)
@@ -126,13 +125,13 @@ Renderer::Renderer(Window* Window)
 	// Describe and create swap chain
 	CreateSwapChain(false); // TODO: create & use startup display settings
 
-	_rtvArena = DX12_Arena(_device.Get(), D3D12_HEAP_TYPE_DEFAULT, 50 * memory::MegaByte,
+	_rtvArena = DX12_Arena(_device.Get(), D3D12_HEAP_TYPE_DEFAULT, 50_Mb,
 						D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES);
 	_dsvHeap = DX12_DescriptorHeap(_device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1);
 
-	_bufferArena = DX12_Arena(_device.Get(), D3D12_HEAP_TYPE_DEFAULT, 500 * memory::MegaByte,
+	_bufferArena = DX12_Arena(_device.Get(), D3D12_HEAP_TYPE_DEFAULT, 500_Mb,
 							D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS);
-	_textureArena = DX12_Arena(_device.Get(), D3D12_HEAP_TYPE_DEFAULT, 500 * memory::MegaByte,
+	_textureArena = DX12_Arena(_device.Get(), D3D12_HEAP_TYPE_DEFAULT, 500_Mb,
 								D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES);
 
 	ShaderDescriptorHeap = DX12_DescriptorHeap(
@@ -281,7 +280,7 @@ Renderer::Renderer(Window* Window)
 	}
 }
 
-void Renderer::Resize(bool bNewFullscreenState)
+void CRenderer::Resize(bool bNewFullscreenState)
 {
 	// Flush before changing any resources.
 	FlushCommandQueue();
@@ -394,7 +393,7 @@ void Renderer::Resize(bool bNewFullscreenState)
 	ScissorRect.bottom = drawRect.y;
 }
 
-void Renderer::StartFrame(CCamera& Camera)
+void CRenderer::StartFrame(CCamera& Camera)
 {
 	auto commandListAllocator = GetCurrentFrameResource().CommandListAllocator;
 
@@ -430,7 +429,7 @@ void Renderer::StartFrame(CCamera& Camera)
 	_commandList->SetDescriptorHeaps(1, &ShaderDescriptorHeap._heap);
 }
 
-void Renderer::Tick(float DeltaSeconds)
+void CRenderer::Tick(float DeltaSeconds)
 {
 	CurrentFrameResourceIndex = (CurrentFrameResourceIndex + 1) % render::constants::FrameResourcesBufferCount;
 
@@ -443,7 +442,7 @@ void Renderer::Tick(float DeltaSeconds)
 	}
 }
 
-void Renderer::Draw(float DeltaSeconds, CCamera& Camera)
+void CRenderer::Draw(float DeltaSeconds, CCamera& Camera)
 {
 	{
 		D3D12_RESOURCE_BARRIER resourceBarrier = {};
@@ -470,42 +469,42 @@ void Renderer::Draw(float DeltaSeconds, CCamera& Camera)
 	GetCurrentFrameResource().UploadArena.Clear();
 }
 
-IDXGIAdapter1* Renderer::GetAdapter()
+IDXGIAdapter1* CRenderer::GetAdapter()
 {
 	return _adapter.Get();
 }
 
-ID3D12Device* Renderer::GetDevice()
+ID3D12Device* CRenderer::GetDevice()
 {
 	return _device.Get();
 }
 
-ID3D12CommandQueue* Renderer::GetCommandQueue()
+ID3D12CommandQueue* CRenderer::GetCommandQueue()
 {
 	return _commandQueue.Get();
 }
 
-ID3D12GraphicsCommandList* Renderer::GetCommandList()
+ID3D12GraphicsCommandList* CRenderer::GetCommandList()
 {
 	return _commandList.Get();
 }
 
-DX12_Arena& Renderer::GetBufferArena()
+DX12_Arena& CRenderer::GetBufferArena()
 {
 	return _bufferArena;
 }
 
-DX12_DescriptorHeap& Renderer::GetDescriptorHeap()
+DX12_DescriptorHeap& CRenderer::GetDescriptorHeap()
 {
 	return ShaderDescriptorHeap;
 }
 
-SFrameResources& Renderer::GetCurrentFrameResource()
+SFrameResources& CRenderer::GetCurrentFrameResource()
 {
 	return FramesResources[CurrentFrameResourceIndex];
 }
 
-ID3D12Resource* Renderer::CreateBufferAsset(
+ID3D12Resource* CRenderer::CreateBufferAsset(
 	const D3D12_RESOURCE_DESC& Desc, D3D12_RESOURCE_STATES InitialState, void* BufferData)
 {
 	uint64 uploadOffset = 0;
@@ -528,7 +527,7 @@ ID3D12Resource* Renderer::CreateBufferAsset(
 	return resource;
 }
 
-ID3D12Resource* Renderer::CreateTextureAsset(
+ID3D12Resource* CRenderer::CreateTextureAsset(
 	const D3D12_RESOURCE_DESC& Desc, D3D12_RESOURCE_STATES InitialState, void* Texels)
 {
 	D3D12_RESOURCE_ALLOCATION_INFO allocationInfo = _device->GetResourceAllocationInfo(0, 1, &Desc);
@@ -584,14 +583,14 @@ ID3D12Resource* Renderer::CreateTextureAsset(
 	return resoruce;
 }
 
-void Renderer::CreateShaderResourceView(ID3D12Resource* Texture, const D3D12_SHADER_RESOURCE_VIEW_DESC& Desc,
+void CRenderer::CreateShaderResourceView(ID3D12Resource* Texture, const D3D12_SHADER_RESOURCE_VIEW_DESC& Desc,
 	D3D12_CPU_DESCRIPTOR_HANDLE* OutCpuHandle, D3D12_GPU_DESCRIPTOR_HANDLE* OutGpuHandle)
 {
 	ShaderDescriptorHeap.Allocate(OutCpuHandle, OutGpuHandle);
 	_device->CreateShaderResourceView(Texture, &Desc, *OutCpuHandle);
 }
 
-void Renderer::CreateSwapChain(bool bFullscreen)
+void CRenderer::CreateSwapChain(bool bFullscreen)
 {
 	_swapChain.Reset();
 
@@ -624,7 +623,7 @@ void Renderer::CreateSwapChain(bool bFullscreen)
 		_commandQueue.Get(), _window->GetHandle(), &swapChainDesc, &fullscreenDesc, nullptr, &_swapChain));
 }
 
-void Renderer::FlushCommandQueue()
+void CRenderer::FlushCommandQueue()
 {
 	_fenceValue++;
 	_commandQueue->Signal(_fence.Get(), _fenceValue);

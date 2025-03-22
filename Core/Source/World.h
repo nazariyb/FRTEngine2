@@ -1,9 +1,9 @@
 ﻿#pragma once
 
-#include <vector>
-
 #include "CoreTypes.h"
 #include "Entity.h"
+#include "Graphics/Renderer.h"
+
 
 namespace frt
 {
@@ -11,7 +11,7 @@ namespace frt
 	{
 	public:
 		CWorld() = delete;
-		explicit CWorld(memory::TMemoryHandle<graphics::Renderer> InRenderer); 
+		explicit CWorld(memory::TRefWeak<graphics::CRenderer> InRenderer); 
 		virtual ~CWorld() = default;
 
 		virtual void Tick(float DeltaSeconds);
@@ -19,9 +19,9 @@ namespace frt
 
 		void CopyConstantData();
 
-		memory::TMemoryHandle<CEntity> SpawnEntity();
+		memory::TRefShared<CEntity> SpawnEntity();
 
-		memory::TMemoryHandle<graphics::Renderer> Renderer;
-		std::vector<memory::TMemoryHandle<CEntity>> Entities;
+		memory::TRefWeak<graphics::CRenderer> Renderer;
+		TArray<memory::TRefShared<CEntity>> Entities;
 	};
 }

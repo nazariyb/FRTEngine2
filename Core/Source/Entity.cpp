@@ -19,14 +19,14 @@ void frt::CEntity::Present(float DeltaSeconds, ID3D12GraphicsCommandList* Comman
 	{
 		D3D12_INDEX_BUFFER_VIEW indexBufferView = {};
 		indexBufferView.BufferLocation = Mesh.IndexBufferGpu->GetGPUVirtualAddress();
-		indexBufferView.SizeInBytes = static_cast<uint32>(Mesh.Indices.GetSize());
+		indexBufferView.SizeInBytes = Mesh.Indices.Count() * sizeof(uint32);
 		indexBufferView.Format = DXGI_FORMAT_R32_UINT;
 		CommandList->IASetIndexBuffer(&indexBufferView);
 	}
 	{
 		D3D12_VERTEX_BUFFER_VIEW vertexBufferViews[1] = {};
 		vertexBufferViews[0].BufferLocation = Mesh.VertexBufferGpu->GetGPUVirtualAddress();
-		vertexBufferViews[0].SizeInBytes = static_cast<uint32>(Mesh.Vertices.GetSize());
+		vertexBufferViews[0].SizeInBytes = Mesh.Vertices.Count() * sizeof(graphics::Vertex);
 		vertexBufferViews[0].StrideInBytes = sizeof(graphics::Vertex);
 		CommandList->IASetVertexBuffers(0, 1, vertexBufferViews);
 	}
@@ -37,6 +37,6 @@ void frt::CEntity::Present(float DeltaSeconds, ID3D12GraphicsCommandList* Comman
 		// graphics::Texture& texture = Model.textures[mesh.textureIndex];
 
 		// CommandList->SetGraphicsRootDescriptorTable(0, mesh.Texture->gpuDescriptor);
-		CommandList->DrawIndexedInstanced(Mesh.Indices.GetNum(), 1, Mesh.indexOffset, Mesh.vertexOffset, 0);
+		CommandList->DrawIndexedInstanced(Mesh.Indices.Count(), 1, Mesh.indexOffset, Mesh.vertexOffset, 0);
 	}
 }

@@ -1,14 +1,13 @@
 #pragma once
 
-#include <memory>
-
 #include "Core.h"
 #include "Singleton.h"
 #include "World.h"
 #include "Graphics/RenderCommonTypes.h"
-#include "Memory/Memory.h"
+#include "Memory/MemoryPool.h"
 #include "User/UserSettings.h"
-
+#include "Memory/Ref.h"
+#include "Window.h"
 
 namespace frt::graphics
 {
@@ -17,7 +16,7 @@ namespace frt::graphics
 
 namespace frt::graphics
 {
-	class Renderer;
+	class CRenderer;
 }
 
 namespace frt
@@ -39,11 +38,11 @@ public:
 	Timer& GetTime() const;
 
 	bool HasGraphics() const;
-	graphics::Renderer& GetGraphics() const;
+	memory::TRefWeak<graphics::CRenderer> GetGraphics() const;
 
 	// temp
 	Window& GetWindow() const { return *_window; }
-	graphics::CCamera& GetCamera() const { return *Camera; }
+	memory::TRefWeak<graphics::CCamera> GetCamera() const { return Camera.GetWeak(); }
 	// ~temp
 
 	virtual void Load();
@@ -68,13 +67,14 @@ protected:
 	virtual void DisplayUserSettings();
 
 protected:
+	memory::CMemoryPool MemoryPool;
 	Timer* _timer;
 	Window* _window;
-	memory::TMemoryHandle<graphics::Renderer> _renderer;
+	memory::TRefUnique<graphics::CRenderer> Renderer;
 
-	memory::TMemoryHandle<CWorld> World;
+	memory::TRefUnique<CWorld> World;
 
-	memory::TMemoryHandle<graphics::CCamera> Camera;
+	memory::TRefShared<graphics::CCamera> Camera;
 
 	graphics::SDisplayOptions DisplayOptions;
 	SUserSettings UserSettings;

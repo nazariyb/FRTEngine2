@@ -21,12 +21,12 @@ namespace frt::graphics
 {
 class CCamera;
 
-class Renderer
+class CRenderer
 {
 public:
 
-	Renderer() = delete;
-	FRT_CORE_API explicit Renderer(Window* Window);
+	CRenderer() = delete;
+	FRT_CORE_API explicit CRenderer(Window* Window);
 
 	void Resize(bool bNewFullscreenState);
 

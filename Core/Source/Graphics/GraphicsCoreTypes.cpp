@@ -1,7 +1,7 @@
 #include "GraphicsCoreTypes.h"
 
 #include "Exception.h"
-#include "Memory/MemoryCoreTypes.h"
+#include "Memory/Memory.h"
 
 namespace frt::graphics
 {

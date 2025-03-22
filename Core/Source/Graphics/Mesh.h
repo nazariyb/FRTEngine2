@@ -3,6 +3,8 @@
 #include "Core.h"
 #include "CoreTypes.h"
 #include "Texture.h"
+#include "Containers/Array.h"
+
 
 namespace frt::graphics
 {
@@ -14,14 +16,14 @@ namespace frt::graphics
 		uint32 vertexCount;
 		uint32 textureIndex;
 
-		memory::TMemoryHandleArray<Vertex, memory::DefaultAllocator> Vertices;
-		memory::TMemoryHandleArray<uint32, memory::DefaultAllocator> Indices;
+		TArray<Vertex> Vertices;
+		TArray<uint32> Indices;
 
 		ComPtr<ID3D12Resource> VertexBufferGpu = nullptr;
 		ComPtr<ID3D12Resource> IndexBufferGpu = nullptr;
 
 		// temp?
-		memory::TMemoryHandle<Texture> Texture;
+		memory::TRefShared<Texture> Texture;
 
 		SMesh() : indexOffset(0), indexCount(0), vertexOffset(0), vertexCount(0), textureIndex(0) {}
 	};
