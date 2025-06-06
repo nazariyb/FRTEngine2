@@ -297,13 +297,17 @@ Real TVector2<Real>::SizeSquared() const
 template <concepts::Numerical Real>
 Real TVector2<Real>::Dist(const TVector2<Real>& rhs) const
 {
-	return std::sqrt(x * x + y * y);
+	const Real dx = x - rhs.x;
+	const Real dy = y - rhs.y;
+	return std::sqrt(dx * dx + dy * dy);
 }
 
 template <concepts::Numerical Real>
 Real TVector2<Real>::DistSquared(const TVector2<Real>& rhs) const
 {
-	return (*this - rhs).Size();
+	const Real dx = x - rhs.x;
+	const Real dy = y - rhs.y;
+	return dx * dx + dy * dy;
 }
 
 template <concepts::Numerical Real>
