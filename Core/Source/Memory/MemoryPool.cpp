@@ -90,7 +90,6 @@ namespace frt::memory
 	void* CMemoryPool::ReAllocate(void* InMemory, uint64 Size)
 	{
 		frt_assert(Tlsf);
-		frt_assert(InMemory);
 
 		return Tlsf->Realloc(InMemory, Size);
 	}
