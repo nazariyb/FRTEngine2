@@ -21,9 +21,9 @@ public:
 	Real x;
 	Real y;
 
-	TVector2() : x(0), y(0) {}
-	explicit TVector2(Real F) : x(F), y(F) {}
-	TVector2(Real X, Real Y) : x(X), y(Y) {}
+	constexpr TVector2() : x(0), y(0) {}
+	constexpr explicit TVector2(Real F) : x(F), y(F) {}
+	constexpr TVector2(Real X, Real Y) : x(X), y(Y) {}
 
 	TVector2(const TVector2<Real>&) = default;
 	TVector2(TVector2<Real>&&) = default;
@@ -42,14 +42,17 @@ public:
 	TVector2<Real>& operator*=(const Real& rhs);
 	TVector2<Real>& operator/=(const Real& rhs);
 
-	TVector2<Real>& operator+(const TVector2<Real>& rhs);
-	TVector2<Real>& operator-(const TVector2<Real>& rhs);
-	TVector2<Real>& operator*(const TVector2<Real>& rhs);
-	TVector2<Real>& operator/(const TVector2<Real>& rhs);
-	TVector2<Real>& operator+(const Real& rhs);
-	TVector2<Real>& operator-(const Real& rhs);
-	TVector2<Real>& operator*(const Real& rhs);
-	TVector2<Real>& operator/(const Real& rhs);
+	template<concepts::Numerical N> friend constexpr TVector2<N> operator+(const TVector2<N>& lhs, const TVector2<N>& rhs) noexcept;
+	template<concepts::Numerical N> friend constexpr TVector2<N> operator-(const TVector2<N>& lhs, const TVector2<N>& rhs) noexcept;
+	template<concepts::Numerical N> friend constexpr TVector2<N> operator*(const TVector2<N>& lhs, const TVector2<N>& rhs) noexcept;
+	template<concepts::Numerical N> friend constexpr TVector2<N> operator/(const TVector2<N>& lhs, const TVector2<N>& rhs) noexcept;
+	template<concepts::Numerical L, concepts::Numerical R> constexpr friend TVector2<L> operator+(const TVector2<L>& lhs, const R& rhs) noexcept;
+	template<concepts::Numerical L, concepts::Numerical R> constexpr friend TVector2<L> operator-(const TVector2<L>& lhs, const R& rhs) noexcept;
+	template<concepts::Numerical L, concepts::Numerical R> constexpr friend TVector2<L> operator*(const TVector2<L>& lhs, const R& rhs) noexcept;
+	template<concepts::Numerical L, concepts::Numerical R> constexpr friend TVector2<L> operator/(const TVector2<L>& lhs, const R& rhs) noexcept;
+	template<concepts::Numerical L, concepts::Numerical R> constexpr friend TVector2<R> operator+(const L& lhs, const TVector2<R>& rhs) noexcept;
+	template<concepts::Numerical L, concepts::Numerical R> constexpr friend TVector2<R> operator-(const L& lhs, const TVector2<R>& rhs) noexcept;
+	template<concepts::Numerical L, concepts::Numerical R> constexpr friend TVector2<R> operator*(const L& lhs, const TVector2<R>& rhs) noexcept;
 
 	TVector2<T>& NormalizeUnsafe();
 	TVector2<T> GetNormalizedUnsafe() const;
@@ -165,52 +168,70 @@ TVector2<Real>& TVector2<Real>::operator/=(const Real& rhs)
 	return *this;
 }
 
-template <concepts::Numerical Real>
-TVector2<Real>& TVector2<Real>::operator+(const TVector2<Real>& rhs)
+template<concepts::Numerical N>
+constexpr TVector2<N> operator+(const TVector2<N>& lhs, const TVector2<N>& rhs) noexcept
 {
-	return TVector2<Real>(x + rhs.x, y + rhs.y);
+	return TVector2<N>(lhs.x + rhs.x, lhs.y + rhs.y);
 }
 
-template <concepts::Numerical Real>
-TVector2<Real>& TVector2<Real>::operator-(const TVector2<Real>& rhs)
+template<concepts::Numerical N>
+constexpr TVector2<N> operator-(const TVector2<N>& lhs, const TVector2<N>& rhs) noexcept
 {
-	return TVector2<Real>(x - rhs.x, y - rhs.y);
+	return TVector2<N>(lhs.x - rhs.x, lhs.y - rhs.y);
 }
 
-template <concepts::Numerical Real>
-TVector2<Real>& TVector2<Real>::operator*(const TVector2<Real>& rhs)
+template<concepts::Numerical N>
+constexpr TVector2<N> operator*(const TVector2<N>& lhs, const TVector2<N>& rhs) noexcept
 {
-	return TVector2<Real>(x * rhs.x, y * rhs.y);
+	return TVector2<N>(lhs.x * rhs.x, lhs.y * rhs.y);
 }
 
-template <concepts::Numerical Real>
-TVector2<Real>& TVector2<Real>::operator/(const TVector2<Real>& rhs)
+template<concepts::Numerical N>
+constexpr TVector2<N> operator/(const TVector2<N>& lhs, const TVector2<N>& rhs) noexcept
 {
-	return TVector2<Real>(x / rhs.x, y / rhs.y);
+	return TVector2<N>(lhs.x / rhs.x, lhs.y / rhs.y);
 }
 
-template <concepts::Numerical Real>
-TVector2<Real>& TVector2<Real>::operator+(const Real& rhs)
+template<concepts::Numerical L, concepts::Numerical R>
+constexpr TVector2<L> operator+(const TVector2<L>& lhs, const R& rhs) noexcept
 {
-	return TVector2<Real>(x + rhs, y + rhs);
+	return TVector2<L>(lhs.x + rhs, lhs.y + rhs);
 }
 
-template <concepts::Numerical Real>
-TVector2<Real>& TVector2<Real>::operator-(const Real& rhs)
+template<concepts::Numerical L, concepts::Numerical R>
+constexpr TVector2<L> operator-(const TVector2<L>& lhs, const R& rhs) noexcept
 {
-	return TVector2<Real>(x - rhs, y - rhs);
+	return TVector2<L>(lhs.x - rhs, lhs.y - rhs);
 }
 
-template <concepts::Numerical Real>
-TVector2<Real>& TVector2<Real>::operator*(const Real& rhs)
+template<concepts::Numerical L, concepts::Numerical R>
+constexpr TVector2<L> operator*(const TVector2<L>& lhs, const R& rhs) noexcept
 {
-	return TVector2<Real>(x * rhs, y * rhs);
+	return TVector2<L>(lhs.x * rhs, lhs.y * rhs);
 }
 
-template <concepts::Numerical Real>
-TVector2<Real>& TVector2<Real>::operator/(const Real& rhs)
+template<concepts::Numerical L, concepts::Numerical R>
+constexpr TVector2<L> operator/(const TVector2<L>& lhs, const R& rhs) noexcept
 {
-	return TVector2<Real>(x / rhs, y / rhs);
+	return TVector2<L>(lhs.x / rhs, lhs.y / rhs);
+}
+
+template<concepts::Numerical L, concepts::Numerical R>
+constexpr TVector2<R> operator+(const L& lhs, const TVector2<R>& rhs) noexcept
+{
+	return rhs + lhs;
+}
+
+template<concepts::Numerical L, concepts::Numerical R>
+constexpr TVector2<R> operator-(const L& lhs, const TVector2<R>& rhs) noexcept
+{
+	return -rhs + lhs;
+}
+
+template<concepts::Numerical L, concepts::Numerical R>
+constexpr TVector2<R> operator*(const L& lhs, const TVector2<R>& rhs) noexcept
+{
+	return rhs * lhs;
 }
 
 template <concepts::Numerical T>

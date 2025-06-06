@@ -3,6 +3,7 @@
 #include <cmath>
 
 #include "Core.h"
+#include "Math.h"
 #include "MathUtility.h"
 
 
@@ -23,10 +24,10 @@ public:
 	Real y;
 	Real z;
 
-	TVector3() : x(0), y(0), z(0) {}
-	explicit TVector3(Real F) : x(F), y(F), z(F) {}
-	TVector3(Real X, Real Y) : x(X), y(Y), z(0) {}
-	TVector3(Real X, Real Y, Real Z) : x(X), y(Y), z(Z) {}
+	constexpr TVector3() : x(0), y(0), z(0) {}
+	constexpr explicit TVector3(Real F) : x(F), y(F), z(F) {}
+	constexpr TVector3(Real X, Real Y) : x(X), y(Y), z(0) {}
+	constexpr TVector3(Real X, Real Y, Real Z) : x(X), y(Y), z(Z) {}
 
 	TVector3(const TVector3<Real>&) = default;
 	TVector3(TVector3<Real>&&) = default;
@@ -45,14 +46,17 @@ public:
 	TVector3<Real>& operator*=(const Real& rhs);
 	TVector3<Real>& operator/=(const Real& rhs);
 
-	TVector3<Real>& operator+(const TVector3<Real>& rhs);
-	TVector3<Real>& operator-(const TVector3<Real>& rhs);
-	TVector3<Real>& operator*(const TVector3<Real>& rhs);
-	TVector3<Real>& operator/(const TVector3<Real>& rhs);
-	TVector3<Real>& operator+(const Real& rhs);
-	TVector3<Real>& operator-(const Real& rhs);
-	TVector3<Real>& operator*(const Real& rhs);
-	TVector3<Real>& operator/(const Real& rhs);
+	template<concepts::Numerical N> friend constexpr TVector3<N> operator+(const TVector3<N>& lhs, const TVector3<N>& rhs) noexcept;
+	template<concepts::Numerical N> friend constexpr TVector3<N> operator-(const TVector3<N>& lhs, const TVector3<N>& rhs) noexcept;
+	template<concepts::Numerical N> friend constexpr TVector3<N> operator*(const TVector3<N>& lhs, const TVector3<N>& rhs) noexcept;
+	template<concepts::Numerical N> friend constexpr TVector3<N> operator/(const TVector3<N>& lhs, const TVector3<N>& rhs) noexcept;
+	template<concepts::Numerical L, concepts::Numerical R> constexpr friend TVector3<L> operator+(const TVector3<L>& lhs, const R& rhs) noexcept;
+	template<concepts::Numerical L, concepts::Numerical R> constexpr friend TVector3<L> operator-(const TVector3<L>& lhs, const R& rhs) noexcept;
+	template<concepts::Numerical L, concepts::Numerical R> constexpr friend TVector3<L> operator*(const TVector3<L>& lhs, const R& rhs) noexcept;
+	template<concepts::Numerical L, concepts::Numerical R> constexpr friend TVector3<L> operator/(const TVector3<L>& lhs, const R& rhs) noexcept;
+	template<concepts::Numerical L, concepts::Numerical R> constexpr friend TVector3<R> operator+(const L& lhs, const TVector3<R>& rhs) noexcept;
+	template<concepts::Numerical L, concepts::Numerical R> constexpr friend TVector3<R> operator-(const L& lhs, const TVector3<R>& rhs) noexcept;
+	template<concepts::Numerical L, concepts::Numerical R> constexpr friend TVector3<R> operator*(const L& lhs, const TVector3<R>& rhs) noexcept;
 
 	TVector3<T>& NormalizeUnsafe();
 	TVector3<T> GetNormalizedUnsafe() const;
@@ -175,52 +179,70 @@ TVector3<Real>& TVector3<Real>::operator/=(const Real& rhs)
 	return *this;
 }
 
-template <typename Real>
-TVector3<Real>& TVector3<Real>::operator+(const TVector3<Real>& rhs)
+template<concepts::Numerical N>
+constexpr TVector3<N> operator+(const TVector3<N>& lhs, const TVector3<N>& rhs) noexcept
 {
-	return TVector3<Real>(x + rhs.x, y + rhs.y, z + rhs.z);
+	return TVector3<N>(lhs.x + rhs.x, lhs.y + rhs.y, lhs.z + rhs.z);
 }
 
-template <typename Real>
-TVector3<Real>& TVector3<Real>::operator-(const TVector3<Real>& rhs)
+template<concepts::Numerical N>
+constexpr TVector3<N> operator-(const TVector3<N>& lhs, const TVector3<N>& rhs) noexcept
 {
-	return TVector3<Real>(x - rhs.x, y - rhs.y, z - rhs.z);
+	return TVector3<N>(lhs.x - rhs.x, lhs.y - rhs.y, lhs.z - rhs.z);
 }
 
-template <typename Real>
-TVector3<Real>& TVector3<Real>::operator*(const TVector3<Real>& rhs)
+template<concepts::Numerical N>
+constexpr TVector3<N> operator*(const TVector3<N>& lhs, const TVector3<N>& rhs) noexcept
 {
-	return TVector3<Real>(x * rhs.x, y * rhs.y, z * rhs.z);
+	return TVector3<N>(lhs.x * rhs.x, lhs.y * rhs.y, lhs.z * rhs.z);
 }
 
-template <typename Real>
-TVector3<Real>& TVector3<Real>::operator/(const TVector3<Real>& rhs)
+template<concepts::Numerical N>
+constexpr TVector3<N> operator/(const TVector3<N>& lhs, const TVector3<N>& rhs) noexcept
 {
-	return TVector3<Real>(x / rhs.x, y / rhs.y, z / rhs.z);
+	return TVector3<N>(lhs.x / rhs.x, lhs.y / rhs.y, lhs.z / rhs.z);
 }
 
-template <typename Real>
-TVector3<Real>& TVector3<Real>::operator+(const Real& rhs)
+template<concepts::Numerical L, concepts::Numerical R>
+constexpr TVector3<L> operator+(const TVector3<L>& lhs, const R& rhs) noexcept
 {
-	return TVector3<Real>(x + rhs, y + rhs, z + rhs);
+	return TVector3<L>(lhs.x + rhs, lhs.y + rhs, lhs.z + rhs);
 }
 
-template <typename Real>
-TVector3<Real>& TVector3<Real>::operator-(const Real& rhs)
+template<concepts::Numerical L, concepts::Numerical R>
+constexpr TVector3<L> operator-(const TVector3<L>& lhs, const R& rhs) noexcept
 {
-	return TVector3<Real>(x - rhs, y - rhs, z - rhs);
+	return TVector3<L>(lhs.x - rhs, lhs.y - rhs, lhs.z - rhs);
 }
 
-template <typename Real>
-TVector3<Real>& TVector3<Real>::operator*(const Real& rhs)
+template<concepts::Numerical L, concepts::Numerical R>
+constexpr TVector3<L> operator*(const TVector3<L>& lhs, const R& rhs) noexcept
 {
-	return TVector3<Real>(x * rhs, y * rhs, z * rhs);
+	return TVector3<L>(lhs.x * rhs, lhs.y * rhs, lhs.z * rhs);
 }
 
-template <typename Real>
-TVector3<Real>& TVector3<Real>::operator/(const Real& rhs)
+template<concepts::Numerical L, concepts::Numerical R>
+constexpr TVector3<L> operator/(const TVector3<L>& lhs, const R& rhs) noexcept
 {
-	return TVector3<Real>(x / rhs, y / rhs, z / rhs);
+	return TVector3<L>(lhs.x / rhs, lhs.y / rhs, lhs.z / rhs);
+}
+
+template<concepts::Numerical L, concepts::Numerical R>
+constexpr TVector3<R> operator+(const L& lhs, const TVector3<R>& rhs) noexcept
+{
+	return rhs + lhs;
+}
+
+template<concepts::Numerical L, concepts::Numerical R>
+constexpr TVector3<R> operator-(const L& lhs, const TVector3<R>& rhs) noexcept
+{
+	return -rhs + lhs;
+}
+
+template<concepts::Numerical L, concepts::Numerical R>
+constexpr TVector3<R> operator*(const L& lhs, const TVector3<R>& rhs) noexcept
+{
+	return rhs * lhs;
 }
 
 template <typename T>
@@ -236,7 +258,7 @@ TVector3<T>& TVector3<T>::NormalizeUnsafe()
 template <typename T>
 TVector3<T> TVector3<T>::GetNormalizedUnsafe() const
 {
-	return TVector3<T>().NormalizeUnsafe();
+	return TVector3<T>(*this).NormalizeUnsafe();
 }
 
 template <typename Real>
