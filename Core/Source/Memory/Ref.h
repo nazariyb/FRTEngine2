@@ -32,8 +32,8 @@ namespace refs{} using namespace refs;
  * @param TRefInOut    : non-owning, wraps raw ptr, read-write access, can't be null
  * @param TRefWeak     : non-owning, analogue to std::weak_ptr
  * @param TRefShared   : owning, analogue to std::shared_ptr
- * @param TRefUnique   : owning, similar to std::weak_ptr, but has extra cost as it also has control block and allows getting weak ptrs.
- *	This makes RefUnique's usage more clear as one don't have to use raw ptr or to move ownership just to use an object in somme function.
+ * @param TRefUnique   : owning, similar to std::unique_ptr, but has extra cost as it also has control block and allows getting weak ptrs.
+ *	This makes RefUnique's usage more clear as one don't have to use raw ptr or to move ownership just to use an object in some function.
  *
  * @todo multithreading support
  */
