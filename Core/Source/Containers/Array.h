@@ -121,7 +121,7 @@ namespace frt
 		const TElementType& Last() const;
 		// ~Getters
 
-		// STL compatability
+		// STL compatibility
 		using value_type = TElementType;
 		using size_type = uint32;
 		using difference_type = int64;
