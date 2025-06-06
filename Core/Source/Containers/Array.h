@@ -386,7 +386,7 @@ namespace frt
 
 		for (uint32 i = Size; i > InIndex; --i)
 		{
-			*(Data + i) = std::move(Data + i - 1);
+			*(Data + i) = std::move(*(Data + i - 1));
 		}
 		++Size;
 
