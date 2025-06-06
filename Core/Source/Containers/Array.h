@@ -34,6 +34,12 @@ namespace frt
 		TArray& operator=(TArray&& Other) noexcept;
 		~TArray();
 
+		// constructor with initializer list
+		TArray(std::initializer_list<TElementType> InList);
+		TArray(const std::vector<TElementType>& InVector);
+		TArray& operator=(std::initializer_list<TElementType> InList);
+		TArray& operator=(const std::vector<TElementType>& InVector);
+
 		// Allocators
 		TArray(uint32 InCapacity);
 		void SetCapacity(uint32 InCapacity);
@@ -44,6 +50,7 @@ namespace frt
 		template <bool bExtendIfNeeded = true>
 		uint32 SetSize(uint32 InSize, const TElementType& InInitWithValue);
 
+		// TODO: handle InSize < Size
 		template <bool bExtendIfNeeded = true>
 		uint32 SetSizeUninitialized(uint32 InSize);
 
@@ -86,6 +93,9 @@ namespace frt
 		template <bool bKeepOrder = true, IndexStrategy::EType TIndexType = IndexStrategy::IS_Default>
 		void RemoveAt(IndexType InIndex);
 
+		/**
+		 * Destruct all elements, set size to 0, but do not free memory.
+		 */
 		void Clear();
 		// ~Removers
 
@@ -198,6 +208,8 @@ namespace frt
 	template <typename ElementType, typename TAllocator>
 	TArray<ElementType, TAllocator>& TArray<ElementType, TAllocator>::operator=(TArray&& Other) noexcept
 	{
+		Clear();
+
 		Data = Other.Data;
 		Size = Other.Size;
 		Capacity = Other.Capacity;
@@ -213,6 +225,64 @@ namespace frt
 	TArray<ElementType, TAllocator>::~TArray()
 	{
 		Free();
+	}
+
+	template <typename TElementType, typename TAllocator>
+	TArray<TElementType, TAllocator>::TArray(std::initializer_list<TElementType> InList)
+	{
+		Capacity = InList.size();
+		ReAlloc(Capacity);
+
+		for (const auto& elem : InList)
+		{
+			Add(elem);
+		}
+	}
+
+	template <typename TElementType, typename TAllocator>
+	TArray<TElementType, TAllocator>::TArray(const std::vector<TElementType>& InVector)
+	{
+		Capacity = InVector.size();
+		ReAlloc(Capacity);
+
+		for (const auto& elem : InVector)
+		{
+			Add(elem);
+		}
+	}
+
+	template <typename TElementType, typename TAllocator>
+	TArray<TElementType, TAllocator>& TArray<TElementType, TAllocator>::operator=(
+		std::initializer_list<TElementType> InList)
+	{
+		Clear();
+
+		Capacity = InList.size();
+		ReAlloc(Capacity);
+
+		for (const auto& elem : InList)
+		{
+			Add(elem);
+		}
+
+		return *this;
+	}
+
+	template <typename TElementType, typename TAllocator>
+	TArray<TElementType, TAllocator>& TArray<TElementType, TAllocator>::operator=(
+		const std::vector<TElementType>& InVector)
+	{
+		Clear();
+
+		Capacity = InVector.size();
+		ReAlloc(Capacity);
+
+		for (const auto& elem : InVector)
+		{
+			Add(elem);
+		}
+
+		return *this;
 	}
 
 	template <typename ElementType, typename TAllocator>
