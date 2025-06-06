@@ -131,7 +131,7 @@ namespace frt
 		const TElementType& Last() const;
 		// ~Getters
 
-		// STL compatability
+		// STL compatibility
 		using value_type = TElementType;
 		using size_type = uint32;
 		using difference_type = int64;
@@ -456,7 +456,7 @@ namespace frt
 
 		for (uint32 i = Size; i > InIndex; --i)
 		{
-			*(Data + i) = std::move(Data + i - 1);
+			*(Data + i) = std::move(*(Data + i - 1));
 		}
 		++Size;
 

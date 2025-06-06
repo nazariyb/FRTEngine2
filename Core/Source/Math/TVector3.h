@@ -335,13 +335,19 @@ Real TVector3<Real>::SizeSquared() const
 template <typename Real>
 Real TVector3<Real>::Dist(const TVector3<Real>& rhs) const
 {
-	return std::sqrt(x * x + y * y + z * z);
+	const Real dx = x - rhs.x;
+	const Real dy = y - rhs.y;
+	const Real dz = z - rhs.z;
+	return std::sqrt(dx * dx + dy * dy + dz * dz);
 }
 
 template <typename Real>
 Real TVector3<Real>::DistSquared(const TVector3<Real>& rhs) const
 {
-	return (*this - rhs).Size();
+	const Real dx = x - rhs.x;
+	const Real dy = y - rhs.y;
+	const Real dz = z - rhs.z;
+	return dx * dx + dy * dy + dz * dz;
 }
 
 template <typename Real>
