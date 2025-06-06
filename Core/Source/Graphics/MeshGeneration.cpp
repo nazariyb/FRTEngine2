@@ -200,10 +200,8 @@ namespace frt::graphics::mesh
 		const uint32 innerStacksIndexCount = (StackCount - polesCount) * SliceCount * 6u;
 		const uint32 indexCount = poleStacksIndexCount + innerStacksIndexCount;
 
-		result.Vertices = TArray<Vertex>(vertexCount);
-		result.Vertices.SetSize<false>(vertexCount);
-		result.Indices = TArray<uint32>(indexCount);
-		result.Indices.SetSize<false>(indexCount);
+		result.Vertices.SetSize<true>(vertexCount);
+		result.Indices.SetSize<true>(indexCount);
 
 		auto& v = result.Vertices;
 		auto& i = result.Indices;
@@ -299,14 +297,76 @@ namespace frt::graphics::mesh
 		return result;
 	}
 
-	SMesh GenerateGeosphere()
+	SMesh GenerateGeosphere(float Radius, uint32 SubdivisionsCount)
 	{
 		SMesh result;
-		result.Vertices = TArray<Vertex>(24);
-		result.Indices = TArray<uint32>(36);
+
+		const uint32 subdivisions = math::Min<uint32>(SubdivisionsCount, 6u);
+
+		constexpr uint32 initialVertexCount = 12u;
+
+		result.Vertices.SetSize<true>(initialVertexCount);
 
 		auto& v = result.Vertices;
 		auto& i = result.Indices;
+
+		// Approximate a sphere by tessellating an icosahedron.
+
+		constexpr float X = 0.525731f; 
+		constexpr float Z = 0.850651f;
+
+		v[0].Position  = { -X, Z, 0.f };
+		v[1].Position  = { X, Z, 0.f };
+		v[2].Position  = { -X, -Z, 0.f };
+		v[3].Position  = { X, -Z, 0.f };
+		v[4].Position  = { 0.f, X, Z };
+		v[5].Position  = { 0.f, -X, Z };
+		v[6].Position  = { 0.f, X, -Z };
+		v[7].Position  = { 0.f, -X, -Z };
+		v[8].Position  = { Z, 0.f, X };
+		v[9].Position  = { -Z, 0.f, X };
+		v[10].Position = { Z, 0.f, -X };
+		v[11].Position = { -Z, 0.f, -X };
+
+		i =
+			{
+				1u, 4u, 0u,    4u,9u,0u,   4u,5u, 9u,   8u,5u,4u,    1u, 8u,4u,
+				1u, 10u,8u,   10u,3u,8u,   8u,3u, 5u,   3u,2u,5u,    3u, 7u,2u,
+				3u, 10u,7u,   10u,6u,7u,   6u,11u,7u,   6u,0u,11u,   6u, 1u,0u,
+				10u,1u, 6u,   11u,0u,9u,   2u,11u,9u,   5u,2u,9u,    11u,2u,7u,
+			};
+
+		Subdivide(v, i, subdivisions);
+
+		// Project vertices onto sphere and scale
+		for (uint32 idx = 0; idx < v.Count(); ++idx)
+		{
+			const Vector3f n = v[idx].Position.GetNormalizedUnsafe();
+			const Vector3f p = Radius * n;
+
+			v[idx].Position = p;
+			v[idx].Normal = n;
+
+			// Derive texture coordinates from spherical coordinates
+			float theta = atan2f(p.z, p.x);
+
+			// Put in [0, 2pi]
+			if (theta < 0.f)
+			{
+				theta += math::TWO_PI;
+			}
+
+			const float phi = acosf(p.y / Radius);
+
+			v[idx].Uv.x = theta / math::TWO_PI;
+			v[idx].Uv.y = phi / math::PI;
+
+			// Partial derivative of P with respect to theta
+			v[idx].Tangent.x = -Radius * sinf(phi) * sinf(theta);
+			v[idx].Tangent.y = Radius * sinf(phi) * cosf(theta);
+			v[idx].Tangent.z = 0.f;
+			v[idx].Tangent.NormalizeUnsafe();
+		}
 
 		// TODO: temp
 		_private::CreateGpuResources(v, i, result.VertexBufferGpu, result.IndexBufferGpu);
@@ -357,6 +417,94 @@ namespace frt::graphics::mesh
 		_private::CreateGpuResources(v, i, result.VertexBufferGpu, result.IndexBufferGpu);
 
 		return result;
+	}
+
+	void Subdivide(TArray<Vertex>& InOutVertices, TArray<uint32>& InOutIndices, uint32 SubdivisionsCount)
+	{
+		if (InOutVertices.Count() == 0 || InOutIndices.Count() == 0)
+		{
+			return; // Nothing to subdivide.
+		}
+
+		for (uint32 sub = 0; sub < SubdivisionsCount; ++sub)
+		{
+			// Each subdivision will add 3 new vertices and 6 new indices per triangle.
+			// The number of triangles will increase by 4x.
+			// So, we need to generate new vertices and indices based on the current ones.
+			TArray<Vertex> oldVertices = InOutVertices;
+			TArray<uint32> oldIndices = InOutIndices;
+
+			TArray<Vertex>& newVertices = InOutVertices;
+			TArray<uint32>& newIndices = InOutIndices;
+
+			newVertices.Clear();
+			newIndices.Clear();
+
+			//       v1
+			//       *
+			//      / \
+			//     /   \
+			//  m0*-----*m1
+			//   / \   / \
+			//  /   \ /   \
+			// *-----*-----*
+			// v0    m2     v2
+
+			const uint32 numTris = oldIndices.size() / 3u;
+			for(uint32 i = 0; i < numTris; ++i)
+			{
+				Vertex v0 = oldVertices[ oldIndices[i * 3 + 0] ];
+				Vertex v1 = oldVertices[ oldIndices[i * 3 + 1] ];
+				Vertex v2 = oldVertices[ oldIndices[i * 3 + 2] ];
+
+				//
+				// Generate the midpoints.
+				//
+
+				Vertex m0 = MidPoint(v0, v1);
+				Vertex m1 = MidPoint(v1, v2);
+				Vertex m2 = MidPoint(v0, v2);
+
+				//
+				// Add new geometry.
+				//
+
+				newVertices.Add(v0); // 0
+				newVertices.Add(v1); // 1
+				newVertices.Add(v2); // 2
+				newVertices.Add(m0); // 3
+				newVertices.Add(m1); // 4
+				newVertices.Add(m2); // 5
+ 
+				newIndices.Add(i * 6 + 0);
+				newIndices.Add(i * 6 + 3);
+				newIndices.Add(i * 6 + 5);
+
+				newIndices.Add(i * 6 + 3);
+				newIndices.Add(i * 6 + 4);
+				newIndices.Add(i * 6 + 5);
+
+				newIndices.Add(i * 6 + 5);
+				newIndices.Add(i * 6 + 4);
+				newIndices.Add(i * 6 + 2);
+
+				newIndices.Add(i * 6 + 3);
+				newIndices.Add(i * 6 + 1);
+				newIndices.Add(i * 6 + 4);
+			}
+		}
+	}
+
+	Vertex MidPoint(const Vertex& A, const Vertex& B)
+	{
+		return Vertex
+		{
+			.Position = (A.Position + B.Position) * 0.5f,
+			.Uv = (A.Uv + B.Uv) * 0.5f,
+			.Normal = (A.Normal + B.Normal).GetNormalizedUnsafe(),
+			.Tangent = (A.Tangent + B.Tangent).GetNormalizedUnsafe(),
+			// .Color = (A.Color + B.Color) * 0.5f // TODO: color
+		};
 	}
 
 	void _private::CreateGpuResources(

@@ -8,10 +8,13 @@ namespace frt::graphics::mesh
 {
 	SMesh GenerateCube(const Vector3f& Extent, uint32 SubdivisionsCount);
 	SMesh GenerateSphere(float Radius, uint32 SliceCount, uint32 StackCount);
-	SMesh GenerateGeosphere();
+	SMesh GenerateGeosphere(float Radius, uint32 SubdivisionsCount);
 	SMesh GenerateCylinder();
 	SMesh GenerateGrid();
 	SMesh GenerateQuad();
+
+	void Subdivide(TArray<Vertex>& InOutVertices, TArray<uint32>& InOutIndices, uint32 SubdivisionsCount);
+	Vertex MidPoint(const Vertex& A, const Vertex& B);
 
 	namespace _private
 	{

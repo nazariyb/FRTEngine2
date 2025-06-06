@@ -118,8 +118,9 @@ void GameInstance::Load()
 {
 	std::cout << std::filesystem::current_path() << std::endl;
 
-	World->SpawnEntity()->Mesh = mesh::GenerateCube(Vector3f(.3f), 1);
-	World->SpawnEntity()->Mesh = mesh::GenerateSphere(1.f, 10u, 10u);
+	// World->SpawnEntity()->Mesh = mesh::GenerateCube(Vector3f(.3f), 1);
+	World->SpawnEntity()->Mesh = mesh::GenerateGeosphere(1.f, 2u);
+	World->SpawnEntity()->Mesh = mesh::GenerateSphere(.1f, 10u, 10u);
 	// skullEnt->Model = Model::LoadFromFile(
 	// 	R"(..\Core\Content\Models\Skull\scene.gltf)",
 	// 	R"(..\Core\Content\Models\Skull\textures\defaultMat_baseColor.jpeg)");
