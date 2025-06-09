@@ -5,15 +5,16 @@
 
 struct ID3D12Resource;
 
+
 namespace frt::graphics
 {
-	struct FRT_CORE_API Texture
-	{
-		int32 width;
-		int32 height;
-		uint32* texels;
+struct FRT_CORE_API STexture
+{
+	int32 Width;
+	int32 Height;
+	uint32* Texels;
 
-		ID3D12Resource* gpuTexture;
-		D3D12_GPU_DESCRIPTOR_HANDLE gpuDescriptor;
-	};
+	ID3D12Resource* GpuTexture;
+	D3D12_GPU_DESCRIPTOR_HANDLE GpuDescriptor;
+};
 }

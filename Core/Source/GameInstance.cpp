@@ -3,50 +3,49 @@
 #include <filesystem>
 #include <iostream>
 
-#include "Graphics/Renderer.h"
 #include "Timer.h"
 #include "Window.h"
 #include "Graphics/Camera.h"
+#include "Graphics/Renderer.h"
 #include "Memory/Memory.h"
 
 #include "imgui.h"
-#include "backends/imgui_impl_win32.h"
 #include "backends/imgui_impl_dx12.h"
+#include "backends/imgui_impl_win32.h"
 #include "Graphics/GraphicsUtility.h"
 #include "Graphics/MeshGeneration.h"
 #include "Graphics/RenderCommonTypes.h"
 
 NAMESPACE_FRT_START
-
 FRT_SINGLETON_DEFINE_INSTANCE(GameInstance)
 
 using namespace graphics;
 using namespace memory::literals;
 
-GameInstance::GameInstance()
-	: _frameCount(0)
+GameInstance::GameInstance ()
+	: FrameCount(0)
 {
 	MemoryPool = memory::CMemoryPool(2_Gb);
 	MemoryPool.MakeThisPrimaryInstance();
 
-	_timer = new Timer;
+	Timer = new CTimer;
 
-	WindowParams windowParams;
-	windowParams.startX = 1000;
-	windowParams.startY = 1000;
-	windowParams.width = 1260;
-	windowParams.height = 720;
-	windowParams.className = L"FrtWindowClass";
+	SWindowParams windowParams;
+	windowParams.StartX = 1000;
+	windowParams.StartY = 1000;
+	windowParams.Width = 1260;
+	windowParams.Height = 720;
+	windowParams.ClassName = L"FrtWindowClass";
 	windowParams.hInst = GetModuleHandle(nullptr);
-	_window = new Window(windowParams);
+	Window = new CWindow(windowParams);
 
-	_window->PostResizeEvent += std::bind(&GameInstance::OnWindowResize, this);
-	_window->PostLoseFocusEvent += std::bind(&GameInstance::OnLoseFocus, this);
-	_window->PostGainFocusEvent += std::bind(&GameInstance::OnGainFocus, this);
-	_window->PostMinimizeEvent += std::bind(&GameInstance::OnMinimize, this);
-	_window->PostRestoreFromMinimizeEvent += std::bind(&GameInstance::OnRestoreFromMinimize, this);
+	Window->PostResizeEvent += std::bind(&GameInstance::OnWindowResize, this);
+	Window->PostLoseFocusEvent += std::bind(&GameInstance::OnLoseFocus, this);
+	Window->PostGainFocusEvent += std::bind(&GameInstance::OnGainFocus, this);
+	Window->PostMinimizeEvent += std::bind(&GameInstance::OnMinimize, this);
+	Window->PostRestoreFromMinimizeEvent += std::bind(&GameInstance::OnRestoreFromMinimize, this);
 
-	Renderer = MemoryPool.NewUnique<CRenderer>(_window);
+	Renderer = MemoryPool.NewUnique<CRenderer>(Window);
 	Renderer->Resize(UserSettings.DisplaySettings.FullscreenMode == EFullscreenMode::Fullscreen);
 	DisplayOptions = graphics::GetDisplayOptions(Renderer->GetAdapter());
 
@@ -62,7 +61,7 @@ GameInstance::GameInstance()
 	io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
 	io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
-	ImGui_ImplWin32_Init(_window->GetHandle());
+	ImGui_ImplWin32_Init(Window->GetHandle());
 
 	ImGui_ImplDX12_InitInfo imguiDx12InitInfo;
 	imguiDx12InitInfo.Device = Renderer->GetDevice();
@@ -73,48 +72,51 @@ GameInstance::GameInstance()
 	imguiDx12InitInfo.UserData = Renderer.GetRawIgnoringLifetime();
 	imguiDx12InitInfo.SrvDescriptorHeap = Renderer->ShaderDescriptorHeap.GetHeap();
 	imguiDx12InitInfo.SrvDescriptorAllocFn =
-		[](ImGui_ImplDX12_InitInfo* InitInfo, D3D12_CPU_DESCRIPTOR_HANDLE* OutCpuHandle, D3D12_GPU_DESCRIPTOR_HANDLE* OutGpuHandle)
+		[] (
+		ImGui_ImplDX12_InitInfo* InitInfo,
+		D3D12_CPU_DESCRIPTOR_HANDLE* OutCpuHandle,
+		D3D12_GPU_DESCRIPTOR_HANDLE* OutGpuHandle)
 		{
 			return ((CRenderer*)InitInfo->UserData)->ShaderDescriptorHeap.Allocate(OutCpuHandle, OutGpuHandle);
 		};
 	imguiDx12InitInfo.SrvDescriptorFreeFn =
-		[](ImGui_ImplDX12_InitInfo*, D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle, D3D12_GPU_DESCRIPTOR_HANDLE GpuHandle)
+		[] (ImGui_ImplDX12_InitInfo*, D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle, D3D12_GPU_DESCRIPTOR_HANDLE GpuHandle)
 		{
 			// TODO
 		};
 	ImGui_ImplDX12_Init(&imguiDx12InitInfo);
 }
 
-GameInstance::~GameInstance()
+GameInstance::~GameInstance ()
 {
 	ImGui_ImplDX12_Shutdown();
 	ImGui_ImplWin32_Shutdown();
 	ImGui::DestroyContext();
 
-	delete _timer;
-	delete _window;
+	delete Timer;
+	delete Window;
 
-	_timer = nullptr;
-	_window = nullptr;
+	Timer = nullptr;
+	Window = nullptr;
 }
 
-Timer& GameInstance::GetTime() const
+CTimer& GameInstance::GetTime () const
 {
-	return *_timer;
+	return *Timer;
 }
 
-bool GameInstance::HasGraphics() const
+bool GameInstance::HasGraphics () const
 {
 	return !!Renderer;
 }
 
-memory::TRefWeak<graphics::CRenderer> GameInstance::GetGraphics() const
+memory::TRefWeak<graphics::CRenderer> GameInstance::GetGraphics () const
 {
 	frt_assert(Renderer);
 	return Renderer.GetWeak();
 }
 
-void GameInstance::Load()
+void GameInstance::Load ()
 {
 	std::cout << std::filesystem::current_path() << std::endl;
 
@@ -126,9 +128,9 @@ void GameInstance::Load()
 	// 	R"(..\Core\Content\Models\Skull\textures\defaultMat_baseColor.jpeg)");
 }
 
-void GameInstance::Tick(float DeltaSeconds)
+void GameInstance::Tick (float DeltaSeconds)
 {
-	++_frameCount;
+	++FrameCount;
 
 	ImGui_ImplDX12_NewFrame();
 	ImGui_ImplWin32_NewFrame();
@@ -144,7 +146,7 @@ void GameInstance::Tick(float DeltaSeconds)
 	World->Tick(DeltaSeconds);
 }
 
-void GameInstance::Draw(float DeltaSeconds)
+void GameInstance::Draw (float DeltaSeconds)
 {
 	Renderer->StartFrame(*Camera);
 
@@ -163,12 +165,12 @@ void GameInstance::Draw(float DeltaSeconds)
 	Renderer->Draw(DeltaSeconds, *Camera);
 }
 
-long long GameInstance::GetFrameCount() const
+long long GameInstance::GetFrameCount () const
 {
-	return _frameCount;
+	return FrameCount;
 }
 
-void GameInstance::CalculateFrameStats() const
+void GameInstance::CalculateFrameStats () const
 {
 	static int frameCount = 0;
 	static float timeElapsed = 0.f;
@@ -177,7 +179,7 @@ void GameInstance::CalculateFrameStats() const
 
 	static float fps = 0.f, msPerFrame = 0.f;
 
-	if (_timer->GetTotalSeconds() - timeElapsed >= 1.f)
+	if (Timer->GetTotalSeconds() - timeElapsed >= 1.f)
 	{
 		fps = static_cast<float>(frameCount);
 		msPerFrame = 1000.f / fps;
@@ -192,44 +194,42 @@ void GameInstance::CalculateFrameStats() const
 	ImGui::End();
 }
 
-void GameInstance::OnWindowResize()
+void GameInstance::OnWindowResize ()
 {
 	Renderer->Resize(UserSettings.DisplaySettings.IsFullscreen());
 }
 
-void GameInstance::OnLoseFocus()
-{
-}
+void GameInstance::OnLoseFocus ()
+{}
 
-void GameInstance::OnGainFocus()
-{
-}
+void GameInstance::OnGainFocus ()
+{}
 
-void GameInstance::OnMinimize()
+void GameInstance::OnMinimize ()
 {
 	if (UserSettings.DisplaySettings.IsFullscreen())
 	{
 		Renderer->Resize(false);
-		_timer->Pause();
+		Timer->Pause();
 	}
 }
 
-void GameInstance::OnRestoreFromMinimize()
+void GameInstance::OnRestoreFromMinimize ()
 {
-	_window->SetDisplaySettings(UserSettings.DisplaySettings, DisplayOptions);
+	Window->SetDisplaySettings(UserSettings.DisplaySettings, DisplayOptions);
 	if (UserSettings.DisplaySettings.IsFullscreen())
 	{
-		_timer->Start();
+		Timer->Start();
 	}
 }
 
-void GameInstance::DisplayUserSettings()
+void GameInstance::DisplayUserSettings ()
 {
 	// TODO: this func is okay for now, but should be revisited later to at least remove reallocations on each frame
 
 	ImGui::Begin("DisplaySettings");
 
-	const auto strToChar = [](void* UserData, int Idx) -> const char*
+	const auto strToChar = [] (void* UserData, int Idx) -> const char*
 	{
 		return static_cast<std::string*>(UserData)[Idx].c_str();
 	};
@@ -238,8 +238,10 @@ void GameInstance::DisplayUserSettings()
 
 	{
 		const auto monitorNames = DisplayOptions.GetNames();
-		const char* labelMonitor = "Monitor";
-		ImGui::Combo(labelMonitor, &displaySettings.MonitorIndex, strToChar, (void*)monitorNames.data(), (int)monitorNames.size());
+		auto labelMonitor = "Monitor";
+		ImGui::Combo(
+			labelMonitor, &displaySettings.MonitorIndex, strToChar, (void*)monitorNames.data(),
+			(int)monitorNames.size());
 	}
 
 	std::vector<uint64> resolutions = DisplayOptions.GetResolutionsEncoded(displaySettings.MonitorIndex);
@@ -255,9 +257,11 @@ void GameInstance::DisplayUserSettings()
 			resolutionStrs.emplace_back(std::format("{}:{}", width, height));
 		}
 
-		const char* labelResolution = "Resolution";
+		auto labelResolution = "Resolution";
 		ImGui::BeginDisabled(displaySettings.IsFullscreen());
-		ImGui::Combo(labelResolution, &displaySettings.ResolutionIndex, strToChar, resolutionStrs.data(), (int)resolutionStrs.size());
+		ImGui::Combo(
+			labelResolution, &displaySettings.ResolutionIndex, strToChar, resolutionStrs.data(),
+			(int)resolutionStrs.size());
 		ImGui::EndDisabled();
 	}
 
@@ -275,13 +279,13 @@ void GameInstance::DisplayUserSettings()
 			rRStrs.emplace_back(std::format("{:.2f}", (float)numerator / (float)denominator));
 		}
 
-		const char* labelRR = "RefreshRate";
+		auto labelRR = "RefreshRate";
 		ImGui::Combo(labelRR, &displaySettings.RefreshRateIndex, strToChar, rRStrs.data(), (int)rRStrs.size());
 	}
 
 	{
 		const char* modeNames[] = { "Minimized", "Fullscreen", "Windowed", "Borderless" };
-		const char* labelFullscreen = "Fullscreen";
+		auto labelFullscreen = "Fullscreen";
 		ImGui::SliderInt(
 			labelFullscreen,
 			(int*)&displaySettings.FullscreenMode,
@@ -294,14 +298,15 @@ void GameInstance::DisplayUserSettings()
 	{
 		if (displaySettings.IsFullscreen())
 		{
-			const uint64 fullscreenResolution = DisplayOptions.GetFullscreenResolutionEncoded(displaySettings.MonitorIndex);
+			const uint64 fullscreenResolution = DisplayOptions.GetFullscreenResolutionEncoded(
+				displaySettings.MonitorIndex);
 			const auto resIt = std::ranges::find(resolutions, fullscreenResolution);
 			auto resIndex = std::distance(resolutions.begin(), resIt);
 			resIndex = math::ClampIndex(resIndex, resolutions.size() - 1u);
 			displaySettings.ResolutionIndex = resIndex;
 		}
 
-		_window->SetDisplaySettings(displaySettings, DisplayOptions);
+		Window->SetDisplaySettings(displaySettings, DisplayOptions);
 	}
 
 	ImGui::End();

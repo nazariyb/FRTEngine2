@@ -10,10 +10,10 @@
 #include "Timer.h"
 #include "Window.h"
 
+
 namespace frt::graphics
 {
-
-static void GetHardwareAdapter(IDXGIFactory4* pFactory, IDXGIAdapter1** ppAdapter)
+static void GetHardwareAdapter (IDXGIFactory4* pFactory, IDXGIAdapter1** ppAdapter)
 {
 	*ppAdapter = nullptr;
 	for (UINT adapterIndex = 0; ; ++adapterIndex)
@@ -38,17 +38,17 @@ static void GetHardwareAdapter(IDXGIFactory4* pFactory, IDXGIAdapter1** ppAdapte
 
 using namespace memory::literals;
 
-CRenderer::CRenderer(Window* Window)
-	: _window(Window)
-	, _adapter(nullptr)
-	, _device(nullptr)
-	, _swapChain(nullptr)
+CRenderer::CRenderer (CWindow* Window)
+	: Window(Window)
+	, Adapter(nullptr)
+	, Device(nullptr)
+	, SwapChain(nullptr)
 	, CurrentBackBufferIndex(0)
-	, _commandQueue(nullptr)
-	, _commandAllocator(nullptr)
-	, _commandList(nullptr)
-	, _fenceValue(0)
-	, _fenceEvent(nullptr)
+	, CommandQueue(nullptr)
+	, CommandAllocator(nullptr)
+	, CommandList(nullptr)
+	, FenceValue(0)
+	, FenceEvent(nullptr)
 {
 #if defined(DEBUG) || defined(_DEBUG)
 	// Enable the D3D12 debug layer.
@@ -59,37 +59,37 @@ CRenderer::CRenderer(Window* Window)
 	}
 #endif
 
-	const auto [renderWidth, renderHeight] = _window->GetWindowSize();
+	const auto [renderWidth, renderHeight] = Window->GetWindowSize();
 
 	Viewport =
-		{
-			.TopLeftX = 0,
-			.TopLeftY = 0,
-			.Width = static_cast<float>(renderWidth),
-			.Height = static_cast<float>(renderHeight),
-			.MinDepth = 0.0f,
-			.MaxDepth = 1.0f
-		};
+	{
+		.TopLeftX = 0,
+		.TopLeftY = 0,
+		.Width = static_cast<float>(renderWidth),
+		.Height = static_cast<float>(renderHeight),
+		.MinDepth = 0.0f,
+		.MaxDepth = 1.0f
+	};
 
 	ScissorRect =
-		{
-			.left = 0,
-			.top = 0,
-			.right = static_cast<long>(renderWidth),
-			.bottom = static_cast<long>(renderHeight)
-		};
+	{
+		.left = 0,
+		.top = 0,
+		.right = static_cast<long>(renderWidth),
+		.bottom = static_cast<long>(renderHeight)
+	};
 
 	// Initialization
 
 	THROW_IF_FAILED(CreateDXGIFactory2(0, IID_PPV_ARGS(&Factory)));
 
-	GetHardwareAdapter(Factory.Get(), &_adapter);
+	GetHardwareAdapter(Factory.Get(), &Adapter);
 
-	if (FAILED(D3D12CreateDevice(_adapter.Get(), D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&_device))))
+	if (FAILED(D3D12CreateDevice(Adapter.Get(), D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&Device))))
 	{
 		IDXGIAdapter* pWarpAdapter = nullptr;
 		THROW_IF_FAILED(Factory->EnumWarpAdapter(IID_PPV_ARGS(&pWarpAdapter)));
-		THROW_IF_FAILED(D3D12CreateDevice(pWarpAdapter, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&_device)));
+		THROW_IF_FAILED(D3D12CreateDevice(pWarpAdapter, D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&Device)));
 	}
 
 	// Check supported features
@@ -99,10 +99,11 @@ CRenderer::CRenderer(Window* Window)
 	multisampleQualityLevels.SampleCount = 4;
 	multisampleQualityLevels.Flags = D3D12_MULTISAMPLE_QUALITY_LEVELS_FLAG_NONE;
 	multisampleQualityLevels.NumQualityLevels = 0;
-	THROW_IF_FAILED(_device->CheckFeatureSupport(
-		D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS,
-		&multisampleQualityLevels,
-		sizeof(multisampleQualityLevels)));
+	THROW_IF_FAILED(
+		Device->CheckFeatureSupport(
+			D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS,
+			&multisampleQualityLevels,
+			sizeof(multisampleQualityLevels)));
 
 	// TODO: save as member
 	uint32 msaaQuality = multisampleQualityLevels.NumQualityLevels;
@@ -113,43 +114,49 @@ CRenderer::CRenderer(Window* Window)
 	queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
 	queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
 
-	THROW_IF_FAILED(_device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&_commandQueue)));
+	THROW_IF_FAILED(Device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&CommandQueue)));
 
 	// Command allocator and list
 
-	THROW_IF_FAILED(_device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&_commandAllocator)));
-	THROW_IF_FAILED(_device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, _commandAllocator.Get(), nullptr, IID_PPV_ARGS(&_commandList)));
-	THROW_IF_FAILED(_device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&_fence)));
-	_commandList->Close();
+	THROW_IF_FAILED(Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&CommandAllocator)));
+	THROW_IF_FAILED(
+		Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, CommandAllocator.Get(), nullptr, IID_PPV_ARGS(&
+			CommandList)));
+	THROW_IF_FAILED(Device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&Fence)));
+	CommandList->Close();
 
 	// Describe and create swap chain
 	CreateSwapChain(false); // TODO: create & use startup display settings
 
-	_rtvArena = DX12_Arena(_device.Get(), D3D12_HEAP_TYPE_DEFAULT, 50_Mb,
-						D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES);
-	_dsvHeap = DX12_DescriptorHeap(_device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1);
+	RtvArena = DX12_Arena(
+		Device.Get(), D3D12_HEAP_TYPE_DEFAULT, 50_Mb,
+		D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES);
+	DsvHeap = DX12_DescriptorHeap(Device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1);
 
-	_bufferArena = DX12_Arena(_device.Get(), D3D12_HEAP_TYPE_DEFAULT, 500_Mb,
-							D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS);
-	_textureArena = DX12_Arena(_device.Get(), D3D12_HEAP_TYPE_DEFAULT, 500_Mb,
-								D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES);
+	BufferArena = DX12_Arena(
+		Device.Get(), D3D12_HEAP_TYPE_DEFAULT, 500_Mb,
+		D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS);
+	TextureArena = DX12_Arena(
+		Device.Get(), D3D12_HEAP_TYPE_DEFAULT, 500_Mb,
+		D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES);
 
 	ShaderDescriptorHeap = DX12_DescriptorHeap(
-		_device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 50, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE);
+		Device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 50, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE);
 
-	_rtvHeap = DX12_DescriptorHeap(_device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_RTV, render::constants::FrameResourcesBufferCount);
+	RtvHeap = DX12_DescriptorHeap(
+		Device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_RTV, render::constants::FrameResourcesBufferCount);
 
 	for (uint8 i = 0; i < render::constants::FrameResourcesBufferCount; ++i)
 	{
-		FramesResources[i].Init(_device.Get(), 1, 2, _bufferArena, GetDescriptorHeap());
+		FramesResources[i].Init(Device.Get(), 1, 2, BufferArena, GetDescriptorHeap());
 	}
 
 	for (unsigned frameIndex = 0; frameIndex < render::constants::SwapChainBufferCount; ++frameIndex)
 	{
-		_rtvHeap.Allocate(&_frameBufferDescriptors[frameIndex], nullptr);
+		RtvHeap.Allocate(&FrameBufferDescriptors[frameIndex], nullptr);
 	}
 
-	_dsvHeap.Allocate(&_depthStencilDescriptor, nullptr);
+	DsvHeap.Allocate(&DepthStencilDescriptor, nullptr);
 
 	{
 		{
@@ -184,14 +191,16 @@ CRenderer::CRenderer(Window* Window)
 			ID3DBlob* serializedRootSignature = nullptr;
 			ID3DBlob* errorMessage = nullptr;
 
-			THROW_IF_FAILED(D3D12SerializeRootSignature(
-				&rootSignatureDesc, D3D_ROOT_SIGNATURE_VERSION_1_0, &serializedRootSignature, &errorMessage));
+			THROW_IF_FAILED(
+				D3D12SerializeRootSignature(
+					&rootSignatureDesc, D3D_ROOT_SIGNATURE_VERSION_1_0, &serializedRootSignature, &errorMessage));
 
-			THROW_IF_FAILED(_device->CreateRootSignature(
-				0,
-				serializedRootSignature->GetBufferPointer(),
-				serializedRootSignature->GetBufferSize(),
-				IID_PPV_ARGS(&_rootSignature)));
+			THROW_IF_FAILED(
+				Device->CreateRootSignature(
+					0,
+					serializedRootSignature->GetBufferPointer(),
+					serializedRootSignature->GetBufferSize(),
+					IID_PPV_ARGS(&RootSignature)));
 
 			if (serializedRootSignature)
 			{
@@ -204,7 +213,7 @@ CRenderer::CRenderer(Window* Window)
 		}
 
 		D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
-		psoDesc.pRootSignature = _rootSignature.Get();
+		psoDesc.pRootSignature = RootSignature.Get();
 
 		psoDesc.VS = Dx12LoadShader(R"(..\Core\Content\Shaders\Bin\VertexShader.shader)");
 		psoDesc.PS = Dx12LoadShader(R"(..\Core\Content\Shaders\Bin\PixelShader.shader)");
@@ -276,71 +285,73 @@ CRenderer::CRenderer(Window* Window)
 		psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
 		psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
 
-		THROW_IF_FAILED(_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&_pipelineState)));
+		THROW_IF_FAILED(Device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&PipelineState)));
 	}
 }
 
-void CRenderer::Resize(bool bNewFullscreenState)
+void CRenderer::Resize (bool bNewFullscreenState)
 {
 	// Flush before changing any resources.
 	FlushCommandQueue();
 
-	THROW_IF_FAILED(_commandList->Reset(_commandAllocator.Get(), nullptr));
+	THROW_IF_FAILED(CommandList->Reset(CommandAllocator.Get(), nullptr));
 
 	// Release the previous resources we will be recreating.
 	for (int i = 0; i < render::constants::SwapChainBufferCount; ++i)
 	{
-		_frameBuffer[i].Reset();
+		FrameBuffer[i].Reset();
 	}
-	_depthStencilBuffer.Reset();
+	DepthStencilBuffer.Reset();
 
 	// start logic
 
 	BOOL bWasInFullscreen = false;
-	if (_swapChain)
+	if (SwapChain)
 	{
-		THROW_IF_FAILED(_swapChain->GetFullscreenState(&bWasInFullscreen, nullptr));
+		THROW_IF_FAILED(SwapChain->GetFullscreenState(&bWasInFullscreen, nullptr));
 	}
 
 	const bool bExitingFullscreen = bWasInFullscreen && !bNewFullscreenState;
 	const bool bEnteringFullscreen = !bWasInFullscreen && bNewFullscreenState;
 
-	Vector2f drawRect = _window->GetWindowSize();
+	Vector2f drawRect = Window->GetWindowSize();
 
-	if (_swapChain && bExitingFullscreen)
+	if (SwapChain && bExitingFullscreen)
 	{
-		_swapChain->SetFullscreenState(bNewFullscreenState, nullptr);
+		SwapChain->SetFullscreenState(bNewFullscreenState, nullptr);
 	}
 
 	if (drawRect.x > 0.f && drawRect.y > 0.f)
 	{
-		if (!_swapChain || (bWasInFullscreen != bNewFullscreenState))
+		if (!SwapChain || (bWasInFullscreen != bNewFullscreenState))
 		{
 			CreateSwapChain(bNewFullscreenState);
 		}
 		else
 		{
 			// Resize the swap chain.
-			THROW_IF_FAILED(_swapChain->ResizeBuffers(
-				render::constants::SwapChainBufferCount,
-				drawRect.x, drawRect.y, 
-				DXGI_FORMAT_R8G8B8A8_UNORM, 
-				DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH));
+			THROW_IF_FAILED(
+				SwapChain->ResizeBuffers(
+					render::constants::SwapChainBufferCount,
+					drawRect.x, drawRect.y,
+					DXGI_FORMAT_R8G8B8A8_UNORM,
+					DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH));
 		}
 
 		CurrentBackBufferIndex = 0;
 
 		for (unsigned frameIndex = 0; frameIndex < render::constants::SwapChainBufferCount; ++frameIndex)
 		{
-			_swapChain->GetBuffer(frameIndex, IID_PPV_ARGS(&_frameBuffer[frameIndex]));
-			_device->CreateRenderTargetView(_frameBuffer[frameIndex].Get(), nullptr, _frameBufferDescriptors[frameIndex]);
+			SwapChain->GetBuffer(frameIndex, IID_PPV_ARGS(&FrameBuffer[frameIndex]));
+			Device->CreateRenderTargetView(
+				FrameBuffer[frameIndex].Get(), nullptr, FrameBufferDescriptors[frameIndex]);
 		}
 
 		{
 			// depth stencil
 
 			D3D12_RESOURCE_DESC resourceDesc =
-				{
+			{
 				.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D,
 				.Alignment = 0,
 				.Width = static_cast<UINT>(drawRect.x),
@@ -348,33 +359,34 @@ void CRenderer::Resize(bool bNewFullscreenState)
 				.DepthOrArraySize = 1,
 				.MipLevels = 1,
 				.Format = DXGI_FORMAT_D32_FLOAT,
-				.SampleDesc = DXGI_SAMPLE_DESC{ .Count = 1, .Quality = 0 }, // TODO
+				.SampleDesc = DXGI_SAMPLE_DESC{ .Count = 1, .Quality = 0 },
+				// TODO
 				.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN,
 				.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
 			};
 
 			D3D12_CLEAR_VALUE clearValue =
-				{
+			{
 				.Format = resourceDesc.Format,
 				.DepthStencil = D3D12_DEPTH_STENCIL_VALUE{ .Depth = 1.0f, .Stencil = 0 },
 			};
 
-			_rtvArena.Free();
-			_depthStencilBuffer = _rtvArena.Allocate(resourceDesc, D3D12_RESOURCE_STATE_DEPTH_WRITE, &clearValue);
+			RtvArena.Free();
+			DepthStencilBuffer = RtvArena.Allocate(resourceDesc, D3D12_RESOURCE_STATE_DEPTH_WRITE, &clearValue);
 
-			_device->CreateDepthStencilView(_depthStencilBuffer.Get(), nullptr, _depthStencilDescriptor);
+			Device->CreateDepthStencilView(DepthStencilBuffer.Get(), nullptr, DepthStencilDescriptor);
 		}
 	}
 	else
 	{
-		_swapChain->SetFullscreenState(bNewFullscreenState, nullptr);
-		_swapChain.Reset();
+		SwapChain->SetFullscreenState(bNewFullscreenState, nullptr);
+		SwapChain.Reset();
 	}
 
 	// Execute the resize commands.
-	THROW_IF_FAILED(_commandList->Close());
-	ID3D12CommandList* cmdsLists[] = { _commandList.Get() };
-	_commandQueue->ExecuteCommandLists(_countof(cmdsLists), cmdsLists);
+	THROW_IF_FAILED(CommandList->Close());
+	ID3D12CommandList* cmdsLists[] = { CommandList.Get() };
+	CommandQueue->ExecuteCommandLists(_countof(cmdsLists), cmdsLists);
 
 	// Wait until resize is complete.
 	FlushCommandQueue();
@@ -393,126 +405,130 @@ void CRenderer::Resize(bool bNewFullscreenState)
 	ScissorRect.bottom = drawRect.y;
 }
 
-void CRenderer::StartFrame(CCamera& Camera)
+void CRenderer::StartFrame (CCamera& Camera)
 {
 	auto commandListAllocator = GetCurrentFrameResource().CommandListAllocator;
 
 	THROW_IF_FAILED(commandListAllocator->Reset());
 
 	// TODO: assign different PSO
-	THROW_IF_FAILED(_commandList->Reset(commandListAllocator.Get(), nullptr));
+	THROW_IF_FAILED(CommandList->Reset(commandListAllocator.Get(), nullptr));
 
 	{
 		D3D12_RESOURCE_BARRIER resourceBarrier = {};
 		resourceBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-		resourceBarrier.Transition.pResource = _frameBuffer[CurrentBackBufferIndex].Get();
+		resourceBarrier.Transition.pResource = FrameBuffer[CurrentBackBufferIndex].Get();
 		resourceBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 		resourceBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
 		resourceBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-		_commandList->ResourceBarrier(1, &resourceBarrier);
+		CommandList->ResourceBarrier(1, &resourceBarrier);
 	}
 
-	_commandList->RSSetViewports(1, &Viewport);
-	_commandList->RSSetScissorRects(1, &ScissorRect);
+	CommandList->RSSetViewports(1, &Viewport);
+	CommandList->RSSetScissorRects(1, &ScissorRect);
 
 	FLOAT Color[] = { 0.1f, 0.3f, 0.3f, 1.f };
-	_commandList->ClearRenderTargetView(_frameBufferDescriptors[CurrentBackBufferIndex], Color, 0, nullptr);
-	_commandList->ClearDepthStencilView(
-		_depthStencilDescriptor, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1, 0, 0, nullptr);
+	CommandList->ClearRenderTargetView(FrameBufferDescriptors[CurrentBackBufferIndex], Color, 0, nullptr);
+	CommandList->ClearDepthStencilView(
+		DepthStencilDescriptor, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1, 0, 0, nullptr);
 
-	_commandList->OMSetRenderTargets(1, &_frameBufferDescriptors[CurrentBackBufferIndex], false, &_depthStencilDescriptor);
+	CommandList->OMSetRenderTargets(
+		1, &FrameBufferDescriptors[CurrentBackBufferIndex], false, &DepthStencilDescriptor);
 
-	_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-	_commandList->SetGraphicsRootSignature(_rootSignature.Get());
-	_commandList->SetPipelineState(_pipelineState.Get());
+	CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+	CommandList->SetGraphicsRootSignature(RootSignature.Get());
+	CommandList->SetPipelineState(PipelineState.Get());
 
-	_commandList->SetDescriptorHeaps(1, &ShaderDescriptorHeap._heap);
+	CommandList->SetDescriptorHeaps(1, &ShaderDescriptorHeap._heap);
 }
 
-void CRenderer::Tick(float DeltaSeconds)
+void CRenderer::Tick (float DeltaSeconds)
 {
 	CurrentFrameResourceIndex = (CurrentFrameResourceIndex + 1) % render::constants::FrameResourcesBufferCount;
 
-	if (GetCurrentFrameResource().FenceValue != 0 && _fence->GetCompletedValue() < GetCurrentFrameResource().FenceValue)
+	if (GetCurrentFrameResource().FenceValue != 0 && Fence->GetCompletedValue() < GetCurrentFrameResource().FenceValue)
 	{
 		HANDLE eventHandle = CreateEventEx(nullptr, nullptr, false, EVENT_ALL_ACCESS);
-		THROW_IF_FAILED(_fence->SetEventOnCompletion(GetCurrentFrameResource().FenceValue, eventHandle));
+		THROW_IF_FAILED(Fence->SetEventOnCompletion(GetCurrentFrameResource().FenceValue, eventHandle));
 		WaitForSingleObject(eventHandle, INFINITE);
 		CloseHandle(eventHandle);
 	}
 }
 
-void CRenderer::Draw(float DeltaSeconds, CCamera& Camera)
+void CRenderer::Draw (float DeltaSeconds, CCamera& Camera)
 {
 	{
 		D3D12_RESOURCE_BARRIER resourceBarrier = {};
 		resourceBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-		resourceBarrier.Transition.pResource = _frameBuffer[CurrentBackBufferIndex].Get();
+		resourceBarrier.Transition.pResource = FrameBuffer[CurrentBackBufferIndex].Get();
 		resourceBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 		resourceBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
 		resourceBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-		_commandList->ResourceBarrier(1, &resourceBarrier);
+		CommandList->ResourceBarrier(1, &resourceBarrier);
 	}
 
-	THROW_IF_FAILED(_commandList->Close());
-	_commandQueue->ExecuteCommandLists(1, (ID3D12CommandList**)_commandList.GetAddressOf());
+	THROW_IF_FAILED(CommandList->Close());
+	CommandQueue->ExecuteCommandLists(1, (ID3D12CommandList**)CommandList.GetAddressOf());
 
-	_swapChain->Present(1, 0);
+	SwapChain->Present(1, 0);
 	CurrentBackBufferIndex = (CurrentBackBufferIndex + 1) % render::constants::FrameResourcesBufferCount;
 
 	// FlushCommandQueue();
 
-	++_fenceValue;
-	GetCurrentFrameResource().FenceValue = _fenceValue;
-	_commandQueue->Signal(_fence.Get(), _fenceValue);
+	++FenceValue;
+	GetCurrentFrameResource().FenceValue = FenceValue;
+	CommandQueue->Signal(Fence.Get(), FenceValue);
 
 	GetCurrentFrameResource().UploadArena.Clear();
 }
 
-IDXGIAdapter1* CRenderer::GetAdapter()
+IDXGIAdapter1* CRenderer::GetAdapter ()
 {
-	return _adapter.Get();
+	return Adapter.Get();
 }
 
-ID3D12Device* CRenderer::GetDevice()
+ID3D12Device* CRenderer::GetDevice ()
 {
-	return _device.Get();
+	return Device.Get();
 }
 
-ID3D12CommandQueue* CRenderer::GetCommandQueue()
+ID3D12CommandQueue* CRenderer::GetCommandQueue ()
 {
-	return _commandQueue.Get();
+	return CommandQueue.Get();
 }
 
-ID3D12GraphicsCommandList* CRenderer::GetCommandList()
+ID3D12GraphicsCommandList* CRenderer::GetCommandList ()
 {
-	return _commandList.Get();
+	return CommandList.Get();
 }
 
-DX12_Arena& CRenderer::GetBufferArena()
+DX12_Arena& CRenderer::GetBufferArena ()
 {
-	return _bufferArena;
+	return BufferArena;
 }
 
-DX12_DescriptorHeap& CRenderer::GetDescriptorHeap()
+DX12_DescriptorHeap& CRenderer::GetDescriptorHeap ()
 {
 	return ShaderDescriptorHeap;
 }
 
-SFrameResources& CRenderer::GetCurrentFrameResource()
+SFrameResources& CRenderer::GetCurrentFrameResource ()
 {
 	return FramesResources[CurrentFrameResourceIndex];
 }
 
-ID3D12Resource* CRenderer::CreateBufferAsset(
-	const D3D12_RESOURCE_DESC& Desc, D3D12_RESOURCE_STATES InitialState, void* BufferData)
+ID3D12Resource* CRenderer::CreateBufferAsset (
+	const D3D12_RESOURCE_DESC& Desc,
+	D3D12_RESOURCE_STATES InitialState,
+	void* BufferData)
 {
 	uint64 uploadOffset = 0;
 	uint8* dest = GetCurrentFrameResource().UploadArena.Allocate(Desc.Width, &uploadOffset);
 	memcpy(dest, BufferData, Desc.Width);
 
-	ID3D12Resource* resource = _bufferArena.Allocate(Desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr);
-	_commandList->CopyBufferRegion(resource, 0, GetCurrentFrameResource().UploadArena.GetGPUBuffer(), uploadOffset, Desc.Width);
+	ID3D12Resource* resource = BufferArena.Allocate(Desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr);
+	CommandList->CopyBufferRegion(
+		resource, 0, GetCurrentFrameResource().UploadArena.GetGPUBuffer(), uploadOffset, Desc.Width);
 
 	{
 		D3D12_RESOURCE_BARRIER resourceBarrier = {};
@@ -521,16 +537,18 @@ ID3D12Resource* CRenderer::CreateBufferAsset(
 		resourceBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 		resourceBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
 		resourceBarrier.Transition.StateAfter = InitialState;
-		_commandList->ResourceBarrier(1, &resourceBarrier);
+		CommandList->ResourceBarrier(1, &resourceBarrier);
 	}
 
 	return resource;
 }
 
-ID3D12Resource* CRenderer::CreateTextureAsset(
-	const D3D12_RESOURCE_DESC& Desc, D3D12_RESOURCE_STATES InitialState, void* Texels)
+ID3D12Resource* CRenderer::CreateTextureAsset (
+	const D3D12_RESOURCE_DESC& Desc,
+	D3D12_RESOURCE_STATES InitialState,
+	void* Texels)
 {
-	D3D12_RESOURCE_ALLOCATION_INFO allocationInfo = _device->GetResourceAllocationInfo(0, 1, &Desc);
+	D3D12_RESOURCE_ALLOCATION_INFO allocationInfo = Device->GetResourceAllocationInfo(0, 1, &Desc);
 	uint64 bytesPerPixel = Dx12GetBytesPerPixel(Desc.Format);
 
 	D3D12_PLACED_SUBRESOURCE_FOOTPRINT placedFootprint;
@@ -544,17 +562,20 @@ ID3D12Resource* CRenderer::CreateTextureAsset(
 		footprint.RowPitch = (uint32)AlignAddress(footprint.Width * bytesPerPixel, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
 		placedFootprint.Footprint = footprint;
 
-		uint8* destTexels = GetCurrentFrameResource().UploadArena.Allocate(footprint.Height * footprint.RowPitch, &placedFootprint.Offset);
+		uint8* destTexels = GetCurrentFrameResource().UploadArena.Allocate(
+			footprint.Height * footprint.RowPitch, &placedFootprint.Offset);
 
 		for (uint32 Y = 0; Y < Desc.Height; ++Y)
 		{
-			uint8* src = reinterpret_cast<uint8*>(reinterpret_cast<uint64>(Texels) + ((uint64)Y * (uint64)Desc.Width) * (uint64)bytesPerPixel);
-			uint8* dest = reinterpret_cast<uint8*>(reinterpret_cast<uint64>(destTexels) + (uint64)Y * (uint64)footprint.RowPitch);
+			auto src = reinterpret_cast<uint8*>(reinterpret_cast<uint64>(Texels) + ((uint64)Y * (uint64)Desc.Width) * (
+													uint64)bytesPerPixel);
+			auto dest = reinterpret_cast<uint8*>(
+				reinterpret_cast<uint64>(destTexels) + (uint64)Y * (uint64)footprint.RowPitch);
 			memcpy(dest, src, Desc.Width * bytesPerPixel);
 		}
 	}
 
-	ID3D12Resource* resoruce = _textureArena.Allocate(Desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr);
+	ID3D12Resource* resoruce = TextureArena.Allocate(Desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr);
 
 	{
 		D3D12_TEXTURE_COPY_LOCATION srcLocation = {};
@@ -567,7 +588,7 @@ ID3D12Resource* CRenderer::CreateTextureAsset(
 		destLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
 		destLocation.SubresourceIndex = 0;
 
-		_commandList->CopyTextureRegion(&destLocation, 0, 0, 0, &srcLocation, nullptr);
+		CommandList->CopyTextureRegion(&destLocation, 0, 0, 0, &srcLocation, nullptr);
 	}
 
 	{
@@ -577,61 +598,67 @@ ID3D12Resource* CRenderer::CreateTextureAsset(
 		resourceBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 		resourceBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
 		resourceBarrier.Transition.StateAfter = InitialState;
-		_commandList->ResourceBarrier(1, &resourceBarrier);
+		CommandList->ResourceBarrier(1, &resourceBarrier);
 	}
 
 	return resoruce;
 }
 
-void CRenderer::CreateShaderResourceView(ID3D12Resource* Texture, const D3D12_SHADER_RESOURCE_VIEW_DESC& Desc,
-	D3D12_CPU_DESCRIPTOR_HANDLE* OutCpuHandle, D3D12_GPU_DESCRIPTOR_HANDLE* OutGpuHandle)
+void CRenderer::CreateShaderResourceView (
+	ID3D12Resource* Texture,
+	const D3D12_SHADER_RESOURCE_VIEW_DESC& Desc,
+	D3D12_CPU_DESCRIPTOR_HANDLE* OutCpuHandle,
+	D3D12_GPU_DESCRIPTOR_HANDLE* OutGpuHandle)
 {
 	ShaderDescriptorHeap.Allocate(OutCpuHandle, OutGpuHandle);
-	_device->CreateShaderResourceView(Texture, &Desc, *OutCpuHandle);
+	Device->CreateShaderResourceView(Texture, &Desc, *OutCpuHandle);
 }
 
-void CRenderer::CreateSwapChain(bool bFullscreen)
+void CRenderer::CreateSwapChain (bool bFullscreen)
 {
-	_swapChain.Reset();
+	SwapChain.Reset();
 
-	Vector2f drawRect = _window->GetWindowSize();
+	Vector2f drawRect = Window->GetWindowSize();
 
 	DXGI_SWAP_CHAIN_DESC1 swapChainDesc =
-		{
-			.Width = static_cast<unsigned int>(drawRect.x),
-			.Height = static_cast<unsigned int>(drawRect.y),
-			.Format = DXGI_FORMAT_R8G8B8A8_UNORM,
-			.Stereo = false,
-			.SampleDesc = DXGI_SAMPLE_DESC { .Count = 1, .Quality = 0 }, // TODO: use sampling
-			.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT,
-			.BufferCount = render::constants::SwapChainBufferCount,
-			.Scaling = DXGI_SCALING_NONE,
-			.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD,
-			.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED,
-			.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH,
-		};
+	{
+		.Width = static_cast<unsigned int>(drawRect.x),
+		.Height = static_cast<unsigned int>(drawRect.y),
+		.Format = DXGI_FORMAT_R8G8B8A8_UNORM,
+		.Stereo = false,
+		.SampleDesc = DXGI_SAMPLE_DESC{ .Count = 1, .Quality = 0 },
+		// TODO: use sampling
+		.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT,
+		.BufferCount = render::constants::SwapChainBufferCount,
+		.Scaling = DXGI_SCALING_NONE,
+		.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD,
+		.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED,
+		.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH,
+	};
 
 	DXGI_SWAP_CHAIN_FULLSCREEN_DESC fullscreenDesc =
-		{
-			.RefreshRate = { 0, 1 }, // TODO
-			.ScanlineOrdering = DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED,
-			.Scaling = DXGI_MODE_SCALING_UNSPECIFIED,
-			.Windowed = !bFullscreen,
-		};
+	{
+		.RefreshRate = { 0, 1 },
+		// TODO
+		.ScanlineOrdering = DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED,
+		.Scaling = DXGI_MODE_SCALING_UNSPECIFIED,
+		.Windowed = !bFullscreen,
+	};
 
-	THROW_IF_FAILED(Factory->CreateSwapChainForHwnd(
-		_commandQueue.Get(), _window->GetHandle(), &swapChainDesc, &fullscreenDesc, nullptr, &_swapChain));
+	THROW_IF_FAILED(
+		Factory->CreateSwapChainForHwnd(
+			CommandQueue.Get(), Window->GetHandle(), &swapChainDesc, &fullscreenDesc, nullptr, &SwapChain));
 }
 
-void CRenderer::FlushCommandQueue()
+void CRenderer::FlushCommandQueue ()
 {
-	_fenceValue++;
-	_commandQueue->Signal(_fence.Get(), _fenceValue);
+	FenceValue++;
+	CommandQueue->Signal(Fence.Get(), FenceValue);
 
-	if (_fence->GetCompletedValue() < _fenceValue)
+	if (Fence->GetCompletedValue() < FenceValue)
 	{
-		_fence->SetEventOnCompletion(_fenceValue, _fenceEvent);
-		WaitForSingleObject(_fenceEvent, INFINITE);
+		Fence->SetEventOnCompletion(FenceValue, FenceEvent);
+		WaitForSingleObject(FenceEvent, INFINITE);
 	}
 }
 }

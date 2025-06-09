@@ -2,9 +2,8 @@
 
 namespace frt
 {
-	class CWorldScene
-	{
-	public:
-		
-	};
+class CWorldScene
+{
+public:
+};
 }

@@ -6,19 +6,17 @@
 using namespace std::chrono;
 
 NAMESPACE_FRT_START
+FRT_SINGLETON_DEFINE_INSTANCE(CTimer)
 
-FRT_SINGLETON_DEFINE_INSTANCE(Timer)
-
-Timer::Timer()
-	: _deltaSeconds(0)
-	, _pausedDuration(0)
-	, _bPaused(false)
-{
-}
+CTimer::CTimer ()
+	: DeltaSeconds(0)
+	, PausedDuration(0)
+	, BPaused(false)
+{}
 
 // Returns the total time elapsed since Reset() was called, NOT counting any
 // time when the clock is stopped.
-float Timer::GetTotalSeconds() const
+float CTimer::GetTotalSeconds () const
 {
 	// If we are stopped, do not count the time that has passed since we stopped.
 	// Moreover, if we previously already had a pause, the distance 
@@ -29,9 +27,10 @@ float Timer::GetTotalSeconds() const
 	// ----*---------------*-----------------*------------*------------*------> time
 	//  mBaseTime       mStopTime        startTime     mStopTime    mCurrTime
 
-	if (_bPaused)
+	if (BPaused)
 	{
-		return static_cast<float>(MicroSecondsToSeconds(GetDurationInMicroSeconds(_baseTimePoint, _stopTimePoint) - _pausedDuration));
+		return static_cast<float>(MicroSecondsToSeconds(
+			GetDurationInMicroSeconds(BaseTimePoint, StopTimePoint) - PausedDuration));
 	}
 
 	// The distance mCurrTime - mBaseTime includes paused time,
@@ -43,33 +42,34 @@ float Timer::GetTotalSeconds() const
 	//                     |<--paused time-->|
 	// ----*---------------*-----------------*------------*------> time
 	//  mBaseTime       mStopTime        startTime     mCurrTime
-	
+
 	else
 	{
-		return static_cast<float>(MicroSecondsToSeconds(GetDurationInMicroSeconds(_baseTimePoint, _currTimePoint) - _pausedDuration));
+		return static_cast<float>(MicroSecondsToSeconds(
+			GetDurationInMicroSeconds(BaseTimePoint, CurrTimePoint) - PausedDuration));
 	}
 }
 
-float Timer::GetDeltaSeconds() const
+float CTimer::GetDeltaSeconds () const
 {
-	return static_cast<float>(_deltaSeconds);
+	return static_cast<float>(DeltaSeconds);
 }
 
-bool Timer::IsPaused() const
+bool CTimer::IsPaused () const
 {
-	return _bPaused;
+	return BPaused;
 }
 
-void Timer::Reset()
+void CTimer::Reset ()
 {
 	const auto currentTimePoint = high_resolution_clock::now();
-	_baseTimePoint = currentTimePoint;
-	_prevTimePoint = currentTimePoint;
-	_stopTimePoint = {};
-	_bPaused = false;
+	BaseTimePoint = currentTimePoint;
+	PrevTimePoint = currentTimePoint;
+	StopTimePoint = {};
+	BPaused = false;
 }
 
-void Timer::Start(bool bReset)
+void CTimer::Start (bool bReset)
 {
 	if (bReset)
 	{
@@ -84,57 +84,57 @@ void Timer::Start(bool bReset)
 	// ----*---------------*-----------------*------------> time
 	//  mBaseTime       mStopTime        startTime     
 
-	if (_bPaused)
+	if (BPaused)
 	{
-		_pausedDuration += GetDurationInMicroSeconds(_stopTimePoint, startTimePoint);
+		PausedDuration += GetDurationInMicroSeconds(StopTimePoint, startTimePoint);
 
-		_prevTimePoint = startTimePoint;
-		_stopTimePoint = {};
-		_bPaused = false;
+		PrevTimePoint = startTimePoint;
+		StopTimePoint = {};
+		BPaused = false;
 	}
 }
 
-void Timer::Pause()
+void CTimer::Pause ()
 {
-	if(!_bPaused)
+	if (!BPaused)
 	{
-		_stopTimePoint = high_resolution_clock::now();
-		_bPaused  = true;
+		StopTimePoint = high_resolution_clock::now();
+		BPaused = true;
 	}
 }
 
-void Timer::Tick()
+void CTimer::Tick ()
 {
-	if (_bPaused)
+	if (BPaused)
 	{
-		_deltaSeconds = 0.0;
+		DeltaSeconds = 0.0;
 		return;
 	}
 
 	const auto currentTimePoint = high_resolution_clock::now();
-	_currTimePoint = currentTimePoint;
+	CurrTimePoint = currentTimePoint;
 
 	// Time difference between this frame and the previous.
-	_deltaSeconds = MicroSecondsToSeconds(GetDurationInMicroSeconds(_prevTimePoint, _currTimePoint));
+	DeltaSeconds = MicroSecondsToSeconds(GetDurationInMicroSeconds(PrevTimePoint, CurrTimePoint));
 
 	// Prepare for next frame.
-	_prevTimePoint = _currTimePoint;
+	PrevTimePoint = CurrTimePoint;
 
 	// Force nonnegative.  The DXSDK's CDXUTTimer mentions that if the 
 	// processor goes into a power save mode or we get shuffled to another
 	// processor, then mDeltaTime can be negative.
-	if (_deltaSeconds < 0.0)
+	if (DeltaSeconds < 0.0)
 	{
-		_deltaSeconds = 0.0;
+		DeltaSeconds = 0.0;
 	}
 }
 
-long long Timer::GetDurationInMicroSeconds(const TimePoint& Start, const TimePoint& End)
+long long CTimer::GetDurationInMicroSeconds (const TimePoint& Start, const TimePoint& End)
 {
 	return duration_cast<microseconds>(End - Start).count();
 }
 
-double Timer::MicroSecondsToSeconds(long long MicroSeconds)
+double CTimer::MicroSecondsToSeconds (long long MicroSeconds)
 {
 	return static_cast<double>(MicroSeconds) / 1'000'000.;
 }

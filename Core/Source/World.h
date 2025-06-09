@@ -7,21 +7,21 @@
 
 namespace frt
 {
-	class CWorld
-	{
-	public:
-		CWorld() = delete;
-		explicit CWorld(memory::TRefWeak<graphics::CRenderer> InRenderer); 
-		virtual ~CWorld() = default;
+class CWorld
+{
+public:
+	CWorld () = delete;
+	explicit CWorld (memory::TRefWeak<graphics::CRenderer> InRenderer);
+	virtual ~CWorld () = default;
 
-		virtual void Tick(float DeltaSeconds);
-		virtual void Present(float DeltaSeconds, ID3D12GraphicsCommandList* CommandList);
+	virtual void Tick (float DeltaSeconds);
+	virtual void Present (float DeltaSeconds, ID3D12GraphicsCommandList* CommandList);
 
-		void CopyConstantData();
+	void CopyConstantData ();
 
-		memory::TRefShared<CEntity> SpawnEntity();
+	memory::TRefShared<CEntity> SpawnEntity ();
 
-		memory::TRefWeak<graphics::CRenderer> Renderer;
-		TArray<memory::TRefShared<CEntity>> Entities;
-	};
+	memory::TRefWeak<graphics::CRenderer> Renderer;
+	TArray<memory::TRefShared<CEntity>> Entities;
+};
 }

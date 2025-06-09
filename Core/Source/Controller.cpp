@@ -3,8 +3,8 @@
 
 namespace frt
 {
-	CController::CController()
-	{
-		Camera = memory::NewShared<graphics::CCamera>();
-	}
+CController::CController ()
+{
+	Camera = memory::NewShared<graphics::CCamera>();
+}
 }

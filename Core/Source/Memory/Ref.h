@@ -9,7 +9,11 @@
 
 namespace frt::memory
 {
-namespace refs{} using namespace refs;
+namespace refs
+{}
+
+
+using namespace refs;
 
 /**
  * @note: Work in progress.
@@ -39,308 +43,517 @@ namespace refs{} using namespace refs;
  */
 namespace refs
 {
-	template <typename T, bool bNullAllowed> struct TRefObserver;
-	template <typename T, bool bNullAllowed> struct TRefBorrowed;
+	template <typename T, bool bNullAllowed>
+	struct TRefObserver;
+	template <typename T, bool bNullAllowed>
+	struct TRefBorrowed;
 
-	template <typename T> using TRefIn = TRefObserver<T, false>;
-	template <typename T> using TRefInOpt = TRefObserver<T, true>;
-	template <typename T> using TRefOut = TRefBorrowed<T, false>;
-	template <typename T> using TRefOutOpt = TRefBorrowed<T, true>;
-	template <typename T> using TRefInOut = TRefOut<T>;
+	template <typename T>
+	using TRefIn = TRefObserver<T, false>;
+	template <typename T>
+	using TRefInOpt = TRefObserver<T, true>;
+	template <typename T>
+	using TRefOut = TRefBorrowed<T, false>;
+	template <typename T>
+	using TRefOutOpt = TRefBorrowed<T, true>;
+	template <typename T>
+	using TRefInOut = TRefOut<T>;
 
-	template <typename T> struct TRefWeak;
-	template <typename T> struct TRefShared;
-	template <typename T> struct TRefUnique;
+	template <typename T>
+	struct TRefWeak;
+	template <typename T>
+	struct TRefShared;
+	template <typename T>
+	struct TRefUnique;
 
-template <typename T>
-struct TRefControlBlock
-{
-	uint32 StrongRefCount = 1u;
-	uint32 WeakRefCount = 1u;
 
-	IAllocator* Allocator = nullptr; // TODO: 
+	template <typename T>
+	struct TRefControlBlock
+	{
+		uint32 StrongRefCount = 1u;
+		uint32 WeakRefCount = 1u;
 
-	/**
-	 *
-	 */
+		IAllocator* Allocator = nullptr; // TODO: 
+
+		/**
+		*
+		*/
 #if defined(FRT_STORE_CONTROLED_DATA_IN_PLACE)
 	union { std::remove_cv_t<T> Data; };
 
 	T* Ptr() { return reinterpret_cast<T*>(&Data); }
 	static constexpr uint32 GetFullSize() { return sizeof(TRefControlBlock); }
 #else
-	T* Ptr() { return reinterpret_cast<T*>((uint8*)this + sizeof(TRefControlBlock)); }
-	static constexpr uint32 GetFullSize() { return sizeof(TRefControlBlock) + sizeof(T); }
+		T* Ptr () { return reinterpret_cast<T*>((uint8*)this + sizeof(TRefControlBlock)); }
+		static constexpr uint32 GetFullSize () { return sizeof(TRefControlBlock) + sizeof(T); }
 #endif
 
-	TRefControlBlock() { new (Ptr()) T; }
+		TRefControlBlock () { new(Ptr()) T; }
 
-	template <typename ... Args>
-	explicit TRefControlBlock(Args&&... InArgs) { new (Ptr()) T(std::forward<Args>(InArgs)...); }
+		template <typename... Args>
+		explicit TRefControlBlock (Args&&... InArgs) { new(Ptr()) T(std::forward<Args>(InArgs)...); }
 
-	TRefControlBlock* CopyStrong() { frt_assert(StrongRefCount > 0u); ++StrongRefCount; return this; }
-	TRefControlBlock* CopyWeak() { frt_assert(StrongRefCount > 0u); ++WeakRefCount; return this; }
+		TRefControlBlock* CopyStrong ()
+		{
+			frt_assert(StrongRefCount > 0u);
+			++StrongRefCount;
+			return this;
+		}
 
-	void DecrementStrong() { frt_assert(StrongRefCount > 0u); if (--StrongRefCount == 0u) {Ptr()->~T(); DecrementWeak();} }
-	void DecrementWeak() { frt_assert(WeakRefCount > 0u); if (--WeakRefCount == 0u) Allocator->DeleteManaged(this); }
-};
+		TRefControlBlock* CopyWeak ()
+		{
+			frt_assert(StrongRefCount > 0u);
+			++WeakRefCount;
+			return this;
+		}
 
-/**
- * 
- * @tparam T Type of watched object
- * 
- */
-template <typename T, bool bNullAllowed>
-struct TRefObserver
-{
-	TRefObserver() requires bNullAllowed : Ptr{ nullptr } {}
+		void DecrementStrong ()
+		{
+			frt_assert(StrongRefCount > 0u);
+			if (--StrongRefCount == 0u)
+			{
+				Ptr()->~T();
+				DecrementWeak();
+			}
+		}
 
-	template <bool bOtherNullAllowed>
-	requires (bNullAllowed == bOtherNullAllowed) || (bNullAllowed && !bOtherNullAllowed)
-	TRefObserver(const TRefObserver<T, bOtherNullAllowed>& Other) : Ptr{ Other.Ptr } {}
-	TRefObserver(const TRefObserver& Other) = default;
+		void DecrementWeak ()
+		{
+			frt_assert(WeakRefCount > 0u);
+			if (--WeakRefCount == 0u)
+			{
+				Allocator->DeleteManaged(this);
+			}
+		}
+	};
 
-	template <bool bOtherNullAllowed>
-	requires bNullAllowed && bOtherNullAllowed
-	TRefObserver(TRefObserver&& Other) noexcept : Ptr{ Other.Ptr } { Other.Ptr = nullptr; (void)std::move(Other); }
-	TRefObserver(TRefObserver&& Other) = default;
 
-	template <bool bOtherNullAllowed>
-	requires (bNullAllowed == bOtherNullAllowed) || (bNullAllowed && !bOtherNullAllowed)
-	TRefObserver& operator=(const TRefObserver<T, bOtherNullAllowed>& Other) { Ptr = Other.Ptr; return *this; }
-	TRefObserver& operator=(const TRefObserver& Other)  = default;
-
-	template <bool bOtherNullAllowed>
-	requires bNullAllowed && bOtherNullAllowed
-	TRefObserver& operator=(TRefObserver&& Other) noexcept { Ptr = Other.Ptr; Other.Ptr = nullptr; (void)std::move(Other); return *this; }
-	TRefObserver& operator=(TRefObserver&& Other) = default;
-
-	~TRefObserver() = default;
-
-	TRefObserver(std::nullptr_t) requires bNullAllowed : Ptr{ nullptr } {}
-	TRefObserver(std::nullptr_t) = delete;
-	TRefObserver(const T* InPtr) : Ptr{ InPtr } { frt_assert(Ptr || bNullAllowed); }
-	TRefObserver& operator=(std::nullptr_t) requires bNullAllowed { Ptr = nullptr; return *this; }
-	TRefObserver& operator=(std::nullptr_t) = delete;
-	TRefObserver& operator=(const T* NewPtr) { Ptr = NewPtr; frt_assert(Ptr || bNullAllowed); return *this; }
-
-	const T* Get() const { return Ptr; }
-	const T* operator->() const { return Ptr; }
-	const T& operator*() const { return *Ptr; }
-
-	explicit constexpr operator bool() const { return !bNullAllowed || Ptr != nullptr; }
-	explicit operator const T*() const { return Ptr; }
-
-	void Reset(std::nullptr_t) requires bNullAllowed { Ptr = nullptr; }
-	void Reset(std::nullptr_t) = delete;
-	void Reset(const T* NewPtr) { Ptr = NewPtr; frt_assert(Ptr || bNullAllowed); }
-protected:
-	const T* Ptr;
-};
-
-/**
- * 
- * @tparam T Type of borrowed object
- */
-template <typename T, bool bNullAllowed>
-struct TRefBorrowed
-{
-	TRefBorrowed() requires bNullAllowed : Ptr{ nullptr } {}
-
-	template <bool bOtherNullAllowed>
-	requires (bNullAllowed == bOtherNullAllowed) || (bNullAllowed && !bOtherNullAllowed)
-	TRefBorrowed(const TRefBorrowed<T, bOtherNullAllowed>& Other) : Ptr{ Other.Ptr } {}
-	TRefBorrowed(const TRefBorrowed& Other) = default;
-
-	template <bool bOtherNullAllowed>
-	requires bNullAllowed && bOtherNullAllowed
-	TRefBorrowed(TRefBorrowed&& Other) noexcept : Ptr{ Other.Ptr } { Other.Ptr = nullptr; (void)std::move(Other); }
-	TRefBorrowed(TRefBorrowed&& Other) = default;
-
-	template <bool bOtherNullAllowed>
-	requires (bNullAllowed == bOtherNullAllowed) || (bNullAllowed && !bOtherNullAllowed)
-	TRefBorrowed& operator=(const TRefBorrowed<T, bOtherNullAllowed>& Other) { Ptr = Other.Ptr; return *this; }
-	TRefBorrowed& operator=(const TRefBorrowed& Other)  = default;
-
-	template <bool bOtherNullAllowed>
-	requires bNullAllowed && bOtherNullAllowed
-	TRefBorrowed& operator=(TRefBorrowed&& Other) noexcept { Ptr = Other.Ptr; Other.Ptr = nullptr; (void)std::move(Other); return *this; }
-	TRefBorrowed& operator=(TRefBorrowed&& Other) = default;
-
-	~TRefBorrowed() = default;
-
-	TRefBorrowed(std::nullptr_t) requires bNullAllowed : Ptr{ nullptr } {}
-	TRefBorrowed(std::nullptr_t) = delete;
-	TRefBorrowed(const T* InPtr) : Ptr{ InPtr } { frt_assert(Ptr || bNullAllowed); }
-	TRefBorrowed& operator=(std::nullptr_t) requires bNullAllowed { Ptr = nullptr; return *this; }
-	TRefBorrowed& operator=(std::nullptr_t) = delete;
-	TRefBorrowed& operator=(const T* NewPtr) { Ptr = NewPtr; frt_assert(Ptr || bNullAllowed); return *this; }
-
-	T* Get() { return Ptr; }
-	T* operator->() { return Ptr; }
-	T& operator*() { return *Ptr; }
-
-	const T* Get() const { return Ptr; }
-	const T* operator->() const { return Ptr; }
-	const T& operator*() const { return *Ptr; }
-
-	explicit constexpr operator bool() const { return !bNullAllowed || Ptr != nullptr; }
-	explicit operator const T*() const { return Ptr; }
-
-	void Reset(std::nullptr_t) requires bNullAllowed { Ptr = nullptr; }
-	void Reset(std::nullptr_t) = delete;
-	void Reset(const T* NewPtr) { Ptr = NewPtr; frt_assert(Ptr || bNullAllowed); }
-protected:
-	T* Ptr;
-};
-
-template <typename T>
-struct TRefShared
-{
-	TRefShared() = default;
-
-	TRefShared(const TRefShared& Other) {  Control = Other.Control->CopyStrong(); }
-	TRefShared& operator=(const TRefShared& Other)
+	/**
+	* 
+	* @tparam T Type of watched object
+	* 
+	*/
+	template <typename T, bool bNullAllowed>
+	struct TRefObserver
 	{
-		if (this == &Other) return *this;
-		if (Control) Control->DecrementStrong();
-		Control = Other.Control->CopyStrong();
-		return *this;
-	}
+		TRefObserver () requires bNullAllowed : Ptr{ nullptr } {}
 
-	TRefShared(TRefShared&& Other) noexcept { Move(std::move(Other)); }
-	TRefShared& operator=(TRefShared&& Other) noexcept
+		template <bool bOtherNullAllowed>
+			requires (bNullAllowed == bOtherNullAllowed) || (bNullAllowed && !bOtherNullAllowed)
+		TRefObserver (const TRefObserver<T, bOtherNullAllowed>& Other) : Ptr{ Other.Ptr } {}
+
+		TRefObserver (const TRefObserver& Other) = default;
+
+		template <bool bOtherNullAllowed>
+			requires bNullAllowed && bOtherNullAllowed
+		TRefObserver (TRefObserver&& Other) noexcept
+			: Ptr{ Other.Ptr }
+		{
+			Other.Ptr = nullptr;
+			(void)std::move(Other);
+		}
+
+		TRefObserver (TRefObserver&& Other) = default;
+
+		template <bool bOtherNullAllowed>
+			requires (bNullAllowed == bOtherNullAllowed) || (bNullAllowed && !bOtherNullAllowed)
+		TRefObserver& operator= (const TRefObserver<T, bOtherNullAllowed>& Other)
+		{
+			Ptr = Other.Ptr;
+			return *this;
+		}
+
+		TRefObserver& operator= (const TRefObserver& Other) = default;
+
+		template <bool bOtherNullAllowed>
+			requires bNullAllowed && bOtherNullAllowed
+		TRefObserver& operator= (TRefObserver&& Other) noexcept
+		{
+			Ptr = Other.Ptr;
+			Other.Ptr = nullptr;
+			(void)std::move(Other);
+			return *this;
+		}
+
+		TRefObserver& operator= (TRefObserver&& Other) = default;
+
+		~TRefObserver () = default;
+
+		TRefObserver (std::nullptr_t) requires bNullAllowed : Ptr{ nullptr } {}
+		TRefObserver (std::nullptr_t) = delete;
+		TRefObserver (const T* InPtr) : Ptr{ InPtr } { frt_assert(Ptr || bNullAllowed); }
+
+		TRefObserver& operator= (std::nullptr_t) requires bNullAllowed
+		{
+			Ptr = nullptr;
+			return *this;
+		}
+
+		TRefObserver& operator= (std::nullptr_t) = delete;
+
+		TRefObserver& operator= (const T* NewPtr)
+		{
+			Ptr = NewPtr;
+			frt_assert(Ptr || bNullAllowed);
+			return *this;
+		}
+
+		const T* Get () const { return Ptr; }
+		const T* operator-> () const { return Ptr; }
+		const T& operator* () const { return *Ptr; }
+
+		explicit constexpr operator bool () const { return !bNullAllowed || Ptr != nullptr; }
+		explicit operator const T* () const { return Ptr; }
+
+		void Reset (std::nullptr_t) requires bNullAllowed { Ptr = nullptr; }
+		void Reset (std::nullptr_t) = delete;
+
+		void Reset (const T* NewPtr)
+		{
+			Ptr = NewPtr;
+			frt_assert(Ptr || bNullAllowed);
+		}
+
+	protected:
+		const T* Ptr;
+	};
+
+
+	/**
+	* 
+	* @tparam T Type of borrowed object
+	*/
+	template <typename T, bool bNullAllowed>
+	struct TRefBorrowed
 	{
-		if (Control) Control->DecrementStrong();
-		Move(std::move(Other));
-		return *this;
-	}
+		TRefBorrowed () requires bNullAllowed : Ptr{ nullptr } {}
 
-	void Move(TRefShared&& Other) noexcept { Control = Other.Control; Other.Control = nullptr; (void)std::move(Other); }
+		template <bool bOtherNullAllowed>
+			requires (bNullAllowed == bOtherNullAllowed) || (bNullAllowed && !bOtherNullAllowed)
+		TRefBorrowed (const TRefBorrowed<T, bOtherNullAllowed>& Other) : Ptr{ Other.Ptr } {}
 
-	~TRefShared() { Release(); }
+		TRefBorrowed (const TRefBorrowed& Other) = default;
 
-	TRefShared(TRefControlBlock<T>* InControl) : Control { InControl } {}
+		template <bool bOtherNullAllowed>
+			requires bNullAllowed && bOtherNullAllowed
+		TRefBorrowed (TRefBorrowed&& Other) noexcept
+			: Ptr{ Other.Ptr }
+		{
+			Other.Ptr = nullptr;
+			(void)std::move(Other);
+		}
 
-	TRefWeak<T> GetWeak() const { return TRefWeak<T>(Control->CopyWeak()); }
-	TRefObserver<T, false> GetObserver() const { return TRefObserver<T, false>(Ptr()); }
-	TRefBorrowed<T, false> GetBorrowed() const { return TRefBorrowed<T, false>(Ptr()); }
+		TRefBorrowed (TRefBorrowed&& Other) = default;
 
-	T* GetRawIgnoringLifetime() { return Ptr(); }
-	T* operator->() { return Ptr(); }
-	T& operator*() { return *Ptr(); }
+		template <bool bOtherNullAllowed>
+			requires (bNullAllowed == bOtherNullAllowed) || (bNullAllowed && !bOtherNullAllowed)
+		TRefBorrowed& operator= (const TRefBorrowed<T, bOtherNullAllowed>& Other)
+		{
+			Ptr = Other.Ptr;
+			return *this;
+		}
 
-	const T* GetRawIgnoringLifetime() const { return Ptr(); }
-	const T* operator->() const { return Ptr(); }
-	const T& operator*() const { return *Ptr(); }
+		TRefBorrowed& operator= (const TRefBorrowed& Other) = default;
 
-	explicit constexpr operator bool() const { return Control && Control->StrongRefCount > 0u; }
-	explicit operator const T*() const { return Ptr(); }
+		template <bool bOtherNullAllowed>
+			requires bNullAllowed && bOtherNullAllowed
+		TRefBorrowed& operator= (TRefBorrowed&& Other) noexcept
+		{
+			Ptr = Other.Ptr;
+			Other.Ptr = nullptr;
+			(void)std::move(Other);
+			return *this;
+		}
 
-	void Release() { if (Control) Control->DecrementStrong(); Control = nullptr; }
-	void Reset(const TRefControlBlock<T>* NewPtr = nullptr) { if (Control) Control->DecrementStrong(); Control = NewPtr; }
+		TRefBorrowed& operator= (TRefBorrowed&& Other) = default;
 
-protected:
-	T* Ptr() { return Control->Ptr(); }
-	TRefControlBlock<T>* Control = nullptr;
-};
+		~TRefBorrowed () = default;
 
-template <typename T>
-struct TRefWeak
-{
-	TRefWeak() = default;
+		TRefBorrowed (std::nullptr_t) requires bNullAllowed : Ptr{ nullptr } {}
+		TRefBorrowed (std::nullptr_t) = delete;
+		TRefBorrowed (const T* InPtr) : Ptr{ InPtr } { frt_assert(Ptr || bNullAllowed); }
 
-	TRefWeak(const TRefWeak& Other) : Control{ Other.Control->CopyWeak() } {}
-	TRefWeak& operator=(const TRefWeak& Other)
+		TRefBorrowed& operator= (std::nullptr_t) requires bNullAllowed
+		{
+			Ptr = nullptr;
+			return *this;
+		}
+
+		TRefBorrowed& operator= (std::nullptr_t) = delete;
+
+		TRefBorrowed& operator= (const T* NewPtr)
+		{
+			Ptr = NewPtr;
+			frt_assert(Ptr || bNullAllowed);
+			return *this;
+		}
+
+		T* Get () { return Ptr; }
+		T* operator-> () { return Ptr; }
+		T& operator* () { return *Ptr; }
+
+		const T* Get () const { return Ptr; }
+		const T* operator-> () const { return Ptr; }
+		const T& operator* () const { return *Ptr; }
+
+		explicit constexpr operator bool () const { return !bNullAllowed || Ptr != nullptr; }
+		explicit operator const T* () const { return Ptr; }
+
+		void Reset (std::nullptr_t) requires bNullAllowed { Ptr = nullptr; }
+		void Reset (std::nullptr_t) = delete;
+
+		void Reset (const T* NewPtr)
+		{
+			Ptr = NewPtr;
+			frt_assert(Ptr || bNullAllowed);
+		}
+
+	protected:
+		T* Ptr;
+	};
+
+
+	template <typename T>
+	struct TRefShared
 	{
-		if (this == &Other) return *this;
-		if (Control) Control->DecrementWeak();
-		Control = Other.Control->CopyWeak();
-		return *this;
-	}
+		TRefShared () = default;
 
-	TRefWeak(TRefWeak&& Other) noexcept { Move(std::move(Other)); }
-	TRefWeak& operator=(TRefWeak&& Other) noexcept
+		TRefShared (const TRefShared& Other) { Control = Other.Control->CopyStrong(); }
+
+		TRefShared& operator= (const TRefShared& Other)
+		{
+			if (this == &Other)
+			{
+				return *this;
+			}
+			if (Control)
+			{
+				Control->DecrementStrong();
+			}
+			Control = Other.Control->CopyStrong();
+			return *this;
+		}
+
+		TRefShared (TRefShared&& Other) noexcept { Move(std::move(Other)); }
+
+		TRefShared& operator= (TRefShared&& Other) noexcept
+		{
+			if (Control)
+			{
+				Control->DecrementStrong();
+			}
+			Move(std::move(Other));
+			return *this;
+		}
+
+		void Move (TRefShared&& Other) noexcept
+		{
+			Control = Other.Control;
+			Other.Control = nullptr;
+			(void)std::move(Other);
+		}
+
+		~TRefShared () { Release(); }
+
+		TRefShared (TRefControlBlock<T>* InControl) : Control{ InControl } {}
+
+		TRefWeak<T> GetWeak () const { return TRefWeak<T>(Control->CopyWeak()); }
+		TRefObserver<T, false> GetObserver () const { return TRefObserver<T, false>(Ptr()); }
+		TRefBorrowed<T, false> GetBorrowed () const { return TRefBorrowed<T, false>(Ptr()); }
+
+		T* GetRawIgnoringLifetime () { return Ptr(); }
+		T* operator-> () { return Ptr(); }
+		T& operator* () { return *Ptr(); }
+
+		const T* GetRawIgnoringLifetime () const { return Ptr(); }
+		const T* operator-> () const { return Ptr(); }
+		const T& operator* () const { return *Ptr(); }
+
+		explicit constexpr operator bool () const { return Control && Control->StrongRefCount > 0u; }
+		explicit operator const T* () const { return Ptr(); }
+
+		void Release ()
+		{
+			if (Control)
+			{
+				Control->DecrementStrong();
+			}
+			Control = nullptr;
+		}
+
+		void Reset (const TRefControlBlock<T>* NewPtr = nullptr)
+		{
+			if (Control)
+			{
+				Control->DecrementStrong();
+			}
+			Control = NewPtr;
+		}
+
+	protected:
+		T* Ptr () { return Control->Ptr(); }
+		TRefControlBlock<T>* Control = nullptr;
+	};
+
+
+	template <typename T>
+	struct TRefWeak
 	{
-		if (Control) Control->DecrementWeak();
-		Move(std::move(Other));
-		return *this;
-	}
+		TRefWeak () = default;
 
-	void Move(TRefWeak&& Other) noexcept { Control = Other.Control; Other.Control = nullptr; (void)std::move(Other); }
+		TRefWeak (const TRefWeak& Other) : Control{ Other.Control->CopyWeak() } {}
 
-	~TRefWeak() { if (Control) Control->DecrementWeak(); }
+		TRefWeak& operator= (const TRefWeak& Other)
+		{
+			if (this == &Other)
+			{
+				return *this;
+			}
+			if (Control)
+			{
+				Control->DecrementWeak();
+			}
+			Control = Other.Control->CopyWeak();
+			return *this;
+		}
 
-	TRefWeak(TRefControlBlock<T>* InControl) : Control{ InControl } {}
-	TRefWeak& operator=(TRefControlBlock<T>* InControl)
+		TRefWeak (TRefWeak&& Other) noexcept { Move(std::move(Other)); }
+
+		TRefWeak& operator= (TRefWeak&& Other) noexcept
+		{
+			if (Control)
+			{
+				Control->DecrementWeak();
+			}
+			Move(std::move(Other));
+			return *this;
+		}
+
+		void Move (TRefWeak&& Other) noexcept
+		{
+			Control = Other.Control;
+			Other.Control = nullptr;
+			(void)std::move(Other);
+		}
+
+		~TRefWeak ()
+		{
+			if (Control)
+			{
+				Control->DecrementWeak();
+			}
+		}
+
+		TRefWeak (TRefControlBlock<T>* InControl) : Control{ InControl } {}
+
+		TRefWeak& operator= (TRefControlBlock<T>* InControl)
+		{
+			if (Control == InControl)
+			{
+				return *this;
+			}
+			if (Control)
+			{
+				Control->DecrementWeak();
+			}
+			Control = InControl;
+			return *this;
+		}
+
+		TRefObserver<T, false> GetObserver () const { return TRefObserver<T, false>(Ptr()); }
+		TRefBorrowed<T, false> GetBorrowed () const { return TRefBorrowed<T, false>(Ptr()); }
+
+		T* GetRawIgnoringLifetime () { return Ptr(); }
+		T* operator-> () { return Ptr(); }
+		T& operator* () { return *Ptr(); }
+
+		const T* GetRawIgnoringLifetime () const { return Ptr(); }
+		const T* operator-> () const { return Control->Ptr(); }
+		const T& operator* () const { return *Ptr(); }
+
+		explicit constexpr operator bool () const { return Ptr() != nullptr; }
+		explicit operator const T* () const { return Ptr(); }
+
+		TRefShared<T> Lock () { return TRefShared<T>(Control->CopyStrong()); }
+
+		void Reset (TRefControlBlock<T>* NewControl = nullptr)
+		{
+			if (Control)
+			{
+				Control->DecrementWeak();
+			}
+			Control = NewControl;
+		}
+
+	protected:
+		T* Ptr () { return Control->Ptr(); }
+		TRefControlBlock<T>* Control;
+	};
+
+
+	template <typename T>
+	struct TRefUnique
 	{
-		if (Control == InControl) return *this;
-		if (Control) Control->DecrementWeak();
-		Control = InControl;
-		return *this;
-	}
+		TRefUnique () = default;
 
-	TRefObserver<T, false> GetObserver() const { return TRefObserver<T, false>(Ptr()); }
-	TRefBorrowed<T, false> GetBorrowed() const { return TRefBorrowed<T, false>(Ptr()); }
+		TRefUnique (const TRefUnique& Other) = delete;
+		TRefUnique& operator= (const TRefUnique& Other) = delete;
 
-	T* GetRawIgnoringLifetime() { return Ptr(); }
-	T* operator->() { return Ptr(); }
-	T& operator*() { return *Ptr(); }
+		TRefUnique (TRefUnique&& Other) noexcept { Move(std::move(Other)); }
 
-	const T* GetRawIgnoringLifetime() const { return Ptr(); }
-	const T* operator->() const { return Control->Ptr(); }
-	const T& operator*() const { return *Ptr(); }
+		TRefUnique& operator= (TRefUnique&& Other) noexcept
+		{
+			Move(std::move(Other));
+			return *this;
+		}
 
-	explicit constexpr operator bool() const { return Ptr() != nullptr; }
-	explicit operator const T*() const { return Ptr(); }
+		void Move (TRefUnique&& Other) noexcept
+		{
+			Control = Other.Control;
+			Other.Control = nullptr;
+			(void)std::move(Other);
+		}
 
-	TRefShared<T> Lock() { return TRefShared<T>(Control->CopyStrong()); }
-	void Reset(TRefControlBlock<T>* NewControl = nullptr) { if (Control) Control->DecrementWeak(); Control = NewControl; }
+		~TRefUnique () { Release(); }
 
-protected:
-	T* Ptr() { return Control->Ptr(); }
-	TRefControlBlock<T>* Control;
-};
+		TRefUnique (TRefControlBlock<T>* InControl) : Control{ InControl } {}
 
-template <typename T>
-struct TRefUnique
-{
-	TRefUnique() = default;
+		TRefWeak<T> GetWeak () const { return TRefWeak<T>(Control->CopyWeak()); }
+		TRefObserver<T, false> GetObserver () const { return TRefObserver<T, false>(Ptr()); }
+		TRefBorrowed<T, false> GetBorrowed () const { return TRefBorrowed<T, false>(Ptr()); }
 
-	TRefUnique(const TRefUnique& Other) = delete;
-	TRefUnique& operator=(const TRefUnique& Other)  = delete;
+		T* GetRawIgnoringLifetime () { return Ptr(); }
+		T* operator-> () { return Ptr(); }
+		T& operator* () { return *Ptr(); }
 
-	TRefUnique(TRefUnique&& Other) noexcept { Move(std::move(Other)); }
-	TRefUnique& operator=(TRefUnique&& Other) noexcept { Move(std::move(Other)); return *this; }
+		const T* GetRawIgnoringLifetime () const { return Ptr(); }
+		const T* operator-> () const { return Ptr(); }
+		const T& operator* () const { return *Ptr(); }
 
-	void Move(TRefUnique&& Other) noexcept { Control = Other.Control; Other.Control = nullptr; (void)std::move(Other); }
+		explicit constexpr operator bool () const { return Control && Control->StrongRefCount > 0u; }
+		explicit operator const T* () const { return Ptr(); }
 
-	~TRefUnique() { Release(); }
+		void Release ()
+		{
+			if (Control)
+			{
+				Control->DecrementStrong();
+			}
+			Control = nullptr;
+		}
 
-	TRefUnique(TRefControlBlock<T>* InControl) : Control { InControl } {}
+		void Reset (const TRefControlBlock<T>* NewPtr = nullptr)
+		{
+			if (Control)
+			{
+				Control->DecrementStrong();
+			}
+			Control = NewPtr;
+		}
 
-	TRefWeak<T> GetWeak() const { return TRefWeak<T>(Control->CopyWeak()); }
-	TRefObserver<T, false> GetObserver() const { return TRefObserver<T, false>(Ptr()); }
-	TRefBorrowed<T, false> GetBorrowed() const { return TRefBorrowed<T, false>(Ptr()); }
-
-	T* GetRawIgnoringLifetime() { return Ptr(); }
-	T* operator->() { return Ptr(); }
-	T& operator*() { return *Ptr(); }
-
-	const T* GetRawIgnoringLifetime() const { return Ptr(); }
-	const T* operator->() const { return Ptr(); }
-	const T& operator*() const { return *Ptr(); }
-
-	explicit constexpr operator bool() const { return Control && Control->StrongRefCount > 0u; }
-	explicit operator const T*() const { return Ptr(); }
-
-	void Release() { if (Control) Control->DecrementStrong(); Control = nullptr; }
-	void Reset(const TRefControlBlock<T>* NewPtr = nullptr) { if (Control) Control->DecrementStrong(); Control = NewPtr; }
-
-protected:
-	T* Ptr() { return Control->Ptr(); }
-	TRefControlBlock<T>* Control;
-};
+	protected:
+		T* Ptr () { return Control->Ptr(); }
+		TRefControlBlock<T>* Control;
+	};
 }
 }
-

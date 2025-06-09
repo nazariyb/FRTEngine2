@@ -18,21 +18,20 @@
 
 
 NAMESPACE_FRT_START
-
-template<class T>
+template <class T>
 class FRT_CORE_API Singleton
 {
 public:
-	Singleton(const Singleton&) = delete;
-	Singleton& operator=(const Singleton&) = delete;
+	Singleton (const Singleton&) = delete;
+	Singleton& operator= (const Singleton&) = delete;
 
-	Singleton()
+	Singleton ()
 	{
 		// static_assert(_instance == nullptr, "Singleton already exists");
 		_instance = static_cast<T*>(this);
 	}
 
-	~Singleton()
+	~Singleton ()
 	{
 		// assert(_instance != nullptr, "Singleton doesn't exist");
 		_instance = nullptr;
@@ -43,5 +42,6 @@ public:
 protected:
 	static T* _instance;
 };
+
 
 NAMESPACE_FRT_END

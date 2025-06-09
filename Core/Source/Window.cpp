@@ -9,54 +9,54 @@
 #include "Graphics/RenderCommonTypes.h"
 
 NAMESPACE_FRT_START
-	Window::~Window()
-{
-}
+CWindow::~CWindow ()
+{}
 
-Window::Window(const WindowParams& Params)
-	: _params(Params)
+CWindow::CWindow (const SWindowParams& Params)
+	: Params(Params)
 {
 	RegisterWinAPIClass();
 
-	const int right = _params.startX + _params.width;
-	const int bottom = _params.startY + _params.height;
-	RECT wr {.left = _params.startX, .top = _params.startY, .right = right, .bottom = bottom};
+	const int right = Params.StartX + Params.Width;
+	const int bottom = Params.StartY + Params.Height;
+	RECT wr{ .left = Params.StartX, .top = Params.StartY, .right = right, .bottom = bottom };
 	AdjustWindowRect(&wr, WS_OVERLAPPEDWINDOW, false);
 
-	_title = L"FRTEngine";
-	_hWindow = CreateWindow(_params.className.c_str(), _title.c_str(),
+	Title = L"FRTEngine";
+	hWindow = CreateWindow(
+		Params.ClassName.c_str(), Title.c_str(),
 		WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
-		_params.width, _params.height,
-		nullptr /*hWndParent*/, nullptr /*hMenu*/, _params.hInst,
+		Params.Width, Params.Height,
+		nullptr /*hWndParent*/, nullptr /*hMenu*/, Params.hInst,
 		this /*lpParam*/);
 
-	if (!_hWindow) // TODO: move this if outside
+	if (!hWindow) // TODO: move this if outside
 	{
 		MessageBox(0, L"CreateWindow Failed.", 0, 0);
 	}
 
 	DisplaySettings = SDisplaySettings
-		{
-			.MonitorIndex = -1,
-			.ResolutionIndex = -1,
-			.RefreshRateIndex = -1
-		};
+	{
+		.MonitorIndex = -1,
+		.ResolutionIndex = -1,
+		.RefreshRateIndex = -1
+	};
 
-	ShowWindow(_hWindow, SW_SHOWDEFAULT);
-	UpdateWindow(_hWindow);
+	ShowWindow(hWindow, SW_SHOWDEFAULT);
+	UpdateWindow(hWindow);
 }
 
-HWND Window::GetHandle() const
+HWND CWindow::GetHandle () const
 {
-	return _hWindow;
+	return hWindow;
 }
 
-Vector2f Window::GetWindowSize() const
+Vector2f CWindow::GetWindowSize () const
 {
-	return { static_cast<float>(_params.width), static_cast<float>(_params.height) };
+	return { static_cast<float>(Params.Width), static_cast<float>(Params.Height) };
 }
 
-void Window::SetDisplaySettings(const SDisplaySettings& NewSettings, const graphics::SDisplayOptions& Options)
+void CWindow::SetDisplaySettings (const SDisplaySettings& NewSettings, const graphics::SDisplayOptions& Options)
 {
 	if (NewSettings == DisplaySettings)
 	{
@@ -64,7 +64,7 @@ void Window::SetDisplaySettings(const SDisplaySettings& NewSettings, const graph
 	}
 
 	const bool bMonitorChangedInFullscreen = (NewSettings.MonitorIndex != DisplaySettings.MonitorIndex)
-		&& DisplaySettings.IsFullscreen();
+											&& DisplaySettings.IsFullscreen();
 	if (DisplaySettings.FullscreenMode != NewSettings.FullscreenMode || bMonitorChangedInFullscreen)
 	{
 		UpdateFullscreenMode(NewSettings.FullscreenMode, Options.OutputsRects[NewSettings.MonitorIndex]);
@@ -81,7 +81,7 @@ void Window::SetDisplaySettings(const SDisplaySettings& NewSettings, const graph
 }
 
 // TODO: change physical resolution in fullscreen
-void SetResolution(int width, int height, int refreshRate = 60)
+void SetResolution (int width, int height, int refreshRate = 60)
 {
 	DEVMODE devMode = {};
 	devMode.dmSize = sizeof(DEVMODE);
@@ -94,68 +94,68 @@ void SetResolution(int width, int height, int refreshRate = 60)
 	ChangeDisplaySettings(&devMode, CDS_FULLSCREEN);
 }
 
-void Window::ResizeWithMove(const Vector2u& NewSize, const graphics::SRect& MonitorRect) const
+void CWindow::ResizeWithMove (const Vector2u& NewSize, const graphics::SRect& MonitorRect) const
 {
 	const auto [pos, size] = CalcPositionAndSize(NewSize, MonitorRect);
-	MoveWindow(_hWindow, pos.x, pos.y, size.x, size.y, true);
+	MoveWindow(hWindow, pos.x, pos.y, size.x, size.y, true);
 }
 
-void Window::ResizeWithSetPos(const Vector2u& NewSize, const graphics::SRect& MonitorRect) const
+void CWindow::ResizeWithSetPos (const Vector2u& NewSize, const graphics::SRect& MonitorRect) const
 {
 	const auto [pos, size] = CalcPositionAndSize(NewSize, MonitorRect);
-	SetWindowPos(_hWindow, HWND_TOP, pos.x, pos.y, size.x, size.y, SWP_FRAMECHANGED | SWP_NOACTIVATE);
+	SetWindowPos(hWindow, HWND_TOP, pos.x, pos.y, size.x, size.y, SWP_FRAMECHANGED | SWP_NOACTIVATE);
 }
 
-void Window::ResizeWithSetPos(const graphics::SRect& NewRect) const
+void CWindow::ResizeWithSetPos (const graphics::SRect& NewRect) const
 {
 	const auto [pos, size] = CalcPositionAndSize(NewRect);
-	SetWindowPos(_hWindow, HWND_TOP, pos.x, pos.y, size.x, size.y, SWP_FRAMECHANGED | SWP_NOACTIVATE);
+	SetWindowPos(hWindow, HWND_TOP, pos.x, pos.y, size.x, size.y, SWP_FRAMECHANGED | SWP_NOACTIVATE);
 }
 
-void Window::UpdateFullscreenMode(EFullscreenMode NewFullscreenMode, const graphics::SRect& MonitorRect)
+void CWindow::UpdateFullscreenMode (EFullscreenMode NewFullscreenMode, const graphics::SRect& MonitorRect)
 {
 	if (NewFullscreenMode == EFullscreenMode::Fullscreen)
 	{
 		{
 			// using guard doesn't look right...
 			TGuardValue GuardIgnoreNextSizeEvent(bIgnoreNextSizeEvent, true);
-			SetWindowLong(_hWindow, GWL_STYLE, WS_POPUP | WS_VISIBLE);
+			SetWindowLong(hWindow, GWL_STYLE, WS_POPUP | WS_VISIBLE);
 		}
 		ResizeWithSetPos(MonitorRect);
-		ShowWindow(_hWindow, SW_MAXIMIZE);
+		ShowWindow(hWindow, SW_MAXIMIZE);
 	}
 	else if (NewFullscreenMode == EFullscreenMode::Borderless)
 	{
 		{
 			TGuardValue GuardIgnoreNextSizeEvent(bIgnoreNextSizeEvent, true);
-			SetWindowLong(_hWindow, GWL_STYLE, WS_POPUP);
+			SetWindowLong(hWindow, GWL_STYLE, WS_POPUP);
 		}
 		ResizeWithSetPos(MonitorRect);
-		ShowWindow(_hWindow, SW_MAXIMIZE);
+		ShowWindow(hWindow, SW_MAXIMIZE);
 	}
 	else
 	{
 		{
 			TGuardValue GuardIgnoreNextSizeEvent(bIgnoreNextSizeEvent, true);
-			SetWindowLong(_hWindow, GWL_STYLE, WS_OVERLAPPEDWINDOW);
+			SetWindowLong(hWindow, GWL_STYLE, WS_OVERLAPPEDWINDOW);
 		}
 		ResizeWithSetPos(MonitorRect);
-		ShowWindow(_hWindow, SW_NORMAL);
+		ShowWindow(hWindow, SW_NORMAL);
 	}
 }
 
-Window::SPosSize Window::CalcPositionAndSize(const Vector2u& NewSize, const graphics::SRect& MonitorRect)
+CWindow::SPosSize CWindow::CalcPositionAndSize (const Vector2u& NewSize, const graphics::SRect& MonitorRect)
 {
 	const int32 newX = (int32)(MonitorRect.Right - MonitorRect.Left) / 2 - NewSize.x / 2 + (int32)MonitorRect.Left;
 	const int32 newY = (int32)(MonitorRect.Bottom - MonitorRect.Top) / 2 - NewSize.y / 2 + (int32)MonitorRect.Top;
 	return SPosSize
-		{
-			.Position = { newX, newY },
-			.Size = { (int32)NewSize.x, (int32)NewSize.y }
-		};
+	{
+		.Position = { newX, newY },
+		.Size = { (int32)NewSize.x, (int32)NewSize.y }
+	};
 }
 
-Window::SPosSize Window::CalcPositionAndSize(const graphics::SRect& MonitorRect)
+CWindow::SPosSize CWindow::CalcPositionAndSize (const graphics::SRect& MonitorRect)
 {
 	return SPosSize
 	{
@@ -164,45 +164,45 @@ Window::SPosSize Window::CalcPositionAndSize(const graphics::SRect& MonitorRect)
 	};
 }
 
-void Window::UpdateTitle(const std::wstring& NewTitleDetails) const
+void CWindow::UpdateTitle (const std::wstring& NewTitleDetails) const
 {
-	std::wstring newTitle = _title + NewTitleDetails;
-	SetWindowText(_hWindow, newTitle.c_str());
+	std::wstring newTitle = Title + NewTitleDetails;
+	SetWindowText(hWindow, newTitle.c_str());
 }
 
-void Window::RegisterWinAPIClass()
+void CWindow::RegisterWinAPIClass ()
 {
 	WNDCLASSEX wcex;
 
 	wcex.cbSize = sizeof(WNDCLASSEX);
 
-	wcex.style          = CS_HREDRAW | CS_VREDRAW | CS_OWNDC;
-	wcex.lpfnWndProc    = SetupMessageProcessing;
-	wcex.cbClsExtra     = 0;
-	wcex.cbWndExtra     = 0;
-	wcex.hInstance      = _params.hInst;
-	wcex.hIcon          = nullptr;//LoadIcon(hInstance, MAKEINTRESOURCE(IDI_DEMO));
-	wcex.hCursor        = nullptr;//LoadCursor(nullptr, IDC_ARROW);
-	wcex.hbrBackground  = nullptr;//(HBRUSH)(COLOR_WINDOW+1);
-	wcex.lpszMenuName   = nullptr;//MAKEINTRESOURCEW(IDC_DEMO);
-	wcex.lpszClassName  = _params.className.c_str();
-	wcex.hIconSm        = nullptr;//LoadIcon(wcex.hInstance, MAKEINTRESOURCE(IDI_SMALL));
+	wcex.style = CS_HREDRAW | CS_VREDRAW | CS_OWNDC;
+	wcex.lpfnWndProc = SetupMessageProcessing;
+	wcex.cbClsExtra = 0;
+	wcex.cbWndExtra = 0;
+	wcex.hInstance = Params.hInst;
+	wcex.hIcon = nullptr;         //LoadIcon(hInstance, MAKEINTRESOURCE(IDI_DEMO));
+	wcex.hCursor = nullptr;       //LoadCursor(nullptr, IDC_ARROW);
+	wcex.hbrBackground = nullptr; //(HBRUSH)(COLOR_WINDOW+1);
+	wcex.lpszMenuName = nullptr;  //MAKEINTRESOURCEW(IDC_DEMO);
+	wcex.lpszClassName = Params.ClassName.c_str();
+	wcex.hIconSm = nullptr; //LoadIcon(wcex.hInstance, MAKEINTRESOURCE(IDI_SMALL));
 
 	RegisterClassEx(&wcex);
 }
 
-LRESULT Window::SetupMessageProcessing(HWND hWindow, UINT message, WPARAM wParam, LPARAM lParam)
+LRESULT CWindow::SetupMessageProcessing (HWND hWindow, UINT message, WPARAM wParam, LPARAM lParam)
 {
 	// use create parameter passed in from CreateWindow() to store window class pointer at WinAPI side
 	if (message == WM_NCCREATE)
 	{
 		// extract ptr to window class from creation data
 		const CREATESTRUCTW* const pCreate = reinterpret_cast<CREATESTRUCTW*>(lParam);
-		Window* const pWnd = static_cast<Window*>(pCreate->lpCreateParams);
+		const auto pWnd = static_cast<CWindow*>(pCreate->lpCreateParams);
 		// set WinAPI-managed user data to store ptr to window instance
 		SetWindowLongPtr(hWindow, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(pWnd));
 		// set message proc to normal (non-setup) handler now that setup is finished
-		SetWindowLongPtr(hWindow, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&Window::HandleMessageProcessing));
+		SetWindowLongPtr(hWindow, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&CWindow::HandleMessageProcessing));
 		// forward message to window instance handler
 		return pWnd->WindowProcessMessage(hWindow, message, wParam, lParam);
 	}
@@ -210,62 +210,61 @@ LRESULT Window::SetupMessageProcessing(HWND hWindow, UINT message, WPARAM wParam
 	return DefWindowProc(hWindow, message, wParam, lParam);
 }
 
-LRESULT Window::HandleMessageProcessing(HWND hWindow, UINT message, WPARAM wParam, LPARAM lParam)
+LRESULT CWindow::HandleMessageProcessing (HWND hWindow, UINT message, WPARAM wParam, LPARAM lParam)
 {
 	// retrieve ptr to window instance
-	Window* const pWnd = reinterpret_cast<Window*>(GetWindowLongPtr(hWindow, GWLP_USERDATA));
+	const auto pWnd = reinterpret_cast<CWindow*>(GetWindowLongPtr(hWindow, GWLP_USERDATA));
 	// forward message to window instance handler
 	return pWnd->WindowProcessMessage(hWindow, message, wParam, lParam);
 }
 
-LRESULT CALLBACK Window::WindowProcessMessage(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
+LRESULT CALLBACK CWindow::WindowProcessMessage (HWND hWnd, UINT Message, WPARAM wParam, LPARAM lParam)
 {
-	extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
-	if (ImGui_ImplWin32_WndProcHandler(hWnd, message, wParam, lParam))
+	extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler (HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+	if (ImGui_ImplWin32_WndProcHandler(hWnd, Message, wParam, lParam))
 	{
 		return true;
 	}
 
-	switch (message)
+	switch (Message)
 	{
 		// WM_ACTIVATE is sent when the window is activated or deactivated.  
 		// We pause the game when the window is deactivated and unpause it 
 		// when it becomes active.  
 		case WM_ACTIVATE:
+		{
+			if (LOWORD(wParam) == WA_INACTIVE)
 			{
-				if (LOWORD(wParam) == WA_INACTIVE)
+				// TODO:
+				// mAppPaused = true;
+				// mTimer.Stop();
+				if (DisplaySettings.IsFullscreen())
 				{
-					// TODO:
-					// mAppPaused = true;
-					// mTimer.Stop();
-					if (DisplaySettings.IsFullscreen())
-					{
-						ShowWindow(_hWindow, SW_MINIMIZE);
-					}
-					PostLoseFocusEvent.Invoke();
+					ShowWindow(hWindow, SW_MINIMIZE);
 				}
-				else
-				{
-					// TODO:
-					// mAppPaused = false;
-					// mTimer.Start();
-					ShowWindow(_hWindow, SW_RESTORE);
-					PostGainFocusEvent.Invoke();
-				}
-				return 0;
+				PostLoseFocusEvent.Invoke();
 			}
+			else
+			{
+				// TODO:
+				// mAppPaused = false;
+				// mTimer.Start();
+				ShowWindow(hWindow, SW_RESTORE);
+				PostGainFocusEvent.Invoke();
+			}
+			return 0;
+		}
 
 		// WM_SIZE is sent when the user resizes the window.
-		case WM_SIZE:
-			if (bIgnoreNextSizeEvent)
+		case WM_SIZE: if (bIgnoreNextSizeEvent)
 			{
 				return 0;
 			}
 
 			// Save the new client area dimensions.
-			_params.width  = LOWORD(lParam);
-			_params.height = HIWORD(lParam);
-			if( wParam == SIZE_MINIMIZED )
+			Params.Width = LOWORD(lParam);
+			Params.Height = HIWORD(lParam);
+			if (wParam == SIZE_MINIMIZED)
 			{
 				bMinimized = true;
 				// mMaximized = false;
@@ -273,12 +272,12 @@ LRESULT CALLBACK Window::WindowProcessMessage(HWND hWnd, UINT message, WPARAM wP
 				PostMinimizeEvent.Invoke();
 				return 0;
 			}
-			else if( wParam == SIZE_MAXIMIZED )
+			else if (wParam == SIZE_MAXIMIZED)
 			{
 				// mMaximized = true;
 				PostResizeEvent.Invoke();
 			}
-			else if( wParam == SIZE_RESTORED )
+			else if (wParam == SIZE_RESTORED)
 			{
 				// Restoring from minimized state?
 				if (bMinimized)
@@ -349,9 +348,8 @@ LRESULT CALLBACK Window::WindowProcessMessage(HWND hWnd, UINT message, WPARAM wP
 			return MAKELRESULT(0, MNC_CLOSE);
 
 		// Catch this message so to prevent the window from becoming too small.
-		case WM_GETMINMAXINFO:
-			((MINMAXINFO*)lParam)->ptMinTrackSize.x = 200;
-			((MINMAXINFO*)lParam)->ptMinTrackSize.y = 200; 
+		case WM_GETMINMAXINFO: ((MINMAXINFO*)lParam)->ptMinTrackSize.x = 200;
+			((MINMAXINFO*)lParam)->ptMinTrackSize.y = 200;
 			return 0;
 
 		case WM_COMMAND:
@@ -363,28 +361,25 @@ LRESULT CALLBACK Window::WindowProcessMessage(HWND hWnd, UINT message, WPARAM wP
 				//case IDM_ABOUT:
 				//    DialogBox(hInst, MAKEINTRESOURCE(IDD_ABOUTBOX), hWnd, About);
 				//    break;
-			// case IDM_EXIT:
-			// 	DestroyWindow(hWnd);
-			// 	break;
-			default:
-				return DefWindowProc(hWnd, message, wParam, lParam);
+				// case IDM_EXIT:
+				// 	DestroyWindow(hWnd);
+				// 	break;
+				default: return DefWindowProc(hWnd, Message, wParam, lParam);
 			}
 		}
 		break;
-	// case WM_PAINT:
-	// 	{
-	// 		PAINTSTRUCT ps;
-	// 		HDC hdc = BeginPaint(hWnd, &ps);
-	// 		// TODO: Add any drawing code that uses hdc here...
-	// 		EndPaint(hWnd, &ps);
-	// 	}
-	// 	break;
-	//TODO: case WM_DISPLAYCHANGE :
-	case WM_DESTROY:
-		PostQuitMessage(0);
-		break;
-	default:
-		return DefWindowProc(hWnd, message, wParam, lParam);
+		// case WM_PAINT:
+		// 	{
+		// 		PAINTSTRUCT ps;
+		// 		HDC hdc = BeginPaint(hWnd, &ps);
+		// 		// TODO: Add any drawing code that uses hdc here...
+		// 		EndPaint(hWnd, &ps);
+		// 	}
+		// 	break;
+		//TODO: case WM_DISPLAYCHANGE :
+		case WM_DESTROY: PostQuitMessage(0);
+			break;
+		default: return DefWindowProc(hWnd, Message, wParam, lParam);
 	}
 	return 0;
 }

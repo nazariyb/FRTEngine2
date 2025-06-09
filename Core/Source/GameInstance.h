@@ -2,74 +2,77 @@
 
 #include "Core.h"
 #include "Singleton.h"
+#include "Window.h"
 #include "World.h"
 #include "Graphics/RenderCommonTypes.h"
 #include "Memory/MemoryPool.h"
-#include "User/UserSettings.h"
 #include "Memory/Ref.h"
-#include "Window.h"
+#include "User/UserSettings.h"
+
 
 namespace frt::graphics
 {
-	class CCamera;
+class CCamera;
 }
+
 
 namespace frt::graphics
 {
-	class CRenderer;
+class CRenderer;
 }
+
 
 namespace frt
 {
-	class Timer;
-	class Window;
+class CTimer;
+class CWindow;
 }
 
-NAMESPACE_FRT_START
 
+NAMESPACE_FRT_START
 class FRT_CORE_API GameInstance : public Singleton<GameInstance>
 {
 public:
-	GameInstance();
-	virtual ~GameInstance();
+	GameInstance ();
+	virtual ~GameInstance ();
 
 	FRT_SINGLETON_GETTERS(GameInstance)
 
-	Timer& GetTime() const;
+	CTimer& GetTime () const;
 
-	bool HasGraphics() const;
-	memory::TRefWeak<graphics::CRenderer> GetGraphics() const;
+	bool HasGraphics () const;
+	memory::TRefWeak<graphics::CRenderer> GetGraphics () const;
 
 	// temp
-	Window& GetWindow() const { return *_window; }
-	memory::TRefWeak<graphics::CCamera> GetCamera() const { return Camera.GetWeak(); }
+	CWindow& GetWindow () const { return *Window; }
+	memory::TRefWeak<graphics::CCamera> GetCamera () const { return Camera.GetWeak(); }
 	// ~temp
 
-	virtual void Load();
+	virtual void Load ();
 
 	// Update
 	// virtual void Input(float DeltaSeconds);
-	virtual void Tick(float DeltaSeconds);
-	virtual void Draw(float DeltaSeconds);
+	virtual void Tick (float DeltaSeconds);
+	virtual void Draw (float DeltaSeconds);
 	// ~Update
 
-	long long GetFrameCount() const;
+	long long GetFrameCount () const;
 
 protected:
-	void CalculateFrameStats() const;
+	void CalculateFrameStats () const;
 
-	virtual void OnWindowResize();
-	virtual void OnLoseFocus();
-	virtual void OnGainFocus();
-	virtual void OnMinimize();
-	virtual void OnRestoreFromMinimize();
+	virtual void OnWindowResize ();
+	virtual void OnLoseFocus ();
+	virtual void OnGainFocus ();
+	virtual void OnMinimize ();
+	virtual void OnRestoreFromMinimize ();
 
-	virtual void DisplayUserSettings();
+	virtual void DisplayUserSettings ();
 
 protected:
 	memory::CMemoryPool MemoryPool;
-	Timer* _timer;
-	Window* _window;
+	CTimer* Timer;
+	CWindow* Window;
 	memory::TRefUnique<graphics::CRenderer> Renderer;
 
 	memory::TRefUnique<CWorld> World;
@@ -79,9 +82,10 @@ protected:
 	graphics::SDisplayOptions DisplayOptions;
 	SUserSettings UserSettings;
 
-	long long _frameCount;
+	long long FrameCount;
 
 	bool bLoaded = false; // temp
 };
+
 
 NAMESPACE_FRT_END

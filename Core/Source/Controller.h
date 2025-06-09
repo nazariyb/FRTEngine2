@@ -6,12 +6,12 @@
 
 namespace frt
 {
-	class FRT_CORE_API CController
-	{
-	public:
-		CController();
+class FRT_CORE_API CController
+{
+public:
+	CController ();
 
-	protected:
-		memory::TRefShared<graphics::CCamera> Camera;
-	};
+protected:
+	memory::TRefShared<graphics::CCamera> Camera;
+};
 }

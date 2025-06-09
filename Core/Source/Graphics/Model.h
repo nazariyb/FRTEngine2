@@ -12,27 +12,28 @@
 
 struct ID3D12Resource;
 
+
 namespace frt::graphics
 {
-	struct SMesh;
-	struct Vertex;
-	struct Texture;
+struct SMesh;
+struct SVertex;
+struct STexture;
 }
 
 
 namespace frt::graphics
 {
-	struct FRT_CORE_API Model
-	{
-		TArray<SMesh> meshes;
-		TArray<Texture> textures;
+struct FRT_CORE_API SModel
+{
+	TArray<SMesh> Meshes;
+	TArray<STexture> Textures;
 
-		TArray<Vertex> vertices;
-		TArray<uint32> indices;
+	TArray<SVertex> Vertices;
+	TArray<uint32> Indices;
 
-		ID3D12Resource* vertexBuffer = nullptr;
-		ID3D12Resource* indexBuffer = nullptr;
+	ID3D12Resource* VertexBuffer = nullptr;
+	ID3D12Resource* IndexBuffer = nullptr;
 
-		static Model LoadFromFile(const std::string& filename, const std::string& texturePath);
-	};
+	static SModel LoadFromFile (const std::string& Filename, const std::string& TexturePath);
+};
 }

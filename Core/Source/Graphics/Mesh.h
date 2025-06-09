@@ -8,23 +8,28 @@
 
 namespace frt::graphics
 {
-	struct FRT_CORE_API SMesh
-	{
-		uint32 indexOffset;
-		uint32 indexCount;
-		uint32 vertexOffset;
-		uint32 vertexCount;
-		uint32 textureIndex;
+struct FRT_CORE_API SMesh
+{
+	uint32 IndexOffset;
+	uint32 IndexCount;
+	uint32 VertexOffset;
+	uint32 VertexCount;
+	uint32 TextureIndex;
 
-		TArray<Vertex> Vertices;
-		TArray<uint32> Indices;
+	TArray<SVertex> Vertices;
+	TArray<uint32> Indices;
 
-		ComPtr<ID3D12Resource> VertexBufferGpu = nullptr;
-		ComPtr<ID3D12Resource> IndexBufferGpu = nullptr;
+	ComPtr<ID3D12Resource> VertexBufferGpu = nullptr;
+	ComPtr<ID3D12Resource> IndexBufferGpu = nullptr;
 
-		// temp?
-		memory::TRefShared<Texture> Texture;
+	// temp?
+	memory::TRefShared<STexture> Texture;
 
-		SMesh() : indexOffset(0), indexCount(0), vertexOffset(0), vertexCount(0), textureIndex(0) {}
-	};
+	SMesh ()
+		: IndexOffset(0u)
+		, IndexCount(0u)
+		, VertexOffset(0u)
+		, VertexCount(0u)
+		, TextureIndex(0u) {}
+};
 }

@@ -1,6 +1,6 @@
 #include "Core.h"
 
-int test()
+int test ()
 {
 	return 0;
 }

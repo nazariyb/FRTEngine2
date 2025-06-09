@@ -4,17 +4,16 @@
 #include "Timer.h"
 #include "Window.h"
 #include "Graphics/Camera.h"
-#include "Graphics/Renderer.h"
 #include "Graphics/GraphicsCoreTypes.h"
+#include "Graphics/Renderer.h"
 
 using namespace frt;
 
-CWorld::CWorld(memory::TRefWeak<graphics::CRenderer> InRenderer)
+CWorld::CWorld (memory::TRefWeak<graphics::CRenderer> InRenderer)
 	: Renderer(InRenderer)
-{
-}
+{}
 
-void CWorld::Tick(float DeltaSeconds)
+void CWorld::Tick (float DeltaSeconds)
 {
 	for (auto& entity : Entities)
 	{
@@ -23,7 +22,7 @@ void CWorld::Tick(float DeltaSeconds)
 	CopyConstantData();
 }
 
-void CWorld::Present(float DeltaSeconds, ID3D12GraphicsCommandList* CommandList)
+void CWorld::Present (float DeltaSeconds, ID3D12GraphicsCommandList* CommandList)
 {
 	auto& currentFrameResources = Renderer->GetCurrentFrameResource();
 
@@ -46,7 +45,7 @@ void CWorld::Present(float DeltaSeconds, ID3D12GraphicsCommandList* CommandList)
 	}
 }
 
-void CWorld::CopyConstantData()
+void CWorld::CopyConstantData ()
 {
 	// TODO: ideally, CBs should already be stored in one array
 	// TODO: use (when it's implemented) memory pool
@@ -54,12 +53,15 @@ void CWorld::CopyConstantData()
 	auto objectsData = malloc(alignedSize * Entities.Count());
 	for (int i = 0; i < Entities.Count(); ++i)
 	{
-		memcpy((uint8*)objectsData + alignedSize * i, &Entities[i]->Transform.GetMatrix(), sizeof(graphics::SObjectConstants));
+		memcpy(
+			(uint8*)objectsData + alignedSize * i, &Entities[i]->Transform.GetMatrix(),
+			sizeof(graphics::SObjectConstants));
 	}
 
 	auto& currentFrameResources = Renderer->GetCurrentFrameResource();
 
-	currentFrameResources.ObjectCB.CopyBunch((graphics::SObjectConstants*)objectsData, currentFrameResources.UploadArena);
+	currentFrameResources.ObjectCB.CopyBunch(
+		(graphics::SObjectConstants*)objectsData, currentFrameResources.UploadArena);
 
 	free(objectsData);
 
@@ -74,13 +76,13 @@ void CWorld::CopyConstantData()
 
 	XMMATRIX viewProj = XMMatrixMultiply(view, projection);
 
-	auto viewDeterminant =  XMMatrixDeterminant(view);
+	auto viewDeterminant = XMMatrixDeterminant(view);
 	XMMATRIX invView = XMMatrixInverse(&viewDeterminant, view);
 
-	auto projectionDeterminant =  XMMatrixDeterminant(projection);
+	auto projectionDeterminant = XMMatrixDeterminant(projection);
 	XMMATRIX invProj = XMMatrixInverse(&projectionDeterminant, projection);
 
-	auto viewProjDeterminant =  XMMatrixDeterminant(viewProj);
+	auto viewProjDeterminant = XMMatrixDeterminant(viewProj);
 	XMMATRIX invViewProj = XMMatrixInverse(&viewProjDeterminant, viewProj);
 
 	XMStoreFloat4x4(&passConstants.View, view);
@@ -100,7 +102,7 @@ void CWorld::CopyConstantData()
 	currentFrameResources.PassCB.CopyBunch(&passConstants, currentFrameResources.UploadArena);
 }
 
-memory::TRefShared<CEntity> CWorld::SpawnEntity()
+memory::TRefShared<CEntity> CWorld::SpawnEntity ()
 {
 	auto newEntity = memory::NewShared<CEntity>();
 	Entities.Add(newEntity);

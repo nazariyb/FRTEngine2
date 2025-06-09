@@ -23,7 +23,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
 	auto game = new DemoGame();
 
-	Timer& time = game->GetTime();
+	CTimer& time = game->GetTime();
 	time.Reset();
 
 	// game->Load();

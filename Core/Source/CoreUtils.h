@@ -1,17 +1,18 @@
 #pragma once
 
-template<typename T>
+template <typename T>
 struct TGuardValue
 {
-	TGuardValue() = delete;
+	TGuardValue () = delete;
 
-	TGuardValue(T& InVariable, T TempValue)
-		: Variable(InVariable), OldValue(InVariable)
+	TGuardValue (T& InVariable, T TempValue)
+		: Variable(InVariable)
+		, OldValue(InVariable)
 	{
 		Variable = TempValue;
 	}
 
-	~TGuardValue()
+	~TGuardValue ()
 	{
 		Variable = OldValue;
 	}
@@ -20,6 +21,7 @@ private:
 	T& Variable;
 	T OldValue;
 };
+
 
 #define FRT_DELETE_COPY_OPS(Type)\
 	Type(const Type&) = delete;\

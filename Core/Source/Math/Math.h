@@ -1,9 +1,9 @@
 #pragma once
 
 #include "Core.h"
-#include "Vector2.h"
-#include "TVector3.h"
 #include "MathUtility.h"
+#include "Vector3.h"
+#include "Vector2.h"
 
 using Vector2i = FRT_CORE_API frt::math::TVector2<int>;
 using Vector2u = FRT_CORE_API frt::math::TVector2<unsigned>;

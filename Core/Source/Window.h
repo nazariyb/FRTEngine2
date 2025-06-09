@@ -12,65 +12,69 @@
 
 
 NAMESPACE_FRT_START
-
 namespace graphics
 {
 	struct SDisplayOptions;
 }
 
-struct FRT_CORE_API WindowParams
+
+struct FRT_CORE_API SWindowParams
 {
 	HINSTANCE hInst = nullptr;
-	int startX = 0;
-	int startY = 0;
-	int width = 0;
-	int height = 0;
+	int StartX = 0;
+	int StartY = 0;
+	int Width = 0;
+	int Height = 0;
 
 #pragma warning(push)
 #pragma warning(disable: 4251)
-	std::wstring className;
+	std::wstring ClassName;
 #pragma warning(pop)
 };
 
-class FRT_CORE_API Window
+
+class FRT_CORE_API CWindow
 {
 public:
-	Window() = delete;
-	~Window();
+	CWindow () = delete;
+	~CWindow ();
 
-	Window(const Window&) = delete;
-	Window(Window&&) = delete;
-	Window& operator=(const Window&) = delete;
-	Window& operator=(Window&&) = delete;
+	CWindow (const CWindow&) = delete;
+	CWindow (CWindow&&) = delete;
+	CWindow& operator= (const CWindow&) = delete;
+	CWindow& operator= (CWindow&&) = delete;
 
-	Window(const WindowParams& Params);
+	CWindow (const SWindowParams& Params);
 
-	HWND GetHandle() const;
-	Vector2f GetWindowSize() const;
+	HWND GetHandle () const;
+	Vector2f GetWindowSize () const;
 
 	// TODO: probably options should be saved in Window?
-	void SetDisplaySettings(const SDisplaySettings& NewSettings, const graphics::SDisplayOptions& Options);
-	void UpdateTitle(const std::wstring& NewTitleDetails) const;
+	void SetDisplaySettings (const SDisplaySettings& NewSettings, const graphics::SDisplayOptions& Options);
+	void UpdateTitle (const std::wstring& NewTitleDetails) const;
 
 protected:
-	void RegisterWinAPIClass();
+	void RegisterWinAPIClass ();
 
-	static LRESULT CALLBACK SetupMessageProcessing(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
-	static LRESULT CALLBACK HandleMessageProcessing(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
-	LRESULT CALLBACK WindowProcessMessage(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
+	static LRESULT CALLBACK SetupMessageProcessing (HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
+	static LRESULT CALLBACK HandleMessageProcessing (HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
+	LRESULT CALLBACK WindowProcessMessage (HWND hWnd, UINT Message, WPARAM wParam, LPARAM lParam);
 
-	void ResizeWithMove(const Vector2u& NewSize, const graphics::SRect& MonitorRect) const;
-	void ResizeWithSetPos(const Vector2u& NewSize, const graphics::SRect& MonitorRect) const;
-	void ResizeWithSetPos(const graphics::SRect& NewRect) const;
-	void UpdateFullscreenMode(EFullscreenMode NewFullscreenMode, const graphics::SRect& MonitorRect);
+	void ResizeWithMove (const Vector2u& NewSize, const graphics::SRect& MonitorRect) const;
+	void ResizeWithSetPos (const Vector2u& NewSize, const graphics::SRect& MonitorRect) const;
+	void ResizeWithSetPos (const graphics::SRect& NewRect) const;
+	void UpdateFullscreenMode (EFullscreenMode NewFullscreenMode, const graphics::SRect& MonitorRect);
+
 
 	struct SPosSize
 	{
 		Vector2i Position;
 		Vector2i Size;
 	};
-	static SPosSize CalcPositionAndSize(const Vector2u& NewSize, const graphics::SRect& MonitorRect);
-	static SPosSize CalcPositionAndSize(const graphics::SRect& MonitorRect);
+
+
+	static SPosSize CalcPositionAndSize (const Vector2u& NewSize, const graphics::SRect& MonitorRect);
+	static SPosSize CalcPositionAndSize (const graphics::SRect& MonitorRect);
 
 public:
 	CEvent<> PostResizeEvent;
@@ -80,16 +84,17 @@ public:
 	CEvent<> PostRestoreFromMinimizeEvent;
 
 protected:
-	WindowParams _params;
-	HWND _hWindow;
+	SWindowParams Params;
+	HWND hWindow;
 	SDisplaySettings DisplaySettings;
 	bool bMinimized = false;
 	bool bIgnoreNextSizeEvent = false;
 
 #pragma warning(push)
 #pragma warning(disable: 4251)
-	std::wstring _title;
+	std::wstring Title;
 #pragma warning(pop)
 };
+
 
 NAMESPACE_FRT_END
