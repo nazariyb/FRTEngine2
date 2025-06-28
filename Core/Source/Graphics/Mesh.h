@@ -2,8 +2,9 @@
 
 #include "Core.h"
 #include "CoreTypes.h"
-#include "Texture.h"
 #include "Containers/Array.h"
+#include "Graphics/Render/GraphicsCoreTypes.h"
+#include "Render/Texture.h"
 
 
 namespace frt::graphics

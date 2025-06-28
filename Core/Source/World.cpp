@@ -4,14 +4,19 @@
 #include "Timer.h"
 #include "Window.h"
 #include "Graphics/Camera.h"
-#include "Graphics/GraphicsCoreTypes.h"
-#include "Graphics/Renderer.h"
+#include "Graphics/Render/GraphicsCoreTypes.h"
+#include "Graphics/Render/Renderer.h"
 
 using namespace frt;
 
+#if !defined(FRT_HEADLESS)
 CWorld::CWorld (memory::TRefWeak<graphics::CRenderer> InRenderer)
 	: Renderer(InRenderer)
 {}
+#else
+CWorld::CWorld ()
+{}
+#endif
 
 void CWorld::Tick (float DeltaSeconds)
 {
@@ -19,9 +24,12 @@ void CWorld::Tick (float DeltaSeconds)
 	{
 		entity->Tick(DeltaSeconds);
 	}
+#if !defined(FRT_HEADLESS)
 	CopyConstantData();
+#endif
 }
 
+#if !defined(FRT_HEADLESS)
 void CWorld::Present (float DeltaSeconds, ID3D12GraphicsCommandList* CommandList)
 {
 	auto& currentFrameResources = Renderer->GetCurrentFrameResource();
@@ -101,6 +109,7 @@ void CWorld::CopyConstantData ()
 
 	currentFrameResources.PassCB.CopyBunch(&passConstants, currentFrameResources.UploadArena);
 }
+#endif
 
 memory::TRefShared<CEntity> CWorld::SpawnEntity ()
 {

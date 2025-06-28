@@ -1,5 +1,7 @@
 ﻿#pragma once
 
+#include <vector>
+
 #include "Math/MathUtility.h"
 #include "Memory/Memory.h"
 

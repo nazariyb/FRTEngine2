@@ -68,8 +68,18 @@ newaction
 	end
 }
 
+local buildConfigs = { "Debug", "Release" }
+local buildTargets = { "Default", "Headless" }
+local configs = {}
+
+for _, cfg in ipairs(buildConfigs) do
+	for _, tgt in ipairs(buildTargets) do
+		table.insert(configs, cfg .. "-" .. tgt)
+	end
+end
+
 workspace "FRTEngine2"
-	configurations { "Debug", "Release" }
+	configurations(configs)
 	platforms { "Win64", "Linux" }
 
 	language "C++"
@@ -91,10 +101,10 @@ workspace "FRTEngine2"
 project "Core"
 	location "%{prj.name}"
 
-	filter "configurations:Debug"
+	filter "configurations:Debug-*"
 		kind "SharedLib"
 
-	filter "configurations:Release"
+	filter "configurations:Release-*"
 		kind "SharedLib"
 		-- TODO: should be static
 		-- kind "StaticLib"
@@ -114,20 +124,34 @@ project "Core"
 		"%{prj.name}/../**.lua",
 		"%{prj.name}/../**.txt",
 		"%{prj.name}/../**.bat",
-		"%{prj.name}/Content/Shaders/**.hlsl",
-		"%{prj.name}/Content/Shaders/**.hlsli",
-		thirdPartyDir.."/Imgui/*.h",
-		thirdPartyDir.."/Imgui/*.cpp",
-		thirdPartyDir.."/Imgui/backends/imgui_impl_dx12.*",
-		thirdPartyDir.."/Imgui/backends/imgui_impl_win32.*",
-		thirdPartyDir.."/Imgui/misc/cpp/imgui_stdlib.*",
 	}
+
+	filter "configurations:not *-Headless"
+		files
+		{
+			"%{prj.name}/Content/Shaders/**.hlsl",
+			"%{prj.name}/Content/Shaders/**.hlsli",
+			thirdPartyDir.."/Imgui/*.h",
+			thirdPartyDir.."/Imgui/*.cpp",
+			thirdPartyDir.."/Imgui/backends/imgui_impl_dx12.*",
+			thirdPartyDir.."/Imgui/backends/imgui_impl_win32.*",
+			thirdPartyDir.."/Imgui/misc/cpp/imgui_stdlib.*",
+		}
+	filter {}
 
 	removefiles
 	{
 		"%{wks.location}/Intermediate/**",
 		"**/vcpkg/**",
 	}
+
+	filter "configurations:*-Headless"
+		removefiles
+		{
+-- 			"%{prj.name}/Source/Graphics/Render/**.h",
+			"%{prj.name}/Source/Graphics/Render/**.cpp",
+			"%{prj.name}/Source/Window.cpp",
+		}
 
 	filter "action:vs*"
 		files
@@ -156,25 +180,25 @@ project "Core"
 	----------------
 	----- Libs -----
 	----------------
-	filter "configurations:Debug"
+	filter "configurations:Debug-*"
 		libdirs
 		{
 			vcpkgRoot .. "/installed/" .. triplet .. "/debug/lib",
 		}
 
-	filter "configurations:Release"
+	filter "configurations:Release-*"
 		libdirs
 		{
 			vcpkgRoot .. "/installed/" .. triplet .. "/lib",
 		}
 
-	filter "configurations:Debug"
+	filter "configurations:Debug-*"
 		links
 		{
 			"assimp-vc143-mtd"
 		}
 
-	filter "configurations:Release"
+	filter "configurations:Release-*"
 		links
 		{
 			"assimp-vc143-mt"
@@ -197,13 +221,16 @@ project "Core"
 	filter "platforms:Win64"
 		defines { "WIN64", "_WINDOWS" }
 
-	filter "configurations:Debug"
+	filter "configurations:Debug-*"
 		defines { "DEBUG", "FRT_CORE_EXPORTS" }
 		symbols "On"
 
-	filter "configurations:Release"
+	filter "configurations:Release-*"
 		defines { "NDEBUG", "FRT_CORE_EXPORTS" }
 		optimize "On"
+
+	filter "configurations:*-Headless"
+		defines { "FRT_HEADLESS" }
 
 	filter {}
 
@@ -218,14 +245,14 @@ project "Core"
 		"%{wks.location}%{thirdPartyDir}/Dxc/bin/x64/dxc.exe -E main -Fo %{prj.location}Content/Shaders/Bin/PixelShader.shader -T ps_6_0 -Zi -Zpc -Qembed_debug %{prj.location}Content/Shaders/PixelShader.hlsl"
 	}
 
-	filter "configurations:Release"
+	filter "configurations:Release-*"
 		prebuildcommands
 		{
 			"{COPYFILE} %[%{vcpkgRoot}/installed/%{triplet}/bin/*.pdb] %[%{cfg.buildtarget.directory}]",
 			"{COPYFILE} %[%{vcpkgRoot}/installed/%{triplet}/bin/*.dll] %[%{cfg.buildtarget.directory}]",
 		}
 
-	filter "configurations:Debug"
+	filter "configurations:Debug-*"
 		prebuildcommands
 		{
 			"{COPYFILE} %[%{vcpkgRoot}/installed/%{triplet}/debug/bin/*.pdb] %[%{cfg.buildtarget.directory}]",
@@ -259,14 +286,14 @@ project "Core-Test"
 		"Core/Source",
 	}
 
-	filter "configurations:Debug"
+	filter "configurations:Debug-*"
 		libdirs
 		{
 			vcpkgRoot .. "/installed/" .. triplet .. "/debug/lib",
 			vcpkgRoot .. "/installed/" .. triplet .. "/debug/lib/manual-link",
 		}
 
-	filter "configurations:Release"
+	filter "configurations:Release-*"
 		libdirs
 		{
 			vcpkgRoot .. "/installed/" .. triplet .. "/lib",
@@ -284,13 +311,13 @@ project "Core-Test"
 
 	filter {}
 
-	defines { "_CONSOLE" }
+	defines { "_CONSOLE", "FRT_HEADLESS" }
 
-	filter "configurations:Debug"
+	filter "configurations:Debug-*"
 		defines { "_DEBUG" }
 		symbols "On"
 
-	filter "configurations:Release"
+	filter "configurations:Release-*"
 		defines { "NDEBUG" }
 		optimize "On"
 
@@ -303,7 +330,11 @@ project "Core-Test"
 project "Demo"
 	location "%{prj.name}"
 
-	kind "WindowedApp"
+	filter "configurations:*-Headless"
+		kind "ConsoleApp"
+	filter "configurations:not *-Headless"
+		kind "WindowedApp"
+	filter {}
 
 	targetdir "Binaries/%{cfg.platform}/%{cfg.buildcfg}"
 	objdir "Intermediate/%{cfg.platform}/%{cfg.buildcfg}/%{prj.name}"
@@ -328,12 +359,15 @@ project "Demo"
 
 	defines { "_WINDOWS" }
 
-	filter "configurations:Debug"
+	filter "configurations:Debug-*"
 		defines { "_DEBUG" }
 		symbols "On"
 
-	filter "configurations:Release"
+	filter "configurations:Release-*"
 		defines { "NDEBUG" }
 		optimize "On"
+
+	filter "configurations:*-Headless"
+		defines { "FRT_HEADLESS" }
 
 	filter {}

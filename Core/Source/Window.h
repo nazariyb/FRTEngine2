@@ -4,9 +4,8 @@
 #include <Windows.h>
 
 #include "Core.h"
-#include "CoreTypes.h"
 #include "Event.h"
-#include "Graphics/RenderCommonTypes.h"
+#include "Graphics/Render/RenderCommonTypes.h"
 #include "Math/Math.h"
 #include "User/UserSettings.h"
 

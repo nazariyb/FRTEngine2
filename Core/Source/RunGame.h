@@ -28,6 +28,7 @@ int RunGame()
 
 	try
 	{
+#if !defined(FRT_HEADLESS)
 		while (msg.message != WM_QUIT)
 		{
 			if (PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE))
@@ -45,6 +46,16 @@ int RunGame()
 				}
 			}
 		}
+#else
+		while (true)
+		{
+			time.Tick();
+			if (!time.IsPaused())
+			{
+				game->Tick(time.GetDeltaSeconds());
+			}
+		}
+#endif
 	}
 	catch (const Exception& e)
 	{
@@ -69,6 +80,7 @@ namespace platform
 {
 #if defined(_WINDOWS)
 
+#if !defined(FRT_HEADLESS)
 #define FRT_RUN_GAME(TGame)\
 		int APIENTRY wWinMain(_In_ HINSTANCE hInstance,\
 			_In_opt_ HINSTANCE hPrevInstance,\
@@ -79,6 +91,13 @@ namespace platform
 			UNREFERENCED_PARAMETER(lpCmdLine);\
 			return RunGame<TGame>();\
 		}
+#else
+#define FRT_RUN_GAME(TGame)\
+	int main()\
+	{\
+		return RunGame<TGame>();\
+	}
+#endif
 
 #elif defined(_LINUX)
 #error "Linux platform is not supported yet"

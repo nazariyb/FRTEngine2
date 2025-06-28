@@ -6,14 +6,14 @@
 #include <assimp/scene.h>
 
 #include "Mesh.h"
-#include "Texture.h"
+#include "Render/Texture.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ASSERT(x) frt_assert(x)
 #include <stb_image.h>
 
 #include "GameInstance.h"
-#include "Renderer.h"
+#include "Render/Renderer.h"
 
 
 namespace frt::graphics
@@ -68,6 +68,7 @@ SModel SModel::LoadFromFile (const std::string& Filename, const std::string& Tex
 			int32 channelNum = 0;
 			texture.Texels = (uint32*)stbi_load(TexturePath.c_str(), &texture.Width, &texture.Height, &channelNum, 4);
 
+#if !defined(FRT_HEADLESS)
 			{
 				D3D12_RESOURCE_DESC Desc = {};
 				Desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
@@ -93,7 +94,7 @@ SModel SModel::LoadFromFile (const std::string& Filename, const std::string& Tex
 				GameInstance::GetInstance().GetGraphics()->CreateShaderResourceView(
 					texture.GpuTexture, srvDesc, &cpuDescriptor, &texture.GpuDescriptor);
 			}
-
+#endif
 			++textureIndex;
 		}
 	}
@@ -162,6 +163,7 @@ SModel SModel::LoadFromFile (const std::string& Filename, const std::string& Tex
 		}
 	}
 
+#if !defined(FRT_HEADLESS)
 	memory::TRefWeak<CRenderer> graphics = GameInstance::GetInstance().GetGraphics();
 
 	{
@@ -199,7 +201,7 @@ SModel SModel::LoadFromFile (const std::string& Filename, const std::string& Tex
 		result.IndexBuffer = graphics->CreateBufferAsset(
 			ibDesc, D3D12_RESOURCE_STATE_INDEX_BUFFER, result.Indices.GetData());
 	}
-
+#endif
 	return result;
 }
 }

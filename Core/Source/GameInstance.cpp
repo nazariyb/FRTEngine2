@@ -6,15 +6,15 @@
 #include "Timer.h"
 #include "Window.h"
 #include "Graphics/Camera.h"
-#include "Graphics/Renderer.h"
+#include "Graphics/Render/Renderer.h"
 #include "Memory/Memory.h"
 
 #include "imgui.h"
+#include "Graphics/MeshGeneration.h"
+#include "Graphics/Render/GraphicsUtility.h"
+#include "Graphics/Render/RenderCommonTypes.h"
 #include "backends/imgui_impl_dx12.h"
 #include "backends/imgui_impl_win32.h"
-#include "Graphics/GraphicsUtility.h"
-#include "Graphics/MeshGeneration.h"
-#include "Graphics/RenderCommonTypes.h"
 
 NAMESPACE_FRT_START
 FRT_SINGLETON_DEFINE_INSTANCE(GameInstance)
@@ -22,7 +22,7 @@ FRT_SINGLETON_DEFINE_INSTANCE(GameInstance)
 using namespace graphics;
 using namespace memory::literals;
 
-GameInstance::GameInstance ()
+GameInstance::GameInstance()
 	: FrameCount(0)
 {
 	MemoryPool = memory::CMemoryPool(2_Gb);
@@ -37,6 +37,7 @@ GameInstance::GameInstance ()
 	windowParams.Height = 720;
 	windowParams.ClassName = L"FrtWindowClass";
 	windowParams.hInst = GetModuleHandle(nullptr);
+#if !defined(FRT_HEADLESS)
 	Window = new CWindow(windowParams);
 
 	Window->PostResizeEvent += std::bind(&GameInstance::OnWindowResize, this);
@@ -52,7 +53,11 @@ GameInstance::GameInstance ()
 	World = MemoryPool.NewUnique<CWorld>(Renderer.GetWeak());
 
 	Camera = memory::NewShared<CCamera>();
+#else
+	World = MemoryPool.NewUnique<CWorld>();
+#endif
 
+#if !defined(FRT_HEADLESS)
 	IMGUI_CHECKVERSION();
 	ImGui::CreateContext();
 
@@ -85,38 +90,47 @@ GameInstance::GameInstance ()
 			// TODO
 		};
 	ImGui_ImplDX12_Init(&imguiDx12InitInfo);
+#endif
 }
 
-GameInstance::~GameInstance ()
+GameInstance::~GameInstance()
 {
+#if !defined(FRT_HEADLESS)
 	ImGui_ImplDX12_Shutdown();
 	ImGui_ImplWin32_Shutdown();
 	ImGui::DestroyContext();
 
-	delete Timer;
 	delete Window;
-
-	Timer = nullptr;
 	Window = nullptr;
+#endif
+
+	delete Timer;
+	Timer = nullptr;
 }
 
-CTimer& GameInstance::GetTime () const
+CTimer& GameInstance::GetTime() const
 {
 	return *Timer;
 }
 
-bool GameInstance::HasGraphics () const
+bool GameInstance::HasGraphics() const
 {
+#if !defined(FRT_HEADLESS)
 	return !!Renderer;
+#else
+	return false;
+#endif
 }
 
+#if !defined(FRT_HEADLESS)
 memory::TRefWeak<graphics::CRenderer> GameInstance::GetGraphics () const
 {
 	frt_assert(Renderer);
 	return Renderer.GetWeak();
 }
+#endif
 
-void GameInstance::Load ()
+void GameInstance::Load()
 {
 	std::cout << std::filesystem::current_path() << std::endl;
 
@@ -128,25 +142,30 @@ void GameInstance::Load ()
 	// 	R"(..\Core\Content\Models\Skull\textures\defaultMat_baseColor.jpeg)");
 }
 
-void GameInstance::Tick (float DeltaSeconds)
+void GameInstance::Tick(float DeltaSeconds)
 {
 	++FrameCount;
 
+#if !defined(FRT_HEADLESS)
 	ImGui_ImplDX12_NewFrame();
 	ImGui_ImplWin32_NewFrame();
 	ImGui::NewFrame();
 
 	ImGui::ShowDemoWindow();
-
+#endif
 	CalculateFrameStats();
+#if !defined(FRT_HEADLESS)
 	DisplayUserSettings();
 
 	Renderer->Tick(DeltaSeconds);
 	Camera->Tick(DeltaSeconds);
+#endif
+
 	World->Tick(DeltaSeconds);
 }
 
-void GameInstance::Draw (float DeltaSeconds)
+#if !defined(FRT_HEADLESS)
+void GameInstance::Draw(float DeltaSeconds)
 {
 	Renderer->StartFrame(*Camera);
 
@@ -164,13 +183,14 @@ void GameInstance::Draw (float DeltaSeconds)
 
 	Renderer->Draw(DeltaSeconds, *Camera);
 }
+#endif
 
-long long GameInstance::GetFrameCount () const
+long long GameInstance::GetFrameCount() const
 {
 	return FrameCount;
 }
 
-void GameInstance::CalculateFrameStats () const
+void GameInstance::CalculateFrameStats() const
 {
 	static int frameCount = 0;
 	static float timeElapsed = 0.f;
@@ -188,24 +208,29 @@ void GameInstance::CalculateFrameStats () const
 		timeElapsed += 1.f;
 	}
 
+#if !defined(FRT_HEADLESS)
 	ImGui::Begin("Stats", nullptr, ImGuiWindowFlags_NoResize);
 	ImGui::Text("FPS: %.2f", fps);
 	ImGui::Text("MS/frame: %.2f", msPerFrame);
 	ImGui::End();
+#else
+	std::printf("FPS: %.2f; MS/frame: %.2f\n", fps, msPerFrame);
+#endif
 }
 
-void GameInstance::OnWindowResize ()
+#if !defined(FRT_HEADLESS)
+void GameInstance::OnWindowResize()
 {
 	Renderer->Resize(UserSettings.DisplaySettings.IsFullscreen());
 }
 
-void GameInstance::OnLoseFocus ()
+void GameInstance::OnLoseFocus()
 {}
 
-void GameInstance::OnGainFocus ()
+void GameInstance::OnGainFocus()
 {}
 
-void GameInstance::OnMinimize ()
+void GameInstance::OnMinimize()
 {
 	if (UserSettings.DisplaySettings.IsFullscreen())
 	{
@@ -214,7 +239,7 @@ void GameInstance::OnMinimize ()
 	}
 }
 
-void GameInstance::OnRestoreFromMinimize ()
+void GameInstance::OnRestoreFromMinimize()
 {
 	Window->SetDisplaySettings(UserSettings.DisplaySettings, DisplayOptions);
 	if (UserSettings.DisplaySettings.IsFullscreen())
@@ -223,7 +248,7 @@ void GameInstance::OnRestoreFromMinimize ()
 	}
 }
 
-void GameInstance::DisplayUserSettings ()
+void GameInstance::DisplayUserSettings()
 {
 	// TODO: this func is okay for now, but should be revisited later to at least remove reallocations on each frame
 
@@ -311,5 +336,6 @@ void GameInstance::DisplayUserSettings ()
 
 	ImGui::End();
 }
+#endif
 
 NAMESPACE_FRT_END

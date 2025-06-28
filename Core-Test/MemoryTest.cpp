@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include "Memory/Memory.h"
 #include "Memory/MemoryPool.h"
 
 struct TestStruct
@@ -54,7 +55,7 @@ TEST(MemoryAllocation, PrimaryInstance)
     pool.MakeThisPrimaryInstance();
     EXPECT_EQ(CMemoryPool::GetPrimaryInstance(), &pool);
 
-    TestStruct* obj = memory::NewUnmanaged<TestStruct>();
+    TestStruct* obj = NewUnmanaged<TestStruct>();
     EXPECT_EQ(obj->a, 1);
     obj->~TestStruct();
     pool.DeleteUnmanaged(obj);

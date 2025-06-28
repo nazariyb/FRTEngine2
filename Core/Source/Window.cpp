@@ -1,12 +1,13 @@
 ﻿#include "Window.h"
 
 #include <iostream>
+#include <vector>
 
 #include "CoreUtils.h"
 #include "Math/Math.h"
 
 #include "imgui.h"
-#include "Graphics/RenderCommonTypes.h"
+#include "Graphics/Render/RenderCommonTypes.h"
 
 NAMESPACE_FRT_START
 CWindow::~CWindow ()

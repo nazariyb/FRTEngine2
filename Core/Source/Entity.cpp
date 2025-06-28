@@ -2,10 +2,9 @@
 
 #include "GameInstance.h"
 #include "Timer.h"
-#include "Window.h"
-#include "Graphics/Renderer.h"
+#include "Graphics/Render/Renderer.h"
 
-void frt::CEntity::Tick (float DeltaSeconds)
+void frt::CEntity::Tick(float DeltaSeconds)
 {
 	const float timeElapsed = GameInstance::GetInstance().GetTime().GetTotalSeconds();
 	const double scale = std::cos(timeElapsed) / 8.f + .25f;
@@ -14,6 +13,7 @@ void frt::CEntity::Tick (float DeltaSeconds)
 	Transform.SetRotation(0.f, math::PI_OVER_FOUR * timeElapsed, 0.f);
 }
 
+#if !defined(FRT_HEADLESS)
 void frt::CEntity::Present (float DeltaSeconds, ID3D12GraphicsCommandList* CommandList)
 {
 	{
@@ -40,3 +40,4 @@ void frt::CEntity::Present (float DeltaSeconds, ID3D12GraphicsCommandList* Comma
 		CommandList->DrawIndexedInstanced(Mesh.Indices.Count(), 1, Mesh.IndexOffset, Mesh.VertexOffset, 0);
 	}
 }
+#endif

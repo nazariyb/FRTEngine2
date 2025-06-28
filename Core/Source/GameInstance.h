@@ -4,7 +4,7 @@
 #include "Singleton.h"
 #include "Window.h"
 #include "World.h"
-#include "Graphics/RenderCommonTypes.h"
+#include "Graphics/Render/RenderCommonTypes.h"
 #include "Memory/MemoryPool.h"
 #include "Memory/Ref.h"
 #include "User/UserSettings.h"
@@ -41,19 +41,23 @@ public:
 	CTimer& GetTime () const;
 
 	bool HasGraphics () const;
+#if !defined(FRT_HEADLESS)
 	memory::TRefWeak<graphics::CRenderer> GetGraphics () const;
 
 	// temp
 	CWindow& GetWindow () const { return *Window; }
 	memory::TRefWeak<graphics::CCamera> GetCamera () const { return Camera.GetWeak(); }
 	// ~temp
+#endif
 
 	virtual void Load ();
 
 	// Update
 	// virtual void Input(float DeltaSeconds);
 	virtual void Tick (float DeltaSeconds);
+#if !defined(FRT_HEADLESS)
 	virtual void Draw (float DeltaSeconds);
+#endif
 	// ~Update
 
 	long long GetFrameCount () const;
@@ -61,6 +65,7 @@ public:
 protected:
 	void CalculateFrameStats () const;
 
+#if !defined(FRT_HEADLESS)
 	virtual void OnWindowResize ();
 	virtual void OnLoseFocus ();
 	virtual void OnGainFocus ();
@@ -68,16 +73,18 @@ protected:
 	virtual void OnRestoreFromMinimize ();
 
 	virtual void DisplayUserSettings ();
+#endif
 
 protected:
 	memory::CMemoryPool MemoryPool;
 	CTimer* Timer;
+#if !defined(FRT_HEADLESS)
 	CWindow* Window;
 	memory::TRefUnique<graphics::CRenderer> Renderer;
-
-	memory::TRefUnique<CWorld> World;
-
 	memory::TRefShared<graphics::CCamera> Camera;
+
+#endif
+	memory::TRefUnique<CWorld> World;
 
 	graphics::SDisplayOptions DisplayOptions;
 	SUserSettings UserSettings;

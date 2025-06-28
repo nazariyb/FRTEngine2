@@ -2,11 +2,11 @@
 
 #include <complex>
 
-#include "Camera.h"
+#include "Graphics/Camera.h"
 #include "d3dx12.h"
 #include "Exception.h"
 #include "GraphicsUtility.h"
-#include "Model.h"
+#include "Graphics/Model.h"
 #include "Timer.h"
 #include "Window.h"
 

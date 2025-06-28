@@ -1,6 +1,6 @@
 #include "MeshGeneration.h"
 
-#include "Renderer.h"
+#include "Render/Renderer.h"
 #include "Containers/Array.h"
 
 
@@ -181,9 +181,10 @@ SMesh GenerateCube (const Vector3f& Extent, uint32 SubdivisionsCount)
 	i[30] = 20; i[31] = 21; i[32] = 22;
 	i[33] = 20; i[34] = 22; i[35] = 23;
 
+#if !defined(FRT_HEADLESS)
 	// TODO: temp
 	_private::CreateGpuResources(v, i, result.VertexBufferGpu, result.IndexBufferGpu);
-
+#endif
 	return result;
 }
 
@@ -292,9 +293,10 @@ SMesh GenerateSphere (float Radius, uint32 SliceCount, uint32 StackCount)
 		i[curIdx++] = baseIdx + sliceIdx + 1u;
 	}
 
+#if !defined(FRT_HEADLESS)
 	// TODO: temp
 	_private::CreateGpuResources(v, i, result.VertexBufferGpu, result.IndexBufferGpu);
-
+#endif
 	return result;
 }
 
@@ -369,9 +371,10 @@ SMesh GenerateGeosphere (float Radius, uint32 SubdivisionsCount)
 		v[idx].Tangent.NormalizeUnsafe();
 	}
 
+#if !defined(FRT_HEADLESS)
 	// TODO: temp
 	_private::CreateGpuResources(v, i, result.VertexBufferGpu, result.IndexBufferGpu);
-
+#endif
 	return result;
 }
 
@@ -384,9 +387,10 @@ SMesh GenerateCylinder ()
 	auto& v = result.Vertices;
 	auto& i = result.Indices;
 
+#if !defined(FRT_HEADLESS)
 	// TODO: temp
 	_private::CreateGpuResources(v, i, result.VertexBufferGpu, result.IndexBufferGpu);
-
+#endif
 	return result;
 }
 
@@ -399,9 +403,10 @@ SMesh GenerateGrid ()
 	auto& v = result.Vertices;
 	auto& i = result.Indices;
 
+#if !defined(FRT_HEADLESS)
 	// TODO: temp
 	_private::CreateGpuResources(v, i, result.VertexBufferGpu, result.IndexBufferGpu);
-
+#endif
 	return result;
 }
 
@@ -414,9 +419,10 @@ SMesh GenerateQuad ()
 	auto& v = result.Vertices;
 	auto& i = result.Indices;
 
+#if !defined(FRT_HEADLESS)
 	// TODO: temp
 	_private::CreateGpuResources(v, i, result.VertexBufferGpu, result.IndexBufferGpu);
-
+#endif
 	return result;
 }
 
@@ -508,6 +514,7 @@ SVertex MidPoint (const SVertex& A, const SVertex& B)
 	};
 }
 
+#if !defined(FRT_HEADLESS)
 void _private::CreateGpuResources (
 	const TArray<SVertex>& Vertices,
 	const TArray<uint32>& Indices,
@@ -552,4 +559,5 @@ void _private::CreateGpuResources (
 			ibDesc, D3D12_RESOURCE_STATE_INDEX_BUFFER, (void*)Indices.GetData());
 	}
 }
+#endif
 }
