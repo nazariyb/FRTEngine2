@@ -103,7 +103,7 @@ public:
 	static const TVector3<Real> UpVector;
 	static const TVector3<Real> DownVector;
 	static const TVector3<Real> ForwardVector;
-	static const TVector3<Real> DownwardVector;
+	static const TVector3<Real> BackwardVector;
 	static const TVector3<Real> RightVector;
 	static const TVector3<Real> LeftVector;
 	static const TVector3<Real> XAxisVector;
@@ -372,4 +372,17 @@ Real TVector3<Real>::DistSquared (const TVector3<Real>& Lhs, const TVector3<Real
 {
 	return Lhs.DistSquared(Rhs);
 }
+
+template<typename Real> inline const TVector3<Real> TVector3<Real>::ZeroVector = TVector3<Real>(0, 0, 0);
+template<typename Real> inline const TVector3<Real> TVector3<Real>::OneVector = TVector3<Real>(1, 1, 1);
+template<typename Real> inline const TVector3<Real> TVector3<Real>::UpVector = TVector3<Real>(0, 0, 1);
+template<typename Real> inline const TVector3<Real> TVector3<Real>::DownVector = TVector3<Real>(0, 0, -1);
+template<typename Real> inline const TVector3<Real> TVector3<Real>::ForwardVector = TVector3<Real>(1, 0, 0);
+template<typename Real> inline const TVector3<Real> TVector3<Real>::BackwardVector = TVector3<Real>(-1, 0, 0);
+template<typename Real> inline const TVector3<Real> TVector3<Real>::RightVector = TVector3<Real>(0, 1, 0);
+template<typename Real> inline const TVector3<Real> TVector3<Real>::LeftVector = TVector3<Real>(0, -1, 0);
+template<typename Real> inline const TVector3<Real> TVector3<Real>::XAxisVector = TVector3<Real>(1, 0, 0);
+template<typename Real> inline const TVector3<Real> TVector3<Real>::YAxisVector = TVector3<Real>(0, 1, 0);
+template<typename Real> inline const TVector3<Real> TVector3<Real>::ZAxisVector = TVector3<Real>(0, 0, 1);
+
 }

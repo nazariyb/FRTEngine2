@@ -6,7 +6,7 @@
 
 namespace frt::graphics::mesh
 {
-SMesh GenerateCube (const Vector3f& Extent, uint32 SubdivisionsCount)
+SMesh GenerateCube(const Vector3f& Extent, uint32 SubdivisionsCount)
 {
 	SMesh result;
 
@@ -188,7 +188,7 @@ SMesh GenerateCube (const Vector3f& Extent, uint32 SubdivisionsCount)
 	return result;
 }
 
-SMesh GenerateSphere (float Radius, uint32 SliceCount, uint32 StackCount)
+SMesh GenerateSphere(float Radius, uint32 SliceCount, uint32 StackCount)
 {
 	frt_assert(SliceCount > 1u);
 	frt_assert(StackCount > 1u);
@@ -300,7 +300,7 @@ SMesh GenerateSphere (float Radius, uint32 SliceCount, uint32 StackCount)
 	return result;
 }
 
-SMesh GenerateGeosphere (float Radius, uint32 SubdivisionsCount)
+SMesh GenerateGeosphere(float Radius, uint32 SubdivisionsCount)
 {
 	SMesh result;
 
@@ -378,14 +378,88 @@ SMesh GenerateGeosphere (float Radius, uint32 SubdivisionsCount)
 	return result;
 }
 
-SMesh GenerateCylinder ()
+SMesh GenerateCylinder(float BottomRadius, float TopRadius, float Height, uint32 SliceCount, uint32 StackCount)
 {
 	SMesh result;
-	result.Vertices = TArray<SVertex>(24);
-	result.Indices = TArray<uint32>(36);
+
+	// result.Vertices = TArray<SVertex>(24);
+	// result.Indices = TArray<uint32>(36);
 
 	auto& v = result.Vertices;
 	auto& i = result.Indices;
+
+	const float stackHeight = Height / static_cast<float>(StackCount);
+	const float radiusStep = (TopRadius - BottomRadius) / static_cast<float>(StackCount);
+
+	const uint32 ringCount = StackCount + 1u;
+
+	for (uint32 stackIdx = 0u; stackIdx < ringCount; ++stackIdx)
+	{
+		const float y = -Height * 0.5f + static_cast<float>(stackIdx) * stackHeight;
+		const float radius = BottomRadius + static_cast<float>(stackIdx) * radiusStep;
+
+		for (uint32 sliceIdx = 0u; sliceIdx <= SliceCount; ++sliceIdx)
+		{
+			const float theta = math::TWO_PI * static_cast<float>(sliceIdx) / static_cast<float>(SliceCount);
+
+			SVertex vertex;
+			vertex.Position = Vector3f::ForwardVector * radius * std::sin(theta)
+							+ Vector3f::UpVector * y
+							+ Vector3f::RightVector * radius * std::cos(theta);
+			vertex.Uv.x = static_cast<float>(sliceIdx) / static_cast<float>(SliceCount);
+			vertex.Uv.y = static_cast<float>(stackIdx) / static_cast<float>(StackCount);
+
+			//   Let r0 be the bottom radius and let r1 be the top radius.
+			//   y(v) = h - hv for v in [0,1].
+			//   r(v) = r1 + (r0-r1)v
+			//
+			//   x(t, v) = r(v)*cos(t)
+			//   y(t, v) = h - hv
+			//   z(t, v) = r(v)*sin(t)
+			// 
+			//  dx/dt = -r(v)*sin(t)
+			//  dy/dt = 0
+			//  dz/dt = +r(v)*cos(t)
+			//
+			//  dx/dv = (r0-r1)*cos(t)
+			//  dy/dv = -h
+			//  dz/dv = (r0-r1)*sin(t)
+
+			vertex.Tangent = Vector3f::ForwardVector * -radius * std::sin(theta)
+							+ Vector3f::UpVector * 0.f
+							+ Vector3f::RightVector * radius * std::cos(theta);
+
+			const float dr = BottomRadius - TopRadius;
+			const Vector3f bitangent = Vector3f::ForwardVector * dr * std::cos(theta)
+										+ Vector3f::UpVector * -Height
+										+ Vector3f::RightVector * dr * std::sin(theta);
+
+			vertex.Normal = vertex.Tangent.Cross(bitangent).GetNormalizedUnsafe();
+
+			v.Add(vertex);
+		}
+	}
+
+	const uint32 ringVertexCount = SliceCount + 1u;
+
+	for (uint32 stackIdx = 0u; stackIdx < StackCount; ++stackIdx)
+	{
+		for (uint32 sliceIdx = 0u; sliceIdx < SliceCount; ++sliceIdx)
+		{
+			const uint32 baseIndex = stackIdx * ringVertexCount + sliceIdx;
+
+			i.Add(baseIndex);
+			i.Add(baseIndex + ringVertexCount);
+			i.Add(baseIndex + 1u);
+
+			i.Add(baseIndex + 1u);
+			i.Add(baseIndex + ringVertexCount);
+			i.Add(baseIndex + ringVertexCount + 1u);
+		}
+	}
+
+	_private::BuildCylinderCap(true, TopRadius, Height, SliceCount, v, i);
+	_private::BuildCylinderCap(false, BottomRadius, Height, SliceCount, v, i);
 
 #if !defined(FRT_HEADLESS)
 	// TODO: temp
@@ -394,14 +468,63 @@ SMesh GenerateCylinder ()
 	return result;
 }
 
-SMesh GenerateGrid ()
+SMesh GenerateGrid(float Width, float Depth, uint32 CellCountX, uint32 CellCountZ)
 {
 	SMesh result;
-	result.Vertices = TArray<SVertex>(24);
-	result.Indices = TArray<uint32>(36);
 
 	auto& v = result.Vertices;
 	auto& i = result.Indices;
+
+	v.SetSize<true>(CellCountX * CellCountZ);
+
+	const uint32 faceCount = (CellCountX - 1u) * (CellCountZ - 1u) * 2u;
+	i.SetSize<true>(faceCount * 3u);
+
+	const float halfWidth = Width * 0.5f;
+	const float halfDepth = Depth * 0.5f;
+
+	const float dx = Width / static_cast<float>(CellCountX - 1u);
+	const float dz = Depth / static_cast<float>(CellCountZ - 1u);
+
+	const float du = 1.f / static_cast<float>(CellCountX - 1u);
+	const float dv = 1.f / static_cast<float>(CellCountZ - 1u);
+
+	for (uint32 z = 0u; z < CellCountZ; ++z)
+	{
+		for (uint32 x = 0u; x < CellCountX; ++x)
+		{
+			const uint32 idx = z * CellCountX + x;
+
+			v[idx].Position = Vector3f::ForwardVector * (halfDepth - static_cast<float>(z) * dz)
+							+ Vector3f::UpVector * 0.f
+							+ Vector3f::RightVector * (-halfWidth + static_cast<float>(x) * dx);
+
+			v[idx].Uv.x = static_cast<float>(x) * du;
+			v[idx].Uv.y = static_cast<float>(z) * dv;
+
+			v[idx].Normal = Vector3f::UpVector;
+			v[idx].Tangent = Vector3f::RightVector;
+		}
+	}
+
+	uint32 k = 0u;
+	for (uint32 z = 0u; z < CellCountZ - 1u; ++z)
+	{
+		for (uint32 x = 0u; x < CellCountX - 1u; ++x)
+		{
+			const uint32 baseIndex = z * CellCountX + x;
+
+			// First triangle
+			i[k++] = baseIndex;
+			i[k++] = baseIndex + CellCountX;
+			i[k++] = baseIndex + 1u;
+
+			// Second triangle
+			i[k++] = baseIndex + 1u;
+			i[k++] = baseIndex + CellCountX;
+			i[k++] = baseIndex + CellCountX + 1u;
+		}
+	}
 
 #if !defined(FRT_HEADLESS)
 	// TODO: temp
@@ -410,14 +533,49 @@ SMesh GenerateGrid ()
 	return result;
 }
 
-SMesh GenerateQuad ()
+SMesh GenerateQuad(float Width, float Depth)
 {
 	SMesh result;
-	result.Vertices = TArray<SVertex>(24);
-	result.Indices = TArray<uint32>(36);
 
 	auto& v = result.Vertices;
 	auto& i = result.Indices;
+
+	v.SetSize<true>(4u);
+	i.SetSize<true>(6u);
+
+	const float halfWidth = Width * 0.5f;
+	const float halfDepth = Depth * 0.5f;
+
+	v[0] = SVertex
+	{
+		.Position = Vector3f::ForwardVector * halfDepth + Vector3f::LeftVector * halfWidth,
+		.Uv = { 0.f, 1.f },
+		.Normal = { 0.f, 1.f, 0.f }, .Tangent = { 1.f, 0.f, 0.f }
+	};
+
+	v[1] = SVertex
+	{
+		.Position = Vector3f::BackwardVector * halfDepth + Vector3f::LeftVector * halfWidth,
+		.Uv = { 0.f, 0.f },
+		.Normal = { 0.f, 1.f, 0.f }, .Tangent = { 1.f, 0.f, 0.f }
+	};
+
+	v[2] = SVertex
+	{
+		.Position = Vector3f::BackwardVector * halfDepth + Vector3f::RightVector * halfWidth,
+		.Uv = { 1.f, 0.f },
+		.Normal = { 0.f, 1.f, 0.f }, .Tangent = { 1.f, 0.f, 0.f }
+	};
+
+	v[3] = SVertex
+	{
+		.Position = Vector3f::ForwardVector * halfDepth + Vector3f::RightVector * halfWidth,
+		.Uv = { 1.f, 1.f },
+		.Normal = { 0.f, 1.f, 0.f }, .Tangent = { 1.f, 0.f, 0.f }
+	};
+
+	i[0] = 0u; i[1] = 1u; i[2] = 2u;
+	i[3] = 0u; i[4] = 2u; i[5] = 3u;
 
 #if !defined(FRT_HEADLESS)
 	// TODO: temp
@@ -426,7 +584,7 @@ SMesh GenerateQuad ()
 	return result;
 }
 
-void Subdivide (TArray<SVertex>& InOutVertices, TArray<uint32>& InOutIndices, uint32 SubdivisionsCount)
+void Subdivide(TArray<SVertex>& InOutVertices, TArray<uint32>& InOutIndices, uint32 SubdivisionsCount)
 {
 	if (InOutVertices.Count() == 0 || InOutIndices.Count() == 0)
 	{
@@ -502,7 +660,7 @@ void Subdivide (TArray<SVertex>& InOutVertices, TArray<uint32>& InOutIndices, ui
 	}
 }
 
-SVertex MidPoint (const SVertex& A, const SVertex& B)
+SVertex MidPoint(const SVertex& A, const SVertex& B)
 {
 	return SVertex
 	{
@@ -514,8 +672,71 @@ SVertex MidPoint (const SVertex& A, const SVertex& B)
 	};
 }
 
+void _private::BuildCylinderCap(
+	bool bTop,
+	float Radius,
+	float Height,
+	uint32 SliceCount,
+	TArray<SVertex>& OutVertices,
+	TArray<uint32>& OutIndices)
+{
+	const float normalY = (bTop ? 1.f : -1.f);
+	const float y = Height * 0.5f * normalY;
+
+	const uint32 baseIndex = OutVertices.Count();
+	for (uint32 sliceIdx = 0; sliceIdx <= SliceCount; ++sliceIdx)
+	{
+		const float theta = math::TWO_PI * static_cast<float>(sliceIdx) / static_cast<float>(SliceCount);
+		const float x = Radius * sinf(theta);
+		const float z = Radius * cosf(theta);
+
+		// vertex.Tangent = Vector3f(-sinf(theta), 0.f, cosf(theta));
+
+		OutVertices.Add(
+			SVertex
+			{
+				.Position = Vector3f::ForwardVector * x
+							+ Vector3f::UpVector * y
+							+ Vector3f::RightVector * z,
+				.Uv = Vector2f(x / Height + 0.5f, y / Height + 0.5f),
+				.Normal = Vector3f::UpVector * normalY,
+				.Tangent = Vector3f::ForwardVector
+			});
+	}
+
+	OutVertices.Add(
+		SVertex
+		{
+			.Position = Vector3f::UpVector * y,
+			.Uv = Vector2f(0.5f, 0.5f),
+			.Normal = Vector3f::UpVector * normalY,
+			.Tangent = Vector3f::ForwardVector
+		});
+
+	const uint32 centerIndex = OutVertices.Count() - 1u;
+
+	for (uint32 sliceIdx = 0; sliceIdx < SliceCount; ++sliceIdx)
+	{
+		const uint32 i0 = baseIndex + sliceIdx;
+		const uint32 i1 = baseIndex + sliceIdx + 1u;
+
+		if (bTop)
+		{
+			OutIndices.Add(centerIndex);
+			OutIndices.Add(i1);
+			OutIndices.Add(i0);
+		}
+		else
+		{
+			OutIndices.Add(centerIndex);
+			OutIndices.Add(i0);
+			OutIndices.Add(i1);
+		}
+	}
+}
+
 #if !defined(FRT_HEADLESS)
-void _private::CreateGpuResources (
+void _private::CreateGpuResources(
 	const TArray<SVertex>& Vertices,
 	const TArray<uint32>& Indices,
 	ComPtr<ID3D12Resource>& OutVertexBufferGpu,
