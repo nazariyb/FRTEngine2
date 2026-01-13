@@ -9,7 +9,7 @@ void frt::CEntity::Tick(float DeltaSeconds)
 	const float timeElapsed = GameInstance::GetInstance().GetTime().GetTotalSeconds();
 	const double scale = std::cos(timeElapsed) / 8.f + .25f;
 	Transform.SetScale(1.f);
-	Transform.SetTranslation(1.2f, 0.f, 0.f);
+	// Transform.SetTranslation(1.2f, 0.f, 0.f);
 	Transform.SetRotation(0.f, math::PI_OVER_FOUR * timeElapsed, -math::PI_OVER_FOUR / 2.f);
 }
 

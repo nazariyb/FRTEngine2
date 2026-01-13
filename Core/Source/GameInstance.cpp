@@ -134,13 +134,19 @@ void GameInstance::Load()
 {
 	std::cout << std::filesystem::current_path() << std::endl;
 
-	// World->SpawnEntity()->Mesh = mesh::GenerateCube(Vector3f(.3f), 1);
+	Cube = World->SpawnEntity();
+	Cube->Mesh = mesh::GenerateCube(Vector3f(.3f), 1);
 	// World->SpawnEntity()->Mesh = mesh::GenerateGeosphere(1.f, 2u);
-	// World->SpawnEntity()->Mesh = mesh::GenerateCylinder(1.f, 0.5, 1.f, 10u, 10u);
-	World->SpawnEntity()->Mesh = mesh::GenerateSphere(.1f, 10u, 10u);
+	Cylinder = World->SpawnEntity();
+	Cylinder->Mesh = mesh::GenerateCylinder(1.f, 0.5, 1.f, 10u, 10u);
+
+	Sphere = World->SpawnEntity();
+	Sphere->Mesh = mesh::GenerateSphere(.1f, 10u, 10u);
 	// World->SpawnEntity()->Mesh = mesh::GenerateGrid(1.f, 1.f, 10u, 10u);
-	World->SpawnEntity()->Mesh = mesh::GenerateQuad(1.f, 1.f);
-	// skullEnt->Model = Model::LoadFromFile(
+	// World->SpawnEntity()->Mesh = mesh::GenerateGrid(1.f, 1.f, 10u, 10u);
+	// World->SpawnEntity()->Mesh = mesh::GenerateQuad(1.f, 1.f);
+	// auto skullEnt = World->SpawnEntity();
+	// skullEnt->Mesh = SModel::LoadFromFile(
 	// 	R"(..\Core\Content\Models\Skull\scene.gltf)",
 	// 	R"(..\Core\Content\Models\Skull\textures\defaultMat_baseColor.jpeg)");
 }
@@ -165,6 +171,8 @@ void GameInstance::Tick(float DeltaSeconds)
 #endif
 
 	World->Tick(DeltaSeconds);
+
+	UpdateEntities(DeltaSeconds);
 }
 
 #if !defined(FRT_HEADLESS)
@@ -340,5 +348,50 @@ void GameInstance::DisplayUserSettings()
 	ImGui::End();
 }
 #endif
+
+void GameInstance::UpdateEntities (float DeltaSeconds)
+{
+	static float Angle = 0.0f;
+	static float VerticalTime = 0.0f;
+
+	Angle += 1.0f * DeltaSeconds;
+	VerticalTime += DeltaSeconds;
+
+	// Loop Angle to keep it within [0, 2PI]
+	if (Angle > math::PI * 2.0f)
+	{
+		Angle -= math::PI * 2.0f;
+	}
+
+	float Radius = 1.0f;
+	float Height = std::sin(VerticalTime * 2.0f) * 0.5f; // Oscillates between -0.5 and 0.5
+
+	if (Cube)
+	{
+		Vector3f CubePos;
+		CubePos.x = Radius * std::sin(Angle) + 1.f;
+		CubePos.y = Height;
+		CubePos.z = Radius * std::cos(Angle);
+		Cube->Transform.SetTranslation(CubePos);
+	}
+
+	if (Sphere)
+	{
+		Vector3f SpherePos;
+		SpherePos.x = (Radius + 1.0f) * std::sin(-Angle) + 1.f;
+		SpherePos.y = -Height;
+		SpherePos.z = (Radius + 1.0f) * std::cos(-Angle);
+		Sphere->Transform.SetTranslation(SpherePos);
+	}
+
+	if (Cylinder)
+	{
+		Vector3f CylinderPos;
+		CylinderPos.x = (Radius - .5f) * std::sin(-Angle) + 1.f;
+		CylinderPos.y = -Height + 0.1f;
+		CylinderPos.z = (Radius - .5f) * std::cos(-Angle);
+		Cylinder->Transform.SetTranslation(CylinderPos);
+	}
+}
 
 NAMESPACE_FRT_END

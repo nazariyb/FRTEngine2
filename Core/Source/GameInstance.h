@@ -86,6 +86,13 @@ protected:
 #endif
 	memory::TRefUnique<CWorld> World;
 
+	// temp
+	memory::TRefShared<CEntity> Cube;
+	memory::TRefShared<CEntity> Cylinder;
+	memory::TRefShared<CEntity> Sphere;
+	void UpdateEntities(float DeltaSeconds);
+	// ~temp
+
 	graphics::SDisplayOptions DisplayOptions;
 	SUserSettings UserSettings;
 
