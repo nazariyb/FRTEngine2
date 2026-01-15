@@ -61,6 +61,8 @@ public:
 private:
 	void CreateSwapChain (bool bFullscreen);
 	void FlushCommandQueue ();
+	void CreateRootSignature ();
+	void CreatePipelineState ();
 
 public:
 	DX12_DescriptorHeap ShaderDescriptorHeap;

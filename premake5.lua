@@ -226,7 +226,7 @@ project "Core"
 		symbols "On"
 
 	filter "configurations:Release-*"
-		defines { "NDEBUG", "FRT_CORE_EXPORTS" }
+		defines { "NDEBUG", "RELEASE", "FRT_CORE_EXPORTS" }
 		optimize "On"
 
 	filter "configurations:*-Headless"
