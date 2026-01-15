@@ -46,6 +46,7 @@
 #define NOPROXYSTUB
 #define NOIMAGE
 #define NOTAPE
+#define NOMINMAX
 #endif
 
 #define NOMINMAX

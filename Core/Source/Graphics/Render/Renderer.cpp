@@ -5,7 +5,6 @@
 #include "Graphics/Camera.h"
 #include "d3dx12.h"
 #include "Exception.h"
-#include "GraphicsUtility.h"
 #include "Graphics/Model.h"
 #include "Timer.h"
 #include "Window.h"
@@ -215,8 +214,20 @@ CRenderer::CRenderer (CWindow* Window)
 		D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
 		psoDesc.pRootSignature = RootSignature.Get();
 
-		psoDesc.VS = Dx12LoadShader(R"(..\Core\Content\Shaders\Bin\VertexShader.shader)");
-		psoDesc.PS = Dx12LoadShader(R"(..\Core\Content\Shaders\Bin\PixelShader.shader)");
+		const std::filesystem::path vertexShaderPath = R"(..\Core\Content\Shaders\Bin\VertexShader.shader)";
+		const std::filesystem::path pixelShaderPath = R"(..\Core\Content\Shaders\Bin\PixelShader.shader)";
+
+		const SShaderAsset* vertexShader = ShaderLibrary.LoadShader(
+			"VertexShader",
+			vertexShaderPath,
+			EShaderStage::Vertex);
+		const SShaderAsset* pixelShader = ShaderLibrary.LoadShader(
+			"PixelShader",
+			pixelShaderPath,
+			EShaderStage::Pixel);
+
+		psoDesc.VS = vertexShader->GetBytecode();
+		psoDesc.PS = pixelShader->GetBytecode();
 
 		psoDesc.BlendState.RenderTarget[0].BlendEnable = true;
 		psoDesc.BlendState.RenderTarget[0].LogicOpEnable = false;

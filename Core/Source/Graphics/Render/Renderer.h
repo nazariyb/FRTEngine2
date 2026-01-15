@@ -7,6 +7,7 @@
 #include "Core.h"
 #include "GraphicsCoreTypes.h"
 #include "RenderConstants.h"
+#include "ShaderAsset.h"
 
 
 namespace frt
@@ -89,6 +90,7 @@ private:
 
 	ComPtr<ID3D12RootSignature> RootSignature;
 	ComPtr<ID3D12PipelineState> PipelineState;
+	CShaderLibrary ShaderLibrary;
 
 	ComPtr<ID3D12Resource> CommonConstantBuffer;
 	D3D12_GPU_DESCRIPTOR_HANDLE CommonConstantBufferDescriptor;
