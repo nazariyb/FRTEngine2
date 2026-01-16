@@ -77,5 +77,11 @@ struct SFrameResources
 		uint32 ObjectCount,
 		DX12_Arena& BufferArena,
 		DX12_DescriptorHeap& DescriptorHeap);
+
+	void EnsureObjectCapacity (
+		ID3D12Device* Device,
+		uint32 ObjectCount,
+		DX12_Arena& BufferArena,
+		DX12_DescriptorHeap& DescriptorHeap);
 };
 }

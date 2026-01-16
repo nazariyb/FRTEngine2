@@ -35,4 +35,18 @@ void SFrameResources::Init (
 	PassCB = SConstantBuffer<SPassConstants>(Device, BufferArena, DescriptorHeap, PassCount);
 	ObjectCB = SConstantBuffer<SObjectConstants>(Device, BufferArena, DescriptorHeap, ObjectCount);
 }
+
+void SFrameResources::EnsureObjectCapacity (
+	ID3D12Device* Device,
+	uint32 ObjectCount,
+	DX12_Arena& BufferArena,
+	DX12_DescriptorHeap& DescriptorHeap)
+{
+	if (ObjectCount <= ObjectCB.ObjectCount)
+	{
+		return;
+	}
+
+	ObjectCB = SConstantBuffer<SObjectConstants>(Device, BufferArena, DescriptorHeap, ObjectCount);
+}
 }

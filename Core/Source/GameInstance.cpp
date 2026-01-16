@@ -11,6 +11,7 @@
 
 #include "imgui.h"
 #include "Graphics/MeshGeneration.h"
+#include "Graphics/Model.h"
 #include "Graphics/Render/GraphicsUtility.h"
 #include "Graphics/Render/RenderCommonTypes.h"
 #include "backends/imgui_impl_dx12.h"
@@ -21,6 +22,25 @@ FRT_SINGLETON_DEFINE_INSTANCE(GameInstance)
 
 using namespace graphics;
 using namespace memory::literals;
+
+#if !defined(FRT_HEADLESS)
+static ImGui_ImplDX12_InitInfo gImGuiDx12InitInfo;
+
+static void RebuildImGuiDx12Backend (graphics::CRenderer* renderer)
+{
+	if (!renderer)
+	{
+		return;
+	}
+
+	gImGuiDx12InitInfo.Device = renderer->GetDevice();
+	gImGuiDx12InitInfo.CommandQueue = renderer->GetCommandQueue();
+	gImGuiDx12InitInfo.SrvDescriptorHeap = renderer->GetDescriptorHeap().GetHeap();
+
+	ImGui_ImplDX12_Shutdown();
+	ImGui_ImplDX12_Init(&gImGuiDx12InitInfo);
+}
+#endif
 
 GameInstance::GameInstance()
 	: FrameCount(0)
@@ -68,15 +88,15 @@ GameInstance::GameInstance()
 
 	ImGui_ImplWin32_Init(Window->GetHandle());
 
-	ImGui_ImplDX12_InitInfo imguiDx12InitInfo;
-	imguiDx12InitInfo.Device = Renderer->GetDevice();
-	imguiDx12InitInfo.CommandQueue = Renderer->GetCommandQueue();
-	imguiDx12InitInfo.NumFramesInFlight = render::constants::FrameResourcesBufferCount;
-	imguiDx12InitInfo.RTVFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
-	imguiDx12InitInfo.DSVFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
-	imguiDx12InitInfo.UserData = Renderer.GetRawIgnoringLifetime();
-	imguiDx12InitInfo.SrvDescriptorHeap = Renderer->ShaderDescriptorHeap.GetHeap();
-	imguiDx12InitInfo.SrvDescriptorAllocFn =
+	gImGuiDx12InitInfo = ImGui_ImplDX12_InitInfo();
+	gImGuiDx12InitInfo.Device = Renderer->GetDevice();
+	gImGuiDx12InitInfo.CommandQueue = Renderer->GetCommandQueue();
+	gImGuiDx12InitInfo.NumFramesInFlight = render::constants::FrameResourcesBufferCount;
+	gImGuiDx12InitInfo.RTVFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+	gImGuiDx12InitInfo.DSVFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+	gImGuiDx12InitInfo.UserData = Renderer.GetRawIgnoringLifetime();
+	gImGuiDx12InitInfo.SrvDescriptorHeap = Renderer->ShaderDescriptorHeap.GetHeap();
+	gImGuiDx12InitInfo.SrvDescriptorAllocFn =
 		[] (
 		ImGui_ImplDX12_InitInfo* InitInfo,
 		D3D12_CPU_DESCRIPTOR_HANDLE* OutCpuHandle,
@@ -84,12 +104,18 @@ GameInstance::GameInstance()
 		{
 			return ((CRenderer*)InitInfo->UserData)->ShaderDescriptorHeap.Allocate(OutCpuHandle, OutGpuHandle);
 		};
-	imguiDx12InitInfo.SrvDescriptorFreeFn =
+	gImGuiDx12InitInfo.SrvDescriptorFreeFn =
 		[] (ImGui_ImplDX12_InitInfo*, D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle, D3D12_GPU_DESCRIPTOR_HANDLE GpuHandle)
 		{
 			// TODO
 		};
-	ImGui_ImplDX12_Init(&imguiDx12InitInfo);
+	ImGui_ImplDX12_Init(&gImGuiDx12InitInfo);
+
+	Renderer->OnShaderDescriptorHeapRebuild +=
+		[renderer = Renderer.GetRawIgnoringLifetime()] ()
+		{
+			RebuildImGuiDx12Backend(renderer);
+		};
 #endif
 }
 
@@ -135,20 +161,24 @@ void GameInstance::Load()
 	std::cout << std::filesystem::current_path() << std::endl;
 
 	Cube = World->SpawnEntity();
-	Cube->Mesh = mesh::GenerateCube(Vector3f(.3f), 1);
-	// World->SpawnEntity()->Mesh = mesh::GenerateGeosphere(1.f, 2u);
+	Cube->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
+		graphics::SRenderModel::FromMesh(mesh::GenerateCube(Vector3f(.3f), 1)));
+	// // World->SpawnEntity()->Mesh = mesh::GenerateGeosphere(1.f, 2u);
 	Cylinder = World->SpawnEntity();
-	Cylinder->Mesh = mesh::GenerateCylinder(1.f, 0.5, 1.f, 10u, 10u);
+	Cylinder->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
+		graphics::SRenderModel::FromMesh(mesh::GenerateCylinder(1.f, 0.5, 1.f, 10u, 10u)));
 
 	Sphere = World->SpawnEntity();
-	Sphere->Mesh = mesh::GenerateSphere(.1f, 10u, 10u);
+	Sphere->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
+		graphics::SRenderModel::FromMesh(mesh::GenerateSphere(.1f, 10u, 10u)));
 	// World->SpawnEntity()->Mesh = mesh::GenerateGrid(1.f, 1.f, 10u, 10u);
 	// World->SpawnEntity()->Mesh = mesh::GenerateGrid(1.f, 1.f, 10u, 10u);
 	// World->SpawnEntity()->Mesh = mesh::GenerateQuad(1.f, 1.f);
-	// auto skullEnt = World->SpawnEntity();
-	// skullEnt->Mesh = SModel::LoadFromFile(
-	// 	R"(..\Core\Content\Models\Skull\scene.gltf)",
-	// 	R"(..\Core\Content\Models\Skull\textures\defaultMat_baseColor.jpeg)");
+	auto skullEnt = World->SpawnEntity();
+	skullEnt->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(graphics::SRenderModel::LoadFromFile(
+		R"(..\Core\Content\Models\Skull\scene.gltf)",
+		R"(..\Core\Content\Models\Skull\textures\defaultMat_baseColor.jpeg)"));
+	skullEnt->Transform.SetTranslation(1.f, 0.f, 0.f);
 }
 
 void GameInstance::Tick(float DeltaSeconds)
@@ -170,9 +200,9 @@ void GameInstance::Tick(float DeltaSeconds)
 	Camera->Tick(DeltaSeconds);
 #endif
 
-	World->Tick(DeltaSeconds);
-
 	UpdateEntities(DeltaSeconds);
+
+	World->Tick(DeltaSeconds);
 }
 
 #if !defined(FRT_HEADLESS)

@@ -62,6 +62,9 @@ struct DX12_DescriptorHeap
 
 	void Allocate (D3D12_CPU_DESCRIPTOR_HANDLE* OutCpuHandle, D3D12_GPU_DESCRIPTOR_HANDLE* OutGpuHandle);
 	ID3D12DescriptorHeap* GetHeap () const { return _heap; }
+	uint64 GetCapacity () const { return _maxNum; }
+	uint64 GetCount () const { return _currNum; }
+	uint64 GetRemaining () const { return _maxNum - _currNum; }
 
 private:
 	uint64 _stepSize;

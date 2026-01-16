@@ -16,28 +16,47 @@ void frt::CEntity::Tick(float DeltaSeconds)
 #if !defined(FRT_HEADLESS)
 void frt::CEntity::Present (float DeltaSeconds, ID3D12GraphicsCommandList* CommandList)
 {
+	if (!RenderModel.Model)
+	{
+		return;
+	}
+
+	const graphics::SRenderModel& model = *RenderModel.Model;
+	if (!model.VertexBufferGpu || !model.IndexBufferGpu)
+	{
+		return;
+	}
+
 	{
 		D3D12_INDEX_BUFFER_VIEW indexBufferView = {};
-		indexBufferView.BufferLocation = Mesh.IndexBufferGpu->GetGPUVirtualAddress();
-		indexBufferView.SizeInBytes = Mesh.Indices.Count() * sizeof(uint32);
+		indexBufferView.BufferLocation = model.IndexBufferGpu->GetGPUVirtualAddress();
+		indexBufferView.SizeInBytes = model.Indices.Count() * sizeof(uint32);
 		indexBufferView.Format = DXGI_FORMAT_R32_UINT;
 		CommandList->IASetIndexBuffer(&indexBufferView);
 	}
 	{
 		D3D12_VERTEX_BUFFER_VIEW vertexBufferViews[1] = {};
-		vertexBufferViews[0].BufferLocation = Mesh.VertexBufferGpu->GetGPUVirtualAddress();
-		vertexBufferViews[0].SizeInBytes = Mesh.Vertices.Count() * sizeof(graphics::SVertex);
+		vertexBufferViews[0].BufferLocation = model.VertexBufferGpu->GetGPUVirtualAddress();
+		vertexBufferViews[0].SizeInBytes = model.Vertices.Count() * sizeof(graphics::SVertex);
 		vertexBufferViews[0].StrideInBytes = sizeof(graphics::SVertex);
 		CommandList->IASetVertexBuffers(0, 1, vertexBufferViews);
 	}
 
-	// for (uint32 meshId = 0; meshId < Model.meshes.GetNum(); ++meshId)
+	for (uint32 sectionIndex = 0; sectionIndex < model.Sections.Count(); ++sectionIndex)
 	{
-		// graphics::SMesh& mesh = Model.meshes[meshId];
-		// graphics::Texture& texture = Model.textures[mesh.textureIndex];
+		const graphics::SRenderSection& section = model.Sections[sectionIndex];
 
-		// CommandList->SetGraphicsRootDescriptorTable(0, mesh.Texture->gpuDescriptor);
-		CommandList->DrawIndexedInstanced(Mesh.Indices.Count(), 1, Mesh.IndexOffset, Mesh.VertexOffset, 0);
+		if (section.MaterialIndex < model.Textures.Count())
+		{
+			CommandList->SetGraphicsRootDescriptorTable(0, model.Textures[section.MaterialIndex].GpuDescriptor);
+		}
+
+		CommandList->DrawIndexedInstanced(
+			section.IndexCount,
+			1,
+			section.IndexOffset,
+			section.VertexOffset,
+			0);
 	}
 }
 #endif

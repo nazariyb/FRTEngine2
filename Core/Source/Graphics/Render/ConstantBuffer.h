@@ -17,17 +17,18 @@ struct SConstantBuffer
 	std::vector<D3D12_GPU_DESCRIPTOR_HANDLE> DescriptorHeapHandleGpu;
 
 	uint64 UploadOffset = 0;
-	uint16 ObjectCount = 0;
+	uint32 ObjectCount = 0;
 
 	SConstantBuffer () = default;
 	SConstantBuffer (
 		ID3D12Device* Device,
 		DX12_Arena& BufferArena,
 		DX12_DescriptorHeap& DescriptorHeap,
-		uint16 InObjectCount = 1);
+		uint32 InObjectCount = 1);
 
 	void CopyBunch (TData* Data, DX12_UploadArena& UploadArena);
 	void Upload (DX12_UploadArena& UploadArena, ID3D12GraphicsCommandList* CommandList);
+	void RebuildDescriptors (ID3D12Device* Device, DX12_DescriptorHeap& DescriptorHeap);
 };
 }
 
@@ -39,7 +40,7 @@ SConstantBuffer<TData>::SConstantBuffer (
 	ID3D12Device* Device,
 	DX12_Arena& BufferArena,
 	DX12_DescriptorHeap& DescriptorHeap,
-	uint16 InObjectCount)
+	uint32 InObjectCount)
 	: ObjectCount(InObjectCount)
 {
 	D3D12_RESOURCE_DESC cbDesc = {};
@@ -56,7 +57,7 @@ SConstantBuffer<TData>::SConstantBuffer (
 
 	DescriptorHeapHandleGpu.resize(ObjectCount);
 
-	for (uint16 i = 0; i < ObjectCount; ++i)
+	for (uint32 i = 0; i < ObjectCount; ++i)
 	{
 		const D3D12_CONSTANT_BUFFER_VIEW_DESC cbViewDesc
 		{
@@ -112,6 +113,33 @@ void SConstantBuffer<TData>::Upload (
 		resourceBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
 		resourceBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER;
 		CommandList->ResourceBarrier(1, &resourceBarrier);
+	}
+}
+
+template <typename TData>
+void SConstantBuffer<TData>::RebuildDescriptors (ID3D12Device* Device, DX12_DescriptorHeap& DescriptorHeap)
+{
+	if (!GpuResource || ObjectCount == 0u)
+	{
+		DescriptorHeapHandleGpu.clear();
+		return;
+	}
+
+	DescriptorHeapHandleGpu.clear();
+	DescriptorHeapHandleGpu.resize(ObjectCount);
+
+	for (uint32 i = 0; i < ObjectCount; ++i)
+	{
+		const D3D12_CONSTANT_BUFFER_VIEW_DESC cbViewDesc
+		{
+			.BufferLocation = GpuResource->GetGPUVirtualAddress() + DataSize * i,
+			.SizeInBytes = DataSize
+		};
+
+		D3D12_CPU_DESCRIPTOR_HANDLE cpuDesc = {};
+		DescriptorHeap.Allocate(&cpuDesc, &DescriptorHeapHandleGpu[i]);
+
+		Device->CreateConstantBufferView(&cbViewDesc, cpuDesc);
 	}
 }
 }

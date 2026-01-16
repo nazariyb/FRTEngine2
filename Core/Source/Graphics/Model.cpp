@@ -1,6 +1,7 @@
 #include "Model.h"
 
 #include <stdlib.h>
+#include <utility>
 #include <assimp/Importer.hpp>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
@@ -18,18 +19,18 @@
 
 namespace frt::graphics
 {
-SModel SModel::LoadFromFile (const std::string& Filename, const std::string& TexturePath)
+SRenderModel SRenderModel::LoadFromFile (const std::string& Filename, const std::string& TexturePath)
 {
 	Assimp::Importer importer;
 	const aiScene* scene = importer.ReadFile(
-		Filename, aiProcess_Triangulate | aiProcess_OptimizeMeshes | aiProcess_FlipWindingOrder);
+		Filename, aiProcess_Triangulate | aiProcess_OptimizeMeshes | aiProcess_FlipWindingOrder | aiProcess_FlipUVs);
 	if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode)
 	{
 		frt_assert(false);
 		return {};
 	}
 
-	SModel result;
+	SRenderModel result;
 
 	// Textures
 	auto materialTextureMap = TArray<uint32>(scene->mNumMaterials);
@@ -99,9 +100,9 @@ SModel SModel::LoadFromFile (const std::string& Filename, const std::string& Tex
 		}
 	}
 
-	// Meshes
+	// Sections
 	const int32 meshesNum = (int32)scene->mNumMeshes;
-	result.Meshes = TArray<SMesh>(meshesNum);
+	result.Sections = TArray<SRenderSection>(meshesNum);
 
 	int32 indexNum = 0;
 	int32 vertexNum = 0;
@@ -110,33 +111,35 @@ SModel SModel::LoadFromFile (const std::string& Filename, const std::string& Tex
 	{
 		const aiMesh* srcMesh = scene->mMeshes[i];
 		frt_assert(srcMesh);
-		SMesh& dstMesh = result.Meshes.Add();
+		SRenderSection& dstSection = result.Sections.Add();
 
-		dstMesh.TextureIndex = materialTextureMap[srcMesh->mMaterialIndex];
+		dstSection.MaterialIndex = materialTextureMap[srcMesh->mMaterialIndex];
 
-		dstMesh.IndexOffset = indexNum;
-		dstMesh.VertexOffset = vertexNum;
+		dstSection.IndexOffset = indexNum;
+		dstSection.VertexOffset = vertexNum;
 
-		dstMesh.IndexCount = srcMesh->mNumFaces * 3;
-		dstMesh.VertexCount = srcMesh->mNumVertices;
+		dstSection.IndexCount = srcMesh->mNumFaces * 3;
+		dstSection.VertexCount = srcMesh->mNumVertices;
 
-		indexNum += static_cast<int32>(dstMesh.IndexCount);
-		vertexNum += static_cast<int32>(dstMesh.VertexCount);
+		indexNum += static_cast<int32>(dstSection.IndexCount);
+		vertexNum += static_cast<int32>(dstSection.VertexCount);
 	}
 
 	// Vertices & Indices
-	result.Vertices = TArray<SVertex>(vertexNum);
-	result.Indices = TArray<uint32>(indexNum);
+	result.Vertices = TArray<SVertex>();
+	result.Vertices.SetSizeUninitialized(vertexNum);
+	result.Indices = TArray<uint32>();
+	result.Indices.SetSizeUninitialized(indexNum);
 
 	for (int64 i = 0; i < meshesNum; ++i)
 	{
 		const aiMesh* srcMesh = scene->mMeshes[i];
 		frt_assert(srcMesh);
-		SMesh& dstMesh = result.Meshes[i];
+		SRenderSection& dstSection = result.Sections[i];
 
-		for (int64 vertexIndex = 0; vertexIndex < dstMesh.VertexCount; ++vertexIndex)
+		for (int64 vertexIndex = 0; vertexIndex < dstSection.VertexCount; ++vertexIndex)
 		{
-			SVertex& vertex = result.Vertices.Add();
+			SVertex& vertex = result.Vertices[dstSection.VertexOffset + vertexIndex];
 			vertex.Position.x = srcMesh->mVertices[vertexIndex].x;
 			vertex.Position.y = srcMesh->mVertices[vertexIndex].y;
 			vertex.Position.z = srcMesh->mVertices[vertexIndex].z;
@@ -155,7 +158,7 @@ SModel SModel::LoadFromFile (const std::string& Filename, const std::string& Tex
 
 		for (int64 faceIndex = 0; faceIndex < srcMesh->mNumFaces; ++faceIndex)
 		{
-			uint32* indices = &result.Indices[dstMesh.IndexOffset + faceIndex * 3];
+			uint32* indices = &result.Indices[dstSection.IndexOffset + faceIndex * 3];
 
 			indices[0] = srcMesh->mFaces[faceIndex].mIndices[0];
 			indices[1] = srcMesh->mFaces[faceIndex].mIndices[1];
@@ -180,8 +183,8 @@ SModel SModel::LoadFromFile (const std::string& Filename, const std::string& Tex
 		vbDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 		vbDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
 
-		result.VertexBuffer = graphics->CreateBufferAsset(
-			vbDesc, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, result.Vertices.GetData());
+		result.VertexBufferGpu.Attach(graphics->CreateBufferAsset(
+			vbDesc, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, result.Vertices.GetData()));
 	}
 
 	{
@@ -198,10 +201,29 @@ SModel SModel::LoadFromFile (const std::string& Filename, const std::string& Tex
 		ibDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 		ibDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
 
-		result.IndexBuffer = graphics->CreateBufferAsset(
-			ibDesc, D3D12_RESOURCE_STATE_INDEX_BUFFER, result.Indices.GetData());
+		result.IndexBufferGpu.Attach(graphics->CreateBufferAsset(
+			ibDesc, D3D12_RESOURCE_STATE_INDEX_BUFFER, result.Indices.GetData()));
 	}
 #endif
+	return result;
+}
+
+SRenderModel SRenderModel::FromMesh (SMesh&& Mesh)
+{
+	SRenderModel result;
+	result.Vertices = std::move(Mesh.Vertices);
+	result.Indices = std::move(Mesh.Indices);
+	result.VertexBufferGpu = std::move(Mesh.VertexBufferGpu);
+	result.IndexBufferGpu = std::move(Mesh.IndexBufferGpu);
+
+	SRenderSection& section = result.Sections.Add();
+	section.IndexOffset = 0u;
+	section.VertexOffset = 0u;
+	section.IndexCount = result.Indices.Count();
+	section.VertexCount = result.Vertices.Count();
+	section.MaterialIndex = 0xFFFFFFFF;
+
+	// TODO: map Mesh.Texture to a texture slot when materials land.
 	return result;
 }
 }

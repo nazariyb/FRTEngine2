@@ -5,6 +5,8 @@
 #include <wrl/client.h>
 
 #include "Core.h"
+#include "Containers/Array.h"
+#include "Event.h"
 #include "GraphicsCoreTypes.h"
 #include "RenderConstants.h"
 #include "ShaderAsset.h"
@@ -43,6 +45,9 @@ public:
 	FRT_CORE_API DX12_Arena& GetBufferArena ();
 	FRT_CORE_API DX12_DescriptorHeap& GetDescriptorHeap ();
 	FRT_CORE_API SFrameResources& GetCurrentFrameResource ();
+	FRT_CORE_API void EnsureObjectConstantCapacity (uint32 ObjectCount);
+
+	frt::CEvent<> OnShaderDescriptorHeapRebuild;
 
 	FRT_CORE_API ID3D12Resource* CreateBufferAsset (
 		const D3D12_RESOURCE_DESC& Desc,
@@ -63,6 +68,9 @@ private:
 	void FlushCommandQueue ();
 	void CreateRootSignature ();
 	void CreatePipelineState ();
+	void EnsureShaderDescriptorCapacity (uint32 RequiredCount);
+	void RebuildShaderDescriptorHeap (uint32 NewCapacity);
+	void RebuildShaderDescriptors ();
 
 public:
 	DX12_DescriptorHeap ShaderDescriptorHeap;
@@ -97,6 +105,13 @@ private:
 	ComPtr<ID3D12Resource> CommonConstantBuffer;
 	D3D12_GPU_DESCRIPTOR_HANDLE CommonConstantBufferDescriptor;
 
+	struct SShaderResourceViewRecord
+	{
+		ID3D12Resource* Resource = nullptr;
+		D3D12_SHADER_RESOURCE_VIEW_DESC Desc = {};
+		D3D12_GPU_DESCRIPTOR_HANDLE* GpuHandle = nullptr;
+	};
+
 	DX12_DescriptorHeap RtvHeap;
 	DX12_Arena RtvArena;
 	DX12_Arena BufferArena;
@@ -112,6 +127,10 @@ private:
 	unsigned long long FenceValue;
 	HANDLE FenceEvent;
 	// ~Synchronization
+
+	TArray<SShaderResourceViewRecord> TrackedSrvs;
+	D3D12_DESCRIPTOR_HEAP_TYPE ShaderDescriptorHeapType = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+	D3D12_DESCRIPTOR_HEAP_FLAGS ShaderDescriptorHeapFlags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 };
 
 

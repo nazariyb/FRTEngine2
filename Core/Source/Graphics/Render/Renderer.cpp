@@ -552,6 +552,93 @@ SFrameResources& CRenderer::GetCurrentFrameResource ()
 	return FramesResources[CurrentFrameResourceIndex];
 }
 
+void CRenderer::EnsureObjectConstantCapacity (uint32 ObjectCount)
+{
+	if (ObjectCount == 0u)
+	{
+		return;
+	}
+
+	const uint32 currentObjectCount = FramesResources[0].ObjectCB.ObjectCount;
+	if (ObjectCount <= currentObjectCount)
+	{
+		return;
+	}
+
+	const uint32 frameCount = render::constants::FrameResourcesBufferCount;
+	const uint32 requiredTotal =
+		static_cast<uint32>(ShaderDescriptorHeap.GetCount()) + frameCount * ObjectCount;
+
+	EnsureShaderDescriptorCapacity(requiredTotal);
+
+	for (uint32 i = 0; i < render::constants::FrameResourcesBufferCount; ++i)
+	{
+		FramesResources[i].EnsureObjectCapacity(Device.Get(), ObjectCount, BufferArena, ShaderDescriptorHeap);
+	}
+}
+
+void CRenderer::EnsureShaderDescriptorCapacity (uint32 RequiredCount)
+{
+	const uint32 currentCapacity = static_cast<uint32>(ShaderDescriptorHeap.GetCapacity());
+	if (RequiredCount <= currentCapacity)
+	{
+		return;
+	}
+
+	const uint32 grownCapacity = static_cast<uint32>(currentCapacity == 0u ? 1u : currentCapacity);
+	uint32 newCapacity = grownCapacity;
+	while (newCapacity < RequiredCount)
+	{
+		newCapacity *= 2u;
+	}
+
+	RebuildShaderDescriptorHeap(newCapacity);
+}
+
+void CRenderer::RebuildShaderDescriptorHeap (uint32 NewCapacity)
+{
+	FlushCommandQueue();
+
+	ShaderDescriptorHeap = DX12_DescriptorHeap(
+		Device.Get(),
+		ShaderDescriptorHeapType,
+		NewCapacity,
+		ShaderDescriptorHeapFlags);
+
+	RebuildShaderDescriptors();
+
+	OnShaderDescriptorHeapRebuild.Invoke();
+}
+
+void CRenderer::RebuildShaderDescriptors ()
+{
+	for (uint32 i = 0; i < render::constants::FrameResourcesBufferCount; ++i)
+	{
+		FramesResources[i].PassCB.RebuildDescriptors(Device.Get(), ShaderDescriptorHeap);
+		FramesResources[i].ObjectCB.RebuildDescriptors(Device.Get(), ShaderDescriptorHeap);
+	}
+
+	for (uint32 i = 0; i < TrackedSrvs.Count(); ++i)
+	{
+		SShaderResourceViewRecord& record = TrackedSrvs[i];
+		if (!record.Resource)
+		{
+			continue;
+		}
+
+		D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = {};
+		D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = {};
+		ShaderDescriptorHeap.Allocate(&cpuHandle, &gpuHandle);
+
+		if (record.GpuHandle)
+		{
+			*record.GpuHandle = gpuHandle;
+		}
+
+		Device->CreateShaderResourceView(record.Resource, &record.Desc, cpuHandle);
+	}
+}
+
 ID3D12Resource* CRenderer::CreateBufferAsset (
 	const D3D12_RESOURCE_DESC& Desc,
 	D3D12_RESOURCE_STATES InitialState,
@@ -645,8 +732,18 @@ void CRenderer::CreateShaderResourceView (
 	D3D12_CPU_DESCRIPTOR_HANDLE* OutCpuHandle,
 	D3D12_GPU_DESCRIPTOR_HANDLE* OutGpuHandle)
 {
+	EnsureShaderDescriptorCapacity(static_cast<uint32>(ShaderDescriptorHeap.GetCount() + 1u));
+
 	ShaderDescriptorHeap.Allocate(OutCpuHandle, OutGpuHandle);
 	Device->CreateShaderResourceView(Texture, &Desc, *OutCpuHandle);
+
+	if (OutGpuHandle)
+	{
+		SShaderResourceViewRecord& record = TrackedSrvs.Add();
+		record.Resource = Texture;
+		record.Desc = Desc;
+		record.GpuHandle = OutGpuHandle;
+	}
 }
 
 void CRenderer::CreateSwapChain (bool bFullscreen)

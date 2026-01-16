@@ -57,21 +57,30 @@ void CWorld::CopyConstantData ()
 {
 	// TODO: ideally, CBs should already be stored in one array
 	// TODO: use (when it's implemented) memory pool
+	const uint32 entityCount = Entities.Count();
+	Renderer->EnsureObjectConstantCapacity(entityCount);
+
 	uint64 alignedSize = memory::AlignAddress(sizeof(graphics::SObjectConstants), 256);
-	auto objectsData = malloc(alignedSize * Entities.Count());
-	for (int i = 0; i < Entities.Count(); ++i)
+	void* objectsData = nullptr;
+	if (entityCount > 0u)
 	{
-		memcpy(
-			(uint8*)objectsData + alignedSize * i, &Entities[i]->Transform.GetMatrix(),
-			sizeof(graphics::SObjectConstants));
+		objectsData = malloc(alignedSize * entityCount);
+		for (uint32 i = 0; i < entityCount; ++i)
+		{
+			memcpy(
+				(uint8*)objectsData + alignedSize * i, &Entities[i]->Transform.GetMatrix(),
+				sizeof(graphics::SObjectConstants));
+		}
 	}
 
 	auto& currentFrameResources = Renderer->GetCurrentFrameResource();
 
-	currentFrameResources.ObjectCB.CopyBunch(
-		(graphics::SObjectConstants*)objectsData, currentFrameResources.UploadArena);
-
-	free(objectsData);
+	if (objectsData)
+	{
+		currentFrameResources.ObjectCB.CopyBunch(
+			(graphics::SObjectConstants*)objectsData, currentFrameResources.UploadArena);
+		free(objectsData);
+	}
 
 	using namespace DirectX;
 
