@@ -124,6 +124,7 @@ project "Core"
 		"%{prj.name}/../**.lua",
 		"%{prj.name}/../**.txt",
 		"%{prj.name}/../**.bat",
+		"%{prj.name}/../**.frtmat",
 	}
 
 	filter "configurations:not *-Headless"

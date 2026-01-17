@@ -8,7 +8,7 @@
 #include "Memory/Ref.h"
 #include "Render/ConstantBuffer.h"
 #include "Render/GraphicsCoreTypes.h"
-#include "Render/Texture.h"
+#include "Render/Material.h"
 
 struct ID3D12Resource;
 
@@ -34,7 +34,7 @@ struct FRT_CORE_API SRenderSection
 struct FRT_CORE_API SRenderModel
 {
 	TArray<SRenderSection> Sections;
-	TArray<STexture> Textures;
+	TArray<memory::TRefShared<SMaterial>> Materials;
 
 	TArray<SVertex> Vertices;
 	TArray<uint32> Indices;

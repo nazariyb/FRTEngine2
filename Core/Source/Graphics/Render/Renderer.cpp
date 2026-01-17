@@ -159,6 +159,8 @@ CRenderer::CRenderer (CWindow* Window)
 
 	CreateRootSignature();
 	CreatePipelineState();
+
+	MaterialLibrary.SetRenderer(this);
 }
 
 void CRenderer::CreateRootSignature ()
@@ -483,6 +485,7 @@ void CRenderer::Tick (float DeltaSeconds)
 	}
 
 #if !defined(RELEASE)
+	MaterialLibrary.ReloadModifiedMaterials();
 	if (ShaderLibrary.ReloadModifiedShaders())
 	{
 		CreatePipelineState();
@@ -550,6 +553,11 @@ DX12_DescriptorHeap& CRenderer::GetDescriptorHeap ()
 SFrameResources& CRenderer::GetCurrentFrameResource ()
 {
 	return FramesResources[CurrentFrameResourceIndex];
+}
+
+CMaterialLibrary& CRenderer::GetMaterialLibrary ()
+{
+	return MaterialLibrary;
 }
 
 void CRenderer::EnsureObjectConstantCapacity (uint32 ObjectCount)

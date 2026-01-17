@@ -45,10 +45,15 @@ void frt::CEntity::Present (float DeltaSeconds, ID3D12GraphicsCommandList* Comma
 	for (uint32 sectionIndex = 0; sectionIndex < model.Sections.Count(); ++sectionIndex)
 	{
 		const graphics::SRenderSection& section = model.Sections[sectionIndex];
-
-		if (section.MaterialIndex < model.Textures.Count())
+		if (section.MaterialIndex < model.Materials.Count())
 		{
-			CommandList->SetGraphicsRootDescriptorTable(0, model.Textures[section.MaterialIndex].GpuDescriptor);
+			memory::TRefShared<graphics::SMaterial> material = model.Materials[section.MaterialIndex];
+			if (material && material->bHasBaseColorTexture)
+			{
+				CommandList->SetGraphicsRootDescriptorTable(
+					0,
+					material->BaseColorTexture.GpuDescriptor);
+			}
 		}
 
 		CommandList->DrawIndexedInstanced(

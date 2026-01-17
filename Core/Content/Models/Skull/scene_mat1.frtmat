@@ -1,0 +1,5 @@
+# FRT material
+name: scene_mat1
+vertex_shader: VertexShader
+pixel_shader: PixelShader
+base_color_texture: 

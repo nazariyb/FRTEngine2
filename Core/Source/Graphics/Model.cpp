@@ -1,19 +1,21 @@
 #include "Model.h"
 
 #include <stdlib.h>
+#include <filesystem>
 #include <utility>
 #include <assimp/Importer.hpp>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
 
 #include "Mesh.h"
-#include "Render/Texture.h"
+#include "Memory/Memory.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ASSERT(x) frt_assert(x)
 #include <stb_image.h>
 
 #include "GameInstance.h"
+#include "Render/MaterialLibrary.h"
 #include "Render/Renderer.h"
 
 
@@ -32,72 +34,70 @@ SRenderModel SRenderModel::LoadFromFile (const std::string& Filename, const std:
 
 	SRenderModel result;
 
-	// Textures
-	auto materialTextureMap = TArray<uint32>(scene->mNumMaterials);
-	uint32 textureNum = 0;
-	for (int64 materialIndex = 0; materialIndex < scene->mNumMaterials; ++materialIndex)
-	{
-		const aiMaterial* material = scene->mMaterials[materialIndex];
-		frt_assert(material);
-
-		if (material->GetTextureCount(aiTextureType_DIFFUSE) > 0)
-		{
-			materialTextureMap.Add(textureNum);
-			textureNum += 1;
-		}
-		else
-		{
-			materialTextureMap.Add(0xFFFFFFFF);
-		}
-	}
-
-	result.Textures = TArray<STexture>(textureNum);
-
-	int32 textureIndex = 0;
-	for (int64 materialIndex = 0; materialIndex < scene->mNumMaterials; ++materialIndex)
-	{
-		const aiMaterial* material = scene->mMaterials[materialIndex];
-		frt_assert(material);
-
-		if (material->GetTextureCount(aiTextureType_DIFFUSE) > 0)
-		{
-			aiString textureName; // TODO: this should be used
-			material->GetTexture(aiTextureType_DIFFUSE, 0, &textureName);
-
-			STexture& texture = result.Textures.Add();
-
-			int32 channelNum = 0;
-			texture.Texels = (uint32*)stbi_load(TexturePath.c_str(), &texture.Width, &texture.Height, &channelNum, 4);
+	// Materials
+	const std::filesystem::path modelPath = Filename;
+	const std::filesystem::path materialDir = modelPath.parent_path();
+	const std::string materialBaseName = modelPath.stem().string();
 
 #if !defined(FRT_HEADLESS)
-			{
-				D3D12_RESOURCE_DESC Desc = {};
-				Desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-				Desc.Width = texture.Width;
-				Desc.Height = texture.Height;
-				Desc.DepthOrArraySize = 1;
-				Desc.MipLevels = 1;
-				Desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-				Desc.SampleDesc.Count = 1;
-				Desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-				texture.GpuTexture = GameInstance::GetInstance().GetGraphics()->CreateTextureAsset(
-					Desc, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, texture.Texels);
-
-				D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-				srvDesc.Format = Desc.Format;
-				srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-				srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-				srvDesc.Texture2D.MostDetailedMip = 0;
-				srvDesc.Texture2D.MipLevels = 1;
-				srvDesc.Texture2D.PlaneSlice = 0;
-
-				D3D12_CPU_DESCRIPTOR_HANDLE cpuDescriptor = {};
-				GameInstance::GetInstance().GetGraphics()->CreateShaderResourceView(
-					texture.GpuTexture, srvDesc, &cpuDescriptor, &texture.GpuDescriptor);
-			}
+	memory::TRefWeak<CRenderer> graphics = GameInstance::GetInstance().GetGraphics();
+	frt_assert(graphics);
+	CMaterialLibrary& materialLibrary = graphics->GetMaterialLibrary();
+#else
+	CMaterialLibrary materialLibrary;
 #endif
-			++textureIndex;
+
+	result.Materials = TArray<memory::TRefShared<SMaterial>>(scene->mNumMaterials);
+	for (int64 materialIndex = 0; materialIndex < scene->mNumMaterials; ++materialIndex)
+	{
+		const aiMaterial* material = scene->mMaterials[materialIndex];
+		frt_assert(material);
+
+		aiString materialAiName;
+		std::string materialName;
+		if (material->Get(AI_MATKEY_NAME, materialAiName) == AI_SUCCESS)
+		{
+			materialName = materialAiName.C_Str();
 		}
+
+		SMaterial defaultMaterial;
+		defaultMaterial.Name = materialName.empty()
+			? materialBaseName + "_mat" + std::to_string(materialIndex)
+			: materialName;
+		defaultMaterial.VertexShaderName = "VertexShader";
+		defaultMaterial.PixelShaderName = "PixelShader";
+
+		std::filesystem::path materialPath =
+			materialDir / (materialBaseName + "_mat" + std::to_string(materialIndex) + ".frtmat");
+
+		if (material->GetTextureCount(aiTextureType_DIFFUSE) > 0)
+		{
+			std::filesystem::path texturePath;
+			if (!TexturePath.empty())
+			{
+				texturePath = TexturePath;
+			}
+			else
+			{
+				aiString textureName;
+				if (material->GetTexture(aiTextureType_DIFFUSE, 0, &textureName) == AI_SUCCESS)
+				{
+					texturePath = textureName.C_Str();
+				}
+			}
+
+			if (!texturePath.empty())
+			{
+				std::error_code ec;
+				const std::filesystem::path relativePath =
+					std::filesystem::relative(texturePath, materialPath.parent_path(), ec);
+				defaultMaterial.BaseColorTexturePath = ec ? texturePath.string() : relativePath.string();
+			}
+		}
+
+		memory::TRefShared<SMaterial> materialRef =
+			materialLibrary.LoadOrCreateMaterial(materialPath, defaultMaterial);
+		result.Materials.Add(materialRef);
 	}
 
 	// Sections
@@ -113,7 +113,7 @@ SRenderModel SRenderModel::LoadFromFile (const std::string& Filename, const std:
 		frt_assert(srcMesh);
 		SRenderSection& dstSection = result.Sections.Add();
 
-		dstSection.MaterialIndex = materialTextureMap[srcMesh->mMaterialIndex];
+		dstSection.MaterialIndex = static_cast<uint32>(srcMesh->mMaterialIndex);
 
 		dstSection.IndexOffset = indexNum;
 		dstSection.VertexOffset = vertexNum;
@@ -167,8 +167,6 @@ SRenderModel SRenderModel::LoadFromFile (const std::string& Filename, const std:
 	}
 
 #if !defined(FRT_HEADLESS)
-	memory::TRefWeak<CRenderer> graphics = GameInstance::GetInstance().GetGraphics();
-
 	{
 		D3D12_RESOURCE_DESC vbDesc = {};
 		vbDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
@@ -216,12 +214,17 @@ SRenderModel SRenderModel::FromMesh (SMesh&& Mesh)
 	result.VertexBufferGpu = std::move(Mesh.VertexBufferGpu);
 	result.IndexBufferGpu = std::move(Mesh.IndexBufferGpu);
 
+	memory::TRefShared<SMaterial> material = memory::NewShared<SMaterial>();
+	material->VertexShaderName = "VertexShader";
+	material->PixelShaderName = "PixelShader";
+	result.Materials.Add(material);
+
 	SRenderSection& section = result.Sections.Add();
 	section.IndexOffset = 0u;
 	section.VertexOffset = 0u;
 	section.IndexCount = result.Indices.Count();
 	section.VertexCount = result.Vertices.Count();
-	section.MaterialIndex = 0xFFFFFFFF;
+	section.MaterialIndex = 0u;
 
 	// TODO: map Mesh.Texture to a texture slot when materials land.
 	return result;

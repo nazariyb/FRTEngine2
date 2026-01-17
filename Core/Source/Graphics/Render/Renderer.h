@@ -8,6 +8,7 @@
 #include "Containers/Array.h"
 #include "Event.h"
 #include "GraphicsCoreTypes.h"
+#include "MaterialLibrary.h"
 #include "RenderConstants.h"
 #include "ShaderAsset.h"
 
@@ -46,6 +47,7 @@ public:
 	FRT_CORE_API DX12_DescriptorHeap& GetDescriptorHeap ();
 	FRT_CORE_API SFrameResources& GetCurrentFrameResource ();
 	FRT_CORE_API void EnsureObjectConstantCapacity (uint32 ObjectCount);
+	FRT_CORE_API CMaterialLibrary& GetMaterialLibrary ();
 
 	frt::CEvent<> OnShaderDescriptorHeapRebuild;
 
@@ -101,6 +103,7 @@ private:
 	ComPtr<ID3D12RootSignature> RootSignature;
 	ComPtr<ID3D12PipelineState> PipelineState;
 	CShaderLibrary ShaderLibrary;
+	CMaterialLibrary MaterialLibrary;
 
 	ComPtr<ID3D12Resource> CommonConstantBuffer;
 	D3D12_GPU_DESCRIPTOR_HANDLE CommonConstantBufferDescriptor;

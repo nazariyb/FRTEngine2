@@ -487,6 +487,7 @@ namespace refs
 
 	protected:
 		T* Ptr () { return Control->Ptr(); }
+		const T* Ptr () const { return Control->Ptr(); }
 		TRefControlBlock<T>* Control;
 	};
 
