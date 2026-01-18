@@ -42,6 +42,12 @@ void frt::CEntity::Present (float DeltaSeconds, ID3D12GraphicsCommandList* Comma
 		CommandList->IASetVertexBuffers(0, 1, vertexBufferViews);
 	}
 
+	memory::TRefWeak<graphics::CRenderer> renderer = GameInstance::GetInstance().GetGraphics();
+	if (!renderer)
+	{
+		return;
+	}
+
 	for (uint32 sectionIndex = 0; sectionIndex < model.Sections.Count(); ++sectionIndex)
 	{
 		const graphics::SRenderSection& section = model.Sections[sectionIndex];
@@ -53,6 +59,15 @@ void frt::CEntity::Present (float DeltaSeconds, ID3D12GraphicsCommandList* Comma
 				CommandList->SetGraphicsRootDescriptorTable(
 					0,
 					material->BaseColorTexture.GpuDescriptor);
+			}
+
+			if (material)
+			{
+				ID3D12PipelineState* pipelineState = renderer->GetPipelineStateForMaterial(*material);
+				if (pipelineState)
+				{
+					CommandList->SetPipelineState(pipelineState);
+				}
 			}
 		}
 

@@ -1,6 +1,7 @@
 ﻿#include "Renderer.h"
 
 #include <complex>
+#include <filesystem>
 
 #include "Graphics/Camera.h"
 #include "d3dx12.h"
@@ -217,34 +218,41 @@ void CRenderer::CreateRootSignature ()
 	}
 }
 
-void CRenderer::CreatePipelineState ()
+static std::string MakePipelineStateKey (const std::string& VertexShaderName, const std::string& PixelShaderName)
+{
+	return VertexShaderName + "|" + PixelShaderName;
+}
+
+ComPtr<ID3D12PipelineState> CRenderer::BuildPipelineState (
+	const std::string& VertexShaderName,
+	const std::string& PixelShaderName)
 {
 	D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
 	psoDesc.pRootSignature = RootSignature.Get();
 
-		const std::filesystem::path shaderSourceDir = R"(..\Core\Content\Shaders)";
-		const std::filesystem::path shaderBinDir = shaderSourceDir / "Bin";
-		const std::filesystem::path vertexShaderPath = shaderBinDir / "VertexShader.shader";
-		const std::filesystem::path pixelShaderPath = shaderBinDir / "PixelShader.shader";
-		const std::filesystem::path vertexShaderSourcePath = shaderSourceDir / "VertexShader.hlsl";
-		const std::filesystem::path pixelShaderSourcePath = shaderSourceDir / "PixelShader.hlsl";
+	const std::filesystem::path shaderSourceDir = R"(..\Core\Content\Shaders)";
+	const std::filesystem::path shaderBinDir = shaderSourceDir / "Bin";
+	const std::filesystem::path vertexShaderPath = shaderBinDir / (VertexShaderName + ".shader");
+	const std::filesystem::path pixelShaderPath = shaderBinDir / (PixelShaderName + ".shader");
+	const std::filesystem::path vertexShaderSourcePath = shaderSourceDir / (VertexShaderName + ".hlsl");
+	const std::filesystem::path pixelShaderSourcePath = shaderSourceDir / (PixelShaderName + ".hlsl");
 
-		const SShaderAsset* vertexShader = ShaderLibrary.LoadShader(
-			"VertexShader",
-			vertexShaderPath,
-			vertexShaderSourcePath,
-			shaderSourceDir,
-			"main",
-			"vs_6_0",
-			EShaderStage::Vertex);
-		const SShaderAsset* pixelShader = ShaderLibrary.LoadShader(
-			"PixelShader",
-			pixelShaderPath,
-			pixelShaderSourcePath,
-			shaderSourceDir,
-			"main",
-			"ps_6_0",
-			EShaderStage::Pixel);
+	const SShaderAsset* vertexShader = ShaderLibrary.LoadShader(
+		VertexShaderName,
+		vertexShaderPath,
+		vertexShaderSourcePath,
+		shaderSourceDir,
+		"main",
+		"vs_6_0",
+		EShaderStage::Vertex);
+	const SShaderAsset* pixelShader = ShaderLibrary.LoadShader(
+		PixelShaderName,
+		pixelShaderPath,
+		pixelShaderSourcePath,
+		shaderSourceDir,
+		"main",
+		"ps_6_0",
+		EShaderStage::Pixel);
 
 	psoDesc.VS = vertexShader->GetBytecode();
 	psoDesc.PS = pixelShader->GetBytecode();
@@ -316,7 +324,16 @@ void CRenderer::CreatePipelineState ()
 	psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
 	psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
 
-	THROW_IF_FAILED(Device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&PipelineState)));
+	ComPtr<ID3D12PipelineState> pipelineState;
+	THROW_IF_FAILED(Device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&pipelineState)));
+	return pipelineState;
+}
+
+void CRenderer::CreatePipelineState ()
+{
+	PipelineStateCache.clear();
+	PipelineState = BuildPipelineState("VertexShader", "PixelShader");
+	PipelineStateCache.emplace(MakePipelineStateKey("VertexShader", "PixelShader"), PipelineState);
 }
 
 void CRenderer::Resize (bool bNewFullscreenState)
@@ -558,6 +575,26 @@ SFrameResources& CRenderer::GetCurrentFrameResource ()
 CMaterialLibrary& CRenderer::GetMaterialLibrary ()
 {
 	return MaterialLibrary;
+}
+
+ID3D12PipelineState* CRenderer::GetPipelineStateForMaterial (const SMaterial& Material)
+{
+	const std::string vertexShader = Material.VertexShaderName.empty() ? "VertexShader"
+		: Material.VertexShaderName;
+	const std::string pixelShader = Material.PixelShaderName.empty() ? "PixelShader"
+		: Material.PixelShaderName;
+
+	const std::string key = MakePipelineStateKey(vertexShader, pixelShader);
+	auto it = PipelineStateCache.find(key);
+	if (it != PipelineStateCache.end())
+	{
+		return it->second.Get();
+	}
+
+	ComPtr<ID3D12PipelineState> pipelineState = BuildPipelineState(vertexShader, pixelShader);
+	ID3D12PipelineState* pipelineRaw = pipelineState.Get();
+	PipelineStateCache.emplace(key, std::move(pipelineState));
+	return pipelineRaw;
 }
 
 void CRenderer::EnsureObjectConstantCapacity (uint32 ObjectCount)

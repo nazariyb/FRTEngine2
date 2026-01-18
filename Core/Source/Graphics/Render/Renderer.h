@@ -2,6 +2,8 @@
 
 #include <d3d12.h>
 #include <dxgi1_4.h>
+#include <string>
+#include <unordered_map>
 #include <wrl/client.h>
 
 #include "Core.h"
@@ -48,6 +50,7 @@ public:
 	FRT_CORE_API SFrameResources& GetCurrentFrameResource ();
 	FRT_CORE_API void EnsureObjectConstantCapacity (uint32 ObjectCount);
 	FRT_CORE_API CMaterialLibrary& GetMaterialLibrary ();
+	FRT_CORE_API ID3D12PipelineState* GetPipelineStateForMaterial (const SMaterial& Material);
 
 	frt::CEvent<> OnShaderDescriptorHeapRebuild;
 
@@ -70,6 +73,9 @@ private:
 	void FlushCommandQueue ();
 	void CreateRootSignature ();
 	void CreatePipelineState ();
+	ComPtr<ID3D12PipelineState> BuildPipelineState (
+		const std::string& VertexShaderName,
+		const std::string& PixelShaderName);
 	void EnsureShaderDescriptorCapacity (uint32 RequiredCount);
 	void RebuildShaderDescriptorHeap (uint32 NewCapacity);
 	void RebuildShaderDescriptors ();
@@ -104,6 +110,7 @@ private:
 	ComPtr<ID3D12PipelineState> PipelineState;
 	CShaderLibrary ShaderLibrary;
 	CMaterialLibrary MaterialLibrary;
+	std::unordered_map<std::string, ComPtr<ID3D12PipelineState>> PipelineStateCache;
 
 	ComPtr<ID3D12Resource> CommonConstantBuffer;
 	D3D12_GPU_DESCRIPTOR_HANDLE CommonConstantBufferDescriptor;
