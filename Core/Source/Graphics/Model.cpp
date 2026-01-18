@@ -40,9 +40,9 @@ SRenderModel SRenderModel::LoadFromFile (const std::string& Filename, const std:
 	const std::string materialBaseName = modelPath.stem().string();
 
 #if !defined(FRT_HEADLESS)
-	memory::TRefWeak<CRenderer> graphics = GameInstance::GetInstance().GetGraphics();
-	frt_assert(graphics);
-	CMaterialLibrary& materialLibrary = graphics->GetMaterialLibrary();
+	memory::TRefWeak<CRenderer> renderer = GameInstance::GetInstance().GetRenderer();
+	frt_assert(renderer);
+	CMaterialLibrary& materialLibrary = renderer->GetMaterialLibrary();
 #else
 	CMaterialLibrary materialLibrary;
 #endif
@@ -181,7 +181,7 @@ SRenderModel SRenderModel::LoadFromFile (const std::string& Filename, const std:
 		vbDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 		vbDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
 
-		result.VertexBufferGpu.Attach(graphics->CreateBufferAsset(
+		result.VertexBufferGpu.Attach(renderer->CreateBufferAsset(
 			vbDesc, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, result.Vertices.GetData()));
 	}
 
@@ -199,7 +199,7 @@ SRenderModel SRenderModel::LoadFromFile (const std::string& Filename, const std:
 		ibDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 		ibDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
 
-		result.IndexBufferGpu.Attach(graphics->CreateBufferAsset(
+		result.IndexBufferGpu.Attach(renderer->CreateBufferAsset(
 			ibDesc, D3D12_RESOURCE_STATE_INDEX_BUFFER, result.Indices.GetData()));
 	}
 #endif

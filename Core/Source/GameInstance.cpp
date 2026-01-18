@@ -149,7 +149,7 @@ bool GameInstance::HasGraphics() const
 }
 
 #if !defined(FRT_HEADLESS)
-memory::TRefWeak<graphics::CRenderer> GameInstance::GetGraphics () const
+memory::TRefWeak<graphics::CRenderer> GameInstance::GetRenderer () const
 {
 	frt_assert(Renderer);
 	return Renderer.GetWeak();

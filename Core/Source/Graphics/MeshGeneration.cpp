@@ -742,7 +742,7 @@ void _private::CreateGpuResources(
 	ComPtr<ID3D12Resource>& OutVertexBufferGpu,
 	ComPtr<ID3D12Resource>& OutIndexBufferGpu)
 {
-	memory::TRefWeak<CRenderer> renderer = GameInstance::GetInstance().GetGraphics();
+	memory::TRefWeak<CRenderer> renderer = GameInstance::GetInstance().GetRenderer();
 
 	{
 		D3D12_RESOURCE_DESC vbDesc = {};

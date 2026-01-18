@@ -42,7 +42,7 @@ void frt::CEntity::Present (float DeltaSeconds, ID3D12GraphicsCommandList* Comma
 		CommandList->IASetVertexBuffers(0, 1, vertexBufferViews);
 	}
 
-	memory::TRefWeak<graphics::CRenderer> renderer = GameInstance::GetInstance().GetGraphics();
+	memory::TRefWeak<graphics::CRenderer> renderer = GameInstance::GetInstance().GetRenderer();
 	if (!renderer)
 	{
 		return;

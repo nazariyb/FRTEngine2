@@ -42,7 +42,7 @@ public:
 
 	bool HasGraphics () const;
 #if !defined(FRT_HEADLESS)
-	memory::TRefWeak<graphics::CRenderer> GetGraphics () const;
+	memory::TRefWeak<graphics::CRenderer> GetRenderer () const;
 
 	// temp
 	CWindow& GetWindow () const { return *Window; }
