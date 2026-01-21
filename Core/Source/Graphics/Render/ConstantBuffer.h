@@ -1,8 +1,10 @@
 ﻿#pragma once
 
+#include <cstring>
 #include <vector>
 
 #include "CoreTypes.h"
+#include "Memory/Memory.h"
 #include "RenderResourceAllocators.h"
 
 
@@ -26,7 +28,7 @@ struct SConstantBuffer
 		DX12_DescriptorHeap& DescriptorHeap,
 		uint32 InObjectCount = 1);
 
-	void CopyBunch (TData* Data, DX12_UploadArena& UploadArena);
+	void CopyBunch (TData* Data, uint32 Count, DX12_UploadArena& UploadArena);
 	void Upload (DX12_UploadArena& UploadArena, ID3D12GraphicsCommandList* CommandList);
 	void RebuildDescriptors (ID3D12Device* Device, DX12_DescriptorHeap& DescriptorHeap);
 };
@@ -73,13 +75,26 @@ SConstantBuffer<TData>::SConstantBuffer (
 }
 
 template <typename TData>
-void SConstantBuffer<TData>::CopyBunch (TData* Data, DX12_UploadArena& UploadArena)
+void SConstantBuffer<TData>::CopyBunch (TData* Data, uint32 Count, DX12_UploadArena& UploadArena)
 {
-	if (Data)
+	if (!Data || Count == 0u || ObjectCount == 0u)
 	{
-		uint8* dest = UploadArena.Allocate(DataSize * ObjectCount, &UploadOffset);
-		memcpy(dest, Data, DataSize * ObjectCount);
+		return;
 	}
+
+	const uint32 copyCount = Count < ObjectCount ? Count : ObjectCount;
+	const uint64 totalSize = DataSize * ObjectCount;
+
+	auto staging = static_cast<uint8*>(memory::NewUnmanaged(totalSize));
+	memset(staging, 0, totalSize);
+	for (uint32 i = 0; i < copyCount; ++i)
+	{
+		memcpy(staging + DataSize * i, Data + i, sizeof(TData));
+	}
+
+	uint8* dest = UploadArena.Allocate(totalSize, &UploadOffset);
+	memcpy(dest, staging, totalSize);
+	memory::DestroyUnmanaged(staging);
 }
 
 template <typename TData>

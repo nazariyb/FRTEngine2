@@ -1,5 +1,7 @@
 ﻿#include "World.h"
 
+#include <unordered_map>
+
 #include "GameInstance.h"
 #include "Timer.h"
 #include "Window.h"
@@ -34,14 +36,65 @@ void CWorld::Present (float DeltaSeconds, ID3D12GraphicsCommandList* CommandList
 {
 	auto& currentFrameResources = Renderer->GetCurrentFrameResource();
 
+	// TODO: assign stable material indices in MaterialLibrary and update constants only when dirty.
+	std::unordered_map<const graphics::SMaterial*, uint32> materialIndices;
+	TArray<graphics::SMaterialConstants> materialConstants;
+
+	for (uint32 i = 0; i < Entities.Count(); ++i)
+	{
+		CEntity* entity = Entities[i].GetRawIgnoringLifetime();
+		frt_assert(entity);
+		if (!entity->RenderModel.Model)
+		{
+			continue;
+		}
+
+		graphics::SRenderModel& model = *entity->RenderModel.Model;
+		for (const graphics::SRenderSection& section : model.Sections)
+		{
+			if (section.MaterialIndex >= model.Materials.Count())
+			{
+				continue;
+			}
+
+			graphics::SMaterial* material = model.Materials[section.MaterialIndex].GetRawIgnoringLifetime();
+			frt_assert(material);
+
+			auto it = materialIndices.find(material);
+			if (it == materialIndices.end())
+			{
+				const uint32 materialIndex = materialConstants.Count();
+				materialIndices.emplace(material, materialIndex);
+
+				graphics::SMaterialConstants& constants = materialConstants.Add();
+				constants.DiffuseAlbedo = material->DiffuseAlbedo;
+				material->RuntimeIndex = materialIndex;
+			}
+			else
+			{
+				material->RuntimeIndex = it->second;
+			}
+		}
+	}
+
+	Renderer->EnsureMaterialConstantCapacity(materialConstants.Count());
+	if (!materialConstants.IsEmpty())
+	{
+		currentFrameResources.MaterialCB.CopyBunch(
+			materialConstants.GetData(),
+			materialConstants.Count(),
+			currentFrameResources.UploadArena);
+	}
+
 	// this is so messed up...
 	currentFrameResources.PassCB.Upload(currentFrameResources.UploadArena, Renderer->GetCommandList());
 	if (!currentFrameResources.PassCB.DescriptorHeapHandleGpu.empty())
 	{
-		CommandList->SetGraphicsRootDescriptorTable(2, currentFrameResources.PassCB.DescriptorHeapHandleGpu[0]);
+		CommandList->SetGraphicsRootDescriptorTable(3, currentFrameResources.PassCB.DescriptorHeapHandleGpu[0]);
 	}
 
 	currentFrameResources.ObjectCB.Upload(currentFrameResources.UploadArena, Renderer->GetCommandList());
+	currentFrameResources.MaterialCB.Upload(currentFrameResources.UploadArena, Renderer->GetCommandList());
 	auto& ObjectDescriptorHandles = currentFrameResources.ObjectCB.DescriptorHeapHandleGpu;
 	for (uint32 i = 0; i < Entities.Count(); ++i)
 	{
@@ -60,26 +113,21 @@ void CWorld::CopyConstantData ()
 	const uint32 entityCount = Entities.Count();
 	Renderer->EnsureObjectConstantCapacity(entityCount);
 
-	uint64 alignedSize = memory::AlignAddress(sizeof(graphics::SObjectConstants), 256);
-	void* objectsData = nullptr;
-	if (entityCount > 0u)
-	{
-		objectsData = malloc(alignedSize * entityCount);
-		for (uint32 i = 0; i < entityCount; ++i)
-		{
-			memcpy(
-				(uint8*)objectsData + alignedSize * i, &Entities[i]->Transform.GetMatrix(),
-				sizeof(graphics::SObjectConstants));
-		}
-	}
-
 	auto& currentFrameResources = Renderer->GetCurrentFrameResource();
 
-	if (objectsData)
+	if (entityCount > 0u)
 	{
+		TArray<graphics::SObjectConstants> objectConstants;
+		objectConstants.SetSizeUninitialized(entityCount);
+		for (uint32 i = 0; i < entityCount; ++i)
+		{
+			objectConstants[i].World = Entities[i]->Transform.GetMatrix();
+		}
+
 		currentFrameResources.ObjectCB.CopyBunch(
-			(graphics::SObjectConstants*)objectsData, currentFrameResources.UploadArena);
-		free(objectsData);
+			objectConstants.GetData(),
+			objectConstants.Count(),
+			currentFrameResources.UploadArena);
 	}
 
 	using namespace DirectX;
@@ -116,7 +164,7 @@ void CWorld::CopyConstantData ()
 	passConstants.TotalTime = GameInstance::GetInstance().GetTime().GetTotalSeconds();
 	passConstants.DeltaTime = GameInstance::GetInstance().GetTime().GetDeltaSeconds();
 
-	currentFrameResources.PassCB.CopyBunch(&passConstants, currentFrameResources.UploadArena);
+	currentFrameResources.PassCB.CopyBunch(&passConstants, 1u, currentFrameResources.UploadArena);
 }
 #endif
 

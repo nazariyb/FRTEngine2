@@ -54,12 +54,13 @@ void frt::CEntity::Present (float DeltaSeconds, ID3D12GraphicsCommandList* Comma
 		if (section.MaterialIndex < model.Materials.Count())
 		{
 			memory::TRefShared<graphics::SMaterial> material = model.Materials[section.MaterialIndex];
+			D3D12_GPU_DESCRIPTOR_HANDLE textureHandle = renderer->GetDefaultWhiteTextureGpu();
 			if (material && material->bHasBaseColorTexture)
 			{
-				CommandList->SetGraphicsRootDescriptorTable(
-					0,
-					material->BaseColorTexture.GpuDescriptor);
+				textureHandle = material->BaseColorTexture.GpuDescriptor;
 			}
+
+			CommandList->SetGraphicsRootDescriptorTable(0, textureHandle);
 
 			if (material)
 			{
@@ -67,6 +68,13 @@ void frt::CEntity::Present (float DeltaSeconds, ID3D12GraphicsCommandList* Comma
 				if (pipelineState)
 				{
 					CommandList->SetPipelineState(pipelineState);
+				}
+
+				graphics::SFrameResources& frameResources = renderer->GetCurrentFrameResource();
+				const auto& materialHandles = frameResources.MaterialCB.DescriptorHeapHandleGpu;
+				if (material->RuntimeIndex < materialHandles.size())
+				{
+					CommandList->SetGraphicsRootDescriptorTable(2, materialHandles[material->RuntimeIndex]);
 				}
 			}
 		}

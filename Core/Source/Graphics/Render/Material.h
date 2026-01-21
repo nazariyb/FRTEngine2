@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <string>
+#include <DirectXMath.h>
 
 #include "Core.h"
 #include "CoreTypes.h"
@@ -20,6 +21,9 @@ struct FRT_CORE_API SMaterial
 	std::string BaseColorTexturePath;
 	std::filesystem::path SourcePath;
 	std::filesystem::file_time_type LastWriteTime;
+
+	DirectX::XMFLOAT4 DiffuseAlbedo = { 1.f, 1.f, 1.f, 1.f };
+	uint32 RuntimeIndex = 0u;
 
 	STexture BaseColorTexture = {};
 	bool bHasBaseColorTexture = false;

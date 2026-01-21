@@ -5,7 +5,12 @@ cbuffer ObjectConstantBuffer : register(b0)
 	// float deltaSeconds;
 }
 
-cbuffer PassConstantBuffer : register(b1)
+cbuffer MaterialConstantBuffer : register(b1)
+{
+	float4 gDiffuseAlbedo;
+}
+
+cbuffer PassConstantBuffer : register(b2)
 {
 	float4x4 gView;
 	float4x4 gViewInv;

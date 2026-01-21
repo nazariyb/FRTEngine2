@@ -148,7 +148,13 @@ CRenderer::CRenderer (CWindow* Window)
 
 	for (uint8 i = 0; i < render::constants::FrameResourcesBufferCount; ++i)
 	{
-		FramesResources[i].Init(Device.Get(), 1, 2, BufferArena, GetDescriptorHeap());
+		FramesResources[i].Init(
+			Device.Get(),
+			render::constants::InitialPassCount,
+			render::constants::InitialObjectCount,
+			render::constants::InitialMaterialCount,
+			BufferArena,
+			GetDescriptorHeap());
 	}
 
 	for (unsigned frameIndex = 0; frameIndex < render::constants::SwapChainBufferCount; ++frameIndex)
@@ -158,6 +164,7 @@ CRenderer::CRenderer (CWindow* Window)
 
 	DsvHeap.Allocate(&DepthStencilDescriptor, nullptr);
 
+	CreateDefaultWhiteTexture();
 	CreateRootSignature();
 	CreatePipelineState();
 
@@ -166,17 +173,19 @@ CRenderer::CRenderer (CWindow* Window)
 
 void CRenderer::CreateRootSignature ()
 {
-	CD3DX12_ROOT_PARAMETER rootParameters[3];
+	CD3DX12_ROOT_PARAMETER rootParameters[4];
 
 	CD3DX12_DESCRIPTOR_RANGE texTable0(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
 
 	rootParameters[0].InitAsDescriptorTable(1, &texTable0);
 
 	CD3DX12_DESCRIPTOR_RANGE objCbvTable0(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0);
-	CD3DX12_DESCRIPTOR_RANGE passCbvTable0(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 1);
+	CD3DX12_DESCRIPTOR_RANGE materialCbvTable0(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 1);
+	CD3DX12_DESCRIPTOR_RANGE passCbvTable0(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 2);
 
 	rootParameters[1].InitAsDescriptorTable(1, &objCbvTable0);
-	rootParameters[2].InitAsDescriptorTable(1, &passCbvTable0);
+	rootParameters[2].InitAsDescriptorTable(1, &materialCbvTable0);
+	rootParameters[3].InitAsDescriptorTable(1, &passCbvTable0);
 
 	constexpr D3D12_STATIC_SAMPLER_DESC samplerDesc
 	{
@@ -191,7 +200,7 @@ void CRenderer::CreateRootSignature ()
 	};
 
 	CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc(
-		3, rootParameters, 1, &samplerDesc,
+		4, rootParameters, 1, &samplerDesc,
 		D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
 	ID3DBlob* serializedRootSignature = nullptr;
@@ -597,6 +606,11 @@ ID3D12PipelineState* CRenderer::GetPipelineStateForMaterial (const SMaterial& Ma
 	return pipelineRaw;
 }
 
+D3D12_GPU_DESCRIPTOR_HANDLE CRenderer::GetDefaultWhiteTextureGpu () const
+{
+	return DefaultWhiteTexture.GpuDescriptor;
+}
+
 void CRenderer::EnsureObjectConstantCapacity (uint32 ObjectCount)
 {
 	if (ObjectCount == 0u)
@@ -619,6 +633,71 @@ void CRenderer::EnsureObjectConstantCapacity (uint32 ObjectCount)
 	for (uint32 i = 0; i < render::constants::FrameResourcesBufferCount; ++i)
 	{
 		FramesResources[i].EnsureObjectCapacity(Device.Get(), ObjectCount, BufferArena, ShaderDescriptorHeap);
+	}
+}
+
+void CRenderer::CreateDefaultWhiteTexture ()
+{
+	THROW_IF_FAILED(CommandAllocator->Reset());
+	THROW_IF_FAILED(CommandList->Reset(CommandAllocator.Get(), nullptr));
+
+	constexpr uint32 whiteTexel = 0xFFFFFFFFu;
+
+	D3D12_RESOURCE_DESC desc = {};
+	desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+	desc.Width = 1;
+	desc.Height = 1;
+	desc.DepthOrArraySize = 1;
+	desc.MipLevels = 1;
+	desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	desc.SampleDesc.Count = 1;
+	desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
+
+	DefaultWhiteTexture.GpuTexture = CreateTextureAsset(
+		desc, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, (void*)&whiteTexel);
+	DefaultWhiteTexture.Width = 1;
+	DefaultWhiteTexture.Height = 1;
+	DefaultWhiteTexture.Texels = nullptr;
+
+	D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+	srvDesc.Format = desc.Format;
+	srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	srvDesc.Texture2D.MostDetailedMip = 0;
+	srvDesc.Texture2D.MipLevels = 1;
+	srvDesc.Texture2D.PlaneSlice = 0;
+
+	D3D12_CPU_DESCRIPTOR_HANDLE cpuDescriptor = {};
+	CreateShaderResourceView(DefaultWhiteTexture.GpuTexture, srvDesc, &cpuDescriptor, &DefaultWhiteTexture.GpuDescriptor);
+
+	THROW_IF_FAILED(CommandList->Close());
+	ID3D12CommandList* commandLists[] = { CommandList.Get() };
+	CommandQueue->ExecuteCommandLists(_countof(commandLists), commandLists);
+	FlushCommandQueue();
+}
+
+void CRenderer::EnsureMaterialConstantCapacity (uint32 MaterialCount)
+{
+	if (MaterialCount == 0u)
+	{
+		return;
+	}
+
+	const uint32 currentMaterialCount = FramesResources[0].MaterialCB.ObjectCount;
+	if (MaterialCount <= currentMaterialCount)
+	{
+		return;
+	}
+
+	const uint32 frameCount = render::constants::FrameResourcesBufferCount;
+	const uint32 requiredTotal =
+		static_cast<uint32>(ShaderDescriptorHeap.GetCount()) + frameCount * MaterialCount;
+
+	EnsureShaderDescriptorCapacity(requiredTotal);
+
+	for (uint32 i = 0; i < render::constants::FrameResourcesBufferCount; ++i)
+	{
+		FramesResources[i].EnsureMaterialCapacity(Device.Get(), MaterialCount, BufferArena, ShaderDescriptorHeap);
 	}
 }
 
@@ -661,6 +740,7 @@ void CRenderer::RebuildShaderDescriptors ()
 	{
 		FramesResources[i].PassCB.RebuildDescriptors(Device.Get(), ShaderDescriptorHeap);
 		FramesResources[i].ObjectCB.RebuildDescriptors(Device.Get(), ShaderDescriptorHeap);
+		FramesResources[i].MaterialCB.RebuildDescriptors(Device.Get(), ShaderDescriptorHeap);
 	}
 
 	for (uint32 i = 0; i < TrackedSrvs.Count(); ++i)

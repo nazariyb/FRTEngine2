@@ -11,6 +11,7 @@
 #include "Event.h"
 #include "GraphicsCoreTypes.h"
 #include "MaterialLibrary.h"
+#include "Texture.h"
 #include "RenderConstants.h"
 #include "ShaderAsset.h"
 
@@ -49,8 +50,10 @@ public:
 	FRT_CORE_API DX12_DescriptorHeap& GetDescriptorHeap ();
 	FRT_CORE_API SFrameResources& GetCurrentFrameResource ();
 	FRT_CORE_API void EnsureObjectConstantCapacity (uint32 ObjectCount);
+	FRT_CORE_API void EnsureMaterialConstantCapacity (uint32 MaterialCount);
 	FRT_CORE_API CMaterialLibrary& GetMaterialLibrary ();
 	FRT_CORE_API ID3D12PipelineState* GetPipelineStateForMaterial (const SMaterial& Material);
+	FRT_CORE_API D3D12_GPU_DESCRIPTOR_HANDLE GetDefaultWhiteTextureGpu () const;
 
 	frt::CEvent<> OnShaderDescriptorHeapRebuild;
 
@@ -76,6 +79,7 @@ private:
 	ComPtr<ID3D12PipelineState> BuildPipelineState (
 		const std::string& VertexShaderName,
 		const std::string& PixelShaderName);
+	void CreateDefaultWhiteTexture ();
 	void EnsureShaderDescriptorCapacity (uint32 RequiredCount);
 	void RebuildShaderDescriptorHeap (uint32 NewCapacity);
 	void RebuildShaderDescriptors ();
@@ -111,6 +115,7 @@ private:
 	CShaderLibrary ShaderLibrary;
 	CMaterialLibrary MaterialLibrary;
 	std::unordered_map<std::string, ComPtr<ID3D12PipelineState>> PipelineStateCache;
+	STexture DefaultWhiteTexture = {};
 
 	ComPtr<ID3D12Resource> CommonConstantBuffer;
 	D3D12_GPU_DESCRIPTOR_HANDLE CommonConstantBufferDescriptor;

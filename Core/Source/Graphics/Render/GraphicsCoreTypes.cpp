@@ -10,10 +10,11 @@ SFrameResources::SFrameResources (
 	ID3D12Device* Device,
 	uint32 PassCount,
 	uint32 ObjectCount,
+	uint32 MaterialCount,
 	DX12_Arena& BufferArena,
 	DX12_DescriptorHeap& DescriptorHeap)
 {
-	Init(Device, PassCount, ObjectCount, BufferArena, DescriptorHeap);
+	Init(Device, PassCount, ObjectCount, MaterialCount, BufferArena, DescriptorHeap);
 }
 
 SFrameResources::~SFrameResources ()
@@ -23,6 +24,7 @@ void SFrameResources::Init (
 	ID3D12Device* Device,
 	uint32 PassCount,
 	uint32 ObjectCount,
+	uint32 MaterialCount,
 	DX12_Arena& BufferArena,
 	DX12_DescriptorHeap& DescriptorHeap)
 {
@@ -34,6 +36,7 @@ void SFrameResources::Init (
 
 	PassCB = SConstantBuffer<SPassConstants>(Device, BufferArena, DescriptorHeap, PassCount);
 	ObjectCB = SConstantBuffer<SObjectConstants>(Device, BufferArena, DescriptorHeap, ObjectCount);
+	MaterialCB = SConstantBuffer<SMaterialConstants>(Device, BufferArena, DescriptorHeap, MaterialCount);
 }
 
 void SFrameResources::EnsureObjectCapacity (
@@ -48,5 +51,19 @@ void SFrameResources::EnsureObjectCapacity (
 	}
 
 	ObjectCB = SConstantBuffer<SObjectConstants>(Device, BufferArena, DescriptorHeap, ObjectCount);
+}
+
+void SFrameResources::EnsureMaterialCapacity (
+	ID3D12Device* Device,
+	uint32 MaterialCount,
+	DX12_Arena& BufferArena,
+	DX12_DescriptorHeap& DescriptorHeap)
+{
+	if (MaterialCount <= MaterialCB.ObjectCount)
+	{
+		return;
+	}
+
+	MaterialCB = SConstantBuffer<SMaterialConstants>(Device, BufferArena, DescriptorHeap, MaterialCount);
 }
 }

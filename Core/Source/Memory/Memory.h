@@ -41,6 +41,11 @@ template <typename T, typename... Args>
 	return DefaultPool::GetPrimaryInstance()->NewUnmanaged<T>(std::forward<Args>(InArgs)...);
 }
 
+inline void* NewUnmanaged (uint64 Size)
+{
+	return DefaultPool::GetPrimaryInstance()->Allocate(Size);
+}
+
 template <typename T, typename... Args>
 [[nodiscard]] T* NewManaged (Args&&... InArgs)
 {
@@ -57,6 +62,11 @@ template <typename T, typename... Args>
 [[nodiscard]] TRefShared<T> NewShared (Args&&... InArgs)
 {
 	return DefaultPool::GetPrimaryInstance()->NewShared<T>(std::forward<Args>(InArgs)...);
+}
+
+inline void DestroyUnmanaged (void* MemoryToDelete)
+{
+	DefaultPool::GetPrimaryInstance()->DeleteUnmanaged(MemoryToDelete);
 }
 }
 

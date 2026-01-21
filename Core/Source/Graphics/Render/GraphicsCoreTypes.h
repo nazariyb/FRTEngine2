@@ -49,6 +49,11 @@ struct SPassConstants
 	float DeltaTime = 0.f;
 };
 
+struct SMaterialConstants
+{
+	DirectX::XMFLOAT4 DiffuseAlbedo = { 1.f, 1.f, 1.f, 1.f };
+};
+
 
 struct SFrameResources
 {
@@ -58,6 +63,7 @@ struct SFrameResources
 	ComPtr<ID3D12CommandAllocator> CommandListAllocator;
 	SConstantBuffer<SPassConstants> PassCB;
 	SConstantBuffer<SObjectConstants> ObjectCB;
+	SConstantBuffer<SMaterialConstants> MaterialCB;
 	DX12_UploadArena UploadArena;
 
 	uint64 FenceValue = 0;
@@ -67,6 +73,7 @@ struct SFrameResources
 		ID3D12Device* Device,
 		uint32 PassCount,
 		uint32 ObjectCount,
+		uint32 MaterialCount,
 		DX12_Arena& BufferArena,
 		DX12_DescriptorHeap& DescriptorHeap);
 	~SFrameResources ();
@@ -75,12 +82,19 @@ struct SFrameResources
 		ID3D12Device* Device,
 		uint32 PassCount,
 		uint32 ObjectCount,
+		uint32 MaterialCount,
 		DX12_Arena& BufferArena,
 		DX12_DescriptorHeap& DescriptorHeap);
 
 	void EnsureObjectCapacity (
 		ID3D12Device* Device,
 		uint32 ObjectCount,
+		DX12_Arena& BufferArena,
+		DX12_DescriptorHeap& DescriptorHeap);
+
+	void EnsureMaterialCapacity (
+		ID3D12Device* Device,
+		uint32 MaterialCount,
 		DX12_Arena& BufferArena,
 		DX12_DescriptorHeap& DescriptorHeap);
 };

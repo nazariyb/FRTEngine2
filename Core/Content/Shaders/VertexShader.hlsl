@@ -1,5 +1,6 @@
 #include "CoreTypes.hlsli"
 
+
 PSInput main(VSInput input)
 {
 	PSInput result;
