@@ -607,6 +607,15 @@ void CRenderer::StartFrame (CCamera& Camera)
 	// TODO: assign different PSO
 	THROW_IF_FAILED(CommandList->Reset(commandListAllocator.Get(), nullptr));
 
+#ifndef RELEASE
+	const bool bMaterialsReloaded = MaterialLibrary.ReloadModifiedMaterials();
+	const bool bShadersReloaded = ShaderLibrary.ReloadModifiedShaders();
+	if (bMaterialsReloaded || bShadersReloaded)
+	{
+		bPendingPipelineStateRebuild = true;
+	}
+#endif
+
 	{
 		D3D12_RESOURCE_BARRIER resourceBarrier = {};
 		resourceBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -646,15 +655,6 @@ void CRenderer::Tick (float DeltaSeconds)
 		WaitForSingleObject(eventHandle, INFINITE);
 		CloseHandle(eventHandle);
 	}
-
-#ifndef RELEASE
-	const bool materialsReloaded = MaterialLibrary.ReloadModifiedMaterials();
-	const bool shadersReloaded = ShaderLibrary.ReloadModifiedShaders();
-	if (materialsReloaded || shadersReloaded)
-	{
-		bPendingPipelineStateRebuild = true;
-	}
-#endif
 }
 
 void CRenderer::Draw (float DeltaSeconds, CCamera& Camera)
