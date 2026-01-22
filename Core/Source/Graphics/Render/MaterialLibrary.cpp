@@ -7,13 +7,14 @@
 
 #include <stb_image.h>
 
-#include "Graphics/Render/Material.h"
 #include "Graphics/Render/Renderer.h"
 #include "Memory/Memory.h"
 
 
 namespace frt::graphics
 {
+static constexpr int32 MaterialFileVersion = 1;
+
 static std::string TrimCopy (const std::string& Input)
 {
 	size_t start = 0;
@@ -46,6 +47,198 @@ static std::string StripQuotes (const std::string& Input)
 	}
 
 	return Input;
+}
+
+static bool ParseInt32 (const std::string& Input, int32* OutValue)
+{
+	const char* cstr = Input.c_str();
+	char* end = nullptr;
+	const long value = std::strtol(cstr, &end, 10);
+	if (end == cstr)
+	{
+		return false;
+	}
+
+	*OutValue = static_cast<int32>(value);
+	return true;
+}
+
+static std::string ToLowerCopy (const std::string& Input)
+{
+	std::string result = Input;
+	for (char& ch : result)
+	{
+		ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+	}
+	return result;
+}
+
+static bool ParseBool (const std::string& Input, bool* OutValue)
+{
+	const std::string normalized = ToLowerCopy(Input);
+	if (normalized == "true" || normalized == "1" || normalized == "yes" || normalized == "on")
+	{
+		*OutValue = true;
+		return true;
+	}
+
+	if (normalized == "false" || normalized == "0" || normalized == "no" || normalized == "off")
+	{
+		*OutValue = false;
+		return true;
+	}
+
+	return false;
+}
+
+static bool ParseCullMode (const std::string& Input, D3D12_CULL_MODE* OutMode)
+{
+	const std::string normalized = ToLowerCopy(Input);
+	if (normalized == "none")
+	{
+		*OutMode = D3D12_CULL_MODE_NONE;
+		return true;
+	}
+
+	if (normalized == "front")
+	{
+		*OutMode = D3D12_CULL_MODE_FRONT;
+		return true;
+	}
+
+	if (normalized == "back")
+	{
+		*OutMode = D3D12_CULL_MODE_BACK;
+		return true;
+	}
+
+	return false;
+}
+
+static bool ParseDepthFunc (const std::string& Input, D3D12_COMPARISON_FUNC* OutFunc)
+{
+	const std::string normalized = ToLowerCopy(Input);
+	if (normalized == "never")
+	{
+		*OutFunc = D3D12_COMPARISON_FUNC_NEVER;
+		return true;
+	}
+	if (normalized == "less")
+	{
+		*OutFunc = D3D12_COMPARISON_FUNC_LESS;
+		return true;
+	}
+	if (normalized == "equal")
+	{
+		*OutFunc = D3D12_COMPARISON_FUNC_EQUAL;
+		return true;
+	}
+	if (normalized == "less_equal" || normalized == "lequal")
+	{
+		*OutFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+		return true;
+	}
+	if (normalized == "greater")
+	{
+		*OutFunc = D3D12_COMPARISON_FUNC_GREATER;
+		return true;
+	}
+	if (normalized == "not_equal" || normalized == "notequal")
+	{
+		*OutFunc = D3D12_COMPARISON_FUNC_NOT_EQUAL;
+		return true;
+	}
+	if (normalized == "greater_equal" || normalized == "gequal")
+	{
+		*OutFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
+		return true;
+	}
+	if (normalized == "always")
+	{
+		*OutFunc = D3D12_COMPARISON_FUNC_ALWAYS;
+		return true;
+	}
+
+	return false;
+}
+
+static const char* CullModeToString (D3D12_CULL_MODE Mode)
+{
+	switch (Mode)
+	{
+		case D3D12_CULL_MODE_NONE: return "none";
+		case D3D12_CULL_MODE_FRONT: return "front";
+		case D3D12_CULL_MODE_BACK: return "back";
+		default: return "back";
+	}
+}
+
+static const char* DepthFuncToString (D3D12_COMPARISON_FUNC Func)
+{
+	switch (Func)
+	{
+		case D3D12_COMPARISON_FUNC_NEVER: return "never";
+		case D3D12_COMPARISON_FUNC_LESS: return "less";
+		case D3D12_COMPARISON_FUNC_EQUAL: return "equal";
+		case D3D12_COMPARISON_FUNC_LESS_EQUAL: return "less_equal";
+		case D3D12_COMPARISON_FUNC_GREATER: return "greater";
+		case D3D12_COMPARISON_FUNC_NOT_EQUAL: return "not_equal";
+		case D3D12_COMPARISON_FUNC_GREATER_EQUAL: return "greater_equal";
+		case D3D12_COMPARISON_FUNC_ALWAYS: return "always";
+		default: return "less";
+	}
+}
+
+static int32 GetMaterialFileVersion (const std::filesystem::path& MaterialPath)
+{
+	std::ifstream stream(MaterialPath);
+	if (!stream.is_open())
+	{
+		return 0;
+	}
+
+	std::string line;
+	while (std::getline(stream, line))
+	{
+		std::string trimmed = TrimCopy(line);
+		if (trimmed.empty())
+		{
+			continue;
+		}
+
+		if (trimmed.rfind("#", 0) == 0u || trimmed.rfind("//", 0) == 0u)
+		{
+			continue;
+		}
+
+		size_t split = trimmed.find(':');
+		if (split == std::string::npos)
+		{
+			split = trimmed.find('=');
+		}
+
+		if (split == std::string::npos)
+		{
+			continue;
+		}
+
+		std::string key = TrimCopy(trimmed.substr(0, split));
+		std::string value = TrimCopy(trimmed.substr(split + 1));
+		value = StripQuotes(value);
+
+		if (key == "version")
+		{
+			int32 version = 0;
+			if (ParseInt32(value, &version))
+			{
+				return version;
+			}
+		}
+
+		break;
+	}
+
+	return 0;
 }
 
 void CMaterialLibrary::SetRenderer (CRenderer* InRenderer)
@@ -95,6 +288,15 @@ bool CMaterialLibrary::ReloadModifiedMaterials ()
 			continue;
 		}
 
+		const int32 fileVersion = GetMaterialFileVersion(material.SourcePath);
+		if (fileVersion < MaterialFileVersion)
+		{
+			SaveMaterialFile(material.SourcePath, material);
+			material.LastWriteTime = std::filesystem::last_write_time(material.SourcePath, ec);
+			anyReloaded = true;
+			continue;
+		}
+
 		if (ParseMaterialFile(material.SourcePath, material))
 		{
 			material.LastWriteTime = newWriteTime;
@@ -118,7 +320,15 @@ memory::TRefShared<SMaterial> CMaterialLibrary::LoadMaterialFromFile (
 	const bool exists = std::filesystem::exists(MaterialPath, ec);
 	if (!ec && exists)
 	{
-		ParseMaterialFile(MaterialPath, material);
+		const int32 fileVersion = GetMaterialFileVersion(MaterialPath);
+		if (fileVersion < MaterialFileVersion)
+		{
+			SaveMaterialFile(MaterialPath, material);
+		}
+		else
+		{
+			ParseMaterialFile(MaterialPath, material);
+		}
 	}
 	else if (bCreateIfMissing)
 	{
@@ -176,6 +386,10 @@ bool CMaterialLibrary::ParseMaterialFile (const std::filesystem::path& MaterialP
 		{
 			Material.Name = value;
 		}
+		else if (key == "version")
+		{
+			continue;
+		}
 		else if (key == "vertex_shader")
 		{
 			Material.VertexShaderName = value;
@@ -187,6 +401,26 @@ bool CMaterialLibrary::ParseMaterialFile (const std::filesystem::path& MaterialP
 		else if (key == "base_color_texture")
 		{
 			Material.BaseColorTexturePath = value;
+		}
+		else if (key == "cull")
+		{
+			(void)ParseCullMode(value, &Material.CullMode);
+		}
+		else if (key == "depth_enable")
+		{
+			(void)ParseBool(value, &Material.bDepthEnable);
+		}
+		else if (key == "depth_write")
+		{
+			(void)ParseBool(value, &Material.bDepthWrite);
+		}
+		else if (key == "depth_func")
+		{
+			(void)ParseDepthFunc(value, &Material.DepthFunc);
+		}
+		else if (key == "alpha_blend")
+		{
+			(void)ParseBool(value, &Material.bAlphaBlend);
 		}
 	}
 
@@ -204,11 +438,17 @@ bool CMaterialLibrary::SaveMaterialFile (const std::filesystem::path& MaterialPa
 		return false;
 	}
 
+	stream << "version: " << MaterialFileVersion << "\n";
 	stream << "# FRT material\n";
 	stream << "name: " << Material.Name << "\n";
 	stream << "vertex_shader: " << Material.VertexShaderName << "\n";
 	stream << "pixel_shader: " << Material.PixelShaderName << "\n";
 	stream << "base_color_texture: " << Material.BaseColorTexturePath << "\n";
+	stream << "cull: " << CullModeToString(Material.CullMode) << "\n";
+	stream << "depth_enable: " << (Material.bDepthEnable ? "true" : "false") << "\n";
+	stream << "depth_write: " << (Material.bDepthWrite ? "true" : "false") << "\n";
+	stream << "depth_func: " << DepthFuncToString(Material.DepthFunc) << "\n";
+	stream << "alpha_blend: " << (Material.bAlphaBlend ? "true" : "false") << "\n";
 	return true;
 }
 

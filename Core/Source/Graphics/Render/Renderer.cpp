@@ -3,12 +3,13 @@
 #include <complex>
 #include <filesystem>
 
-#include "Graphics/Camera.h"
 #include "d3dx12.h"
 #include "Exception.h"
-#include "Graphics/Model.h"
 #include "Timer.h"
 #include "Window.h"
+#include "Graphics/Camera.h"
+#include "Graphics/Model.h"
+#include "Graphics/Render/Material.h"
 
 
 namespace frt::graphics
@@ -227,14 +228,31 @@ void CRenderer::CreateRootSignature ()
 	}
 }
 
-static std::string MakePipelineStateKey (const std::string& VertexShaderName, const std::string& PixelShaderName)
+static std::string MakePipelineStateKey (
+	const std::string& VertexShaderName,
+	const std::string& PixelShaderName,
+	D3D12_CULL_MODE CullMode,
+	D3D12_COMPARISON_FUNC DepthFunc,
+	bool bDepthEnable,
+	bool bDepthWrite,
+	bool bAlphaBlend)
 {
-	return VertexShaderName + "|" + PixelShaderName;
+	return VertexShaderName + "|" + PixelShaderName
+		+ "|" + std::to_string(static_cast<uint32>(CullMode))
+		+ "|" + std::to_string(static_cast<uint32>(DepthFunc))
+		+ "|" + (bDepthEnable ? "1" : "0")
+		+ "|" + (bDepthWrite ? "1" : "0")
+		+ "|" + (bAlphaBlend ? "1" : "0");
 }
 
 ComPtr<ID3D12PipelineState> CRenderer::BuildPipelineState (
 	const std::string& VertexShaderName,
-	const std::string& PixelShaderName)
+	const std::string& PixelShaderName,
+	D3D12_CULL_MODE CullMode,
+	D3D12_COMPARISON_FUNC DepthFunc,
+	bool bDepthEnable,
+	bool bDepthWrite,
+	bool bAlphaBlend)
 {
 	D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
 	psoDesc.pRootSignature = RootSignature.Get();
@@ -266,13 +284,13 @@ ComPtr<ID3D12PipelineState> CRenderer::BuildPipelineState (
 	psoDesc.VS = vertexShader->GetBytecode();
 	psoDesc.PS = pixelShader->GetBytecode();
 
-	psoDesc.BlendState.RenderTarget[0].BlendEnable = true;
+	psoDesc.BlendState.RenderTarget[0].BlendEnable = bAlphaBlend;
 	psoDesc.BlendState.RenderTarget[0].LogicOpEnable = false;
-	psoDesc.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_ONE;
-	psoDesc.BlendState.RenderTarget[0].DestBlend = D3D12_BLEND_ZERO;
+	psoDesc.BlendState.RenderTarget[0].SrcBlend = bAlphaBlend ? D3D12_BLEND_SRC_ALPHA : D3D12_BLEND_ONE;
+	psoDesc.BlendState.RenderTarget[0].DestBlend = bAlphaBlend ? D3D12_BLEND_INV_SRC_ALPHA : D3D12_BLEND_ZERO;
 	psoDesc.BlendState.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
 	psoDesc.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
-	psoDesc.BlendState.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_ZERO;
+	psoDesc.BlendState.RenderTarget[0].DestBlendAlpha = bAlphaBlend ? D3D12_BLEND_INV_SRC_ALPHA : D3D12_BLEND_ZERO;
 	psoDesc.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
 	psoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
 	psoDesc.SampleMask = UINT_MAX;
@@ -280,14 +298,15 @@ ComPtr<ID3D12PipelineState> CRenderer::BuildPipelineState (
 	psoDesc.SampleDesc.Quality = 0;
 
 	psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-	psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+	psoDesc.RasterizerState.CullMode = CullMode;
 	psoDesc.RasterizerState.FrontCounterClockwise = false;
 	psoDesc.RasterizerState.DepthClipEnable = true;
 
-	psoDesc.DepthStencilState.DepthEnable = true;
+	psoDesc.DepthStencilState.DepthEnable = bDepthEnable;
 	psoDesc.DepthStencilState.StencilEnable = false;
-	psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-	psoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+	psoDesc.DepthStencilState.DepthWriteMask =
+		bDepthWrite ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
+	psoDesc.DepthStencilState.DepthFunc = DepthFunc;
 
 	D3D12_INPUT_ELEMENT_DESC inputElementDescs[5] = {};
 	inputElementDescs[0].SemanticName = "POSITION";
@@ -341,8 +360,25 @@ ComPtr<ID3D12PipelineState> CRenderer::BuildPipelineState (
 void CRenderer::CreatePipelineState ()
 {
 	PipelineStateCache.clear();
-	PipelineState = BuildPipelineState("VertexShader", "PixelShader");
-	PipelineStateCache.emplace(MakePipelineStateKey("VertexShader", "PixelShader"), PipelineState);
+	const SMaterial defaultMaterial = {};
+	PipelineState = BuildPipelineState(
+		"VertexShader",
+		"PixelShader",
+		defaultMaterial.CullMode,
+		defaultMaterial.DepthFunc,
+		defaultMaterial.bDepthEnable,
+		defaultMaterial.bDepthWrite,
+		defaultMaterial.bAlphaBlend);
+	PipelineStateCache.emplace(
+		MakePipelineStateKey(
+			"VertexShader",
+			"PixelShader",
+			defaultMaterial.CullMode,
+			defaultMaterial.DepthFunc,
+			defaultMaterial.bDepthEnable,
+			defaultMaterial.bDepthWrite,
+			defaultMaterial.bAlphaBlend),
+		PipelineState);
 }
 
 void CRenderer::Resize (bool bNewFullscreenState)
@@ -511,10 +547,18 @@ void CRenderer::Tick (float DeltaSeconds)
 	}
 
 #if !defined(RELEASE)
-	MaterialLibrary.ReloadModifiedMaterials();
-	if (ShaderLibrary.ReloadModifiedShaders())
+	const bool materialsReloaded = MaterialLibrary.ReloadModifiedMaterials();
+	const bool shadersReloaded = ShaderLibrary.ReloadModifiedShaders();
+	if (materialsReloaded || shadersReloaded)
 	{
+		bPendingPipelineStateRebuild = true;
+	}
+
+	if (bPendingPipelineStateRebuild)
+	{
+		FlushCommandQueue();
 		CreatePipelineState();
+		bPendingPipelineStateRebuild = false;
 	}
 #endif
 }
@@ -593,14 +637,28 @@ ID3D12PipelineState* CRenderer::GetPipelineStateForMaterial (const SMaterial& Ma
 	const std::string pixelShader = Material.PixelShaderName.empty() ? "PixelShader"
 		: Material.PixelShaderName;
 
-	const std::string key = MakePipelineStateKey(vertexShader, pixelShader);
+	const std::string key = MakePipelineStateKey(
+		vertexShader,
+		pixelShader,
+		Material.CullMode,
+		Material.DepthFunc,
+		Material.bDepthEnable,
+		Material.bDepthWrite,
+		Material.bAlphaBlend);
 	auto it = PipelineStateCache.find(key);
 	if (it != PipelineStateCache.end())
 	{
 		return it->second.Get();
 	}
 
-	ComPtr<ID3D12PipelineState> pipelineState = BuildPipelineState(vertexShader, pixelShader);
+	ComPtr<ID3D12PipelineState> pipelineState = BuildPipelineState(
+		vertexShader,
+		pixelShader,
+		Material.CullMode,
+		Material.DepthFunc,
+		Material.bDepthEnable,
+		Material.bDepthWrite,
+		Material.bAlphaBlend);
 	ID3D12PipelineState* pipelineRaw = pipelineState.Get();
 	PipelineStateCache.emplace(key, std::move(pipelineState));
 	return pipelineRaw;
@@ -914,8 +972,10 @@ void CRenderer::FlushCommandQueue ()
 
 	if (Fence->GetCompletedValue() < FenceValue)
 	{
-		Fence->SetEventOnCompletion(FenceValue, FenceEvent);
-		WaitForSingleObject(FenceEvent, INFINITE);
+		HANDLE eventHandle = CreateEventEx(nullptr, nullptr, false, EVENT_ALL_ACCESS);
+		THROW_IF_FAILED(Fence->SetEventOnCompletion(FenceValue, eventHandle));
+		WaitForSingleObject(eventHandle, INFINITE);
+		CloseHandle(eventHandle);
 	}
 }
 }

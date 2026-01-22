@@ -78,7 +78,12 @@ private:
 	void CreatePipelineState ();
 	ComPtr<ID3D12PipelineState> BuildPipelineState (
 		const std::string& VertexShaderName,
-		const std::string& PixelShaderName);
+		const std::string& PixelShaderName,
+		D3D12_CULL_MODE CullMode,
+		D3D12_COMPARISON_FUNC DepthFunc,
+		bool bDepthEnable,
+		bool bDepthWrite,
+		bool bAlphaBlend);
 	void CreateDefaultWhiteTexture ();
 	void EnsureShaderDescriptorCapacity (uint32 RequiredCount);
 	void RebuildShaderDescriptorHeap (uint32 NewCapacity);
@@ -116,6 +121,7 @@ private:
 	CMaterialLibrary MaterialLibrary;
 	std::unordered_map<std::string, ComPtr<ID3D12PipelineState>> PipelineStateCache;
 	STexture DefaultWhiteTexture = {};
+	bool bPendingPipelineStateRebuild = false;
 
 	ComPtr<ID3D12Resource> CommonConstantBuffer;
 	D3D12_GPU_DESCRIPTOR_HANDLE CommonConstantBufferDescriptor;
