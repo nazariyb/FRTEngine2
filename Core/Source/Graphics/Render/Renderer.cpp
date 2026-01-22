@@ -546,19 +546,12 @@ void CRenderer::Tick (float DeltaSeconds)
 		CloseHandle(eventHandle);
 	}
 
-#if !defined(RELEASE)
+#ifndef RELEASE
 	const bool materialsReloaded = MaterialLibrary.ReloadModifiedMaterials();
 	const bool shadersReloaded = ShaderLibrary.ReloadModifiedShaders();
 	if (materialsReloaded || shadersReloaded)
 	{
 		bPendingPipelineStateRebuild = true;
-	}
-
-	if (bPendingPipelineStateRebuild)
-	{
-		FlushCommandQueue();
-		CreatePipelineState();
-		bPendingPipelineStateRebuild = false;
 	}
 #endif
 }
@@ -586,6 +579,15 @@ void CRenderer::Draw (float DeltaSeconds, CCamera& Camera)
 	++FenceValue;
 	GetCurrentFrameResource().FenceValue = FenceValue;
 	CommandQueue->Signal(Fence.Get(), FenceValue);
+
+#ifndef RELEASE
+	if (bPendingPipelineStateRebuild)
+	{
+		WaitForFenceValue(FenceValue);
+		CreatePipelineState();
+		bPendingPipelineStateRebuild = false;
+	}
+#endif
 
 	GetCurrentFrameResource().UploadArena.Clear();
 }
@@ -970,12 +972,19 @@ void CRenderer::FlushCommandQueue ()
 	FenceValue++;
 	CommandQueue->Signal(Fence.Get(), FenceValue);
 
-	if (Fence->GetCompletedValue() < FenceValue)
+	WaitForFenceValue(FenceValue);
+}
+
+void CRenderer::WaitForFenceValue (uint64 Value)
+{
+	if (Fence->GetCompletedValue() >= Value)
 	{
-		HANDLE eventHandle = CreateEventEx(nullptr, nullptr, false, EVENT_ALL_ACCESS);
-		THROW_IF_FAILED(Fence->SetEventOnCompletion(FenceValue, eventHandle));
-		WaitForSingleObject(eventHandle, INFINITE);
-		CloseHandle(eventHandle);
+		return;
 	}
+
+	HANDLE eventHandle = CreateEventEx(nullptr, nullptr, false, EVENT_ALL_ACCESS);
+	THROW_IF_FAILED(Fence->SetEventOnCompletion(Value, eventHandle));
+	WaitForSingleObject(eventHandle, INFINITE);
+	CloseHandle(eventHandle);
 }
 }

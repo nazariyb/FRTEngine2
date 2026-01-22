@@ -74,6 +74,7 @@ public:
 private:
 	void CreateSwapChain (bool bFullscreen);
 	void FlushCommandQueue ();
+	void WaitForFenceValue (uint64 Value);
 	void CreateRootSignature ();
 	void CreatePipelineState ();
 	ComPtr<ID3D12PipelineState> BuildPipelineState (
