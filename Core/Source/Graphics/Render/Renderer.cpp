@@ -174,19 +174,44 @@ CRenderer::CRenderer (CWindow* Window)
 
 void CRenderer::CreateRootSignature ()
 {
-	CD3DX12_ROOT_PARAMETER rootParameters[4];
+	CD3DX12_ROOT_PARAMETER rootParameters[render::constants::RootParamCount];
 
-	CD3DX12_DESCRIPTOR_RANGE texTable0(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
+	CD3DX12_DESCRIPTOR_RANGE texTable0(
+		D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+		1,
+		render::constants::RootRegister_BaseColorTexture,
+		render::constants::RootSpace_Global);
 
-	rootParameters[0].InitAsDescriptorTable(1, &texTable0);
+	rootParameters[render::constants::RootParam_BaseColorTexture].InitAsDescriptorTable(1, &texTable0);
 
-	CD3DX12_DESCRIPTOR_RANGE objCbvTable0(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0);
-	CD3DX12_DESCRIPTOR_RANGE materialCbvTable0(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 1);
-	CD3DX12_DESCRIPTOR_RANGE passCbvTable0(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 2);
+	CD3DX12_DESCRIPTOR_RANGE objCbvTable0(
+		D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
+		1,
+		render::constants::RootRegister_ObjectCbv,
+		render::constants::RootSpace_Global);
+	CD3DX12_DESCRIPTOR_RANGE materialCbvTable0(
+		D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
+		1,
+		render::constants::RootRegister_MaterialCbv,
+		render::constants::RootSpace_Global);
+	CD3DX12_DESCRIPTOR_RANGE passCbvTable0(
+		D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
+		1,
+		render::constants::RootRegister_PassCbv,
+		render::constants::RootSpace_Global);
 
-	rootParameters[1].InitAsDescriptorTable(1, &objCbvTable0);
-	rootParameters[2].InitAsDescriptorTable(1, &materialCbvTable0);
-	rootParameters[3].InitAsDescriptorTable(1, &passCbvTable0);
+	rootParameters[render::constants::RootParam_ObjectCbv].InitAsDescriptorTable(1, &objCbvTable0);
+	rootParameters[render::constants::RootParam_MaterialCbv].InitAsDescriptorTable(1, &materialCbvTable0);
+	rootParameters[render::constants::RootParam_PassCbv].InitAsDescriptorTable(1, &passCbvTable0);
+
+	CD3DX12_DESCRIPTOR_RANGE materialTextureTable0(
+		D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+		render::constants::RootMaterialTextureCount,
+		render::constants::RootRegister_MaterialTextureStart,
+		render::constants::RootSpace_Material);
+	rootParameters[render::constants::RootParam_MaterialTextures].InitAsDescriptorTable(
+		1,
+		&materialTextureTable0);
 
 	constexpr D3D12_STATIC_SAMPLER_DESC samplerDesc
 	{
@@ -201,7 +226,7 @@ void CRenderer::CreateRootSignature ()
 	};
 
 	CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc(
-		4, rootParameters, 1, &samplerDesc,
+		render::constants::RootParamCount, rootParameters, 1, &samplerDesc,
 		D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
 	ID3DBlob* serializedRootSignature = nullptr;

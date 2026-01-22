@@ -90,7 +90,9 @@ void CWorld::Present (float DeltaSeconds, ID3D12GraphicsCommandList* CommandList
 	currentFrameResources.PassCB.Upload(currentFrameResources.UploadArena, Renderer->GetCommandList());
 	if (!currentFrameResources.PassCB.DescriptorHeapHandleGpu.empty())
 	{
-		CommandList->SetGraphicsRootDescriptorTable(3, currentFrameResources.PassCB.DescriptorHeapHandleGpu[0]);
+		CommandList->SetGraphicsRootDescriptorTable(
+			render::constants::RootParam_PassCbv,
+			currentFrameResources.PassCB.DescriptorHeapHandleGpu[0]);
 	}
 
 	currentFrameResources.ObjectCB.Upload(currentFrameResources.UploadArena, Renderer->GetCommandList());
@@ -100,7 +102,9 @@ void CWorld::Present (float DeltaSeconds, ID3D12GraphicsCommandList* CommandList
 	{
 		if (i < ObjectDescriptorHandles.size())
 		{
-			CommandList->SetGraphicsRootDescriptorTable(1, ObjectDescriptorHandles[i]);
+			CommandList->SetGraphicsRootDescriptorTable(
+				render::constants::RootParam_ObjectCbv,
+				ObjectDescriptorHandles[i]);
 		}
 		Entities[i]->Present(DeltaSeconds, CommandList);
 	}

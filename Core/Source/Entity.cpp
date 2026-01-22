@@ -60,7 +60,9 @@ void frt::CEntity::Present (float DeltaSeconds, ID3D12GraphicsCommandList* Comma
 				textureHandle = material->BaseColorTexture.GpuDescriptor;
 			}
 
-			CommandList->SetGraphicsRootDescriptorTable(0, textureHandle);
+			CommandList->SetGraphicsRootDescriptorTable(
+				render::constants::RootParam_BaseColorTexture,
+				textureHandle);
 
 			if (material)
 			{
@@ -74,7 +76,9 @@ void frt::CEntity::Present (float DeltaSeconds, ID3D12GraphicsCommandList* Comma
 				const auto& materialHandles = frameResources.MaterialCB.DescriptorHeapHandleGpu;
 				if (material->RuntimeIndex < materialHandles.size())
 				{
-					CommandList->SetGraphicsRootDescriptorTable(2, materialHandles[material->RuntimeIndex]);
+					CommandList->SetGraphicsRootDescriptorTable(
+						render::constants::RootParam_MaterialCbv,
+						materialHandles[material->RuntimeIndex]);
 				}
 			}
 		}
