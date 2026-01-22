@@ -1,6 +1,7 @@
 ﻿#include "Renderer.h"
 
 #include <complex>
+#include <cstdio>
 #include <filesystem>
 
 #include "d3dx12.h"
@@ -270,9 +271,85 @@ static std::string MakePipelineStateKey (
 		+ "|" + (bAlphaBlend ? "1" : "0");
 }
 
+static uint64 HashDefines (const TArray<SShaderDefine>& Defines)
+{
+	constexpr uint64 offsetBasis = 1469598103934665603ull;
+	constexpr uint64 prime = 1099511628211ull;
+
+	uint64 hash = offsetBasis;
+	for (uint32 i = 0; i < Defines.Count(); ++i)
+	{
+		const SShaderDefine& define = Defines[i];
+		for (unsigned char ch : define.Name)
+		{
+			hash ^= ch;
+			hash *= prime;
+		}
+		hash ^= static_cast<unsigned char>('=');
+		hash *= prime;
+		for (unsigned char ch : define.Value)
+		{
+			hash ^= ch;
+			hash *= prime;
+		}
+		hash ^= static_cast<unsigned char>(';');
+		hash *= prime;
+	}
+
+	return hash;
+}
+
+static std::string MakeShaderPermutationName (const std::string& BaseName, const TArray<SShaderDefine>& Defines)
+{
+	if (Defines.IsEmpty())
+	{
+		return BaseName;
+	}
+
+	const uint64 hash = HashDefines(Defines);
+	char buffer[17] = {};
+#if defined(_MSC_VER)
+	_snprintf_s(buffer, sizeof(buffer), "%016llx", hash);
+#else
+	std::snprintf(buffer, sizeof(buffer), "%016llx", static_cast<unsigned long long>(hash));
+#endif
+	return BaseName + "_perm_" + buffer;
+}
+
+static void BuildShaderDefines (
+	const SMaterial& Material,
+	EShaderStage Stage,
+	TArray<SShaderDefine>& OutDefines)
+{
+	OutDefines.Clear();
+
+	if (Stage == EShaderStage::Pixel && HasMaterialFlag(Material.Flags, EMaterialFlags::UseBaseColorTexture))
+	{
+		SShaderDefine& define = OutDefines.Add();
+		define.Name = "FRT_HAS_BASE_COLOR_TEXTURE";
+		define.Value = "1";
+	}
+}
+
+CRenderer::SShaderPermutation CRenderer::BuildShaderPermutation (
+	const std::string& BaseName,
+	const SMaterial& Material,
+	EShaderStage Stage) const
+{
+	SShaderPermutation permutation;
+	BuildShaderDefines(Material, Stage, permutation.Defines);
+	permutation.Name = MakeShaderPermutationName(BaseName, permutation.Defines);
+
+	const std::filesystem::path shaderSourceDir = R"(..\Core\Content\Shaders)";
+	const std::filesystem::path shaderBinDir = shaderSourceDir / "Bin";
+	permutation.CompiledPath = shaderBinDir / (permutation.Name + ".shader");
+	permutation.SourcePath = shaderSourceDir / (BaseName + ".hlsl");
+	return permutation;
+}
+
 ComPtr<ID3D12PipelineState> CRenderer::BuildPipelineState (
-	const std::string& VertexShaderName,
-	const std::string& PixelShaderName,
+	const SShaderPermutation& VertexShader,
+	const SShaderPermutation& PixelShader,
 	D3D12_CULL_MODE CullMode,
 	D3D12_COMPARISON_FUNC DepthFunc,
 	bool bDepthEnable,
@@ -283,28 +360,25 @@ ComPtr<ID3D12PipelineState> CRenderer::BuildPipelineState (
 	psoDesc.pRootSignature = RootSignature.Get();
 
 	const std::filesystem::path shaderSourceDir = R"(..\Core\Content\Shaders)";
-	const std::filesystem::path shaderBinDir = shaderSourceDir / "Bin";
-	const std::filesystem::path vertexShaderPath = shaderBinDir / (VertexShaderName + ".shader");
-	const std::filesystem::path pixelShaderPath = shaderBinDir / (PixelShaderName + ".shader");
-	const std::filesystem::path vertexShaderSourcePath = shaderSourceDir / (VertexShaderName + ".hlsl");
-	const std::filesystem::path pixelShaderSourcePath = shaderSourceDir / (PixelShaderName + ".hlsl");
 
 	const SShaderAsset* vertexShader = ShaderLibrary.LoadShader(
-		VertexShaderName,
-		vertexShaderPath,
-		vertexShaderSourcePath,
+		VertexShader.Name,
+		VertexShader.CompiledPath,
+		VertexShader.SourcePath,
 		shaderSourceDir,
 		"main",
 		"vs_6_0",
-		EShaderStage::Vertex);
+		EShaderStage::Vertex,
+		VertexShader.Defines);
 	const SShaderAsset* pixelShader = ShaderLibrary.LoadShader(
-		PixelShaderName,
-		pixelShaderPath,
-		pixelShaderSourcePath,
+		PixelShader.Name,
+		PixelShader.CompiledPath,
+		PixelShader.SourcePath,
 		shaderSourceDir,
 		"main",
 		"ps_6_0",
-		EShaderStage::Pixel);
+		EShaderStage::Pixel,
+		PixelShader.Defines);
 
 	psoDesc.VS = vertexShader->GetBytecode();
 	psoDesc.PS = pixelShader->GetBytecode();
@@ -386,9 +460,11 @@ void CRenderer::CreatePipelineState ()
 {
 	PipelineStateCache.clear();
 	const SMaterial defaultMaterial = {};
+	const SShaderPermutation vertexShader = BuildShaderPermutation("VertexShader", defaultMaterial, EShaderStage::Vertex);
+	const SShaderPermutation pixelShader = BuildShaderPermutation("PixelShader", defaultMaterial, EShaderStage::Pixel);
 	PipelineState = BuildPipelineState(
-		"VertexShader",
-		"PixelShader",
+		vertexShader,
+		pixelShader,
 		defaultMaterial.CullMode,
 		defaultMaterial.DepthFunc,
 		defaultMaterial.bDepthEnable,
@@ -396,8 +472,8 @@ void CRenderer::CreatePipelineState ()
 		defaultMaterial.bAlphaBlend);
 	PipelineStateCache.emplace(
 		MakePipelineStateKey(
-			"VertexShader",
-			"PixelShader",
+			vertexShader.Name,
+			pixelShader.Name,
 			defaultMaterial.CullMode,
 			defaultMaterial.DepthFunc,
 			defaultMaterial.bDepthEnable,
@@ -659,14 +735,17 @@ CMaterialLibrary& CRenderer::GetMaterialLibrary ()
 
 ID3D12PipelineState* CRenderer::GetPipelineStateForMaterial (const SMaterial& Material)
 {
-	const std::string vertexShader = Material.VertexShaderName.empty() ? "VertexShader"
+	const std::string vertexShaderBase = Material.VertexShaderName.empty() ? "VertexShader"
 		: Material.VertexShaderName;
-	const std::string pixelShader = Material.PixelShaderName.empty() ? "PixelShader"
+	const std::string pixelShaderBase = Material.PixelShaderName.empty() ? "PixelShader"
 		: Material.PixelShaderName;
 
+	const SShaderPermutation vertexShader = BuildShaderPermutation(vertexShaderBase, Material, EShaderStage::Vertex);
+	const SShaderPermutation pixelShader = BuildShaderPermutation(pixelShaderBase, Material, EShaderStage::Pixel);
+
 	const std::string key = MakePipelineStateKey(
-		vertexShader,
-		pixelShader,
+		vertexShader.Name,
+		pixelShader.Name,
 		Material.CullMode,
 		Material.DepthFunc,
 		Material.bDepthEnable,

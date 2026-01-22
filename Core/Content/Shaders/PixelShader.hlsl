@@ -7,7 +7,13 @@ PSOutput main(PSInput input)
 {
 	PSOutput result;
 
-	result.color = texture.Sample(BilinearSampler, input.uv) * gDiffuseAlbedo;
+#if defined(FRT_HAS_BASE_COLOR_TEXTURE)
+	float4 baseColor = texture.Sample(BilinearSampler, input.uv);
+#else
+	float4 baseColor = float4(1.f, 1.f, 1.f, 1.f);
+#endif
+
+	result.color = baseColor * gDiffuseAlbedo;
 	// if (result.color.a < 1.f)
 	{
 		// Currently, nothing uses alpha chanel, so if it's zero, it's most likely a bug, so we make it noticeable

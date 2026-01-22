@@ -24,6 +24,12 @@ enum class EShaderStage : uint8
 	Domain
 };
 
+struct SShaderDefine
+{
+	std::string Name;
+	std::string Value;
+};
+
 
 struct SShaderAsset
 {
@@ -34,6 +40,7 @@ struct SShaderAsset
 	std::string EntryPoint;
 	std::string TargetProfile;
 	EShaderStage Stage = EShaderStage::Vertex;
+	TArray<SShaderDefine> Defines;
 	TArray<uint8> Bytecode;
 	std::filesystem::file_time_type LastWriteTime;
 
@@ -52,7 +59,8 @@ public:
 		const std::filesystem::path& IncludeDir,
 		std::string_view EntryPoint,
 		std::string_view TargetProfile,
-		EShaderStage Stage);
+		EShaderStage Stage,
+		const TArray<SShaderDefine>& Defines);
 	const SShaderAsset* GetShader (std::string_view Name) const;
 	bool ReloadModifiedShaders ();
 

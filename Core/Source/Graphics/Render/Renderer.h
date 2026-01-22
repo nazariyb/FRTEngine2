@@ -2,6 +2,7 @@
 
 #include <d3d12.h>
 #include <dxgi1_4.h>
+#include <filesystem>
 #include <string>
 #include <unordered_map>
 #include <wrl/client.h>
@@ -72,14 +73,26 @@ public:
 		D3D12_GPU_DESCRIPTOR_HANDLE* OutGpuHandle);
 
 private:
+	struct SShaderPermutation
+	{
+		std::string Name;
+		std::filesystem::path CompiledPath;
+		std::filesystem::path SourcePath;
+		TArray<SShaderDefine> Defines;
+	};
+
 	void CreateSwapChain (bool bFullscreen);
 	void FlushCommandQueue ();
 	void WaitForFenceValue (uint64 Value);
 	void CreateRootSignature ();
 	void CreatePipelineState ();
+	SShaderPermutation BuildShaderPermutation (
+		const std::string& BaseName,
+		const SMaterial& Material,
+		EShaderStage Stage) const;
 	ComPtr<ID3D12PipelineState> BuildPipelineState (
-		const std::string& VertexShaderName,
-		const std::string& PixelShaderName,
+		const SShaderPermutation& VertexShader,
+		const SShaderPermutation& PixelShader,
 		D3D12_CULL_MODE CullMode,
 		D3D12_COMPARISON_FUNC DepthFunc,
 		bool bDepthEnable,

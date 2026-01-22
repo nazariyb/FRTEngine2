@@ -454,15 +454,18 @@ bool CMaterialLibrary::SaveMaterialFile (const std::filesystem::path& MaterialPa
 
 void CMaterialLibrary::EnsureBaseColorTexture (SMaterial& Material) const
 {
-	if (!Renderer)
-	{
-		return;
-	}
+	const bool bWantsBaseColorTexture = !Material.BaseColorTexturePath.empty();
+	SetMaterialFlag(Material.Flags, EMaterialFlags::UseBaseColorTexture, bWantsBaseColorTexture);
 
-	if (Material.BaseColorTexturePath.empty())
+	if (!bWantsBaseColorTexture)
 	{
 		Material.bHasBaseColorTexture = false;
 		Material.LoadedBaseColorTexturePath.clear();
+		return;
+	}
+
+	if (!Renderer)
+	{
 		return;
 	}
 

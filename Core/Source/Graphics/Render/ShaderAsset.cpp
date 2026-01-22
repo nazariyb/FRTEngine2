@@ -42,6 +42,19 @@ static std::wstring QuoteArgument (const std::wstring& Value)
 	return escaped;
 }
 
+static std::wstring JoinDefine (const SShaderDefine& Define)
+{
+	if (Define.Value.empty())
+	{
+		return ToWide(Define.Name);
+	}
+
+	std::string combined = Define.Name;
+	combined.push_back('=');
+	combined.append(Define.Value);
+	return ToWide(combined);
+}
+
 static bool RunProcess (const std::wstring& ApplicationPath, const std::wstring& CommandLine, std::string* OutOutput)
 {
 	SECURITY_ATTRIBUTES securityAttributes = {};
@@ -144,6 +157,37 @@ bool CShaderLibrary::SStringEqual::operator() (std::string_view Lhs, const std::
 	return Lhs == std::string_view(Rhs);
 }
 
+static std::string BuildShaderKey (std::string_view Name, const TArray<SShaderDefine>& Defines)
+{
+	if (Defines.IsEmpty())
+	{
+		return std::string(Name);
+	}
+
+	std::string key;
+	key.reserve(Name.size() + Defines.Count() * 16u);
+	key.append(Name);
+	key.push_back('|');
+	for (uint32 i = 0; i < Defines.Count(); ++i)
+	{
+		const SShaderDefine& define = Defines[i];
+		if (define.Name.empty())
+		{
+			continue;
+		}
+
+		key.append(define.Name);
+		if (!define.Value.empty())
+		{
+			key.push_back('=');
+			key.append(define.Value);
+		}
+		key.push_back(';');
+	}
+
+	return key;
+}
+
 static std::filesystem::file_time_type GetLastWriteTime (const std::filesystem::path& Path)
 {
 	std::error_code error;
@@ -236,6 +280,15 @@ static bool CompileShader (const SShaderAsset& Shader)
 	if (!includeDir.empty())
 	{
 		commandLine.append(L" -I ").append(QuoteArgument(includeDir.wstring()));
+	}
+	for (uint32 i = 0; i < Shader.Defines.Count(); ++i)
+	{
+		const SShaderDefine& define = Shader.Defines[i];
+		if (define.Name.empty())
+		{
+			continue;
+		}
+		commandLine.append(L" -D ").append(QuoteArgument(JoinDefine(define)));
 	}
 	commandLine.append(L" ").append(QuoteArgument(sourcePath.wstring()));
 
@@ -337,7 +390,8 @@ const SShaderAsset* CShaderLibrary::LoadShader (
 	const std::filesystem::path& IncludeDir,
 	std::string_view EntryPoint,
 	std::string_view TargetProfile,
-	EShaderStage Stage)
+	EShaderStage Stage,
+	const TArray<SShaderDefine>& Defines)
 {
 	frt_assert(!Name.empty());
 	frt_assert(!CompiledPath.empty());
@@ -346,7 +400,8 @@ const SShaderAsset* CShaderLibrary::LoadShader (
 	const std::filesystem::path sourcePath = GetAbsolutePath(SourcePath);
 	const std::filesystem::path includeDir = GetAbsolutePath(IncludeDir);
 
-	auto it = Shaders.find(Name);
+	const std::string key = BuildShaderKey(Name, Defines);
+	auto it = Shaders.find(key);
 	if (it != Shaders.end())
 	{
 		frt_assert(it->second.Path == compiledPath);
@@ -365,7 +420,7 @@ const SShaderAsset* CShaderLibrary::LoadShader (
 	}
 
 	SShaderAsset asset;
-	asset.Name = std::string(Name);
+	asset.Name = key;
 	asset.Path = compiledPath;
 	asset.SourcePath = sourcePath;
 	asset.IncludeDir = includeDir;
@@ -378,6 +433,7 @@ const SShaderAsset* CShaderLibrary::LoadShader (
 		asset.TargetProfile = TargetProfile;
 	}
 	asset.Stage = Stage;
+	asset.Defines = Defines;
 
 	const bool bNeedsCompile = !asset.SourcePath.empty();
 	if (bNeedsCompile)
