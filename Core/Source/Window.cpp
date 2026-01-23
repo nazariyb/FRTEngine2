@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "CoreUtils.h"
+#include "Input/PlatformInputWin32.h"
 #include "Math/Math.h"
 
 #include "imgui.h"
@@ -221,6 +222,7 @@ LRESULT CWindow::HandleMessageProcessing (HWND hWindow, UINT message, WPARAM wPa
 
 LRESULT CALLBACK CWindow::WindowProcessMessage (HWND hWnd, UINT Message, WPARAM wParam, LPARAM lParam)
 {
+	input::HandleWin32Message(hWnd, Message, wParam, lParam);
 	extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler (HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 	if (ImGui_ImplWin32_WndProcHandler(hWnd, Message, wParam, lParam))
 	{

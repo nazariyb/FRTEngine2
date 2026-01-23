@@ -23,6 +23,9 @@ concept Unsigned = std::is_unsigned_v<T>;
 template <typename Type, typename Base>
 concept Derived = std::is_base_of_v<Base, Type>;
 
+template <typename T>
+concept Enum = std::is_enum_v<T>;
+
 
 template <typename T>
 struct SIsIndexable : std::false_type

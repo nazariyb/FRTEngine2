@@ -6,6 +6,7 @@
 
 #include "Core.h"
 #include "CoreTypes.h"
+#include "Enum.h"
 #include "Texture.h"
 
 
@@ -16,23 +17,7 @@ enum class EMaterialFlags : uint32
 	None = 0,
 	UseBaseColorTexture = 1u << 0u
 };
-
-inline bool HasMaterialFlag (uint32 Flags, EMaterialFlags Flag)
-{
-	return (Flags & static_cast<uint32>(Flag)) != 0u;
-}
-
-inline void SetMaterialFlag (uint32& Flags, EMaterialFlags Flag, bool bEnabled)
-{
-	if (bEnabled)
-	{
-		Flags |= static_cast<uint32>(Flag);
-	}
-	else
-	{
-		Flags &= ~static_cast<uint32>(Flag);
-	}
-}
+FRT_DECLARE_FLAG_ENUM(EMaterialFlags)
 
 struct FRT_CORE_API SMaterial
 {
@@ -47,7 +32,7 @@ struct FRT_CORE_API SMaterial
 
 	DirectX::XMFLOAT4 DiffuseAlbedo = { 1.f, 1.f, 1.f, 1.f };
 	uint32 RuntimeIndex = 0u;
-	uint32 Flags = 0u;
+	SFlags<EMaterialFlags> Flags;
 
 	D3D12_CULL_MODE CullMode = D3D12_CULL_MODE_NONE;
 	D3D12_COMPARISON_FUNC DepthFunc = D3D12_COMPARISON_FUNC_LESS;

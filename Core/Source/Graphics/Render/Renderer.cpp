@@ -323,7 +323,7 @@ static void BuildShaderDefines (
 {
 	OutDefines.Clear();
 
-	if (Stage == EShaderStage::Pixel && HasMaterialFlag(Material.Flags, EMaterialFlags::UseBaseColorTexture))
+	if (Stage == EShaderStage::Pixel && (Material.Flags && EMaterialFlags::UseBaseColorTexture))
 	{
 		SShaderDefine& define = OutDefines.Add();
 		define.Name = "FRT_HAS_BASE_COLOR_TEXTURE";

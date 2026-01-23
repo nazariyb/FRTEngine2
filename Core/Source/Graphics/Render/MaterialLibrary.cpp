@@ -455,7 +455,7 @@ bool CMaterialLibrary::SaveMaterialFile (const std::filesystem::path& MaterialPa
 void CMaterialLibrary::EnsureBaseColorTexture (SMaterial& Material) const
 {
 	const bool bWantsBaseColorTexture = !Material.BaseColorTexturePath.empty();
-	SetMaterialFlag(Material.Flags, EMaterialFlags::UseBaseColorTexture, bWantsBaseColorTexture);
+	Material.Flags << (EMaterialFlags::UseBaseColorTexture + bWantsBaseColorTexture);
 
 	if (!bWantsBaseColorTexture)
 	{
