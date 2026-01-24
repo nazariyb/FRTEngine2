@@ -41,6 +41,7 @@ int RunGame()
 				time.Tick();
 				if (!time.IsPaused())
 				{
+					game->Input(time.GetDeltaSeconds());
 					game->Tick(time.GetDeltaSeconds());
 					game->Draw(time.GetDeltaSeconds());
 				}

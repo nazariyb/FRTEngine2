@@ -6,6 +6,16 @@
 
 namespace frt::graphics::mesh
 {
+static void FlipTriangleWinding (TArray<uint32>& Indices)
+{
+	for (uint32 idx = 0; idx + 2u < Indices.Count(); idx += 3u)
+	{
+		const uint32 temp = Indices[idx + 1u];
+		Indices[idx + 1u] = Indices[idx + 2u];
+		Indices[idx + 2u] = temp;
+	}
+}
+
 SMesh GenerateCube(const Vector3f& Extent, uint32 SubdivisionsCount)
 {
 	SMesh result;
@@ -21,140 +31,140 @@ SMesh GenerateCube(const Vector3f& Extent, uint32 SubdivisionsCount)
 	auto& v = result.Vertices;
 	auto& i = result.Indices;
 
-	const float dHalf = Extent.x * 0.5f;
-	const float wHalf = Extent.y * 0.5f;
-	const float hHalf = Extent.z * 0.5f;
+	const float xHalf = Extent.x * 0.5f;
+	const float yHalf = Extent.y * 0.5f;
+	const float zHalf = Extent.z * 0.5f;
 
 	// Front face
 	v[0] = SVertex
 	{
-		.Position = { -dHalf, -wHalf, -hHalf }, .Uv = { 0.f, 1.f },
-		.Normal = { -1.f, 0.f, 0.f }, .Tangent = { 0.f, 1.f, 0.f },
+		.Position = { +xHalf, -yHalf, +zHalf }, .Uv = { 0.f, 1.f },
+		.Normal = { 0.f, 0.f, 1.f }, .Tangent = { -1.f, 0.f, 0.f },
 	};
 	v[1] = SVertex
 	{
-		.Position = { -dHalf, +wHalf, -hHalf }, .Uv = { 0.f, 0.f },
-		.Normal = { -1.f, 0.f, 0.f }, .Tangent = { 0.f, 1.f, 0.f },
+		.Position = { +xHalf, +yHalf, +zHalf }, .Uv = { 0.f, 0.f },
+		.Normal = { 0.f, 0.f, 1.f }, .Tangent = { -1.f, 0.f, 0.f },
 	};
 	v[2] = SVertex
 	{
-		.Position = { +dHalf, +wHalf, -hHalf }, .Uv = { 1.f, 0.f },
-		.Normal = { -1.f, 0.f, 0.f }, .Tangent = { 0.f, 1.f, 0.f },
+		.Position = { -xHalf, +yHalf, +zHalf }, .Uv = { 1.f, 0.f },
+		.Normal = { 0.f, 0.f, 1.f }, .Tangent = { -1.f, 0.f, 0.f },
 	};
 	v[3] = SVertex
 	{
-		.Position = { +dHalf, -wHalf, -hHalf }, .Uv = { 1.f, 1.f },
-		.Normal = { -1.f, 0.f, 0.f }, .Tangent = { 0.f, 1.f, 0.f },
+		.Position = { -xHalf, -yHalf, +zHalf }, .Uv = { 1.f, 1.f },
+		.Normal = { 0.f, 0.f, 1.f }, .Tangent = { -1.f, 0.f, 0.f },
 	};
 
 	// Back face
 	v[4] = SVertex
 	{
-		.Position = { -dHalf, -wHalf, +hHalf }, .Uv = { 1.f, 1.f },
-		.Normal = { 1.f, 0.f, 0.f }, .Tangent = { 0.f, -1.f, 0.f },
+		.Position = { +xHalf, -yHalf, -zHalf }, .Uv = { 0.f, 1.f },
+		.Normal = { 0.f, 0.f, -1.f }, .Tangent = { -1.f, 0.f, 0.f },
 	};
 	v[5] = SVertex
 	{
-		.Position = { +dHalf, -wHalf, +hHalf }, .Uv = { 0.f, 1.f },
-		.Normal = { 1.f, 0.f, 0.f }, .Tangent = { 0.f, -1.f, 0.f },
+		.Position = { -xHalf, -yHalf, -zHalf }, .Uv = { 1.f, 1.f },
+		.Normal = { 0.f, 0.f, -1.f }, .Tangent = { -1.f, 0.f, 0.f },
 	};
 	v[6] = SVertex
 	{
-		.Position = { +dHalf, +wHalf, +hHalf }, .Uv = { 0.f, 0.f },
-		.Normal = { 1.f, 0.f, 0.f }, .Tangent = { 0.f, -1.f, 0.f },
+		.Position = { -xHalf, +yHalf, -zHalf }, .Uv = { 1.f, 0.f },
+		.Normal = { 0.f, 0.f, -1.f }, .Tangent = { -1.f, 0.f, 0.f },
 	};
 	v[7] = SVertex
 	{
-		.Position = { -dHalf, +wHalf, +hHalf }, .Uv = { 1.f, 0.f },
-		.Normal = { 1.f, 0.f, 0.f }, .Tangent = { 0.f, -1.f, 0.f },
+		.Position = { +xHalf, +yHalf, -zHalf }, .Uv = { 0.f, 0.f },
+		.Normal = { 0.f, 0.f, -1.f }, .Tangent = { -1.f, 0.f, 0.f },
 	};
 
 	// Top face
 	v[8] = SVertex
 	{
-		.Position = { -dHalf, +wHalf, -hHalf }, .Uv = { 0.f, 1.f },
-		.Normal = { 0.f, 0.f, 1.f }, .Tangent = { 0.f, 1.f, 0.f },
+		.Position = { +xHalf, +yHalf, -zHalf }, .Uv = { 0.f, 1.f },
+		.Normal = { 0.f, 1.f, 0.f }, .Tangent = { -1.f, 0.f, 0.f },
 	};
 	v[9] = SVertex
 	{
-		.Position = { -dHalf, +wHalf, +hHalf }, .Uv = { 0.f, 0.f },
-		.Normal = { 0.f, 0.f, 1.f }, .Tangent = { 0.f, 1.f, 0.f },
+		.Position = { -xHalf, +yHalf, -zHalf }, .Uv = { 1.f, 1.f },
+		.Normal = { 0.f, 1.f, 0.f }, .Tangent = { -1.f, 0.f, 0.f },
 	};
 	v[10] = SVertex
 	{
-		.Position = { +dHalf, +wHalf, +hHalf }, .Uv = { 1.f, 0.f },
-		.Normal = { 0.f, 0.f, 1.f }, .Tangent = { 0.f, 1.f, 0.f },
+		.Position = { -xHalf, +yHalf, +zHalf }, .Uv = { 1.f, 0.f },
+		.Normal = { 0.f, 1.f, 0.f }, .Tangent = { -1.f, 0.f, 0.f },
 	};
 	v[11] = SVertex
 	{
-		.Position = { +dHalf, +wHalf, -hHalf }, .Uv = { 1.f, 1.f },
-		.Normal = { 0.f, 0.f, 1.f }, .Tangent = { 0.f, 1.f, 0.f },
+		.Position = { +xHalf, +yHalf, +zHalf }, .Uv = { 0.f, 0.f },
+		.Normal = { 0.f, 1.f, 0.f }, .Tangent = { -1.f, 0.f, 0.f },
 	};
 
 	// Bottom face
 	v[12] = SVertex
 	{
-		.Position = { -dHalf, -wHalf, -hHalf }, .Uv = { 1.f, 1.f },
-		.Normal = { 0.f, 0.f, -1.f }, .Tangent = { 0.f, -1.f, 0.f },
+		.Position = { +xHalf, -yHalf, -zHalf }, .Uv = { 0.f, 1.f },
+		.Normal = { 0.f, -1.f, 0.f }, .Tangent = { -1.f, 0.f, 0.f },
 	};
 	v[13] = SVertex
 	{
-		.Position = { +dHalf, -wHalf, -hHalf }, .Uv = { 0.f, 1.f },
-		.Normal = { 0.f, 0.f, -1.f }, .Tangent = { 0.f, -1.f, 0.f },
+		.Position = { +xHalf, -yHalf, +zHalf }, .Uv = { 0.f, 0.f },
+		.Normal = { 0.f, -1.f, 0.f }, .Tangent = { -1.f, 0.f, 0.f },
 	};
 	v[14] = SVertex
 	{
-		.Position = { +dHalf, -wHalf, +hHalf }, .Uv = { 0.f, 0.f },
-		.Normal = { 0.f, 0.f, -1.f }, .Tangent = { 0.f, -1.f, 0.f },
+		.Position = { -xHalf, -yHalf, +zHalf }, .Uv = { 1.f, 0.f },
+		.Normal = { 0.f, -1.f, 0.f }, .Tangent = { -1.f, 0.f, 0.f },
 	};
 	v[15] = SVertex
 	{
-		.Position = { -dHalf, -wHalf, +hHalf }, .Uv = { 1.f, 0.f },
-		.Normal = { 0.f, 0.f, -1.f }, .Tangent = { 0.f, -1.f, 0.f },
+		.Position = { -xHalf, -yHalf, -zHalf }, .Uv = { 1.f, 1.f },
+		.Normal = { 0.f, -1.f, 0.f }, .Tangent = { -1.f, 0.f, 0.f },
 	};
 
 	// Left face
 	v[16] = SVertex
 	{
-		.Position = { -dHalf, -wHalf, +hHalf }, .Uv = { 0.f, 1.f },
-		.Normal = { 0.f, -1.f, 0.f }, .Tangent = { -1.f, 0.f, 0.f },
+		.Position = { +xHalf, -yHalf, -zHalf }, .Uv = { 0.f, 1.f },
+		.Normal = { 1.f, 0.f, 0.f }, .Tangent = { 0.f, 0.f, 1.f },
 	};
 	v[17] = SVertex
 	{
-		.Position = { -dHalf, +wHalf, +hHalf }, .Uv = { 0.f, 0.f },
-		.Normal = { 0.f, -1.f, 0.f }, .Tangent = { -1.f, 0.f, 0.f },
+		.Position = { +xHalf, +yHalf, -zHalf }, .Uv = { 0.f, 0.f },
+		.Normal = { 1.f, 0.f, 0.f }, .Tangent = { 0.f, 0.f, 1.f },
 	};
 	v[18] = SVertex
 	{
-		.Position = { -dHalf, +wHalf, -hHalf }, .Uv = { 1.f, 0.f },
-		.Normal = { 0.f, -1.f, 0.f }, .Tangent = { -1.f, 0.f, 0.f },
+		.Position = { +xHalf, +yHalf, +zHalf }, .Uv = { 1.f, 0.f },
+		.Normal = { 1.f, 0.f, 0.f }, .Tangent = { 0.f, 0.f, 1.f },
 	};
 	v[19] = SVertex
 	{
-		.Position = { -dHalf, -wHalf, -hHalf }, .Uv = { 1.f, 1.f },
-		.Normal = { 0.f, -1.f, 0.f }, .Tangent = { -1.f, 0.f, 0.f },
+		.Position = { +xHalf, -yHalf, +zHalf }, .Uv = { 1.f, 1.f },
+		.Normal = { 1.f, 0.f, 0.f }, .Tangent = { 0.f, 0.f, 1.f },
 	};
 
 	// Right face
 	v[20] = SVertex
 	{
-		.Position = { +dHalf, -wHalf, -hHalf }, .Uv = { 0.f, 1.f },
-		.Normal = { 0.f, 1.f, 0.f }, .Tangent = { 1.f, 0.f, 0.f },
+		.Position = { -xHalf, -yHalf, -zHalf }, .Uv = { 0.f, 1.f },
+		.Normal = { -1.f, 0.f, 0.f }, .Tangent = { 0.f, 0.f, 1.f },
 	};
 	v[21] = SVertex
 	{
-		.Position = { +dHalf, +wHalf, -hHalf }, .Uv = { 0.f, 0.f },
-		.Normal = { 0.f, 1.f, 0.f }, .Tangent = { 1.f, 0.f, 0.f },
+		.Position = { -xHalf, -yHalf, +zHalf }, .Uv = { 1.f, 1.f },
+		.Normal = { -1.f, 0.f, 0.f }, .Tangent = { 0.f, 0.f, 1.f },
 	};
 	v[22] = SVertex
 	{
-		.Position = { +dHalf, +wHalf, +hHalf }, .Uv = { 1.f, 0.f },
-		.Normal = { 0.f, 1.f, 0.f }, .Tangent = { 1.f, 0.f, 0.f },
+		.Position = { -xHalf, +yHalf, +zHalf }, .Uv = { 1.f, 0.f },
+		.Normal = { -1.f, 0.f, 0.f }, .Tangent = { 0.f, 0.f, 1.f },
 	};
 	v[23] = SVertex
 	{
-		.Position = { +dHalf, -wHalf, +hHalf }, .Uv = { 1.f, 1.f },
-		.Normal = { 0.f, 1.f, 0.f }, .Tangent = { 1.f, 0.f, 0.f },
+		.Position = { -xHalf, +yHalf, -zHalf }, .Uv = { 0.f, 0.f },
+		.Normal = { -1.f, 0.f, 0.f }, .Tangent = { 0.f, 0.f, 1.f },
 	};
 
 	// Front face
@@ -210,15 +220,15 @@ SMesh GenerateSphere(float Radius, uint32 SliceCount, uint32 StackCount)
 
 	v[0] = SVertex // Top vertex
 	{
-		.Position = { 0.f, 0.f, +Radius }, .Uv = { 0.f, 0.f },
-		.Normal = { 0.f, 0.f, 1.f }, .Tangent = { 0.f, 1.f, 0.f },
+		.Position = { 0.f, +Radius, 0.f }, .Uv = { 0.f, 0.f },
+		.Normal = { 0.f, 1.f, 0.f }, .Tangent = { 1.f, 0.f, 0.f },
 		.Color = { 0.f, 0.f, 0.f, 1.f }
 	};
 
 	v[vertexCount - 1] = SVertex // Bottom vertex
 	{
-		.Position = { 0.f, 0.f, -Radius }, .Uv = { 0.f, 1.f },
-		.Normal = { 0.f, 0.f, -1.f }, .Tangent = { 0.f, 1.f, 0.f },
+		.Position = { 0.f, -Radius, 0.f }, .Uv = { 0.f, 1.f },
+		.Normal = { 0.f, -1.f, 0.f }, .Tangent = { 1.f, 0.f, 0.f },
 		.Color = { 0.f, 0.f, 0.f, 1.f }
 	};
 
@@ -239,15 +249,15 @@ SMesh GenerateSphere(float Radius, uint32 SliceCount, uint32 StackCount)
 				.Position =
 				{
 					Radius * sinf(phi) * sinf(theta),
-					Radius * sinf(phi) * cosf(theta),
-					Radius * cosf(phi)
+					Radius * cosf(phi),
+					Radius * sinf(phi) * cosf(theta)
 				},
 				.Uv = { theta / math::TWO_PI, phi / math::PI },
 				.Tangent =
 				{
-					+Radius * sinf(phi) * cosf(theta),
-					-Radius * sinf(phi) * sinf(theta),
-					0.f
+					Radius * sinf(phi) * cosf(theta),
+					0.f,
+					-Radius * sinf(phi) * sinf(theta)
 				}
 			};
 			v[vertexIdx].Tangent.NormalizeUnsafe();
@@ -293,6 +303,8 @@ SMesh GenerateSphere(float Radius, uint32 SliceCount, uint32 StackCount)
 		i[curIdx++] = baseIdx + sliceIdx + 1u;
 	}
 
+	FlipTriangleWinding(i);
+
 #if !defined(FRT_HEADLESS)
 	// TODO: temp
 	_private::CreateGpuResources(v, i, result.VertexBufferGpu, result.IndexBufferGpu);
@@ -318,18 +330,23 @@ SMesh GenerateGeosphere(float Radius, uint32 SubdivisionsCount)
 	constexpr float X = 0.525731f;
 	constexpr float Z = 0.850651f;
 
-	v[0].Position = { -X, Z, 0.f };
-	v[1].Position = { X, Z, 0.f };
-	v[2].Position = { -X, -Z, 0.f };
-	v[3].Position = { X, -Z, 0.f };
-	v[4].Position = { 0.f, X, Z };
-	v[5].Position = { 0.f, -X, Z };
-	v[6].Position = { 0.f, X, -Z };
-	v[7].Position = { 0.f, -X, -Z };
-	v[8].Position = { Z, 0.f, X };
-	v[9].Position = { -Z, 0.f, X };
-	v[10].Position = { Z, 0.f, -X };
-	v[11].Position = { -Z, 0.f, -X };
+	const auto toLuf = [] (float x, float y, float z)
+	{
+		return Vector3f(-y, z, x);
+	};
+
+	v[0].Position = toLuf(-X, Z, 0.f);
+	v[1].Position = toLuf(X, Z, 0.f);
+	v[2].Position = toLuf(-X, -Z, 0.f);
+	v[3].Position = toLuf(X, -Z, 0.f);
+	v[4].Position = toLuf(0.f, X, Z);
+	v[5].Position = toLuf(0.f, -X, Z);
+	v[6].Position = toLuf(0.f, X, -Z);
+	v[7].Position = toLuf(0.f, -X, -Z);
+	v[8].Position = toLuf(Z, 0.f, X);
+	v[9].Position = toLuf(-Z, 0.f, X);
+	v[10].Position = toLuf(Z, 0.f, -X);
+	v[11].Position = toLuf(-Z, 0.f, -X);
 
 	i =
 		{
@@ -351,7 +368,7 @@ SMesh GenerateGeosphere(float Radius, uint32 SubdivisionsCount)
 		v[idx].Normal = n;
 
 		// Derive texture coordinates from spherical coordinates
-		float theta = atan2f(p.z, p.x);
+		float theta = atan2f(p.x, p.z);
 
 		// Put in [0, 2pi]
 		if (theta < 0.f)
@@ -365,11 +382,13 @@ SMesh GenerateGeosphere(float Radius, uint32 SubdivisionsCount)
 		v[idx].Uv.y = phi / math::PI;
 
 		// Partial derivative of P with respect to theta
-		v[idx].Tangent.x = -Radius * sinf(phi) * sinf(theta);
-		v[idx].Tangent.y = Radius * sinf(phi) * cosf(theta);
-		v[idx].Tangent.z = 0.f;
+		v[idx].Tangent.x = Radius * sinf(phi) * cosf(theta);
+		v[idx].Tangent.y = 0.f;
+		v[idx].Tangent.z = -Radius * sinf(phi) * sinf(theta);
 		v[idx].Tangent.NormalizeUnsafe();
 	}
+
+	FlipTriangleWinding(i);
 
 #if !defined(FRT_HEADLESS)
 	// TODO: temp
@@ -550,28 +569,28 @@ SMesh GenerateQuad(float Width, float Depth)
 	{
 		.Position = Vector3f::ForwardVector * halfDepth + Vector3f::LeftVector * halfWidth,
 		.Uv = { 0.f, 1.f },
-		.Normal = { 0.f, 1.f, 0.f }, .Tangent = { 1.f, 0.f, 0.f }
+		.Normal = { 0.f, 1.f, 0.f }, .Tangent = { -1.f, 0.f, 0.f }
 	};
 
 	v[1] = SVertex
 	{
 		.Position = Vector3f::BackwardVector * halfDepth + Vector3f::LeftVector * halfWidth,
 		.Uv = { 0.f, 0.f },
-		.Normal = { 0.f, 1.f, 0.f }, .Tangent = { 1.f, 0.f, 0.f }
+		.Normal = { 0.f, 1.f, 0.f }, .Tangent = { -1.f, 0.f, 0.f }
 	};
 
 	v[2] = SVertex
 	{
 		.Position = Vector3f::BackwardVector * halfDepth + Vector3f::RightVector * halfWidth,
 		.Uv = { 1.f, 0.f },
-		.Normal = { 0.f, 1.f, 0.f }, .Tangent = { 1.f, 0.f, 0.f }
+		.Normal = { 0.f, 1.f, 0.f }, .Tangent = { -1.f, 0.f, 0.f }
 	};
 
 	v[3] = SVertex
 	{
 		.Position = Vector3f::ForwardVector * halfDepth + Vector3f::RightVector * halfWidth,
 		.Uv = { 1.f, 1.f },
-		.Normal = { 0.f, 1.f, 0.f }, .Tangent = { 1.f, 0.f, 0.f }
+		.Normal = { 0.f, 1.f, 0.f }, .Tangent = { -1.f, 0.f, 0.f }
 	};
 
 	i[0] = 0u; i[1] = 1u; i[2] = 2u;

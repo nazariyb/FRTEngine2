@@ -1,4 +1,4 @@
-#include "Input/PlatformInputWin32.h"
+﻿#include "Input/PlatformInputWin32.h"
 
 #if defined(_WINDOWS)
 

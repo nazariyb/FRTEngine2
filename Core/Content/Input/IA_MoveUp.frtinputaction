@@ -1,0 +1,5 @@
+version: 1
+# FRT input action
+
+action: IA_MoveUp
+type: Button

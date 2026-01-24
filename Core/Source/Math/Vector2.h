@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cmath>
+#include <sstream>
+#include <string>
 
 #include "Core.h"
 #include "CoreTypes.h"
@@ -88,6 +90,9 @@ public:
 	Real DistSquared (const TVector2<Real>& Rhs) const;
 	static Real Dist (const TVector2<Real>& Lhs, const TVector2<Real>& Rhs);
 	static Real DistSquared (const TVector2<Real>& Lhs, const TVector2<Real>& Rhs);
+
+	std::string ToString () const;
+	template<concepts::Numerical N> friend std::ostream& operator << (std::ostream& Stream, const TVector2<N>& Vector);
 
 	FRT_CORE_API static const TVector2<Real> ZeroVector;
 	FRT_CORE_API static const TVector2<Real> OneVector;
@@ -346,5 +351,23 @@ template <concepts::Numerical Real>
 Real TVector2<Real>::DistSquared (const TVector2<Real>& Lhs, const TVector2<Real>& Rhs)
 {
 	return Lhs.DistSquared(Rhs);
+}
+
+template <concepts::Numerical T> 
+std::string TVector2<T>::ToString () const
+{
+	std::stringstream ss;
+	ss << "(";
+	ss << x;
+	ss << ", ";
+	ss << y;
+	ss << ")";
+	return ss.str();
+}
+
+template <concepts::Numerical N>
+std::ostream& operator << (std::ostream& Stream, const TVector2<N>& Vector)
+{
+	return Stream << Vector.ToString();
 }
 }

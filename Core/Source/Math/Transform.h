@@ -28,6 +28,10 @@ public:
 
 	const DirectX::XMFLOAT4X4& GetMatrix ();
 
+	const Vector3f& GetTranslation () const { return Translation; }
+	const Vector3f& GetRotation () const { return Rotation; }
+	const Vector3f& GetScale () const { return Scale; }
+
 	void SetTranslation (float X, float Y, float Z);
 	void SetTranslation (const Vector3f& InTranslation);
 
@@ -36,6 +40,10 @@ public:
 
 	void SetScale (float InScale);
 	void SetScale (const Vector3f& InScale);
+
+	void MoveBy (const Vector3f& Delta);
+	void RotateBy (const Vector3f& Delta);
+	void ScaleBy (float Delta);
 };
 
 
@@ -49,11 +57,12 @@ inline const DirectX::XMFLOAT4X4& STransform::GetMatrix ()
 {
 	using namespace DirectX;
 
-	MatrixIntr = XMMatrixMultiply(
-		XMMatrixMultiply(
-			XMMatrixRotationRollPitchYaw(Rotation.x, Rotation.z, Rotation.y),
-			XMMatrixScaling(Scale.x, Scale.y, Scale.z)),
-		XMMatrixTranslation(Translation.x, Translation.z, Translation.y));
+	const XMMATRIX rotation = XMMatrixRotationRollPitchYaw(Rotation.x, Rotation.y, Rotation.z);
+	const XMMATRIX scale = XMMatrixScaling(Scale.x, Scale.y, Scale.z);
+	const XMMATRIX translation = XMMatrixTranslation(Translation.x, Translation.y, Translation.z);
+	const XMMATRIX engineMatrix = XMMatrixMultiply(XMMatrixMultiply(rotation, scale), translation);
+	const XMMATRIX lufToDx = XMMatrixScaling(-1.f, 1.f, 1.f);
+	MatrixIntr = XMMatrixMultiply(lufToDx, engineMatrix);
 
 	XMStoreFloat4x4(&Matrix4x4, MatrixIntr);
 
@@ -88,5 +97,20 @@ inline void STransform::SetScale (float InScale)
 inline void STransform::SetScale (const Vector3f& InScale)
 {
 	Scale = InScale;
+}
+
+inline void STransform::MoveBy (const Vector3f& Delta)
+{
+	Translation += Delta;
+}
+
+inline void STransform::RotateBy (const Vector3f& Delta)
+{
+	Rotation += Delta;
+}
+
+inline void STransform::ScaleBy (float Delta)
+{
+	Scale *= Delta;
 }
 }

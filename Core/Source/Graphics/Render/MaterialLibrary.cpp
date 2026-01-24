@@ -7,6 +7,7 @@
 
 #include <stb_image.h>
 
+#include "Assets/TextAssetIO.h"
 #include "Graphics/Render/Renderer.h"
 #include "Memory/Memory.h"
 
@@ -15,85 +16,9 @@ namespace frt::graphics
 {
 static constexpr int32 MaterialFileVersion = 1;
 
-static std::string TrimCopy (const std::string& Input)
-{
-	size_t start = 0;
-	while (start < Input.size() && std::isspace(static_cast<unsigned char>(Input[start])))
-	{
-		++start;
-	}
-
-	size_t end = Input.size();
-	while (end > start && std::isspace(static_cast<unsigned char>(Input[end - 1u])))
-	{
-		--end;
-	}
-
-	return Input.substr(start, end - start);
-}
-
-static std::string StripQuotes (const std::string& Input)
-{
-	if (Input.size() < 2u)
-	{
-		return Input;
-	}
-
-	const char first = Input.front();
-	const char last = Input.back();
-	if ((first == '"' && last == '"') || (first == '\'' && last == '\''))
-	{
-		return Input.substr(1u, Input.size() - 2u);
-	}
-
-	return Input;
-}
-
-static bool ParseInt32 (const std::string& Input, int32* OutValue)
-{
-	const char* cstr = Input.c_str();
-	char* end = nullptr;
-	const long value = std::strtol(cstr, &end, 10);
-	if (end == cstr)
-	{
-		return false;
-	}
-
-	*OutValue = static_cast<int32>(value);
-	return true;
-}
-
-static std::string ToLowerCopy (const std::string& Input)
-{
-	std::string result = Input;
-	for (char& ch : result)
-	{
-		ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-	}
-	return result;
-}
-
-static bool ParseBool (const std::string& Input, bool* OutValue)
-{
-	const std::string normalized = ToLowerCopy(Input);
-	if (normalized == "true" || normalized == "1" || normalized == "yes" || normalized == "on")
-	{
-		*OutValue = true;
-		return true;
-	}
-
-	if (normalized == "false" || normalized == "0" || normalized == "no" || normalized == "off")
-	{
-		*OutValue = false;
-		return true;
-	}
-
-	return false;
-}
-
 static bool ParseCullMode (const std::string& Input, D3D12_CULL_MODE* OutMode)
 {
-	const std::string normalized = ToLowerCopy(Input);
+	const std::string normalized = assets::text::ToLowerCopy(Input);
 	if (normalized == "none")
 	{
 		*OutMode = D3D12_CULL_MODE_NONE;
@@ -117,7 +42,7 @@ static bool ParseCullMode (const std::string& Input, D3D12_CULL_MODE* OutMode)
 
 static bool ParseDepthFunc (const std::string& Input, D3D12_COMPARISON_FUNC* OutFunc)
 {
-	const std::string normalized = ToLowerCopy(Input);
+	const std::string normalized = assets::text::ToLowerCopy(Input);
 	if (normalized == "never")
 	{
 		*OutFunc = D3D12_COMPARISON_FUNC_NEVER;
@@ -191,54 +116,7 @@ static const char* DepthFuncToString (D3D12_COMPARISON_FUNC Func)
 
 static int32 GetMaterialFileVersion (const std::filesystem::path& MaterialPath)
 {
-	std::ifstream stream(MaterialPath);
-	if (!stream.is_open())
-	{
-		return 0;
-	}
-
-	std::string line;
-	while (std::getline(stream, line))
-	{
-		std::string trimmed = TrimCopy(line);
-		if (trimmed.empty())
-		{
-			continue;
-		}
-
-		if (trimmed.rfind("#", 0) == 0u || trimmed.rfind("//", 0) == 0u)
-		{
-			continue;
-		}
-
-		size_t split = trimmed.find(':');
-		if (split == std::string::npos)
-		{
-			split = trimmed.find('=');
-		}
-
-		if (split == std::string::npos)
-		{
-			continue;
-		}
-
-		std::string key = TrimCopy(trimmed.substr(0, split));
-		std::string value = TrimCopy(trimmed.substr(split + 1));
-		value = StripQuotes(value);
-
-		if (key == "version")
-		{
-			int32 version = 0;
-			if (ParseInt32(value, &version))
-			{
-				return version;
-			}
-		}
-
-		break;
-	}
-
-	return 0;
+	return assets::text::GetTextAssetVersion(MaterialPath);
 }
 
 void CMaterialLibrary::SetRenderer (CRenderer* InRenderer)
@@ -356,31 +234,12 @@ bool CMaterialLibrary::ParseMaterialFile (const std::filesystem::path& MaterialP
 	std::string line;
 	while (std::getline(stream, line))
 	{
-		std::string trimmed = TrimCopy(line);
-		if (trimmed.empty())
+		std::string key;
+		std::string value;
+		if (!assets::text::TryParseKeyValue(line, &key, &value))
 		{
 			continue;
 		}
-
-		if (trimmed.rfind("#", 0) == 0u || trimmed.rfind("//", 0) == 0u)
-		{
-			continue;
-		}
-
-		size_t split = trimmed.find(':');
-		if (split == std::string::npos)
-		{
-			split = trimmed.find('=');
-		}
-
-		if (split == std::string::npos)
-		{
-			continue;
-		}
-
-		std::string key = TrimCopy(trimmed.substr(0, split));
-		std::string value = TrimCopy(trimmed.substr(split + 1));
-		value = StripQuotes(value);
 
 		if (key == "name")
 		{
@@ -408,11 +267,11 @@ bool CMaterialLibrary::ParseMaterialFile (const std::filesystem::path& MaterialP
 		}
 		else if (key == "depth_enable")
 		{
-			(void)ParseBool(value, &Material.bDepthEnable);
+			(void)assets::text::ParseBool(value, &Material.bDepthEnable);
 		}
 		else if (key == "depth_write")
 		{
-			(void)ParseBool(value, &Material.bDepthWrite);
+			(void)assets::text::ParseBool(value, &Material.bDepthWrite);
 		}
 		else if (key == "depth_func")
 		{
@@ -420,7 +279,7 @@ bool CMaterialLibrary::ParseMaterialFile (const std::filesystem::path& MaterialP
 		}
 		else if (key == "alpha_blend")
 		{
-			(void)ParseBool(value, &Material.bAlphaBlend);
+			(void)assets::text::ParseBool(value, &Material.bAlphaBlend);
 		}
 	}
 

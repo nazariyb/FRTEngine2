@@ -7,6 +7,8 @@
 #include "Graphics/Render/RenderCommonTypes.h"
 #include "Memory/MemoryPool.h"
 #include "Memory/Ref.h"
+#include "Input/InputActionLibrary.h"
+#include "Input/InputSystem.h"
 #include "User/UserSettings.h"
 
 
@@ -49,11 +51,17 @@ public:
 	memory::TRefWeak<graphics::CCamera> GetCamera () const { return Camera.GetWeak(); }
 	// ~temp
 #endif
+	input::CInputSystem& GetInputSystem () { return InputSystem; }
+	const input::CInputSystem& GetInputSystem () const { return InputSystem; }
+	input::CInputActionLibrary& GetInputActionLibrary () { return InputActionLibrary; }
+	const input::CInputActionLibrary& GetInputActionLibrary () const { return InputActionLibrary; }
+	input::CInputActionMap* GetActiveInputActionMap ();
+	const input::CInputActionMap* GetActiveInputActionMap () const;
 
 	virtual void Load ();
 
 	// Update
-	// virtual void Input(float DeltaSeconds);
+	virtual void Input(float DeltaSeconds);
 	virtual void Tick (float DeltaSeconds);
 #if !defined(FRT_HEADLESS)
 	virtual void Draw (float DeltaSeconds);
@@ -85,6 +93,9 @@ protected:
 
 #endif
 	memory::TRefUnique<CWorld> World;
+	input::CInputSystem InputSystem;
+	input::CInputActionLibrary InputActionLibrary;
+	input::SInputActionMapAsset* ActiveActionMap = nullptr;
 
 	// temp
 	memory::TRefShared<CEntity> Cube;
@@ -99,6 +110,7 @@ protected:
 	long long FrameCount;
 
 	bool bLoaded = false; // temp
+	bool bCameraMovementEnabled = false;
 };
 
 

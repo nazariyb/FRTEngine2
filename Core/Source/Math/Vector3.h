@@ -8,7 +8,7 @@
 
 namespace frt::math
 {
-template <typename T>
+template <concepts::Numerical T>
 struct TVector3
 {
 	static_assert(std::is_floating_point_v<T>, "T must be a floating point number");
@@ -98,6 +98,9 @@ public:
 	static Real Dist (const TVector3<Real>& Lhs, const TVector3<Real>& Rhs);
 	static Real DistSquared (const TVector3<Real>& Lhs, const TVector3<Real>& Rhs);
 
+	std::string ToString () const;
+	template<concepts::Numerical N> friend std::ostream& operator << (std::ostream& Stream, const TVector3<N>& Vector);
+
 	static const TVector3<Real> ZeroVector;
 	static const TVector3<Real> OneVector;
 	static const TVector3<Real> UpVector;
@@ -112,13 +115,13 @@ public:
 };
 
 
-template <typename Real>
+template <concepts::Numerical Real>
 TVector3<Real>& TVector3<Real>::operator- ()
 {
 	return TVector3<Real>(-x, -y, -z);
 }
 
-template <typename Real>
+template <concepts::Numerical Real>
 TVector3<Real>& TVector3<Real>::operator+= (const TVector3<Real>& Rhs)
 {
 	x += Rhs.x;
@@ -127,7 +130,7 @@ TVector3<Real>& TVector3<Real>::operator+= (const TVector3<Real>& Rhs)
 	return *this;
 }
 
-template <typename Real>
+template <concepts::Numerical Real>
 TVector3<Real>& TVector3<Real>::operator-= (const TVector3<Real>& Rhs)
 {
 	x -= Rhs.x;
@@ -136,7 +139,7 @@ TVector3<Real>& TVector3<Real>::operator-= (const TVector3<Real>& Rhs)
 	return *this;
 }
 
-template <typename Real>
+template <concepts::Numerical Real>
 TVector3<Real>& TVector3<Real>::operator*= (const TVector3<Real>& Rhs)
 {
 	x *= Rhs.x;
@@ -145,7 +148,7 @@ TVector3<Real>& TVector3<Real>::operator*= (const TVector3<Real>& Rhs)
 	return *this;
 }
 
-template <typename Real>
+template <concepts::Numerical Real>
 TVector3<Real>& TVector3<Real>::operator/= (const TVector3<Real>& Rhs)
 {
 	x /= Rhs.x;
@@ -154,7 +157,7 @@ TVector3<Real>& TVector3<Real>::operator/= (const TVector3<Real>& Rhs)
 	return *this;
 }
 
-template <typename Real>
+template <concepts::Numerical Real>
 TVector3<Real>& TVector3<Real>::operator+= (const Real& Rhs)
 {
 	x += Rhs;
@@ -163,7 +166,7 @@ TVector3<Real>& TVector3<Real>::operator+= (const Real& Rhs)
 	return *this;
 }
 
-template <typename Real>
+template <concepts::Numerical Real>
 TVector3<Real>& TVector3<Real>::operator-= (const Real& Rhs)
 {
 	x -= Rhs;
@@ -172,7 +175,7 @@ TVector3<Real>& TVector3<Real>::operator-= (const Real& Rhs)
 	return *this;
 }
 
-template <typename Real>
+template <concepts::Numerical Real>
 TVector3<Real>& TVector3<Real>::operator*= (const Real& Rhs)
 {
 	x *= Rhs;
@@ -181,7 +184,7 @@ TVector3<Real>& TVector3<Real>::operator*= (const Real& Rhs)
 	return *this;
 }
 
-template <typename Real>
+template <concepts::Numerical Real>
 TVector3<Real>& TVector3<Real>::operator/= (const Real& Rhs)
 {
 	x /= Rhs;
@@ -256,7 +259,7 @@ constexpr TVector3<R> operator* (const L& lhs, const TVector3<R>& rhs) noexcept
 	return rhs * lhs;
 }
 
-template <typename T>
+template <concepts::Numerical T>
 TVector3<T>& TVector3<T>::NormalizeUnsafe ()
 {
 	const float magnitude = Size();
@@ -266,43 +269,43 @@ TVector3<T>& TVector3<T>::NormalizeUnsafe ()
 	return *this;
 }
 
-template <typename T>
+template <concepts::Numerical T>
 TVector3<T> TVector3<T>::GetNormalizedUnsafe () const
 {
 	return TVector3<T>(*this).NormalizeUnsafe();
 }
 
-template <typename Real>
+template <concepts::Numerical Real>
 Real TVector3<Real>::Dot (const TVector3<Real>& Rhs)
 {
 	return x * Rhs.x + y * Rhs.y + z * Rhs.z;
 }
 
-template <typename T>
+template <concepts::Numerical T>
 typename TVector3<T>::Real TVector3<T>::CosDegrees (const TVector3<Real>& Rhs)
 {
 	return frt::math::RadiansToDegrees(CosRadians(Rhs));
 }
 
-template <typename T>
+template <concepts::Numerical T>
 typename TVector3<T>::Real TVector3<T>::CosRadians (const TVector3<Real>& Rhs)
 {
 	return Dot(GetNormalizedUnsafe(), Rhs.GetNormalizedUnsafe());
 }
 
-template <typename T>
+template <concepts::Numerical T>
 typename TVector3<T>::Real TVector3<T>::ProjectOnTo (const TVector3<Real>& Rhs)
 {
 	return Dot(Rhs);
 }
 
-template <typename T>
+template <concepts::Numerical T>
 typename TVector3<T>::Real TVector3<T>::ProjectOnToNormal (const TVector3<Real>& Rhs)
 {
 	return Dot(Rhs.GetNormalizedUnsafe());
 }
 
-template <typename Real>
+template <concepts::Numerical Real>
 TVector3<Real> TVector3<Real>::Cross (const TVector3<Real>& Rhs)
 {
 	return TVector3<Real>
@@ -313,37 +316,37 @@ TVector3<Real> TVector3<Real>::Cross (const TVector3<Real>& Rhs)
 			);
 }
 
-template <typename Real>
+template <concepts::Numerical Real>
 Real TVector3<Real>::Dot (const TVector3<Real>& Lhs, const TVector3<Real>& Rhs)
 {
 	return Lhs.x * Rhs.x + Lhs.y * Rhs.y + Lhs.z * Rhs.z;
 }
 
-template <typename Real>
+template <concepts::Numerical Real>
 Real TVector3<Real>::Cos (const TVector3<Real>& Lhs, const TVector3<Real>& Rhs)
 {
 	return Lhs.x * Rhs.x + Lhs.y * Rhs.y + Lhs.z * Rhs.z;
 }
 
-template <typename Real>
+template <concepts::Numerical Real>
 TVector3<Real> TVector3<Real>::Cross (const TVector3<Real>& Lhs, const TVector3<Real>& Rhs)
 {
 	return Lhs.Cross(Rhs);
 }
 
-template <typename Real>
+template <concepts::Numerical Real>
 Real TVector3<Real>::Size () const
 {
 	return std::sqrt(x * x + y * y + z * z);
 }
 
-template <typename Real>
+template <concepts::Numerical Real>
 Real TVector3<Real>::SizeSquared () const
 {
 	return x * x + y * y + z * z;
 }
 
-template <typename Real>
+template <concepts::Numerical Real>
 Real TVector3<Real>::Dist (const TVector3<Real>& Rhs) const
 {
 	const Real dx = x - Rhs.x;
@@ -352,7 +355,7 @@ Real TVector3<Real>::Dist (const TVector3<Real>& Rhs) const
 	return std::sqrt(dx * dx + dy * dy + dz * dz);
 }
 
-template <typename Real>
+template <concepts::Numerical Real>
 Real TVector3<Real>::DistSquared (const TVector3<Real>& Rhs) const
 {
 	const Real dx = x - Rhs.x;
@@ -361,28 +364,42 @@ Real TVector3<Real>::DistSquared (const TVector3<Real>& Rhs) const
 	return dx * dx + dy * dy + dz * dz;
 }
 
-template <typename Real>
+template <concepts::Numerical Real>
 Real TVector3<Real>::Dist (const TVector3<Real>& Lhs, const TVector3<Real>& Rhs)
 {
 	return Lhs.Dist(Rhs);
 }
 
-template <typename Real>
+template <concepts::Numerical Real>
 Real TVector3<Real>::DistSquared (const TVector3<Real>& Lhs, const TVector3<Real>& Rhs)
 {
 	return Lhs.DistSquared(Rhs);
 }
 
-template<typename Real> inline const TVector3<Real> TVector3<Real>::ZeroVector = TVector3<Real>(0, 0, 0);
-template<typename Real> inline const TVector3<Real> TVector3<Real>::OneVector = TVector3<Real>(1, 1, 1);
-template<typename Real> inline const TVector3<Real> TVector3<Real>::UpVector = TVector3<Real>(0, 0, 1);
-template<typename Real> inline const TVector3<Real> TVector3<Real>::DownVector = TVector3<Real>(0, 0, -1);
-template<typename Real> inline const TVector3<Real> TVector3<Real>::ForwardVector = TVector3<Real>(1, 0, 0);
-template<typename Real> inline const TVector3<Real> TVector3<Real>::BackwardVector = TVector3<Real>(-1, 0, 0);
-template<typename Real> inline const TVector3<Real> TVector3<Real>::RightVector = TVector3<Real>(0, 1, 0);
-template<typename Real> inline const TVector3<Real> TVector3<Real>::LeftVector = TVector3<Real>(0, -1, 0);
-template<typename Real> inline const TVector3<Real> TVector3<Real>::XAxisVector = TVector3<Real>(1, 0, 0);
-template<typename Real> inline const TVector3<Real> TVector3<Real>::YAxisVector = TVector3<Real>(0, 1, 0);
-template<typename Real> inline const TVector3<Real> TVector3<Real>::ZAxisVector = TVector3<Real>(0, 0, 1);
+template <concepts::Numerical Real> 
+std::string TVector3<Real>::ToString () const
+{
+	std::stringstream ss;
+	ss << "(" << x << ", " << y << ", " << z << ")";
+	return ss.str();
+}
+
+template <concepts::Numerical N>
+std::ostream& operator << (std::ostream& Stream, const TVector3<N>& Vector)
+{
+	return Stream << Vector.ToString();
+}
+
+template<concepts::Numerical Real> inline const TVector3<Real> TVector3<Real>::ZeroVector = TVector3<Real>(0, 0, 0);
+template<concepts::Numerical Real> inline const TVector3<Real> TVector3<Real>::OneVector = TVector3<Real>(1, 1, 1);
+template<concepts::Numerical Real> inline const TVector3<Real> TVector3<Real>::UpVector = TVector3<Real>(0, 1, 0);
+template<concepts::Numerical Real> inline const TVector3<Real> TVector3<Real>::DownVector = TVector3<Real>(0, -1, 0);
+template<concepts::Numerical Real> inline const TVector3<Real> TVector3<Real>::ForwardVector = TVector3<Real>(0, 0, 1);
+template<concepts::Numerical Real> inline const TVector3<Real> TVector3<Real>::BackwardVector = TVector3<Real>(0, 0, -1);
+template<concepts::Numerical Real> inline const TVector3<Real> TVector3<Real>::RightVector = TVector3<Real>(-1, 0, 0);
+template<concepts::Numerical Real> inline const TVector3<Real> TVector3<Real>::LeftVector = TVector3<Real>(1, 0, 0);
+template<concepts::Numerical Real> inline const TVector3<Real> TVector3<Real>::XAxisVector = TVector3<Real>(1, 0, 0);
+template<concepts::Numerical Real> inline const TVector3<Real> TVector3<Real>::YAxisVector = TVector3<Real>(0, 1, 0);
+template<concepts::Numerical Real> inline const TVector3<Real> TVector3<Real>::ZAxisVector = TVector3<Real>(0, 0, 1);
 
 }

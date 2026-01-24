@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <unordered_map>
 
@@ -33,6 +33,9 @@ public:
 	float GetMouseWheelDelta (WindowId Window = InvalidWindowId) const;
 
 	bool IsGamepadConnected (uint8 GamepadIndex, WindowId Window = InvalidWindowId) const;
+	bool IsGamepadButtonDown (uint8 GamepadIndex, EGamepadButton Button, WindowId Window = InvalidWindowId) const;
+	bool WasGamepadButtonPressed (uint8 GamepadIndex, EGamepadButton Button, WindowId Window = InvalidWindowId) const;
+	bool WasGamepadButtonReleased (uint8 GamepadIndex, EGamepadButton Button, WindowId Window = InvalidWindowId) const;
 	float GetGamepadAxis (uint8 GamepadIndex, EGamepadAxis Axis, WindowId Window = InvalidWindowId) const;
 
 public:

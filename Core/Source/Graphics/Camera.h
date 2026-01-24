@@ -3,6 +3,7 @@
 #include <DirectXMath.h>
 #include "Core.h"
 #include "Math/Math.h"
+#include "Math/Transform.h"
 
 
 namespace frt::graphics
@@ -18,9 +19,10 @@ public:
 		float aspectRatio,
 		float nearPlane = 1.0f,
 		float farPlane = 1000.0f) const;
+	Vector3f GetLookDirection () const;
 
 public:
-	Vector3f Position;
-	Vector3f LookDirection;
+	math::STransform Transform;
+	float MovementSpeed = 5.0f;
 };
 }

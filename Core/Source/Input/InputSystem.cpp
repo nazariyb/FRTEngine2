@@ -1,4 +1,4 @@
-#include "Input/InputSystem.h"
+﻿#include "Input/InputSystem.h"
 
 #include <algorithm>
 #include <vector>
@@ -224,6 +224,79 @@ bool CInputSystem::IsGamepadConnected (uint8 GamepadIndex, WindowId Window) cons
 	}
 
 	return state->Current.Gamepads[GamepadIndex].bConnected;
+}
+
+bool CInputSystem::IsGamepadButtonDown (uint8 GamepadIndex, EGamepadButton Button, WindowId Window) const
+{
+	if (GamepadIndex >= MaxGamepads)
+	{
+		return false;
+	}
+
+	const size_t index = static_cast<size_t>(Button);
+	if (index >= GamepadButtonCount)
+	{
+		return false;
+	}
+
+	const WindowId resolved = ResolveWindow(Window);
+	const SWindowInputState* state = FindState(resolved);
+	if (!state)
+	{
+		return false;
+	}
+
+	return state->Current.Gamepads[GamepadIndex].Buttons[index].bDown;
+}
+
+bool CInputSystem::WasGamepadButtonPressed (uint8 GamepadIndex, EGamepadButton Button, WindowId Window) const
+{
+	if (GamepadIndex >= MaxGamepads)
+	{
+		return false;
+	}
+
+	const size_t index = static_cast<size_t>(Button);
+	if (index >= GamepadButtonCount)
+	{
+		return false;
+	}
+
+	const WindowId resolved = ResolveWindow(Window);
+	const SWindowInputState* state = FindState(resolved);
+	if (!state)
+	{
+		return false;
+	}
+
+	const SButtonState& prev = state->Previous.Gamepads[GamepadIndex].Buttons[index];
+	const SButtonState& curr = state->Current.Gamepads[GamepadIndex].Buttons[index];
+	return !prev.bDown && curr.bDown;
+}
+
+bool CInputSystem::WasGamepadButtonReleased (uint8 GamepadIndex, EGamepadButton Button, WindowId Window) const
+{
+	if (GamepadIndex >= MaxGamepads)
+	{
+		return false;
+	}
+
+	const size_t index = static_cast<size_t>(Button);
+	if (index >= GamepadButtonCount)
+	{
+		return false;
+	}
+
+	const WindowId resolved = ResolveWindow(Window);
+	const SWindowInputState* state = FindState(resolved);
+	if (!state)
+	{
+		return false;
+	}
+
+	const SButtonState& prev = state->Previous.Gamepads[GamepadIndex].Buttons[index];
+	const SButtonState& curr = state->Current.Gamepads[GamepadIndex].Buttons[index];
+	return prev.bDown && !curr.bDown;
 }
 
 float CInputSystem::GetGamepadAxis (uint8 GamepadIndex, EGamepadAxis Axis, WindowId Window) const

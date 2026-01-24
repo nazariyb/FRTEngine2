@@ -48,7 +48,7 @@ newaction
 		removeDirectory("Binaries")
 		removeDirectory("Intermediate")
 
-		for _, folder in ipairs({ ".", "Core", "Core-Test", "Demo" }) do
+		for _, folder in ipairs({ ".", "Core", "Core-Test", "AssetTool", "Demo" }) do
 			os.remove(folder.."/*.sln")
 			os.remove(folder.."/*.vcxproj")
 			os.remove(folder.."/*.vcxproj.filters")
@@ -124,7 +124,7 @@ project "Core"
 		"%{prj.name}/../**.lua",
 		"%{prj.name}/../**.txt",
 		"%{prj.name}/../**.bat",
-		"%{prj.name}/../**.frtmat",
+		"%{prj.name}/../**.frt*",
 	}
 
 	filter "configurations:not *-Headless"
@@ -311,6 +311,46 @@ project "Core-Test"
 	}
 
 	filter {}
+
+	defines { "_CONSOLE", "FRT_HEADLESS" }
+
+	filter "configurations:Debug-*"
+		defines { "_DEBUG" }
+		symbols "On"
+
+	filter "configurations:Release-*"
+		defines { "NDEBUG" }
+		optimize "On"
+
+	filter {}
+
+
+-----------------------------------------
+--------------  AssetTool  --------------
+-----------------------------------------
+project "AssetTool"
+	location "%{prj.name}"
+
+	kind "ConsoleApp"
+
+	targetdir "Binaries/%{cfg.platform}/%{cfg.buildcfg}"
+	objdir "Intermediate/%{cfg.platform}/%{cfg.buildcfg}/%{prj.name}"
+
+	files
+	{
+		"%{prj.name}/**.h",
+		"%{prj.name}/**.cpp",
+	}
+
+	includedirs
+	{
+		"Core/Source",
+	}
+
+	links
+	{
+		"Core"
+	}
 
 	defines { "_CONSOLE", "FRT_HEADLESS" }
 

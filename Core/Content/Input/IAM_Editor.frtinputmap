@@ -1,0 +1,22 @@
+version: 1
+# FRT input actions
+
+action: IA_EnableMove
+type: Button
+bind: MouseButton Right
+
+action: IA_MoveForward
+type: Axis
+bind: Key W scale=1
+bind: Key S scale=-1
+
+action: IA_MoveLeft
+type: Axis
+bind: Key A scale=1
+bind: Key D scale=-1
+
+action: IA_MoveUp
+type: Axis
+bind: Key Space scale=1
+bind: Key LeftCtrl scale=-1
+bind: Key RightCtrl scale=-1

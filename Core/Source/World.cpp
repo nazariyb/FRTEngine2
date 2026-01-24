@@ -141,7 +141,7 @@ void CWorld::CopyConstantData ()
 
 	const auto Camera = GameInstance::GetInstance().GetCamera();
 	XMMATRIX view = Camera->GetViewMatrix();
-	XMMATRIX projection = Camera->GetProjectionMatrix(90.f, (float)renderWidth / renderHeight, 1.f, 1'000.f);
+	XMMATRIX projection = Camera->GetProjectionMatrix(math::PI_OVER_TWO, (float)renderWidth / renderHeight, 1.f, 1'000.f);
 
 	XMMATRIX viewProj = XMMatrixMultiply(view, projection);
 
@@ -160,11 +160,11 @@ void CWorld::CopyConstantData ()
 	XMStoreFloat4x4(&passConstants.ProjectionInverse, invProj);
 	XMStoreFloat4x4(&passConstants.ViewProjection, viewProj);
 	XMStoreFloat4x4(&passConstants.ViewProjectionInverse, invViewProj);
-	passConstants.CameraPosition = Camera->Position;
+	passConstants.CameraPosition = math::ToDirectXCoordinates(Camera->Transform.GetTranslation());
 	passConstants.RenderTargetSize = Vector2f(renderWidth, renderHeight);
 	passConstants.RenderTargetSizeInverse = Vector2f(1.0f / renderWidth, 1.0f / renderHeight);
-	passConstants.NearPlane = 1.0f;
-	passConstants.FarPlane = 1000.0f;
+	passConstants.NearPlane = .1f;
+	passConstants.FarPlane = 1'000.0f;
 	passConstants.TotalTime = GameInstance::GetInstance().GetTime().GetTotalSeconds();
 	passConstants.DeltaTime = GameInstance::GetInstance().GetTime().GetDeltaSeconds();
 

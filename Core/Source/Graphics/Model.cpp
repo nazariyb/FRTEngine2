@@ -25,7 +25,12 @@ SRenderModel SRenderModel::LoadFromFile (const std::string& Filename, const std:
 {
 	Assimp::Importer importer;
 	const aiScene* scene = importer.ReadFile(
-		Filename, aiProcess_Triangulate | aiProcess_OptimizeMeshes | aiProcess_FlipWindingOrder | aiProcess_FlipUVs);
+		Filename,
+		aiProcess_Triangulate |
+		aiProcess_OptimizeMeshes |
+		aiProcess_FlipWindingOrder |
+		aiProcess_FlipUVs |
+		aiProcess_PreTransformVertices);
 	if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode)
 	{
 		frt_assert(false);
@@ -140,7 +145,7 @@ SRenderModel SRenderModel::LoadFromFile (const std::string& Filename, const std:
 		for (int64 vertexIndex = 0; vertexIndex < dstSection.VertexCount; ++vertexIndex)
 		{
 			SVertex& vertex = result.Vertices[dstSection.VertexOffset + vertexIndex];
-			vertex.Position.x = srcMesh->mVertices[vertexIndex].x;
+			vertex.Position.x = -srcMesh->mVertices[vertexIndex].x;
 			vertex.Position.y = srcMesh->mVertices[vertexIndex].y;
 			vertex.Position.z = srcMesh->mVertices[vertexIndex].z;
 

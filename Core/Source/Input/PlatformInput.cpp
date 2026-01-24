@@ -1,4 +1,4 @@
-#include "Input/PlatformInput.h"
+﻿#include "Input/PlatformInput.h"
 
 #include <mutex>
 #include <utility>

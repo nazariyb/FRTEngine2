@@ -3,19 +3,19 @@
 #include <filesystem>
 #include <iostream>
 
+#include "imgui.h"
+#include "backends/imgui_impl_dx12.h"
+#include "backends/imgui_impl_win32.h"
+
 #include "Timer.h"
 #include "Window.h"
 #include "Graphics/Camera.h"
-#include "Graphics/Render/Renderer.h"
-#include "Memory/Memory.h"
-
-#include "imgui.h"
 #include "Graphics/MeshGeneration.h"
 #include "Graphics/Model.h"
 #include "Graphics/Render/GraphicsUtility.h"
 #include "Graphics/Render/RenderCommonTypes.h"
-#include "backends/imgui_impl_dx12.h"
-#include "backends/imgui_impl_win32.h"
+#include "Graphics/Render/Renderer.h"
+#include "Memory/Memory.h"
 
 NAMESPACE_FRT_START
 FRT_SINGLETON_DEFINE_INSTANCE(GameInstance)
@@ -42,6 +42,49 @@ static void RebuildImGuiDx12Backend (graphics::CRenderer* renderer)
 }
 #endif
 
+static std::filesystem::path ResolveInputContentRoot ()
+{
+	std::error_code ec;
+	std::filesystem::path current = std::filesystem::current_path(ec);
+	if (ec)
+	{
+		current = ".";
+	}
+
+	std::filesystem::path dir = current;
+	while (true)
+	{
+		std::filesystem::path candidate = dir / "Core" / "Content" / "Input";
+		if (std::filesystem::exists(candidate, ec))
+		{
+			std::filesystem::path absolute = std::filesystem::absolute(candidate, ec);
+			return ec ? candidate : absolute;
+		}
+
+		if (!dir.has_parent_path())
+		{
+			break;
+		}
+
+		const std::filesystem::path parent = dir.parent_path();
+		if (parent == dir)
+		{
+			break;
+		}
+
+		dir = parent;
+	}
+
+	std::filesystem::path fallback = current / "Core" / "Content" / "Input";
+	std::filesystem::path absolute = std::filesystem::absolute(fallback, ec);
+	return ec ? fallback : absolute;
+}
+
+static std::filesystem::path GetDefaultInputMapPath ()
+{
+	return ResolveInputContentRoot() / "IAM_Editor.frtinputmap";
+}
+
 GameInstance::GameInstance()
 	: FrameCount(0)
 {
@@ -66,6 +109,9 @@ GameInstance::GameInstance()
 	Window->PostMinimizeEvent += std::bind(&GameInstance::OnMinimize, this);
 	Window->PostRestoreFromMinimizeEvent += std::bind(&GameInstance::OnRestoreFromMinimize, this);
 
+	InputSystem.SetDefaultWindow(
+		static_cast<input::WindowId>(reinterpret_cast<uintptr_t>(Window->GetHandle())));
+
 	Renderer = MemoryPool.NewUnique<CRenderer>(Window);
 	Renderer->Resize(UserSettings.DisplaySettings.FullscreenMode == EFullscreenMode::Fullscreen);
 	DisplayOptions = graphics::GetDisplayOptions(Renderer->GetAdapter());
@@ -76,6 +122,8 @@ GameInstance::GameInstance()
 #else
 	World = MemoryPool.NewUnique<CWorld>();
 #endif
+
+	ActiveActionMap = InputActionLibrary.LoadOrCreateActionMap(GetDefaultInputMapPath());
 
 #if !defined(FRT_HEADLESS)
 	IMGUI_CHECKVERSION();
@@ -156,6 +204,16 @@ memory::TRefWeak<graphics::CRenderer> GameInstance::GetRenderer () const
 }
 #endif
 
+const input::CInputActionMap* GameInstance::GetActiveInputActionMap () const
+{
+	return ActiveActionMap ? &ActiveActionMap->ActionMap : nullptr;
+}
+
+input::CInputActionMap* GameInstance::GetActiveInputActionMap ()
+{
+	return ActiveActionMap ? &ActiveActionMap->ActionMap : nullptr;
+}
+
 void GameInstance::Load()
 {
 	std::cout << std::filesystem::current_path() << std::endl;
@@ -163,7 +221,7 @@ void GameInstance::Load()
 	Cube = World->SpawnEntity();
 	Cube->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
 		graphics::SRenderModel::FromMesh(mesh::GenerateCube(Vector3f(.3f), 1)));
-	// // World->SpawnEntity()->Mesh = mesh::GenerateGeosphere(1.f, 2u);
+
 	Cylinder = World->SpawnEntity();
 	Cylinder->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
 		graphics::SRenderModel::FromMesh(mesh::GenerateCylinder(1.f, 0.5, 1.f, 10u, 10u)));
@@ -171,14 +229,63 @@ void GameInstance::Load()
 	Sphere = World->SpawnEntity();
 	Sphere->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
 		graphics::SRenderModel::FromMesh(mesh::GenerateSphere(.1f, 10u, 10u)));
-	// World->SpawnEntity()->Mesh = mesh::GenerateGrid(1.f, 1.f, 10u, 10u);
-	// World->SpawnEntity()->Mesh = mesh::GenerateGrid(1.f, 1.f, 10u, 10u);
-	// World->SpawnEntity()->Mesh = mesh::GenerateQuad(1.f, 1.f);
+
 	auto skullEnt = World->SpawnEntity();
 	skullEnt->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(graphics::SRenderModel::LoadFromFile(
 		R"(..\Core\Content\Models\Skull\scene.gltf)",
 		R"(..\Core\Content\Models\Skull\textures\defaultMat_baseColor.jpeg)"));
 	skullEnt->Transform.SetTranslation(1.f, 0.f, 0.f);
+}
+
+void GameInstance::Input (float DeltaSeconds)
+{
+	InputSystem.Update(DeltaSeconds);
+#ifndef RELEASE
+	InputActionLibrary.ReloadModifiedActions();
+	InputActionLibrary.ReloadModifiedActionMaps();
+#endif
+	if (ActiveActionMap)
+	{
+		ActiveActionMap->ActionMap.Evaluate(InputSystem);
+	}
+
+	input::SInputActionState* EnableMoveState = ActiveActionMap->ActionMap.FindActionState("IA_EnableMove");
+	if (EnableMoveState && EnableMoveState->bDown)
+	{
+		// Look
+		Vector2f MouseDelta = InputSystem.GetMouseDelta();
+		Vector3f CameraRotationVector = Vector3f::ZeroVector;
+		CameraRotationVector += Vector3f::LeftVector * MouseDelta.y;
+		CameraRotationVector += Vector3f::DownVector * MouseDelta.x;
+		Camera->Transform.RotateBy(CameraRotationVector * DeltaSeconds * 1.f);
+
+		// Speed
+		Vector3f CameraMoveVector = Vector3f::ZeroVector;
+		input::SInputActionState* MoveForwardState = ActiveActionMap->ActionMap.FindActionState("IA_MoveForward");
+		CameraMoveVector += Vector3f::ForwardVector * MoveForwardState->Value;
+		input::SInputActionState* MoveLeftState = ActiveActionMap->ActionMap.FindActionState("IA_MoveLeft");
+		CameraMoveVector += Vector3f::LeftVector * MoveLeftState->Value;
+		input::SInputActionState* MoveUpState = ActiveActionMap->ActionMap.FindActionState("IA_MoveUp");
+		CameraMoveVector += Vector3f::UpVector * MoveUpState->Value;
+
+		// Move
+		const Vector3f localMove = CameraMoveVector;
+
+		using namespace DirectX;
+		const Vector3f rot = Camera->Transform.GetRotation(); // pitch, yaw, roll (radians)
+		const XMMATRIX rotM = XMMatrixRotationRollPitchYaw(rot.x, rot.y, rot.z);
+
+		const XMVECTOR v = XMLoadFloat3(reinterpret_cast<const XMFLOAT3*>(&localMove));
+		const XMVECTOR worldMoveV = XMVector3TransformNormal(v, rotM);
+
+		Vector3f worldMove{};
+		XMStoreFloat3(reinterpret_cast<XMFLOAT3*>(&worldMove), worldMoveV);
+
+		const float WheelDelta = InputSystem.GetMouseWheelDelta();
+		Camera->MovementSpeed += WheelDelta * 0.5;
+
+		Camera->Transform.MoveBy(worldMove * DeltaSeconds * Camera->MovementSpeed);
+	}
 }
 
 void GameInstance::Tick(float DeltaSeconds)
@@ -266,13 +373,16 @@ void GameInstance::OnWindowResize()
 }
 
 void GameInstance::OnLoseFocus()
-{}
+{
+	InputSystem.Clear();
+}
 
 void GameInstance::OnGainFocus()
 {}
 
 void GameInstance::OnMinimize()
 {
+	InputSystem.Clear();
 	if (UserSettings.DisplaySettings.IsFullscreen())
 	{
 		Renderer->Resize(false);

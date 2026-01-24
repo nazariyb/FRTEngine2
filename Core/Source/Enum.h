@@ -1,9 +1,16 @@
 ﻿#pragma once
 
+#include <array>
+#include <string_view>
 #include <type_traits>
+#include <utility>
 
 #include "CoreTypes.h"
 
+
+///
+/// === === === Flags === === ===
+///
 
 namespace frt::flags
 {
@@ -11,14 +18,16 @@ template <typename T>
 struct FlagEnumTag
 {};
 
+
 template <typename T>
 struct TIsFlagEnum
 {
-	static constexpr bool value = requires(FlagEnumTag<T> Tag)
+	static constexpr bool value = requires (FlagEnumTag<T> Tag)
 	{
 		frt_flag_enum_marker(Tag);
 	};
 };
+
 
 template <typename T>
 inline constexpr bool IsFlagEnum = TIsFlagEnum<T>::value;
@@ -169,4 +178,100 @@ template <frt::flags::FlagEnum E, frt::concepts::Unsigned UnderlyingType>
 bool SFlags<E, UnderlyingType>::HasAny (SFlags OtherFlags) const
 {
 	return (Flags & OtherFlags.Flags) != 0u;
+}
+
+
+///
+/// === === === Reflection === === ===
+///
+
+namespace frt::enum_
+{
+template <typename E>
+struct TEnumTraits
+{
+	static constexpr bool bIsDefined = false;
+};
+
+
+template <typename E>
+concept ReflectedEnum = frt::concepts::Enum<E> && TEnumTraits<E>::bIsDefined;
+
+inline constexpr char ToLowerAscii (char c)
+{
+	return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
+}
+
+inline bool EqualsIgnoreCase (std::string_view A, std::string_view B)
+{
+	if (A.size() != B.size())
+	{
+		return false;
+	}
+
+	for (size_t i = 0; i < A.size(); ++i)
+	{
+		if (ToLowerAscii(A[i]) != ToLowerAscii(B[i]))
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+template <ReflectedEnum E>
+constexpr std::string_view ToString (E Value)
+{
+	for (const auto& entry : TEnumTraits<E>::Entries)
+	{
+		if (entry.first == Value)
+		{
+			return entry.second;
+		}
+	}
+	return {};
+}
+
+template <ReflectedEnum E>
+bool TryParse (std::string_view Text, E* OutValue, bool bIgnoreCase = true)
+{
+	for (const auto& entry : TEnumTraits<E>::Entries)
+	{
+		if (bIgnoreCase ? EqualsIgnoreCase(Text, entry.second) : (Text == entry.second))
+		{
+			*OutValue = entry.first;
+			return true;
+		}
+	}
+	return false;
+}
+
+template <ReflectedEnum E>
+constexpr bool IsValid (E Value)
+{
+	for (const auto& entry : TEnumTraits<E>::Entries)
+	{
+		if (entry.first == Value)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+}
+
+
+#define FRT_ENUM_ENTRY(EnumType, Value)\
+std::pair<EnumType, std::string_view>{ EnumType::Value, #Value }
+
+#define FRT_ENUM_ENTRY_NAME(EnumType, Value, Name)\
+std::pair<EnumType, std::string_view>{ EnumType::Value, Name }
+
+#define FRT_DECLARE_ENUM_REFLECTION(EnumType, ...)\
+namespace frt::enum_ {\
+template <> struct TEnumTraits<EnumType>\
+{\
+	static constexpr auto Entries = std::to_array<std::pair<EnumType, std::string_view>>({ __VA_ARGS__ });\
+	static constexpr bool bIsDefined = true;\
+};\
 }
