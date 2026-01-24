@@ -48,7 +48,7 @@ newaction
 		removeDirectory("Binaries")
 		removeDirectory("Intermediate")
 
-		for _, folder in ipairs({ ".", "Core", "Core-Test", "AssetTool", "Demo" }) do
+		for _, folder in ipairs({ ".", "Core", "Core-Test", "Demo" }) do
 			os.remove(folder.."/*.sln")
 			os.remove(folder.."/*.vcxproj")
 			os.remove(folder.."/*.vcxproj.filters")
@@ -85,6 +85,12 @@ workspace "FRTEngine2"
 	language "C++"
 	cppdialect "C++20"
 
+	defines
+	{
+		'FRT_PLATFORM_NAME="%{cfg.platform}"',
+		'FRT_CONFIG_NAME="%{cfg.buildcfg}"'
+	}
+
 	filter "platforms:Win64"
 		system "Windows"
 		architecture "x86_64"
@@ -111,8 +117,16 @@ project "Core"
 
 	filter {}
 
-	targetdir "Binaries/%{cfg.platform}/%{cfg.buildcfg}"
+	targetdir "Binaries/%{cfg.platform}"
 	objdir "Intermediate/%{cfg.platform}/%{cfg.buildcfg}/%{prj.name}"
+
+	filter "configurations:Release-*"
+		targetname "%{prj.name}"
+
+	filter "configurations:not Release-*"
+		targetname "%{prj.name}-%{cfg.buildcfg}"
+
+	filter {}
 
 	-----------------
 	----- Files -----
@@ -144,6 +158,8 @@ project "Core"
 	{
 		"%{wks.location}/Intermediate/**",
 		"**/vcpkg/**",
+		"%{prj.name}/Source/Assets/AssetToolClient.*",
+		"%{prj.name}/Source/Assets/AssetIpc.h",
 	}
 
 	filter "configurations:*-Headless"
@@ -271,8 +287,16 @@ project "Core-Test"
 
 	kind "ConsoleApp"
 
-	targetdir "Binaries/%{cfg.platform}/%{cfg.buildcfg}"
+	targetdir "Binaries/%{cfg.platform}"
 	objdir "Intermediate/%{cfg.platform}/%{cfg.buildcfg}/%{prj.name}"
+
+	filter "configurations:Release-*"
+		targetname "%{prj.name}"
+
+	filter "configurations:not Release-*"
+		targetname "%{prj.name}-%{cfg.buildcfg}"
+
+	filter {}
 
 	files
 	{
@@ -325,47 +349,6 @@ project "Core-Test"
 	filter {}
 
 
------------------------------------------
---------------  AssetTool  --------------
------------------------------------------
-project "AssetTool"
-	location "%{prj.name}"
-
-	kind "ConsoleApp"
-
-	targetdir "Binaries/%{cfg.platform}/%{cfg.buildcfg}"
-	objdir "Intermediate/%{cfg.platform}/%{cfg.buildcfg}/%{prj.name}"
-
-	files
-	{
-		"%{prj.name}/**.h",
-		"%{prj.name}/**.cpp",
-	}
-
-	includedirs
-	{
-		"Core/Source",
-	}
-
-	links
-	{
-		"Core"
-	}
-
-	defines { "_CONSOLE", "FRT_HEADLESS" }
-
-	filter "configurations:Debug-*"
-		defines { "_DEBUG" }
-		symbols "On"
-
-	filter "configurations:Release-*"
-		defines { "NDEBUG" }
-		optimize "On"
-
-	filter {}
-
-
------------------------------------------
 ---------------  Demo  ------------------
 -----------------------------------------
 project "Demo"
@@ -377,8 +360,16 @@ project "Demo"
 		kind "WindowedApp"
 	filter {}
 
-	targetdir "Binaries/%{cfg.platform}/%{cfg.buildcfg}"
+	targetdir "Binaries/%{cfg.platform}"
 	objdir "Intermediate/%{cfg.platform}/%{cfg.buildcfg}/%{prj.name}"
+
+	filter "configurations:Release-*"
+		targetname "%{prj.name}"
+
+	filter "configurations:not Release-*"
+		targetname "%{prj.name}-%{cfg.buildcfg}"
+
+	filter {}
 
 	files
 	{
