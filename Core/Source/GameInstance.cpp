@@ -249,6 +249,7 @@ void GameInstance::Input (float DeltaSeconds)
 		ActiveActionMap->ActionMap.Evaluate(InputSystem);
 	}
 
+#ifndef FRT_HEADLESS
 	input::SInputActionState* EnableMoveState = ActiveActionMap->ActionMap.FindActionState("IA_EnableMove");
 	if (EnableMoveState && EnableMoveState->bDown)
 	{
@@ -286,6 +287,7 @@ void GameInstance::Input (float DeltaSeconds)
 
 		Camera->Transform.MoveBy(worldMove * DeltaSeconds * Camera->MovementSpeed);
 	}
+#endif
 }
 
 void GameInstance::Tick(float DeltaSeconds)
