@@ -2,12 +2,12 @@
 
 #include <filesystem>
 #include <string>
-#include <DirectXMath.h>
 
 #include "Core.h"
 #include "CoreTypes.h"
 #include "Enum.h"
 #include "Texture.h"
+#include "Graphics/SColor.h"
 
 
 namespace frt::graphics
@@ -30,7 +30,7 @@ struct FRT_CORE_API SMaterial
 	std::filesystem::path SourcePath;
 	std::filesystem::file_time_type LastWriteTime;
 
-	DirectX::XMFLOAT4 DiffuseAlbedo = { 1.f, 1.f, 1.f, 1.f };
+	SColor DiffuseAlbedo = SColor::White;
 	uint32 RuntimeIndex = 0u;
 	SFlags<EMaterialFlags> Flags;
 

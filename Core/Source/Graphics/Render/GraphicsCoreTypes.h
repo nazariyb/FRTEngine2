@@ -6,6 +6,7 @@
 #include "ConstantBuffer.h"
 #include "CoreUtils.h"
 #include "RenderResourceAllocators.h"
+#include "Graphics/SColor.h"
 #include "Math/Math.h"
 
 struct ID3D12Heap;
@@ -51,7 +52,7 @@ struct SPassConstants
 
 struct SMaterialConstants
 {
-	DirectX::XMFLOAT4 DiffuseAlbedo = { 1.f, 1.f, 1.f, 1.f };
+	SColor DiffuseAlbedo = { 1.f, 1.f, 1.f, 1.f };
 };
 
 

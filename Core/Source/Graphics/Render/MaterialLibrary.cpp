@@ -257,6 +257,10 @@ bool CMaterialLibrary::ParseMaterialFile (const std::filesystem::path& MaterialP
 		{
 			Material.PixelShaderName = value;
 		}
+		else if (key == "color")
+		{
+			Material.DiffuseAlbedo.FillFromString(value);
+		}
 		else if (key == "base_color_texture")
 		{
 			Material.BaseColorTexturePath = value;
@@ -302,6 +306,7 @@ bool CMaterialLibrary::SaveMaterialFile (const std::filesystem::path& MaterialPa
 	stream << "name: " << Material.Name << "\n";
 	stream << "vertex_shader: " << Material.VertexShaderName << "\n";
 	stream << "pixel_shader: " << Material.PixelShaderName << "\n";
+	stream << "color: " << Material.DiffuseAlbedo.ToString() << "\n"; 
 	stream << "base_color_texture: " << Material.BaseColorTexturePath << "\n";
 	stream << "cull: " << CullModeToString(Material.CullMode) << "\n";
 	stream << "depth_enable: " << (Material.bDepthEnable ? "true" : "false") << "\n";

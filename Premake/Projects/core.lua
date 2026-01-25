@@ -40,6 +40,7 @@ project "Core"
 		rootpath("%{prj.name}/Source/**.hxx"), rootpath("%{prj.name}/Source/**.hh"),
 		rootpath("%{prj.name}/Source/**.c"), rootpath("%{prj.name}/Source/**.cpp"),
 		rootpath("%{prj.name}/Source/**.cxx"), rootpath("%{prj.name}/Source/**.cc"),
+		rootpath("%{prj.name}/Content/**"),
 		rootpath("**.lua"),
 		rootpath("**.txt"),
 		rootpath("**.bat"),

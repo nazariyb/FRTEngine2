@@ -211,7 +211,7 @@ SRenderModel SRenderModel::LoadFromFile (const std::string& Filename, const std:
 	return result;
 }
 
-SRenderModel SRenderModel::FromMesh (SMesh&& Mesh)
+SRenderModel SRenderModel::FromMesh (SMesh&& Mesh, memory::TRefShared<SMaterial> Material)
 {
 	SRenderModel result;
 	result.Vertices = std::move(Mesh.Vertices);
@@ -219,10 +219,17 @@ SRenderModel SRenderModel::FromMesh (SMesh&& Mesh)
 	result.VertexBufferGpu = std::move(Mesh.VertexBufferGpu);
 	result.IndexBufferGpu = std::move(Mesh.IndexBufferGpu);
 
-	memory::TRefShared<SMaterial> material = memory::NewShared<SMaterial>();
-	material->VertexShaderName = "VertexShader";
-	material->PixelShaderName = "PixelShader";
-	result.Materials.Add(material);
+	if (Material)
+	{
+		result.Materials.Add(Material);
+	}
+	else
+	{
+		memory::TRefShared<SMaterial> material = memory::NewShared<SMaterial>();
+		material->VertexShaderName = "VertexShader";
+		material->PixelShaderName = "PixelShader";
+		result.Materials.Add(material);
+	}
 
 	SRenderSection& section = result.Sections.Add();
 	section.IndexOffset = 0u;

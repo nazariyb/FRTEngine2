@@ -43,7 +43,7 @@ struct FRT_CORE_API SRenderModel
 	ComPtr<ID3D12Resource> IndexBufferGpu = nullptr;
 
 	static SRenderModel LoadFromFile (const std::string& Filename, const std::string& TexturePath);
-	static SRenderModel FromMesh (SMesh&& Mesh);
+	static SRenderModel FromMesh (SMesh&& Mesh, memory::TRefShared<SMaterial> Material = nullptr);
 };
 
 struct FRT_CORE_API Comp_RenderModel

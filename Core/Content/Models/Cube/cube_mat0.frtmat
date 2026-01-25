@@ -3,8 +3,8 @@ version: 1
 name: defaultMat
 vertex_shader: VertexShader
 pixel_shader: PixelShader
-color: RGBA(1,1,1,1)
-base_color_texture: textures\defaultMat_baseColor.jpeg
+color: RGBA(1, 1,1, 1)
+base_color_texture: Cube_BaseColor.png
 cull: front
 depth_enable: true
 depth_write: true

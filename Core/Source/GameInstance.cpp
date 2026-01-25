@@ -85,7 +85,7 @@ static std::filesystem::path GetDefaultInputMapPath ()
 	return ResolveInputContentRoot() / "IAM_Editor.frtinputmap";
 }
 
-GameInstance::GameInstance()
+GameInstance::GameInstance ()
 	: FrameCount(0)
 {
 	MemoryPool = memory::CMemoryPool(2_Gb);
@@ -167,7 +167,7 @@ GameInstance::GameInstance()
 #endif
 }
 
-GameInstance::~GameInstance()
+GameInstance::~GameInstance ()
 {
 #if !defined(FRT_HEADLESS)
 	ImGui_ImplDX12_Shutdown();
@@ -182,12 +182,12 @@ GameInstance::~GameInstance()
 	Timer = nullptr;
 }
 
-CTimer& GameInstance::GetTime() const
+CTimer& GameInstance::GetTime () const
 {
 	return *Timer;
 }
 
-bool GameInstance::HasGraphics() const
+bool GameInstance::HasGraphics () const
 {
 #if !defined(FRT_HEADLESS)
 	return !!Renderer;
@@ -214,26 +214,32 @@ input::CInputActionMap* GameInstance::GetActiveInputActionMap ()
 	return ActiveActionMap ? &ActiveActionMap->ActionMap : nullptr;
 }
 
-void GameInstance::Load()
+void GameInstance::Load ()
 {
 	std::cout << std::filesystem::current_path() << std::endl;
 
-	Cube = World->SpawnEntity();
-	Cube->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
-		graphics::SRenderModel::FromMesh(mesh::GenerateCube(Vector3f(.3f), 1)));
+	std::filesystem::path cubeMaterialPath =
+		std::filesystem::path("../Core/Content/Models/Cube") / ("cube_mat" + std::to_string(0) + ".frtmat");
 
-	Cylinder = World->SpawnEntity();
-	Cylinder->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
-		graphics::SRenderModel::FromMesh(mesh::GenerateCylinder(1.f, 0.5, 1.f, 10u, 10u)));
+	Cube = World->SpawnEntity();
+	Cube->RenderModel.Model = memory::NewShared<SRenderModel>(
+		SRenderModel::FromMesh(
+			mesh::GenerateCube(Vector3f(1.f), 1),
+			Renderer->GetMaterialLibrary().LoadOrCreateMaterial(cubeMaterialPath, {})));
+
+	// Cylinder = World->SpawnEntity();
+	// Cylinder->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
+	// 	graphics::SRenderModel::FromMesh(mesh::GenerateCylinder(1.f, 0.5, 1.f, 10u, 10u)));
 
 	Sphere = World->SpawnEntity();
 	Sphere->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
 		graphics::SRenderModel::FromMesh(mesh::GenerateSphere(.1f, 10u, 10u)));
 
 	auto skullEnt = World->SpawnEntity();
-	skullEnt->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(graphics::SRenderModel::LoadFromFile(
-		R"(..\Core\Content\Models\Skull\scene.gltf)",
-		R"(..\Core\Content\Models\Skull\textures\defaultMat_baseColor.jpeg)"));
+	skullEnt->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
+		graphics::SRenderModel::LoadFromFile(
+			R"(..\Core\Content\Models\Skull\scene.gltf)",
+			R"(..\Core\Content\Models\Skull\textures\defaultMat_baseColor.jpeg)"));
 	skullEnt->Transform.SetTranslation(1.f, 0.f, 0.f);
 }
 
@@ -290,7 +296,7 @@ void GameInstance::Input (float DeltaSeconds)
 #endif
 }
 
-void GameInstance::Tick(float DeltaSeconds)
+void GameInstance::Tick (float DeltaSeconds)
 {
 	++FrameCount;
 
@@ -315,7 +321,7 @@ void GameInstance::Tick(float DeltaSeconds)
 }
 
 #if !defined(FRT_HEADLESS)
-void GameInstance::Draw(float DeltaSeconds)
+void GameInstance::Draw (float DeltaSeconds)
 {
 	Renderer->StartFrame(*Camera);
 
@@ -335,12 +341,12 @@ void GameInstance::Draw(float DeltaSeconds)
 }
 #endif
 
-long long GameInstance::GetFrameCount() const
+long long GameInstance::GetFrameCount () const
 {
 	return FrameCount;
 }
 
-void GameInstance::CalculateFrameStats() const
+void GameInstance::CalculateFrameStats () const
 {
 	static int frameCount = 0;
 	static float timeElapsed = 0.f;
@@ -369,20 +375,20 @@ void GameInstance::CalculateFrameStats() const
 }
 
 #if !defined(FRT_HEADLESS)
-void GameInstance::OnWindowResize()
+void GameInstance::OnWindowResize ()
 {
 	Renderer->Resize(UserSettings.DisplaySettings.IsFullscreen());
 }
 
-void GameInstance::OnLoseFocus()
+void GameInstance::OnLoseFocus ()
 {
 	InputSystem.Clear();
 }
 
-void GameInstance::OnGainFocus()
+void GameInstance::OnGainFocus ()
 {}
 
-void GameInstance::OnMinimize()
+void GameInstance::OnMinimize ()
 {
 	InputSystem.Clear();
 	if (UserSettings.DisplaySettings.IsFullscreen())
@@ -392,7 +398,7 @@ void GameInstance::OnMinimize()
 	}
 }
 
-void GameInstance::OnRestoreFromMinimize()
+void GameInstance::OnRestoreFromMinimize ()
 {
 	Window->SetDisplaySettings(UserSettings.DisplaySettings, DisplayOptions);
 	if (UserSettings.DisplaySettings.IsFullscreen())
@@ -401,7 +407,7 @@ void GameInstance::OnRestoreFromMinimize()
 	}
 }
 
-void GameInstance::DisplayUserSettings()
+void GameInstance::DisplayUserSettings ()
 {
 	// TODO: this func is okay for now, but should be revisited later to at least remove reallocations on each frame
 
@@ -511,9 +517,9 @@ void GameInstance::UpdateEntities (float DeltaSeconds)
 	if (Cube)
 	{
 		Vector3f CubePos;
-		CubePos.x = Radius * std::sin(Angle) + 1.f;
+		CubePos.x = (Radius + 0.6f) * std::sin(Angle) + 1.f;
 		CubePos.y = Height;
-		CubePos.z = Radius * std::cos(Angle);
+		CubePos.z = (Radius + 0.6f) * std::cos(Angle);
 		Cube->Transform.SetTranslation(CubePos);
 	}
 
