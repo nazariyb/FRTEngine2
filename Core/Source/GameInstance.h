@@ -61,7 +61,7 @@ public:
 	virtual void Load ();
 
 	// Update
-	virtual void Input(float DeltaSeconds);
+	virtual void Input (float DeltaSeconds);
 	virtual void Tick (float DeltaSeconds);
 #if !defined(FRT_HEADLESS)
 	virtual void Draw (float DeltaSeconds);
@@ -73,7 +73,7 @@ public:
 protected:
 	void CalculateFrameStats () const;
 
-#if !defined(FRT_HEADLESS)
+#ifndef FRT_HEADLESS
 	virtual void OnWindowResize ();
 	virtual void OnLoseFocus ();
 	virtual void OnGainFocus ();
@@ -86,7 +86,7 @@ protected:
 protected:
 	memory::CMemoryPool MemoryPool;
 	CTimer* Timer;
-#if !defined(FRT_HEADLESS)
+#ifndef FRT_HEADLESS
 	CWindow* Window;
 	memory::TRefUnique<graphics::CRenderer> Renderer;
 	memory::TRefShared<graphics::CCamera> Camera;
@@ -101,7 +101,7 @@ protected:
 	memory::TRefShared<CEntity> Cube;
 	memory::TRefShared<CEntity> Cylinder;
 	memory::TRefShared<CEntity> Sphere;
-	void UpdateEntities(float DeltaSeconds);
+	void UpdateEntities (float DeltaSeconds);
 	// ~temp
 
 	graphics::SDisplayOptions DisplayOptions;
