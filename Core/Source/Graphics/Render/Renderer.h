@@ -105,6 +105,8 @@ private:
 
 public:
 	DX12_DescriptorHeap ShaderDescriptorHeap;
+	bool bVSyncEnabled = true;
+	DXGI_RATIONAL DisplayRefreshRate = { 0u, 1u };
 
 private:
 	CWindow* Window;

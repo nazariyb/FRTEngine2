@@ -449,9 +449,9 @@ void GameInstance::DisplayUserSettings ()
 		ImGui::EndDisabled();
 	}
 
+	std::vector<uint64> refreshRates = DisplayOptions.GetRefreshRatesEncoded(
+		displaySettings.MonitorIndex, resolutions[displaySettings.ResolutionIndex]);
 	{
-		std::vector<uint64> refreshRates = DisplayOptions.GetRefreshRatesEncoded(
-			displaySettings.MonitorIndex, resolutions[displaySettings.ResolutionIndex]);
 		displaySettings.RefreshRateIndex = math::ClampIndex(displaySettings.RefreshRateIndex, refreshRates.size() - 1u);
 
 		std::vector<std::string> rRStrs;
@@ -464,7 +464,9 @@ void GameInstance::DisplayUserSettings ()
 		}
 
 		auto labelRR = "RefreshRate";
+		ImGui::BeginDisabled(!displaySettings.IsFullscreen());
 		ImGui::Combo(labelRR, &displaySettings.RefreshRateIndex, strToChar, rRStrs.data(), (int)rRStrs.size());
+		ImGui::EndDisabled();
 	}
 
 	{
@@ -478,6 +480,11 @@ void GameInstance::DisplayUserSettings ()
 			ImGuiSliderFlags_AlwaysClamp);
 	}
 
+	{
+		auto labelVSync = "Enable VSync";
+		ImGui::Checkbox(labelVSync, &displaySettings.bVSync);
+	}
+
 	if (ImGui::Button("Apply"))
 	{
 		if (displaySettings.IsFullscreen())
@@ -489,6 +496,13 @@ void GameInstance::DisplayUserSettings ()
 			resIndex = math::ClampIndex(resIndex, resolutions.size() - 1u);
 			displaySettings.ResolutionIndex = resIndex;
 		}
+
+		GetRenderer()->bVSyncEnabled = displaySettings.bVSync;
+
+		uint32 numerator = 0;
+		uint32 denominator = 0;
+		math::DecodeTwoFromOne(refreshRates[displaySettings.RefreshRateIndex], numerator, denominator);
+		GetRenderer()->DisplayRefreshRate = { numerator, denominator };
 
 		Window->SetDisplaySettings(displaySettings, DisplayOptions);
 	}

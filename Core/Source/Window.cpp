@@ -71,12 +71,17 @@ void CWindow::SetDisplaySettings (const SDisplaySettings& NewSettings, const gra
 	{
 		UpdateFullscreenMode(NewSettings.FullscreenMode, Options.OutputsRects[NewSettings.MonitorIndex]);
 	}
-	else
+	else if (NewSettings.ResolutionIndex != DisplaySettings.ResolutionIndex)
 	{
 		const auto& resolutions = Options.GetResolutionsEncoded((uint32)NewSettings.MonitorIndex);
 		Vector2u newSize;
 		math::DecodeTwoFromOne(resolutions[NewSettings.ResolutionIndex], newSize.x, newSize.y);
 		ResizeWithMove(newSize, Options.OutputsRects[NewSettings.MonitorIndex]);
+	}
+	else
+	{
+		// no changes to a window, but renderer still should react
+		PostResizeEvent.Invoke();
 	}
 
 	DisplaySettings = NewSettings;

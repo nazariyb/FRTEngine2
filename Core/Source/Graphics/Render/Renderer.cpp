@@ -264,11 +264,11 @@ static std::string MakePipelineStateKey (
 	bool bAlphaBlend)
 {
 	return VertexShaderName + "|" + PixelShaderName
-		+ "|" + std::to_string(static_cast<uint32>(CullMode))
-		+ "|" + std::to_string(static_cast<uint32>(DepthFunc))
-		+ "|" + (bDepthEnable ? "1" : "0")
-		+ "|" + (bDepthWrite ? "1" : "0")
-		+ "|" + (bAlphaBlend ? "1" : "0");
+			+ "|" + std::to_string(static_cast<uint32>(CullMode))
+			+ "|" + std::to_string(static_cast<uint32>(DepthFunc))
+			+ "|" + (bDepthEnable ? "1" : "0")
+			+ "|" + (bDepthWrite ? "1" : "0")
+			+ "|" + (bAlphaBlend ? "1" : "0");
 }
 
 static uint64 HashDefines (const TArray<SShaderDefine>& Defines)
@@ -460,7 +460,8 @@ void CRenderer::CreatePipelineState ()
 {
 	PipelineStateCache.clear();
 	const SMaterial defaultMaterial = {};
-	const SShaderPermutation vertexShader = BuildShaderPermutation("VertexShader", defaultMaterial, EShaderStage::Vertex);
+	const SShaderPermutation vertexShader = BuildShaderPermutation(
+		"VertexShader", defaultMaterial, EShaderStage::Vertex);
 	const SShaderPermutation pixelShader = BuildShaderPermutation("PixelShader", defaultMaterial, EShaderStage::Pixel);
 	PipelineState = BuildPipelineState(
 		vertexShader,
@@ -529,6 +530,20 @@ void CRenderer::Resize (bool bNewFullscreenState)
 					drawRect.x, drawRect.y,
 					DXGI_FORMAT_R8G8B8A8_UNORM,
 					DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH));
+		}
+
+		if (bWasInFullscreen && bNewFullscreenState)
+		{
+			DXGI_MODE_DESC modeDesc =
+			{
+				.Width = static_cast<unsigned int>(drawRect.x),
+				.Height = static_cast<unsigned int>(drawRect.y),
+				.RefreshRate = DisplayRefreshRate,
+				.Format = DXGI_FORMAT_R8G8B8A8_UNORM,
+				.ScanlineOrdering = DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED,
+				.Scaling = DXGI_MODE_SCALING_UNSPECIFIED,
+			};
+			SwapChain->ResizeTarget(&modeDesc);
 		}
 
 		CurrentBackBufferIndex = 0;
@@ -672,7 +687,7 @@ void CRenderer::Draw (float DeltaSeconds, CCamera& Camera)
 	THROW_IF_FAILED(CommandList->Close());
 	CommandQueue->ExecuteCommandLists(1, (ID3D12CommandList**)CommandList.GetAddressOf());
 
-	SwapChain->Present(1, 0);
+	SwapChain->Present(bVSyncEnabled, 0);
 	CurrentBackBufferIndex = (CurrentBackBufferIndex + 1) % render::constants::FrameResourcesBufferCount;
 
 	// FlushCommandQueue();
@@ -735,10 +750,12 @@ CMaterialLibrary& CRenderer::GetMaterialLibrary ()
 
 ID3D12PipelineState* CRenderer::GetPipelineStateForMaterial (const SMaterial& Material)
 {
-	const std::string vertexShaderBase = Material.VertexShaderName.empty() ? "VertexShader"
-		: Material.VertexShaderName;
-	const std::string pixelShaderBase = Material.PixelShaderName.empty() ? "PixelShader"
-		: Material.PixelShaderName;
+	const std::string vertexShaderBase = Material.VertexShaderName.empty()
+											? "VertexShader"
+											: Material.VertexShaderName;
+	const std::string pixelShaderBase = Material.PixelShaderName.empty()
+											? "PixelShader"
+											: Material.PixelShaderName;
 
 	const SShaderPermutation vertexShader = BuildShaderPermutation(vertexShaderBase, Material, EShaderStage::Vertex);
 	const SShaderPermutation pixelShader = BuildShaderPermutation(pixelShaderBase, Material, EShaderStage::Pixel);
@@ -832,7 +849,8 @@ void CRenderer::CreateDefaultWhiteTexture ()
 	srvDesc.Texture2D.PlaneSlice = 0;
 
 	D3D12_CPU_DESCRIPTOR_HANDLE cpuDescriptor = {};
-	CreateShaderResourceView(DefaultWhiteTexture.GpuTexture, srvDesc, &cpuDescriptor, &DefaultWhiteTexture.GpuDescriptor);
+	CreateShaderResourceView(
+		DefaultWhiteTexture.GpuTexture, srvDesc, &cpuDescriptor, &DefaultWhiteTexture.GpuDescriptor);
 
 	THROW_IF_FAILED(CommandList->Close());
 	ID3D12CommandList* commandLists[] = { CommandList.Get() };
@@ -1059,8 +1077,7 @@ void CRenderer::CreateSwapChain (bool bFullscreen)
 
 	DXGI_SWAP_CHAIN_FULLSCREEN_DESC fullscreenDesc =
 	{
-		.RefreshRate = { 0, 1 },
-		// TODO
+		.RefreshRate = DisplayRefreshRate,
 		.ScanlineOrdering = DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED,
 		.Scaling = DXGI_MODE_SCALING_UNSPECIFIED,
 		.Windowed = !bFullscreen,

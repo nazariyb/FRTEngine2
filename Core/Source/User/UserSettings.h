@@ -1,8 +1,5 @@
 ﻿#pragma once
 
-#include <string>
-#include <vector>
-
 #include "CoreTypes.h"
 
 
@@ -24,6 +21,7 @@ struct SDisplaySettings
 	int32 RefreshRateIndex = 0;
 
 	EFullscreenMode FullscreenMode = EFullscreenMode::Windowed;
+	bool bVSync = true;
 
 	bool IsFullscreen () const { return FullscreenMode == EFullscreenMode::Fullscreen; }
 };
