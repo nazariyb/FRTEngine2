@@ -32,6 +32,8 @@ project "Demo"
 	includedirs
 	{
 		rootpath("Core/Source"),
+		path.join(thirdPartyDir, "DXR"),
+		path.join(thirdPartyDir, "Dxc/inc"),
 	}
 
 	links

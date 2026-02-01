@@ -45,6 +45,7 @@ project "Core"
 		rootpath("**.txt"),
 		rootpath("**.bat"),
 		rootpath("**.frt*"),
+		path.join(thirdPartyDir, "DXR/**.h"), path.join(thirdPartyDir, "DXR/**.cpp"),
 	}
 
 	filter "configurations:not *-Headless"
@@ -64,8 +65,6 @@ project "Core"
 	{
 		rootpath("Intermediate/**"),
 		rootpath("**/vcpkg/**"),
-		rootpath("%{prj.name}/Source/Assets/AssetToolClient.*"),
-		rootpath("%{prj.name}/Source/Assets/AssetIpc.h"),
 	}
 
 	filter "configurations:*-Headless"
@@ -98,6 +97,8 @@ project "Core"
 		rootpath("%{prj.name}/Source"),
 		path.join(thirdPartyDir, "Stb"),
 		path.join(thirdPartyDir, "Imgui"),
+		path.join(thirdPartyDir, "DXR"),
+		path.join(thirdPartyDir, "Dxc/inc"),
 	}
 
 	----------------
@@ -130,12 +131,12 @@ project "Core"
 	filter "platforms:Win64"
 		libdirs
 		{
-			path.join(thirdPartyDir, "Dxc/lib")
+			path.join(thirdPartyDir, "Dxc/lib/x64")
 		}
 
 		links
 		{
-			"d3d12", "dxgi", "d3dcompiler"
+			"d3d12", "dxgi", "d3dcompiler", "dxcompiler"
 		}
 
 	-------------------
@@ -163,9 +164,11 @@ project "Core"
 	prebuildcommands
 	{
 		-- temporary
-		"{MKDIR} %{prj.location}Content/Shaders/Bin",
-		"\"" .. dxcExe .. "\" -E main -Fo %{prj.location}Content/Shaders/Bin/VertexShader.shader -T vs_6_0 -Zi -Zpc -Qembed_debug %{prj.location}Content/Shaders/VertexShader.hlsl",
-		"\"" .. dxcExe .. "\" -E main -Fo %{prj.location}Content/Shaders/Bin/PixelShader.shader -T ps_6_0 -Zi -Zpc -Qembed_debug %{prj.location}Content/Shaders/PixelShader.hlsl"
+-- 		"{MKDIR} %{prj.location}Content/Shaders/Bin",
+-- 		"\"" .. dxcExe .. "\" -E main -Fo %{prj.location}Content/Shaders/Bin/VertexShader.shader -T vs_6_0 -Zi -Zpc -Qembed_debug %{prj.location}Content/Shaders/VertexShader.hlsl",
+-- 		"\"" .. dxcExe .. "\" -E main -Fo %{prj.location}Content/Shaders/Bin/PixelShader.shader -T ps_6_0 -Zi -Zpc -Qembed_debug %{prj.location}Content/Shaders/PixelShader.hlsl",
+		"{COPYFILE} " .. path.join(thirdPartyDir, "Dxc/bin/x64/dxcompiler.dll") .. " %[%{cfg.buildtarget.directory}]",
+		"{COPYFILE} " .. path.join(thirdPartyDir, "Dxc/bin/x64/dxil.dll") .. " %[%{cfg.buildtarget.directory}]",
 	}
 
 	filter "configurations:Release-*"

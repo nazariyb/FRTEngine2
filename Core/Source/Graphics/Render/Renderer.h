@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include <d3d12.h>
+#include <dxcapi.h>
 #include <dxgi1_4.h>
 #include <filesystem>
 #include <string>
@@ -8,13 +9,14 @@
 #include <wrl/client.h>
 
 #include "Core.h"
-#include "Containers/Array.h"
 #include "Event.h"
 #include "GraphicsCoreTypes.h"
 #include "MaterialLibrary.h"
-#include "Texture.h"
 #include "RenderConstants.h"
 #include "ShaderAsset.h"
+#include "Texture.h"
+#include "Containers/Array.h"
+#include "nv_helpers_dx12/ShaderBindingTableGenerator.h"
 
 
 namespace frt
@@ -44,9 +46,9 @@ public:
 	FRT_CORE_API void Draw (float DeltaSeconds, CCamera& Camera);
 
 	FRT_CORE_API IDXGIAdapter1* GetAdapter ();
-	FRT_CORE_API ID3D12Device* GetDevice ();
+	FRT_CORE_API ID3D12Device5* GetDevice ();
 	FRT_CORE_API ID3D12CommandQueue* GetCommandQueue ();
-	FRT_CORE_API ID3D12GraphicsCommandList* GetCommandList ();
+	FRT_CORE_API ID3D12GraphicsCommandList4* GetCommandList ();
 	FRT_CORE_API DX12_Arena& GetBufferArena ();
 	FRT_CORE_API DX12_DescriptorHeap& GetDescriptorHeap ();
 	FRT_CORE_API SFrameResources& GetCurrentFrameResource ();
@@ -72,6 +74,9 @@ public:
 		D3D12_CPU_DESCRIPTOR_HANDLE* OutCpuHandle,
 		D3D12_GPU_DESCRIPTOR_HANDLE* OutGpuHandle);
 
+	void FlushCommandQueue ();
+	void ResetCommandList ();
+
 private:
 	struct SShaderPermutation
 	{
@@ -81,8 +86,8 @@ private:
 		TArray<SShaderDefine> Defines;
 	};
 
+
 	void CreateSwapChain (bool bFullscreen);
-	void FlushCommandQueue ();
 	void WaitForFenceValue (uint64 Value);
 	void CreateRootSignature ();
 	void CreatePipelineState ();
@@ -103,6 +108,17 @@ private:
 	void RebuildShaderDescriptorHeap (uint32 NewCapacity);
 	void RebuildShaderDescriptors ();
 
+	// Raytracing
+	ComPtr<ID3D12RootSignature> CreateRayGenSignature ();
+	ComPtr<ID3D12RootSignature> CreateMissSignature ();
+	ComPtr<ID3D12RootSignature> CreateHitSignature ();
+
+	void CreateRaytracingPipeline ();
+	void CreateRaytracingOutputBuffer ();
+	public: void CreateShaderResourceHeap (); private:
+	public: void CreateShaderBindingTable (); private:
+	// ~Raytracing
+
 public:
 	DX12_DescriptorHeap ShaderDescriptorHeap;
 	bool bVSyncEnabled = true;
@@ -116,7 +132,7 @@ private:
 
 	// Pipeline
 	ComPtr<IDXGIAdapter1> Adapter;
-	ComPtr<ID3D12Device> Device;
+	ComPtr<ID3D12Device5> Device;
 	ComPtr<IDXGIFactory4> Factory;
 
 	ComPtr<IDXGISwapChain1> SwapChain;
@@ -129,7 +145,7 @@ private:
 
 	ComPtr<ID3D12CommandQueue> CommandQueue;
 	ComPtr<ID3D12CommandAllocator> CommandAllocator;
-	ComPtr<ID3D12GraphicsCommandList> CommandList;
+	ComPtr<ID3D12GraphicsCommandList4> CommandList;
 
 	ComPtr<ID3D12RootSignature> RootSignature;
 	ComPtr<ID3D12PipelineState> PipelineState;
@@ -142,12 +158,14 @@ private:
 	ComPtr<ID3D12Resource> CommonConstantBuffer;
 	D3D12_GPU_DESCRIPTOR_HANDLE CommonConstantBufferDescriptor;
 
+
 	struct SShaderResourceViewRecord
 	{
 		ID3D12Resource* Resource = nullptr;
 		D3D12_SHADER_RESOURCE_VIEW_DESC Desc = {};
 		D3D12_GPU_DESCRIPTOR_HANDLE* GpuHandle = nullptr;
 	};
+
 
 	DX12_DescriptorHeap RtvHeap;
 	DX12_Arena RtvArena;
@@ -168,6 +186,28 @@ private:
 	TArray<SShaderResourceViewRecord> TrackedSrvs;
 	D3D12_DESCRIPTOR_HEAP_TYPE ShaderDescriptorHeapType = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 	D3D12_DESCRIPTOR_HEAP_FLAGS ShaderDescriptorHeapFlags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+
+	// Raytracing
+	ComPtr<IDxcBlob> RayGenLibrary;
+	ComPtr<IDxcBlob> MissLibrary;
+	ComPtr<IDxcBlob> HitLibrary;
+
+	ComPtr<ID3D12RootSignature> RayGenSignature;
+	ComPtr<ID3D12RootSignature> MissSignature;
+	ComPtr<ID3D12RootSignature> HitSignature;
+
+	ComPtr<ID3D12StateObject> RtStateObject;
+	ComPtr<ID3D12StateObjectProperties> RtStateObjectProperties;
+
+	ComPtr<ID3D12Resource> RtOutputResource;
+	ComPtr<ID3D12DescriptorHeap> SrvUavHeap;
+
+	// temporary public
+	public: raytracing::SAccelerationStructureBuffers TopLevelASBuffers; private:
+	nv_helpers_dx12::ShaderBindingTableGenerator SbtHelper;
+	ComPtr<ID3D12Resource> SbtStorage;
+
+	// ~Raytracing
 };
 
 

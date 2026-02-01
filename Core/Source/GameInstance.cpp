@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <iostream>
 
+#include "Exception.h"
 #include "imgui.h"
 #include "backends/imgui_impl_dx12.h"
 #include "backends/imgui_impl_win32.h"
@@ -226,6 +227,7 @@ void GameInstance::Load ()
 		SRenderModel::FromMesh(
 			mesh::GenerateCube(Vector3f(1.f), 1),
 			Renderer->GetMaterialLibrary().LoadOrCreateMaterial(cubeMaterialPath, {})));
+	Cube->bRayTraced = true;
 
 	// Cylinder = World->SpawnEntity();
 	// Cylinder->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
@@ -234,13 +236,33 @@ void GameInstance::Load ()
 	Sphere = World->SpawnEntity();
 	Sphere->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
 		graphics::SRenderModel::FromMesh(mesh::GenerateSphere(.1f, 10u, 10u)));
+	Sphere->bRayTraced = false;
 
-	auto skullEnt = World->SpawnEntity();
-	skullEnt->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
+	// auto skullEnt = World->SpawnEntity();
+	// skullEnt->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
+	// 	graphics::SRenderModel::LoadFromFile(
+	// 		R"(..\Core\Content\Models\Skull\scene.gltf)",
+	// 		R"(..\Core\Content\Models\Skull\textures\defaultMat_baseColor.jpeg)"));
+	// skullEnt->Transform.SetTranslation(1.f, 0.f, 0.f);
+	// skullEnt->bRayTraced = false;
+
+	auto duckEnt = World->SpawnEntity();
+	duckEnt->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
 		graphics::SRenderModel::LoadFromFile(
-			R"(..\Core\Content\Models\Skull\scene.gltf)",
-			R"(..\Core\Content\Models\Skull\textures\defaultMat_baseColor.jpeg)"));
-	skullEnt->Transform.SetTranslation(1.f, 0.f, 0.f);
+			R"(..\Core\Content\Models\Duck\Duck.gltf)",
+			R"(..\Core\Content\Models\Duck\DuckCM.png)"));
+	duckEnt->Transform.SetTranslation(1.f, 0.f, 0.f);
+	duckEnt->bRayTraced = false;
+
+	// TODO: When Sponza is added, the renderer crashes. Probably multiple sections aren't handled properly
+	// auto sponzaEnt = World->SpawnEntity();
+	// sponzaEnt->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
+	// 	graphics::SRenderModel::LoadFromFile(
+	// 		R"(..\Core\Content\Models\Sponza\Sponza.gltf)",
+	// 		""));
+	// // sponzaEnt->Transform.SetTranslation(1.f, 0.f, 0.f);
+	// sponzaEnt->bRayTraced = false;
+
 }
 
 void GameInstance::Input (float DeltaSeconds)
@@ -323,14 +345,27 @@ void GameInstance::Tick (float DeltaSeconds)
 #if !defined(FRT_HEADLESS)
 void GameInstance::Draw (float DeltaSeconds)
 {
-	Renderer->StartFrame(*Camera);
-
 	// TODO: temp
 	if (!bLoaded)
 	{
+		auto& frameResources = Renderer->GetCurrentFrameResource();
+		THROW_IF_FAILED(frameResources.CommandListAllocator->Reset());
+		THROW_IF_FAILED(Renderer->GetCommandList()->Reset(frameResources.CommandListAllocator.Get(), nullptr));
 		Load();
+		World->CreateAccelerationStructures();
+		Renderer->CreateShaderResourceHeap();
+		Renderer->CreateShaderBindingTable();
+
+		ID3D12GraphicsCommandList4* commandList = Renderer->GetCommandList();
+		THROW_IF_FAILED(commandList->Close());
+		ID3D12CommandList* ppCommandLists[] = { commandList };
+		Renderer->GetCommandQueue()->ExecuteCommandLists(1, ppCommandLists);
+		Renderer->FlushCommandQueue();
+
 		bLoaded = true;
 	}
+
+	Renderer->StartFrame(*Camera);
 
 	World->Present(DeltaSeconds, Renderer->GetCommandList());
 

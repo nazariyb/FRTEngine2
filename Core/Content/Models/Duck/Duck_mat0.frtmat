@@ -1,0 +1,12 @@
+version: 1
+# FRT material
+name: blinn3-fx
+vertex_shader: VertexShader
+pixel_shader: PixelShader
+color: RGBA(1, 1, 1, 1)
+base_color_texture: DuckCM.png
+cull: none
+depth_enable: true
+depth_write: true
+depth_func: less
+alpha_blend: false

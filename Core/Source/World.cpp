@@ -2,10 +2,12 @@
 
 #include <unordered_map>
 
+#include "Exception.h"
 #include "GameInstance.h"
 #include "Timer.h"
 #include "Window.h"
 #include "Graphics/Camera.h"
+#include "Graphics/DXRUtils.h"
 #include "Graphics/Render/GraphicsCoreTypes.h"
 #include "Graphics/Render/Renderer.h"
 
@@ -32,7 +34,7 @@ void CWorld::Tick (float DeltaSeconds)
 }
 
 #if !defined(FRT_HEADLESS)
-void CWorld::Present (float DeltaSeconds, ID3D12GraphicsCommandList* CommandList)
+void CWorld::Present (float DeltaSeconds, ID3D12GraphicsCommandList4* CommandList)
 {
 	auto& currentFrameResources = Renderer->GetCurrentFrameResource();
 
@@ -97,16 +99,100 @@ void CWorld::Present (float DeltaSeconds, ID3D12GraphicsCommandList* CommandList
 
 	currentFrameResources.ObjectCB.Upload(currentFrameResources.UploadArena, Renderer->GetCommandList());
 	currentFrameResources.MaterialCB.Upload(currentFrameResources.UploadArena, Renderer->GetCommandList());
+
+	memory::TRefWeak<graphics::CRenderer> renderer = GameInstance::GetInstance().GetRenderer();
+
+	static const D3D12_HEAP_PROPERTIES DefaultHeapProps =
+	{
+		D3D12_HEAP_TYPE_DEFAULT,
+		D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+		D3D12_MEMORY_POOL_UNKNOWN,
+		0,
+		0
+	};
+
 	auto& ObjectDescriptorHandles = currentFrameResources.ObjectCB.DescriptorHeapHandleGpu;
 	for (uint32 i = 0; i < Entities.Count(); ++i)
 	{
+		if (!Entities[i]->RenderModel.Model)
+		{
+			continue;
+		}
+		const graphics::SRenderModel& model = *Entities[i]->RenderModel.Model;
+		if (!model.VertexBufferGpu || !model.IndexBufferGpu)
+		{
+			continue;
+		}
+
 		if (i < ObjectDescriptorHandles.size())
 		{
 			CommandList->SetGraphicsRootDescriptorTable(
 				render::constants::RootParam_ObjectCbv,
 				ObjectDescriptorHandles[i]);
 		}
-		Entities[i]->Present(DeltaSeconds, CommandList);
+
+		if (Entities[i]->bRayTraced)
+		{}
+		else // if ray-traced
+		{
+			{
+				D3D12_INDEX_BUFFER_VIEW indexBufferView = {};
+				indexBufferView.BufferLocation = model.IndexBufferGpu->GetGPUVirtualAddress();
+				indexBufferView.SizeInBytes = model.Indices.Count() * sizeof(uint32);
+				indexBufferView.Format = DXGI_FORMAT_R32_UINT;
+				CommandList->IASetIndexBuffer(&indexBufferView);
+			}
+			{
+				D3D12_VERTEX_BUFFER_VIEW vertexBufferViews[1] = {};
+				vertexBufferViews[0].BufferLocation = model.VertexBufferGpu->GetGPUVirtualAddress();
+				vertexBufferViews[0].SizeInBytes = model.Vertices.Count() * sizeof(graphics::SVertex);
+				vertexBufferViews[0].StrideInBytes = sizeof(graphics::SVertex);
+				CommandList->IASetVertexBuffers(0, 1, vertexBufferViews);
+			}
+
+			for (uint32 sectionIndex = 0; sectionIndex < model.Sections.Count(); ++sectionIndex)
+			{
+				const graphics::SRenderSection& section = model.Sections[sectionIndex];
+				if (section.MaterialIndex < model.Materials.Count())
+				{
+					memory::TRefShared<graphics::SMaterial> material = model.Materials[section.MaterialIndex];
+					D3D12_GPU_DESCRIPTOR_HANDLE textureHandle = renderer->GetDefaultWhiteTextureGpu();
+					if (material && material->bHasBaseColorTexture)
+					{
+						textureHandle = material->BaseColorTexture.GpuDescriptor;
+					}
+
+					CommandList->SetGraphicsRootDescriptorTable(
+						render::constants::RootParam_BaseColorTexture,
+						textureHandle);
+
+					if (material)
+					{
+						ID3D12PipelineState* pipelineState = renderer->GetPipelineStateForMaterial(*material);
+						if (pipelineState)
+						{
+							CommandList->SetPipelineState(pipelineState);
+						}
+
+						graphics::SFrameResources& frameResources = renderer->GetCurrentFrameResource();
+						const auto& materialHandles = frameResources.MaterialCB.DescriptorHeapHandleGpu;
+						if (material->RuntimeIndex < materialHandles.size())
+						{
+							CommandList->SetGraphicsRootDescriptorTable(
+								render::constants::RootParam_MaterialCbv,
+								materialHandles[material->RuntimeIndex]);
+						}
+					}
+				}
+
+				CommandList->DrawIndexedInstanced(
+					section.IndexCount,
+					1,
+					section.IndexOffset,
+					section.VertexOffset,
+					0);
+			}
+		}
 	}
 }
 
@@ -141,7 +227,8 @@ void CWorld::CopyConstantData ()
 
 	const auto Camera = GameInstance::GetInstance().GetCamera();
 	XMMATRIX view = Camera->GetViewMatrix();
-	XMMATRIX projection = Camera->GetProjectionMatrix(math::PI_OVER_TWO, (float)renderWidth / renderHeight, 1.f, 1'000.f);
+	XMMATRIX projection = Camera->GetProjectionMatrix(
+		math::PI_OVER_TWO, (float)renderWidth / renderHeight, 1.f, 1'000.f);
 
 	XMMATRIX viewProj = XMMatrixMultiply(view, projection);
 
@@ -177,4 +264,234 @@ memory::TRefShared<CEntity> CWorld::SpawnEntity ()
 	auto newEntity = memory::NewShared<CEntity>();
 	Entities.Add(newEntity);
 	return newEntity;
+}
+
+graphics::raytracing::SAccelerationStructureBuffers CWorld::CreateBottomLevelAS (
+	const graphics::Comp_RenderModel& RenderModel)
+{
+	using namespace graphics;
+	using namespace graphics::raytracing;
+
+	CBottomLevelASGenerator bottomLevelAS;
+
+	frt_assert(RenderModel.Model);
+	const SRenderModel& model = *RenderModel.Model;
+
+	// Adding all vertex buffers and not transforming their position.
+	bottomLevelAS.AddVertexBuffer(
+		model.VertexBufferGpu.Get(), 0, model.Vertices.Count(), sizeof(SVertex),
+		model.IndexBufferGpu.Get(), 0, model.Indices.Count(),
+		nullptr, 0);
+
+	// The AS build requires some scratch space to store temporary information.
+	// The amount of scratch memory is dependent on the scene complexity.
+	uint64 scratchSizeInBytes = 0;
+	// The final AS also needs to be stored in addition to the existing vertex
+	// buffers. Its size is also dependent on the scene complexity.
+	uint64 resultSizeInBytes = 0;
+
+	ID3D12Device5* device = Renderer->GetDevice();
+
+	bottomLevelAS.ComputeASBufferSizes(device, false, &scratchSizeInBytes, &resultSizeInBytes);
+
+	// Once the sizes are obtained, the application is responsible for allocating
+	// the necessary buffers. Since the entire generation will be done on the GPU,
+	// we can directly allocate those on the default heap
+	SAccelerationStructureBuffers buffers;
+	buffers.Scratch = CreateBuffer(
+		device, scratchSizeInBytes,
+		D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON,
+		DefaultHeapProps);
+	buffers.Result = CreateBuffer(
+		device, resultSizeInBytes,
+		D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_RAYTRACING_ACCELERATION_STRUCTURE,
+		D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+		DefaultHeapProps);
+	if (buffers.Scratch)
+	{
+		buffers.Scratch->SetName(L"BLAS Scratch");
+	}
+	if (buffers.Result)
+	{
+		buffers.Result->SetName(L"BLAS Result");
+	}
+
+	ID3D12GraphicsCommandList4* commandList = Renderer->GetCommandList();
+
+	// BLAS build expects geometry buffers in NON_PIXEL_SHADER_RESOURCE, and scratch/result in UAV/RTAS.
+	D3D12_RESOURCE_BARRIER barriers[4] = {};
+	uint32 barrierCount = 0;
+	auto addTransition = [&] (
+		ID3D12Resource* resource,
+		D3D12_RESOURCE_STATES before,
+		D3D12_RESOURCE_STATES after)
+	{
+		D3D12_RESOURCE_BARRIER& barrier = barriers[barrierCount++];
+		barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+		barrier.Transition.pResource = resource;
+		barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		barrier.Transition.StateBefore = before;
+		barrier.Transition.StateAfter = after;
+	};
+
+	addTransition(
+		model.VertexBufferGpu.Get(),
+		D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
+		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+	addTransition(
+		model.IndexBufferGpu.Get(),
+		D3D12_RESOURCE_STATE_INDEX_BUFFER,
+		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+	addTransition(
+		buffers.Scratch.Get(),
+		D3D12_RESOURCE_STATE_COMMON,
+		D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+	if (barrierCount > 0)
+	{
+		commandList->ResourceBarrier(barrierCount, barriers);
+	}
+
+	// Build the acceleration structure. Note that this call integrates a barrier
+	// on the generated AS, so that it can be used to compute a top-level AS right
+	// after this method.
+	bottomLevelAS.Generate(
+		commandList, buffers.Scratch.Get(),
+		buffers.Result.Get(), false, nullptr);
+
+	// Restore geometry buffers for rasterization.
+	barrierCount = 0;
+	addTransition(
+		model.VertexBufferGpu.Get(),
+		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+		D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
+	addTransition(
+		model.IndexBufferGpu.Get(),
+		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
+		D3D12_RESOURCE_STATE_INDEX_BUFFER);
+	commandList->ResourceBarrier(barrierCount, barriers);
+
+	return buffers;
+}
+
+void CWorld::CreateTopLevelAS (const TArray<std::pair<ID3D12Resource*, DirectX::XMMATRIX>>& Instances)
+{
+	using namespace graphics;
+	using namespace graphics::raytracing;
+
+	TopLevelASGenerator = {};
+
+	for (uint32 i = 0; i < Instances.Count(); i++)
+	{
+		TopLevelASGenerator.AddInstance(Instances[i].first, Instances[i].second, i, 0u);
+	}
+
+	ID3D12Device5* device = Renderer->GetDevice();
+
+	// As for the bottom-level AS, the building the AS requires some scratch space
+	// to store temporary data in addition to the actual AS. In the case of the
+	// top-level AS, the instance descriptors also need to be stored in GPU
+	// memory. This call outputs the memory requirements for each (scratch,
+	// results, instance descriptors) so that the application can allocate the
+	// corresponding memory
+	uint64 scratchSize, resultSize, instanceDescsSize;
+
+
+	TopLevelASGenerator.ComputeASBufferSizes(
+		device, true, &scratchSize,
+		&resultSize, &instanceDescsSize);
+
+	// Create the scratch and result buffers. Since the build is all done on GPU,
+	// those can be allocated on the default heap
+	TopLevelASBuffers.Scratch = CreateBuffer(
+		device, scratchSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+		D3D12_RESOURCE_STATE_COMMON,
+		DefaultHeapProps);
+	TopLevelASBuffers.Result = CreateBuffer(
+		device, resultSize,
+		D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_RAYTRACING_ACCELERATION_STRUCTURE,
+		D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+		DefaultHeapProps);
+
+	// The buffer describing the instances: ID, shader binding information,
+	// matrices ... Those will be copied into the buffer by the helper through
+	// mapping, so the buffer has to be allocated on the upload heap.
+	TopLevelASBuffers.InstanceDesc = CreateBuffer(
+		device, instanceDescsSize, D3D12_RESOURCE_FLAG_NONE,
+		D3D12_RESOURCE_STATE_GENERIC_READ, UploadHeapProps);
+	if (TopLevelASBuffers.Scratch)
+	{
+		TopLevelASBuffers.Scratch->SetName(L"TLAS Scratch");
+	}
+	if (TopLevelASBuffers.Result)
+	{
+		TopLevelASBuffers.Result->SetName(L"TLAS Result");
+	}
+	if (TopLevelASBuffers.InstanceDesc)
+	{
+		TopLevelASBuffers.InstanceDesc->SetName(L"TLAS InstanceDesc");
+	}
+
+	ID3D12GraphicsCommandList4* commandList = Renderer->GetCommandList();
+	D3D12_RESOURCE_BARRIER barriers[2] = {};
+	uint32 barrierCount = 0;
+	auto addTransition = [&] (
+		ID3D12Resource* resource,
+		D3D12_RESOURCE_STATES before,
+		D3D12_RESOURCE_STATES after)
+	{
+		D3D12_RESOURCE_BARRIER& barrier = barriers[barrierCount++];
+		barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+		barrier.Transition.pResource = resource;
+		barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		barrier.Transition.StateBefore = before;
+		barrier.Transition.StateAfter = after;
+	};
+
+	addTransition(
+		TopLevelASBuffers.Scratch.Get(),
+		D3D12_RESOURCE_STATE_COMMON,
+		D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+	commandList->ResourceBarrier(barrierCount, barriers);
+
+	// After all the buffers are allocated, or if only an update is required, we
+	// can build the acceleration structure. Note that in the case of the update
+	// we also pass the existing AS as the 'previous' AS, so that it can be
+	// refitted in place.
+	TopLevelASGenerator.Generate(
+		commandList,
+		TopLevelASBuffers.Scratch.Get(),
+		TopLevelASBuffers.Result.Get(),
+		TopLevelASBuffers.InstanceDesc.Get());
+}
+
+// definitely should be inside Renderer
+void CWorld::CreateAccelerationStructures ()
+{
+	ID3D12Device5* device = Renderer->GetDevice();
+	D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5 = {};
+	if (FAILED(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &options5, sizeof(options5))) ||
+		options5.RaytracingTier < D3D12_RAYTRACING_TIER_1_0)
+	{
+		// Raytracing not supported on this device; skip AS build.
+		return;
+	}
+	if (Entities.IsEmpty() || !Entities[0] || !Entities[0]->RenderModel.Model)
+	{
+		return;
+	}
+
+	graphics::raytracing::SAccelerationStructureBuffers bottomLevelBuffers =
+		CreateBottomLevelAS(Entities[0]->RenderModel);
+
+	// Just one instance for now
+	Instances = { { bottomLevelBuffers.Result.Get(), DirectX::XMLoadFloat4x4(&Entities[0]->Transform.GetMatrix()) } };
+	CreateTopLevelAS(Instances);
+
+	// Store the AS buffers. The rest of the buffers will be released once we exit
+	// the function
+	BottomLevelAS = bottomLevelBuffers.Result;
+
+	Renderer->TopLevelASBuffers = TopLevelASBuffers;
 }

@@ -1,0 +1,12 @@
+version: 1
+# FRT material
+name: Sponza_mat13
+vertex_shader: VertexShader
+pixel_shader: PixelShader
+color: RGBA(1, 1, 1, 1)
+base_color_texture: 
+cull: none
+depth_enable: true
+depth_write: true
+depth_func: less
+alpha_blend: false

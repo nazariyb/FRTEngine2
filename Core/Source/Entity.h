@@ -11,12 +11,11 @@ class CEntity
 public:
 	// temp implementation
 	void Tick (float DeltaSeconds);
-#if !defined(FRT_HEADLESS)
-	void Present (float DeltaSeconds, ID3D12GraphicsCommandList* CommandList);
-#endif
 
 	math::STransform Transform;
 
+	// TODO: These are here temporary
 	graphics::Comp_RenderModel RenderModel;
+	bool bRayTraced = true; // TODO: should be per-material
 };
 }

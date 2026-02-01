@@ -99,4 +99,15 @@ struct SFrameResources
 		DX12_Arena& BufferArena,
 		DX12_DescriptorHeap& DescriptorHeap);
 };
+
+
+namespace raytracing
+{
+	struct SAccelerationStructureBuffers
+	{
+		ComPtr<ID3D12Resource> Scratch;
+		ComPtr<ID3D12Resource> Result;
+		ComPtr<ID3D12Resource> InstanceDesc;
+	};
+}
 }
