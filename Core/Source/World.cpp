@@ -196,6 +196,14 @@ void CWorld::Present (float DeltaSeconds, ID3D12GraphicsCommandList4* CommandLis
 	}
 }
 
+void CWorld::InitializeRendering ()
+{
+	Renderer->BeginInitializationCommands();
+	CreateAccelerationStructures();
+	Renderer->InitializeRaytracingResources();
+	Renderer->EndInitializationCommands();
+}
+
 void CWorld::CopyConstantData ()
 {
 	// TODO: ideally, CBs should already be stored in one array

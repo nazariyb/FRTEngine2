@@ -22,6 +22,7 @@ public:
 	virtual void Tick (float DeltaSeconds);
 #ifndef FRT_HEADLESS
 	virtual void Present (float DeltaSeconds, ID3D12GraphicsCommandList4* CommandList);
+	void InitializeRendering ();
 	void CreateAccelerationStructures ();
 
 	void CopyConstantData ();

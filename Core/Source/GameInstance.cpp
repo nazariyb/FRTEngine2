@@ -263,12 +263,8 @@ void GameInstance::Load ()
 	// // sponzaEnt->Transform.SetTranslation(1.f, 0.f, 0.f);
 	// sponzaEnt->bRayTraced = false;
 
-#if !defined(FRT_HEADLESS)
-	Renderer->BeginInitializationCommands();
-	World->CreateAccelerationStructures();
-	Renderer->CreateShaderResourceHeap();
-	Renderer->CreateShaderBindingTable();
-	Renderer->EndInitializationCommands();
+#ifndef FRT_HEADLESS
+	World->InitializeRendering();
 #endif
 }
 
