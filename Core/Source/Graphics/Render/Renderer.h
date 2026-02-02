@@ -8,7 +8,6 @@
 #include <unordered_map>
 #include <wrl/client.h>
 
-#include "Core.h"
 #include "Event.h"
 #include "GraphicsCoreTypes.h"
 #include "MaterialLibrary.h"
@@ -87,10 +86,16 @@ public:
 	void Tick ();
 	void Draw ();
 	SFrameResources& GetCurrentFrameResource ();
+	void SetRenderMode (ERenderMode Mode);
+	ERenderMode GetRenderMode () const;
+	bool IsRaytracingReady () const;
+	bool ShouldRenderRaster () const;
+	bool ShouldRenderRaytracing () const;
 
 private:
 	void ResetCurrentFrameCommandList ();
 	void ReloadModifiedAssetsIfNeeded ();
+	ERenderMode RenderMode = ERenderMode::Raytracing;
 
 	// Resource uploads
 public:
@@ -202,6 +207,7 @@ private:
 	void PrepareRasterPass ();
 	void TransitionCurrentBackBufferToRenderTarget ();
 	void SetupCurrentBackBufferRenderTarget ();
+	void SetupCurrentBackBufferRenderTargetNoClear ();
 	void BindDefaultRasterState ();
 
 	ComPtr<ID3D12RootSignature> RootSignature;

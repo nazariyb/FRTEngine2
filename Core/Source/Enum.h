@@ -258,6 +258,34 @@ constexpr bool IsValid (E Value)
 	}
 	return false;
 }
+
+template <ReflectedEnum E, size_t... I>
+constexpr auto GetValueNamesImpl (
+	std::index_sequence<I...>)
+	-> std::array<std::string_view, sizeof...(I)>
+{
+	return { TEnumTraits<E>::Entries[I].second... };
+}
+
+template <ReflectedEnum E>
+constexpr auto GetValueNames ()
+	-> std::array<std::string_view, TEnumTraits<E>::Entries.size()>
+{
+	return GetValueNamesImpl<E>(std::make_index_sequence<TEnumTraits<E>::Entries.size()>{});
+}
+
+template <concepts::Enum E>
+constexpr E NextValue (E Value, E Count)
+{
+	using U = std::underlying_type_t<E>;
+	return static_cast<E>((static_cast<U>(Value) + 1) % static_cast<U>(Count));
+}
+
+template <ReflectedEnum E>
+constexpr E NextValue (E Value)
+{
+	return NextValue(Value, E::Count);
+}
 }
 
 

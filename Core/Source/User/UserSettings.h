@@ -1,6 +1,7 @@
 ﻿#pragma once
 
 #include "CoreTypes.h"
+#include "Graphics/Render/GraphicsCoreTypes.h"
 
 
 namespace frt
@@ -21,6 +22,7 @@ struct SDisplaySettings
 	int32 RefreshRateIndex = 0;
 
 	EFullscreenMode FullscreenMode = EFullscreenMode::Windowed;
+	graphics::ERenderMode RenderMode = graphics::ERenderMode::Raytracing;
 	bool bVSync = true;
 
 	bool IsFullscreen () const { return FullscreenMode == EFullscreenMode::Fullscreen; }

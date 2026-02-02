@@ -456,13 +456,57 @@ void CRenderer::ReloadModifiedAssetsIfNeeded ()
 #endif
 }
 
+void CRenderer::SetRenderMode (ERenderMode Mode)
+{
+	RenderMode = Mode;
+}
+
+ERenderMode CRenderer::GetRenderMode () const
+{
+	return RenderMode;
+}
+
+bool CRenderer::IsRaytracingReady () const
+{
+	return RtStateObject
+		&& RtOutputResource
+		&& SrvUavHeap
+		&& SbtStorage
+		&& TopLevelASBuffers.Result;
+}
+
+bool CRenderer::ShouldRenderRaster () const
+{
+	return RenderMode == ERenderMode::Raster || !IsRaytracingReady() || RenderMode == ERenderMode::Hybrid; // fallback to raster
+}
+
+bool CRenderer::ShouldRenderRaytracing () const
+{
+	return RenderMode == ERenderMode::Raytracing && IsRaytracingReady();
+}
+
 void CRenderer::StartFrame ()
 {
 	ResetCurrentFrameCommandList();
 	ProcessPendingResourceUploads();
 	ReloadModifiedAssetsIfNeeded();
-	PrepareRasterPass();
-	DispatchRaytracingToCurrentFrameBuffer();
+	const bool bRenderRaster = ShouldRenderRaster();
+	const bool bRenderRaytracing = ShouldRenderRaytracing();
+
+	if (bRenderRaster)
+	{
+		PrepareRasterPass();
+	}
+	else
+	{
+		TransitionCurrentBackBufferToRenderTarget();
+	}
+
+	if (bRenderRaytracing)
+	{
+		DispatchRaytracingToCurrentFrameBuffer();
+		SetupCurrentBackBufferRenderTargetNoClear();
+	}
 }
 
 void CRenderer::Tick ()
@@ -1065,6 +1109,14 @@ void CRenderer::SetupCurrentBackBufferRenderTarget ()
 	CommandList->ClearDepthStencilView(
 		DepthStencilDescriptor, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1, 0, 0, nullptr);
 
+	CommandList->OMSetRenderTargets(
+		1, &FrameBufferDescriptors[CurrentBackBufferIndex], false, &DepthStencilDescriptor);
+}
+
+void CRenderer::SetupCurrentBackBufferRenderTargetNoClear ()
+{
+	CommandList->RSSetViewports(1, &Viewport);
+	CommandList->RSSetScissorRects(1, &ScissorRect);
 	CommandList->OMSetRenderTargets(
 		1, &FrameBufferDescriptors[CurrentBackBufferIndex], false, &DepthStencilDescriptor);
 }

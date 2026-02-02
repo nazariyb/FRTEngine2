@@ -318,6 +318,15 @@ void GameInstance::Input (float DeltaSeconds)
 
 		Camera->Transform.MoveBy(worldMove * DeltaSeconds * Camera->MovementSpeed);
 	}
+
+	if (InputSystem.WasKeyPressed(input::KeyCode::F2))
+	{
+		const ERenderMode NewRenderMode = enum_::NextValue(Renderer->GetRenderMode());
+
+		// TODO: should be synced automatically
+		UserSettings.DisplaySettings.RenderMode = NewRenderMode;
+		Renderer->SetRenderMode(NewRenderMode);
+	}
 #endif
 }
 
@@ -350,7 +359,11 @@ void GameInstance::Draw (float DeltaSeconds)
 {
 	Renderer->StartFrame();
 
-	World->Present(DeltaSeconds, Renderer->GetCommandList());
+	const bool bRenderRaster = Renderer->ShouldRenderRaster();
+	if (bRenderRaster)
+	{
+		World->Present(DeltaSeconds, Renderer->GetCommandList());
+	}
 
 	ImGui::Render();
 	ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), Renderer->GetCommandList());
@@ -499,6 +512,17 @@ void GameInstance::DisplayUserSettings ()
 	}
 
 	{
+		const auto renderModeNames = enum_::GetValueNames<ERenderMode>();
+		auto labelRenderMode = "RenderMode";
+		ImGui::SliderInt(
+			labelRenderMode,
+			(int*)&displaySettings.RenderMode,
+			0, (int32)ERenderMode::Count - 1,
+			renderModeNames[(int32)displaySettings.RenderMode].data(),
+			ImGuiSliderFlags_AlwaysClamp);
+	}
+
+	{
 		auto labelVSync = "Enable VSync";
 		ImGui::Checkbox(labelVSync, &displaySettings.bVSync);
 	}
@@ -515,6 +539,7 @@ void GameInstance::DisplayUserSettings ()
 			displaySettings.ResolutionIndex = resIndex;
 		}
 
+		GetRenderer()->SetRenderMode(displaySettings.RenderMode);
 		GetRenderer()->bVSyncEnabled = displaySettings.bVSync;
 
 		uint32 numerator = 0;

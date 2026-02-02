@@ -5,6 +5,7 @@
 
 #include "ConstantBuffer.h"
 #include "CoreUtils.h"
+#include "Enum.h"
 #include "RenderResourceAllocators.h"
 #include "Graphics/SColor.h"
 #include "Math/Math.h"
@@ -49,6 +50,7 @@ struct SPassConstants
 	float TotalTime = 0.f;
 	float DeltaTime = 0.f;
 };
+
 
 struct SMaterialConstants
 {
@@ -101,6 +103,15 @@ struct SFrameResources
 };
 
 
+enum class ERenderMode : int32
+{
+	Raster = 0,
+	Raytracing,
+	Hybrid,
+	Count,
+};
+
+
 namespace raytracing
 {
 	struct SAccelerationStructureBuffers
@@ -111,3 +122,9 @@ namespace raytracing
 	};
 }
 }
+
+FRT_DECLARE_ENUM_REFLECTION(
+	frt::graphics::ERenderMode,
+	FRT_ENUM_ENTRY(frt::graphics::ERenderMode, Raster),
+	FRT_ENUM_ENTRY(frt::graphics::ERenderMode, Raytracing),
+	FRT_ENUM_ENTRY(frt::graphics::ERenderMode, Hybrid));
