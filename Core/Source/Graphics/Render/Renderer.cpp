@@ -298,6 +298,9 @@ void CRenderer::Resize (bool bNewFullscreenState)
 
 			Device->CreateDepthStencilView(DepthStencilBuffer.Get(), nullptr, DepthStencilDescriptor);
 		}
+
+		CreateRaytracingOutputBuffer();
+		InitializeRaytracingResources();
 	}
 	else
 	{
@@ -1636,16 +1639,16 @@ void CRenderer::DispatchRaytracingToCurrentFrameBuffer ()
 		D3D12_RESOURCE_STATE_COPY_SOURCE);
 	CommandList->ResourceBarrier(1, &transition);
 	transition = CD3DX12_RESOURCE_BARRIER::Transition(
-		FrameBuffer[CurrentFrameResourceIndex].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
+		FrameBuffer[CurrentBackBufferIndex].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
 		D3D12_RESOURCE_STATE_COPY_DEST);
 	CommandList->ResourceBarrier(1, &transition);
 
 	CommandList->CopyResource(
-		FrameBuffer[CurrentFrameResourceIndex].Get(),
+		FrameBuffer[CurrentBackBufferIndex].Get(),
 		RtOutputResource.Get());
 
 	transition = CD3DX12_RESOURCE_BARRIER::Transition(
-		FrameBuffer[CurrentFrameResourceIndex].Get(), D3D12_RESOURCE_STATE_COPY_DEST,
+		FrameBuffer[CurrentBackBufferIndex].Get(), D3D12_RESOURCE_STATE_COPY_DEST,
 		D3D12_RESOURCE_STATE_RENDER_TARGET);
 	CommandList->ResourceBarrier(1, &transition);
 }

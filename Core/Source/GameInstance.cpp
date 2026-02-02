@@ -366,6 +366,10 @@ void GameInstance::Draw (float DeltaSeconds)
 	}
 
 	ImGui::Render();
+	{
+		ID3D12DescriptorHeap* heaps[] = { Renderer->GetDescriptorHeap().GetHeap() };
+		Renderer->GetCommandList()->SetDescriptorHeaps(_countof(heaps), heaps);
+	}
 	ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), Renderer->GetCommandList());
 
 	Renderer->Draw();
