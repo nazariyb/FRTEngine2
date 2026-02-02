@@ -1,15 +1,17 @@
 ﻿#include "Renderer.h"
 
 #include <complex>
+#include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
+#include <utility>
 
 #include "d3dx12.h"
 #include "DXRHelper.h"
 #include "Exception.h"
 #include "Timer.h"
 #include "Window.h"
-#include "Graphics/Camera.h"
 #include "Graphics/DXRUtils.h"
 #include "Graphics/Model.h"
 #include "Graphics/Render/Material.h"
@@ -509,6 +511,7 @@ void CRenderer::Resize (bool bNewFullscreenState)
 	FlushCommandQueue();
 
 	THROW_IF_FAILED(CommandList->Reset(CommandAllocator.Get(), nullptr));
+	bCommandListRecording = true;
 
 	// Release the previous resources we will be recreating.
 	for (int i = 0; i < render::constants::SwapChainBufferCount; ++i)
@@ -613,6 +616,7 @@ void CRenderer::Resize (bool bNewFullscreenState)
 
 	// Execute the resize commands.
 	THROW_IF_FAILED(CommandList->Close());
+	bCommandListRecording = false;
 	ID3D12CommandList* cmdsLists[] = { CommandList.Get() };
 	CommandQueue->ExecuteCommandLists(_countof(cmdsLists), cmdsLists);
 
@@ -633,15 +637,18 @@ void CRenderer::Resize (bool bNewFullscreenState)
 	ScissorRect.bottom = drawRect.y;
 }
 
-void CRenderer::StartFrame (CCamera& Camera)
+void CRenderer::ResetCurrentFrameCommandList ()
 {
 	auto commandListAllocator = GetCurrentFrameResource().CommandListAllocator;
-
 	THROW_IF_FAILED(commandListAllocator->Reset());
 
 	// TODO: assign different PSO
 	THROW_IF_FAILED(CommandList->Reset(commandListAllocator.Get(), nullptr));
+	bCommandListRecording = true;
+}
 
+void CRenderer::ReloadModifiedAssetsIfNeeded ()
+{
 #ifndef RELEASE
 	const bool bMaterialsReloaded = MaterialLibrary.ReloadModifiedMaterials();
 	const bool bShadersReloaded = ShaderLibrary.ReloadModifiedShaders();
@@ -650,91 +657,89 @@ void CRenderer::StartFrame (CCamera& Camera)
 		bPendingPipelineStateRebuild = true;
 	}
 #endif
+}
 
-	{
-		D3D12_RESOURCE_BARRIER resourceBarrier = {};
-		resourceBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-		resourceBarrier.Transition.pResource = FrameBuffer[CurrentBackBufferIndex].Get();
-		resourceBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-		resourceBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-		resourceBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-		CommandList->ResourceBarrier(1, &resourceBarrier);
-	}
+void CRenderer::TransitionCurrentBackBufferToRenderTarget ()
+{
+	D3D12_RESOURCE_BARRIER resourceBarrier = {};
+	resourceBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+	resourceBarrier.Transition.pResource = FrameBuffer[CurrentBackBufferIndex].Get();
+	resourceBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+	resourceBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+	resourceBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+	CommandList->ResourceBarrier(1, &resourceBarrier);
+}
 
+void CRenderer::SetupCurrentBackBufferRenderTarget ()
+{
 	CommandList->RSSetViewports(1, &Viewport);
 	CommandList->RSSetScissorRects(1, &ScissorRect);
 
-	FLOAT Color[] = { 0.1f, 0.3f, 0.3f, 1.f };
-	CommandList->ClearRenderTargetView(FrameBufferDescriptors[CurrentBackBufferIndex], Color, 0, nullptr);
+	FLOAT clearColor[] = { 0.1f, 0.3f, 0.3f, 1.f };
+	CommandList->ClearRenderTargetView(FrameBufferDescriptors[CurrentBackBufferIndex], clearColor, 0, nullptr);
 	CommandList->ClearDepthStencilView(
 		DepthStencilDescriptor, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1, 0, 0, nullptr);
 
 	CommandList->OMSetRenderTargets(
 		1, &FrameBufferDescriptors[CurrentBackBufferIndex], false, &DepthStencilDescriptor);
+}
 
+void CRenderer::BindDefaultRasterState ()
+{
 	CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 	CommandList->SetGraphicsRootSignature(RootSignature.Get());
 	CommandList->SetPipelineState(PipelineState.Get());
 
 	CommandList->SetDescriptorHeaps(1, &ShaderDescriptorHeap._heap);
+}
 
-	// raytracing
-	std::vector<ID3D12DescriptorHeap*> heaps = { SrvUavHeap.Get() };
-	CommandList->SetDescriptorHeaps(
-		static_cast<uint32>(heaps.size()),
-		heaps.data());
-	CD3DX12_RESOURCE_BARRIER transition = CD3DX12_RESOURCE_BARRIER::Transition(
-		RtOutputResource.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
-		D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-	CommandList->ResourceBarrier(1, &transition);
-
-	// Setup the raytracing task
+D3D12_DISPATCH_RAYS_DESC CRenderer::BuildDispatchRaysDesc ()
+{
 	D3D12_DISPATCH_RAYS_DESC desc = {};
-	// The layout of the SBT is as follows: ray generation shader, miss
-	// shaders, hit groups. As described in the CreateShaderBindingTable method,
-	// all SBT entries of a given type have the same size to allow a fixed stride.
 
-	// The ray generation shaders are always at the beginning of the SBT. 
-	uint32_t rayGenerationSectionSizeInBytes = SbtHelper.GetRayGenSectionSize();
+	// The ray generation shaders are always at the beginning of the SBT.
+	const uint32_t rayGenerationSectionSizeInBytes = SbtHelper.GetRayGenSectionSize();
 	desc.RayGenerationShaderRecord.StartAddress = SbtStorage->GetGPUVirtualAddress();
 	desc.RayGenerationShaderRecord.SizeInBytes = rayGenerationSectionSizeInBytes;
 
-	// The miss shaders are in the second SBT section, right after the ray
-	// generation shader. We have one miss shader for the camera rays and one
-	// for the shadow rays, so this section has a size of 2*m_sbtEntrySize. We
-	// also indicate the stride between the two miss shaders, which is the size
-	// of a SBT entry
-	uint32_t missSectionSizeInBytes = SbtHelper.GetMissSectionSize();
+	// Miss shaders come immediately after ray generation.
+	const uint32_t missSectionSizeInBytes = SbtHelper.GetMissSectionSize();
 	desc.MissShaderTable.StartAddress =
 		SbtStorage->GetGPUVirtualAddress() + rayGenerationSectionSizeInBytes;
 	desc.MissShaderTable.SizeInBytes = missSectionSizeInBytes;
 	desc.MissShaderTable.StrideInBytes = SbtHelper.GetMissEntrySize();
 
-	// The hit groups section start after the miss shaders. In this sample we
-	// have one 1 hit group for the triangle
-	uint32_t hitGroupsSectionSize = SbtHelper.GetHitGroupSectionSize();
+	// Hit groups follow miss shaders.
+	const uint32_t hitGroupsSectionSize = SbtHelper.GetHitGroupSectionSize();
 	desc.HitGroupTable.StartAddress = SbtStorage->GetGPUVirtualAddress() +
 									rayGenerationSectionSizeInBytes +
 									missSectionSizeInBytes;
 	desc.HitGroupTable.SizeInBytes = hitGroupsSectionSize;
 	desc.HitGroupTable.StrideInBytes = SbtHelper.GetHitGroupEntrySize();
 
-	Vector2f drawRect = Window->GetWindowSize();
-	// Dimensions of the image to render, identical to a kernel launch dimension
+	const Vector2f drawRect = Window->GetWindowSize();
 	desc.Width = static_cast<uint32>(drawRect.x);
 	desc.Height = static_cast<uint32>(drawRect.y);
 	desc.Depth = 1;
 
-	// Bind the raytracing pipeline
-	CommandList->SetPipelineState1(RtStateObject.Get());
-	// Dispatch the rays and write to the raytracing output
-	CommandList->DispatchRays(&desc);
+	return desc;
+}
 
-	// The raytracing output needs to be copied to the actual render target used
-	// for display. For this, we need to transition the raytracing output from a
-	// UAV to a copy source, and the render target buffer to a copy destination.
-	// We can then do the actual copy, before transitioning the render target
-	// buffer into a render target, that will be then used to display the image
+void CRenderer::DispatchRaytracingToCurrentFrameBuffer ()
+{
+	ID3D12DescriptorHeap* heaps[] = { SrvUavHeap.Get() };
+	CommandList->SetDescriptorHeaps(_countof(heaps), heaps);
+
+	CD3DX12_RESOURCE_BARRIER transition = CD3DX12_RESOURCE_BARRIER::Transition(
+		RtOutputResource.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
+		D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+	CommandList->ResourceBarrier(1, &transition);
+
+	D3D12_DISPATCH_RAYS_DESC dispatchDesc = BuildDispatchRaysDesc();
+	CommandList->SetPipelineState1(RtStateObject.Get());
+	CommandList->DispatchRays(&dispatchDesc);
+
+	// Copy the DXR output into the active frame buffer used for display.
 	transition = CD3DX12_RESOURCE_BARRIER::Transition(
 		RtOutputResource.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
 		D3D12_RESOURCE_STATE_COPY_SOURCE);
@@ -754,7 +759,18 @@ void CRenderer::StartFrame (CCamera& Camera)
 	CommandList->ResourceBarrier(1, &transition);
 }
 
-void CRenderer::Tick (float DeltaSeconds)
+void CRenderer::StartFrame ()
+{
+	ResetCurrentFrameCommandList();
+	ProcessPendingResourceUploads();
+	ReloadModifiedAssetsIfNeeded();
+	TransitionCurrentBackBufferToRenderTarget();
+	SetupCurrentBackBufferRenderTarget();
+	BindDefaultRasterState();
+	DispatchRaytracingToCurrentFrameBuffer();
+}
+
+void CRenderer::Tick ()
 {
 	CurrentFrameResourceIndex = (CurrentFrameResourceIndex + 1) % render::constants::FrameResourcesBufferCount;
 
@@ -767,7 +783,7 @@ void CRenderer::Tick (float DeltaSeconds)
 	}
 }
 
-void CRenderer::Draw (float DeltaSeconds, CCamera& Camera)
+void CRenderer::Draw ()
 {
 	{
 		D3D12_RESOURCE_BARRIER resourceBarrier = {};
@@ -780,6 +796,7 @@ void CRenderer::Draw (float DeltaSeconds, CCamera& Camera)
 	}
 
 	THROW_IF_FAILED(CommandList->Close());
+	bCommandListRecording = false;
 	CommandQueue->ExecuteCommandLists(1, (ID3D12CommandList**)CommandList.GetAddressOf());
 
 	SwapChain->Present(bVSyncEnabled, 0);
@@ -914,9 +931,6 @@ void CRenderer::EnsureObjectConstantCapacity (uint32 ObjectCount)
 
 void CRenderer::CreateDefaultWhiteTexture ()
 {
-	THROW_IF_FAILED(CommandAllocator->Reset());
-	THROW_IF_FAILED(CommandList->Reset(CommandAllocator.Get(), nullptr));
-
 	constexpr uint32 whiteTexel = 0xFFFFFFFFu;
 
 	D3D12_RESOURCE_DESC desc = {};
@@ -929,11 +943,14 @@ void CRenderer::CreateDefaultWhiteTexture ()
 	desc.SampleDesc.Count = 1;
 	desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
 
-	DefaultWhiteTexture.GpuTexture = CreateTextureAsset(
-		desc, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, (void*)&whiteTexel);
+	DefaultWhiteTexture.GpuTexture = CreateTextureAsset(desc);
 	DefaultWhiteTexture.Width = 1;
 	DefaultWhiteTexture.Height = 1;
 	DefaultWhiteTexture.Texels = nullptr;
+
+	EnqueueTextureUpload(
+		DefaultWhiteTexture.GpuTexture, desc, &whiteTexel,
+		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
 	D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
 	srvDesc.Format = desc.Format;
@@ -947,10 +964,7 @@ void CRenderer::CreateDefaultWhiteTexture ()
 	CreateShaderResourceView(
 		DefaultWhiteTexture.GpuTexture, srvDesc, &cpuDescriptor, &DefaultWhiteTexture.GpuDescriptor);
 
-	THROW_IF_FAILED(CommandList->Close());
-	ID3D12CommandList* commandLists[] = { CommandList.Get() };
-	CommandQueue->ExecuteCommandLists(_countof(commandLists), commandLists);
-	FlushCommandQueue();
+	// Upload is queued; it will be processed during initialization or the first frame.
 }
 
 void CRenderer::EnsureMaterialConstantCapacity (uint32 MaterialCount)
@@ -1251,91 +1265,207 @@ void CRenderer::CreateShaderBindingTable ()
 }
 #pragma endregion Raytracing
 
-ID3D12Resource* CRenderer::CreateBufferAsset (
-	const D3D12_RESOURCE_DESC& Desc,
-	D3D12_RESOURCE_STATES InitialState,
-	void* BufferData)
+void CRenderer::RecordBufferUpload (
+	ID3D12Resource* Resource,
+	uint64 SizeInBytes,
+	const void* BufferData,
+	D3D12_RESOURCE_STATES FinalState)
 {
+	frt_assert(Resource);
+
 	uint64 uploadOffset = 0;
-	uint8* dest = GetCurrentFrameResource().UploadArena.Allocate(Desc.Width, &uploadOffset);
-	memcpy(dest, BufferData, Desc.Width);
-
-	ID3D12Resource* resource = BufferArena.Allocate(Desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr);
-	CommandList->CopyBufferRegion(
-		resource, 0, GetCurrentFrameResource().UploadArena.GetGPUBuffer(), uploadOffset, Desc.Width);
-
+	uint8* dest = GetCurrentFrameResource().UploadArena.Allocate(SizeInBytes, &uploadOffset);
+	if (BufferData && SizeInBytes > 0u)
 	{
-		D3D12_RESOURCE_BARRIER resourceBarrier = {};
-		resourceBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-		resourceBarrier.Transition.pResource = resource;
-		resourceBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-		resourceBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-		resourceBarrier.Transition.StateAfter = InitialState;
-		CommandList->ResourceBarrier(1, &resourceBarrier);
+		memcpy(dest, BufferData, SizeInBytes);
+	}
+	else if (SizeInBytes > 0u)
+	{
+		memset(dest, 0, SizeInBytes);
 	}
 
+	CommandList->CopyBufferRegion(
+		Resource, 0, GetCurrentFrameResource().UploadArena.GetGPUBuffer(), uploadOffset, SizeInBytes);
+
+	D3D12_RESOURCE_BARRIER resourceBarrier = {};
+	resourceBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+	resourceBarrier.Transition.pResource = Resource;
+	resourceBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+	resourceBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+	resourceBarrier.Transition.StateAfter = FinalState;
+	CommandList->ResourceBarrier(1, &resourceBarrier);
+}
+
+uint32 CRenderer::BuildPackedTextureData (
+	const D3D12_RESOURCE_DESC& Desc,
+	const void* Texels,
+	TArray<uint8>& OutPackedTexels) const
+{
+	frt_assert(Texels);
+	frt_assert(Desc.DepthOrArraySize == 1);
+
+	const uint64 bytesPerPixel = Dx12GetBytesPerPixel(Desc.Format);
+	const uint64 sourceRowBytes = static_cast<uint64>(Desc.Width) * bytesPerPixel;
+	const uint32 rowPitch = static_cast<uint32>(AlignAddress(sourceRowBytes, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT));
+	const uint64 totalBytes = static_cast<uint64>(rowPitch) * static_cast<uint64>(Desc.Height);
+	frt_assert(totalBytes <= UINT32_MAX);
+
+	OutPackedTexels.SetSizeUninitialized<true>(static_cast<uint32>(totalBytes));
+
+	const uint8* sourceTexels = reinterpret_cast<const uint8*>(Texels);
+	uint8* packedTexels = OutPackedTexels.GetData();
+	for (uint32 y = 0; y < Desc.Height; ++y)
+	{
+		memcpy(
+			packedTexels + static_cast<uint64>(y) * static_cast<uint64>(rowPitch),
+			sourceTexels + static_cast<uint64>(y) * sourceRowBytes,
+			sourceRowBytes);
+	}
+
+	return rowPitch;
+}
+
+void CRenderer::RecordTextureUpload (
+	ID3D12Resource* Resource,
+	const D3D12_RESOURCE_DESC& Desc,
+	uint32 RowPitch,
+	const void* PackedTexels,
+	D3D12_RESOURCE_STATES FinalState)
+{
+	frt_assert(Resource);
+	frt_assert(PackedTexels);
+
+	const uint64 packedBytes = static_cast<uint64>(RowPitch) * static_cast<uint64>(Desc.Height);
+	uint64 uploadOffset = 0;
+	uint8* destTexels = GetCurrentFrameResource().UploadArena.Allocate(packedBytes, &uploadOffset);
+	memcpy(destTexels, PackedTexels, packedBytes);
+
+	D3D12_PLACED_SUBRESOURCE_FOOTPRINT placedFootprint = {};
+	placedFootprint.Offset = uploadOffset;
+	placedFootprint.Footprint.Format = Desc.Format;
+	placedFootprint.Footprint.Width = static_cast<uint32>(Desc.Width);
+	placedFootprint.Footprint.Height = Desc.Height;
+	placedFootprint.Footprint.Depth = 1;
+	placedFootprint.Footprint.RowPitch = RowPitch;
+
+	D3D12_TEXTURE_COPY_LOCATION srcLocation = {};
+	srcLocation.pResource = GetCurrentFrameResource().UploadArena.GetGPUBuffer();
+	srcLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+	srcLocation.PlacedFootprint = placedFootprint;
+
+	D3D12_TEXTURE_COPY_LOCATION destLocation = {};
+	destLocation.pResource = Resource;
+	destLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+	destLocation.SubresourceIndex = 0;
+
+	CommandList->CopyTextureRegion(&destLocation, 0, 0, 0, &srcLocation, nullptr);
+
+	D3D12_RESOURCE_BARRIER resourceBarrier = {};
+	resourceBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+	resourceBarrier.Transition.pResource = Resource;
+	resourceBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+	resourceBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
+	resourceBarrier.Transition.StateAfter = FinalState;
+	CommandList->ResourceBarrier(1, &resourceBarrier);
+}
+
+void CRenderer::ProcessPendingResourceUploads ()
+{
+	if (PendingBufferUploads.IsEmpty() && PendingTextureUploads.IsEmpty())
+	{
+		return;
+	}
+
+	frt_assert(bCommandListRecording);
+
+	for (uint32 i = 0; i < PendingBufferUploads.Count(); ++i)
+	{
+		SPendingBufferUpload& upload = PendingBufferUploads[i];
+		if (!upload.Resource)
+		{
+			continue;
+		}
+
+		RecordBufferUpload(
+			upload.Resource,
+			static_cast<uint64>(upload.Data.Count()),
+			upload.Data.GetData(),
+			upload.FinalState);
+	}
+	PendingBufferUploads.Clear();
+
+	for (uint32 i = 0; i < PendingTextureUploads.Count(); ++i)
+	{
+		SPendingTextureUpload& upload = PendingTextureUploads[i];
+		if (!upload.Resource || upload.PackedTexels.IsEmpty())
+		{
+			continue;
+		}
+
+		RecordTextureUpload(
+			upload.Resource,
+			upload.Desc,
+			upload.RowPitch,
+			upload.PackedTexels.GetData(),
+			upload.FinalState);
+	}
+	PendingTextureUploads.Clear();
+}
+
+ID3D12Resource* CRenderer::CreateBufferAsset (const D3D12_RESOURCE_DESC& Desc)
+{
+	ID3D12Resource* resource = BufferArena.Allocate(Desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr);
+	frt_assert(resource);
 	return resource;
 }
 
-ID3D12Resource* CRenderer::CreateTextureAsset (
-	const D3D12_RESOURCE_DESC& Desc,
-	D3D12_RESOURCE_STATES InitialState,
-	void* Texels)
+void CRenderer::EnqueueBufferUpload (
+	ID3D12Resource* Resource,
+	uint64 SizeInBytes,
+	const void* BufferData,
+	D3D12_RESOURCE_STATES FinalState)
 {
-	D3D12_RESOURCE_ALLOCATION_INFO allocationInfo = Device->GetResourceAllocationInfo(0, 1, &Desc);
-	uint64 bytesPerPixel = Dx12GetBytesPerPixel(Desc.Format);
+	frt_assert(Resource);
+	frt_assert(SizeInBytes <= UINT32_MAX);
 
-	D3D12_PLACED_SUBRESOURCE_FOOTPRINT placedFootprint;
+	SPendingBufferUpload& pendingUpload = PendingBufferUploads.Add();
+	pendingUpload.Resource = Resource;
+	pendingUpload.FinalState = FinalState;
+	pendingUpload.Data.SetSizeUninitialized<true>(static_cast<uint32>(SizeInBytes));
+	if (BufferData && SizeInBytes > 0u)
 	{
-		frt_assert(Desc.DepthOrArraySize == 1);
-		D3D12_SUBRESOURCE_FOOTPRINT footprint = {};
-		footprint.Format = Desc.Format;
-		footprint.Width = (uint32)Desc.Width;
-		footprint.Height = Desc.Height;
-		footprint.Depth = 1;
-		footprint.RowPitch = (uint32)AlignAddress(footprint.Width * bytesPerPixel, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
-		placedFootprint.Footprint = footprint;
-
-		uint8* destTexels = GetCurrentFrameResource().UploadArena.Allocate(
-			footprint.Height * footprint.RowPitch, &placedFootprint.Offset);
-
-		for (uint32 Y = 0; Y < Desc.Height; ++Y)
-		{
-			auto src = reinterpret_cast<uint8*>(reinterpret_cast<uint64>(Texels) + ((uint64)Y * (uint64)Desc.Width) * (
-													uint64)bytesPerPixel);
-			auto dest = reinterpret_cast<uint8*>(
-				reinterpret_cast<uint64>(destTexels) + (uint64)Y * (uint64)footprint.RowPitch);
-			memcpy(dest, src, Desc.Width * bytesPerPixel);
-		}
+		memcpy(pendingUpload.Data.GetData(), BufferData, SizeInBytes);
 	}
-
-	ID3D12Resource* resoruce = TextureArena.Allocate(Desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr);
-
+	else if (SizeInBytes > 0u)
 	{
-		D3D12_TEXTURE_COPY_LOCATION srcLocation = {};
-		srcLocation.pResource = GetCurrentFrameResource().UploadArena.GetGPUBuffer();
-		srcLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-		srcLocation.PlacedFootprint = placedFootprint;
-
-		D3D12_TEXTURE_COPY_LOCATION destLocation = {};
-		destLocation.pResource = resoruce;
-		destLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-		destLocation.SubresourceIndex = 0;
-
-		CommandList->CopyTextureRegion(&destLocation, 0, 0, 0, &srcLocation, nullptr);
+		memset(pendingUpload.Data.GetData(), 0, SizeInBytes);
 	}
+}
 
-	{
-		D3D12_RESOURCE_BARRIER resourceBarrier = {};
-		resourceBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-		resourceBarrier.Transition.pResource = resoruce;
-		resourceBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-		resourceBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-		resourceBarrier.Transition.StateAfter = InitialState;
-		CommandList->ResourceBarrier(1, &resourceBarrier);
-	}
+ID3D12Resource* CRenderer::CreateTextureAsset (const D3D12_RESOURCE_DESC& Desc)
+{
+	ID3D12Resource* resource = TextureArena.Allocate(Desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr);
+	frt_assert(resource);
+	return resource;
+}
 
-	return resoruce;
+void CRenderer::EnqueueTextureUpload (
+	ID3D12Resource* Resource,
+	const D3D12_RESOURCE_DESC& Desc,
+	const void* Texels,
+	D3D12_RESOURCE_STATES FinalState)
+{
+	frt_assert(Resource);
+
+	TArray<uint8> packedTexels;
+	const uint32 rowPitch = BuildPackedTextureData(Desc, Texels, packedTexels);
+
+	SPendingTextureUpload& pendingUpload = PendingTextureUploads.Add();
+	pendingUpload.Resource = Resource;
+	pendingUpload.Desc = Desc;
+	pendingUpload.FinalState = FinalState;
+	pendingUpload.RowPitch = rowPitch;
+	pendingUpload.PackedTexels = std::move(packedTexels);
 }
 
 void CRenderer::CreateShaderResourceView (
@@ -1393,18 +1523,34 @@ void CRenderer::CreateSwapChain (bool bFullscreen)
 			CommandQueue.Get(), Window->GetHandle(), &swapChainDesc, &fullscreenDesc, nullptr, &SwapChain));
 }
 
+void CRenderer::BeginInitializationCommands ()
+{
+	auto commandListAllocator = GetCurrentFrameResource().CommandListAllocator;
+	THROW_IF_FAILED(commandListAllocator->Reset());
+	THROW_IF_FAILED(CommandList->Reset(commandListAllocator.Get(), nullptr));
+	bCommandListRecording = true;
+	ProcessPendingResourceUploads();
+}
+
+void CRenderer::EndInitializationCommands ()
+{
+	ProcessPendingResourceUploads();
+
+	THROW_IF_FAILED(CommandList->Close());
+	bCommandListRecording = false;
+	ID3D12CommandList* commandLists[] = { CommandList.Get() };
+	CommandQueue->ExecuteCommandLists(_countof(commandLists), commandLists);
+	FlushCommandQueue();
+
+	GetCurrentFrameResource().UploadArena.Clear();
+}
+
 void CRenderer::FlushCommandQueue ()
 {
 	FenceValue++;
 	CommandQueue->Signal(Fence.Get(), FenceValue);
 
 	WaitForFenceValue(FenceValue);
-}
-
-void CRenderer::ResetCommandList ()
-{
-	THROW_IF_FAILED(
-		CommandList->Reset(CommandAllocator.Get(), PipelineState.Get()));
 }
 
 void CRenderer::WaitForFenceValue (uint64 Value)

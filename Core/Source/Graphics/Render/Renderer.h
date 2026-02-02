@@ -30,9 +30,6 @@ using Microsoft::WRL::ComPtr;
 
 namespace frt::graphics
 {
-class CCamera;
-
-
 class CRenderer
 {
 public:
@@ -41,9 +38,9 @@ public:
 
 	void Resize (bool bNewFullscreenState);
 
-	FRT_CORE_API void StartFrame (CCamera& Camera);
-	FRT_CORE_API void Tick (float DeltaSeconds);
-	FRT_CORE_API void Draw (float DeltaSeconds, CCamera& Camera);
+	FRT_CORE_API void StartFrame ();
+	FRT_CORE_API void Tick ();
+	FRT_CORE_API void Draw ();
 
 	FRT_CORE_API IDXGIAdapter1* GetAdapter ();
 	FRT_CORE_API ID3D12Device5* GetDevice ();
@@ -60,22 +57,27 @@ public:
 
 	frt::CEvent<> OnShaderDescriptorHeapRebuild;
 
-	FRT_CORE_API ID3D12Resource* CreateBufferAsset (
+	FRT_CORE_API ID3D12Resource* CreateBufferAsset (const D3D12_RESOURCE_DESC& Desc);
+	FRT_CORE_API ID3D12Resource* CreateTextureAsset (const D3D12_RESOURCE_DESC& Desc);
+	FRT_CORE_API void EnqueueBufferUpload (
+		ID3D12Resource* Resource,
+		uint64 SizeInBytes,
+		const void* BufferData,
+		D3D12_RESOURCE_STATES FinalState);
+	FRT_CORE_API void EnqueueTextureUpload (
+		ID3D12Resource* Resource,
 		const D3D12_RESOURCE_DESC& Desc,
-		D3D12_RESOURCE_STATES InitialState,
-		void* BufferData);
-	FRT_CORE_API ID3D12Resource* CreateTextureAsset (
-		const D3D12_RESOURCE_DESC& Desc,
-		D3D12_RESOURCE_STATES InitialState,
-		void* Texels);
+		const void* Texels,
+		D3D12_RESOURCE_STATES FinalState);
 	FRT_CORE_API void CreateShaderResourceView (
 		ID3D12Resource* Texture,
 		const D3D12_SHADER_RESOURCE_VIEW_DESC& Desc,
 		D3D12_CPU_DESCRIPTOR_HANDLE* OutCpuHandle,
 		D3D12_GPU_DESCRIPTOR_HANDLE* OutGpuHandle);
 
+	void BeginInitializationCommands ();
+	void EndInitializationCommands ();
 	void FlushCommandQueue ();
-	void ResetCommandList ();
 
 private:
 	struct SShaderPermutation
@@ -107,6 +109,29 @@ private:
 	void EnsureShaderDescriptorCapacity (uint32 RequiredCount);
 	void RebuildShaderDescriptorHeap (uint32 NewCapacity);
 	void RebuildShaderDescriptors ();
+	void ProcessPendingResourceUploads ();
+	void RecordBufferUpload (
+		ID3D12Resource* Resource,
+		uint64 SizeInBytes,
+		const void* BufferData,
+		D3D12_RESOURCE_STATES FinalState);
+	void RecordTextureUpload (
+		ID3D12Resource* Resource,
+		const D3D12_RESOURCE_DESC& Desc,
+		uint32 RowPitch,
+		const void* PackedTexels,
+		D3D12_RESOURCE_STATES FinalState);
+	uint32 BuildPackedTextureData (
+		const D3D12_RESOURCE_DESC& Desc,
+		const void* Texels,
+		TArray<uint8>& OutPackedTexels) const;
+	void ResetCurrentFrameCommandList ();
+	void ReloadModifiedAssetsIfNeeded ();
+	void TransitionCurrentBackBufferToRenderTarget ();
+	void SetupCurrentBackBufferRenderTarget ();
+	void BindDefaultRasterState ();
+	D3D12_DISPATCH_RAYS_DESC BuildDispatchRaysDesc ();
+	void DispatchRaytracingToCurrentFrameBuffer ();
 
 	// Raytracing
 	ComPtr<ID3D12RootSignature> CreateRayGenSignature ();
@@ -184,6 +209,27 @@ private:
 	// ~Synchronization
 
 	TArray<SShaderResourceViewRecord> TrackedSrvs;
+
+	struct SPendingBufferUpload
+	{
+		ID3D12Resource* Resource = nullptr;
+		D3D12_RESOURCE_STATES FinalState = D3D12_RESOURCE_STATE_COMMON;
+		TArray<uint8> Data;
+	};
+
+	struct SPendingTextureUpload
+	{
+		ID3D12Resource* Resource = nullptr;
+		D3D12_RESOURCE_DESC Desc = {};
+		D3D12_RESOURCE_STATES FinalState = D3D12_RESOURCE_STATE_COMMON;
+		uint32 RowPitch = 0u;
+		TArray<uint8> PackedTexels;
+	};
+
+	TArray<SPendingBufferUpload> PendingBufferUploads;
+	TArray<SPendingTextureUpload> PendingTextureUploads;
+	bool bCommandListRecording = false;
+
 	D3D12_DESCRIPTOR_HEAP_TYPE ShaderDescriptorHeapType = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
 	D3D12_DESCRIPTOR_HEAP_FLAGS ShaderDescriptorHeapFlags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 

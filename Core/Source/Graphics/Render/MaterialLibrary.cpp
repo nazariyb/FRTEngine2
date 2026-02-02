@@ -370,8 +370,10 @@ void CMaterialLibrary::EnsureBaseColorTexture (SMaterial& Material) const
 		Desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
 		Desc.SampleDesc.Count = 1;
 		Desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-		newTexture.GpuTexture = Renderer->CreateTextureAsset(
-			Desc, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, newTexture.Texels);
+		newTexture.GpuTexture = Renderer->CreateTextureAsset(Desc);
+		Renderer->EnqueueTextureUpload(
+			newTexture.GpuTexture, Desc, newTexture.Texels,
+			D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 
 		D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
 		srvDesc.Format = Desc.Format;

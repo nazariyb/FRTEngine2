@@ -263,6 +263,13 @@ void GameInstance::Load ()
 	// // sponzaEnt->Transform.SetTranslation(1.f, 0.f, 0.f);
 	// sponzaEnt->bRayTraced = false;
 
+#if !defined(FRT_HEADLESS)
+	Renderer->BeginInitializationCommands();
+	World->CreateAccelerationStructures();
+	Renderer->CreateShaderResourceHeap();
+	Renderer->CreateShaderBindingTable();
+	Renderer->EndInitializationCommands();
+#endif
 }
 
 void GameInstance::Input (float DeltaSeconds)
@@ -333,7 +340,7 @@ void GameInstance::Tick (float DeltaSeconds)
 #if !defined(FRT_HEADLESS)
 	DisplayUserSettings();
 
-	Renderer->Tick(DeltaSeconds);
+	Renderer->Tick();
 	Camera->Tick(DeltaSeconds);
 #endif
 
@@ -345,34 +352,14 @@ void GameInstance::Tick (float DeltaSeconds)
 #if !defined(FRT_HEADLESS)
 void GameInstance::Draw (float DeltaSeconds)
 {
-	// TODO: temp
-	if (!bLoaded)
-	{
-		auto& frameResources = Renderer->GetCurrentFrameResource();
-		THROW_IF_FAILED(frameResources.CommandListAllocator->Reset());
-		THROW_IF_FAILED(Renderer->GetCommandList()->Reset(frameResources.CommandListAllocator.Get(), nullptr));
-		Load();
-		World->CreateAccelerationStructures();
-		Renderer->CreateShaderResourceHeap();
-		Renderer->CreateShaderBindingTable();
-
-		ID3D12GraphicsCommandList4* commandList = Renderer->GetCommandList();
-		THROW_IF_FAILED(commandList->Close());
-		ID3D12CommandList* ppCommandLists[] = { commandList };
-		Renderer->GetCommandQueue()->ExecuteCommandLists(1, ppCommandLists);
-		Renderer->FlushCommandQueue();
-
-		bLoaded = true;
-	}
-
-	Renderer->StartFrame(*Camera);
+	Renderer->StartFrame();
 
 	World->Present(DeltaSeconds, Renderer->GetCommandList());
 
 	ImGui::Render();
 	ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), Renderer->GetCommandList());
 
-	Renderer->Draw(DeltaSeconds, *Camera);
+	Renderer->Draw();
 }
 #endif
 

@@ -19,7 +19,7 @@ int RunGame()
 	CTimer& time = game->GetTime();
 	time.Reset();
 
-	// game->Load();
+	game->Load();
 
 	// Initialize global strings
 	// LoadStringW(hInstance, IDS_APP_TITLE, szTitle, MAX_LOADSTRING);

@@ -777,8 +777,12 @@ void _private::CreateGpuResources(
 		vbDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 		vbDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
 
-		OutVertexBufferGpu = renderer->CreateBufferAsset(
-			vbDesc, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, (void*)Vertices.GetData());
+		OutVertexBufferGpu = renderer->CreateBufferAsset(vbDesc);
+		renderer->EnqueueBufferUpload(
+			OutVertexBufferGpu.Get(),
+			vbDesc.Width,
+			Vertices.GetData(),
+			D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
 	}
 
 	{
@@ -795,8 +799,12 @@ void _private::CreateGpuResources(
 		ibDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 		ibDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
 
-		OutIndexBufferGpu = renderer->CreateBufferAsset(
-			ibDesc, D3D12_RESOURCE_STATE_INDEX_BUFFER, (void*)Indices.GetData());
+		OutIndexBufferGpu = renderer->CreateBufferAsset(ibDesc);
+		renderer->EnqueueBufferUpload(
+			OutIndexBufferGpu.Get(),
+			ibDesc.Width,
+			Indices.GetData(),
+			D3D12_RESOURCE_STATE_INDEX_BUFFER);
 	}
 }
 #endif

@@ -109,7 +109,6 @@ protected:
 
 	long long FrameCount;
 
-	bool bLoaded = false; // temp
 	bool bCameraMovementEnabled = false;
 };
 

@@ -186,8 +186,12 @@ SRenderModel SRenderModel::LoadFromFile (const std::string& Filename, const std:
 		vbDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 		vbDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
 
-		result.VertexBufferGpu.Attach(renderer->CreateBufferAsset(
-			vbDesc, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, result.Vertices.GetData()));
+		result.VertexBufferGpu.Attach(renderer->CreateBufferAsset(vbDesc));
+		renderer->EnqueueBufferUpload(
+			result.VertexBufferGpu.Get(),
+			vbDesc.Width,
+			result.Vertices.GetData(),
+			D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
 	}
 
 	{
@@ -204,8 +208,12 @@ SRenderModel SRenderModel::LoadFromFile (const std::string& Filename, const std:
 		ibDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
 		ibDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
 
-		result.IndexBufferGpu.Attach(renderer->CreateBufferAsset(
-			ibDesc, D3D12_RESOURCE_STATE_INDEX_BUFFER, result.Indices.GetData()));
+		result.IndexBufferGpu.Attach(renderer->CreateBufferAsset(ibDesc));
+		renderer->EnqueueBufferUpload(
+			result.IndexBufferGpu.Get(),
+			ibDesc.Width,
+			result.Indices.GetData(),
+			D3D12_RESOURCE_STATE_INDEX_BUFFER);
 	}
 #endif
 	return result;
