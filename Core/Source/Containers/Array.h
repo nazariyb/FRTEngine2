@@ -176,8 +176,8 @@ TArray<ElementType, TAllocator>::TArray ()
 template <typename ElementType, typename TAllocator>
 TArray<ElementType, TAllocator>::TArray (const TArray& Other)
 	: Data(nullptr)
-	, Size(Other.Size)
-	, Capacity(Other.Capacity)
+	, Size(0u)
+	, Capacity(0u)
 {
 	*this = Other;
 }
@@ -201,14 +201,17 @@ TArray<ElementType, TAllocator>& TArray<ElementType, TAllocator>::operator= (con
 		return *this;
 	}
 
-	Clear();
+	if (Size > 0u)
+	{
+		Clear();
+	}
 
 	Size = Other.Size;
 	ReAlloc(Other.Capacity);
 
 	for (uint32 i = 0; i < Size; i++)
 	{
-		*(Data + i) = *(Other.Data + i);
+		new(Data + i) ElementType(*(Other.Data + i));
 	}
 
 	return *this;
@@ -238,9 +241,11 @@ TArray<ElementType, TAllocator>::~TArray ()
 
 template <typename TElementType, typename TAllocator>
 TArray<TElementType, TAllocator>::TArray (std::initializer_list<TElementType> InList)
+	: Data(nullptr)
+	, Size(0u)
+	, Capacity(0u)
 {
-	Capacity = InList.size();
-	ReAlloc(Capacity);
+	ReAlloc(InList.size());
 
 	for (const auto& elem : InList)
 	{
@@ -250,9 +255,11 @@ TArray<TElementType, TAllocator>::TArray (std::initializer_list<TElementType> In
 
 template <typename TElementType, typename TAllocator>
 TArray<TElementType, TAllocator>::TArray (const std::vector<TElementType>& InVector)
+	: Data(nullptr)
+	, Size(0u)
+	, Capacity(0u)
 {
-	Capacity = InVector.size();
-	ReAlloc(Capacity);
+	ReAlloc(InVector.size());
 
 	for (const auto& elem : InVector)
 	{
@@ -324,7 +331,7 @@ uint32 TArray<ElementType, TAllocator>::SetSize (uint32 InSize, const ElementTyp
 	SetSizeUninitialized<bExtendIfNeeded>(InSize);
 	for (uint32 i = OldSize; i < Size; ++i)
 	{
-		*(Data + i) = InInitWithValue;
+		new(Data + i) ElementType(InInitWithValue);
 	}
 
 	return Size;
@@ -398,9 +405,9 @@ ElementType& TArray<ElementType, TAllocator>::Add (const ElementType& InElement)
 		ReAlloc(Capacity * GrowthFactor);
 	}
 
+	auto* newElem = new(Data + Size) ElementType(InElement);
 	++Size;
-	new(Data + Size - 1u) ElementType(InElement);
-	return *(Data + Size - 1u);
+	return *newElem;
 }
 
 template <typename ElementType, typename TAllocator>
@@ -467,7 +474,7 @@ void TArray<ElementType, TAllocator>::Insert (const ElementType& InElement, Inde
 
 	for (uint32 i = Size; i > InIndex; --i)
 	{
-		*(Data + i) = std::move(*(Data + i - 1));
+		new(Data + i) ElementType(std::move(*(Data + i - 1)));
 	}
 	++Size;
 
@@ -487,7 +494,7 @@ void TArray<ElementType, TAllocator>::Insert (ElementType&& InElement, IndexType
 
 	for (uint32 i = Size; i > InIndex; --i)
 	{
-		*(Data + i) = std::move(*(Data + i - 1));
+		new(Data + i) ElementType(std::move(*(Data + i - 1)));
 	}
 	++Size;
 
@@ -507,7 +514,7 @@ void TArray<ElementType, TAllocator>::InsertEmplace (IndexType InIndex, Args&&..
 
 	for (uint32 i = Size; i > InIndex; --i)
 	{
-		*(Data + i) = std::move(*(Data + i - 1));
+		new(Data + i) ElementType(std::move(*(Data + i - 1)));
 	}
 	++Size;
 
@@ -523,9 +530,9 @@ ElementType& TArray<ElementType, TAllocator>::Emplace (Args... InArgs)
 		ReAlloc(Capacity * GrowthFactor);
 	}
 
+	auto* newElem = new(Data + Size) ElementType(std::forward<Args>(InArgs)...);
 	++Size;
-	new(Data + Size) ElementType(std::forward<Args>(InArgs)...);
-	return *(Data + Size);
+	return *newElem;
 }
 
 template <typename ElementType, typename TAllocator>
