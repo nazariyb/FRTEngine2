@@ -15,7 +15,7 @@
 #include "ShaderAsset.h"
 #include "Texture.h"
 #include "Containers/Array.h"
-#include "nv_helpers_dx12/ShaderBindingTableGenerator.h"
+#include "Graphics/DXRUtils.h"
 
 
 namespace frt
@@ -273,7 +273,7 @@ private:
 	ComPtr<ID3D12Resource> RtOutputResource;
 	ComPtr<ID3D12DescriptorHeap> SrvUavHeap;
 
-	nv_helpers_dx12::ShaderBindingTableGenerator SbtHelper;
+	raytracing::CShaderBindingTableGenerator SbtHelper;
 	ComPtr<ID3D12Resource> SbtStorage;
 };
 

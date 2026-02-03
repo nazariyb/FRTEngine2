@@ -1,9 +1,7 @@
 ﻿#include "Renderer.h"
 
 #include <complex>
-#include <cstdint>
 #include <cstdio>
-#include <cstring>
 #include <filesystem>
 #include <utility>
 
@@ -12,11 +10,8 @@
 #include "Exception.h"
 #include "Timer.h"
 #include "Window.h"
-#include "Graphics/DXRUtils.h"
 #include "Graphics/Model.h"
 #include "Graphics/Render/Material.h"
-#include "nv_helpers_dx12/RaytracingPipelineGenerator.h"
-#include "nv_helpers_dx12/RootSignatureGenerator.h"
 
 
 namespace frt::graphics
@@ -1381,7 +1376,7 @@ void CRenderer::InitializeRaytracingResources ()
 
 ComPtr<ID3D12RootSignature> CRenderer::CreateRayGenSignature ()
 {
-	nv_helpers_dx12::RootSignatureGenerator rsc;
+	raytracing::CRootSignatureGenerator rsc;
 	rsc.AddHeapRangesParameter(
 	{
 		{
@@ -1405,19 +1400,20 @@ ComPtr<ID3D12RootSignature> CRenderer::CreateRayGenSignature ()
 
 ComPtr<ID3D12RootSignature> CRenderer::CreateMissSignature ()
 {
-	nv_helpers_dx12::RootSignatureGenerator rsc;
+	raytracing::CRootSignatureGenerator rsc;
 	return rsc.Generate(Device.Get(), true);
 }
 
 ComPtr<ID3D12RootSignature> CRenderer::CreateHitSignature ()
 {
-	nv_helpers_dx12::RootSignatureGenerator rsc;
+	raytracing::CRootSignatureGenerator rsc;
+	rsc.AddRootParameter(D3D12_ROOT_PARAMETER_TYPE_SRV);
 	return rsc.Generate(Device.Get(), true);
 }
 
 void CRenderer::CreateRaytracingPipeline ()
 {
-	nv_helpers_dx12::RayTracingPipelineGenerator pipeline(Device.Get());
+	raytracing::CRayTracingPipelineGenerator pipeline(Device.Get());
 
 	RayGenLibrary = nv_helpers_dx12::CompileShaderLibrary(L"..\\Core\\Content\\Shaders\\DXR\\RayGen.hlsl");
 	MissLibrary = nv_helpers_dx12::CompileShaderLibrary(L"..\\Core\\Content\\Shaders\\DXR\\Miss.hlsl");
@@ -1569,8 +1565,7 @@ void CRenderer::CreateShaderBindingTable ()
 	// communicate their results through the ray payload
 	SbtHelper.AddMissProgram(L"Miss", {});
 
-	// Adding the triangle hit shader
-	SbtHelper.AddHitGroup(L"HitGroup", {});
+	SbtHelper.AddHitGroup(L"HitGroup", {/*VertexBuffer*/});
 
 	// Compute the size of the SBT given the number of shaders and their
 	// parameters
@@ -1598,8 +1593,7 @@ D3D12_DISPATCH_RAYS_DESC CRenderer::BuildDispatchRaysDesc ()
 
 	// Miss shaders come immediately after ray generation.
 	const uint32_t missSectionSizeInBytes = SbtHelper.GetMissSectionSize();
-	desc.MissShaderTable.StartAddress =
-		SbtStorage->GetGPUVirtualAddress() + rayGenerationSectionSizeInBytes;
+	desc.MissShaderTable.StartAddress = SbtStorage->GetGPUVirtualAddress() + rayGenerationSectionSizeInBytes;
 	desc.MissShaderTable.SizeInBytes = missSectionSizeInBytes;
 	desc.MissShaderTable.StrideInBytes = SbtHelper.GetMissEntrySize();
 

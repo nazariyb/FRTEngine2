@@ -485,16 +485,17 @@ void CWorld::CreateAccelerationStructures ()
 		// Raytracing not supported on this device; skip AS build.
 		return;
 	}
-	if (Entities.IsEmpty() || !Entities[0] || !Entities[0]->RenderModel.Model)
+	if (Entities.IsEmpty() || !Entities[2] || !Entities[2]->RenderModel.Model)
 	{
 		return;
 	}
 
 	graphics::raytracing::SAccelerationStructureBuffers bottomLevelBuffers =
-		CreateBottomLevelAS(Entities[0]->RenderModel);
+		CreateBottomLevelAS(Entities[2]->RenderModel);
 
 	// Just one instance for now
-	Instances = { { bottomLevelBuffers.Result.Get(), DirectX::XMLoadFloat4x4(&Entities[0]->Transform.GetMatrix()) } };
+	// Instances = { { bottomLevelBuffers.Result.Get(), DirectX::XMLoadFloat4x4(&Entities[2]->Transform.GetMatrix()) } };
+	Instances = { { bottomLevelBuffers.Result.Get(), DirectX::XMMatrixIdentity() } };
 	CreateTopLevelAS(Instances);
 
 	// Store the AS buffers. The rest of the buffers will be released once we exit

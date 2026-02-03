@@ -227,7 +227,7 @@ void GameInstance::Load ()
 		SRenderModel::FromMesh(
 			mesh::GenerateCube(Vector3f(1.f), 1),
 			Renderer->GetMaterialLibrary().LoadOrCreateMaterial(cubeMaterialPath, {})));
-	Cube->bRayTraced = true;
+	Cube->bRayTraced = false;
 
 	// Cylinder = World->SpawnEntity();
 	// Cylinder->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
@@ -251,8 +251,8 @@ void GameInstance::Load ()
 		graphics::SRenderModel::LoadFromFile(
 			R"(..\Core\Content\Models\Duck\Duck.gltf)",
 			R"(..\Core\Content\Models\Duck\DuckCM.png)"));
-	duckEnt->Transform.SetTranslation(1.f, 0.f, 0.f);
-	duckEnt->bRayTraced = false;
+	duckEnt->Transform.SetTranslation(0.f, 0.f, 2.f);
+	duckEnt->bRayTraced = true;
 
 	// TODO: When Sponza is added, the renderer crashes. Probably multiple sections aren't handled properly
 	// auto sponzaEnt = World->SpawnEntity();
