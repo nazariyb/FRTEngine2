@@ -26,6 +26,7 @@ public:
 	void CreateAccelerationStructures ();
 
 	void CopyConstantData ();
+	void UploadCB (ID3D12GraphicsCommandList4* CommandList);
 #endif
 
 	memory::TRefShared<CEntity> SpawnEntity ();

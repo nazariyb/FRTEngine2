@@ -83,6 +83,7 @@ private:
 	// Frame lifecycle
 public:
 	void StartFrame ();
+	void PrepareCurrentPass ();
 	void Tick ();
 	void Draw ();
 	SFrameResources& GetCurrentFrameResource ();
@@ -256,6 +257,7 @@ private:
 	void CreateRaytracingOutputBuffer ();
 	void CreateShaderResourceHeap ();
 	void CreateShaderBindingTable ();
+	void UpdateRaytracingPassCBAddress ();
 	D3D12_DISPATCH_RAYS_DESC BuildDispatchRaysDesc ();
 	void DispatchRaytracingToCurrentFrameBuffer ();
 

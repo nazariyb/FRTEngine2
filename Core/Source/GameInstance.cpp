@@ -354,16 +354,13 @@ void GameInstance::Tick (float DeltaSeconds)
 	World->Tick(DeltaSeconds);
 }
 
-#if !defined(FRT_HEADLESS)
+#ifndef FRT_HEADLESS
 void GameInstance::Draw (float DeltaSeconds)
 {
 	Renderer->StartFrame();
-
-	const bool bRenderRaster = Renderer->ShouldRenderRaster();
-	if (bRenderRaster)
-	{
-		World->Present(DeltaSeconds, Renderer->GetCommandList());
-	}
+	World->UploadCB(Renderer->GetCommandList());
+	Renderer->PrepareCurrentPass();
+	World->Present(DeltaSeconds, Renderer->GetCommandList());
 
 	ImGui::Render();
 	{

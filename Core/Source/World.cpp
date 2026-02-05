@@ -28,15 +28,26 @@ void CWorld::Tick (float DeltaSeconds)
 	{
 		entity->Tick(DeltaSeconds);
 	}
-#if !defined(FRT_HEADLESS)
+#ifndef FRT_HEADLESS
 	CopyConstantData();
 #endif
 }
 
-#if !defined(FRT_HEADLESS)
+#ifndef FRT_HEADLESS
 void CWorld::Present (float DeltaSeconds, ID3D12GraphicsCommandList4* CommandList)
 {
 	auto& currentFrameResources = Renderer->GetCurrentFrameResource();
+	if (!Renderer->ShouldRenderRaster())
+	{
+		return;
+	}
+
+	if (!currentFrameResources.PassCB.DescriptorHeapHandleGpu.empty())
+	{
+		CommandList->SetGraphicsRootDescriptorTable(
+			render::constants::RootParam_PassCbv,
+			currentFrameResources.PassCB.DescriptorHeapHandleGpu[0]);
+	}
 
 	// TODO: assign stable material indices in MaterialLibrary and update constants only when dirty.
 	std::unordered_map<const graphics::SMaterial*, uint32> materialIndices;
@@ -88,28 +99,10 @@ void CWorld::Present (float DeltaSeconds, ID3D12GraphicsCommandList4* CommandLis
 			currentFrameResources.UploadArena);
 	}
 
-	// this is so messed up...
-	currentFrameResources.PassCB.Upload(currentFrameResources.UploadArena, Renderer->GetCommandList());
-	if (!currentFrameResources.PassCB.DescriptorHeapHandleGpu.empty())
-	{
-		CommandList->SetGraphicsRootDescriptorTable(
-			render::constants::RootParam_PassCbv,
-			currentFrameResources.PassCB.DescriptorHeapHandleGpu[0]);
-	}
-
 	currentFrameResources.ObjectCB.Upload(currentFrameResources.UploadArena, Renderer->GetCommandList());
 	currentFrameResources.MaterialCB.Upload(currentFrameResources.UploadArena, Renderer->GetCommandList());
 
 	memory::TRefWeak<graphics::CRenderer> renderer = GameInstance::GetInstance().GetRenderer();
-
-	static const D3D12_HEAP_PROPERTIES DefaultHeapProps =
-	{
-		D3D12_HEAP_TYPE_DEFAULT,
-		D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
-		D3D12_MEMORY_POOL_UNKNOWN,
-		0,
-		0
-	};
 
 	auto& ObjectDescriptorHandles = currentFrameResources.ObjectCB.DescriptorHeapHandleGpu;
 	for (uint32 i = 0; i < Entities.Count(); ++i)
@@ -264,6 +257,14 @@ void CWorld::CopyConstantData ()
 	passConstants.DeltaTime = GameInstance::GetInstance().GetTime().GetDeltaSeconds();
 
 	currentFrameResources.PassCB.CopyBunch(&passConstants, 1u, currentFrameResources.UploadArena);
+}
+
+void CWorld::UploadCB (ID3D12GraphicsCommandList4* CommandList)
+{
+	auto& currentFrameResources = Renderer->GetCurrentFrameResource();
+
+	currentFrameResources.PassCB.Upload(currentFrameResources.UploadArena, CommandList);
+
 }
 #endif
 

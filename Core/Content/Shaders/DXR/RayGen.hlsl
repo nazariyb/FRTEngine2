@@ -19,11 +19,13 @@ void RayGen ()
 	uint2 launchIndex = DispatchRaysIndex().xy;
 	float2 dims = float2(DispatchRaysDimensions().xy);
 	float2 d = (((launchIndex.xy + 0.5f) / dims.xy) * 2.f - 1.f);
+	float aspectRatio = dims.x / dims.y;
 
 	// Define a ray, consisting of origin, direction, and the min-max distance values
 	RayDesc ray;
-	ray.Origin = float3(d.x, -d.y, -10);
-	ray.Direction = float3(0, 0, 1);
+	ray.Origin = gCameraPos;
+	float4 target = mul(gProjInv, float4(d.x, -d.y, 1, 1));
+	ray.Direction = mul(gViewInv, float4(target.xyz, 0));
 	ray.TMin = 0;
 	ray.TMax = 100000;
 

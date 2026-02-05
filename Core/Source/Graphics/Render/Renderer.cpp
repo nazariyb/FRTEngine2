@@ -499,7 +499,11 @@ void CRenderer::StartFrame ()
 	{
 		TransitionCurrentBackBufferToRenderTarget();
 	}
+}
 
+void CRenderer::PrepareCurrentPass ()
+{
+	const bool bRenderRaytracing = ShouldRenderRaytracing();
 	if (bRenderRaytracing)
 	{
 		DispatchRaytracingToCurrentFrameBuffer();
@@ -1377,6 +1381,7 @@ void CRenderer::InitializeRaytracingResources ()
 ComPtr<ID3D12RootSignature> CRenderer::CreateRayGenSignature ()
 {
 	raytracing::CRootSignatureGenerator rsc;
+	rsc.AddRootParameter(D3D12_ROOT_PARAMETER_TYPE_CBV, render::constants::RootRegister_PassCbv, 0);
 	rsc.AddHeapRangesParameter(
 	{
 		{
@@ -1559,7 +1564,13 @@ void CRenderer::CreateShaderBindingTable ()
 	auto heapPointer = reinterpret_cast<void*>(srvUavHeapHandle.ptr);
 
 	// The ray generation only uses heap data
-	SbtHelper.AddRayGenerationProgram(L"RayGen", { heapPointer });
+	void* passCbAddress = nullptr;
+	if (GetCurrentFrameResource().PassCB.GpuResource)
+	{
+		passCbAddress = reinterpret_cast<void*>(
+			GetCurrentFrameResource().PassCB.GpuResource->GetGPUVirtualAddress());
+	}
+	SbtHelper.AddRayGenerationProgram(L"RayGen", { passCbAddress, heapPointer });
 
 	// The miss and hit shaders do not access any external resources: instead they
 	// communicate their results through the ray payload
@@ -1580,6 +1591,23 @@ void CRenderer::CreateShaderBindingTable ()
 	frt_assert(SbtStorage)
 
 	SbtHelper.Generate(SbtStorage.Get(), RtStateObjectProperties.Get());
+}
+
+void CRenderer::UpdateRaytracingPassCBAddress ()
+{
+	if (!SbtStorage || !GetCurrentFrameResource().PassCB.GpuResource)
+	{
+		return;
+	}
+
+	uint8* sbtData = nullptr;
+	THROW_IF_FAILED(SbtStorage->Map(0, nullptr, reinterpret_cast<void**>(&sbtData)));
+
+	const uint64 cbvAddress = GetCurrentFrameResource().PassCB.GpuResource->GetGPUVirtualAddress();
+	const uint64 cbvOffset = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
+	memcpy(sbtData + cbvOffset, &cbvAddress, sizeof(cbvAddress));
+
+	SbtStorage->Unmap(0, nullptr);
 }
 
 D3D12_DISPATCH_RAYS_DESC CRenderer::BuildDispatchRaysDesc ()
@@ -1617,6 +1645,8 @@ void CRenderer::DispatchRaytracingToCurrentFrameBuffer ()
 {
 	ID3D12DescriptorHeap* heaps[] = { SrvUavHeap.Get() };
 	CommandList->SetDescriptorHeaps(_countof(heaps), heaps);
+
+	UpdateRaytracingPassCBAddress();
 
 	CD3DX12_RESOURCE_BARRIER transition = CD3DX12_RESOURCE_BARRIER::Transition(
 		RtOutputResource.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
