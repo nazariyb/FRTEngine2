@@ -359,8 +359,8 @@ void GameInstance::Draw (float DeltaSeconds)
 {
 	Renderer->StartFrame();
 	World->UploadCB(Renderer->GetCommandList());
-	Renderer->PrepareCurrentPass();
 	World->Present(DeltaSeconds, Renderer->GetCommandList());
+	Renderer->PrepareCurrentPass();
 
 	ImGui::Render();
 	{

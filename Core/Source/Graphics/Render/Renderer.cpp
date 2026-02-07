@@ -467,15 +467,16 @@ ERenderMode CRenderer::GetRenderMode () const
 bool CRenderer::IsRaytracingReady () const
 {
 	return RtStateObject
-		&& RtOutputResource
-		&& SrvUavHeap
-		&& SbtStorage
-		&& TopLevelASBuffers.Result;
+			&& RtOutputResource
+			&& SrvUavHeap
+			&& SbtStorage
+			&& TopLevelASBuffers.Result;
 }
 
 bool CRenderer::ShouldRenderRaster () const
 {
-	return RenderMode == ERenderMode::Raster || !IsRaytracingReady() || RenderMode == ERenderMode::Hybrid; // fallback to raster
+	// fallback to raster
+	return RenderMode == ERenderMode::Raster || !IsRaytracingReady() || RenderMode == ERenderMode::Hybrid;
 }
 
 bool CRenderer::ShouldRenderRaytracing () const
@@ -506,6 +507,11 @@ void CRenderer::PrepareCurrentPass ()
 	const bool bRenderRaytracing = ShouldRenderRaytracing();
 	if (bRenderRaytracing)
 	{
+		if (bRaytracingSbtDirty)
+		{
+			CreateShaderBindingTable();
+			bRaytracingSbtDirty = false;
+		}
 		DispatchRaytracingToCurrentFrameBuffer();
 		SetupCurrentBackBufferRenderTargetNoClear();
 	}
@@ -1211,6 +1217,8 @@ void CRenderer::EnsureObjectConstantCapacity (uint32 ObjectCount)
 	{
 		FramesResources[i].EnsureObjectCapacity(Device.Get(), ObjectCount, BufferArena, ShaderDescriptorHeap);
 	}
+
+	bRaytracingSbtDirty = true;
 }
 
 void CRenderer::EnsureMaterialConstantCapacity (uint32 MaterialCount)
@@ -1236,6 +1244,8 @@ void CRenderer::EnsureMaterialConstantCapacity (uint32 MaterialCount)
 	{
 		FramesResources[i].EnsureMaterialCapacity(Device.Get(), MaterialCount, BufferArena, ShaderDescriptorHeap);
 	}
+
+	bRaytracingSbtDirty = true;
 }
 
 void CRenderer::EnsureShaderDescriptorCapacity (uint32 RequiredCount)
@@ -1366,6 +1376,7 @@ DX12_DescriptorHeap& CRenderer::GetDescriptorHeap ()
 }
 
 #pragma endregion Rasterization
+
 #pragma region Raytracing
 void CRenderer::InitializeRaytracingResources ()
 {
@@ -1412,7 +1423,7 @@ ComPtr<ID3D12RootSignature> CRenderer::CreateMissSignature ()
 ComPtr<ID3D12RootSignature> CRenderer::CreateHitSignature ()
 {
 	raytracing::CRootSignatureGenerator rsc;
-	rsc.AddRootParameter(D3D12_ROOT_PARAMETER_TYPE_SRV);
+	rsc.AddRootParameter(D3D12_ROOT_PARAMETER_TYPE_CBV, render::constants::RootRegister_MaterialCbv, 0);
 	return rsc.Generate(Device.Get(), true);
 }
 
@@ -1552,6 +1563,8 @@ void CRenderer::CreateShaderBindingTable ()
 	// times, the helper must be emptied before re-adding shaders.
 	SbtHelper.Reset();
 
+	const SFrameResources& currentFrameResources = GetCurrentFrameResource();
+
 	// The pointer to the beginning of the heap is the only parameter required by
 	// shaders without root parameters
 	D3D12_GPU_DESCRIPTOR_HANDLE srvUavHeapHandle =
@@ -1565,10 +1578,10 @@ void CRenderer::CreateShaderBindingTable ()
 
 	// The ray generation only uses heap data
 	void* passCbAddress = nullptr;
-	if (GetCurrentFrameResource().PassCB.GpuResource)
+	if (currentFrameResources.PassCB.GpuResource)
 	{
 		passCbAddress = reinterpret_cast<void*>(
-			GetCurrentFrameResource().PassCB.GpuResource->GetGPUVirtualAddress());
+			currentFrameResources.PassCB.GpuResource->GetGPUVirtualAddress());
 	}
 	SbtHelper.AddRayGenerationProgram(L"RayGen", { passCbAddress, heapPointer });
 
@@ -1576,7 +1589,17 @@ void CRenderer::CreateShaderBindingTable ()
 	// communicate their results through the ray payload
 	SbtHelper.AddMissProgram(L"Miss", {});
 
-	SbtHelper.AddHitGroup(L"HitGroup", {/*VertexBuffer*/});
+	const auto& materialCB = currentFrameResources.MaterialCB;
+	if (materialCB.GpuResource)
+	{
+		for (uint32 i = 0; i < materialCB.ObjectCount; ++i)
+		{
+			SbtHelper.AddHitGroup(
+				L"HitGroup",
+				{ (void*)(materialCB.GpuResource->GetGPUVirtualAddress() + i * materialCB.DataSize) });
+		}
+	}
+	// SbtHelper.AddHitGroup(L"HitGroup", {});
 
 	// Compute the size of the SBT given the number of shaders and their
 	// parameters

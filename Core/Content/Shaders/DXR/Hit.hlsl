@@ -12,5 +12,5 @@ void ClosestHit (inout HitInfo payload, Attributes attrib)
 
 	float3 hitColor = A * barycentrics.x + B * barycentrics.y + C * barycentrics.z;
 
-	payload.colorAndDistance = float4(hitColor, RayTCurrent());
+	payload.colorAndDistance = float4(gDiffuseAlbedo.xyz, RayTCurrent());
 }

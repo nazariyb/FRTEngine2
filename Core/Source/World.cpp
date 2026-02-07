@@ -37,17 +37,6 @@ void CWorld::Tick (float DeltaSeconds)
 void CWorld::Present (float DeltaSeconds, ID3D12GraphicsCommandList4* CommandList)
 {
 	auto& currentFrameResources = Renderer->GetCurrentFrameResource();
-	if (!Renderer->ShouldRenderRaster())
-	{
-		return;
-	}
-
-	if (!currentFrameResources.PassCB.DescriptorHeapHandleGpu.empty())
-	{
-		CommandList->SetGraphicsRootDescriptorTable(
-			render::constants::RootParam_PassCbv,
-			currentFrameResources.PassCB.DescriptorHeapHandleGpu[0]);
-	}
 
 	// TODO: assign stable material indices in MaterialLibrary and update constants only when dirty.
 	std::unordered_map<const graphics::SMaterial*, uint32> materialIndices;
@@ -99,8 +88,20 @@ void CWorld::Present (float DeltaSeconds, ID3D12GraphicsCommandList4* CommandLis
 			currentFrameResources.UploadArena);
 	}
 
-	currentFrameResources.ObjectCB.Upload(currentFrameResources.UploadArena, Renderer->GetCommandList());
-	currentFrameResources.MaterialCB.Upload(currentFrameResources.UploadArena, Renderer->GetCommandList());
+	currentFrameResources.ObjectCB.Upload(currentFrameResources.UploadArena, CommandList);
+	currentFrameResources.MaterialCB.Upload(currentFrameResources.UploadArena, CommandList);
+
+	if (!Renderer->ShouldRenderRaster())
+	{
+		return;
+	}
+
+	if (!currentFrameResources.PassCB.DescriptorHeapHandleGpu.empty())
+	{
+		CommandList->SetGraphicsRootDescriptorTable(
+			render::constants::RootParam_PassCbv,
+			currentFrameResources.PassCB.DescriptorHeapHandleGpu[0]);
+	}
 
 	memory::TRefWeak<graphics::CRenderer> renderer = GameInstance::GetInstance().GetRenderer();
 
@@ -126,7 +127,7 @@ void CWorld::Present (float DeltaSeconds, ID3D12GraphicsCommandList4* CommandLis
 
 		if (Entities[i]->bRayTraced)
 		{}
-		else // if ray-traced
+		// else // if ray-traced
 		{
 			{
 				D3D12_INDEX_BUFFER_VIEW indexBufferView = {};
@@ -264,7 +265,6 @@ void CWorld::UploadCB (ID3D12GraphicsCommandList4* CommandList)
 	auto& currentFrameResources = Renderer->GetCurrentFrameResource();
 
 	currentFrameResources.PassCB.Upload(currentFrameResources.UploadArena, CommandList);
-
 }
 #endif
 
@@ -383,7 +383,7 @@ graphics::raytracing::SAccelerationStructureBuffers CWorld::CreateBottomLevelAS 
 	return buffers;
 }
 
-void CWorld::CreateTopLevelAS (const TArray<std::pair<ID3D12Resource*, DirectX::XMMATRIX>>& Instances)
+void CWorld::CreateTopLevelAS (const TArray<SAccelerationInstance>& Instances)
 {
 	using namespace graphics;
 	using namespace graphics::raytracing;
@@ -392,7 +392,11 @@ void CWorld::CreateTopLevelAS (const TArray<std::pair<ID3D12Resource*, DirectX::
 
 	for (uint32 i = 0; i < Instances.Count(); i++)
 	{
-		TopLevelASGenerator.AddInstance(Instances[i].first, Instances[i].second, i, 0u);
+		TopLevelASGenerator.AddInstance(
+			Instances[i].BottomLevelAS,
+			Instances[i].Transform,
+			Instances[i].InstanceId,
+			Instances[i].HitGroupIndex);
 	}
 
 	ID3D12Device5* device = Renderer->GetDevice();
@@ -486,22 +490,103 @@ void CWorld::CreateAccelerationStructures ()
 		// Raytracing not supported on this device; skip AS build.
 		return;
 	}
-	if (Entities.IsEmpty() || !Entities[2] || !Entities[2]->RenderModel.Model)
+	if (Entities.IsEmpty())
 	{
 		return;
 	}
 
-	graphics::raytracing::SAccelerationStructureBuffers bottomLevelBuffers =
-		CreateBottomLevelAS(Entities[2]->RenderModel);
+	std::unordered_map<graphics::SMaterial*, uint32> materialIndices;
 
-	// Just one instance for now
-	// Instances = { { bottomLevelBuffers.Result.Get(), DirectX::XMLoadFloat4x4(&Entities[2]->Transform.GetMatrix()) } };
-	Instances = { { bottomLevelBuffers.Result.Get(), DirectX::XMMatrixIdentity() } };
+	for (uint32 i = 0; i < Entities.Count(); ++i)
+	{
+		CEntity* entity = Entities[i].GetRawIgnoringLifetime();
+		if (!entity || !entity->RenderModel.Model)
+		{
+			continue;
+		}
+
+		graphics::SRenderModel& model = *entity->RenderModel.Model;
+		for (const graphics::SRenderSection& section : model.Sections)
+		{
+			if (section.MaterialIndex >= model.Materials.Count())
+			{
+				continue;
+			}
+
+			graphics::SMaterial* material = model.Materials[section.MaterialIndex].GetRawIgnoringLifetime();
+			if (!material)
+			{
+				continue;
+			}
+
+			auto it = materialIndices.find(material);
+			if (it == materialIndices.end())
+			{
+				const uint32 materialIndex = materialIndices.size();
+				materialIndices.emplace(material, materialIndex);
+				material->RuntimeIndex = materialIndex;
+			}
+			else
+			{
+				material->RuntimeIndex = it->second;
+			}
+		}
+	}
+
+	if (!materialIndices.empty())
+	{
+		Renderer->EnsureMaterialConstantCapacity(static_cast<uint32>(materialIndices.size()));
+	}
+
+	TArray<graphics::raytracing::SAccelerationStructureBuffers> bottomLevelBuffers(Entities.Count());
+
+	for (const auto& entity : Entities)
+	{
+		bottomLevelBuffers.Add(CreateBottomLevelAS(entity->RenderModel));
+	}
+
+	Instances.Clear();
+	Instances.SetCapacity(Entities.Count());
+	for (uint32 i = 0; i < Entities.Count(); i++)
+	{
+		CEntity* entity = Entities[i].GetRawIgnoringLifetime();
+		if (!entity || !entity->RenderModel.Model)
+		{
+			continue;
+		}
+
+		graphics::SRenderModel& model = *entity->RenderModel.Model;
+		uint32 hitGroupIndex = 0u;
+		if (!model.Sections.IsEmpty())
+		{
+			const graphics::SRenderSection& section = model.Sections[0];
+			if (section.MaterialIndex < model.Materials.Count())
+			{
+				graphics::SMaterial* material = model.Materials[section.MaterialIndex].GetRawIgnoringLifetime();
+				if (material)
+				{
+					hitGroupIndex = material->RuntimeIndex;
+				}
+			}
+		}
+
+		Instances.Add(
+			{
+				bottomLevelBuffers[i].Result.Get(),
+				DirectX::XMLoadFloat4x4(&entity->Transform.GetMatrix()),
+				i,
+				hitGroupIndex
+			});
+	}
+
 	CreateTopLevelAS(Instances);
 
-	// Store the AS buffers. The rest of the buffers will be released once we exit
-	// the function
-	BottomLevelAS = bottomLevelBuffers.Result;
+	BottomLevelASs.Clear();
+	BottomLevelASs.SetCapacity(bottomLevelBuffers.Count());
+	for (const auto& buffer : bottomLevelBuffers)
+	{
+		BottomLevelASs.Add(buffer.Result);
+	}
 
 	Renderer->TopLevelASBuffers = TopLevelASBuffers;
 }

@@ -277,6 +277,7 @@ private:
 
 	raytracing::CShaderBindingTableGenerator SbtHelper;
 	ComPtr<ID3D12Resource> SbtStorage;
+	bool bRaytracingSbtDirty = false;
 };
 
 

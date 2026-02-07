@@ -48,6 +48,9 @@ public:
 
 
 inline STransform::STransform ()
+	: Translation(Vector3f::ZeroVector)
+	, Rotation(Vector3f::ZeroVector)
+	, Scale(Vector3f::OneVector)
 {
 	MatrixIntr = DirectX::XMMatrixIdentity();
 	DirectX::XMStoreFloat4x4(&Matrix4x4, MatrixIntr);

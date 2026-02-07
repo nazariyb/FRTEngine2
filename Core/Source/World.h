@@ -33,9 +33,10 @@ public:
 
 private:
 #ifndef FRT_HEADLESS
+	struct SAccelerationInstance;
 	graphics::raytracing::SAccelerationStructureBuffers CreateBottomLevelAS (
 		const graphics::Comp_RenderModel& RenderModel);
-	void CreateTopLevelAS (const TArray<std::pair<ID3D12Resource*, DirectX::XMMATRIX>>& Instances);
+	void CreateTopLevelAS (const TArray<SAccelerationInstance>& Instances);
 #endif
 
 public:
@@ -45,10 +46,18 @@ public:
 	TArray<memory::TRefShared<CEntity>> Entities;
 
 private:
+	struct SAccelerationInstance
+	{
+		ID3D12Resource* BottomLevelAS = nullptr;
+		DirectX::XMMATRIX Transform = {};
+		uint32 InstanceId = 0u;
+		uint32 HitGroupIndex = 0u;
+	};
+
 	// move to renderer?
-	ComPtr<ID3D12Resource> BottomLevelAS;
+	TArray<ComPtr<ID3D12Resource>> BottomLevelASs;
 	graphics::raytracing::CTopLevelASGenerator TopLevelASGenerator;
 	graphics::raytracing::SAccelerationStructureBuffers TopLevelASBuffers;
-	TArray<std::pair<ID3D12Resource*, DirectX::XMMATRIX>> Instances;
+	TArray<SAccelerationInstance> Instances;
 };
 }

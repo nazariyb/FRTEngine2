@@ -189,7 +189,8 @@ void CTopLevelASGenerator::Generate (
 		instanceDescs[i].AccelerationStructure = Instances[i].BottomLevelAS->GetGPUVirtualAddress();
 		instanceDescs[i].Flags = D3D12_RAYTRACING_INSTANCE_FLAG_NONE;
 		DirectX::XMFLOAT3X4 transform3x4;
-		DirectX::XMStoreFloat3x4(&transform3x4, Instances[i].Transform);
+		const DirectX::XMMATRIX dxrTransform = DirectX::XMMatrixTranspose(Instances[i].Transform);
+		DirectX::XMStoreFloat3x4(&transform3x4, dxrTransform);
 		memcpy(instanceDescs[i].Transform, &transform3x4, sizeof(transform3x4));
 	}
 
