@@ -100,6 +100,11 @@ public:
 	* Destruct all elements, set size to 0, but do not free memory.
 	*/
 	void Clear ();
+
+	/**
+	 * @TODO: add shrink option/version
+	 */
+	void Reset (uint32 WantedCapacity);
 	// ~Removers
 
 	// Getters
@@ -648,6 +653,17 @@ void TArray<ElementType, TAllocator>::Clear ()
 		(Data + i)->~ElementType();
 	}
 	Size = 0u;
+}
+
+template <typename TElementType, typename TAllocator>
+void TArray<TElementType, TAllocator>::Reset (uint32 WantedCapacity)
+{
+	Clear();
+
+	if (WantedCapacity > Capacity)
+	{
+		ReAlloc(WantedCapacity);
+	}
 }
 
 template <typename ElementType, typename TAllocator>

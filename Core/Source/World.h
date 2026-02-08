@@ -24,6 +24,7 @@ public:
 	virtual void Present (float DeltaSeconds, ID3D12GraphicsCommandList4* CommandList);
 	void InitializeRendering ();
 	void CreateAccelerationStructures ();
+	void UpdateAccelerationStructures ();
 
 	void CopyConstantData ();
 	void UploadCB (ID3D12GraphicsCommandList4* CommandList);
@@ -36,7 +37,7 @@ private:
 	struct SAccelerationInstance;
 	graphics::raytracing::SAccelerationStructureBuffers CreateBottomLevelAS (
 		const graphics::Comp_RenderModel& RenderModel);
-	void CreateTopLevelAS (const TArray<SAccelerationInstance>& Instances);
+	void CreateTopLevelAS (const TArray<SAccelerationInstance>& Instances, bool bUpdateOnly = false);
 #endif
 
 public:
@@ -49,7 +50,7 @@ private:
 	struct SAccelerationInstance
 	{
 		ID3D12Resource* BottomLevelAS = nullptr;
-		DirectX::XMMATRIX Transform = {};
+		DirectX::XMFLOAT3X4 Transform = {};
 		uint32 InstanceId = 0u;
 		uint32 HitGroupIndex = 0u;
 	};
@@ -59,5 +60,13 @@ private:
 	graphics::raytracing::CTopLevelASGenerator TopLevelASGenerator;
 	graphics::raytracing::SAccelerationStructureBuffers TopLevelASBuffers;
 	TArray<SAccelerationInstance> Instances;
+
+	TArray<CEntity*> AsEntities;
+	TArray<const graphics::SRenderModel*> AsModels;
+	TArray<DirectX::XMFLOAT4X4> AsTransforms;
+	bool bAsInitialized = false;
+	bool bAsTopologyDirty = true;
+	bool bRaytracingSupported = false;
+	bool bRaytracingSupportChecked = false;
 };
 }

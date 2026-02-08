@@ -27,6 +27,7 @@ public:
 	STransform ();
 
 	const DirectX::XMFLOAT4X4& GetMatrix ();
+	DirectX::XMFLOAT3X4 GetRaytracingTransform ();
 
 	const Vector3f& GetTranslation () const { return Translation; }
 	const Vector3f& GetRotation () const { return Rotation; }
@@ -70,6 +71,16 @@ inline const DirectX::XMFLOAT4X4& STransform::GetMatrix ()
 	XMStoreFloat4x4(&Matrix4x4, MatrixIntr);
 
 	return Matrix4x4;
+}
+
+inline DirectX::XMFLOAT3X4 STransform::GetRaytracingTransform ()
+{
+	const DirectX::XMFLOAT4X4& m = GetMatrix();
+
+	return DirectX::XMFLOAT3X4(
+		m._11, m._21, m._31, m._41,
+		m._12, m._22, m._32, m._42,
+		m._13, m._23, m._33, m._43);
 }
 
 inline void STransform::SetTranslation (float X, float Y, float Z)

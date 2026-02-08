@@ -1,5 +1,6 @@
 ﻿#include "World.h"
 
+#include <cstring>
 #include <unordered_map>
 
 #include "Exception.h"
@@ -12,6 +13,21 @@
 #include "Graphics/Render/Renderer.h"
 
 using namespace frt;
+
+namespace
+{
+bool IsRaytracingSupported (ID3D12Device5* Device)
+{
+	D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5 = {};
+	return SUCCEEDED(Device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &options5, sizeof(options5)))
+			&& options5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_0;
+}
+
+bool AreMatricesEqual (const DirectX::XMFLOAT4X4& A, const DirectX::XMFLOAT4X4& B)
+{
+	return std::memcmp(&A, &B, sizeof(DirectX::XMFLOAT4X4)) == 0;
+}
+}
 
 #if !defined(FRT_HEADLESS)
 CWorld::CWorld (memory::TRefWeak<graphics::CRenderer> InRenderer)
@@ -272,6 +288,9 @@ memory::TRefShared<CEntity> CWorld::SpawnEntity ()
 {
 	auto newEntity = memory::NewShared<CEntity>();
 	Entities.Add(newEntity);
+#ifndef FRT_HEADLESS
+	bAsTopologyDirty = true;
+#endif
 	return newEntity;
 }
 
@@ -383,7 +402,7 @@ graphics::raytracing::SAccelerationStructureBuffers CWorld::CreateBottomLevelAS 
 	return buffers;
 }
 
-void CWorld::CreateTopLevelAS (const TArray<SAccelerationInstance>& Instances)
+void CWorld::CreateTopLevelAS (const TArray<SAccelerationInstance>& Instances, bool bUpdateOnly)
 {
 	using namespace graphics;
 	using namespace graphics::raytracing;
@@ -414,24 +433,36 @@ void CWorld::CreateTopLevelAS (const TArray<SAccelerationInstance>& Instances)
 		device, true, &scratchSize,
 		&resultSize, &instanceDescsSize);
 
-	// Create the scratch and result buffers. Since the build is all done on GPU,
-	// those can be allocated on the default heap
-	TopLevelASBuffers.Scratch = CreateBuffer(
-		device, scratchSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-		D3D12_RESOURCE_STATE_COMMON,
-		DefaultHeapProps);
-	TopLevelASBuffers.Result = CreateBuffer(
-		device, resultSize,
-		D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_RAYTRACING_ACCELERATION_STRUCTURE,
-		D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
-		DefaultHeapProps);
+	const bool bHasValidBuffers = TopLevelASBuffers.Result && TopLevelASBuffers.InstanceDesc;
+	const bool bCanUpdateOnly = bUpdateOnly && bHasValidBuffers;
+	if (!bCanUpdateOnly)
+	{
+		TopLevelASBuffers.Result = CreateBuffer(
+			device, resultSize,
+			D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_RAYTRACING_ACCELERATION_STRUCTURE,
+			D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
+			DefaultHeapProps);
+	}
 
-	// The buffer describing the instances: ID, shader binding information,
-	// matrices ... Those will be copied into the buffer by the helper through
-	// mapping, so the buffer has to be allocated on the upload heap.
-	TopLevelASBuffers.InstanceDesc = CreateBuffer(
-		device, instanceDescsSize, D3D12_RESOURCE_FLAG_NONE,
-		D3D12_RESOURCE_STATE_GENERIC_READ, UploadHeapProps);
+	// Scratch and descriptor buffers can be recreated if required by size.
+	const uint64 currentScratchSize = TopLevelASBuffers.Scratch ? TopLevelASBuffers.Scratch->GetDesc().Width : 0u;
+	if (!TopLevelASBuffers.Scratch || currentScratchSize < scratchSize)
+	{
+		TopLevelASBuffers.Scratch = CreateBuffer(
+			device, scratchSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+			D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+			DefaultHeapProps);
+	}
+
+	const uint64 currentDescSize = TopLevelASBuffers.InstanceDesc ? TopLevelASBuffers.InstanceDesc->GetDesc().Width : 0u;
+	if (!TopLevelASBuffers.InstanceDesc || currentDescSize < instanceDescsSize)
+	{
+		TopLevelASBuffers.InstanceDesc = CreateBuffer(
+			device, instanceDescsSize, D3D12_RESOURCE_FLAG_NONE,
+			D3D12_RESOURCE_STATE_GENERIC_READ, UploadHeapProps);
+	}
+
+#ifndef RELEASE
 	if (TopLevelASBuffers.Scratch)
 	{
 		TopLevelASBuffers.Scratch->SetName(L"TLAS Scratch");
@@ -444,29 +475,9 @@ void CWorld::CreateTopLevelAS (const TArray<SAccelerationInstance>& Instances)
 	{
 		TopLevelASBuffers.InstanceDesc->SetName(L"TLAS InstanceDesc");
 	}
+#endif
 
 	ID3D12GraphicsCommandList4* commandList = Renderer->GetCommandList();
-	D3D12_RESOURCE_BARRIER barriers[2] = {};
-	uint32 barrierCount = 0;
-	auto addTransition = [&] (
-		ID3D12Resource* resource,
-		D3D12_RESOURCE_STATES before,
-		D3D12_RESOURCE_STATES after)
-	{
-		D3D12_RESOURCE_BARRIER& barrier = barriers[barrierCount++];
-		barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-		barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-		barrier.Transition.pResource = resource;
-		barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-		barrier.Transition.StateBefore = before;
-		barrier.Transition.StateAfter = after;
-	};
-
-	addTransition(
-		TopLevelASBuffers.Scratch.Get(),
-		D3D12_RESOURCE_STATE_COMMON,
-		D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-	commandList->ResourceBarrier(barrierCount, barriers);
 
 	// After all the buffers are allocated, or if only an update is required, we
 	// can build the acceleration structure. Note that in the case of the update
@@ -476,26 +487,36 @@ void CWorld::CreateTopLevelAS (const TArray<SAccelerationInstance>& Instances)
 		commandList,
 		TopLevelASBuffers.Scratch.Get(),
 		TopLevelASBuffers.Result.Get(),
-		TopLevelASBuffers.InstanceDesc.Get());
+		TopLevelASBuffers.InstanceDesc.Get(),
+		bCanUpdateOnly,
+		bCanUpdateOnly ? TopLevelASBuffers.Result.Get() : nullptr);
 }
 
 // definitely should be inside Renderer
 void CWorld::CreateAccelerationStructures ()
 {
 	ID3D12Device5* device = Renderer->GetDevice();
-	D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5 = {};
-	if (FAILED(device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &options5, sizeof(options5))) ||
-		options5.RaytracingTier < D3D12_RAYTRACING_TIER_1_0)
+	if (!bRaytracingSupportChecked)
 	{
-		// Raytracing not supported on this device; skip AS build.
-		return;
+		bRaytracingSupported = IsRaytracingSupported(device);
+		bRaytracingSupportChecked = true;
 	}
-	if (Entities.IsEmpty())
+	if (!bRaytracingSupported)
 	{
 		return;
 	}
 
+	struct SBuildEntry
+	{
+		CEntity* Entity = nullptr;
+		const graphics::SRenderModel* Model = nullptr;
+		DirectX::XMFLOAT3X4 Transform = {};
+		uint32 HitGroupIndex = 0u;
+	};
+
 	std::unordered_map<graphics::SMaterial*, uint32> materialIndices;
+	TArray<SBuildEntry> buildEntries;
+	buildEntries.SetCapacity(Entities.Count());
 
 	for (uint32 i = 0; i < Entities.Count(); ++i)
 	{
@@ -531,6 +552,38 @@ void CWorld::CreateAccelerationStructures ()
 				material->RuntimeIndex = it->second;
 			}
 		}
+
+		SBuildEntry entry = {};
+		entry.Entity = entity;
+		entry.Model = &model;
+		entry.Transform = entity->Transform.GetRaytracingTransform();
+		if (!model.Sections.IsEmpty())
+		{
+			const graphics::SRenderSection& section = model.Sections[0];
+			if (section.MaterialIndex < model.Materials.Count())
+			{
+				graphics::SMaterial* material = model.Materials[section.MaterialIndex].GetRawIgnoringLifetime();
+				if (material)
+				{
+					entry.HitGroupIndex = material->RuntimeIndex;
+				}
+			}
+		}
+		buildEntries.Add(entry);
+	}
+
+	if (buildEntries.IsEmpty())
+	{
+		BottomLevelASs.Clear();
+		TopLevelASBuffers = {};
+		Renderer->TopLevelASBuffers = {};
+		AsEntities.Clear();
+		AsModels.Clear();
+		AsTransforms.Clear();
+		Instances.Clear();
+		bAsInitialized = true;
+		bAsTopologyDirty = false;
+		return;
 	}
 
 	if (!materialIndices.empty())
@@ -538,21 +591,95 @@ void CWorld::CreateAccelerationStructures ()
 		Renderer->EnsureMaterialConstantCapacity(static_cast<uint32>(materialIndices.size()));
 	}
 
-	TArray<graphics::raytracing::SAccelerationStructureBuffers> bottomLevelBuffers(Entities.Count());
+	TArray<graphics::raytracing::SAccelerationStructureBuffers> bottomLevelBuffers;
+	bottomLevelBuffers.SetCapacity(buildEntries.Count());
 
-	for (const auto& entity : Entities)
+	for (const SBuildEntry& entry : buildEntries)
 	{
-		bottomLevelBuffers.Add(CreateBottomLevelAS(entity->RenderModel));
+		bottomLevelBuffers.Add(CreateBottomLevelAS(entry.Entity->RenderModel));
 	}
 
-	Instances.Clear();
-	Instances.SetCapacity(Entities.Count());
-	for (uint32 i = 0; i < Entities.Count(); i++)
+	Instances.Reset(buildEntries.Count());
+	AsEntities.Reset(buildEntries.Count());
+	AsModels.Reset(buildEntries.Count());
+	AsTransforms.Reset(buildEntries.Count());
+
+	for (uint32 i = 0; i < buildEntries.Count(); ++i)
+	{
+		const SBuildEntry& entry = buildEntries[i];
+		Instances.Add({ bottomLevelBuffers[i].Result.Get(), entry.Transform, i, entry.HitGroupIndex });
+		AsEntities.Add(entry.Entity);
+		AsModels.Add(entry.Model);
+		AsTransforms.Add(entry.Entity->Transform.GetMatrix());
+	}
+
+	CreateTopLevelAS(Instances, false);
+
+	BottomLevelASs.Reset(bottomLevelBuffers.Count());
+	for (const auto& buffer : bottomLevelBuffers)
+	{
+		BottomLevelASs.Add(buffer.Result);
+	}
+
+	Renderer->TopLevelASBuffers = TopLevelASBuffers;
+	bAsInitialized = true;
+	bAsTopologyDirty = false;
+}
+
+void CWorld::UpdateAccelerationStructures ()
+{
+	if (!Renderer->ShouldRenderRaytracing())
+	{
+		return;
+	}
+
+	if (!bAsInitialized || bAsTopologyDirty)
+	{
+		CreateAccelerationStructures();
+		if (TopLevelASBuffers.Result)
+		{
+			Renderer->InitializeRaytracingResources();
+		}
+		return;
+	}
+
+	if (AsEntities.Count() != AsModels.Count() || AsEntities.Count() != AsTransforms.Count())
+	{
+		bAsTopologyDirty = true;
+		CreateAccelerationStructures();
+		if (TopLevelASBuffers.Result)
+		{
+			Renderer->InitializeRaytracingResources();
+		}
+		return;
+	}
+
+	uint32 trackedIndex = 0u;
+	bool bTopologyChanged = false;
+	bool bInstanceDataChanged = false;
+
+	for (uint32 i = 0; i < Entities.Count(); ++i)
 	{
 		CEntity* entity = Entities[i].GetRawIgnoringLifetime();
 		if (!entity || !entity->RenderModel.Model)
 		{
 			continue;
+		}
+
+		if (trackedIndex >= AsEntities.Count() ||
+			AsEntities[trackedIndex] != entity ||
+			AsModels[trackedIndex] != entity->RenderModel.Model.GetRawIgnoringLifetime())
+		{
+			bTopologyChanged = true;
+			break;
+		}
+
+		DirectX::XMFLOAT4X4 currentTransform = entity->Transform.GetMatrix();
+		if (!AreMatricesEqual(currentTransform, AsTransforms[trackedIndex]))
+		{
+			AsTransforms[trackedIndex] = currentTransform;
+			Instances[trackedIndex].Transform = entity->Transform.GetRaytracingTransform();
+			bInstanceDataChanged = true;
 		}
 
 		graphics::SRenderModel& model = *entity->RenderModel.Model;
@@ -570,23 +697,36 @@ void CWorld::CreateAccelerationStructures ()
 			}
 		}
 
-		Instances.Add(
-			{
-				bottomLevelBuffers[i].Result.Get(),
-				DirectX::XMLoadFloat4x4(&entity->Transform.GetMatrix()),
-				i,
-				hitGroupIndex
-			});
+		if (Instances[trackedIndex].HitGroupIndex != hitGroupIndex)
+		{
+			Instances[trackedIndex].HitGroupIndex = hitGroupIndex;
+			bInstanceDataChanged = true;
+		}
+
+		++trackedIndex;
 	}
 
-	CreateTopLevelAS(Instances);
-
-	BottomLevelASs.Clear();
-	BottomLevelASs.SetCapacity(bottomLevelBuffers.Count());
-	for (const auto& buffer : bottomLevelBuffers)
+	if (!bTopologyChanged && trackedIndex != AsEntities.Count())
 	{
-		BottomLevelASs.Add(buffer.Result);
+		bTopologyChanged = true;
 	}
 
+	if (bTopologyChanged)
+	{
+		bAsTopologyDirty = true;
+		CreateAccelerationStructures();
+		if (TopLevelASBuffers.Result)
+		{
+			Renderer->InitializeRaytracingResources();
+		}
+		return;
+	}
+
+	if (!bInstanceDataChanged || Instances.IsEmpty())
+	{
+		return;
+	}
+
+	CreateTopLevelAS(Instances, true);
 	Renderer->TopLevelASBuffers = TopLevelASBuffers;
 }

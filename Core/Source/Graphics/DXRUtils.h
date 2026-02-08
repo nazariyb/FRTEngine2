@@ -151,7 +151,7 @@ class CTopLevelASGenerator
 public:
 	void AddInstance (
 		ID3D12Resource* BottomLevelAS,
-		const DirectX::XMMATRIX& Transform,
+		const DirectX::XMFLOAT3X4& Transform,
 		uint32 InstanceID,
 		uint32 HitGroupIndex);
 
@@ -174,7 +174,7 @@ private:
 	struct SInstance
 	{
 		ID3D12Resource* BottomLevelAS = nullptr;
-		DirectX::XMMATRIX Transform = {};
+		DirectX::XMFLOAT3X4 Transform = {};
 		uint32 InstanceID = 0;
 		uint32 HitGroupIndex = 0;
 	};

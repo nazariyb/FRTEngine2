@@ -1,5 +1,6 @@
-﻿#include "DXRUtils.h"
+#include "DXRUtils.h"
 
+#include <cstring>
 #include <dxcapi.h>
 #include <stdexcept>
 #include <unordered_set>
@@ -119,7 +120,7 @@ void CBottomLevelASGenerator::Generate (
 
 void CTopLevelASGenerator::AddInstance (
 	ID3D12Resource* BottomLevelAS,
-	const DirectX::XMMATRIX& Transform,
+	const DirectX::XMFLOAT3X4& Transform,
 	uint32 InstanceID,
 	uint32 HitGroupIndex)
 {
@@ -188,10 +189,7 @@ void CTopLevelASGenerator::Generate (
 		instanceDescs[i].InstanceContributionToHitGroupIndex = Instances[i].HitGroupIndex;
 		instanceDescs[i].AccelerationStructure = Instances[i].BottomLevelAS->GetGPUVirtualAddress();
 		instanceDescs[i].Flags = D3D12_RAYTRACING_INSTANCE_FLAG_NONE;
-		DirectX::XMFLOAT3X4 transform3x4;
-		const DirectX::XMMATRIX dxrTransform = DirectX::XMMatrixTranspose(Instances[i].Transform);
-		DirectX::XMStoreFloat3x4(&transform3x4, dxrTransform);
-		memcpy(instanceDescs[i].Transform, &transform3x4, sizeof(transform3x4));
+		memcpy(instanceDescs[i].Transform, &Instances[i].Transform, sizeof(Instances[i].Transform));
 	}
 
 	DescriptorsBuffer->Unmap(0, nullptr);

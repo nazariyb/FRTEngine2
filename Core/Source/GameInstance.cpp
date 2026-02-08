@@ -359,6 +359,7 @@ void GameInstance::Draw (float DeltaSeconds)
 {
 	Renderer->StartFrame();
 	World->UploadCB(Renderer->GetCommandList());
+	World->UpdateAccelerationStructures();
 	World->Present(DeltaSeconds, Renderer->GetCommandList());
 	Renderer->PrepareCurrentPass();
 
