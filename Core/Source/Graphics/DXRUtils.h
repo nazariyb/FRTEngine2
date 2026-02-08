@@ -503,12 +503,14 @@ public:
 		uint32 ShaderRegister = 0u,
 		uint32 RegisterSpace = 0u,
 		uint32 NumRootConstants = 1u);
+	void AddStaticSampler (const D3D12_STATIC_SAMPLER_DESC& InStaticSampler);
 
 	ID3D12RootSignature* Generate (ID3D12Device* Device, bool bLocal);
 
 private:
 	TArray<TArray<D3D12_DESCRIPTOR_RANGE>> Ranges;
 	TArray<D3D12_ROOT_PARAMETER> Parameters;
+	TArray<D3D12_STATIC_SAMPLER_DESC> StaticSamplers;
 
 	TArray<uint32> RangeLocations;
 

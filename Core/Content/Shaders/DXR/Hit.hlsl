@@ -3,6 +3,7 @@
 Texture2D<float4> gMaterialTextures[16] : register(t1);
 StructuredBuffer<VSInput> gVertices : register(t17);
 StructuredBuffer<uint> gIndices : register(t18);
+SamplerState gLinearSampler : register(s0);
 
 static const uint MaterialTextureIndexInvalid = 0xFFFFFFFF;
 
@@ -23,6 +24,56 @@ uint GetMaterialTextureIndex (uint index)
 	return gMaterialTextureIndices3[index - 12];
 }
 
+float ComputeTextureLod (
+	float2 uv0,
+	float2 uv1,
+	float2 uv2,
+	float3 position0,
+	float3 position1,
+	float3 position2,
+	uint2 textureSize)
+{
+	if (textureSize.x == 0 || textureSize.y == 0)
+	{
+		return 0.0f;
+	}
+
+	const float2 duv1 = uv1 - uv0;
+	const float2 duv2 = uv2 - uv0;
+	const float uvArea2 = abs(duv1.x * duv2.y - duv1.y * duv2.x);
+	if (uvArea2 <= 1e-8f)
+	{
+		return 0.0f;
+	}
+
+	const float3 edge1 = position1 - position0;
+	const float3 edge2 = position2 - position0;
+	const float worldArea2 = length(cross(edge1, edge2));
+	if (worldArea2 <= 1e-8f)
+	{
+		return 0.0f;
+	}
+
+	const float invProjY = abs(gProj[1][1]);
+	if (invProjY <= 1e-8f || gRenderTargetSize.y <= 1.0f)
+	{
+		return 0.0f;
+	}
+
+	const float tanHalfFovY = 1.0f / invProjY;
+	const float pixelWorldSize = (2.0f * max(RayTCurrent(), 0.0f) * tanHalfFovY) / gRenderTargetSize.y;
+
+	const float worldUnitsPerUv = sqrt(worldArea2 / uvArea2);
+	if (worldUnitsPerUv <= 1e-8f)
+	{
+		return 0.0f;
+	}
+
+	const float uvFootprint = pixelWorldSize / worldUnitsPerUv;
+	const float texelFootprint = uvFootprint * max((float)textureSize.x, (float)textureSize.y);
+	return log2(max(texelFootprint, 1e-8f));
+}
+
 [shader("closesthit")]
 void ClosestHit (inout HitInfo payload, Attributes attrib)
 {
@@ -39,22 +90,26 @@ void ClosestHit (inout HitInfo payload, Attributes attrib)
 	const VSInput v1 = gVertices[i1];
 	const VSInput v2 = gVertices[i2];
 	const float2 uv = v0.uv * barycentrics.x + v1.uv * barycentrics.y + v2.uv * barycentrics.z;
+	const float3 worldPosition0 = mul(ObjectToWorld3x4(), float4(v0.position, 1.0f));
+	const float3 worldPosition1 = mul(ObjectToWorld3x4(), float4(v1.position, 1.0f));
+	const float3 worldPosition2 = mul(ObjectToWorld3x4(), float4(v2.position, 1.0f));
 
 	float3 hitColor = gDiffuseAlbedo.xyz;
 
 	const uint baseColorTextureIndex = GetMaterialTextureIndex(0);
 	if (baseColorTextureIndex != MaterialTextureIndexInvalid)
 	{
+		const float2 wrappedUv = frac(uv);
 		uint2 textureSize = uint2(0, 0);
 		gMaterialTextures[baseColorTextureIndex].GetDimensions(textureSize.x, textureSize.y);
-		if (textureSize.x > 0 && textureSize.y > 0)
-		{
-			const float2 wrappedUv = frac(uv);
-			const uint2 maxTexel = textureSize - 1;
-			const uint2 texel = min(uint2(wrappedUv * float2(textureSize)), maxTexel);
-			const float3 sampledColor = gMaterialTextures[baseColorTextureIndex].Load(int3(texel, 0)).rgb;
-			hitColor *= sampledColor;
-		}
+		const float lod = ComputeTextureLod(
+			v0.uv, v1.uv, v2.uv,
+			worldPosition0, worldPosition1, worldPosition2,
+			textureSize);
+		const float3 sampledColor = gMaterialTextures[baseColorTextureIndex]
+			.SampleLevel(gLinearSampler, wrappedUv, lod)
+			.rgb;
+		hitColor *= sampledColor;
 	}
 
 	payload.colorAndDistance = float4(hitColor, RayTCurrent());

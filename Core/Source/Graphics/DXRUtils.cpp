@@ -851,6 +851,11 @@ void CRootSignatureGenerator::AddRootParameter (
 	RangeLocations.Add(~0u);
 }
 
+void CRootSignatureGenerator::AddStaticSampler (const D3D12_STATIC_SAMPLER_DESC& InStaticSampler)
+{
+	StaticSamplers.Add(InStaticSampler);
+}
+
 ID3D12RootSignature* CRootSignatureGenerator::Generate (ID3D12Device* Device, bool bLocal)
 {
 	// Go through all the parameters, and set the actual addresses of the heap range descriptors based
@@ -866,6 +871,8 @@ ID3D12RootSignature* CRootSignatureGenerator::Generate (ID3D12Device* Device, bo
 	D3D12_ROOT_SIGNATURE_DESC rootDesc = {};
 	rootDesc.NumParameters = Parameters.size();
 	rootDesc.pParameters = Parameters.GetData();
+	rootDesc.NumStaticSamplers = StaticSamplers.Count();
+	rootDesc.pStaticSamplers = StaticSamplers.GetData();
 	// Set the flags of the signature. By default root signatures are global, for example for vertex
 	// and pixel shaders. For raytracing shaders the root signatures are local.
 	rootDesc.Flags =

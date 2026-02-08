@@ -16,6 +16,28 @@
 
 namespace frt::graphics
 {
+namespace
+{
+D3D12_STATIC_SAMPLER_DESC BuildLinearWrapStaticSamplerDesc ()
+{
+	D3D12_STATIC_SAMPLER_DESC sampler = {};
+	sampler.Filter = D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+	sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+	sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+	sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+	sampler.MipLODBias = 0.f;
+	sampler.MaxAnisotropy = 1u;
+	sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
+	sampler.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
+	sampler.MinLOD = 0.f;
+	sampler.MaxLOD = D3D12_FLOAT32_MAX;
+	sampler.ShaderRegister = 0u;
+	sampler.RegisterSpace = 0u;
+	sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+	return sampler;
+}
+}
+
 static void GetHardwareAdapter (IDXGIFactory4* pFactory, IDXGIAdapter1** ppAdapter)
 {
 	*ppAdapter = nullptr;
@@ -827,17 +849,7 @@ void CRenderer::CreateRootSignature ()
 		1,
 		&materialTextureTable0);
 
-	constexpr D3D12_STATIC_SAMPLER_DESC samplerDesc
-	{
-		.Filter = D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT,
-		.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP,
-		.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP,
-		.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP,
-		.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER,
-		.ShaderRegister = 0,
-		.RegisterSpace = 0,
-		.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL,
-	};
+	const D3D12_STATIC_SAMPLER_DESC samplerDesc = BuildLinearWrapStaticSamplerDesc();
 
 	CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc(
 		render::constants::RootParamCount, rootParameters, 1, &samplerDesc,
@@ -1483,6 +1495,7 @@ ComPtr<ID3D12RootSignature> CRenderer::CreateHitSignature ()
 {
 	raytracing::CRootSignatureGenerator rsc;
 	rsc.AddRootParameter(D3D12_ROOT_PARAMETER_TYPE_CBV, render::constants::RootRegister_MaterialCbv, 0);
+	rsc.AddRootParameter(D3D12_ROOT_PARAMETER_TYPE_CBV, render::constants::RootRegister_PassCbv, 0);
 	rsc.AddHeapRangesParameter(
 	{
 		{
@@ -1501,6 +1514,10 @@ ComPtr<ID3D12RootSignature> CRenderer::CreateHitSignature ()
 		D3D12_ROOT_PARAMETER_TYPE_SRV,
 		render::constants::RaytracingRegister_IndexBufferSrv,
 		0);
+
+	const D3D12_STATIC_SAMPLER_DESC linearWrapSampler = BuildLinearWrapStaticSamplerDesc();
+	rsc.AddStaticSampler(linearWrapSampler);
+
 	return rsc.Generate(Device.Get(), true);
 }
 
@@ -1743,6 +1760,7 @@ void CRenderer::CreateShaderBindingTable ()
 				L"HitGroup",
 				{
 					reinterpret_cast<void*>(materialCbAddress),
+					passCbAddress,
 					reinterpret_cast<void*>(materialTextureTableAddress),
 					reinterpret_cast<void*>(hitGroupEntry.VertexBuffer->GetGPUVirtualAddress()),
 					reinterpret_cast<void*>(hitGroupEntry.IndexBuffer->GetGPUVirtualAddress())
@@ -1796,7 +1814,11 @@ void CRenderer::UpdateRaytracingShaderTableAddresses ()
 			static_cast<uint64>(SbtHelper.GetRayGenSectionSize()) +
 			static_cast<uint64>(SbtHelper.GetMissSectionSize());
 		const uint64 hitRecordCbOffset = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
+		const uint64 hitRecordPassCbOffset = hitRecordCbOffset + sizeof(uint64);
 		const uint32 hitRecordStride = SbtHelper.GetHitGroupEntrySize();
+		const uint64 passCbAddress = currentFrameResources.PassCB.GpuResource
+										? currentFrameResources.PassCB.GpuResource->GetGPUVirtualAddress()
+										: 0u;
 
 		for (uint32 i = 0; i < RaytracingHitGroupEntries.Count(); ++i)
 		{
@@ -1810,6 +1832,7 @@ void CRenderer::UpdateRaytracingShaderTableAddresses ()
 				materialCB.GpuResource->GetGPUVirtualAddress() + materialIndex * materialCB.DataSize;
 			const uint64 hitRecordOffset = hitGroupsSectionOffset + static_cast<uint64>(i) * hitRecordStride;
 			memcpy(sbtData + hitRecordOffset + hitRecordCbOffset, &materialCbAddress, sizeof(materialCbAddress));
+			memcpy(sbtData + hitRecordOffset + hitRecordPassCbOffset, &passCbAddress, sizeof(passCbAddress));
 		}
 	}
 
