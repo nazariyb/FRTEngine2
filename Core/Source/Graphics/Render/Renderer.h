@@ -245,7 +245,21 @@ private:
 
 	// Raytracing
 public:
+	struct SRaytracingMaterialTextureSet
+	{
+		ID3D12Resource* Textures[render::constants::RootMaterialTextureCount] = {};
+	};
+
+	struct SRaytracingHitGroupEntry
+	{
+		uint32 MaterialIndex = 0u;
+		ID3D12Resource* VertexBuffer = nullptr;
+		ID3D12Resource* IndexBuffer = nullptr;
+	};
+
 	void InitializeRaytracingResources ();
+	void SetRaytracingMaterialTextureSets (const TArray<SRaytracingMaterialTextureSet>& MaterialTextureSets);
+	void SetRaytracingHitGroupEntries (const TArray<SRaytracingHitGroupEntry>& HitGroupEntries);
 	raytracing::SAccelerationStructureBuffers TopLevelASBuffers;
 
 private:
@@ -257,7 +271,10 @@ private:
 	void CreateRaytracingOutputBuffer ();
 	void CreateShaderResourceHeap ();
 	void CreateShaderBindingTable ();
-	void UpdateRaytracingPassCBAddress ();
+	void UpdateRaytracingShaderTableAddresses ();
+	void WriteRaytracingTextureSrv (
+		D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle,
+		ID3D12Resource* Texture) const;
 	D3D12_DISPATCH_RAYS_DESC BuildDispatchRaysDesc ();
 	void DispatchRaytracingToCurrentFrameBuffer ();
 
@@ -274,6 +291,9 @@ private:
 
 	ComPtr<ID3D12Resource> RtOutputResource;
 	ComPtr<ID3D12DescriptorHeap> SrvUavHeap;
+	uint32 RaytracingMaterialCapacity = 0u;
+	TArray<SRaytracingMaterialTextureSet> RaytracingMaterialTextureSets;
+	TArray<SRaytracingHitGroupEntry> RaytracingHitGroupEntries;
 
 	raytracing::CShaderBindingTableGenerator SbtHelper;
 	ComPtr<ID3D12Resource> SbtStorage;

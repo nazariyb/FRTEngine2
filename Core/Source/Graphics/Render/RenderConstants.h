@@ -29,4 +29,16 @@ static constexpr uint32 RootRegister_MaterialCbv = 1;
 static constexpr uint32 RootRegister_PassCbv = 2;
 static constexpr uint32 RootRegister_MaterialTextureStart = 0;
 static constexpr uint32 RootMaterialTextureCount = 16;
+
+static constexpr uint32 RaytracingRegister_MaterialTextureStart = 1;
+static constexpr uint32 RaytracingRegister_VertexBufferSrv =
+	RaytracingRegister_MaterialTextureStart + RootMaterialTextureCount;
+static constexpr uint32 RaytracingRegister_IndexBufferSrv = RaytracingRegister_VertexBufferSrv + 1;
+
+static constexpr uint32 MaterialTextureSlot_BaseColor = 0;
+static constexpr uint32 MaterialTextureIndexInvalid = 0xFFFFFFFFu;
+
+static constexpr uint32 RaytracingHeapSlot_OutputUav = 0;
+static constexpr uint32 RaytracingHeapSlot_TlasSrv = 1;
+static constexpr uint32 RaytracingHeapSlot_MaterialTextures = 2;
 }

@@ -53,4 +53,4 @@
 
 #include "Asserts.h"
 
-#define FRT_STRUCT_PADDING(Bytes) uint8 __Padding##Bytes[Bytes]
+#define FRT_STRUCT_PADDING(Bytes) uint8 __Padding[Bytes]

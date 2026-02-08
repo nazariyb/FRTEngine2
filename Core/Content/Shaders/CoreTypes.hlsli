@@ -8,6 +8,11 @@ cbuffer ObjectConstantBuffer : register(b0)
 cbuffer MaterialConstantBuffer : register(b1)
 {
 	float4 gDiffuseAlbedo;
+	uint4 gMaterialTextureIndices0;
+	uint4 gMaterialTextureIndices1;
+	uint4 gMaterialTextureIndices2;
+	uint4 gMaterialTextureIndices3;
+	uint gMaterialFlags;
 }
 
 cbuffer PassConstantBuffer : register(b2)

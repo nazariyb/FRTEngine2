@@ -191,7 +191,8 @@ SRenderModel SRenderModel::LoadFromFile (const std::string& Filename, const std:
 			result.VertexBufferGpu.Get(),
 			vbDesc.Width,
 			result.Vertices.GetData(),
-			D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
+			D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER |
+			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 	}
 
 	{
@@ -213,7 +214,8 @@ SRenderModel SRenderModel::LoadFromFile (const std::string& Filename, const std:
 			result.IndexBufferGpu.Get(),
 			ibDesc.Width,
 			result.Indices.GetData(),
-			D3D12_RESOURCE_STATE_INDEX_BUFFER);
+			D3D12_RESOURCE_STATE_INDEX_BUFFER |
+			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 	}
 #endif
 	return result;

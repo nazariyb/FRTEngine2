@@ -14,6 +14,7 @@
 
 using namespace frt;
 
+
 namespace
 {
 bool IsRaytracingSupported (ID3D12Device5* Device)
@@ -57,6 +58,8 @@ void CWorld::Present (float DeltaSeconds, ID3D12GraphicsCommandList4* CommandLis
 	// TODO: assign stable material indices in MaterialLibrary and update constants only when dirty.
 	std::unordered_map<const graphics::SMaterial*, uint32> materialIndices;
 	TArray<graphics::SMaterialConstants> materialConstants;
+	TArray<graphics::CRenderer::SRaytracingMaterialTextureSet> rtMaterialTextureSets;
+	TArray<graphics::CRenderer::SRaytracingHitGroupEntry> rtHitGroupEntries;
 
 	for (uint32 i = 0; i < Entities.Count(); ++i)
 	{
@@ -86,6 +89,22 @@ void CWorld::Present (float DeltaSeconds, ID3D12GraphicsCommandList4* CommandLis
 
 				graphics::SMaterialConstants& constants = materialConstants.Add();
 				constants.DiffuseAlbedo = material->DiffuseAlbedo;
+				constants.Flags = material->Flags.Flags;
+				for (uint32 textureIndex = 0; textureIndex < render::constants::RootMaterialTextureCount; ++
+					textureIndex)
+				{
+					constants.TextureIndices[textureIndex] = render::constants::MaterialTextureIndexInvalid;
+				}
+
+				auto& textureSet = rtMaterialTextureSets.Add();
+				if (material->bHasBaseColorTexture && material->BaseColorTexture.GpuTexture)
+				{
+					constants.TextureIndices[render::constants::MaterialTextureSlot_BaseColor] =
+						render::constants::MaterialTextureSlot_BaseColor;
+					textureSet.Textures[render::constants::MaterialTextureSlot_BaseColor] =
+						material->BaseColorTexture.GpuTexture;
+				}
+
 				material->RuntimeIndex = materialIndex;
 			}
 			else
@@ -96,6 +115,40 @@ void CWorld::Present (float DeltaSeconds, ID3D12GraphicsCommandList4* CommandLis
 	}
 
 	Renderer->EnsureMaterialConstantCapacity(materialConstants.Count());
+	Renderer->SetRaytracingMaterialTextureSets(rtMaterialTextureSets);
+
+	if (!AsEntities.IsEmpty() && (AsEntities.Count() == AsModels.Count()))
+	{
+		rtHitGroupEntries.Reset(AsEntities.Count());
+		for (uint32 i = 0; i < AsEntities.Count(); ++i)
+		{
+			CEntity* entity = AsEntities[i];
+			const graphics::SRenderModel* model = AsModels[i];
+			frt_assert(entity && model && model->VertexBufferGpu && model->IndexBufferGpu);
+
+			uint32 materialIndex = 0u;
+			if (!model->Sections.IsEmpty())
+			{
+				const graphics::SRenderSection& section = model->Sections[0];
+				if (section.MaterialIndex < model->Materials.Count())
+				{
+					const graphics::SMaterial* material =
+						model->Materials[section.MaterialIndex].GetRawIgnoringLifetime();
+					if (material)
+					{
+						materialIndex = material->RuntimeIndex;
+					}
+				}
+			}
+
+			auto& entry = rtHitGroupEntries.Add();
+			entry.MaterialIndex = materialIndex;
+			entry.VertexBuffer = model->VertexBufferGpu.Get();
+			entry.IndexBuffer = model->IndexBufferGpu.Get();
+		}
+	}
+
+	Renderer->SetRaytracingHitGroupEntries(rtHitGroupEntries);
 	if (!materialConstants.IsEmpty())
 	{
 		currentFrameResources.MaterialCB.CopyBunch(
@@ -365,11 +418,11 @@ graphics::raytracing::SAccelerationStructureBuffers CWorld::CreateBottomLevelAS 
 
 	addTransition(
 		model.VertexBufferGpu.Get(),
-		D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER,
+		D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
 		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 	addTransition(
 		model.IndexBufferGpu.Get(),
-		D3D12_RESOURCE_STATE_INDEX_BUFFER,
+		D3D12_RESOURCE_STATE_INDEX_BUFFER | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
 		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 	addTransition(
 		buffers.Scratch.Get(),
@@ -392,11 +445,11 @@ graphics::raytracing::SAccelerationStructureBuffers CWorld::CreateBottomLevelAS 
 	addTransition(
 		model.VertexBufferGpu.Get(),
 		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-		D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
+		D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 	addTransition(
 		model.IndexBufferGpu.Get(),
 		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-		D3D12_RESOURCE_STATE_INDEX_BUFFER);
+		D3D12_RESOURCE_STATE_INDEX_BUFFER | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 	commandList->ResourceBarrier(barrierCount, barriers);
 
 	return buffers;
@@ -454,7 +507,9 @@ void CWorld::CreateTopLevelAS (const TArray<SAccelerationInstance>& Instances, b
 			DefaultHeapProps);
 	}
 
-	const uint64 currentDescSize = TopLevelASBuffers.InstanceDesc ? TopLevelASBuffers.InstanceDesc->GetDesc().Width : 0u;
+	const uint64 currentDescSize = TopLevelASBuffers.InstanceDesc
+										? TopLevelASBuffers.InstanceDesc->GetDesc().Width
+										: 0u;
 	if (!TopLevelASBuffers.InstanceDesc || currentDescSize < instanceDescsSize)
 	{
 		TopLevelASBuffers.InstanceDesc = CreateBuffer(
@@ -511,7 +566,6 @@ void CWorld::CreateAccelerationStructures ()
 		CEntity* Entity = nullptr;
 		const graphics::SRenderModel* Model = nullptr;
 		DirectX::XMFLOAT3X4 Transform = {};
-		uint32 HitGroupIndex = 0u;
 	};
 
 	std::unordered_map<graphics::SMaterial*, uint32> materialIndices;
@@ -557,18 +611,6 @@ void CWorld::CreateAccelerationStructures ()
 		entry.Entity = entity;
 		entry.Model = &model;
 		entry.Transform = entity->Transform.GetRaytracingTransform();
-		if (!model.Sections.IsEmpty())
-		{
-			const graphics::SRenderSection& section = model.Sections[0];
-			if (section.MaterialIndex < model.Materials.Count())
-			{
-				graphics::SMaterial* material = model.Materials[section.MaterialIndex].GetRawIgnoringLifetime();
-				if (material)
-				{
-					entry.HitGroupIndex = material->RuntimeIndex;
-				}
-			}
-		}
 		buildEntries.Add(entry);
 	}
 
@@ -607,7 +649,7 @@ void CWorld::CreateAccelerationStructures ()
 	for (uint32 i = 0; i < buildEntries.Count(); ++i)
 	{
 		const SBuildEntry& entry = buildEntries[i];
-		Instances.Add({ bottomLevelBuffers[i].Result.Get(), entry.Transform, i, entry.HitGroupIndex });
+		Instances.Add({ bottomLevelBuffers[i].Result.Get(), entry.Transform, i, i });
 		AsEntities.Add(entry.Entity);
 		AsModels.Add(entry.Model);
 		AsTransforms.Add(entry.Entity->Transform.GetMatrix());
@@ -682,24 +724,9 @@ void CWorld::UpdateAccelerationStructures ()
 			bInstanceDataChanged = true;
 		}
 
-		graphics::SRenderModel& model = *entity->RenderModel.Model;
-		uint32 hitGroupIndex = 0u;
-		if (!model.Sections.IsEmpty())
+		if (Instances[trackedIndex].HitGroupIndex != trackedIndex)
 		{
-			const graphics::SRenderSection& section = model.Sections[0];
-			if (section.MaterialIndex < model.Materials.Count())
-			{
-				graphics::SMaterial* material = model.Materials[section.MaterialIndex].GetRawIgnoringLifetime();
-				if (material)
-				{
-					hitGroupIndex = material->RuntimeIndex;
-				}
-			}
-		}
-
-		if (Instances[trackedIndex].HitGroupIndex != hitGroupIndex)
-		{
-			Instances[trackedIndex].HitGroupIndex = hitGroupIndex;
+			Instances[trackedIndex].HitGroupIndex = trackedIndex;
 			bInstanceDataChanged = true;
 		}
 

@@ -1385,8 +1385,67 @@ void CRenderer::InitializeRaytracingResources ()
 		return;
 	}
 
-	CreateShaderResourceHeap();
 	CreateShaderBindingTable();
+}
+
+void CRenderer::SetRaytracingMaterialTextureSets (const TArray<SRaytracingMaterialTextureSet>& MaterialTextureSets)
+{
+	bool bChanged = RaytracingMaterialTextureSets.Count() != MaterialTextureSets.Count();
+	if (!bChanged)
+	{
+		for (uint32 i = 0; i < MaterialTextureSets.Count(); ++i)
+		{
+			for (uint32 slot = 0; slot < render::constants::RootMaterialTextureCount; ++slot)
+			{
+				if (RaytracingMaterialTextureSets[i].Textures[slot] != MaterialTextureSets[i].Textures[slot])
+				{
+					bChanged = true;
+					break;
+				}
+			}
+			if (bChanged)
+			{
+				break;
+			}
+		}
+	}
+
+	if (!bChanged)
+	{
+		return;
+	}
+
+	RaytracingMaterialTextureSets = MaterialTextureSets;
+	bRaytracingSbtDirty = true;
+}
+
+void CRenderer::SetRaytracingHitGroupEntries (
+	const TArray<SRaytracingHitGroupEntry>& HitGroupEntries)
+{
+	bool bChanged = RaytracingHitGroupEntries.Count() != HitGroupEntries.Count();
+	if (!bChanged)
+	{
+		for (uint32 i = 0; i < HitGroupEntries.Count(); ++i)
+		{
+			const SRaytracingHitGroupEntry& currentEntry = RaytracingHitGroupEntries[i];
+			const SRaytracingHitGroupEntry& newEntry = HitGroupEntries[i];
+			if (currentEntry.MaterialIndex != newEntry.MaterialIndex ||
+				currentEntry.VertexBuffer != newEntry.VertexBuffer ||
+				currentEntry.IndexBuffer != newEntry.IndexBuffer)
+			{
+				bChanged = true;
+				break;
+			}
+		}
+	}
+
+	if (!bChanged)
+	{
+		return;
+	}
+
+	RaytracingHitGroupEntries = HitGroupEntries;
+	bRaytracingSbtDirty = true;
 }
 
 ComPtr<ID3D12RootSignature> CRenderer::CreateRayGenSignature ()
@@ -1424,6 +1483,24 @@ ComPtr<ID3D12RootSignature> CRenderer::CreateHitSignature ()
 {
 	raytracing::CRootSignatureGenerator rsc;
 	rsc.AddRootParameter(D3D12_ROOT_PARAMETER_TYPE_CBV, render::constants::RootRegister_MaterialCbv, 0);
+	rsc.AddHeapRangesParameter(
+	{
+		{
+			render::constants::RaytracingRegister_MaterialTextureStart,
+			render::constants::RootMaterialTextureCount,
+			0 /*space0*/,
+			D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+			0
+		}
+	});
+	rsc.AddRootParameter(
+		D3D12_ROOT_PARAMETER_TYPE_SRV,
+		render::constants::RaytracingRegister_VertexBufferSrv,
+		0);
+	rsc.AddRootParameter(
+		D3D12_ROOT_PARAMETER_TYPE_SRV,
+		render::constants::RaytracingRegister_IndexBufferSrv,
+		0);
 	return rsc.Generate(Device.Get(), true);
 }
 
@@ -1524,41 +1601,91 @@ void CRenderer::CreateRaytracingOutputBuffer ()
 
 void CRenderer::CreateShaderResourceHeap ()
 {
-	// Create a SRV/UAV/CBV descriptor heap. We need 2 entries - 1 UAV for the
-	// raytracing output and 1 SRV for the TLAS
+	const uint32 materialCountFromCb = FramesResources[0].MaterialCB.ObjectCount;
+	const uint32 materialCountFromSet = RaytracingMaterialTextureSets.Count();
+	const uint32 materialCount = materialCountFromCb > materialCountFromSet
+									? materialCountFromCb
+									: materialCountFromSet;
+	RaytracingMaterialCapacity = materialCount > 0u ? materialCount : 1u;
+
+	const uint32 textureDescriptorCount =
+		RaytracingMaterialCapacity * render::constants::RootMaterialTextureCount;
+	const uint32 descriptorCount =
+		render::constants::RaytracingHeapSlot_MaterialTextures + textureDescriptorCount;
+
 	SrvUavHeap = nv_helpers_dx12::CreateDescriptorHeap(
-		Device.Get(), 2, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
+		Device.Get(), descriptorCount, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
 
-	// Get a handle to the heap memory on the CPU side, to be able to write the
-	// descriptors directly
-	D3D12_CPU_DESCRIPTOR_HANDLE srvHandle =
-		SrvUavHeap->GetCPUDescriptorHandleForHeapStart();
+	const uint32 descriptorSize = Device->GetDescriptorHandleIncrementSize(
+		D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+	const D3D12_CPU_DESCRIPTOR_HANDLE heapStart = SrvUavHeap->GetCPUDescriptorHandleForHeapStart();
+	auto descriptorAt = [&] (uint32 descriptorIndex)
+	{
+		D3D12_CPU_DESCRIPTOR_HANDLE handle = heapStart;
+		handle.ptr += static_cast<SIZE_T>(descriptorSize) * descriptorIndex;
+		return handle;
+	};
 
-	// Create the UAV. Based on the root signature we created it is the first
-	// entry. The Create*View methods write the view information directly into
-	// srvHandle
 	D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
 	uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
 	Device->CreateUnorderedAccessView(
 		RtOutputResource.Get(), nullptr, &uavDesc,
-		srvHandle);
+		descriptorAt(render::constants::RaytracingHeapSlot_OutputUav));
 
-	// Add the Top Level AS SRV right after the raytracing output buffer
-	srvHandle.ptr += Device->GetDescriptorHandleIncrementSize(
-		D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-
-	D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc;
+	D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
 	srvDesc.Format = DXGI_FORMAT_UNKNOWN;
 	srvDesc.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
 	srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
 	srvDesc.RaytracingAccelerationStructure.Location =
 		TopLevelASBuffers.Result->GetGPUVirtualAddress();
-	// Write the acceleration structure view in the heap
-	Device->CreateShaderResourceView(nullptr, &srvDesc, srvHandle);
+	Device->CreateShaderResourceView(
+		nullptr, &srvDesc, descriptorAt(render::constants::RaytracingHeapSlot_TlasSrv));
+
+	for (uint32 materialIndex = 0; materialIndex < RaytracingMaterialCapacity; ++materialIndex)
+	{
+		const SRaytracingMaterialTextureSet* textureSet = materialIndex < RaytracingMaterialTextureSets.Count()
+															? &RaytracingMaterialTextureSets[materialIndex]
+															: nullptr;
+		for (uint32 textureSlot = 0; textureSlot < render::constants::RootMaterialTextureCount; ++textureSlot)
+		{
+			const uint32 descriptorIndex = render::constants::RaytracingHeapSlot_MaterialTextures +
+											materialIndex * render::constants::RootMaterialTextureCount +
+											textureSlot;
+			ID3D12Resource* texture = DefaultWhiteTexture.GpuTexture;
+			if (textureSet && textureSet->Textures[textureSlot])
+			{
+				texture = textureSet->Textures[textureSlot];
+			}
+
+			WriteRaytracingTextureSrv(descriptorAt(descriptorIndex), texture);
+		}
+	}
+}
+
+void CRenderer::WriteRaytracingTextureSrv (
+	D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle,
+	ID3D12Resource* Texture) const
+{
+	ID3D12Resource* textureResource = Texture ? Texture : DefaultWhiteTexture.GpuTexture;
+	frt_assert(textureResource);
+
+	const D3D12_RESOURCE_DESC textureDesc = textureResource->GetDesc();
+	D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
+	srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+	srvDesc.Format = textureDesc.Format;
+	srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+	srvDesc.Texture2D.MostDetailedMip = 0;
+	srvDesc.Texture2D.MipLevels = textureDesc.MipLevels > 0 ? textureDesc.MipLevels : 1;
+	srvDesc.Texture2D.PlaneSlice = 0;
+	srvDesc.Texture2D.ResourceMinLODClamp = 0.f;
+
+	Device->CreateShaderResourceView(textureResource, &srvDesc, CpuHandle);
 }
 
 void CRenderer::CreateShaderBindingTable ()
 {
+	CreateShaderResourceHeap();
+
 	// The SBT helper class collects calls to Add*Program.  If called several
 	// times, the helper must be emptied before re-adding shaders.
 	SbtHelper.Reset();
@@ -1575,8 +1702,13 @@ void CRenderer::CreateShaderBindingTable ()
 	// D3D12_GPU_DESCRIPTOR_HANDLE to define heap pointers. The pointer in this
 	// struct is a UINT64, which then has to be reinterpreted as a pointer.
 	auto heapPointer = reinterpret_cast<void*>(srvUavHeapHandle.ptr);
+	const uint32 descriptorSize = Device->GetDescriptorHandleIncrementSize(
+		D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+	const uint64 materialTextureHeapStart = srvUavHeapHandle.ptr +
+											static_cast<uint64>(descriptorSize) *
+											render::constants::RaytracingHeapSlot_MaterialTextures;
 
-	// The ray generation only uses heap data
+	// Ray generation uses pass constants and global heap descriptors.
 	void* passCbAddress = nullptr;
 	if (currentFrameResources.PassCB.GpuResource)
 	{
@@ -1585,18 +1717,36 @@ void CRenderer::CreateShaderBindingTable ()
 	}
 	SbtHelper.AddRayGenerationProgram(L"RayGen", { passCbAddress, heapPointer });
 
-	// The miss and hit shaders do not access any external resources: instead they
-	// communicate their results through the ray payload
+	// The miss shader only uses payload data.
 	SbtHelper.AddMissProgram(L"Miss", {});
 
 	const auto& materialCB = currentFrameResources.MaterialCB;
 	if (materialCB.GpuResource)
 	{
-		for (uint32 i = 0; i < materialCB.ObjectCount; ++i)
+		for (uint32 i = 0; i < RaytracingHitGroupEntries.Count(); ++i)
 		{
+			const SRaytracingHitGroupEntry& hitGroupEntry = RaytracingHitGroupEntries[i];
+			frt_assert(hitGroupEntry.VertexBuffer && hitGroupEntry.IndexBuffer);
+
+			uint32 materialIndex = hitGroupEntry.MaterialIndex;
+			if (materialIndex >= materialCB.ObjectCount)
+			{
+				materialIndex = 0u;
+			}
+
+			const uint64 materialCbAddress =
+				materialCB.GpuResource->GetGPUVirtualAddress() + materialIndex * materialCB.DataSize;
+			const uint64 materialTextureTableAddress = materialTextureHeapStart +
+														static_cast<uint64>(materialIndex) *
+														render::constants::RootMaterialTextureCount * descriptorSize;
 			SbtHelper.AddHitGroup(
 				L"HitGroup",
-				{ (void*)(materialCB.GpuResource->GetGPUVirtualAddress() + i * materialCB.DataSize) });
+				{
+					reinterpret_cast<void*>(materialCbAddress),
+					reinterpret_cast<void*>(materialTextureTableAddress),
+					reinterpret_cast<void*>(hitGroupEntry.VertexBuffer->GetGPUVirtualAddress()),
+					reinterpret_cast<void*>(hitGroupEntry.IndexBuffer->GetGPUVirtualAddress())
+				});
 		}
 	}
 	// SbtHelper.AddHitGroup(L"HitGroup", {});
@@ -1616,9 +1766,15 @@ void CRenderer::CreateShaderBindingTable ()
 	SbtHelper.Generate(SbtStorage.Get(), RtStateObjectProperties.Get());
 }
 
-void CRenderer::UpdateRaytracingPassCBAddress ()
+void CRenderer::UpdateRaytracingShaderTableAddresses ()
 {
-	if (!SbtStorage || !GetCurrentFrameResource().PassCB.GpuResource)
+	if (!SbtStorage)
+	{
+		return;
+	}
+
+	const SFrameResources& currentFrameResources = GetCurrentFrameResource();
+	if (!currentFrameResources.PassCB.GpuResource && !currentFrameResources.MaterialCB.GpuResource)
 	{
 		return;
 	}
@@ -1626,9 +1782,36 @@ void CRenderer::UpdateRaytracingPassCBAddress ()
 	uint8* sbtData = nullptr;
 	THROW_IF_FAILED(SbtStorage->Map(0, nullptr, reinterpret_cast<void**>(&sbtData)));
 
-	const uint64 cbvAddress = GetCurrentFrameResource().PassCB.GpuResource->GetGPUVirtualAddress();
-	const uint64 cbvOffset = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
-	memcpy(sbtData + cbvOffset, &cbvAddress, sizeof(cbvAddress));
+	if (currentFrameResources.PassCB.GpuResource)
+	{
+		const uint64 passCbAddress = currentFrameResources.PassCB.GpuResource->GetGPUVirtualAddress();
+		const uint64 passCbOffset = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
+		memcpy(sbtData + passCbOffset, &passCbAddress, sizeof(passCbAddress));
+	}
+
+	const auto& materialCB = currentFrameResources.MaterialCB;
+	if (materialCB.GpuResource)
+	{
+		const uint64 hitGroupsSectionOffset =
+			static_cast<uint64>(SbtHelper.GetRayGenSectionSize()) +
+			static_cast<uint64>(SbtHelper.GetMissSectionSize());
+		const uint64 hitRecordCbOffset = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
+		const uint32 hitRecordStride = SbtHelper.GetHitGroupEntrySize();
+
+		for (uint32 i = 0; i < RaytracingHitGroupEntries.Count(); ++i)
+		{
+			uint32 materialIndex = RaytracingHitGroupEntries[i].MaterialIndex;
+			if (materialIndex >= materialCB.ObjectCount)
+			{
+				materialIndex = 0u;
+			}
+
+			const uint64 materialCbAddress =
+				materialCB.GpuResource->GetGPUVirtualAddress() + materialIndex * materialCB.DataSize;
+			const uint64 hitRecordOffset = hitGroupsSectionOffset + static_cast<uint64>(i) * hitRecordStride;
+			memcpy(sbtData + hitRecordOffset + hitRecordCbOffset, &materialCbAddress, sizeof(materialCbAddress));
+		}
+	}
 
 	SbtStorage->Unmap(0, nullptr);
 }
@@ -1669,7 +1852,7 @@ void CRenderer::DispatchRaytracingToCurrentFrameBuffer ()
 	ID3D12DescriptorHeap* heaps[] = { SrvUavHeap.Get() };
 	CommandList->SetDescriptorHeaps(_countof(heaps), heaps);
 
-	UpdateRaytracingPassCBAddress();
+	UpdateRaytracingShaderTableAddresses();
 
 	CD3DX12_RESOURCE_BARRIER transition = CD3DX12_RESOURCE_BARRIER::Transition(
 		RtOutputResource.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,

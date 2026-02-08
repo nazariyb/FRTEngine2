@@ -7,6 +7,7 @@
 #include "CoreUtils.h"
 #include "Enum.h"
 #include "RenderResourceAllocators.h"
+#include "RenderConstants.h"
 #include "Graphics/SColor.h"
 #include "Math/Math.h"
 
@@ -55,7 +56,13 @@ struct SPassConstants
 struct SMaterialConstants
 {
 	SColor DiffuseAlbedo = { 1.f, 1.f, 1.f, 1.f };
+	uint32 TextureIndices[render::constants::RootMaterialTextureCount] = {};
+	uint32 Flags = 0u;
+	FRT_STRUCT_PADDING(3*4);
 };
+
+
+static_assert(sizeof(SMaterialConstants) == 96u);
 
 
 struct SFrameResources
@@ -122,6 +129,7 @@ namespace raytracing
 	};
 }
 }
+
 
 FRT_DECLARE_ENUM_REFLECTION(
 	frt::graphics::ERenderMode,
