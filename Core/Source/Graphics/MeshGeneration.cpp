@@ -782,7 +782,8 @@ void _private::CreateGpuResources(
 			OutVertexBufferGpu.Get(),
 			vbDesc.Width,
 			Vertices.GetData(),
-			D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
+			D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER |
+			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 	}
 
 	{
@@ -804,7 +805,8 @@ void _private::CreateGpuResources(
 			OutIndexBufferGpu.Get(),
 			ibDesc.Width,
 			Indices.GetData(),
-			D3D12_RESOURCE_STATE_INDEX_BUFFER);
+			D3D12_RESOURCE_STATE_INDEX_BUFFER |
+			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 	}
 }
 #endif

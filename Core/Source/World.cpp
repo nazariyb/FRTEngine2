@@ -499,12 +499,14 @@ void CWorld::CreateTopLevelAS (const TArray<SAccelerationInstance>& Instances, b
 
 	// Scratch and descriptor buffers can be recreated if required by size.
 	const uint64 currentScratchSize = TopLevelASBuffers.Scratch ? TopLevelASBuffers.Scratch->GetDesc().Width : 0u;
+	bool bScratchBufferRecreated = false;
 	if (!TopLevelASBuffers.Scratch || currentScratchSize < scratchSize)
 	{
 		TopLevelASBuffers.Scratch = CreateBuffer(
 			device, scratchSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-			D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+			D3D12_RESOURCE_STATE_COMMON,
 			DefaultHeapProps);
+		bScratchBufferRecreated = true;
 	}
 
 	const uint64 currentDescSize = TopLevelASBuffers.InstanceDesc
@@ -533,6 +535,18 @@ void CWorld::CreateTopLevelAS (const TArray<SAccelerationInstance>& Instances, b
 #endif
 
 	ID3D12GraphicsCommandList4* commandList = Renderer->GetCommandList();
+
+	if (bScratchBufferRecreated)
+	{
+		D3D12_RESOURCE_BARRIER scratchBarrier = {};
+		scratchBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+		scratchBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+		scratchBarrier.Transition.pResource = TopLevelASBuffers.Scratch.Get();
+		scratchBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+		scratchBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
+		scratchBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+		commandList->ResourceBarrier(1, &scratchBarrier);
+	}
 
 	// After all the buffers are allocated, or if only an update is required, we
 	// can build the acceleration structure. Note that in the case of the update
@@ -649,7 +663,7 @@ void CWorld::CreateAccelerationStructures ()
 	for (uint32 i = 0; i < buildEntries.Count(); ++i)
 	{
 		const SBuildEntry& entry = buildEntries[i];
-		Instances.Add({ bottomLevelBuffers[i].Result.Get(), entry.Transform, i, i });
+		Instances.Add({ bottomLevelBuffers[i].Result.Get(), entry.Transform, i, i * 2u });
 		AsEntities.Add(entry.Entity);
 		AsModels.Add(entry.Model);
 		AsTransforms.Add(entry.Entity->Transform.GetMatrix());
@@ -724,9 +738,10 @@ void CWorld::UpdateAccelerationStructures ()
 			bInstanceDataChanged = true;
 		}
 
-		if (Instances[trackedIndex].HitGroupIndex != trackedIndex)
+		const uint32 expectedHitGroupIndex = trackedIndex * 2u;
+		if (Instances[trackedIndex].HitGroupIndex != expectedHitGroupIndex)
 		{
-			Instances[trackedIndex].HitGroupIndex = trackedIndex;
+			Instances[trackedIndex].HitGroupIndex = expectedHitGroupIndex;
 			bInstanceDataChanged = true;
 		}
 

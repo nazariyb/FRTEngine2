@@ -1499,6 +1499,16 @@ ComPtr<ID3D12RootSignature> CRenderer::CreateHitSignature ()
 	rsc.AddHeapRangesParameter(
 	{
 		{
+			0 /*t0*/,
+			1,
+			0 /*space0*/,
+			D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+			0
+		}
+	});
+	rsc.AddHeapRangesParameter(
+	{
+		{
 			render::constants::RaytracingRegister_MaterialTextureStart,
 			render::constants::RootMaterialTextureCount,
 			0 /*space0*/,
@@ -1528,6 +1538,7 @@ void CRenderer::CreateRaytracingPipeline ()
 	RayGenLibrary = nv_helpers_dx12::CompileShaderLibrary(L"..\\Core\\Content\\Shaders\\DXR\\RayGen.hlsl");
 	MissLibrary = nv_helpers_dx12::CompileShaderLibrary(L"..\\Core\\Content\\Shaders\\DXR\\Miss.hlsl");
 	HitLibrary = nv_helpers_dx12::CompileShaderLibrary(L"..\\Core\\Content\\Shaders\\DXR\\Hit.hlsl");
+	ShadowLibrary = nv_helpers_dx12::CompileShaderLibrary(L"..\\Core\\Content\\Shaders\\DXR\\ShadowRay.hlsl");
 
 	// In a way similar to DLLs, each library is associated with a number of
 	// exported symbols. This
@@ -1537,11 +1548,12 @@ void CRenderer::CreateRaytracingPipeline ()
 	pipeline.AddLibrary(RayGenLibrary.Get(), { L"RayGen" });
 	pipeline.AddLibrary(MissLibrary.Get(), { L"Miss" });
 	pipeline.AddLibrary(HitLibrary.Get(), { L"ClosestHit" });
+	pipeline.AddLibrary(ShadowLibrary.Get(), { L"ShadowClosestHit", L"ShadowMiss" });
 
 	RayGenSignature = CreateRayGenSignature();
 	MissSignature = CreateMissSignature();
 	HitSignature = CreateHitSignature();
-
+	ShadowSignature = CreateHitSignature();
 
 	// Note that for triangular geometry the intersection shader is built-in. An
 	// empty any-hit shader is also defined by default, so in our simple case each
@@ -1552,6 +1564,7 @@ void CRenderer::CreateRaytracingPipeline ()
 	// Hit group for the triangles, with a shader simply interpolating vertex
 	// colors
 	pipeline.AddHitGroup(L"HitGroup", L"ClosestHit");
+	pipeline.AddHitGroup(L"ShadowHitGroup", L"ShadowClosestHit");
 
 	// The following section associates the root signature to each shader. Note
 	// that we can explicitly show that some shaders share the same root signature
@@ -1561,6 +1574,8 @@ void CRenderer::CreateRaytracingPipeline ()
 	pipeline.AddRootSignatureAssociation(RayGenSignature.Get(), { L"RayGen" });
 	pipeline.AddRootSignatureAssociation(MissSignature.Get(), { L"Miss" });
 	pipeline.AddRootSignatureAssociation(HitSignature.Get(), { L"HitGroup" });
+	pipeline.AddRootSignatureAssociation(ShadowSignature.Get(), { L"ShadowHitGroup" });
+	pipeline.AddRootSignatureAssociation(MissSignature.Get(), { L"ShadowMiss" });
 
 	// The payload size defines the maximum size of the data carried by the rays,
 	// ie. the the data
@@ -1580,7 +1595,7 @@ void CRenderer::CreateRaytracingPipeline ()
 	// then requires a trace depth of 1. Note that this recursion depth should be
 	// kept to a minimum for best performance. Path tracing algorithms can be
 	// easily flattened into a simple loop in the ray generation.
-	pipeline.SetMaxRecursionDepth(1);
+	pipeline.SetMaxRecursionDepth(2);
 
 	// Compile the pipeline for execution on the GPU
 	RtStateObject = pipeline.Generate();
@@ -1721,6 +1736,8 @@ void CRenderer::CreateShaderBindingTable ()
 	auto heapPointer = reinterpret_cast<void*>(srvUavHeapHandle.ptr);
 	const uint32 descriptorSize = Device->GetDescriptorHandleIncrementSize(
 		D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+	void* tlasDescriptorTablePointer = reinterpret_cast<void*>(
+		srvUavHeapHandle.ptr + static_cast<uint64>(descriptorSize) * render::constants::RaytracingHeapSlot_TlasSrv);
 	const uint64 materialTextureHeapStart = srvUavHeapHandle.ptr +
 											static_cast<uint64>(descriptorSize) *
 											render::constants::RaytracingHeapSlot_MaterialTextures;
@@ -1736,6 +1753,7 @@ void CRenderer::CreateShaderBindingTable ()
 
 	// The miss shader only uses payload data.
 	SbtHelper.AddMissProgram(L"Miss", {});
+	SbtHelper.AddMissProgram(L"ShadowMiss", {});
 
 	const auto& materialCB = currentFrameResources.MaterialCB;
 	if (materialCB.GpuResource)
@@ -1761,13 +1779,23 @@ void CRenderer::CreateShaderBindingTable ()
 				{
 					reinterpret_cast<void*>(materialCbAddress),
 					passCbAddress,
+					tlasDescriptorTablePointer,
+					reinterpret_cast<void*>(materialTextureTableAddress),
+					reinterpret_cast<void*>(hitGroupEntry.VertexBuffer->GetGPUVirtualAddress()),
+					reinterpret_cast<void*>(hitGroupEntry.IndexBuffer->GetGPUVirtualAddress())
+				});
+			SbtHelper.AddHitGroup(
+				L"ShadowHitGroup",
+				{
+					reinterpret_cast<void*>(materialCbAddress),
+					passCbAddress,
+					tlasDescriptorTablePointer,
 					reinterpret_cast<void*>(materialTextureTableAddress),
 					reinterpret_cast<void*>(hitGroupEntry.VertexBuffer->GetGPUVirtualAddress()),
 					reinterpret_cast<void*>(hitGroupEntry.IndexBuffer->GetGPUVirtualAddress())
 				});
 		}
 	}
-	// SbtHelper.AddHitGroup(L"HitGroup", {});
 
 	// Compute the size of the SBT given the number of shaders and their
 	// parameters
@@ -1830,9 +1858,14 @@ void CRenderer::UpdateRaytracingShaderTableAddresses ()
 
 			const uint64 materialCbAddress =
 				materialCB.GpuResource->GetGPUVirtualAddress() + materialIndex * materialCB.DataSize;
-			const uint64 hitRecordOffset = hitGroupsSectionOffset + static_cast<uint64>(i) * hitRecordStride;
-			memcpy(sbtData + hitRecordOffset + hitRecordCbOffset, &materialCbAddress, sizeof(materialCbAddress));
-			memcpy(sbtData + hitRecordOffset + hitRecordPassCbOffset, &passCbAddress, sizeof(passCbAddress));
+			const uint64 primaryHitRecordOffset =
+				hitGroupsSectionOffset + static_cast<uint64>(i * 2u) * hitRecordStride;
+			const uint64 shadowHitRecordOffset = primaryHitRecordOffset + hitRecordStride;
+
+			memcpy(sbtData + primaryHitRecordOffset + hitRecordCbOffset, &materialCbAddress, sizeof(materialCbAddress));
+			memcpy(sbtData + primaryHitRecordOffset + hitRecordPassCbOffset, &passCbAddress, sizeof(passCbAddress));
+			memcpy(sbtData + shadowHitRecordOffset + hitRecordCbOffset, &materialCbAddress, sizeof(materialCbAddress));
+			memcpy(sbtData + shadowHitRecordOffset + hitRecordPassCbOffset, &passCbAddress, sizeof(passCbAddress));
 		}
 	}
 

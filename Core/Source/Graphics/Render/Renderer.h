@@ -281,10 +281,12 @@ private:
 	ComPtr<IDxcBlob> RayGenLibrary;
 	ComPtr<IDxcBlob> MissLibrary;
 	ComPtr<IDxcBlob> HitLibrary;
+	ComPtr<IDxcBlob> ShadowLibrary;
 
 	ComPtr<ID3D12RootSignature> RayGenSignature;
 	ComPtr<ID3D12RootSignature> MissSignature;
 	ComPtr<ID3D12RootSignature> HitSignature;
+	ComPtr<ID3D12RootSignature> ShadowSignature;
 
 	ComPtr<ID3D12StateObject> RtStateObject;
 	ComPtr<ID3D12StateObjectProperties> RtStateObjectProperties;
