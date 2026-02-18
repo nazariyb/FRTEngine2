@@ -251,7 +251,7 @@ void GameInstance::Load ()
 		graphics::SRenderModel::LoadFromFile(
 			R"(..\Core\Content\Models\Duck\Duck.gltf)",
 			R"(..\Core\Content\Models\Duck\DuckCM.png)"));
-	duckEnt->Transform.SetTranslation(1.f, 0.f, 2.f);
+	duckEnt->Transform.SetTranslation(0.f, 0.f, 0.f);
 	duckEnt->bRayTraced = true;
 
 	// TODO: When Sponza is added, the renderer crashes. Probably multiple sections aren't handled properly

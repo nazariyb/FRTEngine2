@@ -14,9 +14,15 @@ using Vector3d = frt::math::TVector3<double>;
 
 namespace frt::math
 {
-template <typename T>
-inline TVector3<T> ToDirectXCoordinates (const TVector3<T>& Value)
-{
-	return TVector3<T>(-Value.x, Value.y, Value.z);
-}
+	template <typename T>
+	inline TVector3<T> ToDirectXCoordinates (const TVector3<T>& Value)
+	{
+		return TVector3<T>(-Value.x, Value.y, Value.z);
+	}
+
+	template <typename T>
+	inline TVector3<T> RubToLuf (const TVector3<T>& Value)
+	{
+		return TVector3<T>(-Value.x, Value.y, Value.z);
+	}
 }

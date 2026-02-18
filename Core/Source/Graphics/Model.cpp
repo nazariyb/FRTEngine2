@@ -30,7 +30,9 @@ SRenderModel SRenderModel::LoadFromFile (const std::string& Filename, const std:
 		aiProcess_OptimizeMeshes |
 		aiProcess_FlipWindingOrder |
 		aiProcess_FlipUVs |
-		aiProcess_PreTransformVertices);
+		aiProcess_PreTransformVertices |
+		aiProcess_GenNormals |
+		aiProcess_CalcTangentSpace);
 	if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode)
 	{
 		frt_assert(false);
@@ -67,8 +69,8 @@ SRenderModel SRenderModel::LoadFromFile (const std::string& Filename, const std:
 
 		SMaterial defaultMaterial;
 		defaultMaterial.Name = materialName.empty()
-			? materialBaseName + "_mat" + std::to_string(materialIndex)
-			: materialName;
+									? materialBaseName + "_mat" + std::to_string(materialIndex)
+									: materialName;
 		defaultMaterial.VertexShaderName = "VertexShader";
 		defaultMaterial.PixelShaderName = "PixelShader";
 
@@ -145,9 +147,15 @@ SRenderModel SRenderModel::LoadFromFile (const std::string& Filename, const std:
 		for (int64 vertexIndex = 0; vertexIndex < dstSection.VertexCount; ++vertexIndex)
 		{
 			SVertex& vertex = result.Vertices[dstSection.VertexOffset + vertexIndex];
-			vertex.Position.x = -srcMesh->mVertices[vertexIndex].x;
-			vertex.Position.y = srcMesh->mVertices[vertexIndex].y;
-			vertex.Position.z = srcMesh->mVertices[vertexIndex].z;
+			vertex.Position = frt::math::RubToLuf(
+				*reinterpret_cast<const Vector3f*>(&srcMesh->mVertices[vertexIndex]));
+
+			vertex.Normal = frt::math::RubToLuf(
+				*reinterpret_cast<const Vector3f*>(&srcMesh->mNormals[vertexIndex]));
+			vertex.Tangent = frt::math::RubToLuf(
+				*reinterpret_cast<const Vector3f*>(&srcMesh->mTangents[vertexIndex]));
+			vertex.Bitangent = frt::math::RubToLuf(
+				*reinterpret_cast<const Vector3f*>(&srcMesh->mBitangents[vertexIndex]));
 
 			if (srcMesh->mTextureCoords[0])
 			{

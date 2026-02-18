@@ -39,44 +39,44 @@ SMesh GenerateCube(const Vector3f& Extent, uint32 SubdivisionsCount)
 	v[0] = SVertex
 	{
 		.Position = { +xHalf, -yHalf, +zHalf }, .Uv = { 0.f, 1.f },
-		.Normal = { 0.f, 0.f, 1.f }, .Tangent = { -1.f, 0.f, 0.f },
+		.Normal = { 0.f, 0.f, -1.f }, .Tangent = { -1.f, 0.f, 0.f },
 	};
 	v[1] = SVertex
 	{
 		.Position = { +xHalf, +yHalf, +zHalf }, .Uv = { 0.f, 0.f },
-		.Normal = { 0.f, 0.f, 1.f }, .Tangent = { -1.f, 0.f, 0.f },
+		.Normal = { 0.f, 0.f, -1.f }, .Tangent = { -1.f, 0.f, 0.f },
 	};
 	v[2] = SVertex
 	{
 		.Position = { -xHalf, +yHalf, +zHalf }, .Uv = { 1.f, 0.f },
-		.Normal = { 0.f, 0.f, 1.f }, .Tangent = { -1.f, 0.f, 0.f },
+		.Normal = { 0.f, 0.f, -1.f }, .Tangent = { -1.f, 0.f, 0.f },
 	};
 	v[3] = SVertex
 	{
 		.Position = { -xHalf, -yHalf, +zHalf }, .Uv = { 1.f, 1.f },
-		.Normal = { 0.f, 0.f, 1.f }, .Tangent = { -1.f, 0.f, 0.f },
+		.Normal = { 0.f, 0.f, -1.f }, .Tangent = { -1.f, 0.f, 0.f },
 	};
 
 	// Back face
 	v[4] = SVertex
 	{
 		.Position = { +xHalf, -yHalf, -zHalf }, .Uv = { 0.f, 1.f },
-		.Normal = { 0.f, 0.f, -1.f }, .Tangent = { -1.f, 0.f, 0.f },
+		.Normal = { 0.f, 0.f, 1.f }, .Tangent = { -1.f, 0.f, 0.f },
 	};
 	v[5] = SVertex
 	{
 		.Position = { -xHalf, -yHalf, -zHalf }, .Uv = { 1.f, 1.f },
-		.Normal = { 0.f, 0.f, -1.f }, .Tangent = { -1.f, 0.f, 0.f },
+		.Normal = { 0.f, 0.f, 1.f }, .Tangent = { -1.f, 0.f, 0.f },
 	};
 	v[6] = SVertex
 	{
 		.Position = { -xHalf, +yHalf, -zHalf }, .Uv = { 1.f, 0.f },
-		.Normal = { 0.f, 0.f, -1.f }, .Tangent = { -1.f, 0.f, 0.f },
+		.Normal = { 0.f, 0.f, 1.f }, .Tangent = { -1.f, 0.f, 0.f },
 	};
 	v[7] = SVertex
 	{
 		.Position = { +xHalf, +yHalf, -zHalf }, .Uv = { 0.f, 0.f },
-		.Normal = { 0.f, 0.f, -1.f }, .Tangent = { -1.f, 0.f, 0.f },
+		.Normal = { 0.f, 0.f, 1.f }, .Tangent = { -1.f, 0.f, 0.f },
 	};
 
 	// Top face
@@ -244,7 +244,7 @@ SMesh GenerateSphere(float Radius, uint32 SliceCount, uint32 StackCount)
 		{
 			const float theta = thetaStep * static_cast<float>(sliceIdx);
 
-			v[vertexIdx++] = SVertex
+			v[vertexIdx] = SVertex
 			{
 				.Position =
 				{
@@ -262,6 +262,7 @@ SMesh GenerateSphere(float Radius, uint32 SliceCount, uint32 StackCount)
 			};
 			v[vertexIdx].Tangent.NormalizeUnsafe();
 			v[vertexIdx].Normal = v[vertexIdx].Position.GetNormalizedUnsafe();
+			vertexIdx++;
 		}
 	}
 

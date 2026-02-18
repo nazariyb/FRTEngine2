@@ -39,6 +39,7 @@ struct VSInput
 	float2 uv : TEXCOORD;
 	float3 normal : NORMAL;
 	float3 tangent : TANGENT;
+	float3 biTangent : BITANGENT;
 	float4 color : COLOR;
 };
 
@@ -46,6 +47,7 @@ struct PSInput
 {
 	float4 position : SV_POSITION;
 	float2 uv : TEXCOORD;
+	float3 normal : NORMAL;
 };
 
 struct PSOutput

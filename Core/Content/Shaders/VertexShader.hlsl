@@ -9,6 +9,7 @@ PSInput main(VSInput input)
 	result.position = mul(mul(gViewProj, gWorld), pos);
 
 	result.uv = input.uv;
+	result.normal = input.normal;
 
 	return result;
 }

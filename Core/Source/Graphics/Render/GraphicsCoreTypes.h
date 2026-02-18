@@ -25,6 +25,7 @@ struct SVertex
 	Vector2f Uv;
 	Vector3f Normal;
 	Vector3f Tangent;
+	Vector3f Bitangent;
 	DirectX::XMFLOAT4 Color;
 };
 #pragma pack(pop)
