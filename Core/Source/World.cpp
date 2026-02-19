@@ -89,6 +89,11 @@ void CWorld::Present (float DeltaSeconds, ID3D12GraphicsCommandList4* CommandLis
 
 				graphics::SMaterialConstants& constants = materialConstants.Add();
 				constants.DiffuseAlbedo = material->DiffuseAlbedo;
+				constants.Roughness = material->Roughness;
+				constants.Metallic = material->Metallic;
+				constants.Emissive = material->Emissive;
+				constants.EmissiveIntensity = material->EmissiveIntensity;
+
 				constants.Flags = material->Flags.Flags;
 				for (uint32 textureIndex = 0; textureIndex < render::constants::RootMaterialTextureCount; ++
 					textureIndex)

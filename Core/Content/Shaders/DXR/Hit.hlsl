@@ -15,24 +15,6 @@ struct ShadowHitInfo
 };
 
 
-// 32-bit hash/PRNG step
-uint NextUint (inout uint s)
-{
-	s ^= s >> 17;
-	s *= 0xED5AD4BBu;
-	s ^= s >> 11;
-	s *= 0xAC4C1B51u;
-	s ^= s >> 15;
-	s *= 0x31848BABu;
-	s ^= s >> 14;
-	return s;
-}
-
-float NextFloat01 (inout uint s)
-{
-	return (NextUint(s) & 0x00FFFFFFu) / 16777216.0f; // [0,1)
-}
-
 static const uint MaterialTextureIndexInvalid = 0xFFFFFFFF;
 
 uint GetMaterialTextureIndex (uint index)
@@ -113,59 +95,10 @@ void ClosestHit (inout HitInfo payload, Attributes attrib)
 	// Find the world-space hit position
 	float3 worldOrigin = WorldRayOrigin() + RayTCurrent() * hitDir;
 
-	float3 lightDir = normalize(lightPos - worldOrigin);
-
-	// Fire a shadow ray. The direction is hard-coded here, but can be fetched
-	// from a constant-buffer
-	RayDesc ray;
-	ray.Origin = worldOrigin;
-	ray.Direction = lightDir;
-	ray.TMin = 0.01;
-	ray.TMax = 100000;
-
-	// Initialize the ray payload
-	ShadowHitInfo shadowPayload;
-	shadowPayload.isHit = false;
-
-	// Trace the ray
-	TraceRay(
-		// Acceleration structure
-		SceneBVH,
-		// Flags can be used to specify the behavior upon hitting a surface
-		RAY_FLAG_NONE,
-		// Instance inclusion mask, which can be used to mask out some geometry to
-		// this ray by and-ing the mask with a geometry mask. The 0xFF flag then
-		// indicates no geometry will be masked
-		0xFF,
-		// Depending on the type of ray, a given object can have several hit
-		// groups attached (ie. what to do when hitting to compute regular
-		// shading, and what to do when hitting to compute shadows). Those hit
-		// groups are specified sequentially in the SBT, so the value below
-		// indicates which offset (on 4 bits) to apply to the hit groups for this
-		// ray. In this sample we only have one hit group per object, hence an
-		// offset of 0.
-		1,
-		// The offsets in the SBT can be computed from the object ID, its instance
-		// ID, but also simply by the order the objects have been pushed in the
-		// acceleration structure. This allows the application to group shaders in
-		// the SBT in the same order as they are added in the AS, in which case
-		// the value below represents the stride (4 bits representing the number
-		// of hit groups) between two consecutive objects.
-		2,
-		// Index of the miss shader to use in case several consecutive miss
-		// shaders are present in the SBT. This allows to change the behavior of
-		// the program when no geometry have been hit, for example one to return a
-		// sky color for regular rendering, and another returning a full
-		// visibility value for shadow rays. This sample has only one miss shader,
-		// hence an index 0
-		1,
-		// Ray information to trace
-		ray,
-		// Payload associated to the ray, which will be used to communicate
-		// between the hit/miss shaders and the raygen
-		shadowPayload);
-	// float factor = shadowPayload.isHit ? 0.3 : 1.0;
-	const float factor = 1.0;
+	const float3 toLight = lightPos - worldOrigin;
+	const float lightDistance = length(toLight);
+	const float3 lightDir = lightDistance > 1e-5f ? toLight / lightDistance : float3(0.0f, 1.0f, 0.0f);
+	float visibility = 1.0f;
 	const uint currentDepth = payload.depth;
 	const uint maxReflectionDepth = 10u;
 
@@ -195,6 +128,31 @@ void ClosestHit (inout HitInfo payload, Attributes attrib)
 	normal *= shadeFlip;
 	normal = lerp(geometricNormal, normal, step(0.0f, dot(normal, geometricNormal)));
 
+	if (lightDistance > 1e-5f)
+	{
+		ShadowHitInfo shadowPayload;
+		shadowPayload.isHit = false;
+
+		RayDesc shadowRay;
+		const float shadowBias = 0.001f;
+		const float shadowSign = lerp(-1.0f, 1.0f, step(0.0f, dot(lightDir, geometricNormal)));
+		shadowRay.Origin = worldOrigin + geometricNormal * (shadowSign * shadowBias);
+		shadowRay.Direction = lightDir;
+		shadowRay.TMin = shadowBias;
+		shadowRay.TMax = max(lightDistance - shadowBias, shadowBias);
+
+		TraceRay(
+			SceneBVH,
+			RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_CULL_BACK_FACING_TRIANGLES,
+			0xFF,
+			1,
+			2,
+			1,
+			shadowRay,
+			shadowPayload);
+		visibility = shadowPayload.isHit ? 0.0f : 1.0f;
+	}
+
 	float3 tangent = normalize(v0.tangent * barycentrics.x + v1.tangent * barycentrics.y + v2.tangent * barycentrics.z);
 	tangent = normalize(mul((float3x3)ObjectToWorld3x4(), tangent));
 
@@ -202,20 +160,6 @@ void ClosestHit (inout HitInfo payload, Attributes attrib)
 	tangent = normalize(tangent - dot(tangent, normal) * normal);
 	const float3 bitangent = normalize(cross(normal, tangent));
 	float3x3 tangentToWorld = float3x3(tangent, bitangent, normal);
-
-	uint2 p = DispatchRaysIndex().xy;
-	uint seed = p.x * 1973u ^ p.y * 9277u ^ gFrameIndex * 26699u ^ payload.depth * 3181u;
-
-	float u1 = NextFloat01(seed);
-	float u2 = NextFloat01(seed);
-
-	float r = sqrt(u1); // we don't want to oversample the center
-	float phi = 2.0f * 3.14159265359f * u2;
-
-	float3 reflectDir = float3(r * cos(phi), r * sin(phi), sqrt(1.0 - u1)); // unit hemisphere dir
-
-	// float3 reflectDir = normalize(reflect(hitDir, normal));
-	reflectDir = normalize(mul(reflectDir, tangentToWorld));
 
 	// texture & color
 	float3 hitColor = gDiffuseAlbedo.xyz;
@@ -236,28 +180,60 @@ void ClosestHit (inout HitInfo payload, Attributes attrib)
 		hitColor *= sampledColor;
 	}
 
-	// float3 reflectDir = normalize(reflect(hitDir, normal));
+	const bool isMirror = gRoughness <= 1e-4f;
+	const float nDotL = saturate(dot(normal, lightDir));
+	const float3 directLighting = isMirror ? float3(0.0f, 0.0f, 0.0f) : hitColor * (visibility * nDotL);
 
 	if (currentDepth >= maxReflectionDepth)
 	{
-		// payload.color = hitColor * factor;
-		payload.color = float3(1.f, 0.07f, 0.94f);
+		payload.color = directLighting;
 		payload.distance = RayTCurrent();
+		payload.depth = currentDepth;
 		return;
 	}
 
+	float3 bounceDir;
+	if (isMirror)
+	{
+		bounceDir = normalize(reflect(hitDir, normal));
+	}
+	else
+	{
+		float u1 = NextFloat01(payload.rngState);
+		float u2 = NextFloat01(payload.rngState);
+		float r = sqrt(u1); // we don't want to oversample the center
+		float phi = 2.0f * 3.14159265359f * u2;
+		bounceDir = float3(r * cos(phi), r * sin(phi), sqrt(1.0f - u1)); // unit hemisphere dir
+		bounceDir = normalize(mul(bounceDir, tangentToWorld));
+	}
+
 	RayDesc reflectedRay;
-	reflectedRay.Origin = worldOrigin;
-	reflectedRay.Direction = reflectDir;
-	reflectedRay.TMin = 0.01;
+	const float rayOriginBias = 0.001f;
+	const float originSign = lerp(-1.0f, 1.0f, step(0.0f, dot(bounceDir, geometricNormal)));
+	reflectedRay.Origin = worldOrigin + geometricNormal * (originSign * rayOriginBias);
+	reflectedRay.Direction = bounceDir;
+	reflectedRay.TMin = 0.001f;
 	reflectedRay.TMax = 100000;
 
 	HitInfo reflectedPayload;
 	reflectedPayload.color = float3(0.0f, 0.0f, 0.0f);
 	reflectedPayload.distance = 0.0f;
 	reflectedPayload.depth = currentDepth + 1u;
-	TraceRay(SceneBVH, RAY_FLAG_CULL_BACK_FACING_TRIANGLES, 0xFF, 0, 2, 0, reflectedRay, reflectedPayload);
+	reflectedPayload.rngState = payload.rngState;
+	TraceRay(
+		SceneBVH,
+		RAY_FLAG_CULL_BACK_FACING_TRIANGLES | RAY_FLAG_NONE,
+		0xFF,
+		0,
+		2,
+		0,
+		reflectedRay,
+		reflectedPayload);
 
-	payload.color = reflectedPayload.color * hitColor * factor;
+	payload.color = isMirror
+						? reflectedPayload.color * hitColor
+						: directLighting + reflectedPayload.color * hitColor;
 	payload.distance = RayTCurrent();
+	payload.depth = currentDepth;
+	payload.rngState = reflectedPayload.rngState;
 }

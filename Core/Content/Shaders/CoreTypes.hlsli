@@ -13,6 +13,10 @@ cbuffer MaterialConstantBuffer : register(b1)
 	uint4 gMaterialTextureIndices2;
 	uint4 gMaterialTextureIndices3;
 	uint gMaterialFlags;
+	float gRoughness;
+	float gMetallic;
+	float4 gEmissive;
+	float gEmissiveIntensity;
 }
 
 cbuffer PassConstantBuffer : register(b2)

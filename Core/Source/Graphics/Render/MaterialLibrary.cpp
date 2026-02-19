@@ -261,6 +261,22 @@ bool CMaterialLibrary::ParseMaterialFile (const std::filesystem::path& MaterialP
 		{
 			Material.DiffuseAlbedo.FillFromString(value);
 		}
+		else if (key == "metallic")
+		{
+			Material.Metallic = std::stof(value);
+		}
+		else if (key == "roughness")
+		{
+			Material.Roughness = std::stof(value);
+		}
+		else if (key == "emissive")
+		{
+			Material.Emissive.FillFromString(value);
+		}
+		else if (key == "emissive_intensity")
+		{
+			Material.EmissiveIntensity = std::stof(value);
+		}
 		else if (key == "base_color_texture")
 		{
 			Material.BaseColorTexturePath = value;
@@ -306,7 +322,11 @@ bool CMaterialLibrary::SaveMaterialFile (const std::filesystem::path& MaterialPa
 	stream << "name: " << Material.Name << "\n";
 	stream << "vertex_shader: " << Material.VertexShaderName << "\n";
 	stream << "pixel_shader: " << Material.PixelShaderName << "\n";
-	stream << "color: " << Material.DiffuseAlbedo.ToString() << "\n"; 
+	stream << "color: " << Material.DiffuseAlbedo.ToString() << "\n";
+	stream << "metallic: " << Material.Metallic << "\n";
+	stream << "roughness: " << Material.Roughness << "\n";
+	stream << "emissive: " << Material.Emissive.ToString() << "\n";
+	stream << "emissive_intensity: " << Material.EmissiveIntensity << "\n";
 	stream << "base_color_texture: " << Material.BaseColorTexturePath << "\n";
 	stream << "cull: " << CullModeToString(Material.CullMode) << "\n";
 	stream << "depth_enable: " << (Material.bDepthEnable ? "true" : "false") << "\n";

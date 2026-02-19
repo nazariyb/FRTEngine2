@@ -35,10 +35,12 @@ struct SColor
 	std::string ToString (bool bHex = false) const;
 
 	static const SColor White;
+	static const SColor Black;
 };
 
 
 inline const SColor SColor::White = SColor(1.0f);
+inline const SColor SColor::Black = SColor(0.0f);
 
 
 struct SColor32

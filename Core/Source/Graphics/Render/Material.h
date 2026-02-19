@@ -31,6 +31,11 @@ struct FRT_CORE_API SMaterial
 	std::filesystem::file_time_type LastWriteTime;
 
 	SColor DiffuseAlbedo = SColor::White;
+	float Metallic = 0.0f;
+	float Roughness = 1.0f;
+	SColor Emissive = SColor::Black;
+	float EmissiveIntensity = 0.0f;
+
 	uint32 RuntimeIndex = 0u;
 	SFlags<EMaterialFlags> Flags;
 

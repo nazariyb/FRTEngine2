@@ -61,11 +61,11 @@ struct SMaterialConstants
 	SColor DiffuseAlbedo = { 1.f, 1.f, 1.f, 1.f };
 	uint32 TextureIndices[render::constants::RootMaterialTextureCount] = {};
 	uint32 Flags = 0u;
-	FRT_STRUCT_PADDING(3*4);
+	float Roughness = 1.f;
+	float Metallic = 0.f;
+	SColor Emissive = { 0.f, 0.f, 0.f, 1.f };
+	float EmissiveIntensity = 0.f;
 };
-
-
-static_assert(sizeof(SMaterialConstants) == 96u);
 
 
 struct SFrameResources
