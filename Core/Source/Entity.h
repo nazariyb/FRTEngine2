@@ -13,6 +13,7 @@ public:
 	void Tick (float DeltaSeconds);
 
 	math::STransform Transform;
+	Vector3f RotationSpeed = Vector3f::ZeroVector; // TODO: also temp
 
 	// TODO: These are here temporary
 	graphics::Comp_RenderModel RenderModel;

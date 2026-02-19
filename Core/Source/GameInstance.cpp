@@ -229,9 +229,19 @@ void GameInstance::Load ()
 	floor->bRayTraced = true;
 	floor->Transform.SetTranslation(0.f, -1.f, 0.f);
 
+	std::filesystem::path pillarMaterialPath =
+		std::filesystem::path("../Core/Content/Models/Pillar") / ("pillar_mat" + std::to_string(0) + ".frtmat");
+	auto pillar = World->SpawnEntity();
+	pillar->RenderModel.Model = memory::NewShared<SRenderModel>(
+		SRenderModel::FromMesh(
+			mesh::GenerateCube(Vector3f(.65f, 1.8f, .65f), 1),
+			// mesh::GenerateCylinder(0.65f, 0.65f, 1.8f, 20u, 2u),
+			Renderer->GetMaterialLibrary().LoadOrCreateMaterial(pillarMaterialPath, {})));
+	pillar->bRayTraced = true;
+	pillar->Transform.SetTranslation(-2.5f, -0.2f, 0.f);
+
 	std::filesystem::path cubeMaterialPath =
 		std::filesystem::path("../Core/Content/Models/Cube") / ("cube_mat" + std::to_string(0) + ".frtmat");
-
 	Cube = World->SpawnEntity();
 	Cube->RenderModel.Model = memory::NewShared<SRenderModel>(
 		SRenderModel::FromMesh(
@@ -568,13 +578,6 @@ void GameInstance::DisplayUserSettings ()
 
 void GameInstance::UpdateEntities (float DeltaSeconds)
 {
-	static uint16 updates = 0;
-	if (updates > 300)
-	{
-		return;
-	}
-	++updates;
-
 	static float Angle = 0.0f;
 	static float VerticalTime = 0.0f;
 
