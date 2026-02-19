@@ -421,40 +421,27 @@ SMesh GenerateCylinder(float BottomRadius, float TopRadius, float Height, uint32
 		for (uint32 sliceIdx = 0u; sliceIdx <= SliceCount; ++sliceIdx)
 		{
 			const float theta = math::TWO_PI * static_cast<float>(sliceIdx) / static_cast<float>(SliceCount);
+			const float cosTheta = cosf(theta);
+			const float sinTheta = sinf(theta);
 
 			SVertex vertex;
-			vertex.Position = Vector3f::ForwardVector * radius * std::sin(theta)
+			vertex.Position = Vector3f::ForwardVector * radius * sinTheta
 							+ Vector3f::UpVector * y
-							+ Vector3f::RightVector * radius * std::cos(theta);
+							+ Vector3f::RightVector * radius * cosTheta;
 			vertex.Uv.x = static_cast<float>(sliceIdx) / static_cast<float>(SliceCount);
 			vertex.Uv.y = static_cast<float>(stackIdx) / static_cast<float>(StackCount);
 
-			//   Let r0 be the bottom radius and let r1 be the top radius.
-			//   y(v) = h - hv for v in [0,1].
-			//   r(v) = r1 + (r0-r1)v
-			//
-			//   x(t, v) = r(v)*cos(t)
-			//   y(t, v) = h - hv
-			//   z(t, v) = r(v)*sin(t)
-			// 
-			//  dx/dt = -r(v)*sin(t)
-			//  dy/dt = 0
-			//  dz/dt = +r(v)*cos(t)
-			//
-			//  dx/dv = (r0-r1)*cos(t)
-			//  dy/dv = -h
-			//  dz/dv = (r0-r1)*sin(t)
+			// Derivative by azimuth angle (theta), normalized.
+			vertex.Tangent = (Vector3f::ForwardVector * cosTheta
+							+ Vector3f::RightVector * -sinTheta)
+							.GetNormalizedUnsafe();
 
-			vertex.Tangent = Vector3f::ForwardVector * -radius * std::sin(theta)
-							+ Vector3f::UpVector * 0.f
-							+ Vector3f::RightVector * radius * std::cos(theta);
-
+			// Analytic cone side normal (outward). Reduces seam/tilt artifacts.
 			const float dr = BottomRadius - TopRadius;
-			const Vector3f bitangent = Vector3f::ForwardVector * dr * std::cos(theta)
-										+ Vector3f::UpVector * -Height
-										+ Vector3f::RightVector * dr * std::sin(theta);
-
-			vertex.Normal = vertex.Tangent.Cross(bitangent).GetNormalizedUnsafe();
+			vertex.Normal = (Vector3f::RightVector * cosTheta
+							+ Vector3f::UpVector * (dr / Height)
+							+ Vector3f::ForwardVector * sinTheta)
+							.GetNormalizedUnsafe();
 
 			v.Add(vertex);
 		}
@@ -718,7 +705,9 @@ void _private::BuildCylinderCap(
 				.Position = Vector3f::ForwardVector * x
 							+ Vector3f::UpVector * y
 							+ Vector3f::RightVector * z,
-				.Uv = Vector2f(x / Height + 0.5f, y / Height + 0.5f),
+				.Uv = Vector2f(
+					Radius > 0.0f ? (z / (2.0f * Radius) + 0.5f) : 0.5f,
+					Radius > 0.0f ? (x / (2.0f * Radius) + 0.5f) : 0.5f),
 				.Normal = Vector3f::UpVector * normalY,
 				.Tangent = Vector3f::ForwardVector
 			});
