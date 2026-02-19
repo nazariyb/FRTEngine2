@@ -219,6 +219,16 @@ void GameInstance::Load ()
 {
 	std::cout << std::filesystem::current_path() << std::endl;
 
+	std::filesystem::path floorMaterialPath =
+		std::filesystem::path("../Core/Content/Models/Floor") / ("floor_mat" + std::to_string(0) + ".frtmat");
+	auto floor = World->SpawnEntity();
+	floor->RenderModel.Model = memory::NewShared<SRenderModel>(
+		SRenderModel::FromMesh(
+			mesh::GenerateGrid(10.f, 10.f, 16u, 16u),
+			Renderer->GetMaterialLibrary().LoadOrCreateMaterial(floorMaterialPath, {})));
+	floor->bRayTraced = true;
+	floor->Transform.SetTranslation(0.f, -1.f, 0.f);
+
 	std::filesystem::path cubeMaterialPath =
 		std::filesystem::path("../Core/Content/Models/Cube") / ("cube_mat" + std::to_string(0) + ".frtmat");
 
@@ -235,7 +245,7 @@ void GameInstance::Load ()
 
 	Sphere = World->SpawnEntity();
 	Sphere->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
-		graphics::SRenderModel::FromMesh(mesh::GenerateSphere(.1f, 10u, 10u)));
+		graphics::SRenderModel::FromMesh(mesh::GenerateSphere(.1f, 30u, 30u)));
 	Sphere->bRayTraced = false;
 
 	// auto skullEnt = World->SpawnEntity();
@@ -374,7 +384,7 @@ void GameInstance::Draw (float DeltaSeconds)
 }
 #endif
 
-long long GameInstance::GetFrameCount () const
+uint64 GameInstance::GetFrameCount () const
 {
 	return FrameCount;
 }
@@ -558,6 +568,13 @@ void GameInstance::DisplayUserSettings ()
 
 void GameInstance::UpdateEntities (float DeltaSeconds)
 {
+	static uint16 updates = 0;
+	if (updates > 300)
+	{
+		return;
+	}
+	++updates;
+
 	static float Angle = 0.0f;
 	static float VerticalTime = 0.0f;
 

@@ -24,13 +24,14 @@ cbuffer PassConstantBuffer : register(b2)
 	float4x4 gViewProj;
 	float4x4 gViewProjInv;
 	float3 gCameraPos;
-	// float cbPerObjectPad1;
+	float pad1;
 	float2 gRenderTargetSize;
 	float2 gRenderTargetSizeInv;
 	float gNearPlane;
 	float gFarPlane;
 	float gTotalTime;
 	float gDeltaTime;
+	uint gFrameIndex;
 }
 
 struct VSInput

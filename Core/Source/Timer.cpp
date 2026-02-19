@@ -11,7 +11,7 @@ FRT_SINGLETON_DEFINE_INSTANCE(CTimer)
 CTimer::CTimer ()
 	: DeltaSeconds(0)
 	, PausedDuration(0)
-	, BPaused(false)
+	, bPaused(false)
 {}
 
 // Returns the total time elapsed since Reset() was called, NOT counting any
@@ -27,7 +27,7 @@ float CTimer::GetTotalSeconds () const
 	// ----*---------------*-----------------*------------*------------*------> time
 	//  mBaseTime       mStopTime        startTime     mStopTime    mCurrTime
 
-	if (BPaused)
+	if (bPaused)
 	{
 		return static_cast<float>(MicroSecondsToSeconds(
 			GetDurationInMicroSeconds(BaseTimePoint, StopTimePoint) - PausedDuration));
@@ -57,7 +57,7 @@ float CTimer::GetDeltaSeconds () const
 
 bool CTimer::IsPaused () const
 {
-	return BPaused;
+	return bPaused;
 }
 
 void CTimer::Reset ()
@@ -66,7 +66,7 @@ void CTimer::Reset ()
 	BaseTimePoint = currentTimePoint;
 	PrevTimePoint = currentTimePoint;
 	StopTimePoint = {};
-	BPaused = false;
+	bPaused = false;
 }
 
 void CTimer::Start (bool bReset)
@@ -84,28 +84,28 @@ void CTimer::Start (bool bReset)
 	// ----*---------------*-----------------*------------> time
 	//  mBaseTime       mStopTime        startTime     
 
-	if (BPaused)
+	if (bPaused)
 	{
 		PausedDuration += GetDurationInMicroSeconds(StopTimePoint, startTimePoint);
 
 		PrevTimePoint = startTimePoint;
 		StopTimePoint = {};
-		BPaused = false;
+		bPaused = false;
 	}
 }
 
 void CTimer::Pause ()
 {
-	if (!BPaused)
+	if (!bPaused)
 	{
 		StopTimePoint = high_resolution_clock::now();
-		BPaused = true;
+		bPaused = true;
 	}
 }
 
 void CTimer::Tick ()
 {
-	if (BPaused)
+	if (bPaused)
 	{
 		DeltaSeconds = 0.0;
 		return;

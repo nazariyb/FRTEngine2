@@ -15,6 +15,24 @@ struct ShadowHitInfo
 };
 
 
+// 32-bit hash/PRNG step
+uint NextUint (inout uint s)
+{
+	s ^= s >> 17;
+	s *= 0xED5AD4BBu;
+	s ^= s >> 11;
+	s *= 0xAC4C1B51u;
+	s ^= s >> 15;
+	s *= 0x31848BABu;
+	s ^= s >> 14;
+	return s;
+}
+
+float NextFloat01 (inout uint s)
+{
+	return (NextUint(s) & 0x00FFFFFFu) / 16777216.0f; // [0,1)
+}
+
 static const uint MaterialTextureIndexInvalid = 0xFFFFFFFF;
 
 uint GetMaterialTextureIndex (uint index)
@@ -87,11 +105,13 @@ float ComputeTextureLod (
 [shader("closesthit")]
 void ClosestHit (inout HitInfo payload, Attributes attrib)
 {
-	// shadow
-	float3 lightPos = float3(0, 2, -3);
+	float3 lightPos = float3(0, 2, -3); // TODO: pass actual pos from code
 
-	// Find the world - space hit position
-	float3 worldOrigin = WorldRayOrigin() + RayTCurrent() * WorldRayDirection();
+	// shadow
+
+	float3 hitDir = WorldRayDirection();
+	// Find the world-space hit position
+	float3 worldOrigin = WorldRayOrigin() + RayTCurrent() * hitDir;
 
 	float3 lightDir = normalize(lightPos - worldOrigin);
 
@@ -102,7 +122,6 @@ void ClosestHit (inout HitInfo payload, Attributes attrib)
 	ray.Direction = lightDir;
 	ray.TMin = 0.01;
 	ray.TMax = 100000;
-	bool hit = true;
 
 	// Initialize the ray payload
 	ShadowHitInfo shadowPayload;
@@ -145,10 +164,11 @@ void ClosestHit (inout HitInfo payload, Attributes attrib)
 		// Payload associated to the ray, which will be used to communicate
 		// between the hit/miss shaders and the raygen
 		shadowPayload);
+	// float factor = shadowPayload.isHit ? 0.3 : 1.0;
+	const float factor = 1.0;
+	const uint currentDepth = payload.depth;
+	const uint maxReflectionDepth = 10u;
 
-	float factor = shadowPayload.isHit ? 0.3 : 1.0;
-
-	// texture & color
 	float3 barycentrics =
 		float3(1.f - attrib.bary.x - attrib.bary.y, attrib.bary.x, attrib.bary.y);
 
@@ -165,7 +185,39 @@ void ClosestHit (inout HitInfo payload, Attributes attrib)
 	const float3 worldPosition0 = mul(ObjectToWorld3x4(), float4(v0.position, 1.0f));
 	const float3 worldPosition1 = mul(ObjectToWorld3x4(), float4(v1.position, 1.0f));
 	const float3 worldPosition2 = mul(ObjectToWorld3x4(), float4(v2.position, 1.0f));
+	float3 geometricNormal = normalize(cross(worldPosition1 - worldPosition0, worldPosition2 - worldPosition0));
+	float3 normal = normalize(v0.normal * barycentrics.x + v1.normal * barycentrics.y + v2.normal * barycentrics.z);
+	normal = normalize(mul((float3x3)ObjectToWorld3x4(), normal));
 
+	const float geomFlip = 1.0f - 2.0f * step(0.0f, dot(geometricNormal, hitDir));
+	const float shadeFlip = 1.0f - 2.0f * step(0.0f, dot(normal, hitDir));
+	geometricNormal *= geomFlip;
+	normal *= shadeFlip;
+	normal = lerp(geometricNormal, normal, step(0.0f, dot(normal, geometricNormal)));
+
+	float3 tangent = normalize(v0.tangent * barycentrics.x + v1.tangent * barycentrics.y + v2.tangent * barycentrics.z);
+	tangent = normalize(mul((float3x3)ObjectToWorld3x4(), tangent));
+
+	// Gram-Schmidt to keep tangent orthogonal to normal
+	tangent = normalize(tangent - dot(tangent, normal) * normal);
+	const float3 bitangent = normalize(cross(normal, tangent));
+	float3x3 tangentToWorld = float3x3(tangent, bitangent, normal);
+
+	uint2 p = DispatchRaysIndex().xy;
+	uint seed = p.x * 1973u ^ p.y * 9277u ^ gFrameIndex * 26699u ^ payload.depth * 3181u;
+
+	float u1 = NextFloat01(seed);
+	float u2 = NextFloat01(seed);
+
+	float r = sqrt(u1); // we don't want to oversample the center
+	float phi = 2.0f * 3.14159265359f * u2;
+
+	float3 reflectDir = float3(r * cos(phi), r * sin(phi), sqrt(1.0 - u1)); // unit hemisphere dir
+
+	// float3 reflectDir = normalize(reflect(hitDir, normal));
+	reflectDir = normalize(mul(reflectDir, tangentToWorld));
+
+	// texture & color
 	float3 hitColor = gDiffuseAlbedo.xyz;
 
 	const uint baseColorTextureIndex = GetMaterialTextureIndex(0);
@@ -184,5 +236,28 @@ void ClosestHit (inout HitInfo payload, Attributes attrib)
 		hitColor *= sampledColor;
 	}
 
-	payload.colorAndDistance = float4(hitColor * factor, RayTCurrent());
+	// float3 reflectDir = normalize(reflect(hitDir, normal));
+
+	if (currentDepth >= maxReflectionDepth)
+	{
+		// payload.color = hitColor * factor;
+		payload.color = float3(1.f, 0.07f, 0.94f);
+		payload.distance = RayTCurrent();
+		return;
+	}
+
+	RayDesc reflectedRay;
+	reflectedRay.Origin = worldOrigin;
+	reflectedRay.Direction = reflectDir;
+	reflectedRay.TMin = 0.01;
+	reflectedRay.TMax = 100000;
+
+	HitInfo reflectedPayload;
+	reflectedPayload.color = float3(0.0f, 0.0f, 0.0f);
+	reflectedPayload.distance = 0.0f;
+	reflectedPayload.depth = currentDepth + 1u;
+	TraceRay(SceneBVH, RAY_FLAG_CULL_BACK_FACING_TRIANGLES, 0xFF, 0, 2, 0, reflectedRay, reflectedPayload);
+
+	payload.color = reflectedPayload.color * hitColor * factor;
+	payload.distance = RayTCurrent();
 }

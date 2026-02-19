@@ -11,7 +11,7 @@ SMesh GenerateCube(const Vector3f& Extent, uint32 SubdivisionsCount);
 SMesh GenerateSphere(float Radius, uint32 SliceCount, uint32 StackCount);
 SMesh GenerateGeosphere(float Radius, uint32 SubdivisionsCount);
 SMesh GenerateCylinder(float BottomRadius, float TopRadius, float Height, uint32 SliceCount, uint32 StackCount);
-SMesh GenerateGrid(float Width, float Depth, uint32 CellCountX, uint32 CellCountZ);
+SMesh GenerateGrid(float Width, float Depth, uint32 CellCountWidth, uint32 CellCountDepth);
 SMesh GenerateQuad(float Width, float Depth);
 
 void Subdivide(TArray<SVertex>& InOutVertices, TArray<uint32>& InOutIndices, uint32 SubdivisionsCount);

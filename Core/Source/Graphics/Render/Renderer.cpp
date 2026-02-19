@@ -1590,7 +1590,7 @@ void CRenderer::CreateRaytracingPipeline ()
 	// exchanged between shaders, such as the HitInfo structure in the HLSL code.
 	// It is important to keep this value as low as possible as a too high value
 	// would result in unnecessary memory consumption and cache trashing.
-	pipeline.SetMaxPayloadSize(4 * sizeof(float)); // RGB + distance
+	pipeline.SetMaxPayloadSize(4 * sizeof(float) + sizeof(uint32)); // RGB + distance + depth
 
 	// Upon hitting a surface, DXR can provide several attributes to the hit. In
 	// our sample we just use the barycentric coordinates defined by the weights
@@ -1603,7 +1603,7 @@ void CRenderer::CreateRaytracingPipeline ()
 	// then requires a trace depth of 1. Note that this recursion depth should be
 	// kept to a minimum for best performance. Path tracing algorithms can be
 	// easily flattened into a simple loop in the ray generation.
-	pipeline.SetMaxRecursionDepth(2);
+	pipeline.SetMaxRecursionDepth(30);
 
 	// Compile the pipeline for execution on the GPU
 	RtStateObject = pipeline.Generate();

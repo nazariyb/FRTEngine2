@@ -325,6 +325,7 @@ void CWorld::CopyConstantData ()
 	passConstants.FarPlane = 1'000.0f;
 	passConstants.TotalTime = GameInstance::GetInstance().GetTime().GetTotalSeconds();
 	passConstants.DeltaTime = GameInstance::GetInstance().GetTime().GetDeltaSeconds();
+	passConstants.FrameIndex = static_cast<uint32>(GameInstance::GetInstance().GetFrameCount());
 
 	currentFrameResources.PassCB.CopyBunch(&passConstants, 1u, currentFrameResources.UploadArena);
 }
@@ -512,7 +513,7 @@ void CWorld::CreateTopLevelAS (const TArray<SAccelerationInstance>& Instances, b
 	const uint64 currentDescSize = TopLevelASBuffers.InstanceDesc
 										? TopLevelASBuffers.InstanceDesc->GetDesc().Width
 										: 0u;
-	if (!TopLevelASBuffers.InstanceDesc || currentDescSize < instanceDescsSize)
+	if (instanceDescsSize > 0u && (!TopLevelASBuffers.InstanceDesc || currentDescSize < instanceDescsSize))
 	{
 		TopLevelASBuffers.InstanceDesc = CreateBuffer(
 			device, instanceDescsSize, D3D12_RESOURCE_FLAG_NONE,

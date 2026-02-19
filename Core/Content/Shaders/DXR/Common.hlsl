@@ -2,13 +2,15 @@
 #include "../CoreTypes.hlsli"
 
 // Hit information, aka ray payload
-// This sample only carries a shading color and hit distance.
+// This sample carries shading color, hit distance, and recursion depth.
 // Note that the payload should be kept as small as possible,
 // and that its size must be declared in the corresponding
 // D3D12_RAYTRACING_SHADER_CONFIG pipeline subobjet.
 struct HitInfo
 {
-	float4 colorAndDistance;
+	float3 color;
+	float distance;
+	uint depth;
 };
 
 

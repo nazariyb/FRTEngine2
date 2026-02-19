@@ -45,12 +45,14 @@ struct SPassConstants
 	DirectX::XMFLOAT4X4 ViewProjection;
 	DirectX::XMFLOAT4X4 ViewProjectionInverse;
 	Vector3f CameraPosition;
+	float Pad1;
 	Vector2f RenderTargetSize;
 	Vector2f RenderTargetSizeInverse;
 	float NearPlane = 0.f;
 	float FarPlane = 0.f;
 	float TotalTime = 0.f;
 	float DeltaTime = 0.f;
+	uint32 FrameIndex = 0u;
 };
 
 

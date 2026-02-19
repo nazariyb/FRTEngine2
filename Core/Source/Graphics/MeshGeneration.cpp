@@ -39,44 +39,44 @@ SMesh GenerateCube(const Vector3f& Extent, uint32 SubdivisionsCount)
 	v[0] = SVertex
 	{
 		.Position = { +xHalf, -yHalf, +zHalf }, .Uv = { 0.f, 1.f },
-		.Normal = { 0.f, 0.f, -1.f }, .Tangent = { -1.f, 0.f, 0.f },
+		.Normal = { 0.f, 0.f, 1.f }, .Tangent = { -1.f, 0.f, 0.f },
 	};
 	v[1] = SVertex
 	{
 		.Position = { +xHalf, +yHalf, +zHalf }, .Uv = { 0.f, 0.f },
-		.Normal = { 0.f, 0.f, -1.f }, .Tangent = { -1.f, 0.f, 0.f },
+		.Normal = { 0.f, 0.f, 1.f }, .Tangent = { -1.f, 0.f, 0.f },
 	};
 	v[2] = SVertex
 	{
 		.Position = { -xHalf, +yHalf, +zHalf }, .Uv = { 1.f, 0.f },
-		.Normal = { 0.f, 0.f, -1.f }, .Tangent = { -1.f, 0.f, 0.f },
+		.Normal = { 0.f, 0.f, 1.f }, .Tangent = { -1.f, 0.f, 0.f },
 	};
 	v[3] = SVertex
 	{
 		.Position = { -xHalf, -yHalf, +zHalf }, .Uv = { 1.f, 1.f },
-		.Normal = { 0.f, 0.f, -1.f }, .Tangent = { -1.f, 0.f, 0.f },
+		.Normal = { 0.f, 0.f, 1.f }, .Tangent = { -1.f, 0.f, 0.f },
 	};
 
 	// Back face
 	v[4] = SVertex
 	{
 		.Position = { +xHalf, -yHalf, -zHalf }, .Uv = { 0.f, 1.f },
-		.Normal = { 0.f, 0.f, 1.f }, .Tangent = { -1.f, 0.f, 0.f },
+		.Normal = { 0.f, 0.f, -1.f }, .Tangent = { -1.f, 0.f, 0.f },
 	};
 	v[5] = SVertex
 	{
 		.Position = { -xHalf, -yHalf, -zHalf }, .Uv = { 1.f, 1.f },
-		.Normal = { 0.f, 0.f, 1.f }, .Tangent = { -1.f, 0.f, 0.f },
+		.Normal = { 0.f, 0.f, -1.f }, .Tangent = { -1.f, 0.f, 0.f },
 	};
 	v[6] = SVertex
 	{
 		.Position = { -xHalf, +yHalf, -zHalf }, .Uv = { 1.f, 0.f },
-		.Normal = { 0.f, 0.f, 1.f }, .Tangent = { -1.f, 0.f, 0.f },
+		.Normal = { 0.f, 0.f, -1.f }, .Tangent = { -1.f, 0.f, 0.f },
 	};
 	v[7] = SVertex
 	{
 		.Position = { +xHalf, +yHalf, -zHalf }, .Uv = { 0.f, 0.f },
-		.Normal = { 0.f, 0.f, 1.f }, .Tangent = { -1.f, 0.f, 0.f },
+		.Normal = { 0.f, 0.f, -1.f }, .Tangent = { -1.f, 0.f, 0.f },
 	};
 
 	// Top face
@@ -488,32 +488,32 @@ SMesh GenerateCylinder(float BottomRadius, float TopRadius, float Height, uint32
 	return result;
 }
 
-SMesh GenerateGrid(float Width, float Depth, uint32 CellCountX, uint32 CellCountZ)
+SMesh GenerateGrid(float Width, float Depth, uint32 CellCountWidth, uint32 CellCountDepth)
 {
 	SMesh result;
 
 	auto& v = result.Vertices;
 	auto& i = result.Indices;
 
-	v.SetSize<true>(CellCountX * CellCountZ);
+	v.SetSize<true>(CellCountWidth * CellCountDepth);
 
-	const uint32 faceCount = (CellCountX - 1u) * (CellCountZ - 1u) * 2u;
+	const uint32 faceCount = (CellCountWidth - 1u) * (CellCountDepth - 1u) * 2u;
 	i.SetSize<true>(faceCount * 3u);
 
 	const float halfWidth = Width * 0.5f;
 	const float halfDepth = Depth * 0.5f;
 
-	const float dx = Width / static_cast<float>(CellCountX - 1u);
-	const float dz = Depth / static_cast<float>(CellCountZ - 1u);
+	const float dx = Width / static_cast<float>(CellCountWidth - 1u);
+	const float dz = Depth / static_cast<float>(CellCountDepth - 1u);
 
-	const float du = 1.f / static_cast<float>(CellCountX - 1u);
-	const float dv = 1.f / static_cast<float>(CellCountZ - 1u);
+	const float du = 1.f / static_cast<float>(CellCountWidth - 1u);
+	const float dv = 1.f / static_cast<float>(CellCountDepth - 1u);
 
-	for (uint32 z = 0u; z < CellCountZ; ++z)
+	for (uint32 z = 0u; z < CellCountDepth; ++z)
 	{
-		for (uint32 x = 0u; x < CellCountX; ++x)
+		for (uint32 x = 0u; x < CellCountWidth; ++x)
 		{
-			const uint32 idx = z * CellCountX + x;
+			const uint32 idx = z * CellCountWidth + x;
 
 			v[idx].Position = Vector3f::ForwardVector * (halfDepth - static_cast<float>(z) * dz)
 							+ Vector3f::UpVector * 0.f
@@ -528,21 +528,21 @@ SMesh GenerateGrid(float Width, float Depth, uint32 CellCountX, uint32 CellCount
 	}
 
 	uint32 k = 0u;
-	for (uint32 z = 0u; z < CellCountZ - 1u; ++z)
+	for (uint32 z = 0u; z < CellCountDepth - 1u; ++z)
 	{
-		for (uint32 x = 0u; x < CellCountX - 1u; ++x)
+		for (uint32 x = 0u; x < CellCountWidth - 1u; ++x)
 		{
-			const uint32 baseIndex = z * CellCountX + x;
+			const uint32 baseIndex = z * CellCountWidth + x;
 
 			// First triangle
 			i[k++] = baseIndex;
-			i[k++] = baseIndex + CellCountX;
+			i[k++] = baseIndex + CellCountWidth;
 			i[k++] = baseIndex + 1u;
 
 			// Second triangle
 			i[k++] = baseIndex + 1u;
-			i[k++] = baseIndex + CellCountX;
-			i[k++] = baseIndex + CellCountX + 1u;
+			i[k++] = baseIndex + CellCountWidth;
+			i[k++] = baseIndex + CellCountWidth + 1u;
 		}
 	}
 

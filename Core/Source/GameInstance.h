@@ -5,10 +5,10 @@
 #include "Window.h"
 #include "World.h"
 #include "Graphics/Render/RenderCommonTypes.h"
-#include "Memory/MemoryPool.h"
-#include "Memory/Ref.h"
 #include "Input/InputActionLibrary.h"
 #include "Input/InputSystem.h"
+#include "Memory/MemoryPool.h"
+#include "Memory/Ref.h"
 #include "User/UserSettings.h"
 
 
@@ -68,7 +68,7 @@ public:
 #endif
 	// ~Update
 
-	long long GetFrameCount () const;
+	uint64 GetFrameCount () const;
 
 protected:
 	void CalculateFrameStats () const;
@@ -107,7 +107,7 @@ protected:
 	graphics::SDisplayOptions DisplayOptions;
 	SUserSettings UserSettings;
 
-	long long FrameCount;
+	uint64 FrameCount;
 
 	bool bCameraMovementEnabled = false;
 };

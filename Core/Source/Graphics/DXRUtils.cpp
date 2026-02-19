@@ -176,23 +176,28 @@ void CTopLevelASGenerator::Generate (
 	bool bUpdateOnly,
 	ID3D12Resource* PreviousResult)
 {
-	D3D12_RAYTRACING_INSTANCE_DESC* instanceDescs;
-	DescriptorsBuffer->Map(0, nullptr, reinterpret_cast<void**>(&instanceDescs));
-	frt_assert(instanceDescs);
-
-	memset(instanceDescs, 0, DescriptorSizeInBytes);
-
-	for (uint32 i = 0; i < Instances.Count(); ++i)
+	D3D12_RAYTRACING_INSTANCE_DESC* instanceDescs = nullptr;
+	const bool bHasInstances = Instances.Count() > 0u;
+	if (bHasInstances)
 	{
-		instanceDescs[i].InstanceID = Instances[i].InstanceID;
-		instanceDescs[i].InstanceMask = 0xFF;
-		instanceDescs[i].InstanceContributionToHitGroupIndex = Instances[i].HitGroupIndex;
-		instanceDescs[i].AccelerationStructure = Instances[i].BottomLevelAS->GetGPUVirtualAddress();
-		instanceDescs[i].Flags = D3D12_RAYTRACING_INSTANCE_FLAG_NONE;
-		memcpy(instanceDescs[i].Transform, &Instances[i].Transform, sizeof(Instances[i].Transform));
-	}
+		frt_assert(DescriptorsBuffer != nullptr);
+		const HRESULT mapResult = DescriptorsBuffer->Map(0, nullptr, reinterpret_cast<void**>(&instanceDescs));
+		frt_assert(SUCCEEDED(mapResult) && instanceDescs);
 
-	DescriptorsBuffer->Unmap(0, nullptr);
+		memset(instanceDescs, 0, DescriptorSizeInBytes);
+
+		for (uint32 i = 0; i < Instances.Count(); ++i)
+		{
+			instanceDescs[i].InstanceID = Instances[i].InstanceID;
+			instanceDescs[i].InstanceMask = 0xFF;
+			instanceDescs[i].InstanceContributionToHitGroupIndex = Instances[i].HitGroupIndex;
+			instanceDescs[i].AccelerationStructure = Instances[i].BottomLevelAS->GetGPUVirtualAddress();
+			instanceDescs[i].Flags = D3D12_RAYTRACING_INSTANCE_FLAG_NONE;
+			memcpy(instanceDescs[i].Transform, &Instances[i].Transform, sizeof(Instances[i].Transform));
+		}
+
+		DescriptorsBuffer->Unmap(0, nullptr);
+	}
 
 	D3D12_GPU_VIRTUAL_ADDRESS sourceAS = bUpdateOnly ? PreviousResult->GetGPUVirtualAddress() : 0;
 
@@ -214,7 +219,7 @@ void CTopLevelASGenerator::Generate (
 			.Flags = flags | D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE,
 			.NumDescs = Instances.Count(),
 			.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY,
-			.InstanceDescs = DescriptorsBuffer->GetGPUVirtualAddress(),
+			.InstanceDescs = bHasInstances ? DescriptorsBuffer->GetGPUVirtualAddress() : 0,
 		},
 		.SourceAccelerationStructureData = sourceAS,
 		.ScratchAccelerationStructureData = ScratchBuffer->GetGPUVirtualAddress(),

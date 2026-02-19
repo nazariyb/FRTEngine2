@@ -11,8 +11,10 @@ void RayGen ()
 {
 	// Initialize the ray payload
 	HitInfo payload;
-	// payload.colorAndDistance = float4(0.15, 0.05, 0.5, 1);
-	payload.colorAndDistance = float4(0., 0., 0., 0.);
+	// payload.color = float3(0.15, 0.05, 0.5);
+	payload.color = float3(0.0f, 0.0f, 0.0f);
+	payload.distance = 0.0f;
+	payload.depth = 0u;
 
 	// Get the location within the dispatched 2D grid of work items
 	// (often maps to pixels, so this could represent a pixel coordinate).
@@ -77,5 +79,5 @@ void RayGen ()
 		// shaders and the raygen
 		payload);
 
-	gOutput[launchIndex] = float4(payload.colorAndDistance.rgb, 1.f);
+	gOutput[launchIndex] = float4(payload.color, 1.f);
 }
