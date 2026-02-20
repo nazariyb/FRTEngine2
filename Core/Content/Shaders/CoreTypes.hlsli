@@ -15,8 +15,8 @@ cbuffer MaterialConstantBuffer : register(b1)
 	uint gMaterialFlags;
 	float gRoughness;
 	float gMetallic;
-	float4 gEmissive;
 	float gEmissiveIntensity;
+	float4 gEmissive;
 }
 
 cbuffer PassConstantBuffer : register(b2)

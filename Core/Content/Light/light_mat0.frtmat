@@ -1,13 +1,13 @@
 version: 1
 # FRT material
-name: 
+name: light_mat0
 vertex_shader: 
 pixel_shader: 
-color: RGBA(0.1, 0.3, 0.3, 1)
-metallic: 1
-roughness: 0.02
-emissive: RGBA(0, 0, 0, 1)
-emissive_intensity: 0
+color: RGBA(0.7, 0.25, 0.1, 1)
+metallic: 0
+roughness: 1
+emissive: RGBA(0.7, 0.25, 0.1, 1)
+emissive_intensity: 50
 base_color_texture: 
 cull: none
 depth_enable: true

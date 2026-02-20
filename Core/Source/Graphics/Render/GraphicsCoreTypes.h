@@ -63,8 +63,8 @@ struct SMaterialConstants
 	uint32 Flags = 0u;
 	float Roughness = 1.f;
 	float Metallic = 0.f;
-	SColor Emissive = { 0.f, 0.f, 0.f, 1.f };
 	float EmissiveIntensity = 0.f;
+	SColor Emissive = { 0.f, 0.f, 0.f, 1.f };
 };
 
 

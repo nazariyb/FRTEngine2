@@ -14,7 +14,7 @@ void RayGen ()
 	uint2 launchIndex = DispatchRaysIndex().xy;
 	float2 dims = float2(DispatchRaysDimensions().xy);
 
-	const uint sampleCount = 10;
+	const uint sampleCount = 32u;
 	float3 accumulatedColor = 0.f;
 	for (uint i = 0; i < sampleCount; ++i)
 	{
@@ -92,7 +92,8 @@ void RayGen ()
 		accumulatedColor += payload.color;
 	}
 
-	float3 lin = saturate(accumulatedColor / sampleCount);
-	float3 srgb = pow(lin, 1.0 / 2.2); // approximate
+	float3 lin = accumulatedColor / sampleCount;
+	lin = lin / (1.0 + lin); // tone map
+	float3 srgb = pow(saturate(lin), 1.0 / 2.2); // approximate
 	gOutput[launchIndex] = float4(srgb, 1.f);
 }

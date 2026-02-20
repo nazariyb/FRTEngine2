@@ -258,13 +258,14 @@ void GameInstance::Load ()
 		graphics::SRenderModel::FromMesh(mesh::GenerateSphere(.1f, 30u, 30u)));
 	Sphere->bRayTraced = false;
 
-	// auto skullEnt = World->SpawnEntity();
-	// skullEnt->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
-	// 	graphics::SRenderModel::LoadFromFile(
-	// 		R"(..\Core\Content\Models\Skull\scene.gltf)",
-	// 		R"(..\Core\Content\Models\Skull\textures\defaultMat_baseColor.jpeg)"));
-	// skullEnt->Transform.SetTranslation(1.f, 0.f, 0.f);
-	// skullEnt->bRayTraced = false;
+	auto skullEnt = World->SpawnEntity();
+	skullEnt->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
+		graphics::SRenderModel::LoadFromFile(
+			R"(..\Core\Content\Models\Skull\scene.gltf)",
+			R"(..\Core\Content\Models\Skull\textures\defaultMat_baseColor.jpeg)"));
+	skullEnt->Transform.SetTranslation(-2.5f, 1.5f, 0.f);
+	skullEnt->Transform.SetScale(Vector3f(.45f));
+	skullEnt->RotationSpeed = Vector3f::UpVector * (math::PI_OVER_FOUR * 0.25f);
 
 	auto duckEnt = World->SpawnEntity();
 	duckEnt->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
@@ -272,7 +273,15 @@ void GameInstance::Load ()
 			R"(..\Core\Content\Models\Duck\Duck.gltf)",
 			R"(..\Core\Content\Models\Duck\DuckCM.png)"));
 	duckEnt->Transform.SetTranslation(0.f, 0.f, 0.f);
-	duckEnt->bRayTraced = true;
+
+	auto head = World->SpawnEntity();
+	head->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
+		graphics::SRenderModel::LoadFromFile(
+			R"(..\Core\Content\Models\Head\1\african_head.obj)",
+			R"()"));
+	head->Transform.SetTranslation(2.5f, 1.5f, 0.f);
+	head->Transform.SetScale(Vector3f(.45f));
+	head->RotationSpeed = Vector3f::UpVector * (math::PI_OVER_FOUR * 0.25f);
 
 	// TODO: When Sponza is added, the renderer crashes. Probably multiple sections aren't handled properly
 	// auto sponzaEnt = World->SpawnEntity();
@@ -282,6 +291,43 @@ void GameInstance::Load ()
 	// 		""));
 	// // sponzaEnt->Transform.SetTranslation(1.f, 0.f, 0.f);
 	// sponzaEnt->bRayTraced = false;
+
+	std::filesystem::path lightMaterialPath =
+		std::filesystem::path("../Core/Content/Light") / ("light_mat" + std::to_string(0) + ".frtmat");
+
+	auto lightSource1 = World->SpawnEntity();
+	lightSource1->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
+		SRenderModel::FromMesh(mesh::GenerateSphere(.3f, 30u, 30u),
+			Renderer->GetMaterialLibrary().LoadOrCreateMaterial(lightMaterialPath, {})));
+	lightSource1->Transform.SetTranslation(0.f, 2.f, -3.f);
+
+	std::filesystem::path lightMaterialPath2 =
+		std::filesystem::path("../Core/Content/Light") / ("light_mat" + std::to_string(2) + ".frtmat");
+
+	auto lightSource2 = World->SpawnEntity();
+	lightSource2->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
+		SRenderModel::FromMesh(mesh::GenerateQuad(1.f, 1.f),
+			Renderer->GetMaterialLibrary().LoadOrCreateMaterial(lightMaterialPath2, {})));
+	lightSource2->Transform.SetTranslation(-2.5f, 2.5f, 0.f);
+	// lightSource2->Transform.SetRotation(math::PI, 0.f, 0.f);
+
+	/*memory::TRefShared<CEntity> walls[3];
+	walls[0] = World->SpawnEntity();
+	walls[1] = World->SpawnEntity();
+	walls[2] = World->SpawnEntity();
+
+	auto wallMesh = memory::NewShared<SRenderModel>(SRenderModel::FromMesh(mesh::GenerateQuad(10.f, 10.f)));
+	walls[0]->RenderModel.Model = wallMesh;
+	walls[1]->RenderModel.Model = wallMesh;
+	walls[2]->RenderModel.Model = wallMesh;
+
+	walls[0]->Transform.SetTranslation(-5.f, 4.f, 0.f);
+	walls[1]->Transform.SetTranslation(5.f, 4.f, 0.f);
+	walls[2]->Transform.SetTranslation(0.f, 4.f, 5.f);
+
+	walls[0]->Transform.SetRotation(0.f, 0.f, math::PI_OVER_TWO);
+	walls[1]->Transform.SetRotation(0.f, 0.f, math::PI_OVER_TWO);
+	walls[2]->Transform.SetRotation(math::PI_OVER_TWO, 0.f, 0.f);*/
 
 #ifndef FRT_HEADLESS
 	World->InitializeRendering();

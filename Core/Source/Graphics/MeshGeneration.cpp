@@ -581,8 +581,9 @@ SMesh GenerateQuad(float Width, float Depth)
 		.Normal = { 0.f, 1.f, 0.f }, .Tangent = { -1.f, 0.f, 0.f }
 	};
 
-	i[0] = 0u; i[1] = 1u; i[2] = 2u;
-	i[3] = 0u; i[4] = 2u; i[5] = 3u;
+	// Winding is chosen to match the +Y vertex normal.
+	i[0] = 0u; i[1] = 2u; i[2] = 1u;
+	i[3] = 0u; i[4] = 3u; i[5] = 2u;
 
 #if !defined(FRT_HEADLESS)
 	// TODO: temp

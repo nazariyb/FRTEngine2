@@ -1,13 +1,15 @@
 version: 1
 # FRT material
-name: defaultMat
+name: DefaultMaterial
 vertex_shader: VertexShader
 pixel_shader: PixelShader
-color: RGBA(0.8, 0.8, 0.8, 1)
-base_color_texture: Cube_BaseColor.png
+color: RGBA(1, 1, 1, 1)
 metallic: 0
-roughness: 0.1
-cull: front
+roughness: 1
+emissive: RGBA(0, 0, 0, 1)
+emissive_intensity: 0
+base_color_texture: 
+cull: none
 depth_enable: true
 depth_write: true
 depth_func: less

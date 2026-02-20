@@ -3,7 +3,7 @@ version: 1
 name: 
 vertex_shader: 
 pixel_shader: 
-color: RGBA(1, 1, 1, 1)
+color: RGBA(0.8, 0.6, 0.4, 1)
 base_color_texture: 
 cull: none
 depth_enable: true

@@ -16,6 +16,7 @@ struct ShadowHitInfo
 
 
 static const uint MaterialTextureIndexInvalid = 0xFFFFFFFF;
+static const float Pi = 3.14159265359f;
 
 uint GetMaterialTextureIndex (uint index)
 {
@@ -84,10 +85,57 @@ float ComputeTextureLod (
 	return log2(max(texelFootprint, 1e-8f));
 }
 
+float3 FresnelSchlick (float cosTheta, float3 f0)
+{
+	const float t = pow(1.0f - saturate(cosTheta), 5.0f);
+	return f0 + (1.0f.xxx - f0) * t;
+}
+
+float D_Ggx (float nDotH, float alpha)
+{
+	const float a2 = alpha * alpha;
+	const float denom = nDotH * nDotH * (a2 - 1.0f) + 1.0f;
+	return a2 / max(Pi * denom * denom, 1e-6f);
+}
+
+float G1_SmithGgx (float nDotX, float alpha)
+{
+	const float a2 = alpha * alpha;
+	const float denom = nDotX + sqrt(a2 + (1.0f - a2) * nDotX * nDotX);
+	return (2.0f * nDotX) / max(denom, 1e-6f);
+}
+
+float G_SmithGgx (float nDotV, float nDotL, float alpha)
+{
+	return G1_SmithGgx(nDotV, alpha) * G1_SmithGgx(nDotL, alpha);
+}
+
+float Luminance (float3 c)
+{
+	return dot(c, float3(0.2126f, 0.7152f, 0.0722f));
+}
+
+float3 SampleCosineHemisphere (float u1, float u2)
+{
+	const float r = sqrt(u1);
+	const float phi = 2.0f * Pi * u2;
+	return float3(r * cos(phi), r * sin(phi), sqrt(max(1.0f - u1, 0.0f)));
+}
+
+float3 SampleGgxHalfVector (float u1, float u2, float alpha)
+{
+	const float a2 = alpha * alpha;
+	const float phi = 2.0f * Pi * u2;
+	const float cosTheta = sqrt((1.0f - u1) / max(1.0f + (a2 - 1.0f) * u1, 1e-6f));
+	const float sinTheta = sqrt(max(1.0f - cosTheta * cosTheta, 0.0f));
+	return float3(cos(phi) * sinTheta, sin(phi) * sinTheta, cosTheta);
+}
+
 [shader("closesthit")]
 void ClosestHit (inout HitInfo payload, Attributes attrib)
 {
-	float3 lightPos = float3(0, 2, -3); // TODO: pass actual pos from code
+	float3 lightPos = float3(0, 2, -3); // TODO: pass actual lights from code
+	float3 lightIntensity = float3(20.0f, 20.0f, 20.0f);
 
 	// shadow
 
@@ -98,9 +146,8 @@ void ClosestHit (inout HitInfo payload, Attributes attrib)
 	const float3 toLight = lightPos - worldOrigin;
 	const float lightDistance = length(toLight);
 	const float3 lightDir = lightDistance > 1e-5f ? toLight / lightDistance : float3(0.0f, 1.0f, 0.0f);
-	float visibility = 1.0f;
 	const uint currentDepth = payload.depth;
-	const uint maxReflectionDepth = 10u;
+	const uint maxReflectionDepth = 4u;
 
 	float3 barycentrics =
 		float3(1.f - attrib.bary.x - attrib.bary.y, attrib.bary.x, attrib.bary.y);
@@ -127,31 +174,6 @@ void ClosestHit (inout HitInfo payload, Attributes attrib)
 	geometricNormal *= geomFlip;
 	normal *= shadeFlip;
 	normal = lerp(geometricNormal, normal, step(0.0f, dot(normal, geometricNormal)));
-
-	if (lightDistance > 1e-5f)
-	{
-		ShadowHitInfo shadowPayload;
-		shadowPayload.isHit = false;
-
-		RayDesc shadowRay;
-		const float shadowBias = 0.001f;
-		const float shadowSign = lerp(-1.0f, 1.0f, step(0.0f, dot(lightDir, geometricNormal)));
-		shadowRay.Origin = worldOrigin + geometricNormal * (shadowSign * shadowBias);
-		shadowRay.Direction = lightDir;
-		shadowRay.TMin = shadowBias;
-		shadowRay.TMax = max(lightDistance - shadowBias, shadowBias);
-
-		TraceRay(
-			SceneBVH,
-			RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_CULL_BACK_FACING_TRIANGLES,
-			0xFF,
-			1,
-			2,
-			1,
-			shadowRay,
-			shadowPayload);
-		visibility = shadowPayload.isHit ? 0.0f : 1.0f;
-	}
 
 	float3 tangent = normalize(v0.tangent * barycentrics.x + v1.tangent * barycentrics.y + v2.tangent * barycentrics.z);
 	tangent = normalize(mul((float3x3)ObjectToWorld3x4(), tangent));
@@ -180,31 +202,163 @@ void ClosestHit (inout HitInfo payload, Attributes attrib)
 		hitColor *= sampledColor;
 	}
 
-	const bool isMirror = gRoughness <= 1e-4f;
-	const float nDotL = saturate(dot(normal, lightDir));
-	const float3 directLighting = isMirror ? float3(0.0f, 0.0f, 0.0f) : hitColor * (visibility * nDotL);
-
-	if (currentDepth >= maxReflectionDepth)
+	const float roughness = saturate(gRoughness);
+	const bool isPerfectMirror = roughness <= 1e-4f;
+	const float metallicForDirect = saturate(gMetallic);
+	const float3 kdForDirect = (1.0f - metallicForDirect) * hitColor;
+	float3 directLighting = float3(0.0f, 0.0f, 0.0f);
+	const bool shouldSampleDirect =
+		(!isPerfectMirror) && (currentDepth == 0u) && (lightDistance > 1e-5f) && (Luminance(kdForDirect) > 1e-4f);
+	if (shouldSampleDirect)
 	{
-		payload.color = directLighting;
+		const float nDotL = saturate(dot(normal, lightDir));
+		if (nDotL > 1e-4f)
+		{
+			ShadowHitInfo shadowPayload;
+			shadowPayload.isHit = false;
+
+			RayDesc shadowRay;
+			const float shadowBias = 0.001f;
+			const float shadowSign = lerp(-1.0f, 1.0f, step(0.0f, dot(lightDir, geometricNormal)));
+			shadowRay.Origin = worldOrigin + geometricNormal * (shadowSign * shadowBias);
+			shadowRay.Direction = lightDir;
+			shadowRay.TMin = shadowBias;
+			shadowRay.TMax = max(lightDistance - shadowBias, shadowBias);
+
+			TraceRay(
+				SceneBVH,
+				RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH | RAY_FLAG_CULL_BACK_FACING_TRIANGLES,
+				0xFF,
+				1,
+				2,
+				1,
+				shadowRay,
+				shadowPayload);
+
+			const float visibility = shadowPayload.isHit ? 0.0f : 1.0f;
+			const float distanceAttenuation = 1.0f / max(lightDistance * lightDistance, 1e-4f);
+			directLighting = kdForDirect * (visibility * nDotL) * lightIntensity * distanceAttenuation;
+		}
+	}
+
+	if (gEmissiveIntensity > 0.f)
+	{
+		payload.color = gEmissive.rgb * gEmissiveIntensity * hitColor;
 		payload.distance = RayTCurrent();
 		payload.depth = currentDepth;
 		return;
 	}
 
-	float3 bounceDir;
-	if (isMirror)
+	if (currentDepth >= maxReflectionDepth)
+	{
+		payload.color = float3(0.f, 0.f, 0.f);
+		payload.distance = RayTCurrent();
+		payload.depth = currentDepth;
+		return;
+	}
+
+	// Russian roulette: probabilistically terminate long paths while keeping
+	// expected energy by reweighting survivors.
+	const uint rrStartDepth = 2u;
+	float rrWeight = 1.0f;
+	if (!isPerfectMirror && currentDepth >= rrStartDepth)
+	{
+		float continueProbability = saturate(max(hitColor.r, max(hitColor.g, hitColor.b)));
+		continueProbability = max(continueProbability, 0.1f);
+		if (NextFloat01(payload.rngState) > continueProbability)
+		{
+			payload.color = float3(0.f, 0.f, 0.f);
+			payload.distance = RayTCurrent();
+			payload.depth = currentDepth;
+			return;
+		}
+		rrWeight = 1.0f / continueProbability;
+	}
+
+	float3 bounceDir = 0.0f.xxx;
+	float3 sampleWeight = 0.0f.xxx;
+	if (isPerfectMirror)
 	{
 		bounceDir = normalize(reflect(hitDir, normal));
+		sampleWeight = hitColor;
 	}
 	else
 	{
-		float u1 = NextFloat01(payload.rngState);
-		float u2 = NextFloat01(payload.rngState);
-		float r = sqrt(u1); // we don't want to oversample the center
-		float phi = 2.0f * 3.14159265359f * u2;
-		bounceDir = float3(r * cos(phi), r * sin(phi), sqrt(1.0f - u1)); // unit hemisphere dir
-		bounceDir = normalize(mul(bounceDir, tangentToWorld));
+		const float3 v = normalize(-hitDir);
+		const float nDotV = saturate(dot(normal, v));
+		if (nDotV <= 1e-5f)
+		{
+			payload.color = directLighting;
+			payload.distance = RayTCurrent();
+			payload.depth = currentDepth;
+			return;
+		}
+
+		const float alpha = max(roughness * roughness, 0.02f);
+		const float metallic = saturate(gMetallic);
+		const float3 f0 = lerp(0.04f.xxx, hitColor, metallic);
+		const float3 kd = (1.0f - metallic) * hitColor;
+
+		const float3 fView = FresnelSchlick(nDotV, f0);
+		const float specStrength = Luminance(fView);
+		const float diffStrength = Luminance(kd);
+		float pSpec = specStrength / max(specStrength + diffStrength, 1e-6f);
+		if (metallic > 0.999f)
+		{
+			pSpec = 1.0f;
+		}
+		else
+		{
+			pSpec = clamp(pSpec, 0.05f, 0.95f);
+		}
+
+		const float choose = NextFloat01(payload.rngState);
+		const float u1 = NextFloat01(payload.rngState);
+		const float u2 = NextFloat01(payload.rngState);
+		if (choose < pSpec)
+		{
+			float3 h = SampleGgxHalfVector(u1, u2, alpha);
+			h = normalize(mul(h, tangentToWorld));
+			bounceDir = normalize(reflect(-v, h));
+		}
+		else
+		{
+			float3 localDir = SampleCosineHemisphere(u1, u2);
+			bounceDir = normalize(mul(localDir, tangentToWorld));
+		}
+
+		const float nDotL = saturate(dot(normal, bounceDir));
+		if (nDotL <= 1e-5f)
+		{
+			payload.color = directLighting;
+			payload.distance = RayTCurrent();
+			payload.depth = currentDepth;
+			return;
+		}
+
+		const float3 h = normalize(v + bounceDir);
+		const float nDotH = saturate(dot(normal, h));
+		const float vDotH = saturate(dot(v, h));
+
+		const float d = D_Ggx(nDotH, alpha);
+		const float g = G_SmithGgx(nDotV, nDotL, alpha);
+		const float3 f = FresnelSchlick(vDotH, f0);
+
+		const float3 fSpec = (d * g * f) / max(4.0f * nDotV * nDotL, 1e-6f);
+		const float3 fDiff = kd / Pi;
+		const float3 bsdf = fDiff + fSpec;
+
+		const float pdfDiff = nDotL / Pi;
+		const float pdfSpec = (d * nDotH) / max(4.0f * vDotH, 1e-6f);
+		const float pdf = pSpec * pdfSpec + (1.0f - pSpec) * pdfDiff;
+		if (pdf <= 1e-6f)
+		{
+			payload.color = directLighting;
+			payload.distance = RayTCurrent();
+			payload.depth = currentDepth;
+			return;
+		}
+		sampleWeight = bsdf * (nDotL / pdf);
 	}
 
 	RayDesc reflectedRay;
@@ -230,9 +384,7 @@ void ClosestHit (inout HitInfo payload, Attributes attrib)
 		reflectedRay,
 		reflectedPayload);
 
-	payload.color = isMirror
-						? reflectedPayload.color * hitColor
-						: directLighting + reflectedPayload.color * hitColor;
+	payload.color = directLighting + reflectedPayload.color * sampleWeight * rrWeight;
 	payload.distance = RayTCurrent();
 	payload.depth = currentDepth;
 	payload.rngState = reflectedPayload.rngState;
