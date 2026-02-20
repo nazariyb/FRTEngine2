@@ -406,20 +406,76 @@ void ClosestHit(inout HitInfo payload, Attributes attrib)
 		return;
 	}
 
-	// ── 7. Path depth limit ───────────────────────────────────────────────
-	// Terminate paths that have bounced too many times.
-	// TODO: review item — currently returns black, losing any direct lighting
-	//       computed at this vertex (bug #4).  Becomes relevant once NEE runs
-	//       at all depths (bug #1 fix).
+	// ── 7. Direct lighting  (Next-Event Estimation) ─────────────────────
+	// Explicitly connect this path vertex to the light source and evaluate the
+	// full Cook-Torrance BRDF.  Done before the depth/RR checks so every early
+	// exit can return the direct contribution instead of black.
+	//
+	// TODO: review item — hardcoded light position/intensity (item #6)
+
+	const float3 V = normalize(-rayDir);       // view direction: outgoing, toward camera
+
+	float3 directLighting = float3(0.0f, 0.0f, 0.0f);
+	if (!isPerfectMirror)
+	{
+		const float3 lightPos      = float3(0.0f, 2.0f, -3.0f);
+		const float3 lightRadiance = float3(20.0f, 20.0f, 20.0f);
+
+		const float3 toLight   = lightPos - hitPos;
+		const float  lightDist = length(toLight);
+		const float3 L         = lightDist > 1e-5f ? toLight / lightDist : float3(0.0f, 1.0f, 0.0f);
+
+		const float NoL = saturate(dot(N, L));
+		if (lightDist > 1e-5f && NoL > 1e-4f)
+		{
+			// Offset origin along Ng so the ray doesn't hit its own triangle.
+			// Sign pushes toward the same side of the surface as the light.
+			const float  shadowSign   = dot(L, Ng) >= 0.0f ? 1.0f : -1.0f;
+			const float3 shadowOrigin = hitPos + Ng * (shadowSign * 0.001f);
+			const float  visibility   = TraceShadowRay(shadowOrigin, L, lightDist - 0.001f);
+
+			if (visibility > 0.0f)
+			{
+				// Inverse-square attenuation: E = Φ / (4π·d²), simplified to 1/d²
+				const float attenuation = 1.0f / max(lightDist * lightDist, 1e-4f);
+
+				// Full Cook-Torrance BRDF for the direct sample:
+				//   f = f_diff + f_spec
+				//   f_diff = kd / π                            (Lambertian)
+				//   f_spec = (D·G·F) / (4·NoV·NoL)            (Cook-Torrance)
+				const float  NoV   = saturate(dot(N, V));
+				const float  alpha = max(roughness * roughness, 0.02f);
+				const float3 f0    = lerp(0.04f.xxx, albedo, metallic);
+				const float3 kd    = (1.0f - metallic) * albedo;
+
+				const float3 H    = normalize(V + L);
+				const float  NoH  = saturate(dot(N, H));
+				const float  VoH  = saturate(dot(V, H));
+
+				const float  D    = D_GGX(NoH, alpha);
+				const float  G    = G_Smith(NoV, NoL, alpha);
+				const float3 F    = F_Schlick(VoH, f0);
+
+				const float3 fSpec = (D * G * F) / max(4.0f * NoV * NoL, kEpsilon);
+				const float3 fDiff = kd / kPi;
+
+				directLighting = (fDiff + fSpec) * NoL * lightRadiance * attenuation * visibility;
+			}
+		}
+	}
+
+	// ── 8. Path depth limit ───────────────────────────────────────────────
+	// Terminate paths that have bounced kMaxBounces times.  Return direct
+	// lighting already computed at this vertex rather than discarding it.
 	if (depth >= kMaxBounces)
 	{
-		payload.color    = float3(0.0f, 0.0f, 0.0f);   // no env/sky yet (review item)
+		payload.color    = directLighting;      // no env/sky yet (review item)
 		payload.distance = RayTCurrent();
 		payload.depth    = depth;
 		return;
 	}
 
-	// ── 8. Russian Roulette path termination ─────────────────────────────
+	// ── 9. Russian Roulette path termination ─────────────────────────────
 	// Probabilistically kill low-throughput paths starting at kRussianRouletteDepth.
 	// Surviving paths are reweighted by 1/p to keep the estimator unbiased.
 	// Continuation probability is clamped to ≥ 0.1 to prevent infinite variance.
@@ -430,57 +486,12 @@ void ClosestHit(inout HitInfo payload, Attributes attrib)
 		pContinue = max(pContinue, 0.1f);
 		if (NextFloat01(payload.rngState) > pContinue)
 		{
-			payload.color    = float3(0.0f, 0.0f, 0.0f);
+			payload.color    = directLighting;   // return direct contribution of this vertex
 			payload.distance = RayTCurrent();
 			payload.depth    = depth;
 			return;
 		}
 		rrWeight = 1.0f / pContinue;
-	}
-
-	// ── 9. Direct lighting  (Next-Event Estimation) ───────────────────────
-	// Explicitly connect the current path vertex to the light source and trace
-	// one shadow ray.  NEE greatly reduces variance for direct illumination
-	// compared to relying on the indirect bounce to accidentally hit the light.
-	//
-	// TODO: review item — currently only runs at depth 0 (bug #1)
-	// TODO: review item — currently only diffuse; no specular highlight (bug #2)
-	// TODO: review item — hardcoded light position/intensity (item #6)
-
-	const float3 V = normalize(-rayDir);       // view direction: outgoing, toward camera
-
-	float3 directLighting = float3(0.0f, 0.0f, 0.0f);
-	{
-		const float3 lightPos       = float3(0.0f, 2.0f, -3.0f);
-		const float3 lightRadiance  = float3(20.0f, 20.0f, 20.0f);
-
-		const float3 toLight     = lightPos - hitPos;
-		const float  lightDist   = length(toLight);
-		const float3 L           = lightDist > 1e-5f ? toLight / lightDist : float3(0.0f, 1.0f, 0.0f);
-		const float3 kd          = (1.0f - metallic) * albedo;
-
-		// TODO: remove the depth == 0 guard to enable NEE at all path vertices (bug #1)
-		const bool shouldSampleDirect =
-			(!isPerfectMirror) && (depth == 0u) && (lightDist > 1e-5f) && (Luminance(kd) > 1e-4f);
-
-		if (shouldSampleDirect)
-		{
-			const float NoL = saturate(dot(N, L));
-			if (NoL > 1e-4f)
-			{
-				// Offset the shadow ray origin along Ng to avoid self-intersection.
-				// Sign is chosen so the offset pushes toward the light side of the surface.
-				const float  shadowSign   = dot(L, Ng) >= 0.0f ? 1.0f : -1.0f;
-				const float3 shadowOrigin = hitPos + Ng * (shadowSign * 0.001f);
-				const float  visibility   = TraceShadowRay(shadowOrigin, L, lightDist - 0.001f);
-
-				// Inverse-square attenuation: E = Φ / (4π * d²),  simplified to 1/d²
-				const float  attenuation = 1.0f / max(lightDist * lightDist, 1e-4f);
-
-				// TODO: add specular BRDF term here (bug #2) — currently Lambertian only
-				directLighting = kd * NoL * lightRadiance * attenuation * visibility;
-			}
-		}
 	}
 
 	// ── 10. Indirect lighting  (BSDF-sampled bounce ray) ─────────────────
@@ -493,8 +504,8 @@ void ClosestHit(inout HitInfo payload, Attributes attrib)
 	{
 		// Perfect specular mirror — reflect the incident ray exactly.
 		// reflect() of unit vectors produces a unit vector, no normalize needed.
-		const float3 wi          = reflect(rayDir, N);
-		const float  originSign  = dot(wi, Ng) >= 0.0f ? 1.0f : -1.0f;
+		const float3 wi         = reflect(rayDir, N);
+		const float  originSign = dot(wi, Ng) >= 0.0f ? 1.0f : -1.0f;
 
 		RayDesc bounceRay;
 		bounceRay.Origin    = hitPos + Ng * (originSign * 0.001f);
