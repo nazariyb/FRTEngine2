@@ -53,6 +53,7 @@ struct SPassConstants
 	float TotalTime = 0.f;
 	float DeltaTime = 0.f;
 	uint32 FrameIndex = 0u;
+	uint32 RaytracingSampleCount = 32u;   // samples per pixel per frame
 };
 
 

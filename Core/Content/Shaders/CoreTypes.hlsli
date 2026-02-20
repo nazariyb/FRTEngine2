@@ -36,6 +36,7 @@ cbuffer PassConstantBuffer : register(b2)
 	float gTotalTime;
 	float gDeltaTime;
 	uint gFrameIndex;
+	uint gRaytracingSampleCount;   // samples per pixel per frame; tunable at runtime without shader recompile
 }
 
 struct VSInput

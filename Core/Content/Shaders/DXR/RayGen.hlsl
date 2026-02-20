@@ -14,7 +14,7 @@ void RayGen ()
 	uint2 launchIndex = DispatchRaysIndex().xy;
 	float2 dims = float2(DispatchRaysDimensions().xy);
 
-	const uint sampleCount = 32u;
+	const uint sampleCount = gRaytracingSampleCount;   // set via PassConstantBuffer; no shader recompile needed to tune
 	float3 accumulatedColor = 0.f;
 	for (uint i = 0; i < sampleCount; ++i)
 	{

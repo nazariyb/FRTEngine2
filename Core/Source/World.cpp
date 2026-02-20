@@ -331,6 +331,8 @@ void CWorld::CopyConstantData ()
 	passConstants.TotalTime = GameInstance::GetInstance().GetTime().GetTotalSeconds();
 	passConstants.DeltaTime = GameInstance::GetInstance().GetTime().GetDeltaSeconds();
 	passConstants.FrameIndex = static_cast<uint32>(GameInstance::GetInstance().GetFrameCount());
+	// RaytracingSampleCount left at its default (32); set here to make it visible and easy to tune
+	// passConstants.RaytracingSampleCount = 32u;
 
 	currentFrameResources.PassCB.CopyBunch(&passConstants, 1u, currentFrameResources.UploadArena);
 }
