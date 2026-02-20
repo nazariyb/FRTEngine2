@@ -398,10 +398,9 @@ void ClosestHit(inout HitInfo payload, Attributes attrib)
 	// ── 6. Emissive early-out ─────────────────────────────────────────────
 	// Emissive surfaces are treated as light sources: they terminate the path
 	// and return their own emission.  Emissive energy is independent of albedo.
-	// TODO: review item — currently multiplied by albedo (bug #3)
 	if (gEmissiveIntensity > 0.0f)
 	{
-		payload.color    = gEmissive.rgb * gEmissiveIntensity * albedo;
+		payload.color    = gEmissive.rgb * gEmissiveIntensity;
 		payload.distance = RayTCurrent();
 		payload.depth    = depth;
 		return;

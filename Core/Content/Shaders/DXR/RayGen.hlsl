@@ -36,8 +36,10 @@ void RayGen ()
 		const float2 jitter = float2(NextFloat01(payload.rngState), NextFloat01(payload.rngState)); // in-pixel sample [0,1)
 		const float2 samplePos = launchIndex.xy + jitter;
 		const float2 d = ((samplePos / dims.xy) * 2.f - 1.f);
-		float4 target = mul(gProjInv, float4(d.x, -d.y, 1, 1));
-		ray.Direction = mul(gViewInv, float4(target.xyz, 0));
+		// gProjInv maps clip-space to view-space; w is not necessarily 1, so
+		// divide by w before rotating to world space (perspective divide).
+		const float4 target = mul(gProjInv, float4(d.x, -d.y, 1.0f, 1.0f));
+		ray.Direction = normalize(mul(gViewInv, float4(target.xyz / target.w, 0.0f)).xyz);
 		ray.TMin = 0;
 		ray.TMax = 100000;
 
