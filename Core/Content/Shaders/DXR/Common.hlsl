@@ -1,15 +1,16 @@
 // Shared core types/constant buffers
 #include "../CoreTypes.hlsli"
 
-// Hit information, aka ray payload
-// This sample carries shading color, hit distance, and recursion depth.
-// Note that the payload should be kept as small as possible,
-// and that its size must be declared in the corresponding
-// D3D12_RAYTRACING_SHADER_CONFIG pipeline subobjet.
+// Hit information, aka ray payload.
+// Kept minimal to reduce register pressure and SER bandwidth:
+//   float3 color    — accumulated radiance                  (12 bytes)
+//   uint   depth    — current bounce depth                   (4 bytes)
+//   uint   rngState — hash-based PRNG state                  (4 bytes)
+// Total: 20 bytes.
+// Size must match the MaxPayloadSizeInBytes in D3D12_RAYTRACING_SHADER_CONFIG.
 struct HitInfo
 {
 	float3 color;
-	float distance;
 	uint depth;
 	uint rngState;
 };

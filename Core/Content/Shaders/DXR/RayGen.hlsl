@@ -20,9 +20,7 @@ void RayGen ()
 	{
 		// Initialize the ray payload
 		HitInfo payload;
-		// payload.color = float3(0.15, 0.05, 0.5);
 		payload.color = float3(0.0f, 0.0f, 0.0f);
-		payload.distance = 0.0f;
 		payload.depth = 0u;
 		payload.rngState =
 			launchIndex.x * 1973u ^

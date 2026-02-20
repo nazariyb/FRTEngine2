@@ -396,13 +396,14 @@ void ClosestHit(inout HitInfo payload, Attributes attrib)
 	const bool  isPerfectMirror = (roughness <= 1e-4f);
 
 	// ── 6. Emissive early-out ─────────────────────────────────────────────
-	// Emissive surfaces are treated as light sources: they terminate the path
-	// and return their own emission.  Emissive energy is independent of albedo.
+	// Emissive surfaces terminate the path and return their own emission.
+	// Multiplied by albedo so the emissive colour is tinted by the surface colour
+	// (e.g. a red-painted lamp glows red).  Not physically correct but matches
+	// the common content-authoring convention where albedo doubles as an emissive mask.
 	if (gEmissiveIntensity > 0.0f)
 	{
-		payload.color    = gEmissive.rgb * gEmissiveIntensity;
-		payload.distance = RayTCurrent();
-		payload.depth    = depth;
+		payload.color = gEmissive.rgb * gEmissiveIntensity * albedo;
+		payload.depth = depth;
 		return;
 	}
 
@@ -469,9 +470,8 @@ void ClosestHit(inout HitInfo payload, Attributes attrib)
 	// lighting already computed at this vertex rather than discarding it.
 	if (depth >= kMaxBounces)
 	{
-		payload.color    = directLighting;      // no env/sky yet (review item)
-		payload.distance = RayTCurrent();
-		payload.depth    = depth;
+		payload.color = directLighting;      // no env/sky yet (review item)
+		payload.depth = depth;
 		return;
 	}
 
@@ -486,9 +486,8 @@ void ClosestHit(inout HitInfo payload, Attributes attrib)
 		pContinue = max(pContinue, 0.1f);
 		if (NextFloat01(payload.rngState) > pContinue)
 		{
-			payload.color    = directLighting;   // return direct contribution of this vertex
-			payload.distance = RayTCurrent();
-			payload.depth    = depth;
+			payload.color = directLighting;   // return direct contribution of this vertex
+			payload.depth = depth;
 			return;
 		}
 		rrWeight = 1.0f / pContinue;
@@ -552,7 +551,6 @@ void ClosestHit(inout HitInfo payload, Attributes attrib)
 
 	// ── 11. Combine ───────────────────────────────────────────────────────
 
-	payload.color    = directLighting + bounceRadiance;
-	payload.distance = RayTCurrent();
-	payload.depth    = depth;
+	payload.color = directLighting + bounceRadiance;
+	payload.depth = depth;
 }
