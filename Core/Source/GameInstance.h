@@ -3,7 +3,8 @@
 #include "Core.h"
 #include "Singleton.h"
 #include "Window.h"
-#include "World.h"
+#include "Sys_MeshRenderer.h"
+#include "WorldScene.h"
 #include "Graphics/Render/RenderCommonTypes.h"
 #include "Input/InputActionLibrary.h"
 #include "Input/InputSystem.h"
@@ -70,6 +71,9 @@ public:
 
 	uint64 GetFrameCount () const;
 
+	CWorldScene& GetWorldScene () { return World; }
+	const CWorldScene& GetWorldScene () const { return World; }
+
 protected:
 	void CalculateFrameStats () const;
 
@@ -92,7 +96,8 @@ protected:
 	memory::TRefShared<graphics::CCamera> Camera;
 
 #endif
-	memory::TRefUnique<CWorld> World;
+	CWorldScene World;
+	memory::TRefWeak<Sys_MeshRenderer> MeshRenderer;
 	input::CInputSystem InputSystem;
 	input::CInputActionLibrary InputActionLibrary;
 	input::SInputActionMapAsset* ActiveActionMap = nullptr;

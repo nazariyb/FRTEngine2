@@ -81,6 +81,7 @@ struct SFlags
 	SFlags& operator -= (SFlags InFlags);
 
 	SFlags& operator << (SNewFlagState<E> NewFlagState);
+	SFlags& operator ^= (E Flag);
 
 	bool operator && (E Flag) const;
 	bool operator && (SFlags OtherFlags) const;
@@ -91,6 +92,7 @@ struct SFlags
 	SFlags& RemoveFlags (SFlags InFlags);
 
 	SFlags& SetFlagState (SNewFlagState<E> NewFlagState);
+	SFlags& ToggleFlagState (E Flag);
 
 	bool HasFlag (E Flag) const;
 	bool HasAll (SFlags OtherFlags) const;
@@ -114,6 +116,12 @@ template <frt::flags::FlagEnum E, frt::concepts::Unsigned UnderlyingType>
 SFlags<E, UnderlyingType>& SFlags<E, UnderlyingType>::operator<< (SNewFlagState<E> NewFlagState)
 {
 	return SetFlagState(NewFlagState);
+}
+
+template <frt::flags::FlagEnum E, frt::concepts::Unsigned UnderlyingType>
+SFlags<E, UnderlyingType>& SFlags<E, UnderlyingType>::operator^= (E Flag)
+{
+	return ToggleFlagState(Flag);
 }
 
 template <frt::flags::FlagEnum E, frt::concepts::Unsigned UnderlyingType>
@@ -159,6 +167,13 @@ SFlags<E, UnderlyingType>& SFlags<E, UnderlyingType>::SetFlagState (SNewFlagStat
 	{
 		RemoveFlags(NewFlagState.Flag);
 	}
+	return *this;
+}
+
+template <frt::flags::FlagEnum E, frt::concepts::Unsigned UnderlyingType>
+SFlags<E, UnderlyingType>& SFlags<E, UnderlyingType>::ToggleFlagState (E Flag)
+{
+	Flags ^= static_cast<UnderlyingType>(Flag);
 	return *this;
 }
 

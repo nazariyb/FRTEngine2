@@ -1,4 +1,4 @@
-﻿#include "World.h"
+﻿#include "Sys_MeshRenderer.h"
 
 #include <cstring>
 #include <unordered_map>
@@ -31,27 +31,30 @@ bool AreMatricesEqual (const DirectX::XMFLOAT4X4& A, const DirectX::XMFLOAT4X4& 
 }
 
 #if !defined(FRT_HEADLESS)
-CWorld::CWorld (memory::TRefWeak<graphics::CRenderer> InRenderer)
+Sys_MeshRenderer::Sys_MeshRenderer (memory::TRefWeak<graphics::CRenderer> InRenderer)
 	: Renderer(InRenderer)
 {}
 #else
-CWorld::CWorld ()
+Sys_MeshRenderer::CWorld ()
 {}
 #endif
 
-void CWorld::Tick (float DeltaSeconds)
+SFlags<EUpdatePhase>& Sys_MeshRenderer::GetPhases ()
 {
-	for (auto& entity : Entities)
-	{
-		entity->Tick(DeltaSeconds);
-	}
+	return SFlags<EUpdatePhase>()
+			.AddFlags(EUpdatePhase::Update)
+			.AddFlags(EUpdatePhase::Draw);
+}
+
+void Sys_MeshRenderer::Tick (float DeltaSeconds)
+{
 #ifndef FRT_HEADLESS
 	CopyConstantData();
 #endif
 }
 
 #ifndef FRT_HEADLESS
-void CWorld::Present (float DeltaSeconds, ID3D12GraphicsCommandList4* CommandList)
+void Sys_MeshRenderer::Present (float DeltaSeconds, ID3D12GraphicsCommandList4* CommandList)
 {
 	auto& currentFrameResources = Renderer->GetCurrentFrameResource();
 
@@ -61,16 +64,9 @@ void CWorld::Present (float DeltaSeconds, ID3D12GraphicsCommandList4* CommandLis
 	TArray<graphics::CRenderer::SRaytracingMaterialTextureSet> rtMaterialTextureSets;
 	TArray<graphics::CRenderer::SRaytracingHitGroupEntry> rtHitGroupEntries;
 
-	for (uint32 i = 0; i < Entities.Count(); ++i)
+	for (auto RenderModel : RenderModels)
 	{
-		CEntity* entity = Entities[i].GetRawIgnoringLifetime();
-		frt_assert(entity);
-		if (!entity->RenderModel.Model)
-		{
-			continue;
-		}
-
-		graphics::SRenderModel& model = *entity->RenderModel.Model;
+		graphics::SRenderModel& model = *RenderModel->Model;
 		for (const graphics::SRenderSection& section : model.Sections)
 		{
 			if (section.MaterialIndex >= model.Materials.Count())
@@ -127,7 +123,7 @@ void CWorld::Present (float DeltaSeconds, ID3D12GraphicsCommandList4* CommandLis
 		rtHitGroupEntries.Reset(AsEntities.Count());
 		for (uint32 i = 0; i < AsEntities.Count(); ++i)
 		{
-			CEntity* entity = AsEntities[i];
+			const CEntity* entity = AsEntities[i];
 			const graphics::SRenderModel* model = AsModels[i];
 			frt_assert(entity && model && model->VertexBufferGpu && model->IndexBufferGpu);
 
@@ -180,13 +176,9 @@ void CWorld::Present (float DeltaSeconds, ID3D12GraphicsCommandList4* CommandLis
 	memory::TRefWeak<graphics::CRenderer> renderer = GameInstance::GetInstance().GetRenderer();
 
 	auto& ObjectDescriptorHandles = currentFrameResources.ObjectCB.DescriptorHeapHandleGpu;
-	for (uint32 i = 0; i < Entities.Count(); ++i)
+	for (uint32 i = 0; i < RenderModels.Count(); ++i)
 	{
-		if (!Entities[i]->RenderModel.Model)
-		{
-			continue;
-		}
-		const graphics::SRenderModel& model = *Entities[i]->RenderModel.Model;
+		const graphics::SRenderModel& model = *RenderModels[i]->Model;
 		if (!model.VertexBufferGpu || !model.IndexBufferGpu)
 		{
 			continue;
@@ -199,72 +191,67 @@ void CWorld::Present (float DeltaSeconds, ID3D12GraphicsCommandList4* CommandLis
 				ObjectDescriptorHandles[i]);
 		}
 
-		if (Entities[i]->bRayTraced)
-		{}
-		// else // if ray-traced
 		{
-			{
-				D3D12_INDEX_BUFFER_VIEW indexBufferView = {};
-				indexBufferView.BufferLocation = model.IndexBufferGpu->GetGPUVirtualAddress();
-				indexBufferView.SizeInBytes = model.Indices.Count() * sizeof(uint32);
-				indexBufferView.Format = DXGI_FORMAT_R32_UINT;
-				CommandList->IASetIndexBuffer(&indexBufferView);
-			}
-			{
-				D3D12_VERTEX_BUFFER_VIEW vertexBufferViews[1] = {};
-				vertexBufferViews[0].BufferLocation = model.VertexBufferGpu->GetGPUVirtualAddress();
-				vertexBufferViews[0].SizeInBytes = model.Vertices.Count() * sizeof(graphics::SVertex);
-				vertexBufferViews[0].StrideInBytes = sizeof(graphics::SVertex);
-				CommandList->IASetVertexBuffers(0, 1, vertexBufferViews);
-			}
+			D3D12_INDEX_BUFFER_VIEW indexBufferView = {};
+			indexBufferView.BufferLocation = model.IndexBufferGpu->GetGPUVirtualAddress();
+			indexBufferView.SizeInBytes = model.Indices.Count() * sizeof(uint32);
+			indexBufferView.Format = DXGI_FORMAT_R32_UINT;
+			CommandList->IASetIndexBuffer(&indexBufferView);
+		}
+		{
+			D3D12_VERTEX_BUFFER_VIEW vertexBufferViews[1] = {};
+			vertexBufferViews[0].BufferLocation = model.VertexBufferGpu->GetGPUVirtualAddress();
+			vertexBufferViews[0].SizeInBytes = model.Vertices.Count() * sizeof(graphics::SVertex);
+			vertexBufferViews[0].StrideInBytes = sizeof(graphics::SVertex);
+			CommandList->IASetVertexBuffers(0, 1, vertexBufferViews);
+		}
 
-			for (uint32 sectionIndex = 0; sectionIndex < model.Sections.Count(); ++sectionIndex)
+		for (uint32 sectionIndex = 0; sectionIndex < model.Sections.Count(); ++sectionIndex)
+		{
+			const graphics::SRenderSection& section = model.Sections[sectionIndex];
+			if (section.MaterialIndex < model.Materials.Count())
 			{
-				const graphics::SRenderSection& section = model.Sections[sectionIndex];
-				if (section.MaterialIndex < model.Materials.Count())
+				memory::TRefShared<graphics::SMaterial> material = model.Materials[section.MaterialIndex];
+				D3D12_GPU_DESCRIPTOR_HANDLE textureHandle = renderer->GetDefaultWhiteTextureGpu();
+				if (material && material->bHasBaseColorTexture)
 				{
-					memory::TRefShared<graphics::SMaterial> material = model.Materials[section.MaterialIndex];
-					D3D12_GPU_DESCRIPTOR_HANDLE textureHandle = renderer->GetDefaultWhiteTextureGpu();
-					if (material && material->bHasBaseColorTexture)
-					{
-						textureHandle = material->BaseColorTexture.GpuDescriptor;
-					}
-
-					CommandList->SetGraphicsRootDescriptorTable(
-						render::constants::RootParam_BaseColorTexture,
-						textureHandle);
-
-					if (material)
-					{
-						ID3D12PipelineState* pipelineState = renderer->GetPipelineStateForMaterial(*material);
-						if (pipelineState)
-						{
-							CommandList->SetPipelineState(pipelineState);
-						}
-
-						graphics::SFrameResources& frameResources = renderer->GetCurrentFrameResource();
-						const auto& materialHandles = frameResources.MaterialCB.DescriptorHeapHandleGpu;
-						if (material->RuntimeIndex < materialHandles.size())
-						{
-							CommandList->SetGraphicsRootDescriptorTable(
-								render::constants::RootParam_MaterialCbv,
-								materialHandles[material->RuntimeIndex]);
-						}
-					}
+					textureHandle = material->BaseColorTexture.GpuDescriptor;
 				}
 
-				CommandList->DrawIndexedInstanced(
-					section.IndexCount,
-					1,
-					section.IndexOffset,
-					section.VertexOffset,
-					0);
+				CommandList->SetGraphicsRootDescriptorTable(
+					render::constants::RootParam_BaseColorTexture,
+					textureHandle);
+
+				if (material)
+				{
+					ID3D12PipelineState* pipelineState = renderer->GetPipelineStateForMaterial(*material);
+					if (pipelineState)
+					{
+						CommandList->SetPipelineState(pipelineState);
+					}
+
+					graphics::SFrameResources& frameResources = renderer->GetCurrentFrameResource();
+					const auto& materialHandles = frameResources.MaterialCB.DescriptorHeapHandleGpu;
+					if (material->RuntimeIndex < materialHandles.size())
+					{
+						CommandList->SetGraphicsRootDescriptorTable(
+							render::constants::RootParam_MaterialCbv,
+							materialHandles[material->RuntimeIndex]);
+					}
+				}
 			}
+
+			CommandList->DrawIndexedInstanced(
+				section.IndexCount,
+				1,
+				section.IndexOffset,
+				section.VertexOffset,
+				0);
 		}
 	}
 }
 
-void CWorld::InitializeRendering ()
+void Sys_MeshRenderer::InitializeRendering ()
 {
 	Renderer->BeginInitializationCommands();
 	CreateAccelerationStructures();
@@ -272,30 +259,8 @@ void CWorld::InitializeRendering ()
 	Renderer->EndInitializationCommands();
 }
 
-void CWorld::CopyConstantData ()
+void Sys_MeshRenderer::CopyConstantData ()
 {
-	// TODO: ideally, CBs should already be stored in one array
-	// TODO: use (when it's implemented) memory pool
-	const uint32 entityCount = Entities.Count();
-	Renderer->EnsureObjectConstantCapacity(entityCount);
-
-	auto& currentFrameResources = Renderer->GetCurrentFrameResource();
-
-	if (entityCount > 0u)
-	{
-		TArray<graphics::SObjectConstants> objectConstants;
-		objectConstants.SetSizeUninitialized(entityCount);
-		for (uint32 i = 0; i < entityCount; ++i)
-		{
-			objectConstants[i].World = Entities[i]->Transform.GetMatrix();
-		}
-
-		currentFrameResources.ObjectCB.CopyBunch(
-			objectConstants.GetData(),
-			objectConstants.Count(),
-			currentFrameResources.UploadArena);
-	}
-
 	using namespace DirectX;
 
 	graphics::SPassConstants passConstants;
@@ -335,24 +300,24 @@ void CWorld::CopyConstantData ()
 	// passConstants.RaytracingSampleCount = 32u;
 
 	// ── Accumulation frame counter ────────────────────────────────────────
-	// Reset on any scene change: camera movement, object transforms (set via
-	// bAccumulationDirty by UpdateAccelerationStructures), or topology.
-	// Resetting on movement guarantees history is always valid — no ghosting,
-	// just transient noise that re-converges via 1/(N+1) running average.
+	// Reset on any scene change: camera movement, object transforms, or topology.
+	// bAccumulationDirty is owned by CWorldScene; renderers and systems set it
+	// there so all consumers share one authoritative signal.
+	CWorldScene& scene = GameInstance::GetInstance().GetWorldScene();
 	{
 		DirectX::XMFLOAT4X4 currentView;
 		XMStoreFloat4x4(&currentView, view);
 		if (!AreMatricesEqual(currentView, PrevCameraViewMatrix))
 		{
-			bAccumulationDirty = true;
+			scene.bAccumulationDirty = true;
 			PrevCameraViewMatrix = currentView;
 		}
 	}
 
-	if (bAccumulationDirty)
+	if (scene.bAccumulationDirty)
 	{
 		AccumulationFrameIndex = 0u;
-		bAccumulationDirty = false;
+		scene.bAccumulationDirty = false;
 	}
 	else
 	{
@@ -361,10 +326,11 @@ void CWorld::CopyConstantData ()
 
 	passConstants.AccumulationFrameIndex = AccumulationFrameIndex;
 
+	auto& currentFrameResources = Renderer->GetCurrentFrameResource();
 	currentFrameResources.PassCB.CopyBunch(&passConstants, 1u, currentFrameResources.UploadArena);
 }
 
-void CWorld::UploadCB (ID3D12GraphicsCommandList4* CommandList)
+void Sys_MeshRenderer::UploadCB (ID3D12GraphicsCommandList4* CommandList)
 {
 	auto& currentFrameResources = Renderer->GetCurrentFrameResource();
 
@@ -372,17 +338,24 @@ void CWorld::UploadCB (ID3D12GraphicsCommandList4* CommandList)
 }
 #endif
 
-memory::TRefShared<CEntity> CWorld::SpawnEntity ()
+memory::TRefShared<graphics::Comp_RenderModel> Sys_MeshRenderer::SpawnRenderModel ()
 {
-	auto newEntity = memory::NewShared<CEntity>();
-	Entities.Add(newEntity);
-#ifndef FRT_HEADLESS
-	bAsTopologyDirty = true;
-#endif
-	return newEntity;
+	memory::TRefShared<graphics::Comp_RenderModel> renderModel = memory::NewShared<graphics::Comp_RenderModel>();
+	RenderModels.Add(renderModel);
+	return renderModel;
 }
 
-graphics::raytracing::SAccelerationStructureBuffers CWorld::CreateBottomLevelAS (
+// memory::TRefShared<CEntity> Sys_MeshRenderer::SpawnEntity ()
+// {
+// 	auto newEntity = memory::NewShared<CEntity>();
+// 	Entities.Add(newEntity);
+// #ifndef FRT_HEADLESS
+// 	bAsTopologyDirty = true;
+// #endif
+// 	return newEntity;
+// }
+
+graphics::raytracing::SAccelerationStructureBuffers Sys_MeshRenderer::CreateBottomLevelAS (
 	const graphics::Comp_RenderModel& RenderModel)
 {
 	using namespace graphics;
@@ -490,7 +463,7 @@ graphics::raytracing::SAccelerationStructureBuffers CWorld::CreateBottomLevelAS 
 	return buffers;
 }
 
-void CWorld::CreateTopLevelAS (const TArray<SAccelerationInstance>& Instances, bool bUpdateOnly)
+void Sys_MeshRenderer::CreateTopLevelAS (const TArray<SAccelerationInstance>& Instances, bool bUpdateOnly)
 {
 	using namespace graphics;
 	using namespace graphics::raytracing;
@@ -597,7 +570,7 @@ void CWorld::CreateTopLevelAS (const TArray<SAccelerationInstance>& Instances, b
 }
 
 // definitely should be inside Renderer
-void CWorld::CreateAccelerationStructures ()
+void Sys_MeshRenderer::CreateAccelerationStructures ()
 {
 	ID3D12Device5* device = Renderer->GetDevice();
 	if (!bRaytracingSupportChecked)
@@ -610,26 +583,29 @@ void CWorld::CreateAccelerationStructures ()
 		return;
 	}
 
+	CWorldScene& scene = GameInstance::GetInstance().GetWorldScene();
+	const auto& sceneEntities = scene.GetEntities();
+
 	struct SBuildEntry
 	{
-		CEntity* Entity = nullptr;
+		const CEntity* Entity = nullptr;
 		const graphics::SRenderModel* Model = nullptr;
 		DirectX::XMFLOAT3X4 Transform = {};
 	};
 
 	std::unordered_map<graphics::SMaterial*, uint32> materialIndices;
 	TArray<SBuildEntry> buildEntries;
-	buildEntries.SetCapacity(Entities.Count());
+	buildEntries.SetCapacity(sceneEntities.Count());
 
-	for (uint32 i = 0; i < Entities.Count(); ++i)
+	for (uint32 i = 0; i < sceneEntities.Count(); ++i)
 	{
-		CEntity* entity = Entities[i].GetRawIgnoringLifetime();
-		if (!entity || !entity->RenderModel.Model)
+		const CEntity* entity = sceneEntities[i].GetRawIgnoringLifetime();
+		if (!entity || !entity->RenderModel->Model)
 		{
 			continue;
 		}
 
-		graphics::SRenderModel& model = *entity->RenderModel.Model;
+		const graphics::SRenderModel& model = *entity->RenderModel->Model;
 		for (const graphics::SRenderSection& section : model.Sections)
 		{
 			if (section.MaterialIndex >= model.Materials.Count())
@@ -637,7 +613,8 @@ void CWorld::CreateAccelerationStructures ()
 				continue;
 			}
 
-			graphics::SMaterial* material = model.Materials[section.MaterialIndex].GetRawIgnoringLifetime();
+			graphics::SMaterial* material = const_cast<graphics::SMaterial*>(model.Materials[section.MaterialIndex].
+				GetRawIgnoringLifetime());
 			if (!material)
 			{
 				continue;
@@ -673,7 +650,7 @@ void CWorld::CreateAccelerationStructures ()
 		AsTransforms.Clear();
 		Instances.Clear();
 		bAsInitialized = true;
-		bAsTopologyDirty = false;
+		scene.bSceneTopologyDirty = false;
 		return;
 	}
 
@@ -687,7 +664,7 @@ void CWorld::CreateAccelerationStructures ()
 
 	for (const SBuildEntry& entry : buildEntries)
 	{
-		bottomLevelBuffers.Add(CreateBottomLevelAS(entry.Entity->RenderModel));
+		bottomLevelBuffers.Add(CreateBottomLevelAS(*entry.Entity->GetRenderModel()));
 	}
 
 	Instances.Reset(buildEntries.Count());
@@ -714,30 +691,33 @@ void CWorld::CreateAccelerationStructures ()
 
 	Renderer->TopLevelASBuffers = TopLevelASBuffers;
 	bAsInitialized = true;
-	bAsTopologyDirty = false;
+	scene.bSceneTopologyDirty = false;
 }
 
-void CWorld::UpdateAccelerationStructures ()
+void Sys_MeshRenderer::UpdateAccelerationStructures ()
 {
 	if (!Renderer->ShouldRenderRaytracing())
 	{
 		return;
 	}
 
-	if (!bAsInitialized || bAsTopologyDirty)
+	CWorldScene& scene = GameInstance::GetInstance().GetWorldScene();
+	const auto& sceneEntities = scene.GetEntities();
+
+	if (!bAsInitialized || scene.bSceneTopologyDirty)
 	{
 		CreateAccelerationStructures();
 		if (TopLevelASBuffers.Result)
 		{
 			Renderer->InitializeRaytracingResources();
 		}
-		bAccumulationDirty = true;
+		scene.bAccumulationDirty = true;
 		return;
 	}
 
 	if (AsEntities.Count() != AsModels.Count() || AsEntities.Count() != AsTransforms.Count())
 	{
-		bAsTopologyDirty = true;
+		scene.bSceneTopologyDirty = true;
 		CreateAccelerationStructures();
 		if (TopLevelASBuffers.Result)
 		{
@@ -750,27 +730,27 @@ void CWorld::UpdateAccelerationStructures ()
 	bool bTopologyChanged = false;
 	bool bInstanceDataChanged = false;
 
-	for (uint32 i = 0; i < Entities.Count(); ++i)
+	for (uint32 i = 0; i < sceneEntities.Count(); ++i)
 	{
-		CEntity* entity = Entities[i].GetRawIgnoringLifetime();
-		if (!entity || !entity->RenderModel.Model)
+		const CEntity* entity = sceneEntities[i].GetRawIgnoringLifetime();
+		if (!entity || !entity->RenderModel->Model)
 		{
 			continue;
 		}
 
 		if (trackedIndex >= AsEntities.Count() ||
 			AsEntities[trackedIndex] != entity ||
-			AsModels[trackedIndex] != entity->RenderModel.Model.GetRawIgnoringLifetime())
+			AsModels[trackedIndex] != entity->RenderModel->Model.GetRawIgnoringLifetime())
 		{
 			bTopologyChanged = true;
 			break;
 		}
 
-		DirectX::XMFLOAT4X4 currentTransform = entity->Transform.GetMatrix();
+		DirectX::XMFLOAT4X4 currentTransform = entity->GetTransform().GetMatrix();
 		if (!AreMatricesEqual(currentTransform, AsTransforms[trackedIndex]))
 		{
 			AsTransforms[trackedIndex] = currentTransform;
-			Instances[trackedIndex].Transform = entity->Transform.GetRaytracingTransform();
+			Instances[trackedIndex].Transform = entity->GetTransform().GetRaytracingTransform();
 			bInstanceDataChanged = true;
 		}
 
@@ -791,13 +771,13 @@ void CWorld::UpdateAccelerationStructures ()
 
 	if (bTopologyChanged)
 	{
-		bAsTopologyDirty = true;
+		scene.bSceneTopologyDirty = true;
 		CreateAccelerationStructures();
 		if (TopLevelASBuffers.Result)
 		{
 			Renderer->InitializeRaytracingResources();
 		}
-		bAccumulationDirty = true;
+		scene.bAccumulationDirty = true;
 		return;
 	}
 
@@ -810,5 +790,5 @@ void CWorld::UpdateAccelerationStructures ()
 	// the stale history isn't blended with the new object positions.
 	CreateTopLevelAS(Instances, true);
 	Renderer->TopLevelASBuffers = TopLevelASBuffers;
-	bAccumulationDirty = true;
+	scene.bAccumulationDirty = true;
 }

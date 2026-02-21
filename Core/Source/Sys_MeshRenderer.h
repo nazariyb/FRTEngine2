@@ -2,22 +2,27 @@
 
 #include "CoreTypes.h"
 #include "Entity.h"
+#include "System.h"
 #include "Graphics/DXRUtils.h"
 #include "Graphics/Render/Renderer.h"
 
 
 namespace frt
 {
-class CWorld
+class Sys_MeshRenderer : public ISystem
 {
 public:
 #ifndef FRT_HEADLESS
-	CWorld () = delete;
-	explicit CWorld (memory::TRefWeak<graphics::CRenderer> InRenderer);
+	Sys_MeshRenderer () = delete;
+	explicit Sys_MeshRenderer (memory::TRefWeak<graphics::CRenderer> InRenderer);
 #else
 	CWorld ();
 #endif
-	virtual ~CWorld () = default;
+	virtual ~Sys_MeshRenderer () override {}
+
+	// System interface
+	virtual SFlags<EUpdatePhase>& GetPhases() override;
+	// ~System interface
 
 	virtual void Tick (float DeltaSeconds);
 #ifndef FRT_HEADLESS
@@ -30,7 +35,8 @@ public:
 	void UploadCB (ID3D12GraphicsCommandList4* CommandList);
 #endif
 
-	memory::TRefShared<CEntity> SpawnEntity ();
+	// memory::TRefShared<CEntity> SpawnEntity ();
+	memory::TRefShared<graphics::Comp_RenderModel> SpawnRenderModel ();
 
 private:
 #ifndef FRT_HEADLESS
@@ -44,7 +50,8 @@ public:
 #ifndef FRT_HEADLESS
 	memory::TRefWeak<graphics::CRenderer> Renderer;
 #endif
-	TArray<memory::TRefShared<CEntity>> Entities;
+	// TArray<memory::TRefShared<CEntity>> Entities;
+	TArray<memory::TRefShared<graphics::Comp_RenderModel>> RenderModels; // TODO: allocate on stack
 
 private:
 	struct SAccelerationInstance
@@ -61,21 +68,16 @@ private:
 	graphics::raytracing::SAccelerationStructureBuffers TopLevelASBuffers;
 	TArray<SAccelerationInstance> Instances;
 
-	TArray<CEntity*> AsEntities;
+	TArray<const CEntity*> AsEntities;
 	TArray<const graphics::SRenderModel*> AsModels;
 	TArray<DirectX::XMFLOAT4X4> AsTransforms;
 	bool bAsInitialized = false;
-	bool bAsTopologyDirty = true;
 	bool bRaytracingSupported = false;
 	bool bRaytracingSupportChecked = false;
 
 	// Temporal accumulation counter — increments every frame, resets to 0
-	// whenever the camera moves, any object moves, or the scene topology
-	// changes.  Resets guarantee history is always valid (no ghosting).
-	// The shader uses a pure 1/(N+1) running average — no alpha floor — so
-	// noise keeps decreasing indefinitely while the scene is static.
+	// whenever bAccumulationDirty (owned by CWorldScene) is set.
 	uint32 AccumulationFrameIndex = 0u;
 	DirectX::XMFLOAT4X4 PrevCameraViewMatrix = {};
-	bool bAccumulationDirty = true;
 };
 }

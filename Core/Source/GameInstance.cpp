@@ -88,6 +88,7 @@ static std::filesystem::path GetDefaultInputMapPath ()
 
 GameInstance::GameInstance ()
 	: FrameCount(0)
+	, World(*this)
 {
 	MemoryPool = memory::CMemoryPool(2_Gb);
 	MemoryPool.MakeThisPrimaryInstance();
@@ -117,13 +118,14 @@ GameInstance::GameInstance ()
 	Renderer->Resize(UserSettings.DisplaySettings.FullscreenMode == EFullscreenMode::Fullscreen);
 	DisplayOptions = graphics::GetDisplayOptions(Renderer->GetAdapter());
 
-	World = MemoryPool.NewUnique<CWorld>(Renderer.GetWeak());
+	World.Initialize();
+	MeshRenderer = World.MeshRenderer.GetWeak();
 
 	Camera = memory::NewShared<CCamera>();
 	Camera->Transform.SetTranslation(0.f, 1.5f, -3.f);
 
 #else
-	World = MemoryPool.NewUnique<CWorld>();
+	World = MemoryPool.NewUnique<Sys_MeshRenderer>();
 #endif
 
 	ActiveActionMap = InputActionLibrary.LoadOrCreateActionMap(GetDefaultInputMapPath());
@@ -223,8 +225,8 @@ void GameInstance::Load ()
 
 	std::filesystem::path floorMaterialPath =
 		std::filesystem::path("../Core/Content/Models/Floor") / ("floor_mat" + std::to_string(0) + ".frtmat");
-	auto floor = World->SpawnEntity();
-	floor->RenderModel.Model = memory::NewShared<SRenderModel>(
+	auto floor = World.SpawnEntity();
+	floor->RenderModel->Model = memory::NewShared<SRenderModel>(
 		SRenderModel::FromMesh(
 			mesh::GenerateGrid(10.f, 10.f, 16u, 16u),
 			Renderer->GetMaterialLibrary().LoadOrCreateMaterial(floorMaterialPath, {})));
@@ -233,8 +235,8 @@ void GameInstance::Load ()
 
 	std::filesystem::path pillarMaterialPath =
 		std::filesystem::path("../Core/Content/Models/Pillar") / ("pillar_mat" + std::to_string(0) + ".frtmat");
-	auto pillar = World->SpawnEntity();
-	pillar->RenderModel.Model = memory::NewShared<SRenderModel>(
+	auto pillar = World.SpawnEntity();
+	pillar->RenderModel->Model = memory::NewShared<SRenderModel>(
 		SRenderModel::FromMesh(
 			mesh::GenerateCube(Vector3f(.65f, 1.8f, .65f), 1),
 			// mesh::GenerateCylinder(0.65f, 0.65f, 1.8f, 20u, 2u),
@@ -244,8 +246,8 @@ void GameInstance::Load ()
 
 	std::filesystem::path cubeMaterialPath =
 		std::filesystem::path("../Core/Content/Models/Cube") / ("cube_mat" + std::to_string(0) + ".frtmat");
-	auto cube = World->SpawnEntity();
-	cube->RenderModel.Model = memory::NewShared<SRenderModel>(
+	auto cube = World.SpawnEntity();
+	cube->RenderModel->Model = memory::NewShared<SRenderModel>(
 		SRenderModel::FromMesh(
 			mesh::GenerateCube(Vector3f(1.f), 1),
 			Renderer->GetMaterialLibrary().LoadOrCreateMaterial(cubeMaterialPath, {})));
@@ -255,12 +257,12 @@ void GameInstance::Load ()
 	// Cylinder->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
 	// 	graphics::SRenderModel::FromMesh(mesh::GenerateCylinder(1.f, 0.5, 1.f, 10u, 10u)));
 
-	Sphere = World->SpawnEntity();
-	Sphere->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
+	Sphere = World.SpawnEntity();
+	Sphere->RenderModel->Model = memory::NewShared<graphics::SRenderModel>(
 		graphics::SRenderModel::FromMesh(mesh::GenerateSphere(.3f, 30u, 30u)));
 
-	auto skullEnt = World->SpawnEntity();
-	skullEnt->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
+	auto skullEnt = World.SpawnEntity();
+	skullEnt->RenderModel->Model = memory::NewShared<graphics::SRenderModel>(
 		graphics::SRenderModel::LoadFromFile(
 			R"(..\Core\Content\Models\Skull\scene.gltf)",
 			R"(..\Core\Content\Models\Skull\textures\defaultMat_baseColor.jpeg)"));
@@ -268,15 +270,15 @@ void GameInstance::Load ()
 	skullEnt->Transform.SetScale(Vector3f(.45f));
 	skullEnt->RotationSpeed = Vector3f::UpVector * (math::PI_OVER_FOUR * 0.25f);
 
-	auto duckEnt = World->SpawnEntity();
-	duckEnt->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
+	auto duckEnt = World.SpawnEntity();
+	duckEnt->RenderModel->Model = memory::NewShared<graphics::SRenderModel>(
 		graphics::SRenderModel::LoadFromFile(
 			R"(..\Core\Content\Models\Duck\Duck.gltf)",
 			R"(..\Core\Content\Models\Duck\DuckCM.png)"));
 	duckEnt->Transform.SetTranslation(0.f, 0.f, 0.f);
 
-	auto head = World->SpawnEntity();
-	head->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
+	auto head = World.SpawnEntity();
+	head->RenderModel->Model = memory::NewShared<graphics::SRenderModel>(
 		graphics::SRenderModel::LoadFromFile(
 			R"(..\Core\Content\Models\Head\1\african_head.obj)",
 			R"(..\Core\Content\Models\Head\1\african_head_diffuse.jpg)"));
@@ -296,8 +298,8 @@ void GameInstance::Load ()
 	std::filesystem::path lightMaterialPath =
 		std::filesystem::path("../Core/Content/Light") / ("light_mat" + std::to_string(0) + ".frtmat");
 
-	auto lightSource1 = World->SpawnEntity();
-	lightSource1->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
+	auto lightSource1 = World.SpawnEntity();
+	lightSource1->RenderModel->Model = memory::NewShared<graphics::SRenderModel>(
 		SRenderModel::FromMesh(mesh::GenerateSphere(.3f, 30u, 30u),
 			Renderer->GetMaterialLibrary().LoadOrCreateMaterial(lightMaterialPath, {})));
 	lightSource1->Transform.SetTranslation(0.f, 2.f, -3.f);
@@ -305,8 +307,8 @@ void GameInstance::Load ()
 	std::filesystem::path lightMaterialPath2 =
 		std::filesystem::path("../Core/Content/Light") / ("light_mat" + std::to_string(2) + ".frtmat");
 
-	auto lightSource2 = World->SpawnEntity();
-	lightSource2->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
+	auto lightSource2 = World.SpawnEntity();
+	lightSource2->RenderModel->Model = memory::NewShared<graphics::SRenderModel>(
 		SRenderModel::FromMesh(mesh::GenerateQuad(1.f, 1.f),
 			Renderer->GetMaterialLibrary().LoadOrCreateMaterial(lightMaterialPath2, {})));
 	lightSource2->Transform.SetTranslation(-2.5f, 2.5f, 0.f);
@@ -331,7 +333,7 @@ void GameInstance::Load ()
 	walls[2]->Transform.SetRotation(math::PI_OVER_TWO, 0.f, 0.f);*/
 
 #ifndef FRT_HEADLESS
-	World->InitializeRendering();
+	MeshRenderer->InitializeRendering();
 #endif
 }
 
@@ -398,7 +400,7 @@ void GameInstance::Input (float DeltaSeconds)
 
 	if (InputSystem.WasKeyPressed(input::KeyCode::Space) && !InputSystem.IsMouseButtonDown(input::EMouseButton::Right))
 	{
-		Timer->TogglePause();
+		World.TogglePhasePause(EUpdatePhase::Update);
 	}
 }
 
@@ -422,17 +424,19 @@ void GameInstance::Tick (float DeltaSeconds)
 #endif
 
 	UpdateEntities(DeltaSeconds);
+	World.RunFrame();
 
-	World->Tick(DeltaSeconds);
+	MeshRenderer->Tick(DeltaSeconds);
 }
 
 #ifndef FRT_HEADLESS
 void GameInstance::Draw (float DeltaSeconds)
 {
 	Renderer->StartFrame();
-	World->UploadCB(Renderer->GetCommandList());
-	World->UpdateAccelerationStructures();
-	World->Present(DeltaSeconds, Renderer->GetCommandList());
+	World.SubmitFrame(Renderer->GetCommandList());
+	MeshRenderer->UploadCB(Renderer->GetCommandList());
+	MeshRenderer->UpdateAccelerationStructures();
+	MeshRenderer->Present(DeltaSeconds, Renderer->GetCommandList());
 	Renderer->PrepareCurrentPass();
 
 	ImGui::Render();

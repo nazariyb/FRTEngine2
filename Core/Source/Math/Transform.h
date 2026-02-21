@@ -15,8 +15,8 @@ struct FRT_CORE_API STransform
 private:
 #pragma warning(push)
 #pragma warning(disable: 4251)
-	DirectX::XMFLOAT4X4 Matrix4x4;
-	DirectX::XMMATRIX MatrixIntr;
+	mutable DirectX::XMFLOAT4X4 Matrix4x4;
+	mutable DirectX::XMMATRIX MatrixIntr;
 #pragma warning(pop)
 
 	Vector3f Translation;
@@ -26,8 +26,8 @@ private:
 public:
 	STransform ();
 
-	const DirectX::XMFLOAT4X4& GetMatrix ();
-	DirectX::XMFLOAT3X4 GetRaytracingTransform ();
+	const DirectX::XMFLOAT4X4& GetMatrix () const;
+	DirectX::XMFLOAT3X4 GetRaytracingTransform () const;
 
 	const Vector3f& GetTranslation () const { return Translation; }
 	const Vector3f& GetRotation () const { return Rotation; }
@@ -57,7 +57,7 @@ inline STransform::STransform ()
 	DirectX::XMStoreFloat4x4(&Matrix4x4, MatrixIntr);
 }
 
-inline const DirectX::XMFLOAT4X4& STransform::GetMatrix ()
+inline const DirectX::XMFLOAT4X4& STransform::GetMatrix () const
 {
 	using namespace DirectX;
 
@@ -73,7 +73,7 @@ inline const DirectX::XMFLOAT4X4& STransform::GetMatrix ()
 	return Matrix4x4;
 }
 
-inline DirectX::XMFLOAT3X4 STransform::GetRaytracingTransform ()
+inline DirectX::XMFLOAT3X4 STransform::GetRaytracingTransform () const
 {
 	const DirectX::XMFLOAT4X4& m = GetMatrix();
 
