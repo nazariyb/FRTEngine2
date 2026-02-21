@@ -45,6 +45,7 @@ project "Core"
 		rootpath("**.txt"),
 		rootpath("**.bat"),
 		rootpath("**.frt*"),
+		rootpath("**.md"),
 		path.join(thirdPartyDir, "DXR/**.h"), path.join(thirdPartyDir, "DXR/**.cpp"),
 	}
 
