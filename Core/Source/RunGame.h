@@ -40,7 +40,7 @@ int RunGame()
 			else
 			{
 				time.Tick();
-				if (!time.IsPaused())
+				// if (!time.IsPaused())
 				{
 					game->Input(time.GetDeltaSeconds());
 					game->Tick(time.GetDeltaSeconds());

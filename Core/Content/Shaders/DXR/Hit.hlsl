@@ -148,8 +148,8 @@ float G_Smith(float NoV, float NoL, float alpha)
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Sample a direction from a cosine-weighted hemisphere (Malley's method).
-// Maps (u1, u2) ∈ [0,1)² to the +Z hemisphere.
-// PDF = NoL / π
+// Maps (u1, u2) ∈ [0,1)^2 to the +Z hemisphere.
+// PDF = NoL / pi
 float3 SampleCosineHemisphere(float u1, float u2)
 {
 	const float r   = sqrt(u1);            // projected-disk radius = sin(θ)
@@ -214,7 +214,7 @@ float TraceShadowRay(float3 origin, float3 L, float tMax)
 		SceneBVH,
 		RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH,   // stop at first occluder, no shading needed
 		0xFF,
-		1, 2, 1,   // hit-group offset 1 → ShadowClosestHit;  miss index 1 → ShadowMiss
+		1, 2, 1,   // hit-group offset 1 -> ShadowClosestHit;  miss index 1 -> ShadowMiss
 		ray,
 		shadowPayload);
 
@@ -363,7 +363,7 @@ void ClosestHit(inout HitInfo payload, Attributes attrib)
 
 	// Flip both normals to face the incoming ray, handling double-sided surfaces
 	// and backface hits that can occur due to normal mapping.
-	// step(0, x) = 1 when x >= 0 → "1 - 2*step" flips when dot >= 0
+	// step(0, x) = 1 when x >= 0 -> "1 - 2*step" flips when dot >= 0
 	Ng *= 1.0f - 2.0f * step(0.0f, dot(Ng, rayDir));
 	N  *= 1.0f - 2.0f * step(0.0f, dot(N,  rayDir));
 

@@ -89,11 +89,39 @@ void RayGen ()
 			// shaders and the raygen
 			payload);
 
+		// ── Firefly clamping ─────────────────────────────────────────────────
+		// Clamp each sample's luminance to kFireflyClamp before accumulating.
+		// Fireflies are high-variance outlier samples (e.g. near-specular bounces
+		// that happen to hit a bright emitter).  Clamping is biased but visually
+		// essential: unclamped fireflies appear as bright flickering specks that
+		// are far more distracting than the small bias this introduces.
+		const float kFireflyClamp = 10.0f;
+		const float sampleLum = dot(payload.color, float3(0.2126f, 0.7152f, 0.0722f));
+		if (sampleLum > kFireflyClamp)
+			payload.color *= kFireflyClamp / sampleLum;
+
 		accumulatedColor += payload.color;
 	}
 
 	float3 lin = accumulatedColor / sampleCount;
-	lin = lin / (1.0 + lin); // tone map
-	float3 srgb = pow(saturate(lin), 1.0 / 2.2); // approximate
+	lin = lin / (1.0f + lin);                             // Reinhard tone map
+	float3 srgb = pow(saturate(lin), 1.0f / 2.2f);       // approximate sRGB gamma
+
+	// ── Temporal accumulation ─────────────────────────────────────────────
+	// Pure running average: alpha = 1/(N+1), no floor.
+	// Without a floor the noise level keeps decreasing as long as the scene
+	// is static — there is no cap on convergence.
+	// The counter is reset to 0 by the CPU on any scene change (camera move,
+	// object move, topology change), so history is always valid and there is
+	// no ghosting — just transient noise that re-converges in a few seconds.
+	//
+	//   * Frame 0 (after any change) -> write fresh, no blend
+	//   * Frame N (static)           -> alpha = 1/(N+1), improving every frame
+	if (gAccumulationFrameIndex > 0u)
+	{
+		const float alpha = 1.0f / (float)(gAccumulationFrameIndex + 1u);
+		srgb = lerp(gOutput[launchIndex].rgb, srgb, alpha);
+	}
+
 	gOutput[launchIndex] = float4(srgb, 1.f);
 }

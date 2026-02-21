@@ -24,6 +24,7 @@ public:
 	void FRT_CORE_API Reset ();
 	void FRT_CORE_API Start (bool bReset = false);
 	void FRT_CORE_API Pause ();
+	bool FRT_CORE_API TogglePause ();
 	void FRT_CORE_API Tick ();
 
 private:

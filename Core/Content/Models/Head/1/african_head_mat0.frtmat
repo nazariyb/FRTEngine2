@@ -5,11 +5,11 @@ vertex_shader: VertexShader
 pixel_shader: PixelShader
 color: RGBA(1, 1, 1, 1)
 metallic: 0
-roughness: 1
+roughness: 0.8
 emissive: RGBA(0, 0, 0, 1)
 emissive_intensity: 0
-base_color_texture: 
-cull: none
+base_color_texture: african_head_diffuse.jpg
+cull: front
 depth_enable: true
 depth_write: true
 depth_func: less

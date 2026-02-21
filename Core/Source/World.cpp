@@ -334,6 +334,33 @@ void CWorld::CopyConstantData ()
 	// RaytracingSampleCount left at its default (32); set here to make it visible and easy to tune
 	// passConstants.RaytracingSampleCount = 32u;
 
+	// ── Accumulation frame counter ────────────────────────────────────────
+	// Reset on any scene change: camera movement, object transforms (set via
+	// bAccumulationDirty by UpdateAccelerationStructures), or topology.
+	// Resetting on movement guarantees history is always valid — no ghosting,
+	// just transient noise that re-converges via 1/(N+1) running average.
+	{
+		DirectX::XMFLOAT4X4 currentView;
+		XMStoreFloat4x4(&currentView, view);
+		if (!AreMatricesEqual(currentView, PrevCameraViewMatrix))
+		{
+			bAccumulationDirty = true;
+			PrevCameraViewMatrix = currentView;
+		}
+	}
+
+	if (bAccumulationDirty)
+	{
+		AccumulationFrameIndex = 0u;
+		bAccumulationDirty = false;
+	}
+	else
+	{
+		++AccumulationFrameIndex;
+	}
+
+	passConstants.AccumulationFrameIndex = AccumulationFrameIndex;
+
 	currentFrameResources.PassCB.CopyBunch(&passConstants, 1u, currentFrameResources.UploadArena);
 }
 
@@ -704,6 +731,7 @@ void CWorld::UpdateAccelerationStructures ()
 		{
 			Renderer->InitializeRaytracingResources();
 		}
+		bAccumulationDirty = true;
 		return;
 	}
 
@@ -769,6 +797,7 @@ void CWorld::UpdateAccelerationStructures ()
 		{
 			Renderer->InitializeRaytracingResources();
 		}
+		bAccumulationDirty = true;
 		return;
 	}
 
@@ -777,6 +806,9 @@ void CWorld::UpdateAccelerationStructures ()
 		return;
 	}
 
+	// Per-frame transform update (objects moving): reset accumulation so
+	// the stale history isn't blended with the new object positions.
 	CreateTopLevelAS(Instances, true);
 	Renderer->TopLevelASBuffers = TopLevelASBuffers;
+	bAccumulationDirty = true;
 }

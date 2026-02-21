@@ -3,7 +3,7 @@ version: 1
 name: light_mat0
 vertex_shader: 
 pixel_shader: 
-color: RGBA(0.7, 0.25, 0.1, 1)
+color: RGBA(1, 1, 1, 1)
 metallic: 0
 roughness: 1
 emissive: RGBA(0.7, 0.25, 0.1, 1)

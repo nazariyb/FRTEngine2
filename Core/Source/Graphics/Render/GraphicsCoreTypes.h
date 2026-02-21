@@ -54,6 +54,8 @@ struct SPassConstants
 	float DeltaTime = 0.f;
 	uint32 FrameIndex = 0u;
 	uint32 RaytracingSampleCount = 32u;   // samples per pixel per frame
+	uint32 AccumulationFrameIndex = 0u;   // resets to 0 whenever the camera or any object moves
+	uint32 PadPCB0 = 0u;                 // keep 16-byte cbuffer alignment
 };
 
 

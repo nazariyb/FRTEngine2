@@ -37,6 +37,8 @@ cbuffer PassConstantBuffer : register(b2)
 	float gDeltaTime;
 	uint gFrameIndex;
 	uint gRaytracingSampleCount;   // samples per pixel per frame; tunable at runtime without shader recompile
+	uint gAccumulationFrameIndex;  // resets to 0 on any camera / scene movement
+	uint gPadPCB0;                 // matches SPassConstants::PadPCB0
 }
 
 struct VSInput

@@ -1,6 +1,6 @@
 version: 1
 # FRT material
-name: 
+name: pillar_mat0
 vertex_shader: 
 pixel_shader: 
 color: RGBA(0.1, 0.3, 0.3, 1)

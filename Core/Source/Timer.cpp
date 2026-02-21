@@ -103,6 +103,20 @@ void CTimer::Pause ()
 	}
 }
 
+bool CTimer::TogglePause ()
+{
+	if (bPaused)
+	{
+		Start(false);
+		return false;
+	}
+	else
+	{
+		Pause();
+		return true;
+	}
+}
+
 void CTimer::Tick ()
 {
 	if (bPaused)

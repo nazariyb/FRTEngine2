@@ -68,5 +68,14 @@ private:
 	bool bAsTopologyDirty = true;
 	bool bRaytracingSupported = false;
 	bool bRaytracingSupportChecked = false;
+
+	// Temporal accumulation counter — increments every frame, resets to 0
+	// whenever the camera moves, any object moves, or the scene topology
+	// changes.  Resets guarantee history is always valid (no ghosting).
+	// The shader uses a pure 1/(N+1) running average — no alpha floor — so
+	// noise keeps decreasing indefinitely while the scene is static.
+	uint32 AccumulationFrameIndex = 0u;
+	DirectX::XMFLOAT4X4 PrevCameraViewMatrix = {};
+	bool bAccumulationDirty = true;
 };
 }

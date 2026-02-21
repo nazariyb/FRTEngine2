@@ -120,6 +120,8 @@ GameInstance::GameInstance ()
 	World = MemoryPool.NewUnique<CWorld>(Renderer.GetWeak());
 
 	Camera = memory::NewShared<CCamera>();
+	Camera->Transform.SetTranslation(0.f, 1.5f, -3.f);
+
 #else
 	World = MemoryPool.NewUnique<CWorld>();
 #endif
@@ -242,12 +244,12 @@ void GameInstance::Load ()
 
 	std::filesystem::path cubeMaterialPath =
 		std::filesystem::path("../Core/Content/Models/Cube") / ("cube_mat" + std::to_string(0) + ".frtmat");
-	Cube = World->SpawnEntity();
-	Cube->RenderModel.Model = memory::NewShared<SRenderModel>(
+	auto cube = World->SpawnEntity();
+	cube->RenderModel.Model = memory::NewShared<SRenderModel>(
 		SRenderModel::FromMesh(
 			mesh::GenerateCube(Vector3f(1.f), 1),
 			Renderer->GetMaterialLibrary().LoadOrCreateMaterial(cubeMaterialPath, {})));
-	Cube->bRayTraced = false;
+	cube->Transform.SetTranslation(1.5f, 0.f, -1.5f);
 
 	// Cylinder = World->SpawnEntity();
 	// Cylinder->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
@@ -255,8 +257,7 @@ void GameInstance::Load ()
 
 	Sphere = World->SpawnEntity();
 	Sphere->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
-		graphics::SRenderModel::FromMesh(mesh::GenerateSphere(.1f, 30u, 30u)));
-	Sphere->bRayTraced = false;
+		graphics::SRenderModel::FromMesh(mesh::GenerateSphere(.3f, 30u, 30u)));
 
 	auto skullEnt = World->SpawnEntity();
 	skullEnt->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
@@ -278,7 +279,7 @@ void GameInstance::Load ()
 	head->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
 		graphics::SRenderModel::LoadFromFile(
 			R"(..\Core\Content\Models\Head\1\african_head.obj)",
-			R"()"));
+			R"(..\Core\Content\Models\Head\1\african_head_diffuse.jpg)"));
 	head->Transform.SetTranslation(2.5f, 1.5f, 0.f);
 	head->Transform.SetScale(Vector3f(.45f));
 	head->RotationSpeed = Vector3f::UpVector * (math::PI_OVER_FOUR * 0.25f);
@@ -351,7 +352,7 @@ void GameInstance::Input (float DeltaSeconds)
 	if (EnableMoveState && EnableMoveState->bDown)
 	{
 		// Look
-		Vector2f MouseDelta = InputSystem.GetMouseDelta();
+		Vector2f MouseDelta = InputSystem.GetMouseDelta() * 0.5f;
 		Vector3f CameraRotationVector = Vector3f::ZeroVector;
 		CameraRotationVector += Vector3f::LeftVector * MouseDelta.y;
 		CameraRotationVector += Vector3f::DownVector * MouseDelta.x;
@@ -380,7 +381,7 @@ void GameInstance::Input (float DeltaSeconds)
 		XMStoreFloat3(reinterpret_cast<XMFLOAT3*>(&worldMove), worldMoveV);
 
 		const float WheelDelta = InputSystem.GetMouseWheelDelta();
-		Camera->MovementSpeed += WheelDelta * 0.5;
+		Camera->MovementSpeed = math::Max(Camera->MovementSpeed + WheelDelta * 0.3f, 0.001f);
 
 		Camera->Transform.MoveBy(worldMove * DeltaSeconds * Camera->MovementSpeed);
 	}
@@ -394,6 +395,11 @@ void GameInstance::Input (float DeltaSeconds)
 		Renderer->SetRenderMode(NewRenderMode);
 	}
 #endif
+
+	if (InputSystem.WasKeyPressed(input::KeyCode::Space) && !InputSystem.IsMouseButtonDown(input::EMouseButton::Right))
+	{
+		Timer->TogglePause();
+	}
 }
 
 void GameInstance::Tick (float DeltaSeconds)
