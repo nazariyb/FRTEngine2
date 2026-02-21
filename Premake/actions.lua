@@ -3,6 +3,9 @@ newaction
 	trigger = "install-deps",
 	description = "Install vcpkg dependencies",
 	execute = function ()
+		-- Ensure all submodules are populated before trying to use them
+		os.execute("git submodule update --init --recursive")
+
 		local bootstrap = path.join(vcpkgRoot, "bootstrap-vcpkg.bat")
 		os.execute(string.format("\"%s\"", bootstrap))
 		for _, pkg in ipairs(neededPackages) do

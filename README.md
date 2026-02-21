@@ -35,6 +35,7 @@ Each build has two axes:
 - **OS:** Windows 10 / 11 (64-bit)
 - **Compiler / IDE:** Any toolchain [supported by Premake5](https://premake.github.io/docs/using-premake) will work. A convenience script is provided for **Visual Studio 2022** (with the *Desktop development with C++* workload); scripts for other targets do not exist yet.
 - **GPU:** Any D3D12-capable adapter; DXR (raytracing) requires a GPU that supports DirectX Raytracing Tier 1.0 or higher (e.g. NVIDIA Turing / AMD RDNA2 and later)
+- **Git:** Required on `PATH` — `vcpkg` is a git submodule and is initialized automatically by the install-deps step
 
 ---
 
@@ -42,7 +43,7 @@ Each build has two axes:
 
 ### 1. Install dependencies
 
-Run the helper script from the repository root. It invokes the bundled Premake5 binary to bootstrap **vcpkg** and install the required packages (`assimp`, `gtest`):
+Run the helper script from the repository root. It invokes the bundled Premake5 binary to initialize all submodules, bootstrap `vcpkg`, and install the required packages (`assimp`, `gtest`):
 
 ```bat
 PremakeInstallDependencies.bat
