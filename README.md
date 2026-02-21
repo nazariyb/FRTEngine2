@@ -34,6 +34,8 @@ Each build has two axes:
 
 - **OS:** Windows 10 / 11 (64-bit)
 - **Compiler / IDE:** Any toolchain [supported by Premake5](https://premake.github.io/docs/using-premake) will work. A convenience script is provided for **Visual Studio 2022** (with the *Desktop development with C++* workload); scripts for other targets do not exist yet.
+- **MSBuild / MSVC**_(if applicable)_**:** Toolset **v143** (ships with VS 2022) or later; the code uses **C++20** features.
+- **Windows SDK:** **10.0.19041.0** or later — the minimum version that defines `D3D12_RESOURCE_FLAG_RAYTRACING_ACCELERATION_STRUCTURE` (Windows 10 SDK 2004, May 2020). This is enforced in the generated project files.
 - **GPU:** Any D3D12-capable adapter; DXR (raytracing) requires a GPU that supports DirectX Raytracing Tier 1.0 or higher (e.g. NVIDIA Turing / AMD RDNA2 and later)
 - **Git:** Required on `PATH` — `vcpkg` is a git submodule and is initialized automatically by the install-deps step
 
