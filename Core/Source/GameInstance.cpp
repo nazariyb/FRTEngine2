@@ -425,18 +425,15 @@ void GameInstance::Tick (float DeltaSeconds)
 
 	UpdateEntities(DeltaSeconds);
 	World.RunFrame();
-
-	MeshRenderer->Tick(DeltaSeconds);
 }
 
 #ifndef FRT_HEADLESS
 void GameInstance::Draw (float DeltaSeconds)
 {
 	Renderer->StartFrame();
+
 	World.SubmitFrame(Renderer->GetCommandList());
-	MeshRenderer->UploadCB(Renderer->GetCommandList());
-	MeshRenderer->UpdateAccelerationStructures();
-	MeshRenderer->Present(DeltaSeconds, Renderer->GetCommandList());
+
 	Renderer->PrepareCurrentPass();
 
 	ImGui::Render();
@@ -634,6 +631,11 @@ void GameInstance::DisplayUserSettings ()
 
 void GameInstance::UpdateEntities (float DeltaSeconds)
 {
+	if (World.IsPhasePaused(EUpdatePhase::Update))
+	{
+		return;
+	}
+
 	static float Angle = 0.0f;
 	static float VerticalTime = 0.0f;
 

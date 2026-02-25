@@ -22,9 +22,12 @@ public:
 
 	// System interface
 	virtual SFlags<EUpdatePhase>& GetPhases() override;
+
+	virtual void Update(const SUpdateContext& Context) override;
+	virtual void Finalize(const SUpdateContext& Context) override;
+	virtual void Draw(const SDrawUpdateContext& Context) override;
 	// ~System interface
 
-	virtual void Tick (float DeltaSeconds);
 #ifndef FRT_HEADLESS
 	virtual void Present (float DeltaSeconds, ID3D12GraphicsCommandList4* CommandList);
 	void InitializeRendering ();
@@ -71,6 +74,8 @@ private:
 	TArray<const CEntity*> AsEntities;
 	TArray<const graphics::SRenderModel*> AsModels;
 	TArray<DirectX::XMFLOAT4X4> AsTransforms;
+	SFlags<EUpdatePhase> Phases;
+
 	bool bAsInitialized = false;
 	bool bRaytracingSupported = false;
 	bool bRaytracingSupportChecked = false;

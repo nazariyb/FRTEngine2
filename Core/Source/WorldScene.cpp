@@ -43,9 +43,12 @@ void frt::CWorldScene::RunFrame ()
 		MeshRenderer->Finalize(Context);
 	}
 
-	for (auto& entity : Entities)
+	if (!IsPhasePaused(EUpdatePhase::Update))
 	{
-		entity->Tick(1.f / 60.f);
+		for (auto& entity : Entities)
+		{
+			entity->Tick(1.f / 60.f);
+		}
 	}
 
 	// TODO: ideally, CBs should already be stored in one array

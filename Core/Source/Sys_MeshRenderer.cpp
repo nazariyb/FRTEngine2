@@ -33,7 +33,12 @@ bool AreMatricesEqual (const DirectX::XMFLOAT4X4& A, const DirectX::XMFLOAT4X4& 
 #if !defined(FRT_HEADLESS)
 Sys_MeshRenderer::Sys_MeshRenderer (memory::TRefWeak<graphics::CRenderer> InRenderer)
 	: Renderer(InRenderer)
-{}
+{
+	Phases
+		.AddFlag(EUpdatePhase::Update)
+		.AddFlag(EUpdatePhase::Finalize)
+		.AddFlag(EUpdatePhase::Draw);
+}
 #else
 Sys_MeshRenderer::CWorld ()
 {}
@@ -41,15 +46,26 @@ Sys_MeshRenderer::CWorld ()
 
 SFlags<EUpdatePhase>& Sys_MeshRenderer::GetPhases ()
 {
-	return SFlags<EUpdatePhase>()
-			.AddFlags(EUpdatePhase::Update)
-			.AddFlags(EUpdatePhase::Draw);
+	return Phases;
 }
 
-void Sys_MeshRenderer::Tick (float DeltaSeconds)
+void Sys_MeshRenderer::Update (const SUpdateContext& Context)
+{
+}
+
+void Sys_MeshRenderer::Finalize (const SUpdateContext& Context)
 {
 #ifndef FRT_HEADLESS
 	CopyConstantData();
+#endif
+}
+
+void Sys_MeshRenderer::Draw (const SDrawUpdateContext& Context)
+{
+#ifndef FRT_HEADLESS
+	UploadCB(Context.CommandList);
+	UpdateAccelerationStructures();
+	Present(Context.DeltaSeconds, Context.CommandList);
 #endif
 }
 

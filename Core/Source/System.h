@@ -22,12 +22,11 @@ struct SDrawUpdateContext : SUpdateContext
 
 enum class EUpdatePhase : uint8
 {
-	Input = 0u,
-	Prepare,
-	Update,
-	Finalize,
-	Draw,
-	Count,
+	Input    = 1u << 0u,
+	Prepare  = 1u << 1u,
+	Update   = 1u << 2u,
+	Finalize = 1u << 3u,
+	Draw     = 1u << 4u,
 };
 
 
