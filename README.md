@@ -82,6 +82,21 @@ Replace `<target>` with the Premake action for your toolchain (e.g. `vs2019`, `g
 
 ---
 
+## Controls
+
+Camera movement is only active while **Right Mouse Button** is held.
+
+| Input | Action |
+|---|---|
+| **RMB** (hold) | Enable camera movement |
+| **Mouse move** | Look around (yaw / pitch) |
+| **W / S** | Move forward / backward |
+| **A / D** | Move left / right |
+| **Space / Ctrl** | Move up / down (while RMB held) |
+| **Space** | Toggle pause (while RMB **not** held) |
+
+---
+
 ## Project layout
 
 ```
