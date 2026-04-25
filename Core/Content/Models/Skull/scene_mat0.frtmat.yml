@@ -1,0 +1,14 @@
+version: 2
+name: defaultMat
+
+shaders:
+  vertex: VertexShader
+  pixel: PixelShader
+
+albedo:
+  color: { r: 1.0, g: 0.843, b: 1.0, a: 1.0 }
+  texture: textures/defaultMat_baseColor.jpeg
+
+metallic: 1
+roughness: 0
+cull: front

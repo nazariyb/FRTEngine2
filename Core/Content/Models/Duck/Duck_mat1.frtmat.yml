@@ -1,0 +1,12 @@
+version: 2
+name: Duck_mat1
+
+shaders:
+  vertex: VertexShader
+  pixel: PixelShader
+
+albedo:
+  color: { r: 1, g: 0, b: 0, a: 1 }
+
+metallic: 1
+roughness: 0

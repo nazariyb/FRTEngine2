@@ -1,0 +1,6 @@
+version: 2
+name: light_mat2
+
+emissive:
+  color: { r: 1, g: 1, b: 1 }
+  intensity: 20

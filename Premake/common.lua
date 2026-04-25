@@ -9,7 +9,8 @@ end
 neededPackages =
 {
 	"assimp",
-	"gtest"
+	"gtest",
+	"yaml-cpp"
 }
 
 thirdPartyDir = rootpath("ThirdParty")

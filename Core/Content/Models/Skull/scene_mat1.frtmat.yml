@@ -1,0 +1,6 @@
+version: 2
+name: scene_mat1
+
+shaders:
+  vertex: VertexShader
+  pixel: PixelShader

@@ -1,0 +1,6 @@
+version: 2
+name: light_mat0
+
+emissive:
+  color: { r: 0.75, g: 0.3, b: 0.1 }
+  intensity: 50

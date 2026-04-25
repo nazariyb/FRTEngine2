@@ -1,0 +1,9 @@
+version: 2
+name: pillar_mat0
+
+albedo:
+  color: { r: 0.1, g: 0.3, b: 0.3, a: 1 }
+
+metallic: 1
+roughness: 0.02
+

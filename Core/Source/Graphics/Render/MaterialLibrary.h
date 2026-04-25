@@ -6,6 +6,7 @@
 
 #include "Core.h"
 #include "Memory/Ref.h"
+#include "Assets/Serializer.h"
 
 
 namespace frt::graphics
@@ -17,7 +18,14 @@ class CRenderer;
 class FRT_CORE_API CMaterialLibrary
 {
 public:
+	CMaterialLibrary ();
+
 	void SetRenderer (CRenderer* InRenderer);
+
+	// Access the serializer registry to register/replace backends, change default write format,
+	// or query available formats. Per-project setup happens here.
+	assets::CSerializerRegistry<SMaterial>& GetSerializers () { return Serializers; }
+	const assets::CSerializerRegistry<SMaterial>& GetSerializers () const { return Serializers; }
 
 	memory::TRefShared<SMaterial> LoadOrCreateMaterial (
 		const std::filesystem::path& MaterialPath,
@@ -37,12 +45,13 @@ private:
 		const SMaterial& DefaultMaterial,
 		bool bCreateIfMissing);
 
-	bool ParseMaterialFile (const std::filesystem::path& MaterialPath, SMaterial& Material) const;
-	bool SaveMaterialFile (const std::filesystem::path& MaterialPath, const SMaterial& Material) const;
+	bool ReadMaterial (const std::filesystem::path& Path, SMaterial& Out) const;
+	bool WriteMaterial (const std::filesystem::path& Path, const SMaterial& In) const;
 	void EnsureBaseColorTexture (SMaterial& Material) const;
 
 	static std::string MakeKey (const std::filesystem::path& MaterialPath);
 
+	assets::CSerializerRegistry<SMaterial> Serializers;
 	std::unordered_map<std::string, SMaterialRecord> Materials;
 	CRenderer* Renderer = nullptr;
 };

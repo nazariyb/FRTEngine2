@@ -120,13 +120,15 @@ project "Core"
 	filter "configurations:Debug-*"
 		links
 		{
-			"assimp-vc143-mtd"
+			"assimp-vc143-mtd",
+			"yaml-cppd"
 		}
 
 	filter "configurations:Release-*"
 		links
 		{
-			"assimp-vc143-mt"
+			"assimp-vc143-mt",
+			"yaml-cpp"
 		}
 
 	filter "platforms:Win64"

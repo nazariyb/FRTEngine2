@@ -1,0 +1,146 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "FRT Material",
+  "description": "FRTEngine2 material asset (.frtmat.yml)",
+  "type": "object",
+  "$defs": {
+    "colorLDR": {
+      "type": "object",
+      "description": "LDR color, each channel clamped to [0, 1]",
+      "additionalProperties": false,
+      "properties": {
+        "r": { "type": "number", "minimum": 0, "maximum": 1, "default": 1, "description": "Red channel [0, 1]" },
+        "g": { "type": "number", "minimum": 0, "maximum": 1, "default": 1, "description": "Green channel [0, 1]" },
+        "b": { "type": "number", "minimum": 0, "maximum": 1, "default": 1, "description": "Blue channel [0, 1]" },
+        "a": { "type": "number", "minimum": 0, "maximum": 1, "default": 1, "description": "Alpha channel [0, 1]" }
+      }
+    },
+    "colorHDR": {
+      "type": "object",
+      "description": "HDR color, channels >= 0 (no upper bound)",
+      "additionalProperties": false,
+      "properties": {
+        "r": { "type": "number", "minimum": 0, "default": 0, "description": "Red channel" },
+        "g": { "type": "number", "minimum": 0, "default": 0, "description": "Green channel" },
+        "b": { "type": "number", "minimum": 0, "default": 0, "description": "Blue channel" },
+        "a": { "type": "number", "minimum": 0, "default": 1, "description": "Alpha channel" }
+      }
+    }
+  },
+  "required": ["version", "name"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "integer",
+      "const": 2,
+      "description": "Asset format version. Must be 2."
+    },
+    "name": {
+      "type": "string",
+      "description": "Material name"
+    },
+    "shaders": {
+      "type": "object",
+      "description": "Shader programs used by this material",
+      "required": [],
+      "additionalProperties": false,
+      "properties": {
+        "vertex": {
+          "type": "string",
+          "description": "Vertex shader name"
+        },
+        "pixel": {
+          "type": "string",
+          "description": "Pixel shader name"
+        }
+      }
+    },
+    "albedo": {
+      "type": "object",
+      "description": "Base color. When texture is present, color acts as a tint multiplier.",
+      "additionalProperties": false,
+      "properties": {
+        "color": {
+          "$ref": "#/$defs/colorLDR",
+          "description": "Tint color (LDR). Default: white { r: 1, g: 1, b: 1, a: 1 }."
+        },
+        "texture": {
+          "type": "string",
+          "description": "Path to base color texture, relative to the material file"
+        }
+      }
+    },
+    "metallic": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 0,
+      "description": "Metallic factor [0, 1]. Default: 0."
+    },
+    "roughness": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "default": 1,
+      "description": "Roughness factor [0, 1]. Default: 1."
+    },
+    "emissive": {
+      "type": "object",
+      "description": "Emissive light emission",
+      "additionalProperties": false,
+      "properties": {
+        "color": {
+          "$ref": "#/$defs/colorHDR",
+          "description": "Emissive color (HDR). Default: black { r: 0, g: 0, b: 0 }."
+        },
+        "intensity": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0,
+          "description": "Emissive intensity multiplier. Default: 0."
+        }
+      }
+    },
+    "depth": {
+      "type": "object",
+      "description": "Depth buffer settings",
+      "additionalProperties": false,
+      "properties": {
+        "enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable depth testing. Default: true."
+        },
+        "write": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable depth writes. Default: true."
+        },
+        "func": {
+          "type": "string",
+          "enum": ["less", "less_equal", "equal", "greater", "greater_equal", "always", "never"],
+          "default": "less",
+          "description": "Depth comparison function. Default: less."
+        }
+      }
+    },
+    "cull": {
+      "type": "string",
+      "enum": ["none", "front", "back"],
+      "default": "none",
+      "description": "Face culling mode. Default: none."
+    },
+    "blend": {
+      "type": "object",
+      "description": "Blend settings",
+      "additionalProperties": false,
+      "properties": {
+        "enable": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable alpha blending. Default: false."
+        }
+      }
+    }
+  }
+}

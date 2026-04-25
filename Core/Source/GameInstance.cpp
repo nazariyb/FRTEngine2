@@ -224,7 +224,7 @@ void GameInstance::Load ()
 	std::cout << std::filesystem::current_path() << std::endl;
 
 	std::filesystem::path floorMaterialPath =
-		std::filesystem::path("../Core/Content/Models/Floor") / ("floor_mat" + std::to_string(0) + ".frtmat");
+		std::filesystem::path("../Core/Content/Models/Floor") / ("floor_mat" + std::to_string(0) + ".frtmat.yml");
 	auto floor = World.SpawnEntity();
 	floor->RenderModel->Model = memory::NewShared<SRenderModel>(
 		SRenderModel::FromMesh(
@@ -234,7 +234,7 @@ void GameInstance::Load ()
 	floor->Transform.SetTranslation(0.f, -1.f, 0.f);
 
 	std::filesystem::path pillarMaterialPath =
-		std::filesystem::path("../Core/Content/Models/Pillar") / ("pillar_mat" + std::to_string(0) + ".frtmat");
+		std::filesystem::path("../Core/Content/Models/Pillar") / ("pillar_mat" + std::to_string(0) + ".frtmat.yml");
 	auto pillar = World.SpawnEntity();
 	pillar->RenderModel->Model = memory::NewShared<SRenderModel>(
 		SRenderModel::FromMesh(
@@ -253,7 +253,7 @@ void GameInstance::Load ()
 	mirror->Transform.SetRotation(0.f, 0.f, math::PI_OVER_TWO);
 
 	std::filesystem::path cubeMaterialPath =
-		std::filesystem::path("../Core/Content/Models/Cube") / ("cube_mat" + std::to_string(0) + ".frtmat");
+		std::filesystem::path("../Core/Content/Models/Cube") / ("cube_mat" + std::to_string(0) + ".frtmat.yml");
 	auto cube = World.SpawnEntity();
 	cube->RenderModel->Model = memory::NewShared<SRenderModel>(
 		SRenderModel::FromMesh(
@@ -304,7 +304,7 @@ void GameInstance::Load ()
 	// sponzaEnt->bRayTraced = false;
 
 	std::filesystem::path lightMaterialPath =
-		std::filesystem::path("../Core/Content/Light") / ("light_mat" + std::to_string(0) + ".frtmat");
+		std::filesystem::path("../Core/Content/Light") / ("light_mat" + std::to_string(0) + ".frtmat.yml");
 
 	auto lightSource1 = World.SpawnEntity();
 	lightSource1->RenderModel->Model = memory::NewShared<graphics::SRenderModel>(
@@ -313,7 +313,7 @@ void GameInstance::Load ()
 	lightSource1->Transform.SetTranslation(0.f, 2.f, -3.f);
 
 	std::filesystem::path lightMaterialPath2 =
-		std::filesystem::path("../Core/Content/Light") / ("light_mat" + std::to_string(2) + ".frtmat");
+		std::filesystem::path("../Core/Content/Light") / ("light_mat" + std::to_string(2) + ".frtmat.yml");
 
 	auto lightSource2 = World.SpawnEntity();
 	lightSource2->RenderModel->Model = memory::NewShared<graphics::SRenderModel>(

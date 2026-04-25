@@ -75,7 +75,7 @@ SRenderModel SRenderModel::LoadFromFile (const std::string& Filename, const std:
 		defaultMaterial.PixelShaderName = "PixelShader";
 
 		std::filesystem::path materialPath =
-			materialDir / (materialBaseName + "_mat" + std::to_string(materialIndex) + ".frtmat");
+			materialDir / (materialBaseName + "_mat" + std::to_string(materialIndex) + ".frtmat.yml");
 
 		if (material->GetTextureCount(aiTextureType_DIFFUSE) > 0)
 		{

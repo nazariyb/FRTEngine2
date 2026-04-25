@@ -1,0 +1,11 @@
+version: 2
+name: blinn3-fx
+
+shaders:
+  vertex: VertexShader
+  pixel: PixelShader
+
+albedo:
+  texture: DuckCM.png
+
+roughness: 0.9

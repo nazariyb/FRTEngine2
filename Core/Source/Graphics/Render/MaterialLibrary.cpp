@@ -3,120 +3,24 @@
 #include "Material.h"
 
 #include <d3d12.h>
-#include <fstream>
 
 #include <stb_image.h>
 
-#include "Assets/TextAssetIO.h"
 #include "Graphics/Render/Renderer.h"
+#include "Graphics/Render/Serializers/MaterialSerialize.h"
+#include "Graphics/Render/Serializers/MaterialSerializers.h"
 #include "Memory/Memory.h"
 
 
 namespace frt::graphics
 {
-static constexpr int32 MaterialFileVersion = 1;
-
-static bool ParseCullMode (const std::string& Input, D3D12_CULL_MODE* OutMode)
+CMaterialLibrary::CMaterialLibrary ()
 {
-	const std::string normalized = assets::text::ToLowerCopy(Input);
-	if (normalized == "none")
-	{
-		*OutMode = D3D12_CULL_MODE_NONE;
-		return true;
-	}
-
-	if (normalized == "front")
-	{
-		*OutMode = D3D12_CULL_MODE_FRONT;
-		return true;
-	}
-
-	if (normalized == "back")
-	{
-		*OutMode = D3D12_CULL_MODE_BACK;
-		return true;
-	}
-
-	return false;
-}
-
-static bool ParseDepthFunc (const std::string& Input, D3D12_COMPARISON_FUNC* OutFunc)
-{
-	const std::string normalized = assets::text::ToLowerCopy(Input);
-	if (normalized == "never")
-	{
-		*OutFunc = D3D12_COMPARISON_FUNC_NEVER;
-		return true;
-	}
-	if (normalized == "less")
-	{
-		*OutFunc = D3D12_COMPARISON_FUNC_LESS;
-		return true;
-	}
-	if (normalized == "equal")
-	{
-		*OutFunc = D3D12_COMPARISON_FUNC_EQUAL;
-		return true;
-	}
-	if (normalized == "less_equal" || normalized == "lequal")
-	{
-		*OutFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-		return true;
-	}
-	if (normalized == "greater")
-	{
-		*OutFunc = D3D12_COMPARISON_FUNC_GREATER;
-		return true;
-	}
-	if (normalized == "not_equal" || normalized == "notequal")
-	{
-		*OutFunc = D3D12_COMPARISON_FUNC_NOT_EQUAL;
-		return true;
-	}
-	if (normalized == "greater_equal" || normalized == "gequal")
-	{
-		*OutFunc = D3D12_COMPARISON_FUNC_GREATER_EQUAL;
-		return true;
-	}
-	if (normalized == "always")
-	{
-		*OutFunc = D3D12_COMPARISON_FUNC_ALWAYS;
-		return true;
-	}
-
-	return false;
-}
-
-static const char* CullModeToString (D3D12_CULL_MODE Mode)
-{
-	switch (Mode)
-	{
-		case D3D12_CULL_MODE_NONE: return "none";
-		case D3D12_CULL_MODE_FRONT: return "front";
-		case D3D12_CULL_MODE_BACK: return "back";
-		default: return "back";
-	}
-}
-
-static const char* DepthFuncToString (D3D12_COMPARISON_FUNC Func)
-{
-	switch (Func)
-	{
-		case D3D12_COMPARISON_FUNC_NEVER: return "never";
-		case D3D12_COMPARISON_FUNC_LESS: return "less";
-		case D3D12_COMPARISON_FUNC_EQUAL: return "equal";
-		case D3D12_COMPARISON_FUNC_LESS_EQUAL: return "less_equal";
-		case D3D12_COMPARISON_FUNC_GREATER: return "greater";
-		case D3D12_COMPARISON_FUNC_NOT_EQUAL: return "not_equal";
-		case D3D12_COMPARISON_FUNC_GREATER_EQUAL: return "greater_equal";
-		case D3D12_COMPARISON_FUNC_ALWAYS: return "always";
-		default: return "less";
-	}
-}
-
-static int32 GetMaterialFileVersion (const std::filesystem::path& MaterialPath)
-{
-	return assets::text::GetTextAssetVersion(MaterialPath);
+	// Default per-project setup. Override by calling GetSerializers() after construction.
+	// Order matters for read dispatch: YAML (v2) is tried first, legacy text (v1) is the fallback.
+	Serializers.Register(std::make_unique<CMaterialYamlSerializer>());
+	Serializers.Register(std::make_unique<CMaterialLegacyTextSerializer>());
+	Serializers.SetDefaultWriteFormat(assets::EAssetFormat::Yaml);
 }
 
 void CMaterialLibrary::SetRenderer (CRenderer* InRenderer)
@@ -166,16 +70,7 @@ bool CMaterialLibrary::ReloadModifiedMaterials ()
 			continue;
 		}
 
-		const int32 fileVersion = GetMaterialFileVersion(material.SourcePath);
-		if (fileVersion < MaterialFileVersion)
-		{
-			SaveMaterialFile(material.SourcePath, material);
-			material.LastWriteTime = std::filesystem::last_write_time(material.SourcePath, ec);
-			anyReloaded = true;
-			continue;
-		}
-
-		if (ParseMaterialFile(material.SourcePath, material))
+		if (ReadMaterial(material.SourcePath, material))
 		{
 			material.LastWriteTime = newWriteTime;
 			EnsureBaseColorTexture(material);
@@ -198,19 +93,22 @@ memory::TRefShared<SMaterial> CMaterialLibrary::LoadMaterialFromFile (
 	const bool exists = std::filesystem::exists(MaterialPath, ec);
 	if (!ec && exists)
 	{
-		const int32 fileVersion = GetMaterialFileVersion(MaterialPath);
-		if (fileVersion < MaterialFileVersion)
+		const assets::ISerializer<SMaterial>* reader = Serializers.PickReader(MaterialPath);
+		if (reader)
 		{
-			SaveMaterialFile(MaterialPath, material);
-		}
-		else
-		{
-			ParseMaterialFile(MaterialPath, material);
+			(void)reader->Read(MaterialPath, material);
+
+			// If the file was loaded via a non-default format (e.g. legacy v1),
+			// upgrade by re-saving in the default write format.
+			if (reader->GetFormat() != Serializers.GetDefaultWriteFormat())
+			{
+				WriteMaterial(MaterialPath, material);
+			}
 		}
 	}
 	else if (bCreateIfMissing)
 	{
-		SaveMaterialFile(MaterialPath, material);
+		WriteMaterial(MaterialPath, material);
 	}
 
 	if (material.Name.empty())
@@ -223,117 +121,24 @@ memory::TRefShared<SMaterial> CMaterialLibrary::LoadMaterialFromFile (
 	return memory::NewShared<SMaterial>(std::move(material));
 }
 
-bool CMaterialLibrary::ParseMaterialFile (const std::filesystem::path& MaterialPath, SMaterial& Material) const
+bool CMaterialLibrary::ReadMaterial (const std::filesystem::path& Path, SMaterial& Out) const
 {
-	std::ifstream stream(MaterialPath);
-	if (!stream.is_open())
+	const assets::ISerializer<SMaterial>* reader = Serializers.PickReader(Path);
+	if (!reader)
 	{
 		return false;
 	}
-
-	std::string line;
-	while (std::getline(stream, line))
-	{
-		std::string key;
-		std::string value;
-		if (!assets::text::TryParseKeyValue(line, &key, &value))
-		{
-			continue;
-		}
-
-		if (key == "name")
-		{
-			Material.Name = value;
-		}
-		else if (key == "version")
-		{
-			continue;
-		}
-		else if (key == "vertex_shader")
-		{
-			Material.VertexShaderName = value;
-		}
-		else if (key == "pixel_shader")
-		{
-			Material.PixelShaderName = value;
-		}
-		else if (key == "color")
-		{
-			Material.DiffuseAlbedo.FillFromString(value);
-		}
-		else if (key == "metallic")
-		{
-			Material.Metallic = std::stof(value);
-		}
-		else if (key == "roughness")
-		{
-			Material.Roughness = std::stof(value);
-		}
-		else if (key == "emissive")
-		{
-			Material.Emissive.FillFromString(value);
-		}
-		else if (key == "emissive_intensity")
-		{
-			Material.EmissiveIntensity = std::stof(value);
-		}
-		else if (key == "base_color_texture")
-		{
-			Material.BaseColorTexturePath = value;
-		}
-		else if (key == "cull")
-		{
-			(void)ParseCullMode(value, &Material.CullMode);
-		}
-		else if (key == "depth_enable")
-		{
-			(void)assets::text::ParseBool(value, &Material.bDepthEnable);
-		}
-		else if (key == "depth_write")
-		{
-			(void)assets::text::ParseBool(value, &Material.bDepthWrite);
-		}
-		else if (key == "depth_func")
-		{
-			(void)ParseDepthFunc(value, &Material.DepthFunc);
-		}
-		else if (key == "alpha_blend")
-		{
-			(void)assets::text::ParseBool(value, &Material.bAlphaBlend);
-		}
-	}
-
-	return true;
+	return reader->Read(Path, Out);
 }
 
-bool CMaterialLibrary::SaveMaterialFile (const std::filesystem::path& MaterialPath, const SMaterial& Material) const
+bool CMaterialLibrary::WriteMaterial (const std::filesystem::path& Path, const SMaterial& In) const
 {
-	std::error_code ec;
-	std::filesystem::create_directories(MaterialPath.parent_path(), ec);
-
-	std::ofstream stream(MaterialPath);
-	if (!stream.is_open())
+	const assets::ISerializer<SMaterial>* writer = Serializers.PickWriter();
+	if (!writer)
 	{
 		return false;
 	}
-
-	stream << "version: " << MaterialFileVersion << "\n";
-	stream << "# FRT material\n";
-	stream << "name: " << Material.Name << "\n";
-	stream << "vertex_shader: " << Material.VertexShaderName << "\n";
-	stream << "pixel_shader: " << Material.PixelShaderName << "\n";
-	stream << "color: " << Material.DiffuseAlbedo.ToString() << "\n";
-	stream << "metallic: " << Material.Metallic << "\n";
-	stream << "roughness: " << Material.Roughness << "\n";
-	stream << "emissive: " << Material.Emissive.ToString() << "\n";
-	stream << "emissive_intensity: " << Material.EmissiveIntensity << "\n";
-	stream << "base_color_texture: " << Material.BaseColorTexturePath << "\n";
-	stream << "cull: " << CullModeToString(Material.CullMode) << "\n";
-	stream << "depth_enable: " << (Material.bDepthEnable ? "true" : "false") << "\n";
-	stream << "depth_write: " << (Material.bDepthWrite ? "true" : "false") << "\n";
-	stream << "depth_func: " << DepthFuncToString(Material.DepthFunc) << "\n";
-	stream << "alpha_blend: " << (Material.bAlphaBlend ? "true" : "false") << "\n";
-	return true;
+	return writer->Write(Path, In);
 }
 
 void CMaterialLibrary::EnsureBaseColorTexture (SMaterial& Material) const

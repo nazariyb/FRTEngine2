@@ -1,0 +1,6 @@
+version: 2
+name: Sponza_mat20
+
+shaders:
+  vertex: VertexShader
+  pixel: PixelShader
