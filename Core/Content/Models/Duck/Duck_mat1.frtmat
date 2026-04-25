@@ -3,8 +3,10 @@ version: 1
 name: Duck_mat1
 vertex_shader: VertexShader
 pixel_shader: PixelShader
-color: RGBA(1, 1, 1, 1)
-base_color_texture: 
+color: RGBA(1, 0, 0, 1)
+base_color_texture:
+metallic: 1 
+roughness: 0
 cull: none
 depth_enable: true
 depth_write: true

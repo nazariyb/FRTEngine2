@@ -3,7 +3,11 @@ version: 1
 name: defaultMat
 vertex_shader: VertexShader
 pixel_shader: PixelShader
-color: RGBA(1,1,1,1)
+color: RGBA(1.0, 0.843, 1.0, 1.0)
+metallic: 1
+roughness: 0
+emissive: RGBA(0, 0, 0, 1)
+emissive_intensity: 0
 base_color_texture: textures\defaultMat_baseColor.jpeg
 cull: front
 depth_enable: true

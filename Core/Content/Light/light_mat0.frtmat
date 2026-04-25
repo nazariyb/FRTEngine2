@@ -6,7 +6,7 @@ pixel_shader:
 color: RGBA(1, 1, 1, 1)
 metallic: 0
 roughness: 1
-emissive: RGBA(0.7, 0.25, 0.1, 1)
+emissive: RGBA(0.75, 0.3, 0.1, 1)
 emissive_intensity: 50
 base_color_texture: 
 cull: none

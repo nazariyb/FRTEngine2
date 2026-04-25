@@ -1,7 +1,9 @@
 #include "ShaderAsset.h"
 
 #include <cstdio>
+#include <fstream>
 #include <limits>
+#include <sstream>
 #include <system_error>
 #include <utility>
 
@@ -15,115 +17,58 @@
 namespace frt::graphics
 {
 #ifdef _WINDOWS
+struct SDxcContext
+{
+	Microsoft::WRL::ComPtr<IDxcCompiler> Compiler;
+	Microsoft::WRL::ComPtr<IDxcLibrary> Library;
+	Microsoft::WRL::ComPtr<IDxcIncludeHandler> IncludeHandler;
+	bool bInitialized = false;
+};
+
 static std::wstring ToWide (std::string_view Value)
 {
 	return std::wstring(Value.begin(), Value.end());
 }
 
-static std::wstring QuoteArgument (const std::wstring& Value)
+static bool IsLibraryTarget (std::string_view TargetProfile)
 {
-	if (Value.find_first_of(L" \t\"") == std::wstring::npos)
-	{
-		return Value;
-	}
-
-	std::wstring escaped;
-	escaped.reserve(Value.size() + 2);
-	escaped.push_back(L'"');
-	for (wchar_t ch : Value)
-	{
-		if (ch == L'"')
-		{
-			escaped.push_back(L'\\');
-		}
-		escaped.push_back(ch);
-	}
-	escaped.push_back(L'"');
-	return escaped;
+	return TargetProfile.rfind("lib_", 0) == 0;
 }
 
-static std::wstring JoinDefine (const SShaderDefine& Define)
+static SDxcContext& GetDxcContext ()
 {
-	if (Define.Value.empty())
+	static SDxcContext context = {};
+	if (context.bInitialized)
 	{
-		return ToWide(Define.Name);
+		return context;
 	}
 
-	std::string combined = Define.Name;
-	combined.push_back('=');
-	combined.append(Define.Value);
-	return ToWide(combined);
-}
-
-static bool RunProcess (const std::wstring& ApplicationPath, const std::wstring& CommandLine, std::string* OutOutput)
-{
-	SECURITY_ATTRIBUTES securityAttributes = {};
-	securityAttributes.nLength = sizeof(securityAttributes);
-	securityAttributes.bInheritHandle = TRUE;
-
-	HANDLE outputRead = nullptr;
-	HANDLE outputWrite = nullptr;
-	if (!CreatePipe(&outputRead, &outputWrite, &securityAttributes, 0))
+	context.bInitialized = true;
+	const HRESULT compilerHr = DxcCreateInstance(
+		CLSID_DxcCompiler,
+		__uuidof(IDxcCompiler),
+		reinterpret_cast<void**>(context.Compiler.GetAddressOf()));
+	const HRESULT libraryHr = DxcCreateInstance(
+		CLSID_DxcLibrary,
+		__uuidof(IDxcLibrary),
+		reinterpret_cast<void**>(context.Library.GetAddressOf()));
+	if (FAILED(compilerHr) || FAILED(libraryHr) || !context.Compiler || !context.Library)
 	{
-		return false;
+		context.Compiler.Reset();
+		context.Library.Reset();
+		context.IncludeHandler.Reset();
+		return context;
 	}
 
-	if (!SetHandleInformation(outputRead, HANDLE_FLAG_INHERIT, 0))
+	const HRESULT includeHr = context.Library->CreateIncludeHandler(context.IncludeHandler.GetAddressOf());
+	if (FAILED(includeHr) || !context.IncludeHandler)
 	{
-		CloseHandle(outputWrite);
-		CloseHandle(outputRead);
-		return false;
+		context.Compiler.Reset();
+		context.Library.Reset();
+		context.IncludeHandler.Reset();
 	}
 
-	STARTUPINFOW startupInfo = {};
-	startupInfo.cb = sizeof(startupInfo);
-	startupInfo.dwFlags = STARTF_USESTDHANDLES;
-	startupInfo.hStdOutput = outputWrite;
-	startupInfo.hStdError = outputWrite;
-
-	PROCESS_INFORMATION processInfo = {};
-	std::wstring mutableCommandLine = CommandLine;
-	const BOOL created = CreateProcess(
-		ApplicationPath.empty() ? nullptr : ApplicationPath.c_str(),
-		mutableCommandLine.data(),
-		nullptr,
-		nullptr,
-		TRUE,
-		CREATE_NO_WINDOW,
-		nullptr,
-		nullptr,
-		&startupInfo,
-		&processInfo);
-
-	CloseHandle(outputWrite);
-
-	if (!created)
-	{
-		CloseHandle(outputRead);
-		return false;
-	}
-
-	if (OutOutput)
-	{
-		char buffer[4096];
-		DWORD bytesRead = 0;
-		while (ReadFile(outputRead, buffer, sizeof(buffer), &bytesRead, nullptr) && bytesRead > 0)
-		{
-			OutOutput->append(buffer, buffer + bytesRead);
-		}
-	}
-
-	CloseHandle(outputRead);
-
-	WaitForSingleObject(processInfo.hProcess, INFINITE);
-
-	DWORD exitCode = 1;
-	(void)GetExitCodeProcess(processInfo.hProcess, &exitCode);
-
-	CloseHandle(processInfo.hThread);
-	CloseHandle(processInfo.hProcess);
-
-	return exitCode == 0;
+	return context;
 }
 #endif
 
@@ -213,74 +158,126 @@ static std::filesystem::path GetAbsolutePath (const std::filesystem::path& Path)
 	return absolutePath;
 }
 
-static std::filesystem::path FindDxcPath (const std::filesystem::path& SourcePath)
+static bool WriteFileBytes (const std::filesystem::path& Path, const void* Data, size_t Size)
 {
-	std::filesystem::path searchPath = GetAbsolutePath(SourcePath);
-	if (searchPath.has_filename())
+	if (Path.empty())
 	{
-		searchPath = searchPath.parent_path();
+		return false;
 	}
 
-	for (int32 i = 0; i < 6 && !searchPath.empty(); ++i)
+	const std::filesystem::path absolutePath = GetAbsolutePath(Path);
+	if (absolutePath.empty())
 	{
-		const std::filesystem::path candidate =
-			searchPath / "ThirdParty" / "Dxc" / "bin" / "x64" / "dxc.exe";
-
-		std::error_code error;
-		const bool exists = std::filesystem::exists(candidate, error);
-		if (!error && exists)
-		{
-			return candidate;
-		}
-
-		searchPath = searchPath.parent_path();
+		return false;
 	}
 
-	return {};
+	std::error_code error;
+	std::filesystem::create_directories(absolutePath.parent_path(), error);
+	if (error)
+	{
+		return false;
+	}
+
+ 	FILE* file = nullptr;
+	const std::string filePath = absolutePath.string();
+	const int32 openResult = fopen_s(&file, filePath.c_str(), "wb");
+	if (openResult != 0 || !file)
+	{
+		return false;
+	}
+
+	const size_t bytesWritten = Size > 0u ? fwrite(Data, 1, Size, file) : 0u;
+	(void)fclose(file);
+	return Size == 0u || bytesWritten == Size;
 }
 
-static bool CompileShader (const SShaderAsset& Shader)
+static bool CompileShader (SShaderAsset& Shader)
 {
-	if (Shader.SourcePath.empty() || Shader.Path.empty())
+	if (Shader.SourcePath.empty())
 	{
 		return false;
 	}
 
-	if (Shader.EntryPoint.empty() || Shader.TargetProfile.empty())
+	if (Shader.TargetProfile.empty())
 	{
 		return false;
 	}
 
-	const std::filesystem::path dxcPath = FindDxcPath(Shader.SourcePath);
-	frt_assert(!dxcPath.empty());
-	if (dxcPath.empty())
+	if (!IsLibraryTarget(Shader.TargetProfile) && Shader.EntryPoint.empty())
 	{
 		return false;
 	}
 
 #ifdef _WINDOWS
+	const SDxcContext& context = GetDxcContext();
+	if (!context.Compiler || !context.Library || !context.IncludeHandler)
+	{
+		return false;
+	}
+
 	const std::filesystem::path sourcePath = GetAbsolutePath(Shader.SourcePath);
-	const std::filesystem::path outputPath = GetAbsolutePath(Shader.Path);
-	const std::filesystem::path includeDir =
+	if (sourcePath.empty())
+	{
+		return false;
+	}
+
+	std::ifstream shaderFile(sourcePath);
+	if (!shaderFile.good())
+	{
+		return false;
+	}
+
+	std::stringstream shaderStream;
+	shaderStream << shaderFile.rdbuf();
+	const std::string shaderSource = shaderStream.str();
+
+	Microsoft::WRL::ComPtr<IDxcBlobEncoding> textBlob;
+	const HRESULT createBlobHr = context.Library->CreateBlobWithEncodingFromPinned(
+		reinterpret_cast<LPBYTE>(const_cast<char*>(shaderSource.data())),
+		static_cast<uint32>(shaderSource.size()),
+		0,
+		textBlob.GetAddressOf());
+	if (FAILED(createBlobHr) || !textBlob)
+	{
+		return false;
+	}
+
+	std::wstring sourcePathWide = sourcePath.wstring();
+	std::wstring entryWide = ToWide(Shader.EntryPoint);
+	std::wstring targetWide = ToWide(Shader.TargetProfile);
+	if (entryWide.empty())
+	{
+		entryWide = L"";
+	}
+
+	const std::filesystem::path includePath =
 		Shader.IncludeDir.empty() ? sourcePath.parent_path() : GetAbsolutePath(Shader.IncludeDir);
 
-	if (!outputPath.empty())
+	TArray<std::wstring> argumentStrings;
+	if (!includePath.empty())
 	{
-		std::error_code error;
-		std::filesystem::create_directories(outputPath.parent_path(), error);
+		argumentStrings.Add();
+		argumentStrings[argumentStrings.Count() - 1] = L"-I";
+		argumentStrings.Add();
+		argumentStrings[argumentStrings.Count() - 1] = includePath.wstring();
+	}
+	argumentStrings.Add();
+	argumentStrings[argumentStrings.Count() - 1] = L"-Zi";
+	argumentStrings.Add();
+	argumentStrings[argumentStrings.Count() - 1] = L"-Zpc";
+	argumentStrings.Add();
+	argumentStrings[argumentStrings.Count() - 1] = L"-Qembed_debug";
+
+	TArray<LPCWSTR> arguments;
+	for (uint32 i = 0; i < argumentStrings.Count(); ++i)
+	{
+		arguments.Add();
+		arguments[arguments.Count() - 1] = argumentStrings[i].c_str();
 	}
 
-	std::wstring commandLine;
-	commandLine.reserve(512);
-	commandLine.append(QuoteArgument(dxcPath.wstring()));
-	commandLine.append(L" -E ").append(ToWide(Shader.EntryPoint));
-	commandLine.append(L" -Fo ").append(QuoteArgument(outputPath.wstring()));
-	commandLine.append(L" -T ").append(ToWide(Shader.TargetProfile));
-	commandLine.append(L" -Zi -Zpc -Qembed_debug");
-	if (!includeDir.empty())
-	{
-		commandLine.append(L" -I ").append(QuoteArgument(includeDir.wstring()));
-	}
+	TArray<std::wstring> defineNames;
+	TArray<std::wstring> defineValues;
+	TArray<DxcDefine> dxcDefines;
 	for (uint32 i = 0; i < Shader.Defines.Count(); ++i)
 	{
 		const SShaderDefine& define = Shader.Defines[i];
@@ -288,17 +285,84 @@ static bool CompileShader (const SShaderAsset& Shader)
 		{
 			continue;
 		}
-		commandLine.append(L" -D ").append(QuoteArgument(JoinDefine(define)));
-	}
-	commandLine.append(L" ").append(QuoteArgument(sourcePath.wstring()));
 
-	std::string output;
-	const bool success = RunProcess(dxcPath.wstring(), commandLine, &output);
-	if (!success && !output.empty())
-	{
-		OutputDebugStringA(output.c_str());
+		defineNames.Add();
+		defineNames[defineNames.Count() - 1] = ToWide(define.Name);
+		defineValues.Add();
+		defineValues[defineValues.Count() - 1] = ToWide(define.Value);
+
+		DxcDefine dxcDefine = {};
+		dxcDefine.Name = defineNames[defineNames.Count() - 1].c_str();
+		dxcDefine.Value = defineValues[defineValues.Count() - 1].empty()
+			? nullptr
+			: defineValues[defineValues.Count() - 1].c_str();
+		dxcDefines.Add(dxcDefine);
 	}
-	return success;
+
+	Microsoft::WRL::ComPtr<IDxcOperationResult> operationResult;
+	const HRESULT compileHr = context.Compiler->Compile(
+		textBlob.Get(),
+		sourcePathWide.c_str(),
+		entryWide.c_str(),
+		targetWide.c_str(),
+		arguments.IsEmpty() ? nullptr : arguments.GetData(),
+		arguments.Count(),
+		dxcDefines.IsEmpty() ? nullptr : dxcDefines.GetData(),
+		dxcDefines.Count(),
+		context.IncludeHandler.Get(),
+		operationResult.GetAddressOf());
+	if (FAILED(compileHr) || !operationResult)
+	{
+		return false;
+	}
+
+	HRESULT resultCode = E_FAIL;
+	const HRESULT statusHr = operationResult->GetStatus(&resultCode);
+	if (FAILED(statusHr) || FAILED(resultCode))
+	{
+		Microsoft::WRL::ComPtr<IDxcBlobEncoding> errorBlob;
+		if (SUCCEEDED(operationResult->GetErrorBuffer(errorBlob.GetAddressOf())) && errorBlob)
+		{
+			std::string output(
+				reinterpret_cast<const char*>(errorBlob->GetBufferPointer()),
+				reinterpret_cast<const char*>(errorBlob->GetBufferPointer()) + errorBlob->GetBufferSize());
+			if (!output.empty())
+			{
+				OutputDebugStringA(output.c_str());
+			}
+		}
+		return false;
+	}
+
+	Microsoft::WRL::ComPtr<IDxcBlob> compiledBlob;
+	const HRESULT resultHr = operationResult->GetResult(compiledBlob.GetAddressOf());
+	if (FAILED(resultHr) || !compiledBlob)
+	{
+		return false;
+	}
+
+	const uint32 byteCount = static_cast<uint32>(compiledBlob->GetBufferSize());
+	Shader.Bytecode.SetSizeUninitialized(byteCount);
+	if (byteCount > 0u)
+	{
+		memcpy(Shader.Bytecode.GetData(), compiledBlob->GetBufferPointer(), byteCount);
+	}
+
+	if (!Shader.Path.empty())
+	{
+		(void)WriteFileBytes(Shader.Path, compiledBlob->GetBufferPointer(), compiledBlob->GetBufferSize());
+	}
+
+	if (IsLibraryTarget(Shader.TargetProfile))
+	{
+		Shader.DxcBlob = compiledBlob;
+	}
+	else
+	{
+		Shader.DxcBlob.Reset();
+	}
+
+	return !Shader.Bytecode.IsEmpty();
 #else
 	(void)Shader;
 	return false;
@@ -349,6 +413,11 @@ D3D12_SHADER_BYTECODE SShaderAsset::GetBytecode () const
 	return bytecode;
 }
 
+IDxcBlob* SShaderAsset::GetDxcBlob () const
+{
+	return DxcBlob.Get();
+}
+
 bool SShaderAsset::ReloadIfChanged ()
 {
 	const std::filesystem::path watchPath = SourcePath.empty() ? Path : SourcePath;
@@ -370,15 +439,18 @@ bool SShaderAsset::ReloadIfChanged ()
 			return false;
 		}
 	}
-
-	TArray<uint8> newBytecode = ReadFileBytes(Path);
-	if (newBytecode.IsEmpty())
+	else
 	{
-		return false;
+		TArray<uint8> newBytecode = ReadFileBytes(Path);
+		if (newBytecode.IsEmpty())
+		{
+			return false;
+		}
+		Bytecode = std::move(newBytecode);
+		DxcBlob.Reset();
 	}
 
 	LastWriteTime = lastWriteTime;
-	Bytecode = std::move(newBytecode);
 	return !Bytecode.IsEmpty();
 }
 
@@ -438,10 +510,25 @@ const SShaderAsset* CShaderLibrary::LoadShader (
 	const bool bNeedsCompile = !asset.SourcePath.empty();
 	if (bNeedsCompile)
 	{
-		(void)CompileShader(asset);
+		const bool bCompiled = CompileShader(asset);
+		if (!bCompiled || asset.Bytecode.IsEmpty())
+		{
+			if (!asset.Path.empty())
+			{
+				asset.Bytecode = ReadFileBytes(asset.Path);
+			}
+		}
+		if (!IsLibraryTarget(asset.TargetProfile))
+		{
+			asset.DxcBlob.Reset();
+		}
+	}
+	else
+	{
+		asset.Bytecode = ReadFileBytes(asset.Path);
+		asset.DxcBlob.Reset();
 	}
 
-	asset.Bytecode = ReadFileBytes(asset.Path);
 	frt_assert(!asset.Bytecode.IsEmpty());
 
 	const std::filesystem::path watchPath = asset.SourcePath.empty() ? asset.Path : asset.SourcePath;

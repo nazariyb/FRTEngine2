@@ -218,6 +218,7 @@ private:
 	std::unordered_map<std::string, ComPtr<ID3D12PipelineState>> PipelineStateCache;
 	STexture DefaultWhiteTexture = {};
 	bool bPendingPipelineStateRebuild = false;
+	bool bPendingRaytracingPipelineRebuild = false;
 
 	ComPtr<ID3D12Resource> CommonConstantBuffer;
 	D3D12_GPU_DESCRIPTOR_HANDLE CommonConstantBufferDescriptor;
@@ -267,7 +268,7 @@ private:
 	ComPtr<ID3D12RootSignature> CreateMissSignature ();
 	ComPtr<ID3D12RootSignature> CreateHitSignature ();
 
-	void CreateRaytracingPipeline ();
+	bool CreateRaytracingPipeline ();
 	void CreateRaytracingOutputBuffer ();
 	void CreateShaderResourceHeap ();
 	void CreateShaderBindingTable ();
@@ -277,11 +278,6 @@ private:
 		ID3D12Resource* Texture) const;
 	D3D12_DISPATCH_RAYS_DESC BuildDispatchRaysDesc ();
 	void DispatchRaytracingToCurrentFrameBuffer ();
-
-	ComPtr<IDxcBlob> RayGenLibrary;
-	ComPtr<IDxcBlob> MissLibrary;
-	ComPtr<IDxcBlob> HitLibrary;
-	ComPtr<IDxcBlob> ShadowLibrary;
 
 	ComPtr<ID3D12RootSignature> RayGenSignature;
 	ComPtr<ID3D12RootSignature> MissSignature;

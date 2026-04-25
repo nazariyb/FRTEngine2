@@ -244,6 +244,14 @@ void GameInstance::Load ()
 	pillar->bRayTraced = true;
 	pillar->Transform.SetTranslation(-2.5f, -0.2f, 0.f);
 
+	auto mirror = World.SpawnEntity();
+	mirror->RenderModel->Model = memory::NewShared<SRenderModel>(
+		SRenderModel::FromMesh(
+			mesh::GenerateQuad(3.f, 3.f),
+			Renderer->GetMaterialLibrary().LoadOrCreateMaterial(pillarMaterialPath, {})));
+	mirror->Transform.SetTranslation(3.f, 1.f, -.5f);
+	mirror->Transform.SetRotation(0.f, 0.f, math::PI_OVER_TWO);
+
 	std::filesystem::path cubeMaterialPath =
 		std::filesystem::path("../Core/Content/Models/Cube") / ("cube_mat" + std::to_string(0) + ".frtmat");
 	auto cube = World.SpawnEntity();
@@ -311,7 +319,7 @@ void GameInstance::Load ()
 	lightSource2->RenderModel->Model = memory::NewShared<graphics::SRenderModel>(
 		SRenderModel::FromMesh(mesh::GenerateQuad(1.f, 1.f),
 			Renderer->GetMaterialLibrary().LoadOrCreateMaterial(lightMaterialPath2, {})));
-	lightSource2->Transform.SetTranslation(-2.5f, 2.5f, 0.f);
+	lightSource2->Transform.SetTranslation(-2.5f, 2.85f, 0.f);
 	// lightSource2->Transform.SetRotation(math::PI, 0.f, 0.f);
 
 	/*memory::TRefShared<CEntity> walls[3];

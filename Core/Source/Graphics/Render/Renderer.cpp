@@ -207,7 +207,7 @@ CRenderer::CRenderer (CWindow* Window)
 	CreateRootSignature();
 	CreatePipelineState();
 
-	CreateRaytracingPipeline();
+	(void)CreateRaytracingPipeline();
 	CreateRaytracingOutputBuffer();
 	// CreateShaderResourceHeap();
 
@@ -474,6 +474,10 @@ void CRenderer::ReloadModifiedAssetsIfNeeded ()
 	{
 		bPendingPipelineStateRebuild = true;
 	}
+	if (bShadersReloaded)
+	{
+		bPendingRaytracingPipelineRebuild = true;
+	}
 #endif
 }
 
@@ -584,6 +588,16 @@ void CRenderer::Draw ()
 		WaitForFenceValue(FenceValue);
 		CreatePipelineState();
 		bPendingPipelineStateRebuild = false;
+	}
+
+	if (bPendingRaytracingPipelineRebuild)
+	{
+		WaitForFenceValue(FenceValue);
+		if (CreateRaytracingPipeline())
+		{
+			bRaytracingSbtDirty = true;
+			bPendingRaytracingPipelineRebuild = false;
+		}
 	}
 #endif
 
@@ -1539,24 +1553,70 @@ ComPtr<ID3D12RootSignature> CRenderer::CreateHitSignature ()
 	return rsc.Generate(Device.Get(), true);
 }
 
-void CRenderer::CreateRaytracingPipeline ()
+bool CRenderer::CreateRaytracingPipeline ()
 {
 	raytracing::CRayTracingPipelineGenerator pipeline(Device.Get());
+	const std::filesystem::path shaderSourceDir = R"(..\Core\Content\Shaders\DXR)";
+	const std::filesystem::path shaderBinDir = shaderSourceDir / "Bin";
 
-	RayGenLibrary = nv_helpers_dx12::CompileShaderLibrary(L"..\\Core\\Content\\Shaders\\DXR\\RayGen.hlsl");
-	MissLibrary = nv_helpers_dx12::CompileShaderLibrary(L"..\\Core\\Content\\Shaders\\DXR\\Miss.hlsl");
-	HitLibrary = nv_helpers_dx12::CompileShaderLibrary(L"..\\Core\\Content\\Shaders\\DXR\\Hit.hlsl");
-	ShadowLibrary = nv_helpers_dx12::CompileShaderLibrary(L"..\\Core\\Content\\Shaders\\DXR\\ShadowRay.hlsl");
+	const SShaderAsset* rayGenLibrary = ShaderLibrary.LoadShader(
+		"RayGenLibrary",
+		shaderBinDir / "RayGen.lib",
+		shaderSourceDir / "RayGen.hlsl",
+		shaderSourceDir,
+		"",
+		"lib_6_3",
+		EShaderStage::Compute,
+		{});
+	ComPtr<IDxcBlob> rayGenBlob = rayGenLibrary ? rayGenLibrary->GetDxcBlob() : nullptr;
+	const SShaderAsset* missLibrary = ShaderLibrary.LoadShader(
+		"MissLibrary",
+		shaderBinDir / "Miss.lib",
+		shaderSourceDir / "Miss.hlsl",
+		shaderSourceDir,
+		"",
+		"lib_6_3",
+		EShaderStage::Compute,
+		{});
+	ComPtr<IDxcBlob> missBlob = missLibrary ? missLibrary->GetDxcBlob() : nullptr;
+	const SShaderAsset* hitLibrary = ShaderLibrary.LoadShader(
+		"HitLibrary",
+		shaderBinDir / "Hit.lib",
+		shaderSourceDir / "Hit.hlsl",
+		shaderSourceDir,
+		"",
+		"lib_6_3",
+		EShaderStage::Compute,
+		{});
+	ComPtr<IDxcBlob> hitBlob = hitLibrary ? hitLibrary->GetDxcBlob() : nullptr;
+	const SShaderAsset* shadowLibrary = ShaderLibrary.LoadShader(
+		"ShadowLibrary",
+		shaderBinDir / "ShadowRay.lib",
+		shaderSourceDir / "ShadowRay.hlsl",
+		shaderSourceDir,
+		"",
+		"lib_6_3",
+		EShaderStage::Compute,
+		{});
+	ComPtr<IDxcBlob> shadowBlob = shadowLibrary ? shadowLibrary->GetDxcBlob() : nullptr;
+
+	if (!rayGenBlob || !missBlob || !hitBlob || !shadowBlob)
+	{
+#ifdef _WINDOWS
+		OutputDebugStringA("DXR hot-reload: missing DXIL library blob, keeping previous raytracing pipeline.\n");
+#endif
+		return false;
+	}
 
 	// In a way similar to DLLs, each library is associated with a number of
 	// exported symbols. This
 	// has to be done explicitly in the lines below. Note that a single library
 	// can contain an arbitrary number of symbols, whose semantic is given in HLSL
 	// using the [shader("xxx")] syntax
-	pipeline.AddLibrary(RayGenLibrary.Get(), { L"RayGen" });
-	pipeline.AddLibrary(MissLibrary.Get(), { L"Miss" });
-	pipeline.AddLibrary(HitLibrary.Get(), { L"ClosestHit" });
-	pipeline.AddLibrary(ShadowLibrary.Get(), { L"ShadowClosestHit", L"ShadowMiss" });
+	pipeline.AddLibrary(rayGenBlob.Get(), { L"RayGen" });
+	pipeline.AddLibrary(missBlob.Get(), { L"Miss" });
+	pipeline.AddLibrary(hitBlob.Get(), { L"ClosestHit" });
+	pipeline.AddLibrary(shadowBlob.Get(), { L"ShadowClosestHit", L"ShadowMiss" });
 
 	RayGenSignature = CreateRayGenSignature();
 	MissSignature = CreateMissSignature();
@@ -1606,12 +1666,29 @@ void CRenderer::CreateRaytracingPipeline ()
 	pipeline.SetMaxRecursionDepth(30);
 
 	// Compile the pipeline for execution on the GPU
-	RtStateObject = pipeline.Generate();
+	ID3D12StateObject* generatedStateObject = pipeline.Generate();
+	if (!generatedStateObject)
+	{
+#ifdef _WINDOWS
+		OutputDebugStringA("DXR hot-reload: pipeline generation failed, keeping previous raytracing pipeline.\n");
+#endif
+		return false;
+	}
 
-	// Cast the state object into a properties object, allowing to later access
-	// the shader pointers by name
-	THROW_IF_FAILED(
-		RtStateObject->QueryInterface(IID_PPV_ARGS(&RtStateObjectProperties)));
+	ComPtr<ID3D12StateObject> newStateObject = generatedStateObject;
+	ComPtr<ID3D12StateObjectProperties> newStateObjectProperties;
+	const HRESULT propertiesHr = newStateObject->QueryInterface(IID_PPV_ARGS(&newStateObjectProperties));
+	if (FAILED(propertiesHr) || !newStateObjectProperties)
+	{
+#ifdef _WINDOWS
+		OutputDebugStringA("DXR hot-reload: failed to query state object properties, keeping previous raytracing pipeline.\n");
+#endif
+		return false;
+	}
+
+	RtStateObject = newStateObject;
+	RtStateObjectProperties = newStateObjectProperties;
+	return true;
 }
 
 void CRenderer::CreateRaytracingOutputBuffer ()

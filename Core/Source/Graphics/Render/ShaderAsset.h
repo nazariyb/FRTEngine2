@@ -3,10 +3,13 @@
 #include "Core.h"
 
 #include <d3d12.h>
+#include <dxcapi.h>
 #include <filesystem>
 #include <string>
 #include <string_view>
 #include <unordered_map>
+
+#include <wrl/client.h>
 
 #include "CoreTypes.h"
 #include "Containers/Array.h"
@@ -42,9 +45,11 @@ struct SShaderAsset
 	EShaderStage Stage = EShaderStage::Vertex;
 	TArray<SShaderDefine> Defines;
 	TArray<uint8> Bytecode;
+	Microsoft::WRL::ComPtr<IDxcBlob> DxcBlob;
 	std::filesystem::file_time_type LastWriteTime;
 
 	D3D12_SHADER_BYTECODE GetBytecode () const;
+	IDxcBlob* GetDxcBlob () const;
 	bool ReloadIfChanged ();
 };
 
