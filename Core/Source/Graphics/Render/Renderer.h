@@ -16,6 +16,7 @@
 #include "Texture.h"
 #include "Containers/Array.h"
 #include "Graphics/DXRUtils.h"
+#include "Profiler/GpuProfiler.h"
 
 
 namespace frt
@@ -173,11 +174,16 @@ public:
 
 	frt::CEvent<> OnShaderDescriptorHeapRebuild;
 
+	profiler::CGpuProfiler& GetGpuProfiler () { return GpuProfiler; }
+	const profiler::CGpuProfiler& GetGpuProfiler () const { return GpuProfiler; }
+
 	DX12_DescriptorHeap ShaderDescriptorHeap;
 	bool bVSyncEnabled = true;
 	DXGI_RATIONAL DisplayRefreshRate = { 0u, 1u };
 
 private:
+	profiler::CGpuProfiler GpuProfiler;
+
 	struct SShaderPermutation
 	{
 		std::string Name;

@@ -10,6 +10,7 @@
 #include "DXRHelper.h"
 #include "EnginePaths.h"
 #include "Exception.h"
+#include "Profiler/Profiler.h"
 #include "Timer.h"
 #include "Window.h"
 #include "Graphics/Model.h"
@@ -155,6 +156,14 @@ CRenderer::CRenderer (CWindow* Window)
 	queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
 
 	THROW_IF_FAILED(Device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&CommandQueue)));
+
+	// GPU profiler — must come after Device + CommandQueue exist.
+	// 64 scopes/frame is plenty for current pass count; bump if it ever fills up.
+	GpuProfiler.Init(
+		Device.Get(),
+		CommandQueue.Get(),
+		64u,
+		render::constants::FrameResourcesBufferCount);
 
 	// Command allocator and list
 
@@ -515,6 +524,7 @@ bool CRenderer::ShouldRenderRaytracing () const
 void CRenderer::StartFrame ()
 {
 	ResetCurrentFrameCommandList();
+	GpuProfiler.BeginFrame();
 	ProcessPendingResourceUploads();
 	ReloadModifiedAssetsIfNeeded();
 	const bool bRenderRaster = ShouldRenderRaster();
@@ -569,6 +579,9 @@ void CRenderer::Draw ()
 		resourceBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
 		CommandList->ResourceBarrier(1, &resourceBarrier);
 	}
+
+	// Resolve all timestamp queries recorded this frame before closing the list.
+	GpuProfiler.ResolveFrame(CommandList.Get());
 
 	THROW_IF_FAILED(CommandList->Close());
 	bCommandListRecording = false;
@@ -1991,6 +2004,8 @@ D3D12_DISPATCH_RAYS_DESC CRenderer::BuildDispatchRaysDesc ()
 
 void CRenderer::DispatchRaytracingToCurrentFrameBuffer ()
 {
+	FRT_GPU_SCOPE(CommandList.Get(), "RT_Dispatch");
+
 	ID3D12DescriptorHeap* heaps[] = { SrvUavHeap.Get() };
 	CommandList->SetDescriptorHeaps(_countof(heaps), heaps);
 

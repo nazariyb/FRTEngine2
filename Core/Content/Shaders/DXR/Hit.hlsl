@@ -17,8 +17,9 @@ SamplerState                    gLinearSampler   : register(s0);
 static const float kPi                  = 3.14159265359f;
 static const float kEpsilon             = 1e-6f;
 static const uint  kInvalidTextureSlot  = 0xFFFFFFFF;
-static const uint  kMaxBounces          = 4u;
-static const uint  kRussianRouletteDepth = 2u;    // start RR termination at this depth
+// Path depth bounds come from the pass constant buffer (gRaytracingMaxBounces,
+// gRaytracingRussianRouletteDepth) so they can be tuned live from the ImGui panel
+// without recompiling shaders.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shadow payload  (kept minimal — just a single bool)
@@ -466,9 +467,9 @@ void ClosestHit(inout HitInfo payload, Attributes attrib)
 	}
 
 	// ── 8. Path depth limit ───────────────────────────────────────────────
-	// Terminate paths that have bounced kMaxBounces times.  Return direct
+	// Terminate paths that have bounced gRaytracingMaxBounces times.  Return direct
 	// lighting already computed at this vertex rather than discarding it.
-	if (depth >= kMaxBounces)
+	if (depth >= gRaytracingMaxBounces)
 	{
 		payload.color = directLighting;      // no env/sky yet (review item)
 		payload.depth = depth;
@@ -476,11 +477,11 @@ void ClosestHit(inout HitInfo payload, Attributes attrib)
 	}
 
 	// ── 9. Russian Roulette path termination ─────────────────────────────
-	// Probabilistically kill low-throughput paths starting at kRussianRouletteDepth.
+	// Probabilistically kill low-throughput paths starting at gRaytracingRussianRouletteDepth.
 	// Surviving paths are reweighted by 1/p to keep the estimator unbiased.
 	// Continuation probability is clamped to ≥ 0.1 to prevent infinite variance.
 	float rrWeight = 1.0f;
-	if (!isPerfectMirror && depth >= kRussianRouletteDepth)
+	if (!isPerfectMirror && depth >= gRaytracingRussianRouletteDepth)
 	{
 		float pContinue = saturate(max(albedo.r, max(albedo.g, albedo.b)));
 		pContinue = max(pContinue, 0.1f);

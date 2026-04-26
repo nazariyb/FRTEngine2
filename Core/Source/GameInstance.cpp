@@ -460,10 +460,39 @@ void GameInstance::CalculateFrameStats () const
 	}
 
 #if !defined(FRT_HEADLESS)
-	ImGui::Begin("Stats", nullptr, ImGuiWindowFlags_NoResize);
+	ImGui::Begin("Stats", nullptr);
 	ImGui::Text("FPS: %.2f", fps);
 	ImGui::Text("MS/frame: %.2f", msPerFrame);
+
+	ImGui::Separator();
+	ImGui::Text("GPU passes:");
+	const auto& gpuResults = Renderer->GetGpuProfiler().GetLastResults();
+	double gpuTotalMs = 0.0;
+	for (uint32 i = 0; i < gpuResults.Count(); ++i)
+	{
+		const auto& r = gpuResults[i];
+		ImGui::Text("  %-22s %7.3f ms", r.Name ? r.Name : "?", r.DurationMs);
+		gpuTotalMs += r.DurationMs;
+	}
+	if (!gpuResults.IsEmpty())
+	{
+		ImGui::Text("  %-22s %7.3f ms", "(sum)", gpuTotalMs);
+	}
 	ImGui::End();
+
+	// Live RT knobs — used by sweep studies (samples × bounces × RR) without shader recompile.
+	{
+		auto* mutableThis = const_cast<GameInstance*>(this);
+		SRtSettings& rt = mutableThis->GetRtSettings();
+		ImGui::Begin("Raytracing", nullptr);
+		int samples = static_cast<int>(rt.SampleCount);
+		int bounces = static_cast<int>(rt.MaxBounces);
+		int rr = static_cast<int>(rt.RussianRouletteDepth);
+		if (ImGui::SliderInt("Samples / pixel", &samples, 1, 64))   rt.SampleCount = static_cast<uint32>(samples);
+		if (ImGui::SliderInt("Max bounces",     &bounces, 0, 16))   rt.MaxBounces  = static_cast<uint32>(bounces);
+		if (ImGui::SliderInt("RR start depth",  &rr,      0, 16))   rt.RussianRouletteDepth = static_cast<uint32>(rr);
+		ImGui::End();
+	}
 #else
 	std::printf("FPS: %.2f; MS/frame: %.2f\n", fps, msPerFrame);
 #endif

@@ -11,6 +11,7 @@
 #include "Graphics/DXRUtils.h"
 #include "Graphics/Render/GraphicsCoreTypes.h"
 #include "Graphics/Render/Renderer.h"
+#include "Profiler/Profiler.h"
 
 using namespace frt;
 
@@ -72,6 +73,8 @@ void Sys_MeshRenderer::Draw (const SDrawUpdateContext& Context)
 #ifndef FRT_HEADLESS
 void Sys_MeshRenderer::Present (float DeltaSeconds, ID3D12GraphicsCommandList4* CommandList)
 {
+	FRT_GPU_SCOPE(CommandList, "MeshRenderer_Present");
+
 	auto& currentFrameResources = Renderer->GetCurrentFrameResource();
 
 	// TODO: assign stable material indices in MaterialLibrary and update constants only when dirty.
@@ -325,8 +328,12 @@ void Sys_MeshRenderer::CopyConstantData ()
 	passConstants.TotalTime = GameInstance::GetInstance().GetTime().GetTotalSeconds();
 	passConstants.DeltaTime = GameInstance::GetInstance().GetTime().GetDeltaSeconds();
 	passConstants.FrameIndex = static_cast<uint32>(GameInstance::GetInstance().GetFrameCount());
-	// RaytracingSampleCount left at its default (32); set here to make it visible and easy to tune
-	// passConstants.RaytracingSampleCount = 32u;
+
+	// Live RT knobs (samples, bounces, RR depth) come from GameInstance — set via ImGui sliders.
+	const auto& rtSettings = GameInstance::GetInstance().GetRtSettings();
+	passConstants.RaytracingSampleCount = rtSettings.SampleCount;
+	passConstants.RaytracingMaxBounces = rtSettings.MaxBounces;
+	passConstants.RaytracingRussianRouletteDepth = rtSettings.RussianRouletteDepth;
 
 	// ── Accumulation frame counter ────────────────────────────────────────
 	// Reset on any scene change: camera movement, object transforms, or topology.
@@ -704,9 +711,12 @@ void Sys_MeshRenderer::CreateAccelerationStructures ()
 	TArray<graphics::raytracing::SAccelerationStructureBuffers> bottomLevelBuffers;
 	bottomLevelBuffers.SetCapacity(buildEntries.Count());
 
-	for (const SBuildEntry& entry : buildEntries)
 	{
-		bottomLevelBuffers.Add(CreateBottomLevelAS(*entry.Entity->GetRenderModel()));
+		FRT_GPU_SCOPE(Renderer->GetCommandList(), "BLAS_BuildAll");
+		for (const SBuildEntry& entry : buildEntries)
+		{
+			bottomLevelBuffers.Add(CreateBottomLevelAS(*entry.Entity->GetRenderModel()));
+		}
 	}
 
 	Instances.Reset(buildEntries.Count());
@@ -729,7 +739,10 @@ void Sys_MeshRenderer::CreateAccelerationStructures ()
 		cumulativeHitGroups += sectionCount * 2u;
 	}
 
-	CreateTopLevelAS(Instances, false);
+	{
+		FRT_GPU_SCOPE(Renderer->GetCommandList(), "TLAS_Build");
+		CreateTopLevelAS(Instances, false);
+	}
 
 	BottomLevelASs.Reset(bottomLevelBuffers.Count());
 	for (const auto& buffer : bottomLevelBuffers)
@@ -840,7 +853,10 @@ void Sys_MeshRenderer::UpdateAccelerationStructures ()
 
 	// Per-frame transform update (objects moving): reset accumulation so
 	// the stale history isn't blended with the new object positions.
-	CreateTopLevelAS(Instances, true);
+	{
+		FRT_GPU_SCOPE(Renderer->GetCommandList(), "TLAS_Refit");
+		CreateTopLevelAS(Instances, true);
+	}
 	Renderer->TopLevelASBuffers = TopLevelASBuffers;
 	scene.bAccumulationDirty = true;
 }

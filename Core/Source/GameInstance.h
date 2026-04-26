@@ -117,6 +117,20 @@ protected:
 	graphics::SDisplayOptions DisplayOptions;
 	SUserSettings UserSettings;
 
+	// Live raytracing knobs — written by ImGui sliders, read by Sys_MeshRenderer when
+	// filling SPassConstants. Tweak at runtime without shader recompile.
+	struct SRtSettings
+	{
+		uint32 SampleCount = 32u;
+		uint32 MaxBounces = 4u;
+		uint32 RussianRouletteDepth = 2u;
+	};
+public:
+	SRtSettings& GetRtSettings () { return RtSettings; }
+	const SRtSettings& GetRtSettings () const { return RtSettings; }
+protected:
+	SRtSettings RtSettings;
+
 	uint64 FrameCount;
 
 	bool bCameraMovementEnabled = false;

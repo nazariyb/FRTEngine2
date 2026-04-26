@@ -55,7 +55,12 @@ struct SPassConstants
 	uint32 FrameIndex = 0u;
 	uint32 RaytracingSampleCount = 32u;   // samples per pixel per frame
 	uint32 AccumulationFrameIndex = 0u;   // resets to 0 whenever the camera or any object moves
-	uint32 PadPCB0 = 0u;                 // keep 16-byte cbuffer alignment
+	uint32 RaytracingMaxBounces = 4u;     // upper bound on path depth in Hit.hlsl
+
+	uint32 RaytracingRussianRouletteDepth = 2u;  // depth at which RR termination kicks in
+	uint32 PadPCB0 = 0u;
+	uint32 PadPCB1 = 0u;
+	uint32 PadPCB2 = 0u;                  // 16-byte alignment
 };
 
 
