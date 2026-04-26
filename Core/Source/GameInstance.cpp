@@ -285,15 +285,6 @@ void GameInstance::Load ()
 			R"(..\Core\Content\Models\Duck\DuckCM.png)"));
 	duckEnt->Transform.SetTranslation(0.f, 0.f, 0.f);
 
-	auto head = World.SpawnEntity();
-	head->RenderModel->Model = memory::NewShared<graphics::SRenderModel>(
-		graphics::SRenderModel::LoadFromFile(
-			R"(..\Core\Content\Models\Head\1\african_head.obj)",
-			R"(..\Core\Content\Models\Head\1\african_head_diffuse.jpg)"));
-	head->Transform.SetTranslation(2.5f, 1.5f, 0.f);
-	head->Transform.SetScale(Vector3f(.45f));
-	head->RotationSpeed = Vector3f::UpVector * (math::PI_OVER_FOUR * 0.25f);
-
 	// TODO: When Sponza is added, the renderer crashes. Probably multiple sections aren't handled properly
 	// auto sponzaEnt = World->SpawnEntity();
 	// sponzaEnt->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
