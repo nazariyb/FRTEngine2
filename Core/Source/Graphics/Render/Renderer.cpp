@@ -8,6 +8,7 @@
 
 #include "d3dx12.h"
 #include "DXRHelper.h"
+#include "EnginePaths.h"
 #include "Exception.h"
 #include "Timer.h"
 #include "Window.h"
@@ -1556,8 +1557,8 @@ ComPtr<ID3D12RootSignature> CRenderer::CreateHitSignature ()
 bool CRenderer::CreateRaytracingPipeline ()
 {
 	raytracing::CRayTracingPipelineGenerator pipeline(Device.Get());
-	const std::filesystem::path shaderSourceDir = R"(..\Core\Content\Shaders\DXR)";
-	const std::filesystem::path shaderBinDir = shaderSourceDir / "Bin";
+	const std::filesystem::path shaderSourceDir = paths::GetDxrShaderSourceDir();
+	const std::filesystem::path shaderBinDir = paths::GetDxrShaderCacheDir();
 
 	const SShaderAsset* rayGenLibrary = ShaderLibrary.LoadShader(
 		"RayGenLibrary",
