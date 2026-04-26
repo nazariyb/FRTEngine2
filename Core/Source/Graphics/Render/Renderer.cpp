@@ -1465,8 +1465,8 @@ void CRenderer::SetRaytracingHitGroupEntries (
 			const SRaytracingHitGroupEntry& currentEntry = RaytracingHitGroupEntries[i];
 			const SRaytracingHitGroupEntry& newEntry = HitGroupEntries[i];
 			if (currentEntry.MaterialIndex != newEntry.MaterialIndex ||
-				currentEntry.VertexBuffer != newEntry.VertexBuffer ||
-				currentEntry.IndexBuffer != newEntry.IndexBuffer)
+				currentEntry.VertexBufferGpuVa != newEntry.VertexBufferGpuVa ||
+				currentEntry.IndexBufferGpuVa != newEntry.IndexBufferGpuVa)
 			{
 				bChanged = true;
 				break;
@@ -1847,7 +1847,7 @@ void CRenderer::CreateShaderBindingTable ()
 		for (uint32 i = 0; i < RaytracingHitGroupEntries.Count(); ++i)
 		{
 			const SRaytracingHitGroupEntry& hitGroupEntry = RaytracingHitGroupEntries[i];
-			frt_assert(hitGroupEntry.VertexBuffer && hitGroupEntry.IndexBuffer);
+			frt_assert(hitGroupEntry.VertexBufferGpuVa && hitGroupEntry.IndexBufferGpuVa);
 
 			uint32 materialIndex = hitGroupEntry.MaterialIndex;
 			if (materialIndex >= materialCB.ObjectCount)
@@ -1867,8 +1867,8 @@ void CRenderer::CreateShaderBindingTable ()
 					passCbAddress,
 					tlasDescriptorTablePointer,
 					reinterpret_cast<void*>(materialTextureTableAddress),
-					reinterpret_cast<void*>(hitGroupEntry.VertexBuffer->GetGPUVirtualAddress()),
-					reinterpret_cast<void*>(hitGroupEntry.IndexBuffer->GetGPUVirtualAddress())
+					reinterpret_cast<void*>(hitGroupEntry.VertexBufferGpuVa),
+					reinterpret_cast<void*>(hitGroupEntry.IndexBufferGpuVa)
 				});
 			SbtHelper.AddHitGroup(
 				L"ShadowHitGroup",
@@ -1877,8 +1877,8 @@ void CRenderer::CreateShaderBindingTable ()
 					passCbAddress,
 					tlasDescriptorTablePointer,
 					reinterpret_cast<void*>(materialTextureTableAddress),
-					reinterpret_cast<void*>(hitGroupEntry.VertexBuffer->GetGPUVirtualAddress()),
-					reinterpret_cast<void*>(hitGroupEntry.IndexBuffer->GetGPUVirtualAddress())
+					reinterpret_cast<void*>(hitGroupEntry.VertexBufferGpuVa),
+					reinterpret_cast<void*>(hitGroupEntry.IndexBufferGpuVa)
 				});
 		}
 	}

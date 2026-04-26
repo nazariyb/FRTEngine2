@@ -136,17 +136,29 @@ void Sys_MeshRenderer::Present (float DeltaSeconds, ID3D12GraphicsCommandList4* 
 
 	if (!AsEntities.IsEmpty() && (AsEntities.Count() == AsModels.Count()))
 	{
-		rtHitGroupEntries.Reset(AsEntities.Count());
+		// One hit group entry per (instance, section). Order MUST match the BLAS geometry order
+		// in CreateBottomLevelAS — both iterate model->Sections in the same order.
+		uint32 totalSections = 0u;
+		for (uint32 i = 0; i < AsModels.Count(); ++i)
+		{
+			totalSections += AsModels[i] ? AsModels[i]->Sections.Count() : 0u;
+		}
+		rtHitGroupEntries.Reset(totalSections);
+
 		for (uint32 i = 0; i < AsEntities.Count(); ++i)
 		{
 			const CEntity* entity = AsEntities[i];
 			const graphics::SRenderModel* model = AsModels[i];
 			frt_assert(entity && model && model->VertexBufferGpu && model->IndexBufferGpu);
 
-			uint32 materialIndex = 0u;
-			if (!model->Sections.IsEmpty())
+			const D3D12_GPU_VIRTUAL_ADDRESS vbBase = model->VertexBufferGpu->GetGPUVirtualAddress();
+			const D3D12_GPU_VIRTUAL_ADDRESS ibBase = model->IndexBufferGpu->GetGPUVirtualAddress();
+
+			for (uint32 sectionIdx = 0; sectionIdx < model->Sections.Count(); ++sectionIdx)
 			{
-				const graphics::SRenderSection& section = model->Sections[0];
+				const graphics::SRenderSection& section = model->Sections[sectionIdx];
+
+				uint32 materialIndex = 0u;
 				if (section.MaterialIndex < model->Materials.Count())
 				{
 					const graphics::SMaterial* material =
@@ -156,12 +168,13 @@ void Sys_MeshRenderer::Present (float DeltaSeconds, ID3D12GraphicsCommandList4* 
 						materialIndex = material->RuntimeIndex;
 					}
 				}
-			}
 
-			auto& entry = rtHitGroupEntries.Add();
-			entry.MaterialIndex = materialIndex;
-			entry.VertexBuffer = model->VertexBufferGpu.Get();
-			entry.IndexBuffer = model->IndexBufferGpu.Get();
+				// PrimitiveIndex() in the hit shader is section-local, so feed offset GPU VAs.
+				auto& entry = rtHitGroupEntries.Add();
+				entry.MaterialIndex = materialIndex;
+				entry.VertexBufferGpuVa = vbBase + static_cast<uint64>(section.VertexOffset) * sizeof(graphics::SVertex);
+				entry.IndexBufferGpuVa  = ibBase + static_cast<uint64>(section.IndexOffset) * sizeof(uint32);
+			}
 		}
 	}
 
@@ -382,11 +395,24 @@ graphics::raytracing::SAccelerationStructureBuffers Sys_MeshRenderer::CreateBott
 	frt_assert(RenderModel.Model);
 	const SRenderModel& model = *RenderModel.Model;
 
-	// Adding all vertex buffers and not transforming their position.
-	bottomLevelAS.AddVertexBuffer(
-		model.VertexBufferGpu.Get(), 0, model.Vertices.Count(), sizeof(SVertex),
-		model.IndexBufferGpu.Get(), 0, model.Indices.Count(),
-		nullptr, 0);
+	// One geometry per section. Each geometry slices the shared vertex/index buffers via offsets.
+	// IMPORTANT: section indices are local to the section in our index buffer (mFaces[].mIndices
+	// are written as-is in Model.cpp), so VertexBufferOffset bakes in per-section VertexOffset
+	// to make the indices effectively absolute for each geometry.
+	frt_assert(!model.Sections.IsEmpty());
+	for (uint32 sectionIdx = 0; sectionIdx < model.Sections.Count(); ++sectionIdx)
+	{
+		const SRenderSection& section = model.Sections[sectionIdx];
+		bottomLevelAS.AddVertexBuffer(
+			model.VertexBufferGpu.Get(),
+			static_cast<uint64>(section.VertexOffset) * sizeof(SVertex),
+			section.VertexCount,
+			sizeof(SVertex),
+			model.IndexBufferGpu.Get(),
+			static_cast<uint64>(section.IndexOffset) * sizeof(uint32),
+			section.IndexCount,
+			nullptr, 0);
+	}
 
 	// The AS build requires some scratch space to store temporary information.
 	// The amount of scratch memory is dependent on the scene complexity.
@@ -688,13 +714,19 @@ void Sys_MeshRenderer::CreateAccelerationStructures ()
 	AsModels.Reset(buildEntries.Count());
 	AsTransforms.Reset(buildEntries.Count());
 
+	uint32 cumulativeHitGroups = 0u;
 	for (uint32 i = 0; i < buildEntries.Count(); ++i)
 	{
 		const SBuildEntry& entry = buildEntries[i];
-		Instances.Add({ bottomLevelBuffers[i].Result.Get(), entry.Transform, i, i * 2u });
+		// HitGroupIndex = cumulative sum of prior models' (sectionCount * rayTypesPerSection).
+		// 2 ray types: primary + shadow. Must match SBT layout in CreateShaderBindingTable.
+		Instances.Add({ bottomLevelBuffers[i].Result.Get(), entry.Transform, i, cumulativeHitGroups });
 		AsEntities.Add(entry.Entity);
 		AsModels.Add(entry.Model);
 		AsTransforms.Add(entry.Entity->Transform.GetMatrix());
+
+		const uint32 sectionCount = entry.Model ? entry.Model->Sections.Count() : 0u;
+		cumulativeHitGroups += sectionCount * 2u;
 	}
 
 	CreateTopLevelAS(Instances, false);
@@ -743,6 +775,7 @@ void Sys_MeshRenderer::UpdateAccelerationStructures ()
 	}
 
 	uint32 trackedIndex = 0u;
+	uint32 cumulativeHitGroups = 0u;
 	bool bTopologyChanged = false;
 	bool bInstanceDataChanged = false;
 
@@ -770,12 +803,15 @@ void Sys_MeshRenderer::UpdateAccelerationStructures ()
 			bInstanceDataChanged = true;
 		}
 
-		const uint32 expectedHitGroupIndex = trackedIndex * 2u;
-		if (Instances[trackedIndex].HitGroupIndex != expectedHitGroupIndex)
+		// Cumulative offset, must match CreateAccelerationStructures.
+		if (Instances[trackedIndex].HitGroupIndex != cumulativeHitGroups)
 		{
-			Instances[trackedIndex].HitGroupIndex = expectedHitGroupIndex;
+			Instances[trackedIndex].HitGroupIndex = cumulativeHitGroups;
 			bInstanceDataChanged = true;
 		}
+
+		const uint32 sectionCount = AsModels[trackedIndex] ? AsModels[trackedIndex]->Sections.Count() : 0u;
+		cumulativeHitGroups += sectionCount * 2u;
 
 		++trackedIndex;
 	}

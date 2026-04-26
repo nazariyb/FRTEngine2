@@ -26,21 +26,6 @@ using namespace memory::literals;
 
 #if !defined(FRT_HEADLESS)
 static ImGui_ImplDX12_InitInfo gImGuiDx12InitInfo;
-
-static void RebuildImGuiDx12Backend (graphics::CRenderer* renderer)
-{
-	if (!renderer)
-	{
-		return;
-	}
-
-	gImGuiDx12InitInfo.Device = renderer->GetDevice();
-	gImGuiDx12InitInfo.CommandQueue = renderer->GetCommandQueue();
-	gImGuiDx12InitInfo.SrvDescriptorHeap = renderer->GetDescriptorHeap().GetHeap();
-
-	ImGui_ImplDX12_Shutdown();
-	ImGui_ImplDX12_Init(&gImGuiDx12InitInfo);
-}
 #endif
 
 static std::filesystem::path ResolveInputContentRoot ()
@@ -141,34 +126,36 @@ GameInstance::GameInstance ()
 
 	ImGui_ImplWin32_Init(Window->GetHandle());
 
+	// Dedicated heap for ImGui — small (font + few spares). Isolated from engine's
+	// ShaderDescriptorHeap so engine-side rebuilds on material growth never disturb ImGui.
+	ImGuiDescriptorHeap = graphics::DX12_DescriptorHeap(
+		Renderer->GetDevice(),
+		D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
+		8,
+		D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE);
+
 	gImGuiDx12InitInfo = ImGui_ImplDX12_InitInfo();
 	gImGuiDx12InitInfo.Device = Renderer->GetDevice();
 	gImGuiDx12InitInfo.CommandQueue = Renderer->GetCommandQueue();
 	gImGuiDx12InitInfo.NumFramesInFlight = render::constants::FrameResourcesBufferCount;
 	gImGuiDx12InitInfo.RTVFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 	gImGuiDx12InitInfo.DSVFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
-	gImGuiDx12InitInfo.UserData = Renderer.GetRawIgnoringLifetime();
-	gImGuiDx12InitInfo.SrvDescriptorHeap = Renderer->ShaderDescriptorHeap.GetHeap();
+	gImGuiDx12InitInfo.UserData = &ImGuiDescriptorHeap;
+	gImGuiDx12InitInfo.SrvDescriptorHeap = ImGuiDescriptorHeap.GetHeap();
 	gImGuiDx12InitInfo.SrvDescriptorAllocFn =
 		[] (
 		ImGui_ImplDX12_InitInfo* InitInfo,
 		D3D12_CPU_DESCRIPTOR_HANDLE* OutCpuHandle,
 		D3D12_GPU_DESCRIPTOR_HANDLE* OutGpuHandle)
 		{
-			return ((CRenderer*)InitInfo->UserData)->ShaderDescriptorHeap.Allocate(OutCpuHandle, OutGpuHandle);
+			((graphics::DX12_DescriptorHeap*)InitInfo->UserData)->Allocate(OutCpuHandle, OutGpuHandle);
 		};
 	gImGuiDx12InitInfo.SrvDescriptorFreeFn =
-		[] (ImGui_ImplDX12_InitInfo*, D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle, D3D12_GPU_DESCRIPTOR_HANDLE GpuHandle)
+		[] (ImGui_ImplDX12_InitInfo*, D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_GPU_DESCRIPTOR_HANDLE)
 		{
-			// TODO
+			// Heap is ring/bump-allocated and lives for the GameInstance lifetime — nothing to free per-slot.
 		};
 	ImGui_ImplDX12_Init(&gImGuiDx12InitInfo);
-
-	Renderer->OnShaderDescriptorHeapRebuild +=
-		[renderer = Renderer.GetRawIgnoringLifetime()] ()
-		{
-			RebuildImGuiDx12Backend(renderer);
-		};
 #endif
 }
 
@@ -286,13 +273,13 @@ void GameInstance::Load ()
 	duckEnt->Transform.SetTranslation(0.f, 0.f, 0.f);
 
 	// TODO: When Sponza is added, the renderer crashes. Probably multiple sections aren't handled properly
-	// auto sponzaEnt = World->SpawnEntity();
-	// sponzaEnt->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
-	// 	graphics::SRenderModel::LoadFromFile(
-	// 		R"(..\Core\Content\Models\Sponza\Sponza.gltf)",
-	// 		""));
-	// // sponzaEnt->Transform.SetTranslation(1.f, 0.f, 0.f);
-	// sponzaEnt->bRayTraced = false;
+	auto sponzaEnt = World.SpawnEntity();
+	sponzaEnt->RenderModel->Model = memory::NewShared<graphics::SRenderModel>(
+		graphics::SRenderModel::LoadFromFile(
+			R"(..\Core\Content\Models\Sponza\Sponza.gltf)",
+			""));
+	// sponzaEnt->Transform.SetTranslation(1.f, 0.f, 0.f);
+	sponzaEnt->bRayTraced = false;
 
 	std::filesystem::path lightMaterialPath =
 		std::filesystem::path("../Core/Content/Light") / ("light_mat" + std::to_string(0) + ".frtmat.yml");
@@ -437,7 +424,10 @@ void GameInstance::Draw (float DeltaSeconds)
 
 	ImGui::Render();
 	{
-		ID3D12DescriptorHeap* heaps[] = { Renderer->GetDescriptorHeap().GetHeap() };
+		// Bind ImGui's dedicated heap before its draw. ImGui_ImplDX12_RenderDrawData binds
+		// its own heap internally too, but doing it here keeps state explicit and avoids
+		// surprises if engine code later expects a particular heap bound after ImGui.
+		ID3D12DescriptorHeap* heaps[] = { ImGuiDescriptorHeap.GetHeap() };
 		Renderer->GetCommandList()->SetDescriptorHeaps(_countof(heaps), heaps);
 	}
 	ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), Renderer->GetCommandList());

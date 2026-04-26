@@ -254,8 +254,11 @@ public:
 	struct SRaytracingHitGroupEntry
 	{
 		uint32 MaterialIndex = 0u;
-		ID3D12Resource* VertexBuffer = nullptr;
-		ID3D12Resource* IndexBuffer = nullptr;
+		// Per-section GPU VA: base buffer addr + section offset.
+		// Hit shader's PrimitiveIndex() is section-local, so these must point to
+		// the section's first vertex / first index respectively.
+		D3D12_GPU_VIRTUAL_ADDRESS VertexBufferGpuVa = 0u;
+		D3D12_GPU_VIRTUAL_ADDRESS IndexBufferGpuVa = 0u;
 	};
 
 	void InitializeRaytracingResources ();

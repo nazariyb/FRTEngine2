@@ -6,6 +6,7 @@
 #include "Sys_MeshRenderer.h"
 #include "WorldScene.h"
 #include "Graphics/Render/RenderCommonTypes.h"
+#include "Graphics/Render/RenderResourceAllocators.h"
 #include "Input/InputActionLibrary.h"
 #include "Input/InputSystem.h"
 #include "Memory/MemoryPool.h"
@@ -95,6 +96,10 @@ protected:
 	memory::TRefUnique<graphics::CRenderer> Renderer;
 	memory::TRefShared<graphics::CCamera> Camera;
 
+	// Dedicated descriptor heap for ImGui (font + a few spares).
+	// Kept separate from Renderer's ShaderDescriptorHeap so engine-side heap rebuilds
+	// on material/texture growth never invalidate ImGui's font slot or trash its state.
+	graphics::DX12_DescriptorHeap ImGuiDescriptorHeap;
 #endif
 	CWorldScene World;
 	memory::TRefWeak<Sys_MeshRenderer> MeshRenderer;
