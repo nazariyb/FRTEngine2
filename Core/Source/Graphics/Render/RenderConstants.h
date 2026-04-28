@@ -27,6 +27,7 @@ static constexpr uint32 RootRegister_BaseColorTexture = 0;
 static constexpr uint32 RootRegister_ObjectCbv = 0;
 static constexpr uint32 RootRegister_MaterialCbv = 1;
 static constexpr uint32 RootRegister_PassCbv = 2;
+static constexpr uint32 RootRegister_SkyCbv = 3;
 static constexpr uint32 RootRegister_MaterialTextureStart = 0;
 static constexpr uint32 RootMaterialTextureCount = 16;
 

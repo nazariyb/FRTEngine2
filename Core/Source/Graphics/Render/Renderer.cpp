@@ -1524,6 +1524,8 @@ ComPtr<ID3D12RootSignature> CRenderer::CreateRayGenSignature ()
 ComPtr<ID3D12RootSignature> CRenderer::CreateMissSignature ()
 {
 	raytracing::CRootSignatureGenerator rsc;
+	// Sky CB at b3 — read by Miss to compute environment radiance from ray direction.
+	rsc.AddRootParameter(D3D12_ROOT_PARAMETER_TYPE_CBV, render::constants::RootRegister_SkyCbv, 0);
 	return rsc.Generate(Device.Get(), true);
 }
 
@@ -1848,11 +1850,21 @@ void CRenderer::CreateShaderBindingTable ()
 		passCbAddress = reinterpret_cast<void*>(
 			currentFrameResources.PassCB.GpuResource->GetGPUVirtualAddress());
 	}
+
+	// Sky CB — bound to Miss (and later other RT shaders that need sky radiance).
+	void* skyCbAddress = nullptr;
+	if (currentFrameResources.SkyCB.GpuResource)
+	{
+		skyCbAddress = reinterpret_cast<void*>(
+			currentFrameResources.SkyCB.GpuResource->GetGPUVirtualAddress());
+	}
+
 	SbtHelper.AddRayGenerationProgram(L"RayGen", { passCbAddress, heapPointer });
 
-	// The miss shader only uses payload data.
-	SbtHelper.AddMissProgram(L"Miss", {});
-	SbtHelper.AddMissProgram(L"ShadowMiss", {});
+	// Miss reads sky CB; shadow miss has no payload work but record stride must match
+	// the Miss program's record size, so we pass the same parameter list (it's harmless).
+	SbtHelper.AddMissProgram(L"Miss", { skyCbAddress });
+	SbtHelper.AddMissProgram(L"ShadowMiss", { skyCbAddress });
 
 	const auto& materialCB = currentFrameResources.MaterialCB;
 	if (materialCB.GpuResource)
@@ -1932,6 +1944,21 @@ void CRenderer::UpdateRaytracingShaderTableAddresses ()
 		const uint64 passCbAddress = currentFrameResources.PassCB.GpuResource->GetGPUVirtualAddress();
 		const uint64 passCbOffset = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
 		memcpy(sbtData + passCbOffset, &passCbAddress, sizeof(passCbAddress));
+	}
+
+	// Patch sky CB address into Miss + ShadowMiss records. Miss section has 2 records
+	// (Miss, ShadowMiss); both carry the sky CB pointer. Stride is uniform across the section.
+	if (currentFrameResources.SkyCB.GpuResource)
+	{
+		const uint64 missSectionOffset = SbtHelper.GetRayGenSectionSize();
+		const uint32 missRecordStride = SbtHelper.GetMissEntrySize();
+		const uint64 skyCbOffset = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
+		const uint64 skyCbAddress = currentFrameResources.SkyCB.GpuResource->GetGPUVirtualAddress();
+		for (uint32 i = 0; i < 2u; ++i)
+		{
+			const uint64 recordOffset = missSectionOffset + static_cast<uint64>(i) * missRecordStride;
+			memcpy(sbtData + recordOffset + skyCbOffset, &skyCbAddress, sizeof(skyCbAddress));
+		}
 	}
 
 	const auto& materialCB = currentFrameResources.MaterialCB;

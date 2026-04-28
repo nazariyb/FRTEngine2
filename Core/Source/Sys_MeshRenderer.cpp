@@ -364,6 +364,10 @@ void Sys_MeshRenderer::CopyConstantData ()
 
 	auto& currentFrameResources = Renderer->GetCurrentFrameResource();
 	currentFrameResources.PassCB.CopyBunch(&passConstants, 1u, currentFrameResources.UploadArena);
+
+	// Sky CB — owned by GameInstance, copied into the per-frame SConstantBuffer.
+	graphics::SSkyConstants skyConstants = GameInstance::GetInstance().GetSkySettings();
+	currentFrameResources.SkyCB.CopyBunch(&skyConstants, 1u, currentFrameResources.UploadArena);
 }
 
 void Sys_MeshRenderer::UploadCB (ID3D12GraphicsCommandList4* CommandList)
@@ -371,6 +375,7 @@ void Sys_MeshRenderer::UploadCB (ID3D12GraphicsCommandList4* CommandList)
 	auto& currentFrameResources = Renderer->GetCurrentFrameResource();
 
 	currentFrameResources.PassCB.Upload(currentFrameResources.UploadArena, CommandList);
+	currentFrameResources.SkyCB.Upload(currentFrameResources.UploadArena, CommandList);
 }
 #endif
 

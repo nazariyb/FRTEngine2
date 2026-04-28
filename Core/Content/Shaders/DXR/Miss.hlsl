@@ -1,23 +1,31 @@
 #include "Common.hlsl"
 
-// ── Sky parameters ────────────────────────────────────────────────────────────
-// Tune SkyIntensity to control how much the environment illuminates the scene:
-//   ~1.0  bright midday sky   (local lights barely visible)
-//   ~0.1  overcast dusk       (local lights start to show)
-//   ~0.02 late evening        (local lights are the dominant light source)
-//   ~0.0  pure night / studio (scene lit entirely by explicit lights)
-static const float  SkyIntensity  = 0.08f;
-
-// Zenith (top) and horizon colours for a late-evening sky.
-// ramp = 0 at screen top (ray going up → zenith), 1 at bottom (horizon/ground).
-static const float3 SkyZenith   = float3(0.04f,  0.05f,  0.18f);   // deep blue-indigo
-static const float3 SkyHorizon  = float3(0.18f,  0.09f,  0.05f);   // faint amber-red glow
+// ── Sky model ────────────────────────────────────────────────────────────────
+// Procedural three-stop hemisphere blend driven by the SkyConstantBuffer:
+//   - GroundColor      below horizon (dir.y < 0)
+//   - SkyHorizonColor  at horizon
+//   - SkyZenithColor   at zenith
+//
+// The sun is NOT shaded into the miss radiance — direct sun illumination is
+// added via NEE on a Directional light entry. This keeps MIS clean (no
+// double-count) and lets shadow rays stop at occluders without the sun's
+// brightness leaking around them.
 
 [shader("miss")]
 void Miss (inout HitInfo payload : SV_RayPayload)
 {
-	float2 dims = float2(DispatchRaysDimensions().xy);
-	float  ramp = DispatchRaysIndex().y / dims.y;   // 0 = zenith, 1 = horizon
+	const float3 dir = normalize(WorldRayDirection());
 
-	payload.color = lerp(SkyZenith, SkyHorizon, ramp) * SkyIntensity;
+	// Smoothstep across the horizon for a soft transition between sky and ground.
+	const float softness = max(gSkyHorizonSoftness, 1e-4f);
+	const float skyT = smoothstep(-softness, softness, dir.y);    // 0 deep ground, 1 above horizon
+
+	// Blend horizon -> zenith for the sky half.
+	const float zenithT = saturate(dir.y);                          // 0 at horizon, 1 at zenith
+	const float3 skyColor = lerp(gSkyHorizonColor.rgb, gSkyZenithColor.rgb, zenithT);
+
+	// Smoothstep band between ground and sky.
+	const float3 above = skyColor * gSkyIntensity;
+	const float3 below = gGroundColor.rgb;
+	payload.color = lerp(below, above, skyT);
 }

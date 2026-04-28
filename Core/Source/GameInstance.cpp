@@ -493,6 +493,35 @@ void GameInstance::CalculateFrameStats () const
 		if (ImGui::SliderInt("RR start depth",  &rr,      0, 16))   rt.RussianRouletteDepth = static_cast<uint32>(rr);
 		ImGui::End();
 	}
+
+	// Sky / sun controls. TimeOfDay drives SkySettings via ComputeSkyFromTimeOfDay
+	// when the toggle is on; otherwise the individual fields are tweakable directly.
+	{
+		auto* mutableThis = const_cast<GameInstance*>(this);
+		graphics::SSkyConstants& sky = mutableThis->GetSkySettings();
+		float& tod = mutableThis->GetTimeOfDay();
+		bool& useTod = mutableThis->UseTimeOfDay();
+
+		ImGui::Begin("Sky / Sun");
+		ImGui::Checkbox("Drive from Time of Day", &useTod);
+		if (useTod)
+		{
+			ImGui::SliderFloat("Time of Day", &tod, 0.0f, 1.0f, "%.3f");
+			graphics::ComputeSkyFromTimeOfDay(tod, sky);
+		}
+		else
+		{
+			ImGui::DragFloat3("Sun direction", &sky.SunDirection.x, 0.01f, -1.0f, 1.0f);
+			ImGui::ColorEdit3("Sun color", &sky.SunColor.R);
+			ImGui::SliderFloat("Sun intensity", &sky.SunIntensity, 0.0f, 50.0f);
+			ImGui::ColorEdit3("Sky zenith", &sky.SkyZenithColor.R);
+			ImGui::ColorEdit3("Sky horizon", &sky.SkyHorizonColor.R);
+			ImGui::ColorEdit3("Ground", &sky.GroundColor.R);
+			ImGui::SliderFloat("Sky intensity", &sky.SkyIntensity, 0.0f, 5.0f);
+			ImGui::SliderFloat("Horizon softness", &sky.HorizonSoftness, 0.0f, 1.0f);
+		}
+		ImGui::End();
+	}
 #else
 	std::printf("FPS: %.2f; MS/frame: %.2f\n", fps, msPerFrame);
 #endif

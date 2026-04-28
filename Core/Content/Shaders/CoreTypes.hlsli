@@ -46,6 +46,24 @@ cbuffer PassConstantBuffer : register(b2)
 	uint gPadPCB2;
 }
 
+// Sky / sun parameters. Bound to Miss (and any RT shader that needs sky radiance).
+// Mirror of frt::graphics::SSkyConstants — keep field order in sync.
+cbuffer SkyConstantBuffer : register(b3)
+{
+	float3 gSunDirection;       // unit vector FROM sun TO scene
+	float  gSunIntensity;
+	float4 gSunColor;
+
+	float4 gSkyZenithColor;
+	float4 gSkyHorizonColor;
+	float4 gGroundColor;
+
+	float  gSkyIntensity;
+	float  gSkyHorizonSoftness;
+	float  gPadSky0;
+	float  gPadSky1;
+}
+
 struct VSInput
 {
 	float3 position : POSITION;

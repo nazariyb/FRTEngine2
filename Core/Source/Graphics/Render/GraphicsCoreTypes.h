@@ -76,6 +76,33 @@ struct SMaterialConstants
 };
 
 
+// Sky / sun parameters consumed by the Miss shader (and later by NEE for the sun directional light).
+// Layout matches `cbuffer SkyConstantBuffer : register(b3)` in CoreTypes.hlsli.
+// Keep 16-byte-aligned groups; pad explicitly.
+struct SSkyConstants
+{
+	Vector3f SunDirection      = { -0.30f, -0.70f, 0.60f }; // unit vector pointing FROM sun TO scene
+	float    SunIntensity      = 5.0f;
+
+	SColor   SunColor          = { 1.0f, 0.95f, 0.85f, 1.0f };
+
+	SColor   SkyZenithColor    = { 0.10f, 0.20f, 0.45f, 1.0f };
+	SColor   SkyHorizonColor   = { 0.40f, 0.35f, 0.30f, 1.0f };
+	SColor   GroundColor       = { 0.05f, 0.04f, 0.03f, 1.0f };
+
+	float    SkyIntensity      = 1.0f;
+	float    HorizonSoftness   = 0.20f;  // smoothstep width around dir.y = 0
+	float    PadSky0           = 0.0f;
+	float    PadSky1           = 0.0f;
+};
+
+
+// Time-of-day → sky parameters helper. t in [0,1] where 0=midnight, 0.5=noon, 1=midnight again.
+// Drives sun azimuth + elevation, sun color (warm at sunrise/sunset), sky intensity (dim at night),
+// and horizon tint. Hand-tuned, not physical.
+FRT_CORE_API void ComputeSkyFromTimeOfDay (float TimeOfDay, SSkyConstants& Out);
+
+
 struct SFrameResources
 {
 	FRT_DELETE_COPY_OPS(SFrameResources)
@@ -83,6 +110,7 @@ struct SFrameResources
 
 	ComPtr<ID3D12CommandAllocator> CommandListAllocator;
 	SConstantBuffer<SPassConstants> PassCB;
+	SConstantBuffer<SSkyConstants> SkyCB;
 	SConstantBuffer<SObjectConstants> ObjectCB;
 	SConstantBuffer<SMaterialConstants> MaterialCB;
 	DX12_UploadArena UploadArena;

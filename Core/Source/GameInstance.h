@@ -5,6 +5,7 @@
 #include "Window.h"
 #include "Sys_MeshRenderer.h"
 #include "WorldScene.h"
+#include "Graphics/Render/GraphicsCoreTypes.h"
 #include "Graphics/Render/RenderCommonTypes.h"
 #include "Graphics/Render/RenderResourceAllocators.h"
 #include "Input/InputActionLibrary.h"
@@ -128,8 +129,20 @@ protected:
 public:
 	SRtSettings& GetRtSettings () { return RtSettings; }
 	const SRtSettings& GetRtSettings () const { return RtSettings; }
+
+	graphics::SSkyConstants& GetSkySettings () { return SkySettings; }
+	const graphics::SSkyConstants& GetSkySettings () const { return SkySettings; }
+
+	float& GetTimeOfDay () { return TimeOfDay; }
+	float GetTimeOfDay () const { return TimeOfDay; }
+	bool& UseTimeOfDay () { return bUseTimeOfDay; }
+	bool UseTimeOfDay () const { return bUseTimeOfDay; }
 protected:
 	SRtSettings RtSettings;
+
+	graphics::SSkyConstants SkySettings;
+	float TimeOfDay = 0.5f;     // [0,1]; 0.5 = noon
+	bool  bUseTimeOfDay = true; // when true, ImGui slider drives SkySettings via ComputeSkyFromTimeOfDay
 
 	uint64 FrameCount;
 
