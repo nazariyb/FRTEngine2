@@ -397,10 +397,9 @@ void ClosestHit(inout HitInfo payload, Attributes attrib)
 	const bool  isPerfectMirror = (roughness <= 1e-4f);
 
 	// ── 6. Emissive early-out ─────────────────────────────────────────────
-	// Emissive surfaces terminate the path and return their own emission.
-	// Multiplied by albedo so the emissive colour is tinted by the surface colour
-	// (e.g. a red-painted lamp glows red).  Not physically correct but matches
-	// the common content-authoring convention where albedo doubles as an emissive mask.
+	// Emissive surfaces terminate the path and return their own emission (BRDF bounce path).
+	// They are NOT registered in gLights, so there is no NEE double-count. NEE handles the
+	// Sun and explicit Comp_Light entities; bounces handle emissive geometry.
 	if (gEmissiveIntensity > 0.0f)
 	{
 		payload.color = gEmissive.rgb * gEmissiveIntensity * albedo;

@@ -1,5 +1,6 @@
 ﻿#include "Sys_MeshRenderer.h"
 
+#include <cmath>
 #include <cstring>
 #include <unordered_map>
 
@@ -383,39 +384,48 @@ void Sys_MeshRenderer::CopyConstantData ()
 		Lights.Add(sun);
 	}
 
-	// Emissive sections become Point lights at their entity origin (interim — upgrade to AreaQuad
-	// with proper section bounds later). Per-section granularity, not per-triangle.
+	// Walk scene entities and pick up explicit Comp_Light components.
+	// Emissive mesh sections are NOT registered as NEE lights — their contribution flows through
+	// the BRDF bounce path (Hit.hlsl returns emission on closest-hit). To get low-variance NEE
+	// for an emissive panel, attach a Comp_Light next to it.
 	const auto& sceneEntities = scene.GetEntities();
 	for (uint32 ei = 0; ei < sceneEntities.Count(); ++ei)
 	{
 		const CEntity* entity = sceneEntities[ei].GetRawIgnoringLifetime();
-		if (!entity || !entity->RenderModel || !entity->RenderModel->Model)
+		if (!entity || !entity->Light || !entity->Light->bEnabled)
 		{
 			continue;
 		}
-		const graphics::SRenderModel& model = *entity->RenderModel->Model;
+
+		const graphics::Comp_Light& cl = *entity->Light;
 		const Vector3f origin = entity->Transform.GetTranslation();
 
-		for (uint32 sectionIdx = 0; sectionIdx < model.Sections.Count(); ++sectionIdx)
+		graphics::SLight light;
+		light.Position = math::ToDirectXCoordinates(origin);
+		light.Emission = cl.Color;
+		light.Intensity = cl.Intensity;
+		light.Direction = math::ToDirectXCoordinates(cl.Direction);
+		switch (cl.Kind)
 		{
-			const graphics::SRenderSection& section = model.Sections[sectionIdx];
-			if (section.MaterialIndex >= model.Materials.Count())
+			case graphics::Comp_Light::EKind::Directional:
+				light.Type = static_cast<uint32>(graphics::ELightType::Directional);
+				break;
+			case graphics::Comp_Light::EKind::AreaQuad:
 			{
-				continue;
+				light.Type = static_cast<uint32>(graphics::ELightType::AreaQuad);
+				light.Edge1 = math::ToDirectXCoordinates(cl.Edge1);
+				light.Edge2 = math::ToDirectXCoordinates(cl.Edge2);
+				const float e1 = std::sqrt(cl.Edge1.SizeSquared());
+				const float e2 = std::sqrt(cl.Edge2.SizeSquared());
+				light.Area  = 4.0f * e1 * e2;
+				break;
 			}
-			const graphics::SMaterial* mat = model.Materials[section.MaterialIndex].GetRawIgnoringLifetime();
-			if (!mat || mat->EmissiveIntensity <= 0.0f)
-			{
-				continue;
-			}
-
-			graphics::SLight light;
-			light.Type = static_cast<uint32>(graphics::ELightType::Point);
-			light.Position = math::ToDirectXCoordinates(origin);
-			light.Emission = mat->Emissive;
-			light.Intensity = mat->EmissiveIntensity;
-			Lights.Add(light);
+			case graphics::Comp_Light::EKind::Point:
+			default:
+				light.Type = static_cast<uint32>(graphics::ELightType::Point);
+				break;
 		}
+		Lights.Add(light);
 	}
 
 	passConstants.LightCount = Lights.Count();

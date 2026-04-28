@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include "Graphics/Comp_Light.h"
 #include "Graphics/Model.h"
 #include "Math/Transform.h"
 
@@ -21,6 +22,8 @@ public:
 	memory::TRefShared<graphics::Comp_RenderModel> RenderModel;
 	bool bRayTraced = true; // TODO: should be per-material
 
+	// Optional light component. Light collector pushes an SLight entry per frame when set.
+	memory::TRefShared<graphics::Comp_Light> Light;
 };
 }
 
