@@ -368,6 +368,64 @@ void Sys_MeshRenderer::CopyConstantData ()
 	// Sky CB — owned by GameInstance, copied into the per-frame SConstantBuffer.
 	graphics::SSkyConstants skyConstants = GameInstance::GetInstance().GetSkySettings();
 	currentFrameResources.SkyCB.CopyBunch(&skyConstants, 1u, currentFrameResources.UploadArena);
+
+	// ---- Light collector ----
+	// Rebuild every frame for now (cheap, list is tiny). When portals land we can flip to dirty-driven.
+	Lights.Clear();
+
+	// Sun: directional light from sky settings.
+	{
+		graphics::SLight sun;
+		sun.Type = static_cast<uint32>(graphics::ELightType::Directional);
+		sun.Direction = skyConstants.SunDirection;
+		sun.Emission = skyConstants.SunColor;
+		sun.Intensity = skyConstants.SunIntensity;
+		Lights.Add(sun);
+	}
+
+	// Emissive sections become Point lights at their entity origin (interim — upgrade to AreaQuad
+	// with proper section bounds later). Per-section granularity, not per-triangle.
+	const auto& sceneEntities = scene.GetEntities();
+	for (uint32 ei = 0; ei < sceneEntities.Count(); ++ei)
+	{
+		const CEntity* entity = sceneEntities[ei].GetRawIgnoringLifetime();
+		if (!entity || !entity->RenderModel || !entity->RenderModel->Model)
+		{
+			continue;
+		}
+		const graphics::SRenderModel& model = *entity->RenderModel->Model;
+		const Vector3f origin = entity->Transform.GetTranslation();
+
+		for (uint32 sectionIdx = 0; sectionIdx < model.Sections.Count(); ++sectionIdx)
+		{
+			const graphics::SRenderSection& section = model.Sections[sectionIdx];
+			if (section.MaterialIndex >= model.Materials.Count())
+			{
+				continue;
+			}
+			const graphics::SMaterial* mat = model.Materials[section.MaterialIndex].GetRawIgnoringLifetime();
+			if (!mat || mat->EmissiveIntensity <= 0.0f)
+			{
+				continue;
+			}
+
+			graphics::SLight light;
+			light.Type = static_cast<uint32>(graphics::ELightType::Point);
+			light.Position = math::ToDirectXCoordinates(origin);
+			light.Emission = mat->Emissive;
+			light.Intensity = mat->EmissiveIntensity;
+			Lights.Add(light);
+		}
+	}
+
+	passConstants.LightCount = Lights.Count();
+	// Re-upload PassCB now that LightCount is set. CopyBunch above already ran with stale value;
+	// overwrite the same slot.
+	currentFrameResources.PassCB.CopyBunch(&passConstants, 1u, currentFrameResources.UploadArena);
+
+	// Allocate light buffer in the frame upload arena and push GPU VA to the renderer for SBT patching.
+	const D3D12_GPU_VIRTUAL_ADDRESS lightsGpuVa = Lights.UploadToArena(currentFrameResources.UploadArena);
+	Renderer->SetRaytracingLightsGpuVa(lightsGpuVa);
 }
 
 void Sys_MeshRenderer::UploadCB (ID3D12GraphicsCommandList4* CommandList)

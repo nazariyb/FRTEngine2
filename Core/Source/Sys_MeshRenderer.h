@@ -76,6 +76,10 @@ private:
 	TArray<DirectX::XMFLOAT4X4> AsTransforms;
 	SFlags<EUpdatePhase> Phases;
 
+	// Per-frame light list, refilled by light collector. Uploaded into the frame upload arena
+	// each frame; GPU VA pushed to the renderer for SBT patching.
+	graphics::CLightList Lights;
+
 	bool bAsInitialized = false;
 	bool bRaytracingSupported = false;
 	bool bRaytracingSupportChecked = false;

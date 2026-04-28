@@ -41,10 +41,31 @@ cbuffer PassConstantBuffer : register(b2)
 	uint gRaytracingMaxBounces;    // upper bound on path depth, tunable at runtime
 
 	uint gRaytracingRussianRouletteDepth;  // depth at which RR termination kicks in
-	uint gPadPCB0;
+	uint gLightCount;                      // entries in gLights buffer; 0 disables NEE
 	uint gPadPCB1;
 	uint gPadPCB2;
 }
+
+// NEE light entry. Mirror of frt::graphics::SLight (96 bytes, 16-aligned).
+struct SLight
+{
+	float3 Position;
+	uint   Type;          // 0=Point, 1=Directional, 2=AreaQuad
+	float3 Direction;     // Directional: from sun toward scene. AreaQuad: face normal.
+	float  Pad0;
+	float3 Edge1;         // AreaQuad: half-extent right
+	float  Pad1;
+	float3 Edge2;         // AreaQuad: half-extent up
+	float  Area;
+	float4 Emission;      // RGB radiance multiplier
+	float  Intensity;
+	int    InstanceId;
+	int    Pad2;
+	int    Pad3;
+};
+
+// Bound as root SRV in Hit signature. Empty when gLightCount == 0.
+StructuredBuffer<SLight> gLights : register(t19);
 
 // Sky / sun parameters. Bound to Miss (and any RT shader that needs sky radiance).
 // Mirror of frt::graphics::SSkyConstants — keep field order in sync.

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 #include "Exception.h"
 #include "Memory/Memory.h"
@@ -110,6 +111,41 @@ void SFrameResources::EnsureObjectCapacity (
 
 	ObjectCB = SConstantBuffer<SObjectConstants>(Device, BufferArena, DescriptorHeap, ObjectCount);
 }
+
+// ---- CLightList ----
+
+void CLightList::Clear () { Lights.Clear(); }
+
+void CLightList::Add (const SLight& Light) { Lights.Add(Light); }
+
+uint32 CLightList::Count () const { return Lights.Count(); }
+
+D3D12_GPU_VIRTUAL_ADDRESS CLightList::UploadToArena (DX12_UploadArena& Arena) const
+{
+	// Always allocate at least one slot so the SBT root-SRV pointer is valid even when
+	// the list is empty (DXR rejects null root SRVs at dispatch time).
+	// Shaders gate access on gLightCount; the dummy slot is never read.
+	const uint32 count = math::Max(Lights.Count(), 1u);
+	const uint64 byteCount = static_cast<uint64>(count) * sizeof(SLight);
+
+	uint64 offset = 0u;
+	uint8* dst = Arena.Allocate(byteCount, &offset);
+	if (!dst)
+	{
+		return 0u;
+	}
+
+	if (!Lights.IsEmpty())
+	{
+		std::memcpy(dst, Lights.GetData(), Lights.Count() * sizeof(SLight));
+	}
+	else
+	{
+		std::memset(dst, 0, sizeof(SLight));
+	}
+	return Arena.GetGPUBuffer()->GetGPUVirtualAddress() + offset;
+}
+
 
 void SFrameResources::EnsureMaterialCapacity (
 	ID3D12Device* Device,

@@ -409,42 +409,59 @@ void ClosestHit(inout HitInfo payload, Attributes attrib)
 	}
 
 	// ── 7. Direct lighting  (Next-Event Estimation) ─────────────────────
-	// Explicitly connect this path vertex to the light source and evaluate the
-	// full Cook-Torrance BRDF.  Done before the depth/RR checks so every early
-	// exit can return the direct contribution instead of black.
-	//
-	// TODO: review item — hardcoded light position/intensity (item #6)
+	// Pick one light uniformly from gLights, sample a direction toward it, and accumulate
+	// its contribution weighted by visibility and BRDF. MIS with BRDF sampling is added
+	// in a later step; for now uniform light selection with no balance heuristic.
 
 	const float3 V = normalize(-rayDir);       // view direction: outgoing, toward camera
 
 	float3 directLighting = float3(0.0f, 0.0f, 0.0f);
-	if (!isPerfectMirror)
+	if (!isPerfectMirror && gLightCount > 0u)
 	{
-		const float3 lightPos      = float3(0.0f, 2.0f, -3.0f);
-		const float3 lightRadiance = float3(20.0f, 20.0f, 20.0f);
+		const uint  lightIndex   = NextUint(payload.rngState) % gLightCount;
+		const float lightSelectPdf = 1.0f / (float)gLightCount;
+		const SLight light = gLights[lightIndex];
 
-		const float3 toLight   = lightPos - hitPos;
-		const float  lightDist = length(toLight);
-		const float3 L         = lightDist > 1e-5f ? toLight / lightDist : float3(0.0f, 1.0f, 0.0f);
+		// Resolve direction L (toward light), distance, and incoming radiance for this sample.
+		float3 L          = float3(0.0f, 1.0f, 0.0f);
+		float  lightDist  = 1e30f;
+		float3 lightRadiance = float3(0.0f, 0.0f, 0.0f);
+		float  attenuation = 1.0f;
+		bool   valid = false;
+
+		if (light.Type == 1u) // Directional (sun)
+		{
+			L = normalize(-light.Direction);                          // dir TO sun
+			lightRadiance = light.Emission.rgb * light.Intensity;
+			lightDist = 1e6f;                                          // effectively infinite
+			attenuation = 1.0f;
+			valid = true;
+		}
+		else if (light.Type == 0u) // Point
+		{
+			const float3 toLight = light.Position - hitPos;
+			lightDist = length(toLight);
+			if (lightDist > 1e-5f)
+			{
+				L = toLight / lightDist;
+				attenuation = 1.0f / max(lightDist * lightDist, 1e-4f);
+				lightRadiance = light.Emission.rgb * light.Intensity;
+				valid = true;
+			}
+		}
+		// AreaQuad (Type==2) handled in a later step.
 
 		const float NoL = saturate(dot(N, L));
-		if (lightDist > 1e-5f && NoL > 1e-4f)
+		if (valid && NoL > 1e-4f)
 		{
-			// Offset origin along Ng so the ray doesn't hit its own triangle.
-			// Sign pushes toward the same side of the surface as the light.
 			const float  shadowSign   = dot(L, Ng) >= 0.0f ? 1.0f : -1.0f;
 			const float3 shadowOrigin = hitPos + Ng * (shadowSign * 0.001f);
-			const float  visibility   = TraceShadowRay(shadowOrigin, L, lightDist - 0.001f);
+			const float  shadowTMax   = (light.Type == 1u) ? lightDist : (lightDist - 0.001f);
+			const float  visibility   = TraceShadowRay(shadowOrigin, L, shadowTMax);
 
 			if (visibility > 0.0f)
 			{
-				// Inverse-square attenuation: E = Φ / (4π·d²), simplified to 1/d²
-				const float attenuation = 1.0f / max(lightDist * lightDist, 1e-4f);
-
-				// Full Cook-Torrance BRDF for the direct sample:
-				//   f = f_diff + f_spec
-				//   f_diff = kd / π                            (Lambertian)
-				//   f_spec = (D·G·F) / (4·NoV·NoL)            (Cook-Torrance)
+				// Cook-Torrance BRDF (matches earlier inline formulation).
 				const float  NoV   = saturate(dot(N, V));
 				const float  alpha = max(roughness * roughness, 0.02f);
 				const float3 f0    = lerp(0.04f.xxx, albedo, metallic);
@@ -461,7 +478,8 @@ void ClosestHit(inout HitInfo payload, Attributes attrib)
 				const float3 fSpec = (D * G * F) / max(4.0f * NoV * NoL, kEpsilon);
 				const float3 fDiff = kd / kPi;
 
-				directLighting = (fDiff + fSpec) * NoL * lightRadiance * attenuation * visibility;
+				// Divide by the uniform light-selection pdf so the estimator stays unbiased.
+				directLighting = (fDiff + fSpec) * NoL * lightRadiance * attenuation * visibility / lightSelectPdf;
 			}
 		}
 	}

@@ -270,6 +270,10 @@ public:
 	void InitializeRaytracingResources ();
 	void SetRaytracingMaterialTextureSets (const TArray<SRaytracingMaterialTextureSet>& MaterialTextureSets);
 	void SetRaytracingHitGroupEntries (const TArray<SRaytracingHitGroupEntry>& HitGroupEntries);
+	// Lights buffer GPU VA, refreshed each frame by Sys_MeshRenderer. SBT records pick it up
+	// in UpdateRaytracingShaderTableAddresses.
+	void SetRaytracingLightsGpuVa (D3D12_GPU_VIRTUAL_ADDRESS Va) { RaytracingLightsGpuVa = Va; }
+	D3D12_GPU_VIRTUAL_ADDRESS GetRaytracingLightsGpuVa () const { return RaytracingLightsGpuVa; }
 	raytracing::SAccelerationStructureBuffers TopLevelASBuffers;
 
 private:
@@ -301,6 +305,7 @@ private:
 	uint32 RaytracingMaterialCapacity = 0u;
 	TArray<SRaytracingMaterialTextureSet> RaytracingMaterialTextureSets;
 	TArray<SRaytracingHitGroupEntry> RaytracingHitGroupEntries;
+	D3D12_GPU_VIRTUAL_ADDRESS RaytracingLightsGpuVa = 0u;
 
 	raytracing::CShaderBindingTableGenerator SbtHelper;
 	ComPtr<ID3D12Resource> SbtStorage;

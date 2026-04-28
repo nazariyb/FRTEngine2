@@ -6,8 +6,9 @@
 #include "ConstantBuffer.h"
 #include "CoreUtils.h"
 #include "Enum.h"
-#include "RenderResourceAllocators.h"
 #include "RenderConstants.h"
+#include "RenderResourceAllocators.h"
+#include "Containers/Array.h"
 #include "Graphics/SColor.h"
 #include "Math/Math.h"
 
@@ -58,7 +59,7 @@ struct SPassConstants
 	uint32 RaytracingMaxBounces = 4u;     // upper bound on path depth in Hit.hlsl
 
 	uint32 RaytracingRussianRouletteDepth = 2u;  // depth at which RR termination kicks in
-	uint32 PadPCB0 = 0u;
+	uint32 LightCount = 0u;               // entries in gLights buffer; 0 disables NEE
 	uint32 PadPCB1 = 0u;
 	uint32 PadPCB2 = 0u;                  // 16-byte alignment
 };
@@ -101,6 +102,57 @@ struct SSkyConstants
 // Drives sun azimuth + elevation, sun color (warm at sunrise/sunset), sky intensity (dim at night),
 // and horizon tint. Hand-tuned, not physical.
 FRT_CORE_API void ComputeSkyFromTimeOfDay (float TimeOfDay, SSkyConstants& Out);
+
+
+// Tagged-union light entry. Layout matches struct SLight in CoreTypes.hlsli (96 bytes, 16-aligned).
+// Bound to RT shaders as `StructuredBuffer<SLight> gLights` for NEE sampling.
+enum class ELightType : uint32
+{
+	Point       = 0u,
+	Directional = 1u,
+	AreaQuad    = 2u,
+};
+
+struct SLight
+{
+	Vector3f Position    = { 0.f, 0.f, 0.f }; // Point: origin. Directional: unused. AreaQuad: center.
+	uint32   Type        = 0u;                // ELightType
+
+	Vector3f Direction   = { 0.f, -1.f, 0.f }; // Directional: from sun toward scene. AreaQuad: face normal.
+	float    Pad0        = 0.f;
+
+	Vector3f Edge1       = { 1.f, 0.f, 0.f };  // AreaQuad: half-extent along right (world-space)
+	float    Pad1        = 0.f;
+
+	Vector3f Edge2       = { 0.f, 1.f, 0.f };  // AreaQuad: half-extent along up (world-space)
+	float    Area        = 0.f;                // 4 * |Edge1| * |Edge2| for AreaQuad
+
+	SColor   Emission    = { 0.f, 0.f, 0.f, 0.f }; // RGB radiance multiplier (HDR)
+	float    Intensity   = 0.f;                    // additional scalar multiplier
+	int32    InstanceId  = -1;                     // for MIS reverse lookup; -1 = not a surface light
+	int32    Pad2        = -1;
+	int32    Pad3        = 0;
+};
+static_assert(sizeof(SLight) == 96u, "SLight layout must match HLSL");
+
+
+// CPU-side list of lights for the frame. Cleared and refilled by the light collector.
+// Uploaded into per-frame upload arena, returning a GPU VA the renderer patches into hit-group SBT records.
+class FRT_CORE_API CLightList
+{
+public:
+	void Clear ();
+	void Add (const SLight& Light);
+
+	// Copy the current list into the frame upload arena. Returns 0 if empty.
+	D3D12_GPU_VIRTUAL_ADDRESS UploadToArena (DX12_UploadArena& Arena) const;
+
+	uint32 Count () const;
+	const TArray<SLight>& GetLights () const { return Lights; }
+
+private:
+	TArray<SLight> Lights;
+};
 
 
 struct SFrameResources

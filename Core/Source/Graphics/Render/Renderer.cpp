@@ -1562,6 +1562,11 @@ ComPtr<ID3D12RootSignature> CRenderer::CreateHitSignature ()
 		D3D12_ROOT_PARAMETER_TYPE_SRV,
 		render::constants::RaytracingRegister_IndexBufferSrv,
 		0);
+	// Lights buffer (NEE). Same VA across all hit records in a frame.
+	rsc.AddRootParameter(
+		D3D12_ROOT_PARAMETER_TYPE_SRV,
+		render::constants::RaytracingRegister_LightsSrv,
+		0);
 
 	const D3D12_STATIC_SAMPLER_DESC linearWrapSampler = BuildLinearWrapStaticSamplerDesc();
 	rsc.AddStaticSampler(linearWrapSampler);
@@ -1885,6 +1890,7 @@ void CRenderer::CreateShaderBindingTable ()
 			const uint64 materialTextureTableAddress = materialTextureHeapStart +
 														static_cast<uint64>(materialIndex) *
 														render::constants::RootMaterialTextureCount * descriptorSize;
+			void* lightsAddr = reinterpret_cast<void*>(RaytracingLightsGpuVa);
 			SbtHelper.AddHitGroup(
 				L"HitGroup",
 				{
@@ -1893,7 +1899,8 @@ void CRenderer::CreateShaderBindingTable ()
 					tlasDescriptorTablePointer,
 					reinterpret_cast<void*>(materialTextureTableAddress),
 					reinterpret_cast<void*>(hitGroupEntry.VertexBufferGpuVa),
-					reinterpret_cast<void*>(hitGroupEntry.IndexBufferGpuVa)
+					reinterpret_cast<void*>(hitGroupEntry.IndexBufferGpuVa),
+					lightsAddr
 				});
 			SbtHelper.AddHitGroup(
 				L"ShadowHitGroup",
@@ -1903,7 +1910,8 @@ void CRenderer::CreateShaderBindingTable ()
 					tlasDescriptorTablePointer,
 					reinterpret_cast<void*>(materialTextureTableAddress),
 					reinterpret_cast<void*>(hitGroupEntry.VertexBufferGpuVa),
-					reinterpret_cast<void*>(hitGroupEntry.IndexBufferGpuVa)
+					reinterpret_cast<void*>(hitGroupEntry.IndexBufferGpuVa),
+					lightsAddr
 				});
 		}
 	}
@@ -1969,6 +1977,8 @@ void CRenderer::UpdateRaytracingShaderTableAddresses ()
 			static_cast<uint64>(SbtHelper.GetMissSectionSize());
 		const uint64 hitRecordCbOffset = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
 		const uint64 hitRecordPassCbOffset = hitRecordCbOffset + sizeof(uint64);
+		// Lights GPU VA lives at the 7th root parameter slot (matCB, passCB, TLAS table, matTexTable, VB, IB, Lights).
+		const uint64 hitRecordLightsOffset = hitRecordCbOffset + sizeof(uint64) * 6u;
 		const uint32 hitRecordStride = SbtHelper.GetHitGroupEntrySize();
 		const uint64 passCbAddress = currentFrameResources.PassCB.GpuResource
 										? currentFrameResources.PassCB.GpuResource->GetGPUVirtualAddress()
@@ -1990,8 +2000,10 @@ void CRenderer::UpdateRaytracingShaderTableAddresses ()
 
 			memcpy(sbtData + primaryHitRecordOffset + hitRecordCbOffset, &materialCbAddress, sizeof(materialCbAddress));
 			memcpy(sbtData + primaryHitRecordOffset + hitRecordPassCbOffset, &passCbAddress, sizeof(passCbAddress));
+			memcpy(sbtData + primaryHitRecordOffset + hitRecordLightsOffset, &RaytracingLightsGpuVa, sizeof(RaytracingLightsGpuVa));
 			memcpy(sbtData + shadowHitRecordOffset + hitRecordCbOffset, &materialCbAddress, sizeof(materialCbAddress));
 			memcpy(sbtData + shadowHitRecordOffset + hitRecordPassCbOffset, &passCbAddress, sizeof(passCbAddress));
+			memcpy(sbtData + shadowHitRecordOffset + hitRecordLightsOffset, &RaytracingLightsGpuVa, sizeof(RaytracingLightsGpuVa));
 		}
 	}
 
