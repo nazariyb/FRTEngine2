@@ -85,6 +85,18 @@ cbuffer SkyConstantBuffer : register(b3)
 	float  gPadSky1;
 }
 
+// Procedural sky radiance for a world-space ray direction. Shared between Miss (bounce rays
+// that escape the scene) and Hit (sky-NEE shadow ray that escapes → returns sky radiance).
+// Sun is intentionally excluded — direct sun comes via NEE on a Directional light entry.
+float3 EvalSkyRadiance(float3 dir)
+{
+	const float softness = max(gSkyHorizonSoftness, 1e-4f);
+	const float skyT     = smoothstep(-softness, softness, dir.y);   // 0 deep ground, 1 above horizon
+	const float zenithT  = saturate(dir.y);
+	const float3 skyColor = lerp(gSkyHorizonColor.rgb, gSkyZenithColor.rgb, zenithT);
+	return lerp(gGroundColor.rgb, skyColor * gSkyIntensity, skyT);
+}
+
 struct VSInput
 {
 	float3 position : POSITION;

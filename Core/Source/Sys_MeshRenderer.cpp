@@ -384,6 +384,15 @@ void Sys_MeshRenderer::CopyConstantData ()
 		Lights.Add(sun);
 	}
 
+	// Sky: single hemispherical NEE entry. Direction / radiance evaluated in the shader
+	// per-sample (uniform hemisphere). Shadow ray that escapes the scene = unblocked sky.
+	// This is the dominant indoor light that portal pre-filtering will optimize.
+	{
+		graphics::SLight sky;
+		sky.Type = static_cast<uint32>(graphics::ELightType::Sky);
+		Lights.Add(sky);
+	}
+
 	// Walk scene entities and pick up explicit Comp_Light components.
 	// Emissive mesh sections are NOT registered as NEE lights — their contribution flows through
 	// the BRDF bounce path (Hit.hlsl returns emission on closest-hit). To get low-variance NEE

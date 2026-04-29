@@ -1567,6 +1567,8 @@ ComPtr<ID3D12RootSignature> CRenderer::CreateHitSignature ()
 		D3D12_ROOT_PARAMETER_TYPE_SRV,
 		render::constants::RaytracingRegister_LightsSrv,
 		0);
+	// Sky CB (b3) — Hit shader needs sky radiance for sky-NEE. Same VA across all hit records.
+	rsc.AddRootParameter(D3D12_ROOT_PARAMETER_TYPE_CBV, render::constants::RootRegister_SkyCbv, 0);
 
 	const D3D12_STATIC_SAMPLER_DESC linearWrapSampler = BuildLinearWrapStaticSamplerDesc();
 	rsc.AddStaticSampler(linearWrapSampler);
@@ -1900,7 +1902,8 @@ void CRenderer::CreateShaderBindingTable ()
 					reinterpret_cast<void*>(materialTextureTableAddress),
 					reinterpret_cast<void*>(hitGroupEntry.VertexBufferGpuVa),
 					reinterpret_cast<void*>(hitGroupEntry.IndexBufferGpuVa),
-					lightsAddr
+					lightsAddr,
+					skyCbAddress
 				});
 			SbtHelper.AddHitGroup(
 				L"ShadowHitGroup",
@@ -1911,7 +1914,8 @@ void CRenderer::CreateShaderBindingTable ()
 					reinterpret_cast<void*>(materialTextureTableAddress),
 					reinterpret_cast<void*>(hitGroupEntry.VertexBufferGpuVa),
 					reinterpret_cast<void*>(hitGroupEntry.IndexBufferGpuVa),
-					lightsAddr
+					lightsAddr,
+					skyCbAddress
 				});
 		}
 	}
@@ -1979,7 +1983,12 @@ void CRenderer::UpdateRaytracingShaderTableAddresses ()
 		const uint64 hitRecordPassCbOffset = hitRecordCbOffset + sizeof(uint64);
 		// Lights GPU VA lives at the 7th root parameter slot (matCB, passCB, TLAS table, matTexTable, VB, IB, Lights).
 		const uint64 hitRecordLightsOffset = hitRecordCbOffset + sizeof(uint64) * 6u;
+		// Sky CB (b3) lives at the 8th root parameter slot — last one in hit signature.
+		const uint64 hitRecordSkyCbOffset = hitRecordCbOffset + sizeof(uint64) * 7u;
 		const uint32 hitRecordStride = SbtHelper.GetHitGroupEntrySize();
+		const uint64 skyCbAddrU64 = currentFrameResources.SkyCB.GpuResource
+										? currentFrameResources.SkyCB.GpuResource->GetGPUVirtualAddress()
+										: 0u;
 		const uint64 passCbAddress = currentFrameResources.PassCB.GpuResource
 										? currentFrameResources.PassCB.GpuResource->GetGPUVirtualAddress()
 										: 0u;
@@ -2001,9 +2010,11 @@ void CRenderer::UpdateRaytracingShaderTableAddresses ()
 			memcpy(sbtData + primaryHitRecordOffset + hitRecordCbOffset, &materialCbAddress, sizeof(materialCbAddress));
 			memcpy(sbtData + primaryHitRecordOffset + hitRecordPassCbOffset, &passCbAddress, sizeof(passCbAddress));
 			memcpy(sbtData + primaryHitRecordOffset + hitRecordLightsOffset, &RaytracingLightsGpuVa, sizeof(RaytracingLightsGpuVa));
+			memcpy(sbtData + primaryHitRecordOffset + hitRecordSkyCbOffset, &skyCbAddrU64, sizeof(skyCbAddrU64));
 			memcpy(sbtData + shadowHitRecordOffset + hitRecordCbOffset, &materialCbAddress, sizeof(materialCbAddress));
 			memcpy(sbtData + shadowHitRecordOffset + hitRecordPassCbOffset, &passCbAddress, sizeof(passCbAddress));
 			memcpy(sbtData + shadowHitRecordOffset + hitRecordLightsOffset, &RaytracingLightsGpuVa, sizeof(RaytracingLightsGpuVa));
+			memcpy(sbtData + shadowHitRecordOffset + hitRecordSkyCbOffset, &skyCbAddrU64, sizeof(skyCbAddrU64));
 		}
 	}
 

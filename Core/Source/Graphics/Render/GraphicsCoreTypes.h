@@ -111,6 +111,7 @@ enum class ELightType : uint32
 	Point       = 0u,
 	Directional = 1u,
 	AreaQuad    = 2u,
+	Sky         = 3u, // hemispherical environment; shadow ray escapes → unblocked
 };
 
 struct SLight

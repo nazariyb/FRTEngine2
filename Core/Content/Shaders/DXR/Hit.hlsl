@@ -500,13 +500,31 @@ void ClosestHit(inout HitInfo payload, Attributes attrib)
 				}
 			}
 		}
+		else if (light.Type == 3u) // Sky (uniform upper hemisphere in world space)
+		{
+			// Uniform hemisphere about world up (+y). pdf_omega = 1/(2π).
+			// This is the baseline that portal pre-filtering will replace — most sampled
+			// directions get blocked by walls in indoor scenes.
+			const float u1 = NextFloat01(payload.rngState);
+			const float u2 = NextFloat01(payload.rngState);
+			const float cosTheta = u1;
+			const float sinTheta = sqrt(max(1.0f - cosTheta * cosTheta, 0.0f));
+			const float phi = 2.0f * kPi * u2;
+			L = float3(sinTheta * cos(phi), cosTheta, sinTheta * sin(phi));
+			pdfLightOmega = 1.0f / (2.0f * kPi);
+			lightRadiance = EvalSkyRadiance(L);
+			lightDist = 1e6f; // any escape distance counts as sky-reaching
+			valid = true;
+		}
 
 		const float NoL = saturate(dot(N, L));
 		if (valid && NoL > 1e-4f)
 		{
 			const float  shadowSign   = dot(L, Ng) >= 0.0f ? 1.0f : -1.0f;
 			const float3 shadowOrigin = hitPos + Ng * (shadowSign * 0.001f);
-			const float  shadowTMax   = (light.Type == 1u) ? lightDist : (lightDist - 0.001f);
+			// Directional and Sky have no finite endpoint — use full ray distance.
+			// Point/AreaQuad subtract a small epsilon so shadow ray stops just before the light.
+			const float  shadowTMax   = (light.Type == 1u || light.Type == 3u) ? lightDist : (lightDist - 0.001f);
 			const float  visibility   = TraceShadowRay(shadowOrigin, L, shadowTMax);
 
 			if (visibility > 0.0f)
