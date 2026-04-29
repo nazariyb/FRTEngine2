@@ -234,6 +234,36 @@ struct BSDFSample
 	float3 weight;   // (f_diff + f_spec) * NoL / pdf
 };
 
+// Evaluate the BRDF sampling pdf (in solid-angle measure) for an arbitrary direction L.
+// Mirrors SampleBSDF's lobe split + per-lobe pdfs; used to compute the MIS weight for
+// NEE samples — w_NEE = pdfL / (pdfL + pdfBRDF).
+float EvalBRDFPdf(float3 V, float3 L, float3 N, float roughness, float metallic, float3 albedo)
+{
+	const float NoV = saturate(dot(N, V));
+	const float NoL = saturate(dot(N, L));
+	if (NoV <= 1e-5f || NoL <= 1e-5f) return 0.0f;
+
+	const float  alpha = max(roughness * roughness, 0.02f);
+	const float3 f0    = lerp(0.04f.xxx, albedo, metallic);
+	const float3 kd    = (1.0f - metallic) * albedo;
+
+	const float3 H   = normalize(V + L);
+	const float  NoH = saturate(dot(N, H));
+	const float  VoH = saturate(dot(V, H));
+
+	// Lobe split (matches SampleBSDF).
+	const float3 F_view   = F_Schlick(NoV, f0);
+	const float  specLum  = Luminance(F_view);
+	const float  diffLum  = Luminance(kd);
+	float pSpec = specLum / max(specLum + diffLum, kEpsilon);
+	pSpec = (metallic > 0.999f) ? 1.0f : clamp(pSpec, 0.05f, 0.95f);
+
+	const float D       = D_GGX(NoH, alpha);
+	const float pdfDiff = NoL / kPi;
+	const float pdfSpec = (D * NoH) / max(4.0f * VoH, kEpsilon);
+	return pSpec * pdfSpec + (1.0f - pSpec) * pdfDiff;
+}
+
 // Importance-samples one BSDF lobe (diffuse or specular) using balance-heuristic MIS.
 // V      : view direction (pointing away from the surface, toward the camera)
 // N      : shading normal
@@ -417,23 +447,25 @@ void ClosestHit(inout HitInfo payload, Attributes attrib)
 	float3 directLighting = float3(0.0f, 0.0f, 0.0f);
 	if (!isPerfectMirror && gLightCount > 0u)
 	{
-		const uint  lightIndex   = NextUint(payload.rngState) % gLightCount;
+		const uint  lightIndex     = NextUint(payload.rngState) % gLightCount;
 		const float lightSelectPdf = 1.0f / (float)gLightCount;
 		const SLight light = gLights[lightIndex];
 
-		// Resolve direction L (toward light), distance, and incoming radiance for this sample.
-		float3 L          = float3(0.0f, 1.0f, 0.0f);
-		float  lightDist  = 1e30f;
-		float3 lightRadiance = float3(0.0f, 0.0f, 0.0f);
-		float  attenuation = 1.0f;
+		// Resolve direction L (toward light), distance, incident radiance, and the light's
+		// solid-angle pdf for the sampled direction. pdfLightOmega == 0 marks delta lights
+		// (Point / Directional) where BRDF sampling cannot reach the same direction → MIS
+		// weight collapses to 1 for the NEE estimator.
+		float3 L              = float3(0.0f, 1.0f, 0.0f);
+		float  lightDist      = 1e30f;
+		float3 lightRadiance  = float3(0.0f, 0.0f, 0.0f); // radiance arriving at hit point
+		float  pdfLightOmega  = 0.0f;                     // 0 = delta
 		bool   valid = false;
 
 		if (light.Type == 1u) // Directional (sun)
 		{
-			L = normalize(-light.Direction);                          // dir TO sun
+			L = normalize(-light.Direction);
 			lightRadiance = light.Emission.rgb * light.Intensity;
-			lightDist = 1e6f;                                          // effectively infinite
-			attenuation = 1.0f;
+			lightDist = 1e6f;
 			valid = true;
 		}
 		else if (light.Type == 0u) // Point
@@ -443,12 +475,31 @@ void ClosestHit(inout HitInfo payload, Attributes attrib)
 			if (lightDist > 1e-5f)
 			{
 				L = toLight / lightDist;
-				attenuation = 1.0f / max(lightDist * lightDist, 1e-4f);
-				lightRadiance = light.Emission.rgb * light.Intensity;
+				const float invDistSq = 1.0f / max(lightDist * lightDist, 1e-4f);
+				lightRadiance = light.Emission.rgb * light.Intensity * invDistSq;
 				valid = true;
 			}
 		}
-		// AreaQuad (Type==2) handled in a later step.
+		else if (light.Type == 2u) // AreaQuad (uniform area sampling)
+		{
+			const float u = NextFloat01(payload.rngState) * 2.0f - 1.0f;
+			const float v = NextFloat01(payload.rngState) * 2.0f - 1.0f;
+			const float3 samplePt = light.Position + u * light.Edge1 + v * light.Edge2;
+			const float3 toLight  = samplePt - hitPos;
+			lightDist = length(toLight);
+			if (lightDist > 1e-5f && light.Area > 1e-5f)
+			{
+				L = toLight / lightDist;
+				const float cosThetaLight = max(dot(-L, light.Direction), 0.0f);
+				if (cosThetaLight > 1e-5f)
+				{
+					// Convert area pdf (1/Area) to solid-angle pdf at the hit point.
+					pdfLightOmega = (lightDist * lightDist) / (light.Area * cosThetaLight);
+					lightRadiance = light.Emission.rgb * light.Intensity;
+					valid = true;
+				}
+			}
+		}
 
 		const float NoL = saturate(dot(N, L));
 		if (valid && NoL > 1e-4f)
@@ -460,15 +511,15 @@ void ClosestHit(inout HitInfo payload, Attributes attrib)
 
 			if (visibility > 0.0f)
 			{
-				// Cook-Torrance BRDF (matches earlier inline formulation).
+				// Cook-Torrance BRDF.
 				const float  NoV   = saturate(dot(N, V));
 				const float  alpha = max(roughness * roughness, 0.02f);
 				const float3 f0    = lerp(0.04f.xxx, albedo, metallic);
 				const float3 kd    = (1.0f - metallic) * albedo;
 
-				const float3 H    = normalize(V + L);
-				const float  NoH  = saturate(dot(N, H));
-				const float  VoH  = saturate(dot(V, H));
+				const float3 H   = normalize(V + L);
+				const float  NoH = saturate(dot(N, H));
+				const float  VoH = saturate(dot(V, H));
 
 				const float  D    = D_GGX(NoH, alpha);
 				const float  G    = G_Smith(NoV, NoL, alpha);
@@ -476,9 +527,25 @@ void ClosestHit(inout HitInfo payload, Attributes attrib)
 
 				const float3 fSpec = (D * G * F) / max(4.0f * NoV * NoL, kEpsilon);
 				const float3 fDiff = kd / kPi;
+				const float3 brdf  = fDiff + fSpec;
 
-				// Divide by the uniform light-selection pdf so the estimator stays unbiased.
-				directLighting = (fDiff + fSpec) * NoL * lightRadiance * attenuation * visibility / lightSelectPdf;
+				// MIS weight (balance heuristic). Delta lights → BRDF can never sample the
+				// same direction → w_NEE = 1.
+				float pdfL;
+				float misWeight;
+				if (pdfLightOmega <= 0.0f)
+				{
+					pdfL = lightSelectPdf;
+					misWeight = 1.0f;
+				}
+				else
+				{
+					pdfL = lightSelectPdf * pdfLightOmega;
+					const float pdfBrdf = EvalBRDFPdf(V, L, N, roughness, metallic, albedo);
+					misWeight = pdfL / max(pdfL + pdfBrdf, kEpsilon);
+				}
+
+				directLighting = brdf * NoL * lightRadiance * visibility * misWeight / max(pdfL, kEpsilon);
 			}
 		}
 	}
