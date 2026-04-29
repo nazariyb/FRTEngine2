@@ -77,28 +77,52 @@ SRenderModel SRenderModel::LoadFromFile (const std::string& Filename, const std:
 		std::filesystem::path materialPath =
 			materialDir / (materialBaseName + "_mat" + std::to_string(materialIndex) + ".frtmat.yml");
 
-		if (material->GetTextureCount(aiTextureType_DIFFUSE) > 0)
+		// Check BASE_COLOR first (PBR / glTF), then fall back to DIFFUSE (legacy formats).
+		// Assimp does not always normalize one to the other depending on importer + format.
+		const aiTextureType textureTypesInPriority[] = {
+			aiTextureType_BASE_COLOR,
+			aiTextureType_DIFFUSE,
+		};
+
+		std::filesystem::path texturePath;
+		if (!TexturePath.empty())
 		{
-			std::filesystem::path texturePath;
-			if (!TexturePath.empty())
+			texturePath = TexturePath;
+		}
+		else
+		{
+			for (aiTextureType tt : textureTypesInPriority)
 			{
-				texturePath = TexturePath;
+				if (material->GetTextureCount(tt) == 0)
+				{
+					continue;
+				}
+				aiString textureName;
+				if (material->GetTexture(tt, 0, &textureName) == AI_SUCCESS && textureName.length > 0)
+				{
+					texturePath = textureName.C_Str();
+					break;
+				}
+			}
+		}
+
+		if (!texturePath.empty())
+		{
+			// Assimp returns the URI as authored in the model (typically relative to the model
+			// file itself, e.g. just a filename for gltf assets). Materials live in the same
+			// directory as the model, so the same relative path resolves correctly at load time.
+			// Only normalize when the value is absolute — std::filesystem::relative on a relative
+			// path resolves it against CWD, which produces garbage here.
+			if (texturePath.is_absolute())
+			{
+				std::error_code ec;
+				const std::filesystem::path rel =
+					std::filesystem::relative(texturePath, materialPath.parent_path(), ec);
+				defaultMaterial.BaseColorTexturePath = ec ? texturePath.string() : rel.string();
 			}
 			else
 			{
-				aiString textureName;
-				if (material->GetTexture(aiTextureType_DIFFUSE, 0, &textureName) == AI_SUCCESS)
-				{
-					texturePath = textureName.C_Str();
-				}
-			}
-
-			if (!texturePath.empty())
-			{
-				std::error_code ec;
-				const std::filesystem::path relativePath =
-					std::filesystem::relative(texturePath, materialPath.parent_path(), ec);
-				defaultMaterial.BaseColorTexturePath = ec ? texturePath.string() : relativePath.string();
+				defaultMaterial.BaseColorTexturePath = texturePath.string();
 			}
 		}
 

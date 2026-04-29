@@ -152,6 +152,14 @@ void CYamlWriteArchive::BeginGroup (const char* Name)
 	Stack.Add(Top()[Name]);
 }
 
+void CYamlWriteArchive::BeginGroupFlow (const char* Name)
+{
+	YAML::Node child(YAML::NodeType::Map);
+	child.SetStyle(YAML::EmitterStyle::Flow);
+	Top()[Name] = child;
+	Stack.Add(Top()[Name]);
+}
+
 void CYamlWriteArchive::EndGroup ()
 {
 	frt_assert(Stack.Count() > 1u);

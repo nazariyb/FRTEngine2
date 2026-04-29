@@ -56,6 +56,7 @@ public:
 	void Write (const char* Name, float V) override;
 	void Write (const char* Name, const std::string& V) override;
 	void BeginGroup (const char* Name) override;
+	void BeginGroupFlow (const char* Name) override;
 	void EndGroup () override;
 
 private:

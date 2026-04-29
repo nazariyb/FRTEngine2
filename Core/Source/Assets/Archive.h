@@ -44,6 +44,10 @@ public:
 	virtual void Write (const char* Name, const std::string& V) = 0;
 
 	virtual void BeginGroup (const char* Name) = 0;
+	// Same as BeginGroup but request inline / flow style for the group when the backend
+	// supports it (e.g. YAML emits `{ r: 1, g: 0, b: 0, a: 1 }` instead of multi-line block).
+	// Backends without a notion of style fall through to BeginGroup.
+	virtual void BeginGroupFlow (const char* Name) { BeginGroup(Name); }
 	virtual void EndGroup () = 0;
 };
 
@@ -68,6 +72,16 @@ auto Write (IWriteArchive& Ar, const char* Name, const T& V)
 	-> std::enable_if_t<!std::is_arithmetic_v<T> && !std::is_same_v<T, std::string>, void>
 {
 	Ar.BeginGroup(Name);
+	Serialize(Ar, V);
+	Ar.EndGroup();
+}
+
+// Same as Write, but emits the group inline (flow style) when the backend supports it.
+template <typename T>
+auto WriteFlow (IWriteArchive& Ar, const char* Name, const T& V)
+	-> std::enable_if_t<!std::is_arithmetic_v<T> && !std::is_same_v<T, std::string>, void>
+{
+	Ar.BeginGroupFlow(Name);
 	Serialize(Ar, V);
 	Ar.EndGroup();
 }

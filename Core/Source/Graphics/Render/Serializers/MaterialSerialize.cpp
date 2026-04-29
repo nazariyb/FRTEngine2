@@ -156,7 +156,7 @@ void Serialize (assets::IWriteArchive& Ar, const SMaterial& M)
 	Ar.EndGroup();
 
 	Ar.BeginGroup("albedo");
-		assets::Write(Ar, "color", M.DiffuseAlbedo);
+		assets::WriteFlow(Ar, "color", M.DiffuseAlbedo);
 		Ar.Write("texture", M.BaseColorTexturePath);
 	Ar.EndGroup();
 
@@ -164,7 +164,7 @@ void Serialize (assets::IWriteArchive& Ar, const SMaterial& M)
 	Ar.Write("roughness", M.Roughness);
 
 	Ar.BeginGroup("emissive");
-		assets::Write(Ar, "color", M.Emissive);
+		assets::WriteFlow(Ar, "color", M.Emissive);
 		Ar.Write("intensity", M.EmissiveIntensity);
 	Ar.EndGroup();
 

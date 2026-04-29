@@ -1,6 +1,20 @@
 version: 2
 name: Sponza_mat3
-
 shaders:
   vertex: VertexShader
   pixel: PixelShader
+albedo:
+  color: {r: 1, g: 1, b: 1, a: 1}
+  texture: 8750083169368950601.jpg
+metallic: 0
+roughness: 1
+emissive:
+  color: {r: 0, g: 0, b: 0, a: 1}
+  intensity: 0
+depth:
+  enable: true
+  write: true
+  func: less
+cull: none
+blend:
+  enable: false
