@@ -1,5 +1,7 @@
 ﻿#pragma once
 
+#include <string>
+
 #include "Graphics/Comp_Light.h"
 #include "Graphics/Model.h"
 #include "Math/Transform.h"
@@ -12,6 +14,10 @@ class CEntity
 public:
 	// temp implementation
 	void Tick (float DeltaSeconds);
+
+	// Display name. Auto-assigned by CWorldScene::SpawnEntity (e.g. "Entity #3").
+	// Editor uses it in combo + label fields. Free-form, no uniqueness guarantee.
+	std::string Name;
 
 	const math::STransform& GetTransform () const { return Transform; }
 	math::STransform Transform;

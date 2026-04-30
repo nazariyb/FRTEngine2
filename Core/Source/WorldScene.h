@@ -21,7 +21,7 @@ public:
 
 	bool Initialize ();
 
-	memory::TRefShared<CEntity> SpawnEntity ();
+	memory::TRefShared<CEntity> SpawnEntity (const std::string& Name = "");
 
 	void RunFrame ();
 	void SubmitFrame (ID3D12GraphicsCommandList4* CommandList);

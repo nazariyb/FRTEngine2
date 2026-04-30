@@ -1,6 +1,7 @@
 #include "GameInstance.h"
 
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <iostream>
 
@@ -213,7 +214,7 @@ void GameInstance::Load ()
 
 	std::filesystem::path floorMaterialPath =
 		std::filesystem::path("../Core/Content/Models/Floor") / ("floor_mat" + std::to_string(0) + ".frtmat.yml");
-	auto floor = World.SpawnEntity();
+	auto floor = World.SpawnEntity("Floor");
 	floor->RenderModel->Model = memory::NewShared<SRenderModel>(
 		SRenderModel::FromMesh(
 			mesh::GenerateGrid(10.f, 10.f, 16u, 16u),
@@ -223,7 +224,7 @@ void GameInstance::Load ()
 
 	std::filesystem::path pillarMaterialPath =
 		std::filesystem::path("../Core/Content/Models/Pillar") / ("pillar_mat" + std::to_string(0) + ".frtmat.yml");
-	auto pillar = World.SpawnEntity();
+	auto pillar = World.SpawnEntity("Pillar");
 	pillar->RenderModel->Model = memory::NewShared<SRenderModel>(
 		SRenderModel::FromMesh(
 			mesh::GenerateCube(Vector3f(.65f, 1.8f, .65f), 1),
@@ -232,7 +233,7 @@ void GameInstance::Load ()
 	pillar->bRayTraced = true;
 	pillar->Transform.SetTranslation(-2.5f, -0.2f, 0.f);
 
-	auto mirror = World.SpawnEntity();
+	auto mirror = World.SpawnEntity("Mirror");
 	mirror->RenderModel->Model = memory::NewShared<SRenderModel>(
 		SRenderModel::FromMesh(
 			mesh::GenerateQuad(3.f, 3.f),
@@ -242,7 +243,7 @@ void GameInstance::Load ()
 
 	std::filesystem::path cubeMaterialPath =
 		std::filesystem::path("../Core/Content/Models/Cube") / ("cube_mat" + std::to_string(0) + ".frtmat.yml");
-	auto cube = World.SpawnEntity();
+	auto cube = World.SpawnEntity("Cube");
 	cube->RenderModel->Model = memory::NewShared<SRenderModel>(
 		SRenderModel::FromMesh(
 			mesh::GenerateCube(Vector3f(1.f), 1),
@@ -253,11 +254,11 @@ void GameInstance::Load ()
 	// Cylinder->RenderModel.Model = memory::NewShared<graphics::SRenderModel>(
 	// 	graphics::SRenderModel::FromMesh(mesh::GenerateCylinder(1.f, 0.5, 1.f, 10u, 10u)));
 
-	Sphere = World.SpawnEntity();
+	Sphere = World.SpawnEntity("Sphere");
 	Sphere->RenderModel->Model = memory::NewShared<graphics::SRenderModel>(
 		graphics::SRenderModel::FromMesh(mesh::GenerateSphere(.3f, 30u, 30u)));
 
-	auto skullEnt = World.SpawnEntity();
+	auto skullEnt = World.SpawnEntity("Skull");
 	skullEnt->RenderModel->Model = memory::NewShared<graphics::SRenderModel>(
 		graphics::SRenderModel::LoadFromFile(
 			R"(..\Core\Content\Models\Skull\scene.gltf)",
@@ -266,7 +267,7 @@ void GameInstance::Load ()
 	skullEnt->Transform.SetScale(Vector3f(.45f));
 	skullEnt->RotationSpeed = Vector3f::UpVector * (math::PI_OVER_FOUR * 0.25f);
 
-	auto duckEnt = World.SpawnEntity();
+	auto duckEnt = World.SpawnEntity("Duck");
 	duckEnt->RenderModel->Model = memory::NewShared<graphics::SRenderModel>(
 		graphics::SRenderModel::LoadFromFile(
 			R"(..\Core\Content\Models\Duck\Duck.gltf)",
@@ -274,7 +275,7 @@ void GameInstance::Load ()
 	duckEnt->Transform.SetTranslation(0.f, 0.f, 0.f);
 
 	// TODO: When Sponza is added, the renderer crashes. Probably multiple sections aren't handled properly
-	auto sponzaEnt = World.SpawnEntity();
+	auto sponzaEnt = World.SpawnEntity("Sponza");
 	sponzaEnt->RenderModel->Model = memory::NewShared<graphics::SRenderModel>(
 		graphics::SRenderModel::LoadFromFile(
 			R"(..\Core\Content\Models\Sponza\Sponza.gltf)",
@@ -285,7 +286,7 @@ void GameInstance::Load ()
 	std::filesystem::path lightMaterialPath =
 		std::filesystem::path("../Core/Content/Light") / ("light_mat" + std::to_string(0) + ".frtmat.yml");
 
-	auto lightSource1 = World.SpawnEntity();
+	auto lightSource1 = World.SpawnEntity("Light 1");
 	lightSource1->RenderModel->Model = memory::NewShared<graphics::SRenderModel>(
 		SRenderModel::FromMesh(mesh::GenerateSphere(.3f, 30u, 30u),
 			Renderer->GetMaterialLibrary().LoadOrCreateMaterial(lightMaterialPath, {})));
@@ -294,7 +295,7 @@ void GameInstance::Load ()
 	std::filesystem::path lightMaterialPath2 =
 		std::filesystem::path("../Core/Content/Light") / ("light_mat" + std::to_string(2) + ".frtmat.yml");
 
-	auto lightSource2 = World.SpawnEntity();
+	auto lightSource2 = World.SpawnEntity("Light 2");
 	lightSource2->RenderModel->Model = memory::NewShared<graphics::SRenderModel>(
 		SRenderModel::FromMesh(mesh::GenerateQuad(1.f, 1.f),
 			Renderer->GetMaterialLibrary().LoadOrCreateMaterial(lightMaterialPath2, {})));
@@ -559,15 +560,12 @@ void GameInstance::CalculateFrameStats () const
 			mutableThis->SelectedEntityIndex = -1;
 		}
 
-		// Combo: list "Entity #N" for each entity.
-		const char* preview = mutableThis->SelectedEntityIndex >= 0
-			? "Entity"
-			: "(none)";
-		char previewBuf[32];
-		if (mutableThis->SelectedEntityIndex >= 0)
+		// Combo: each entity by Name (auto-assigned at spawn, editable below).
+		const char* preview = "(none)";
+		if (mutableThis->SelectedEntityIndex >= 0 && mutableThis->SelectedEntityIndex < entityCount)
 		{
-			std::snprintf(previewBuf, sizeof(previewBuf), "Entity #%d", mutableThis->SelectedEntityIndex);
-			preview = previewBuf;
+			CEntity* sel = entities[mutableThis->SelectedEntityIndex].GetRawIgnoringLifetime();
+			preview = (sel && !sel->Name.empty()) ? sel->Name.c_str() : "(unnamed)";
 		}
 		if (ImGui::BeginCombo("Selected", preview))
 		{
@@ -577,14 +575,16 @@ void GameInstance::CalculateFrameStats () const
 			}
 			for (int32 i = 0; i < entityCount; ++i)
 			{
-				char label[32];
-				std::snprintf(label, sizeof(label), "Entity #%d", i);
+				CEntity* e = entities[i].GetRawIgnoringLifetime();
+				const char* label = (e && !e->Name.empty()) ? e->Name.c_str() : "(unnamed)";
 				const bool selected = (mutableThis->SelectedEntityIndex == i);
+				ImGui::PushID(i);
 				if (ImGui::Selectable(label, selected))
 				{
 					mutableThis->SelectedEntityIndex = i;
 				}
 				if (selected) ImGui::SetItemDefaultFocus();
+				ImGui::PopID();
 			}
 			ImGui::EndCombo();
 		}
@@ -594,6 +594,16 @@ void GameInstance::CalculateFrameStats () const
 			CEntity* ent = entities[mutableThis->SelectedEntityIndex].GetRawIgnoringLifetime();
 			if (ent)
 			{
+				// Editable Name. ImGui::InputText needs a writable char buffer.
+				char nameBuf[64];
+				const size_t nameLen = ent->Name.size() < sizeof(nameBuf) - 1 ? ent->Name.size() : sizeof(nameBuf) - 1;
+				std::memcpy(nameBuf, ent->Name.data(), nameLen);
+				nameBuf[nameLen] = '\0';
+				if (ImGui::InputText("Name", nameBuf, sizeof(nameBuf)))
+				{
+					ent->Name = nameBuf;
+				}
+
 				Vector3f pos = ent->Transform.GetTranslation();
 				Vector3f rot = ent->Transform.GetRotation();
 				Vector3f scl = ent->Transform.GetScale();

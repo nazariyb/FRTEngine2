@@ -13,9 +13,17 @@ bool frt::CWorldScene::Initialize ()
 	return true;
 }
 
-frt::memory::TRefShared<frt::CEntity> frt::CWorldScene::SpawnEntity ()
+frt::memory::TRefShared<frt::CEntity> frt::CWorldScene::SpawnEntity (const std::string& Name)
 {
 	auto newEntity = memory::NewShared<CEntity>();
+	if (Name.empty())
+	{
+		newEntity->Name = "Entity #" + std::to_string(Entities.Count());
+	}
+	else
+	{
+		newEntity->Name = Name;
+	}
 	Entities.Add(newEntity);
 	newEntity->RenderModel = MeshRenderer->SpawnRenderModel();
 	bSceneTopologyDirty = true;
