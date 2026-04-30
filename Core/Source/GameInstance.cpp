@@ -1,5 +1,6 @@
 #include "GameInstance.h"
 
+#include <cstdio>
 #include <filesystem>
 #include <iostream>
 
@@ -519,6 +520,96 @@ void GameInstance::CalculateFrameStats () const
 			ImGui::ColorEdit3("Ground", &sky.GroundColor.R);
 			ImGui::SliderFloat("Sky intensity", &sky.SkyIntensity, 0.0f, 5.0f);
 			ImGui::SliderFloat("Horizon softness", &sky.HorizonSoftness, 0.0f, 1.0f);
+		}
+		ImGui::End();
+	}
+
+	// Editor — camera transform + entity transform editor. Always-on camera, entity selected
+	// via combo box. Modifying any transform marks scene topology dirty so AS rebuilds and
+	// accumulation resets.
+	{
+		auto* mutableThis = const_cast<GameInstance*>(this);
+		ImGui::Begin("Editor");
+
+		// ----- Camera -----
+		if (mutableThis->Camera)
+		{
+			ImGui::SeparatorText("Camera");
+			Vector3f camPos = mutableThis->Camera->Transform.GetTranslation();
+			Vector3f camRot = mutableThis->Camera->Transform.GetRotation();
+			bool camChanged = false;
+			if (ImGui::DragFloat3("Cam position", &camPos.x, 0.05f)) camChanged = true;
+			if (ImGui::DragFloat3("Cam rotation", &camRot.x, 0.01f)) camChanged = true;
+			if (camChanged)
+			{
+				mutableThis->Camera->Transform.SetTranslation(camPos);
+				mutableThis->Camera->Transform.SetRotation(camRot);
+				mutableThis->World.bAccumulationDirty = true;
+			}
+		}
+
+		// ----- Entity selection + transform -----
+		ImGui::SeparatorText("Entity");
+		auto& entities = mutableThis->World.GetEntities();
+		const int32 entityCount = static_cast<int32>(entities.Count());
+
+		// Reset selection if list shrank below stored index.
+		if (mutableThis->SelectedEntityIndex >= entityCount)
+		{
+			mutableThis->SelectedEntityIndex = -1;
+		}
+
+		// Combo: list "Entity #N" for each entity.
+		const char* preview = mutableThis->SelectedEntityIndex >= 0
+			? "Entity"
+			: "(none)";
+		char previewBuf[32];
+		if (mutableThis->SelectedEntityIndex >= 0)
+		{
+			std::snprintf(previewBuf, sizeof(previewBuf), "Entity #%d", mutableThis->SelectedEntityIndex);
+			preview = previewBuf;
+		}
+		if (ImGui::BeginCombo("Selected", preview))
+		{
+			if (ImGui::Selectable("(none)", mutableThis->SelectedEntityIndex == -1))
+			{
+				mutableThis->SelectedEntityIndex = -1;
+			}
+			for (int32 i = 0; i < entityCount; ++i)
+			{
+				char label[32];
+				std::snprintf(label, sizeof(label), "Entity #%d", i);
+				const bool selected = (mutableThis->SelectedEntityIndex == i);
+				if (ImGui::Selectable(label, selected))
+				{
+					mutableThis->SelectedEntityIndex = i;
+				}
+				if (selected) ImGui::SetItemDefaultFocus();
+			}
+			ImGui::EndCombo();
+		}
+
+		if (mutableThis->SelectedEntityIndex >= 0 && mutableThis->SelectedEntityIndex < entityCount)
+		{
+			CEntity* ent = entities[mutableThis->SelectedEntityIndex].GetRawIgnoringLifetime();
+			if (ent)
+			{
+				Vector3f pos = ent->Transform.GetTranslation();
+				Vector3f rot = ent->Transform.GetRotation();
+				Vector3f scl = ent->Transform.GetScale();
+				bool changed = false;
+				if (ImGui::DragFloat3("Position", &pos.x, 0.05f)) changed = true;
+				if (ImGui::DragFloat3("Rotation", &rot.x, 0.01f)) changed = true;
+				if (ImGui::DragFloat3("Scale",    &scl.x, 0.01f, 0.001f, 1000.0f)) changed = true;
+				if (changed)
+				{
+					ent->Transform.SetTranslation(pos);
+					ent->Transform.SetRotation(rot);
+					ent->Transform.SetScale(scl);
+					mutableThis->World.bSceneTopologyDirty = true;
+					mutableThis->World.bAccumulationDirty = true;
+				}
+			}
 		}
 		ImGui::End();
 	}

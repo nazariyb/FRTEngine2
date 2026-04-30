@@ -32,6 +32,7 @@ public:
 	bool TogglePhasePause (EUpdatePhase Phase);
 
 	const TArray<memory::TRefShared<CEntity>>& GetEntities () const { return Entities; }
+	TArray<memory::TRefShared<CEntity>>& GetEntities () { return Entities; }
 
 	memory::TRefUnique<Sys_MeshRenderer> MeshRenderer;
 	// TArray<memory::TRefUnique<ISystem>> Systems;
