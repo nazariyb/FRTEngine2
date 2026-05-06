@@ -13,6 +13,7 @@
 #include "Timer.h"
 #include "Window.h"
 #include "Graphics/Camera.h"
+#include "Graphics/GeometryScript.h"
 #include "Graphics/MeshGeneration.h"
 #include "Graphics/Model.h"
 #include "Graphics/Render/GraphicsUtility.h"
@@ -302,23 +303,29 @@ void GameInstance::Load ()
 	lightSource2->Transform.SetTranslation(-2.5f, 2.85f, 0.f);
 	// lightSource2->Transform.SetRotation(math::PI, 0.f, 0.f);
 
-	/*memory::TRefShared<CEntity> walls[3];
-	walls[0] = World->SpawnEntity();
-	walls[1] = World->SpawnEntity();
-	walls[2] = World->SpawnEntity();
+	graphics::SGeometryScript ceilingScript;
+	using EShape = graphics::SGeometryScript::EShape;
+	using EMerge = graphics::SGeometryScript::EMergeOp;
 
-	auto wallMesh = memory::NewShared<SRenderModel>(SRenderModel::FromMesh(mesh::GenerateQuad(10.f, 10.f)));
-	walls[0]->RenderModel.Model = wallMesh;
-	walls[1]->RenderModel.Model = wallMesh;
-	walls[2]->RenderModel.Model = wallMesh;
+	// outer 10×6 wall
+	ceilingScript.Ops.Add({ EShape::Rect, EMerge::AddBase,
+		Vector2f(0.f, 0.f), Vector2f(5.f, 3.f) });
+	// window: 1×1.6 at (-1.5, 0)
+	ceilingScript.Ops.Add({ EShape::Rect, EMerge::Cut,
+		Vector2f(-1.5f, 0.f), Vector2f(0.5f, 0.8f) });
+	// door: 0.8×2.4 at (1.5, -0.3)
+	// ceilingScript.Ops.Add({ EShape::Rect, EMerge::Cut,
+	// 	Vector2f(1.5f, -0.3f), Vector2f(0.4f, 1.2f) });
 
-	walls[0]->Transform.SetTranslation(-5.f, 4.f, 0.f);
-	walls[1]->Transform.SetTranslation(5.f, 4.f, 0.f);
-	walls[2]->Transform.SetTranslation(0.f, 4.f, 5.f);
-
-	walls[0]->Transform.SetRotation(0.f, 0.f, math::PI_OVER_TWO);
-	walls[1]->Transform.SetRotation(0.f, 0.f, math::PI_OVER_TWO);
-	walls[2]->Transform.SetRotation(math::PI_OVER_TWO, 0.f, 0.f);*/
+	auto ceiling = World.SpawnEntity("Ceiling");
+	ceiling->RenderModel->Model = memory::NewShared<SRenderModel>(
+		SRenderModel::FromMesh(
+			graphics::mesh::BuildFromScript(ceilingScript),
+			Renderer->GetMaterialLibrary().LoadOrCreateMaterial(cubeMaterialPath, {})));
+	ceiling->bRayTraced = true;
+	ceiling->Transform.SetTranslation(-0.5f, 9.f, 0.f);
+	ceiling->Transform.SetRotation(math::PI_OVER_TWO, 0.f, 0.f);
+	ceiling->Transform.SetScale({ 1.5f, 1.f, 1.f });
 
 #ifndef FRT_HEADLESS
 	MeshRenderer->InitializeRendering();
