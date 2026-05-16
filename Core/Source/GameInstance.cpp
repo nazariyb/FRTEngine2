@@ -110,7 +110,9 @@ GameInstance::GameInstance ()
 	MeshRenderer = World.MeshRenderer.GetWeak();
 
 	Camera = memory::NewShared<CCamera>();
-	Camera->Transform.SetTranslation(0.f, 1.5f, -3.f);
+	CameraInitialTransform.SetTranslation(4.9f, 2.2f, -1.5f);
+	CameraInitialTransform.SetRotation(-0.038f, -1.356f, .0f);
+	Camera->Transform = CameraInitialTransform;
 
 #else
 	World = MemoryPool.NewUnique<Sys_MeshRenderer>();
@@ -296,11 +298,11 @@ void GameInstance::Load ()
 	std::filesystem::path lightMaterialPath2 =
 		std::filesystem::path("../Core/Content/Light") / ("light_mat" + std::to_string(2) + ".frtmat.yml");
 
-	auto lightSource2 = World.SpawnEntity("Light 2");
-	lightSource2->RenderModel->Model = memory::NewShared<graphics::SRenderModel>(
-		SRenderModel::FromMesh(mesh::GenerateQuad(1.f, 1.f),
-			Renderer->GetMaterialLibrary().LoadOrCreateMaterial(lightMaterialPath2, {})));
-	lightSource2->Transform.SetTranslation(-2.5f, 2.85f, 0.f);
+	// auto lightSource2 = World.SpawnEntity("Light 2");
+	// lightSource2->RenderModel->Model = memory::NewShared<graphics::SRenderModel>(
+	// 	SRenderModel::FromMesh(mesh::GenerateQuad(1.f, 1.f),
+	// 		Renderer->GetMaterialLibrary().LoadOrCreateMaterial(lightMaterialPath2, {})));
+	// lightSource2->Transform.SetTranslation(-2.5f, 2.85f, 0.f);
 	// lightSource2->Transform.SetRotation(math::PI, 0.f, 0.f);
 
 	graphics::SGeometryScript ceilingScript;
@@ -357,11 +359,17 @@ void GameInstance::Input (float DeltaSeconds)
 	if (EnableMoveState && EnableMoveState->bDown)
 	{
 		// Look
-		Vector2f MouseDelta = InputSystem.GetMouseDelta() * 0.5f;
-		Vector3f CameraRotationVector = Vector3f::ZeroVector;
-		CameraRotationVector += Vector3f::LeftVector * MouseDelta.y;
-		CameraRotationVector += Vector3f::DownVector * MouseDelta.x;
-		Camera->Transform.RotateBy(CameraRotationVector * DeltaSeconds * 1.f);
+		const Vector2f ViewportSize = Window->GetWindowSize();
+		const float ViewportAspectRatio = math::Max(ViewportSize.x, 1.0f) / math::Max(ViewportSize.y, 1.0f);
+		const Vector2f MouseDelta = InputSystem.GetMouseDelta() * Camera->RotationSpeed;
+
+		Vector3f CameraRotation = Camera->Transform.GetRotation();
+		CameraRotation += Vector3f::LeftVector * (MouseDelta.y * DeltaSeconds);
+		CameraRotation += Vector3f::DownVector * ((MouseDelta.x / ViewportAspectRatio) * DeltaSeconds);
+
+		constexpr float CameraPitchLimit = math::PI_OVER_TWO - 0.001f;
+		CameraRotation.x = math::Clamp(CameraRotation.x, -CameraPitchLimit, CameraPitchLimit);
+		Camera->Transform.SetRotation(CameraRotation);
 
 		// Speed
 		Vector3f CameraMoveVector = Vector3f::ZeroVector;
@@ -555,13 +563,25 @@ void GameInstance::CalculateFrameStats () const
 			ImGui::SeparatorText("Camera");
 			Vector3f camPos = mutableThis->Camera->Transform.GetTranslation();
 			Vector3f camRot = mutableThis->Camera->Transform.GetRotation();
+			float camMovementSpeed = mutableThis->Camera->MovementSpeed;
+			float camRotationSpeed = mutableThis->Camera->RotationSpeed;
 			bool camChanged = false;
-			if (ImGui::DragFloat3("Cam position", &camPos.x, 0.05f)) camChanged = true;
-			if (ImGui::DragFloat3("Cam rotation", &camRot.x, 0.01f)) camChanged = true;
+			camChanged |= ImGui::DragFloat3("position", &camPos.x, 0.05f);
+			camChanged |= ImGui::DragFloat3("rotation", &camRot.x, 0.01f);
+			ImGui::SliderFloat("move speed", &camMovementSpeed, 0.001f, 50.0f);
+			ImGui::SliderFloat("rot  speed", &camRotationSpeed, 0.001f, 5.0f);
+
+			mutableThis->Camera->MovementSpeed = camMovementSpeed;
+			mutableThis->Camera->RotationSpeed = camRotationSpeed;
 			if (camChanged)
 			{
 				mutableThis->Camera->Transform.SetTranslation(camPos);
 				mutableThis->Camera->Transform.SetRotation(camRot);
+				mutableThis->World.bAccumulationDirty = true;
+			}
+			else if (ImGui::Button("Reset Camera"))
+			{
+				mutableThis->Camera->Transform = mutableThis->CameraInitialTransform;
 				mutableThis->World.bAccumulationDirty = true;
 			}
 		}

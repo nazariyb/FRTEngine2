@@ -24,5 +24,6 @@ public:
 public:
 	math::STransform Transform;
 	float MovementSpeed = 5.0f;
+	float RotationSpeed = 0.5f;
 };
 }

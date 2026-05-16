@@ -153,6 +153,7 @@ protected:
 	uint64 FrameCount;
 
 	bool bCameraMovementEnabled = false;
+	math::STransform CameraInitialTransform;
 };
 
 
