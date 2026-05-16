@@ -1569,6 +1569,11 @@ ComPtr<ID3D12RootSignature> CRenderer::CreateHitSignature ()
 		0);
 	// Sky CB (b3) — Hit shader needs sky radiance for sky-NEE. Same VA across all hit records.
 	rsc.AddRootParameter(D3D12_ROOT_PARAMETER_TYPE_CBV, render::constants::RootRegister_SkyCbv, 0);
+	// Portals buffer (thesis pre-filter). Same VA across all hit records in a frame.
+	rsc.AddRootParameter(
+		D3D12_ROOT_PARAMETER_TYPE_SRV,
+		render::constants::RaytracingRegister_PortalsSrv,
+		0);
 
 	const D3D12_STATIC_SAMPLER_DESC linearWrapSampler = BuildLinearWrapStaticSamplerDesc();
 	rsc.AddStaticSampler(linearWrapSampler);
@@ -1892,7 +1897,8 @@ void CRenderer::CreateShaderBindingTable ()
 			const uint64 materialTextureTableAddress = materialTextureHeapStart +
 														static_cast<uint64>(materialIndex) *
 														render::constants::RootMaterialTextureCount * descriptorSize;
-			void* lightsAddr = reinterpret_cast<void*>(RaytracingLightsGpuVa);
+			void* lightsAddr  = reinterpret_cast<void*>(RaytracingLightsGpuVa);
+			void* portalsAddr = reinterpret_cast<void*>(RaytracingPortalsGpuVa);
 			SbtHelper.AddHitGroup(
 				L"HitGroup",
 				{
@@ -1903,7 +1909,8 @@ void CRenderer::CreateShaderBindingTable ()
 					reinterpret_cast<void*>(hitGroupEntry.VertexBufferGpuVa),
 					reinterpret_cast<void*>(hitGroupEntry.IndexBufferGpuVa),
 					lightsAddr,
-					skyCbAddress
+					skyCbAddress,
+					portalsAddr
 				});
 			SbtHelper.AddHitGroup(
 				L"ShadowHitGroup",
@@ -1915,7 +1922,8 @@ void CRenderer::CreateShaderBindingTable ()
 					reinterpret_cast<void*>(hitGroupEntry.VertexBufferGpuVa),
 					reinterpret_cast<void*>(hitGroupEntry.IndexBufferGpuVa),
 					lightsAddr,
-					skyCbAddress
+					skyCbAddress,
+					portalsAddr
 				});
 		}
 	}
@@ -1983,8 +1991,9 @@ void CRenderer::UpdateRaytracingShaderTableAddresses ()
 		const uint64 hitRecordPassCbOffset = hitRecordCbOffset + sizeof(uint64);
 		// Lights GPU VA lives at the 7th root parameter slot (matCB, passCB, TLAS table, matTexTable, VB, IB, Lights).
 		const uint64 hitRecordLightsOffset = hitRecordCbOffset + sizeof(uint64) * 6u;
-		// Sky CB (b3) lives at the 8th root parameter slot — last one in hit signature.
-		const uint64 hitRecordSkyCbOffset = hitRecordCbOffset + sizeof(uint64) * 7u;
+		// Sky CB (b3) at slot 8, Portals SRV at slot 9 — last two added in hit signature.
+		const uint64 hitRecordSkyCbOffset   = hitRecordCbOffset + sizeof(uint64) * 7u;
+		const uint64 hitRecordPortalsOffset = hitRecordCbOffset + sizeof(uint64) * 8u;
 		const uint32 hitRecordStride = SbtHelper.GetHitGroupEntrySize();
 		const uint64 skyCbAddrU64 = currentFrameResources.SkyCB.GpuResource
 										? currentFrameResources.SkyCB.GpuResource->GetGPUVirtualAddress()
@@ -2011,10 +2020,12 @@ void CRenderer::UpdateRaytracingShaderTableAddresses ()
 			memcpy(sbtData + primaryHitRecordOffset + hitRecordPassCbOffset, &passCbAddress, sizeof(passCbAddress));
 			memcpy(sbtData + primaryHitRecordOffset + hitRecordLightsOffset, &RaytracingLightsGpuVa, sizeof(RaytracingLightsGpuVa));
 			memcpy(sbtData + primaryHitRecordOffset + hitRecordSkyCbOffset, &skyCbAddrU64, sizeof(skyCbAddrU64));
+			memcpy(sbtData + primaryHitRecordOffset + hitRecordPortalsOffset, &RaytracingPortalsGpuVa, sizeof(RaytracingPortalsGpuVa));
 			memcpy(sbtData + shadowHitRecordOffset + hitRecordCbOffset, &materialCbAddress, sizeof(materialCbAddress));
 			memcpy(sbtData + shadowHitRecordOffset + hitRecordPassCbOffset, &passCbAddress, sizeof(passCbAddress));
 			memcpy(sbtData + shadowHitRecordOffset + hitRecordLightsOffset, &RaytracingLightsGpuVa, sizeof(RaytracingLightsGpuVa));
 			memcpy(sbtData + shadowHitRecordOffset + hitRecordSkyCbOffset, &skyCbAddrU64, sizeof(skyCbAddrU64));
+			memcpy(sbtData + shadowHitRecordOffset + hitRecordPortalsOffset, &RaytracingPortalsGpuVa, sizeof(RaytracingPortalsGpuVa));
 		}
 	}
 

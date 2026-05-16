@@ -223,6 +223,47 @@ float TraceShadowRay(float3 origin, float3 L, float tMax)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Portal pre-filter (thesis core)
+//
+// Cheap analytical ray-vs-quad test against authored SPortal entries. Returns true if the
+// ray (origin, dir) passes through ANY portal — meaning a TLAS shadow query for this direction
+// is worth issuing. Returns false → caller short-circuits to "blocked" without a TLAS dispatch.
+//
+// When portals aren't authored OR pre-filter is toggled off, returns true (filter inert).
+// ─────────────────────────────────────────────────────────────────────────────
+
+bool PassesPortalFilter(float3 origin, float3 dir)
+{
+	if (gPortalPreFilter == 0u || gPortalCount == 0u)
+	{
+		return true;
+	}
+
+	for (uint i = 0u; i < gPortalCount; ++i)
+	{
+		SPortal p = gPortals[i];
+
+		// Plane test: t = dot(C - O, N) / dot(D, N)
+		const float denom = dot(dir, p.Normal);
+		if (abs(denom) < 1e-5f) continue;                // parallel to portal plane
+		const float t = dot(p.Center - origin, p.Normal) / denom;
+		if (t <= 0.0f) continue;                         // behind ray origin
+
+		// In-rect test: project (hit - center) onto Edge1 / Edge2 axes.
+		const float3 hit = origin + dir * t;
+		const float3 local = hit - p.Center;
+		const float e1Sq = dot(p.Edge1, p.Edge1);
+		const float e2Sq = dot(p.Edge2, p.Edge2);
+		if (e1Sq < 1e-8f || e2Sq < 1e-8f) continue;
+		const float u = dot(local, p.Edge1) / e1Sq;
+		const float v = dot(local, p.Edge2) / e2Sq;
+		if (abs(u) <= 1.0f && abs(v) <= 1.0f) return true;
+	}
+
+	return false;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // BSDF importance sampling
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -503,8 +544,8 @@ void ClosestHit(inout HitInfo payload, Attributes attrib)
 		else if (light.Type == 3u) // Sky (uniform upper hemisphere in world space)
 		{
 			// Uniform hemisphere about world up (+y). pdf_omega = 1/(2π).
-			// This is the baseline that portal pre-filtering will replace — most sampled
-			// directions get blocked by walls in indoor scenes.
+			// Sampled direction gets fed through the portal pre-filter (thesis): rays that
+			// don't pass through any authored portal are dropped before any TLAS dispatch.
 			const float u1 = NextFloat01(payload.rngState);
 			const float u2 = NextFloat01(payload.rngState);
 			const float cosTheta = u1;
@@ -515,6 +556,13 @@ void ClosestHit(inout HitInfo payload, Attributes attrib)
 			lightRadiance = EvalSkyRadiance(L);
 			lightDist = 1e6f; // any escape distance counts as sky-reaching
 			valid = true;
+
+			// Portal pre-filter — short-circuit before paying for TraceShadowRay (TLAS dispatch).
+			// When no portals authored or toggle off, PassesPortalFilter is a no-op (returns true).
+			if (!PassesPortalFilter(hitPos, L))
+			{
+				valid = false;
+			}
 		}
 
 		const float NoL = saturate(dot(N, L));

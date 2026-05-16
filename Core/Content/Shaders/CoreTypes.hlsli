@@ -42,8 +42,8 @@ cbuffer PassConstantBuffer : register(b2)
 
 	uint gRaytracingRussianRouletteDepth;  // depth at which RR termination kicks in
 	uint gLightCount;                      // entries in gLights buffer; 0 disables NEE
-	uint gPadPCB1;
-	uint gPadPCB2;
+	uint gPortalCount;                     // entries in gPortals buffer; 0 disables portal pre-filter
+	uint gPortalPreFilter;                 // toggle: 0 = baseline (no filter), 1 = pre-filter on
 }
 
 // NEE light entry. Mirror of frt::graphics::SLight (96 bytes, 16-aligned).
@@ -66,6 +66,23 @@ struct SLight
 
 // Bound as root SRV in Hit signature. Empty when gLightCount == 0.
 StructuredBuffer<SLight> gLights : register(t19);
+
+
+// Portal quad — used by the Sky-NEE pre-filter. Mirror of frt::graphics::SPortal (64 bytes).
+struct SPortal
+{
+	float3 Center;
+	float  Pad0;
+	float3 Normal;       // unit; the portal's facing direction
+	float  Pad1;
+	float3 Edge1;        // half-extent along right (world-space)
+	float  Pad2;
+	float3 Edge2;        // half-extent along up
+	uint   Flags;        // reserved
+};
+
+// Bound as root SRV in Hit signature at t20. Empty / dummy when gPortalCount == 0.
+StructuredBuffer<SPortal> gPortals : register(t20);
 
 // Sky / sun parameters. Bound to Miss (and any RT shader that needs sky radiance).
 // Mirror of frt::graphics::SSkyConstants — keep field order in sync.

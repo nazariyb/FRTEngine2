@@ -327,6 +327,14 @@ void GameInstance::Load ()
 	ceiling->Transform.SetRotation(math::PI_OVER_TWO, 0.f, 0.f);
 	ceiling->Transform.SetScale({ 1.5f, 1.f, 1.f });
 
+	auto portal = World.SpawnEntity("Portal1");
+	portal->Transform.SetTranslation(1.75f, 9.f, 0.f);   // window center
+	portal->Transform.SetRotation(math::PI_OVER_TWO, 0.f, 0.f);   // window center
+	portal->Portal = memory::NewShared<graphics::Comp_Portal>();
+	portal->Portal->Normal = Vector3f(0, 0, -1);       // faces interior
+	portal->Portal->Edge1  = Vector3f(0.8f, 0, 0);     // half-width
+	portal->Portal->Edge2  = Vector3f(0, 0.8f, 0);     // half-height
+
 #ifndef FRT_HEADLESS
 	MeshRenderer->InitializeRendering();
 #endif
@@ -500,6 +508,8 @@ void GameInstance::CalculateFrameStats () const
 		if (ImGui::SliderInt("Samples / pixel", &samples, 1, 64))   rt.SampleCount = static_cast<uint32>(samples);
 		if (ImGui::SliderInt("Max bounces",     &bounces, 0, 16))   rt.MaxBounces  = static_cast<uint32>(bounces);
 		if (ImGui::SliderInt("RR start depth",  &rr,      0, 16))   rt.RussianRouletteDepth = static_cast<uint32>(rr);
+		ImGui::Checkbox("Portal pre-filter", &rt.bPortalPreFilter);
+		ImGui::Checkbox("Show portal meshes", &rt.bShowPortalMeshes);
 		ImGui::End();
 	}
 

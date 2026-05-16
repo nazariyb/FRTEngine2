@@ -120,6 +120,36 @@ void CLightList::Add (const SLight& Light) { Lights.Add(Light); }
 
 uint32 CLightList::Count () const { return Lights.Count(); }
 
+// ---- CPortalList ----
+
+void CPortalList::Clear () { Portals.Clear(); }
+void CPortalList::Add (const SPortal& Portal) { Portals.Add(Portal); }
+uint32 CPortalList::Count () const { return Portals.Count(); }
+
+D3D12_GPU_VIRTUAL_ADDRESS CPortalList::UploadToArena (DX12_UploadArena& Arena) const
+{
+	const uint32 count = math::Max(Portals.Count(), 1u);
+	const uint64 byteCount = static_cast<uint64>(count) * sizeof(SPortal);
+
+	uint64 offset = 0u;
+	uint8* dst = Arena.Allocate(byteCount, &offset);
+	if (!dst)
+	{
+		return 0u;
+	}
+
+	if (!Portals.IsEmpty())
+	{
+		std::memcpy(dst, Portals.GetData(), Portals.Count() * sizeof(SPortal));
+	}
+	else
+	{
+		std::memset(dst, 0, sizeof(SPortal));
+	}
+	return Arena.GetGPUBuffer()->GetGPUVirtualAddress() + offset;
+}
+
+
 D3D12_GPU_VIRTUAL_ADDRESS CLightList::UploadToArena (DX12_UploadArena& Arena) const
 {
 	// Always allocate at least one slot so the SBT root-SRV pointer is valid even when

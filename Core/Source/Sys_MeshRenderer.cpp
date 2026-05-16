@@ -10,6 +10,8 @@
 #include "Window.h"
 #include "Graphics/Camera.h"
 #include "Graphics/DXRUtils.h"
+#include "Graphics/GeometryScript.h"
+#include "Graphics/Model.h"
 #include "Graphics/Render/GraphicsCoreTypes.h"
 #include "Graphics/Render/Renderer.h"
 #include "Profiler/Profiler.h"
@@ -211,6 +213,10 @@ void Sys_MeshRenderer::Present (float DeltaSeconds, ID3D12GraphicsCommandList4* 
 	auto& ObjectDescriptorHandles = currentFrameResources.ObjectCB.DescriptorHeapHandleGpu;
 	for (uint32 i = 0; i < RenderModels.Count(); ++i)
 	{
+		if (!RenderModels[i]->bVisible || !RenderModels[i]->Model)
+		{
+			continue;
+		}
 		const graphics::SRenderModel& model = *RenderModels[i]->Model;
 		if (!model.VertexBufferGpu || !model.IndexBufferGpu)
 		{
@@ -335,6 +341,7 @@ void Sys_MeshRenderer::CopyConstantData ()
 	passConstants.RaytracingSampleCount = rtSettings.SampleCount;
 	passConstants.RaytracingMaxBounces = rtSettings.MaxBounces;
 	passConstants.RaytracingRussianRouletteDepth = rtSettings.RussianRouletteDepth;
+	passConstants.bPortalPreFilter = rtSettings.bPortalPreFilter ? 1u : 0u;
 
 	// ── Accumulation frame counter ────────────────────────────────────────
 	// Reset on any scene change: camera movement, object transforms, or topology.
@@ -438,13 +445,54 @@ void Sys_MeshRenderer::CopyConstantData ()
 	}
 
 	passConstants.LightCount = Lights.Count();
-	// Re-upload PassCB now that LightCount is set. CopyBunch above already ran with stale value;
-	// overwrite the same slot.
+
+	// ---- Portal collector ----
+	// Walk scene entities for Comp_Portal. Translation comes from entity transform; orientation
+	// (Normal / Edge1 / Edge2) is authored on the component directly.
+	Portals.Clear();
+	const bool bShowPortalMeshes = GameInstance::GetInstance().GetRtSettings().bShowPortalMeshes;
+	auto& mutableEntities = scene.GetEntities();
+	for (uint32 ei = 0; ei < mutableEntities.Count(); ++ei)
+	{
+		CEntity* entity = mutableEntities[ei].GetRawIgnoringLifetime();
+		if (!entity || !entity->Portal || !entity->Portal->bEnabled)
+		{
+			continue;
+		}
+		const graphics::Comp_Portal& cp = *entity->Portal;
+
+		graphics::SPortal portal;
+		portal.Center = math::ToDirectXCoordinates(entity->Transform.GetTranslation());
+		portal.Normal = math::ToDirectXCoordinates(cp.Normal);
+		portal.Edge1  = math::ToDirectXCoordinates(cp.Edge1);
+		portal.Edge2  = math::ToDirectXCoordinates(cp.Edge2);
+		Portals.Add(portal);
+
+		// Lazily build a visualization quad for this portal (once), then drive its
+		// visibility from the UI toggle. Hidden quads are skipped by raster + AS so
+		// they don't occlude rays during measurement.
+		if (entity->RenderModel)
+		{
+			if (!entity->RenderModel->Model)
+			{
+				entity->RenderModel->Model = memory::NewShared<graphics::SRenderModel>(
+					graphics::SRenderModel::FromMesh(
+						graphics::mesh::BuildPortalQuad(cp.Edge1, cp.Edge2, cp.Normal)));
+			}
+			entity->RenderModel->bVisible = bShowPortalMeshes;
+		}
+	}
+	passConstants.PortalCount = Portals.Count();
+
+	// Re-upload PassCB now that LightCount + PortalCount are set. CopyBunch above already ran
+	// with stale values; overwrite the same slot.
 	currentFrameResources.PassCB.CopyBunch(&passConstants, 1u, currentFrameResources.UploadArena);
 
-	// Allocate light buffer in the frame upload arena and push GPU VA to the renderer for SBT patching.
-	const D3D12_GPU_VIRTUAL_ADDRESS lightsGpuVa = Lights.UploadToArena(currentFrameResources.UploadArena);
+	// Allocate light + portal buffers in the frame upload arena and push GPU VAs to the renderer.
+	const D3D12_GPU_VIRTUAL_ADDRESS lightsGpuVa  = Lights.UploadToArena(currentFrameResources.UploadArena);
+	const D3D12_GPU_VIRTUAL_ADDRESS portalsGpuVa = Portals.UploadToArena(currentFrameResources.UploadArena);
 	Renderer->SetRaytracingLightsGpuVa(lightsGpuVa);
+	Renderer->SetRaytracingPortalsGpuVa(portalsGpuVa);
 }
 
 void Sys_MeshRenderer::UploadCB (ID3D12GraphicsCommandList4* CommandList)
@@ -731,7 +779,7 @@ void Sys_MeshRenderer::CreateAccelerationStructures ()
 	for (uint32 i = 0; i < sceneEntities.Count(); ++i)
 	{
 		const CEntity* entity = sceneEntities[i].GetRawIgnoringLifetime();
-		if (!entity || !entity->RenderModel->Model)
+		if (!entity || !entity->RenderModel || !entity->RenderModel->Model || !entity->RenderModel->bVisible)
 		{
 			continue;
 		}
@@ -877,7 +925,8 @@ void Sys_MeshRenderer::UpdateAccelerationStructures ()
 	for (uint32 i = 0; i < sceneEntities.Count(); ++i)
 	{
 		const CEntity* entity = sceneEntities[i].GetRawIgnoringLifetime();
-		if (!entity || !entity->RenderModel->Model)
+		// Filter must match CreateAccelerationStructures exactly, else trackedIndex desyncs.
+		if (!entity || !entity->RenderModel || !entity->RenderModel->Model || !entity->RenderModel->bVisible)
 		{
 			continue;
 		}

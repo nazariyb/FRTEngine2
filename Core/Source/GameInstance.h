@@ -125,6 +125,8 @@ protected:
 		uint32 SampleCount = 32u;
 		uint32 MaxBounces = 4u;
 		uint32 RussianRouletteDepth = 2u;
+		bool   bPortalPreFilter = true;
+		bool   bShowPortalMeshes = false; // portal viz quads occlude rays — off by default
 	};
 public:
 	SRtSettings& GetRtSettings () { return RtSettings; }

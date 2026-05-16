@@ -80,6 +80,9 @@ private:
 	// each frame; GPU VA pushed to the renderer for SBT patching.
 	graphics::CLightList Lights;
 
+	// Same pattern for portal pre-filter quads.
+	graphics::CPortalList Portals;
+
 	bool bAsInitialized = false;
 	bool bRaytracingSupported = false;
 	bool bRaytracingSupportChecked = false;

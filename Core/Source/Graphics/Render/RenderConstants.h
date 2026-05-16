@@ -35,7 +35,8 @@ static constexpr uint32 RaytracingRegister_MaterialTextureStart = 1;
 static constexpr uint32 RaytracingRegister_VertexBufferSrv =
 	RaytracingRegister_MaterialTextureStart + RootMaterialTextureCount;
 static constexpr uint32 RaytracingRegister_IndexBufferSrv = RaytracingRegister_VertexBufferSrv + 1;
-static constexpr uint32 RaytracingRegister_LightsSrv = RaytracingRegister_IndexBufferSrv + 1;
+static constexpr uint32 RaytracingRegister_LightsSrv  = RaytracingRegister_IndexBufferSrv + 1;
+static constexpr uint32 RaytracingRegister_PortalsSrv = RaytracingRegister_LightsSrv + 1;
 
 static constexpr uint32 MaterialTextureSlot_BaseColor = 0;
 static constexpr uint32 MaterialTextureIndexInvalid = 0xFFFFFFFFu;

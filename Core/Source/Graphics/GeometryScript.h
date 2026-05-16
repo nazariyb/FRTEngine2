@@ -53,5 +53,12 @@ namespace mesh
 	// whose centre is inside outer && outside every hole. Produces more triangles than necessary
 	// but is closed-form for axis-aligned ops, so no triangulation library is needed.
 	FRT_CORE_API SMesh BuildFromScript (const SGeometryScript& Script);
+
+	// Single quad spanning ±Edge1 ±Edge2 around the origin (entity-local), facing Normal.
+	// Used to visualize a Comp_Portal. Edge1/Edge2 are world-space half-extent vectors;
+	// entities carrying a portal only translate, so building around the origin aligns the
+	// quad with the portal rect.
+	FRT_CORE_API SMesh BuildPortalQuad (
+		const Vector3f& Edge1, const Vector3f& Edge2, const Vector3f& Normal);
 }
 }

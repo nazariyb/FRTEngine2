@@ -3,6 +3,7 @@
 #include <string>
 
 #include "Graphics/Comp_Light.h"
+#include "Graphics/Comp_Portal.h"
 #include "Graphics/Model.h"
 #include "Math/Transform.h"
 
@@ -30,6 +31,10 @@ public:
 
 	// Optional light component. Light collector pushes an SLight entry per frame when set.
 	memory::TRefShared<graphics::Comp_Light> Light;
+
+	// Optional portal component. Portal collector pushes an SPortal entry per frame when set.
+	// Pre-filter rejects sky-NEE shadow rays that don't pass through any portal.
+	memory::TRefShared<graphics::Comp_Portal> Portal;
 };
 }
 

@@ -186,4 +186,41 @@ SMesh BuildFromScript (const SGeometryScript& Script)
 
 	return result;
 }
+
+
+SMesh BuildPortalQuad (const Vector3f& Edge1, const Vector3f& Edge2, const Vector3f& Normal)
+{
+	SMesh result;
+	auto& V = result.Vertices;
+	auto& I = result.Indices;
+
+	// Four corners: c - e1 - e2, c + e1 - e2, c + e1 + e2, c - e1 + e2 (c = origin).
+	const Vector3f corners[4] = {
+		Edge1 * -1.0f + Edge2 * -1.0f,
+		Edge1 *  1.0f + Edge2 * -1.0f,
+		Edge1 *  1.0f + Edge2 *  1.0f,
+		Edge1 * -1.0f + Edge2 *  1.0f,
+	};
+	const Vector2f uvs[4] = { { 0.f, 0.f }, { 1.f, 0.f }, { 1.f, 1.f }, { 0.f, 1.f } };
+
+	for (uint32 k = 0; k < 4u; ++k)
+	{
+		SVertex v = {};
+		v.Position  = corners[k];
+		v.Uv        = uvs[k];
+		v.Normal    = Normal;
+		v.Tangent   = Edge1;
+		v.Bitangent = Edge2;
+		v.Color     = { 1.0f, 1.0f, 1.0f, 1.0f };
+		V.Add(v);
+	}
+	I.Add(0u); I.Add(1u); I.Add(2u);
+	I.Add(0u); I.Add(2u); I.Add(3u);
+
+#ifndef FRT_HEADLESS
+	_private::CreateGpuResources(V, I, result.VertexBufferGpu, result.IndexBufferGpu);
+#endif
+
+	return result;
+}
 }

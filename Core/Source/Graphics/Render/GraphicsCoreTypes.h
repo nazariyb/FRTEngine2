@@ -60,8 +60,8 @@ struct SPassConstants
 
 	uint32 RaytracingRussianRouletteDepth = 2u;  // depth at which RR termination kicks in
 	uint32 LightCount = 0u;               // entries in gLights buffer; 0 disables NEE
-	uint32 PadPCB1 = 0u;
-	uint32 PadPCB2 = 0u;                  // 16-byte alignment
+	uint32 PortalCount = 0u;              // entries in gPortals buffer; 0 disables portal pre-filter
+	uint32 bPortalPreFilter = 1u;         // toggle: 0 = baseline (no filter), 1 = pre-filter on
 };
 
 
@@ -153,6 +153,43 @@ public:
 
 private:
 	TArray<SLight> Lights;
+};
+
+
+// Portal quad for the thesis pre-filter test. World-space rectangle through which sky-NEE
+// shadow rays may pass. Layout matches `struct SPortal` in CoreTypes.hlsli (64 bytes, 16-aligned).
+struct SPortal
+{
+	Vector3f Center    = { 0.f, 0.f, 0.f };
+	float    Pad0      = 0.f;
+
+	Vector3f Normal    = { 0.f, 0.f, 1.f }; // unit; pre-filter uses sign of dot(Normal, dir)
+	float    Pad1      = 0.f;
+
+	Vector3f Edge1     = { 1.f, 0.f, 0.f }; // half-extent along right (world-space)
+	float    Pad2      = 0.f;
+
+	Vector3f Edge2     = { 0.f, 1.f, 0.f }; // half-extent along up (world-space)
+	uint32   Flags     = 0u;                // reserved
+};
+static_assert(sizeof(SPortal) == 64u, "SPortal layout must match HLSL");
+
+
+class FRT_CORE_API CPortalList
+{
+public:
+	void Clear ();
+	void Add (const SPortal& Portal);
+
+	// Same upload-into-arena pattern as CLightList. Always returns a valid GPU VA
+	// (allocates a dummy slot when empty) so the SBT root SRV pointer is never null.
+	D3D12_GPU_VIRTUAL_ADDRESS UploadToArena (DX12_UploadArena& Arena) const;
+
+	uint32 Count () const;
+	const TArray<SPortal>& GetPortals () const { return Portals; }
+
+private:
+	TArray<SPortal> Portals;
 };
 
 

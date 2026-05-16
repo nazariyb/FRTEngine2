@@ -274,6 +274,8 @@ public:
 	// in UpdateRaytracingShaderTableAddresses.
 	void SetRaytracingLightsGpuVa (D3D12_GPU_VIRTUAL_ADDRESS Va) { RaytracingLightsGpuVa = Va; }
 	D3D12_GPU_VIRTUAL_ADDRESS GetRaytracingLightsGpuVa () const { return RaytracingLightsGpuVa; }
+	void SetRaytracingPortalsGpuVa (D3D12_GPU_VIRTUAL_ADDRESS Va) { RaytracingPortalsGpuVa = Va; }
+	D3D12_GPU_VIRTUAL_ADDRESS GetRaytracingPortalsGpuVa () const { return RaytracingPortalsGpuVa; }
 	raytracing::SAccelerationStructureBuffers TopLevelASBuffers;
 
 private:
@@ -306,6 +308,7 @@ private:
 	TArray<SRaytracingMaterialTextureSet> RaytracingMaterialTextureSets;
 	TArray<SRaytracingHitGroupEntry> RaytracingHitGroupEntries;
 	D3D12_GPU_VIRTUAL_ADDRESS RaytracingLightsGpuVa = 0u;
+	D3D12_GPU_VIRTUAL_ADDRESS RaytracingPortalsGpuVa = 0u;
 
 	raytracing::CShaderBindingTableGenerator SbtHelper;
 	ComPtr<ID3D12Resource> SbtStorage;

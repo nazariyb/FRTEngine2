@@ -50,6 +50,10 @@ struct FRT_CORE_API Comp_RenderModel
 {
 	memory::TRefShared<SRenderModel> Model;
 
+	// When false the model is skipped by both raster draw and AS build — used for
+	// portal visualization quads so they can be toggled off and not occlude rays.
+	bool bVisible = true;
+
 	// TODO: material overrides, bone pose, per-instance params.
 };
 }
