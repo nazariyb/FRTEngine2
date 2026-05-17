@@ -47,6 +47,11 @@ project "Demo"
 	filter "platforms:Win64"
 		defines { "WIN64", "_WINDOWS" }
 
+	-- Core exports templated/STL members across the DLL boundary. Same compiler+runtime
+	-- on both sides, so C4251/C4275 are benign here. Mirrors the suppression in core.lua.
+	filter "action:vs*"
+		disablewarnings { "4251", "4275" }
+
 	filter "configurations:Debug-*"
 		defines { "_DEBUG" }
 		symbols "On"
