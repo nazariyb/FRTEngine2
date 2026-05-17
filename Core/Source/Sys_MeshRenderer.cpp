@@ -467,6 +467,9 @@ void Sys_MeshRenderer::CopyConstantData ()
 		portal.Normal = math::ToDirectXCoordinates(cp.Normal);
 		portal.Edge1  = math::ToDirectXCoordinates(cp.Edge1);
 		portal.Edge2  = math::ToDirectXCoordinates(cp.Edge2);
+		portal.Flags  = (cp.Shape == graphics::Comp_Portal::EShape::Ellipse)
+							? graphics::portal_flags::Ellipse
+							: 0u;
 		Portals.Add(portal);
 
 		// Lazily build a visualization quad for this portal (once), then drive its

@@ -257,7 +257,11 @@ bool PassesPortalFilter(float3 origin, float3 dir)
 		if (e1Sq < 1e-8f || e2Sq < 1e-8f) continue;
 		const float u = dot(local, p.Edge1) / e1Sq;
 		const float v = dot(local, p.Edge2) / e2Sq;
-		if (abs(u) <= 1.0f && abs(v) <= 1.0f) return true;
+		// Flags bit0: 0 = rect (|u|,|v| <= 1), 1 = ellipse inscribed in that rect (u² + v² <= 1).
+		const bool bEllipse = (p.Flags & 1u) != 0u;
+		const bool bInside = bEllipse ? (u * u + v * v <= 1.0f)
+									  : (abs(u) <= 1.0f && abs(v) <= 1.0f);
+		if (bInside) return true;
 	}
 
 	return false;

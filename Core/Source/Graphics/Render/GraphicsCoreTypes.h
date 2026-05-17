@@ -170,9 +170,14 @@ struct SPortal
 	float    Pad2      = 0.f;
 
 	Vector3f Edge2     = { 0.f, 1.f, 0.f }; // half-extent along up (world-space)
-	uint32   Flags     = 0u;                // reserved
+	uint32   Flags     = 0u;                // bit0: 0 = rect, 1 = ellipse (inscribed in the rect)
 };
 static_assert(sizeof(SPortal) == 64u, "SPortal layout must match HLSL");
+
+namespace portal_flags
+{
+	static constexpr uint32 Ellipse = 1u << 0u;
+}
 
 
 class FRT_CORE_API CPortalList

@@ -15,6 +15,13 @@ namespace frt::graphics
 // helpers today, and explicit fields make portal placement obvious in code.
 struct FRT_CORE_API Comp_Portal
 {
+	enum class EShape : uint8
+	{
+		Rect    = 0u,
+		Ellipse = 1u, // inscribed in the Edge1/Edge2 rect; viz mesh still a quad
+	};
+
+	EShape   Shape    = EShape::Rect;
 	Vector3f Normal   = { 0.0f, 0.0f, 1.0f };
 	Vector3f Edge1    = { 1.0f, 0.0f, 0.0f }; // half-extent along right
 	Vector3f Edge2    = { 0.0f, 1.0f, 0.0f }; // half-extent along up
