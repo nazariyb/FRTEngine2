@@ -423,12 +423,10 @@ void GameInstance::Tick (float DeltaSeconds)
 	ImGui_ImplDX12_NewFrame();
 	ImGui_ImplWin32_NewFrame();
 	ImGui::NewFrame();
-
-	ImGui::ShowDemoWindow();
 #endif
 	CalculateFrameStats();
 #if !defined(FRT_HEADLESS)
-	DisplayUserSettings();
+	DrawUI();
 
 	Renderer->Tick();
 	Camera->Tick(DeltaSeconds);
@@ -466,202 +464,21 @@ uint64 GameInstance::GetFrameCount () const
 	return FrameCount;
 }
 
-void GameInstance::CalculateFrameStats () const
+void GameInstance::CalculateFrameStats ()
 {
-	static int frameCount = 0;
-	static float timeElapsed = 0.f;
+	++StatFrameAccum;
 
-	++frameCount;
-
-	static float fps = 0.f, msPerFrame = 0.f;
-
-	if (Timer->GetTotalSeconds() - timeElapsed >= 1.f)
+	if (Timer->GetTotalSeconds() - StatTimeElapsed >= 1.f)
 	{
-		fps = static_cast<float>(frameCount);
-		msPerFrame = 1000.f / fps;
+		StatFps = static_cast<float>(StatFrameAccum);
+		StatMsPerFrame = 1000.f / StatFps;
 
-		frameCount = 0;
-		timeElapsed += 1.f;
+		StatFrameAccum = 0;
+		StatTimeElapsed += 1.f;
 	}
 
-#if !defined(FRT_HEADLESS)
-	ImGui::Begin("Stats", nullptr);
-	ImGui::Text("FPS: %.2f", fps);
-	ImGui::Text("MS/frame: %.2f", msPerFrame);
-
-	ImGui::Separator();
-	ImGui::Text("GPU passes:");
-	const auto& gpuResults = Renderer->GetGpuProfiler().GetLastResults();
-	double gpuTotalMs = 0.0;
-	for (uint32 i = 0; i < gpuResults.Count(); ++i)
-	{
-		const auto& r = gpuResults[i];
-		ImGui::Text("  %-22s %7.3f ms", r.Name ? r.Name : "?", r.DurationMs);
-		gpuTotalMs += r.DurationMs;
-	}
-	if (!gpuResults.IsEmpty())
-	{
-		ImGui::Text("  %-22s %7.3f ms", "(sum)", gpuTotalMs);
-	}
-	ImGui::End();
-
-	// Live RT knobs — used by sweep studies (samples × bounces × RR) without shader recompile.
-	{
-		auto* mutableThis = const_cast<GameInstance*>(this);
-		SRtSettings& rt = mutableThis->GetRtSettings();
-		ImGui::Begin("Raytracing", nullptr);
-		int samples = static_cast<int>(rt.SampleCount);
-		int bounces = static_cast<int>(rt.MaxBounces);
-		int rr = static_cast<int>(rt.RussianRouletteDepth);
-		if (ImGui::SliderInt("Samples / pixel", &samples, 1, 64))   rt.SampleCount = static_cast<uint32>(samples);
-		if (ImGui::SliderInt("Max bounces",     &bounces, 0, 16))   rt.MaxBounces  = static_cast<uint32>(bounces);
-		if (ImGui::SliderInt("RR start depth",  &rr,      0, 16))   rt.RussianRouletteDepth = static_cast<uint32>(rr);
-		ImGui::Checkbox("Portal pre-filter", &rt.bPortalPreFilter);
-		ImGui::Checkbox("Show portal meshes", &rt.bShowPortalMeshes);
-		ImGui::End();
-	}
-
-	// Sky / sun controls. TimeOfDay drives SkySettings via ComputeSkyFromTimeOfDay
-	// when the toggle is on; otherwise the individual fields are tweakable directly.
-	{
-		auto* mutableThis = const_cast<GameInstance*>(this);
-		graphics::SSkyConstants& sky = mutableThis->GetSkySettings();
-		float& tod = mutableThis->GetTimeOfDay();
-		bool& useTod = mutableThis->UseTimeOfDay();
-
-		ImGui::Begin("Sky / Sun");
-		ImGui::Checkbox("Drive from Time of Day", &useTod);
-		if (useTod)
-		{
-			ImGui::SliderFloat("Time of Day", &tod, 0.0f, 1.0f, "%.3f");
-			graphics::ComputeSkyFromTimeOfDay(tod, sky);
-		}
-		else
-		{
-			ImGui::DragFloat3("Sun direction", &sky.SunDirection.x, 0.01f, -1.0f, 1.0f);
-			ImGui::ColorEdit3("Sun color", &sky.SunColor.R);
-			ImGui::SliderFloat("Sun intensity", &sky.SunIntensity, 0.0f, 50.0f);
-			ImGui::ColorEdit3("Sky zenith", &sky.SkyZenithColor.R);
-			ImGui::ColorEdit3("Sky horizon", &sky.SkyHorizonColor.R);
-			ImGui::ColorEdit3("Ground", &sky.GroundColor.R);
-			ImGui::SliderFloat("Sky intensity", &sky.SkyIntensity, 0.0f, 5.0f);
-			ImGui::SliderFloat("Horizon softness", &sky.HorizonSoftness, 0.0f, 1.0f);
-		}
-		ImGui::End();
-	}
-
-	// Editor — camera transform + entity transform editor. Always-on camera, entity selected
-	// via combo box. Modifying any transform marks scene topology dirty so AS rebuilds and
-	// accumulation resets.
-	{
-		auto* mutableThis = const_cast<GameInstance*>(this);
-		ImGui::Begin("Editor");
-
-		// ----- Camera -----
-		if (mutableThis->Camera)
-		{
-			ImGui::SeparatorText("Camera");
-			Vector3f camPos = mutableThis->Camera->Transform.GetTranslation();
-			Vector3f camRot = mutableThis->Camera->Transform.GetRotation();
-			float camMovementSpeed = mutableThis->Camera->MovementSpeed;
-			float camRotationSpeed = mutableThis->Camera->RotationSpeed;
-			bool camChanged = false;
-			camChanged |= ImGui::DragFloat3("position", &camPos.x, 0.05f);
-			camChanged |= ImGui::DragFloat3("rotation", &camRot.x, 0.01f);
-			ImGui::SliderFloat("move speed", &camMovementSpeed, 0.001f, 50.0f);
-			ImGui::SliderFloat("rot  speed", &camRotationSpeed, 0.001f, 5.0f);
-
-			mutableThis->Camera->MovementSpeed = camMovementSpeed;
-			mutableThis->Camera->RotationSpeed = camRotationSpeed;
-			if (camChanged)
-			{
-				mutableThis->Camera->Transform.SetTranslation(camPos);
-				mutableThis->Camera->Transform.SetRotation(camRot);
-				mutableThis->World.bAccumulationDirty = true;
-			}
-			else if (ImGui::Button("Reset Camera"))
-			{
-				mutableThis->Camera->Transform = mutableThis->CameraInitialTransform;
-				mutableThis->World.bAccumulationDirty = true;
-			}
-		}
-
-		// ----- Entity selection + transform -----
-		ImGui::SeparatorText("Entity");
-		auto& entities = mutableThis->World.GetEntities();
-		const int32 entityCount = static_cast<int32>(entities.Count());
-
-		// Reset selection if list shrank below stored index.
-		if (mutableThis->SelectedEntityIndex >= entityCount)
-		{
-			mutableThis->SelectedEntityIndex = -1;
-		}
-
-		// Combo: each entity by Name (auto-assigned at spawn, editable below).
-		const char* preview = "(none)";
-		if (mutableThis->SelectedEntityIndex >= 0 && mutableThis->SelectedEntityIndex < entityCount)
-		{
-			CEntity* sel = entities[mutableThis->SelectedEntityIndex].GetRawIgnoringLifetime();
-			preview = (sel && !sel->Name.empty()) ? sel->Name.c_str() : "(unnamed)";
-		}
-		if (ImGui::BeginCombo("Selected", preview))
-		{
-			if (ImGui::Selectable("(none)", mutableThis->SelectedEntityIndex == -1))
-			{
-				mutableThis->SelectedEntityIndex = -1;
-			}
-			for (int32 i = 0; i < entityCount; ++i)
-			{
-				CEntity* e = entities[i].GetRawIgnoringLifetime();
-				const char* label = (e && !e->Name.empty()) ? e->Name.c_str() : "(unnamed)";
-				const bool selected = (mutableThis->SelectedEntityIndex == i);
-				ImGui::PushID(i);
-				if (ImGui::Selectable(label, selected))
-				{
-					mutableThis->SelectedEntityIndex = i;
-				}
-				if (selected) ImGui::SetItemDefaultFocus();
-				ImGui::PopID();
-			}
-			ImGui::EndCombo();
-		}
-
-		if (mutableThis->SelectedEntityIndex >= 0 && mutableThis->SelectedEntityIndex < entityCount)
-		{
-			CEntity* ent = entities[mutableThis->SelectedEntityIndex].GetRawIgnoringLifetime();
-			if (ent)
-			{
-				// Editable Name. ImGui::InputText needs a writable char buffer.
-				char nameBuf[64];
-				const size_t nameLen = ent->Name.size() < sizeof(nameBuf) - 1 ? ent->Name.size() : sizeof(nameBuf) - 1;
-				std::memcpy(nameBuf, ent->Name.data(), nameLen);
-				nameBuf[nameLen] = '\0';
-				if (ImGui::InputText("Name", nameBuf, sizeof(nameBuf)))
-				{
-					ent->Name = nameBuf;
-				}
-
-				Vector3f pos = ent->Transform.GetTranslation();
-				Vector3f rot = ent->Transform.GetRotation();
-				Vector3f scl = ent->Transform.GetScale();
-				bool changed = false;
-				if (ImGui::DragFloat3("Position", &pos.x, 0.05f)) changed = true;
-				if (ImGui::DragFloat3("Rotation", &rot.x, 0.01f)) changed = true;
-				if (ImGui::DragFloat3("Scale",    &scl.x, 0.01f, 0.001f, 1000.0f)) changed = true;
-				if (changed)
-				{
-					ent->Transform.SetTranslation(pos);
-					ent->Transform.SetRotation(rot);
-					ent->Transform.SetScale(scl);
-					mutableThis->World.bSceneTopologyDirty = true;
-					mutableThis->World.bAccumulationDirty = true;
-				}
-			}
-		}
-		ImGui::End();
-	}
-#else
-	std::printf("FPS: %.2f; MS/frame: %.2f\n", fps, msPerFrame);
+#if defined(FRT_HEADLESS)
+	std::printf("FPS: %.2f; MS/frame: %.2f\n", StatFps, StatMsPerFrame);
 #endif
 }
 
@@ -698,121 +515,8 @@ void GameInstance::OnRestoreFromMinimize ()
 	}
 }
 
-void GameInstance::DisplayUserSettings ()
-{
-	// TODO: this func is okay for now, but should be revisited later to at least remove reallocations on each frame
-
-	ImGui::Begin("DisplaySettings");
-
-	const auto strToChar = [] (void* UserData, int Idx) -> const char*
-	{
-		return static_cast<std::string*>(UserData)[Idx].c_str();
-	};
-
-	SDisplaySettings& displaySettings = UserSettings.DisplaySettings;
-
-	{
-		const auto monitorNames = DisplayOptions.GetNames();
-		auto labelMonitor = "Monitor";
-		ImGui::Combo(
-			labelMonitor, &displaySettings.MonitorIndex, strToChar, (void*)monitorNames.data(),
-			(int)monitorNames.size());
-	}
-
-	std::vector<uint64> resolutions = DisplayOptions.GetResolutionsEncoded(displaySettings.MonitorIndex);
-	displaySettings.ResolutionIndex = math::ClampIndex(displaySettings.ResolutionIndex, resolutions.size() - 1u);
-
-	{
-		std::vector<std::string> resolutionStrs;
-		resolutionStrs.reserve(resolutions.size());
-		for (const auto& res : resolutions)
-		{
-			uint32 width, height;
-			math::DecodeTwoFromOne(res, width, height);
-			resolutionStrs.emplace_back(std::format("{}:{}", width, height));
-		}
-
-		auto labelResolution = "Resolution";
-		ImGui::BeginDisabled(displaySettings.IsFullscreen());
-		ImGui::Combo(
-			labelResolution, &displaySettings.ResolutionIndex, strToChar, resolutionStrs.data(),
-			(int)resolutionStrs.size());
-		ImGui::EndDisabled();
-	}
-
-	std::vector<uint64> refreshRates = DisplayOptions.GetRefreshRatesEncoded(
-		displaySettings.MonitorIndex, resolutions[displaySettings.ResolutionIndex]);
-	{
-		displaySettings.RefreshRateIndex = math::ClampIndex(displaySettings.RefreshRateIndex, refreshRates.size() - 1u);
-
-		std::vector<std::string> rRStrs;
-		rRStrs.reserve(refreshRates.size());
-		for (const auto& rr : refreshRates)
-		{
-			uint32 numerator, denominator;
-			math::DecodeTwoFromOne(rr, numerator, denominator);
-			rRStrs.emplace_back(std::format("{:.2f}", (float)numerator / (float)denominator));
-		}
-
-		auto labelRR = "RefreshRate";
-		ImGui::BeginDisabled(!displaySettings.IsFullscreen());
-		ImGui::Combo(labelRR, &displaySettings.RefreshRateIndex, strToChar, rRStrs.data(), (int)rRStrs.size());
-		ImGui::EndDisabled();
-	}
-
-	{
-		const char* modeNames[] = { "Minimized", "Fullscreen", "Windowed", "Borderless" };
-		auto labelFullscreen = "Fullscreen";
-		ImGui::SliderInt(
-			labelFullscreen,
-			(int*)&displaySettings.FullscreenMode,
-			1, (int32)EFullscreenMode::Borderless,
-			modeNames[(int32)displaySettings.FullscreenMode],
-			ImGuiSliderFlags_AlwaysClamp);
-	}
-
-	{
-		const auto renderModeNames = enum_::GetValueNames<ERenderMode>();
-		auto labelRenderMode = "RenderMode";
-		ImGui::SliderInt(
-			labelRenderMode,
-			(int*)&displaySettings.RenderMode,
-			0, (int32)ERenderMode::Count - 1,
-			renderModeNames[(int32)displaySettings.RenderMode].data(),
-			ImGuiSliderFlags_AlwaysClamp);
-	}
-
-	{
-		auto labelVSync = "Enable VSync";
-		ImGui::Checkbox(labelVSync, &displaySettings.bVSync);
-	}
-
-	if (ImGui::Button("Apply"))
-	{
-		if (displaySettings.IsFullscreen())
-		{
-			const uint64 fullscreenResolution = DisplayOptions.GetFullscreenResolutionEncoded(
-				displaySettings.MonitorIndex);
-			const auto resIt = std::ranges::find(resolutions, fullscreenResolution);
-			const int32 maxResolutionIndex = static_cast<int32>(resolutions.size() - 1u);
-			int32 resIndex = static_cast<int32>(std::distance(resolutions.begin(), resIt));
-			resIndex = math::ClampIndex(resIndex, maxResolutionIndex);
-			displaySettings.ResolutionIndex = resIndex;
-		}
-
-		GetRenderer()->SetRenderMode(displaySettings.RenderMode);
-		GetRenderer()->bVSyncEnabled = displaySettings.bVSync;
-
-		uint32 numerator = 0;
-		uint32 denominator = 0;
-		math::DecodeTwoFromOne(refreshRates[displaySettings.RefreshRateIndex], numerator, denominator);
-		GetRenderer()->DisplayRefreshRate = { numerator, denominator };
-
-		Window->SetDisplaySettings(displaySettings, DisplayOptions);
-	}
-
-	ImGui::End();
-}
+// UI panel bodies (DrawUI, DrawStatsPanel, DrawRaytracingPanel, DrawSkyPanel,
+// DrawEditorPanel, DrawDisplaySettingsPanel) live in GameInstanceUI.cpp.
 #endif
 
 void GameInstance::UpdateEntities (float DeltaSeconds)

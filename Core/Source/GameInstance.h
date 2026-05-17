@@ -77,7 +77,8 @@ public:
 	const CWorldScene& GetWorldScene () const { return World; }
 
 protected:
-	void CalculateFrameStats () const;
+	// Pure stats computation — updates StatFps / StatMsPerFrame, no ImGui.
+	void CalculateFrameStats ();
 
 #ifndef FRT_HEADLESS
 	virtual void OnWindowResize ();
@@ -86,7 +87,14 @@ protected:
 	virtual void OnMinimize ();
 	virtual void OnRestoreFromMinimize ();
 
-	virtual void DisplayUserSettings ();
+	// UI entry point, called from Tick. Master dispatches to per-panel functions.
+	// All panel bodies live in GameInstanceUI.cpp (long-term they move out of GameInstance).
+	virtual void DrawUI ();
+	void DrawStatsPanel ();
+	void DrawRaytracingPanel ();
+	void DrawSkyPanel ();
+	void DrawEditorPanel ();
+	void DrawDisplaySettingsPanel ();
 #endif
 
 protected:
@@ -125,9 +133,10 @@ protected:
 		uint32 SampleCount = 32u;
 		uint32 MaxBounces = 4u;
 		uint32 RussianRouletteDepth = 2u;
-		bool   bPortalPreFilter = true;
-		bool   bShowPortalMeshes = false; // portal viz quads occlude rays — off by default
+		bool bPortalPreFilter = true;
+		bool bShowPortalMeshes = false; // portal viz quads occlude rays — off by default
 	};
+
 public:
 	SRtSettings& GetRtSettings () { return RtSettings; }
 	const SRtSettings& GetRtSettings () const { return RtSettings; }
@@ -139,18 +148,25 @@ public:
 	float GetTimeOfDay () const { return TimeOfDay; }
 	bool& UseTimeOfDay () { return bUseTimeOfDay; }
 	bool UseTimeOfDay () const { return bUseTimeOfDay; }
+
 protected:
 	SRtSettings RtSettings;
 
 	graphics::SSkyConstants SkySettings;
-	float TimeOfDay = 0.5f;     // [0,1]; 0.5 = noon
-	bool  bUseTimeOfDay = true; // when true, ImGui slider drives SkySettings via ComputeSkyFromTimeOfDay
+	float TimeOfDay = 0.5f;    // [0,1]; 0.5 = noon
+	bool bUseTimeOfDay = true; // when true, ImGui slider drives SkySettings via ComputeSkyFromTimeOfDay
 
 	// Editor selection — index into CWorldScene::GetEntities(). -1 = nothing selected.
 	// Naive but stable as long as entities aren't reordered mid-frame.
 	int32 SelectedEntityIndex = -1;
 
 	uint64 FrameCount;
+
+	// Frame-stats state (was static locals in CalculateFrameStats).
+	float StatFps = 0.f;
+	float StatMsPerFrame = 0.f;
+	int StatFrameAccum = 0;
+	float StatTimeElapsed = 0.f;
 
 	bool bCameraMovementEnabled = false;
 	math::STransform CameraInitialTransform;
