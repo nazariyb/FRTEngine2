@@ -105,7 +105,7 @@ namespace math
 		}
 #endif
 
-		return highestBitIdx;
+		return static_cast<uint8>(highestBitIdx);
 	}
 
 	template <concepts::Unsigned T>
@@ -131,32 +131,32 @@ namespace math
 
 
 		template <EType TParadigm>
-		static bool IsValid (int64 InValue, int64 MaxValue);
+		static bool IsValid (int64 InValue, int64 Count);
 
 		template <EType TFrom, concepts::Indexable TIndexable>
-		static uint64 IsValid (int64 InValue, const TIndexable& Container)
+		static bool IsValid (int64 InValue, const TIndexable& Container)
 		{
-			return IsValid<TFrom>(InValue, Container.GetMaxIndex());
+			return IsValid<TFrom>(InValue, Container.Count());
 		}
 
 		template <EType TFrom>
-		static uint64 ConvertToDefault (int64 InValue, uint64 MaxValue)
+		static uint64 ConvertToDefault (int64 InValue, uint64 Count)
 		{
-			if (!IsValid<TFrom>(InValue, MaxValue))
+			if (!IsValid<TFrom>(InValue, Count))
 			{
-				return MaxValue;
+				return Count;
 			}
-			return (InValue % (int64)MaxValue + (int64)MaxValue) % MaxValue;
+			return (InValue % static_cast<int64>(Count) + static_cast<int64>(Count)) % Count;
 		}
 
 		template <EType TFrom>
-		static uint64 ConvertToDefaultPow2 (int64 InValue, uint64 MaxValue)
+		static uint64 ConvertToDefaultPow2 (int64 InValue, uint64 Count)
 		{
-			if (!IsValid<TFrom>(InValue, MaxValue))
+			if (!IsValid<TFrom>(InValue, Count))
 			{
-				return MaxValue;
+				return Count;
 			}
-			return InValue & (MaxValue - 1);
+			return InValue & (Count - 1);
 		}
 
 		template <EType TFrom, concepts::Indexable TIndexable>
@@ -168,21 +168,21 @@ namespace math
 
 
 	template <>
-	inline bool SIndexStrategy::IsValid<SIndexStrategy::IS_Default> (int64 InValue, int64 MaxValue)
+	inline bool SIndexStrategy::IsValid<SIndexStrategy::IS_Default> (int64 InValue, int64 Count)
 	{
-		return InValue >= 0 && InValue <= MaxValue;
+		return InValue >= 0 && InValue < Count;
 	}
 
 	template <>
-	constexpr bool SIndexStrategy::IsValid<SIndexStrategy::IS_Circular> (int64 InValue, int64 MaxValue)
+	constexpr bool SIndexStrategy::IsValid<SIndexStrategy::IS_Circular> (int64 InValue, int64 Count)
 	{
-		return true;
+		return Count > 0;
 	}
 
 	template <>
-	inline bool SIndexStrategy::IsValid<SIndexStrategy::IS_CircularClamped> (int64 InValue, int64 MaxValue)
+	inline bool SIndexStrategy::IsValid<SIndexStrategy::IS_CircularClamped> (int64 InValue, int64 Count)
 	{
-		return InValue >= -MaxValue && InValue <= MaxValue;
+		return InValue >= -Count && InValue < Count;
 	}
 }
 

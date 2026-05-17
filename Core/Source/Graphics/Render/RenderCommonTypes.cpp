@@ -1,6 +1,44 @@
 ﻿#include "RenderCommonTypes.h"
 
+#ifdef _WINDOWS
+#include <Windows.h>
+#endif
+
 #include "Math/Transform.h"
+
+namespace
+{
+std::string WideToUtf8 (const std::wstring& Value)
+{
+	if (Value.empty())
+	{
+		return {};
+	}
+
+#ifdef _WINDOWS
+	const int byteCount = WideCharToMultiByte(
+		CP_UTF8, 0, Value.data(), static_cast<int>(Value.size()), nullptr, 0, nullptr, nullptr);
+	if (byteCount <= 0)
+	{
+		return {};
+	}
+
+	std::string utf8(static_cast<std::size_t>(byteCount), '\0');
+	WideCharToMultiByte(
+		CP_UTF8, 0, Value.data(), static_cast<int>(Value.size()),
+		utf8.data(), byteCount, nullptr, nullptr);
+	return utf8;
+#else
+	std::string narrow;
+	narrow.reserve(Value.size());
+	for (const wchar_t ch : Value)
+	{
+		narrow.push_back(static_cast<char>(ch));
+	}
+	return narrow;
+#endif
+}
+}
 
 std::vector<std::string> frt::graphics::SDisplayOptions::GetNames () const
 {
@@ -9,7 +47,7 @@ std::vector<std::string> frt::graphics::SDisplayOptions::GetNames () const
 
 	for (const auto& wStr : OutputsNames)
 	{
-		names.emplace_back(wStr.begin(), wStr.end());
+		names.emplace_back(WideToUtf8(wStr));
 	}
 
 	return names;

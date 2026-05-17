@@ -1,5 +1,6 @@
 ﻿#pragma once
 
+#include <limits>
 #include <vector>
 
 #include "Math/MathUtility.h"
@@ -59,7 +60,7 @@ public:
 
 	void ShrinkToFit ();
 
-	void ReAlloc (uint32 InCapacity);
+	void ReAlloc (uint64 InCapacity);
 	void Free ();
 	// ~Allocators
 
@@ -160,6 +161,8 @@ public:
 	static constexpr uint32 MinAllocation = 2u;
 
 private:
+	static uint32 GetGrowCapacity (uint32 CurrentCapacity);
+
 	TElementType* Data;
 	uint32 Size;
 	uint32 Capacity;
@@ -238,6 +241,12 @@ TArray<ElementType, TAllocator>& TArray<ElementType, TAllocator>::operator= (TAr
 	return *this;
 }
 
+template <typename TElementType, typename TAllocator>
+uint32 TArray<TElementType, TAllocator>::GetGrowCapacity (uint32 CurrentCapacity)
+{
+	return static_cast<uint32>(CurrentCapacity * GrowthFactor);
+}
+
 template <typename ElementType, typename TAllocator>
 TArray<ElementType, TAllocator>::~TArray ()
 {
@@ -278,8 +287,7 @@ TArray<TElementType, TAllocator>& TArray<TElementType, TAllocator>::operator= (
 {
 	Clear();
 
-	Capacity = InList.size();
-	ReAlloc(Capacity);
+	ReAlloc(InList.size());
 
 	for (const auto& elem : InList)
 	{
@@ -295,8 +303,7 @@ TArray<TElementType, TAllocator>& TArray<TElementType, TAllocator>::operator= (
 {
 	Clear();
 
-	Capacity = InVector.size();
-	ReAlloc(Capacity);
+	ReAlloc(InVector.size());
 
 	for (const auto& elem : InVector)
 	{
@@ -349,7 +356,7 @@ uint32 TArray<ElementType, TAllocator>::SetSizeUninitialized (uint32 InSize)
 	const bool bExceedsCapacity = InSize > Capacity;
 	if (bExceedsCapacity && bExtendIfNeeded)
 	{
-		ReAlloc(math::Max(InSize, (uint32)(Capacity * GrowthFactor) + 1u));
+		ReAlloc(math::Max(InSize, GetGrowCapacity(Capacity) + 1u));
 	}
 
 	const uint32 NumToAdd = (!bExceedsCapacity || bExtendIfNeeded) ? InSize - Size : Capacity - Size;
@@ -363,9 +370,10 @@ void TArray<ElementType, TAllocator>::ShrinkToFit ()
 }
 
 template <typename ElementType, typename TAllocator>
-void TArray<ElementType, TAllocator>::ReAlloc (uint32 InCapacity)
+void TArray<ElementType, TAllocator>::ReAlloc (uint64 InCapacity)
 {
 	frt_assert(InCapacity >= Size);
+	frt_assert(InCapacity <= (std::numeric_limits<uint32>::max)());
 
 	// As a quick first implementation, we rely on allocator/pool to realloc.
 	// It does the job, and, in fact, it may avoid reallocation and just merge our block with the next one if it's available.
@@ -373,7 +381,7 @@ void TArray<ElementType, TAllocator>::ReAlloc (uint32 InCapacity)
 	// * We can't shrink
 	// * Move-constructors aren't called which may be or not be a problem depending on the type
 
-	Capacity = math::Max(InCapacity, MinAllocation);
+	Capacity = static_cast<uint32>(math::Max(InCapacity, static_cast<uint64>(MinAllocation)));
 	Data = (ElementType*)TAllocator::GetPrimaryInstance()->ReAllocate(Data, sizeof(ElementType) * Capacity);
 }
 
@@ -394,7 +402,7 @@ ElementType& TArray<ElementType, TAllocator>::Add ()
 {
 	if (Size == Capacity)
 	{
-		ReAlloc(Capacity * GrowthFactor);
+		ReAlloc(GetGrowCapacity(Capacity));
 	}
 
 	auto* newElem = new(Data + Size) ElementType;
@@ -407,7 +415,7 @@ ElementType& TArray<ElementType, TAllocator>::Add (const ElementType& InElement)
 {
 	if (Size == Capacity)
 	{
-		ReAlloc(Capacity * GrowthFactor);
+		ReAlloc(GetGrowCapacity(Capacity));
 	}
 
 	auto* newElem = new(Data + Size) ElementType(InElement);
@@ -420,7 +428,7 @@ ElementType& TArray<ElementType, TAllocator>::Add (ElementType&& InElement)
 {
 	if (Size == Capacity)
 	{
-		ReAlloc(Capacity * GrowthFactor);
+		ReAlloc(GetGrowCapacity(Capacity));
 	}
 
 	auto* newElem = new(Data + Size) ElementType(std::move(InElement));
@@ -439,7 +447,7 @@ ElementType& TArray<ElementType, TAllocator>::AddUnique (const ElementType& InEl
 
 	if (Size == Capacity)
 	{
-		ReAlloc(Capacity * GrowthFactor);
+		ReAlloc(GetGrowCapacity(Capacity));
 	}
 
 	auto* newElem = new(Data + Size) ElementType(InElement);
@@ -450,7 +458,7 @@ ElementType& TArray<ElementType, TAllocator>::AddUnique (const ElementType& InEl
 template <typename ElementType, typename TAllocator>
 ElementType& TArray<ElementType, TAllocator>::AddUnique (ElementType&& InElement)
 {
-	const int32 Index = Find(InElement);
+	const uint32 Index = Find(InElement);
 	if (Index < Size)
 	{
 		return *(Data + Index);
@@ -458,7 +466,7 @@ ElementType& TArray<ElementType, TAllocator>::AddUnique (ElementType&& InElement
 
 	if (Size == Capacity)
 	{
-		ReAlloc(Capacity * GrowthFactor);
+		ReAlloc(GetGrowCapacity(Capacity));
 	}
 
 	auto* newElem = new(Data + Size) ElementType(std::move(InElement));
@@ -467,63 +475,68 @@ ElementType& TArray<ElementType, TAllocator>::AddUnique (ElementType&& InElement
 }
 
 template <typename ElementType, typename TAllocator>
-template <ArrayIndexStrategy::EType TIndexType = ArrayIndexStrategy::IS_Default>
+template <ArrayIndexStrategy::EType TIndexType>
 void TArray<ElementType, TAllocator>::Insert (const ElementType& InElement, IndexType InIndex)
 {
-	frt_assert(IsIndexValid<TIndexType>(InIndex));
+	const bool bAppend = InIndex == Size;
+	frt_assert(bAppend || IsIndexValid<TIndexType>(InIndex));
+	const uint32 Index = bAppend ? Size : static_cast<uint32>(ArrayIndexStrategy::ConvertToDefault<TIndexType>(InIndex, *this));
 
 	if (Size == Capacity)
 	{
-		ReAlloc(Capacity * GrowthFactor);
+		ReAlloc(GetGrowCapacity(Capacity));
 	}
 
-	for (uint32 i = Size; i > InIndex; --i)
+	for (uint32 i = Size; i > Index; --i)
 	{
 		new(Data + i) ElementType(std::move(*(Data + i - 1)));
 	}
 	++Size;
 
-	new(Data + InIndex) ElementType(InElement);
+	new(Data + Index) ElementType(InElement);
 }
 
 template <typename ElementType, typename TAllocator>
-template <ArrayIndexStrategy::EType TIndexType = ArrayIndexStrategy::IS_Default>
+template <ArrayIndexStrategy::EType TIndexType>
 void TArray<ElementType, TAllocator>::Insert (ElementType&& InElement, IndexType InIndex)
 {
-	frt_assert(IsIndexValid<TIndexType>(InIndex));
+	const bool bAppend = InIndex == Size;
+	frt_assert(bAppend || IsIndexValid<TIndexType>(InIndex));
+	const uint32 Index = bAppend ? Size : static_cast<uint32>(ArrayIndexStrategy::ConvertToDefault<TIndexType>(InIndex, *this));
 
 	if (Size == Capacity)
 	{
-		ReAlloc(Capacity * GrowthFactor);
+		ReAlloc(GetGrowCapacity(Capacity));
 	}
 
-	for (uint32 i = Size; i > InIndex; --i)
+	for (uint32 i = Size; i > Index; --i)
 	{
 		new(Data + i) ElementType(std::move(*(Data + i - 1)));
 	}
 	++Size;
 
-	new(Data + InIndex) ElementType(std::move(InElement));
+	new(Data + Index) ElementType(std::move(InElement));
 }
 
 template <typename ElementType, typename TAllocator>
 template <typename... Args>
 void TArray<ElementType, TAllocator>::InsertEmplace (IndexType InIndex, Args&&... InArgs)
 {
-	frt_assert(InIndex < Size);
+	frt_assert(InIndex >= 0 && InIndex <= Size);
+	const uint32 Index = static_cast<uint32>(InIndex);
 
 	if (Size == Capacity)
 	{
-		ReAlloc(Capacity * GrowthFactor);
+		ReAlloc(GetGrowCapacity(Capacity));
 	}
 
-	for (uint32 i = Size; i > InIndex; --i)
+	for (uint32 i = Size; i > Index; --i)
 	{
 		new(Data + i) ElementType(std::move(*(Data + i - 1)));
 	}
 	++Size;
 
-	new(Data + InIndex) ElementType(std::forward<Args>(InArgs)...);
+	new(Data + Index) ElementType(std::forward<Args>(InArgs)...);
 }
 
 template <typename ElementType, typename TAllocator>
@@ -532,7 +545,7 @@ ElementType& TArray<ElementType, TAllocator>::Emplace (Args... InArgs)
 {
 	if (Size == Capacity)
 	{
-		ReAlloc(Capacity * GrowthFactor);
+		ReAlloc(GetGrowCapacity(Capacity));
 	}
 
 	auto* newElem = new(Data + Size) ElementType(std::forward<Args>(InArgs)...);
@@ -544,7 +557,7 @@ template <typename ElementType, typename TAllocator>
 void TArray<ElementType, TAllocator>::Append (const TArray& InArray)
 {
 	const uint32 NewSize = Size + InArray.Size;
-	const uint32 NewCapacity = math::Max(NewSize, (uint32)(Capacity * GrowthFactor) + 1u);
+	const uint32 NewCapacity = math::Max(NewSize, GetGrowCapacity(Capacity) + 1u);
 	ReAlloc(NewCapacity);
 
 	for (uint32 i = Size; i < NewSize; ++i)
@@ -559,7 +572,7 @@ template <typename ElementType, typename TAllocator>
 void TArray<ElementType, TAllocator>::Append (TArray&& InArray)
 {
 	const uint32 NewSize = Size + InArray.Size;
-	const uint32 NewCapacity = math::Max(NewSize, (uint32)(Capacity * GrowthFactor) + 1u);
+	const uint32 NewCapacity = math::Max(NewSize, GetGrowCapacity(Capacity) + 1u);
 	ReAlloc(NewCapacity);
 
 	for (uint32 i = Size; i < NewSize; ++i)
@@ -626,20 +639,21 @@ template <typename ElementType, typename TAllocator>
 template <bool bKeepOrder, ArrayIndexStrategy::EType TIndexType>
 void TArray<ElementType, TAllocator>::RemoveAt (IndexType InIndex)
 {
-	frt_assert(IsIndexValid(InIndex));
+	frt_assert(IsIndexValid<TIndexType>(InIndex));
+	const uint32 Index = static_cast<uint32>(ArrayIndexStrategy::ConvertToDefault<TIndexType>(InIndex, *this));
 
-	(Data + InIndex)->~ElementType();
+	(Data + Index)->~ElementType();
 
 	if constexpr (bKeepOrder)
 	{
-		for (uint32 i = InIndex + 1u; i < Size; ++i)
+		for (uint32 i = Index + 1u; i < Size; ++i)
 		{
 			new(Data + i - 1u) ElementType(std::move(*(Data + i)));
 		}
 	}
 	else
 	{
-		new(Data + InIndex) ElementType(std::move(*(Data + Size - 1u)));
+		new(Data + Index) ElementType(std::move(*(Data + Size - 1u)));
 	}
 
 	--Size;
@@ -722,21 +736,21 @@ typename TArray<TElementType, TAllocator>::IndexType TArray<TElementType, TAlloc
 }
 
 template <typename ElementType, typename TAllocator>
-template <ArrayIndexStrategy::EType TIndexType = ArrayIndexStrategy::IS_Default>
+template <ArrayIndexStrategy::EType TIndexType>
 bool TArray<ElementType, TAllocator>::IsIndexValid (IndexType InIndex) const
 {
 	return ArrayIndexStrategy::IsValid<TIndexType>(InIndex, *this);
 }
 
 template <typename ElementType, typename TAllocator>
-template <ArrayIndexStrategy::EType TIndexType = ArrayIndexStrategy::IS_Default>
+template <ArrayIndexStrategy::EType TIndexType>
 ElementType& TArray<ElementType, TAllocator>::Get (IndexType InIndex)
 {
 	return const_cast<ElementType&>(static_cast<const TArray&>(*this).Get<TIndexType>(InIndex));
 }
 
 template <typename ElementType, typename TAllocator>
-template <ArrayIndexStrategy::EType TIndexType = ArrayIndexStrategy::IS_Default>
+template <ArrayIndexStrategy::EType TIndexType>
 const ElementType& TArray<ElementType, TAllocator>::Get (IndexType InIndex) const
 {
 	frt_assert(IsIndexValid<TIndexType>(InIndex));

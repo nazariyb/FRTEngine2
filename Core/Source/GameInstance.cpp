@@ -794,8 +794,9 @@ void GameInstance::DisplayUserSettings ()
 			const uint64 fullscreenResolution = DisplayOptions.GetFullscreenResolutionEncoded(
 				displaySettings.MonitorIndex);
 			const auto resIt = std::ranges::find(resolutions, fullscreenResolution);
-			auto resIndex = std::distance(resolutions.begin(), resIt);
-			resIndex = math::ClampIndex(resIndex, resolutions.size() - 1u);
+			const int32 maxResolutionIndex = static_cast<int32>(resolutions.size() - 1u);
+			int32 resIndex = static_cast<int32>(std::distance(resolutions.begin(), resIt));
+			resIndex = math::ClampIndex(resIndex, maxResolutionIndex);
 			displaySettings.ResolutionIndex = resIndex;
 		}
 

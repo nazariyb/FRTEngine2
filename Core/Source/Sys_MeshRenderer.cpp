@@ -2,6 +2,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <limits>
 #include <unordered_map>
 
 #include "Exception.h"
@@ -802,7 +803,8 @@ void Sys_MeshRenderer::CreateAccelerationStructures ()
 			auto it = materialIndices.find(material);
 			if (it == materialIndices.end())
 			{
-				const uint32 materialIndex = materialIndices.size();
+				frt_assert(materialIndices.size() <= (std::numeric_limits<uint32>::max)());
+				const uint32 materialIndex = static_cast<uint32>(materialIndices.size());
 				materialIndices.emplace(material, materialIndex);
 				material->RuntimeIndex = materialIndex;
 			}

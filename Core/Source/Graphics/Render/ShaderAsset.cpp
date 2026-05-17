@@ -388,7 +388,7 @@ static TArray<uint8> ReadFileBytes (const std::filesystem::path& Path)
 	(void)fseek(file, 0, SEEK_SET);
 
 	frt_assert(fileSize >= 0);
-	fileSize <= std::numeric_limits<int64>::max();
+	frt_assert(fileSize <= (std::numeric_limits<uint32>::max)());
 
 	TArray<uint8> bytes;
 	if (fileSize > 0)

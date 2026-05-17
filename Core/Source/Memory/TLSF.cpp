@@ -404,7 +404,7 @@ void TLSF::MappingSearch (uint64 Size, uint32& OutFli, uint32& OutSli)
 {
 	if (Size >= SmallBlockSize)
 	{
-		const uint64 round = (1 << (math::GetIndexOfFirstOneBit(Size) - SecondLevelIndexCountLog2)) - 1ll;
+		const uint64 round = (1ull << (math::GetIndexOfFirstOneBit(Size) - SecondLevelIndexCountLog2)) - 1ull;
 		Size += round;
 	}
 	MappingInsert(Size, OutFli, OutSli);
@@ -545,7 +545,7 @@ void* TLSF::Memalign (uint64 Align, uint64 Size)
 	{
 		void* ptr = SBlockHeader::Cast(block);
 		void* aligned = AlignPtr(ptr, Align);
-		uint64 gap = (uint8*)aligned - ptr;
+		uint64 gap = static_cast<uint8*>(aligned) - static_cast<uint8*>(ptr);
 
 		if (gap && gap < gapMin)
 		{
@@ -554,7 +554,7 @@ void* TLSF::Memalign (uint64 Align, uint64 Size)
 			const void* nextAligned = (uint8*)aligned + offset;
 
 			aligned = AlignPtr(nextAligned, Align);
-			gap = (uint8*)aligned - ptr;
+			gap = static_cast<uint8*>(aligned) - static_cast<uint8*>(ptr);
 		}
 
 		if (gap)

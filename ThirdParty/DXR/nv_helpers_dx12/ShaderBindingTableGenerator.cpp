@@ -37,6 +37,7 @@ dispatch rays description.
 #include "ShaderBindingTableGenerator.h"
 
 #include <stdexcept>
+#include <string>
 
 // Helper to compute aligned buffer sizes
 #ifndef ROUND_UP
@@ -45,6 +46,19 @@ dispatch rays description.
 
 namespace nv_helpers_dx12
 {
+namespace
+{
+std::string NarrowShaderName(const std::wstring& value)
+{
+  std::string narrow;
+  narrow.reserve(value.size());
+  for (const wchar_t ch : value)
+  {
+    narrow.push_back(static_cast<char>(ch));
+  }
+  return narrow;
+}
+}
 
 //--------------------------------------------------------------------------------------------------
 //
@@ -214,7 +228,7 @@ uint32_t ShaderBindingTableGenerator::CopyShaderData(
     {
       std::wstring errMsg(std::wstring(L"Unknown shader identifier used in the SBT: ") +
                           shader.m_entryPoint);
-      throw std::logic_error(std::string(errMsg.begin(), errMsg.end()));
+      throw std::logic_error(NarrowShaderName(errMsg));
     }
     // Copy the shader identifier
     memcpy(pData, id, m_progIdSize);

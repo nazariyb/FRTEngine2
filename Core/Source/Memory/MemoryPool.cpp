@@ -33,7 +33,7 @@ CMemoryPool::CMemoryPool ()
 {}
 
 CMemoryPool::CMemoryPool (uint64 InSize)
-	: MemorySize(InSize)
+	: MemorySize(TLSF::GetSize() + TLSF::GetPoolOverhead() + TLSF::AlignUp(InSize, TLSF::AlignSize))
 {
 #if _WINDOWS
 	// Memory = new uint8[MemorySize];
@@ -42,6 +42,7 @@ CMemoryPool::CMemoryPool (uint64 InSize)
 		Memory = mmap(nullptr, MemorySize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 		// munmap(pool, PoolSize);
 #endif
+	frt_assert(Memory);
 	Tlsf = new(Memory) TLSF(MemorySize);
 }
 

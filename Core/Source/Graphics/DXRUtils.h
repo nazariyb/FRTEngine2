@@ -397,7 +397,7 @@ public:
 
 	uint32 ComputeSBTSize ();
 
-	ID3D12Resource* Generate (ID3D12Resource* SbtBuffer, ID3D12StateObjectProperties* RaytracingPipeline);
+	void Generate (ID3D12Resource* SbtBuffer, ID3D12StateObjectProperties* RaytracingPipeline);
 
 	void Reset ();
 

@@ -241,11 +241,12 @@ void CRenderer::Resize (bool bNewFullscreenState)
 
 	// start logic
 
-	BOOL bWasInFullscreen = false;
+	BOOL bWasInFullscreenRaw = FALSE;
 	if (SwapChain)
 	{
-		THROW_IF_FAILED(SwapChain->GetFullscreenState(&bWasInFullscreen, nullptr));
+		THROW_IF_FAILED(SwapChain->GetFullscreenState(&bWasInFullscreenRaw, nullptr));
 	}
+	const bool bWasInFullscreen = bWasInFullscreenRaw != FALSE;
 
 	const bool bExitingFullscreen = bWasInFullscreen && !bNewFullscreenState;
 	const bool bEnteringFullscreen = !bWasInFullscreen && bNewFullscreenState;
@@ -259,6 +260,8 @@ void CRenderer::Resize (bool bNewFullscreenState)
 
 	if (drawRect.x > 0.f && drawRect.y > 0.f)
 	{
+		const UINT drawWidth = static_cast<UINT>(drawRect.x);
+		const UINT drawHeight = static_cast<UINT>(drawRect.y);
 		if (!SwapChain || (bWasInFullscreen != bNewFullscreenState))
 		{
 			CreateSwapChain(bNewFullscreenState);
@@ -269,7 +272,7 @@ void CRenderer::Resize (bool bNewFullscreenState)
 			THROW_IF_FAILED(
 				SwapChain->ResizeBuffers(
 					render::constants::SwapChainBufferCount,
-					drawRect.x, drawRect.y,
+					drawWidth, drawHeight,
 					DXGI_FORMAT_R8G8B8A8_UNORM,
 					DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH));
 		}
@@ -278,8 +281,8 @@ void CRenderer::Resize (bool bNewFullscreenState)
 		{
 			DXGI_MODE_DESC modeDesc =
 			{
-				.Width = static_cast<unsigned int>(drawRect.x),
-				.Height = static_cast<unsigned int>(drawRect.y),
+				.Width = drawWidth,
+				.Height = drawHeight,
 				.RefreshRate = DisplayRefreshRate,
 				.Format = DXGI_FORMAT_R8G8B8A8_UNORM,
 				.ScanlineOrdering = DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED,
@@ -304,8 +307,8 @@ void CRenderer::Resize (bool bNewFullscreenState)
 			{
 				.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D,
 				.Alignment = 0,
-				.Width = static_cast<UINT>(drawRect.x),
-				.Height = static_cast<UINT>(drawRect.y),
+				.Width = drawWidth,
+				.Height = drawHeight,
 				.DepthOrArraySize = 1,
 				.MipLevels = 1,
 				.Format = DXGI_FORMAT_D32_FLOAT,
@@ -355,8 +358,8 @@ void CRenderer::Resize (bool bNewFullscreenState)
 
 	ScissorRect.left = 0;
 	ScissorRect.top = 0;
-	ScissorRect.right = drawRect.x;
-	ScissorRect.bottom = drawRect.y;
+	ScissorRect.right = static_cast<LONG>(drawRect.x);
+	ScissorRect.bottom = static_cast<LONG>(drawRect.y);
 }
 
 IDXGIAdapter1* CRenderer::GetAdapter ()

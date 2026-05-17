@@ -148,6 +148,9 @@ project "Core"
 	filter "platforms:Win64"
 		defines { "WIN64", "_WINDOWS" }
 
+	filter "action:vs*"
+		disablewarnings { "4251", "4275" }
+
 	filter "configurations:Debug-*"
 		defines { "DEBUG", "FRT_CORE_EXPORTS" }
 		symbols "On"

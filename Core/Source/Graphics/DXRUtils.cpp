@@ -2,7 +2,9 @@
 
 #include <cstring>
 #include <dxcapi.h>
+#include <limits>
 #include <stdexcept>
+#include <string>
 #include <unordered_set>
 
 #include "Exception.h"
@@ -10,6 +12,27 @@
 
 namespace frt::graphics::raytracing
 {
+namespace
+{
+uint32 CheckedUint32 (uint64 Value)
+{
+	frt_assert(Value <= (std::numeric_limits<uint32>::max)());
+	return static_cast<uint32>(Value);
+}
+
+std::string NarrowShaderName (const std::wstring& Value)
+{
+	std::string narrow;
+	narrow.reserve(Value.size());
+	for (const wchar_t ch : Value)
+	{
+		frt_assert(ch >= 0 && ch <= 0x7f);
+		narrow.push_back(static_cast<char>(ch));
+	}
+	return narrow;
+}
+}
+
 void CBottomLevelASGenerator::AddVertexBuffer (
 	ID3D12Resource* VertexBuffer,
 	uint64 VertexBufferOffset,
@@ -650,16 +673,16 @@ uint32 CShaderBindingTableGenerator::ComputeSBTSize ()
 	MissEntrySize = GetEntrySize(Miss);
 	HitGroupEntrySize = GetEntrySize(HitGroup);
 
-	const uint32 sbtSize = memory::AlignAddress(
-		RayGenEntrySize * RayGen.Count() +
-		MissEntrySize * Miss.Count() +
-		HitGroupEntrySize * HitGroup.Count(),
+	const uint64 sbtSize = memory::AlignAddress(
+		static_cast<uint64>(RayGenEntrySize) * RayGen.Count() +
+		static_cast<uint64>(MissEntrySize) * Miss.Count() +
+		static_cast<uint64>(HitGroupEntrySize) * HitGroup.Count(),
 		256u);
 
-	return sbtSize;
+	return CheckedUint32(sbtSize);
 }
 
-ID3D12Resource* CShaderBindingTableGenerator::Generate (
+void CShaderBindingTableGenerator::Generate (
 	ID3D12Resource* SbtBuffer,
 	ID3D12StateObjectProperties* RaytracingPipeline)
 {
@@ -745,7 +768,7 @@ uint32 CShaderBindingTableGenerator::CopyShaderData (
 			std::wstring errMsg(
 				std::wstring(L"Unknown shader identifier used in the SBT: ") +
 				shader.EntryPoint);
-			throw std::logic_error(std::string(errMsg.begin(), errMsg.end()));
+			throw std::logic_error(NarrowShaderName(errMsg));
 		}
 		// Copy the shader identifier
 		memcpy(pData, id, ProgIdSize);
@@ -771,7 +794,7 @@ uint32 CShaderBindingTableGenerator::GetEntrySize (const TArray<SSBTEntry>& Entr
 	uint32_t entrySize = ProgIdSize + 8 * maxArgs;
 
 	// The entries of the shader binding table must be 16-bytes-aligned
-	entrySize = memory::AlignAddress(entrySize, D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT);
+	entrySize = CheckedUint32(memory::AlignAddress(entrySize, D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT));
 
 	return entrySize;
 }

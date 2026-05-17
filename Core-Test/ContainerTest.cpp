@@ -313,7 +313,7 @@ TEST(TArrayTest, ReAllocAndFreeTest)
     arr.Add(1);
     arr.Add(2);
     arr.ReAlloc(10);
-    EXPECT_GE(arr.GetCapacity(), 10);
+    EXPECT_GE(arr.GetCapacity(), 10u);
     arr.Free();
     EXPECT_EQ(arr.GetSize(), 0);
 }
@@ -324,7 +324,7 @@ TEST(TArrayTest, SetCapacityAndShrinkToFitTest)
 
     TArray<int> arr;
     arr.SetCapacity(10);
-    EXPECT_GE(arr.GetCapacity(), 10);
+    EXPECT_GE(arr.GetCapacity(), 10u);
     for (int i = 0; i < 10; i++)
     {
         arr.Add(i);
