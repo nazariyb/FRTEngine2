@@ -561,10 +561,17 @@ void ClosestHit(inout HitInfo payload, Attributes attrib)
 			lightDist = 1e6f; // any escape distance counts as sky-reaching
 			valid = true;
 
+			CounterAdd(RC_SKY_SHADOW_ATTEMPTED);
+
 			// Portal pre-filter — short-circuit before paying for TraceShadowRay (TLAS dispatch).
 			// When no portals authored or toggle off, PassesPortalFilter is a no-op (returns true).
-			if (!PassesPortalFilter(hitPos, L))
+			if (PassesPortalFilter(hitPos, L))
 			{
+				CounterAdd(RC_SKY_SHADOW_PORTAL_OK);
+			}
+			else
+			{
+				CounterAdd(RC_SKY_SHADOW_PORTAL_REJ);
 				valid = false;
 			}
 		}
@@ -577,7 +584,14 @@ void ClosestHit(inout HitInfo payload, Attributes attrib)
 			// Directional and Sky have no finite endpoint — use full ray distance.
 			// Point/AreaQuad subtract a small epsilon so shadow ray stops just before the light.
 			const float  shadowTMax   = (light.Type == 1u || light.Type == 3u) ? lightDist : (lightDist - 0.001f);
+			if (light.Type == 1u) CounterAdd(RC_SUN_SHADOW);
 			const float  visibility   = TraceShadowRay(shadowOrigin, L, shadowTMax);
+
+			if (light.Type == 3u)
+			{
+				if (visibility > 0.0f) CounterAdd(RC_SKY_SHADOW_REACHED);
+				else                   CounterAdd(RC_SKY_SHADOW_BLOCKED);
+			}
 
 			if (visibility > 0.0f)
 			{
@@ -672,6 +686,7 @@ void ClosestHit(inout HitInfo payload, Attributes attrib)
 		bouncePayload.rngState = payload.rngState;
 
 		// RAY_FLAG_NONE: do not cull back-faces — bounce rays must hit all geometry
+		CounterAdd(RC_BOUNCE);
 		TraceRay(SceneBVH, RAY_FLAG_NONE, 0xFF, 0, 2, 0, bounceRay, bouncePayload);
 		payload.rngState = bouncePayload.rngState;
 

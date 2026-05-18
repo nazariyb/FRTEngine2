@@ -12,6 +12,7 @@
 #include "Input/InputSystem.h"
 #include "Memory/MemoryPool.h"
 #include "Memory/Ref.h"
+#include "Profiler/MetricsAggregator.h"
 #include "User/UserSettings.h"
 
 
@@ -135,6 +136,7 @@ protected:
 		uint32 RussianRouletteDepth = 2u;
 		bool bPortalPreFilter = true;
 		bool bShowPortalMeshes = false; // portal viz quads occlude rays — off by default
+		bool bCollectCounters = false;  // ray-counter atomics — off by default (perf), on in sessions
 	};
 
 public:
@@ -167,6 +169,9 @@ protected:
 	float StatMsPerFrame = 0.f;
 	int StatFrameAccum = 0;
 	float StatTimeElapsed = 0.f;
+
+	// Per-frame metrics + rolling N-frame average. Sampled in Tick, read by panels.
+	profiler::CMetricsAggregator Metrics;
 
 	bool bCameraMovementEnabled = false;
 	math::STransform CameraInitialTransform;

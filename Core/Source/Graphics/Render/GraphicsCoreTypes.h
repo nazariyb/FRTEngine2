@@ -62,6 +62,11 @@ struct SPassConstants
 	uint32 LightCount = 0u;               // entries in gLights buffer; 0 disables NEE
 	uint32 PortalCount = 0u;              // entries in gPortals buffer; 0 disables portal pre-filter
 	uint32 bPortalPreFilter = 1u;         // toggle: 0 = baseline (no filter), 1 = pre-filter on
+
+	uint32 bCountersEnabled = 0u;         // 0 = skip all ray-counter atomics (zero overhead)
+	uint32 PadPCB1 = 0u;
+	uint32 PadPCB2 = 0u;
+	uint32 PadPCB3 = 0u;                  // 16-byte alignment
 };
 
 

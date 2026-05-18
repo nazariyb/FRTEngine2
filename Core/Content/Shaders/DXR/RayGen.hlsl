@@ -41,6 +41,8 @@ void RayGen ()
 		ray.TMin = 0;
 		ray.TMax = 100000;
 
+		CounterAdd(RC_PRIMARY);
+
 		// Trace the ray
 		TraceRay(
 			// Parameter name: AccelerationStructure

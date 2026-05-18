@@ -38,6 +38,9 @@ static constexpr uint32 RaytracingRegister_IndexBufferSrv = RaytracingRegister_V
 static constexpr uint32 RaytracingRegister_LightsSrv  = RaytracingRegister_IndexBufferSrv + 1;
 static constexpr uint32 RaytracingRegister_PortalsSrv = RaytracingRegister_LightsSrv + 1;
 
+// u0 is the RT output (bound via heap range in raygen). Ray counters use root UAV u1.
+static constexpr uint32 RaytracingRegister_CountersUav = 1;
+
 static constexpr uint32 MaterialTextureSlot_BaseColor = 0;
 static constexpr uint32 MaterialTextureIndexInvalid = 0xFFFFFFFFu;
 

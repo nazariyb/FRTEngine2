@@ -16,6 +16,7 @@
 
 #include "Window.h"
 #include "Graphics/Camera.h"
+#include "Profiler/SceneDescriptor.h"
 #include "Graphics/Render/GraphicsCoreTypes.h"
 #include "Graphics/Render/Renderer.h"
 
@@ -51,6 +52,47 @@ void GameInstance::DrawStatsPanel ()
 	{
 		ImGui::Text("  %-22s %7.3f ms", "(sum)", gpuTotalMs);
 	}
+
+	ImGui::Separator();
+	const profiler::SFrameMetrics& cur = Metrics.Latest();
+	const profiler::SFrameMetrics& avg = Metrics.Average();
+	ImGui::Text("Ray counters    %-14s %-14s", "instant", "avg(N)");
+	auto row = [] (const char* label, uint64 a, uint64 b)
+	{
+		ImGui::Text("  %-13s %-14llu %-14llu", label, a, b);
+	};
+	row("Primary",   cur.Counters.Values[profiler::RC_Primary],            avg.Counters.Values[profiler::RC_Primary]);
+	row("Bounce",    cur.Counters.Values[profiler::RC_Bounce],             avg.Counters.Values[profiler::RC_Bounce]);
+	row("SunShadow", cur.Counters.Values[profiler::RC_SunShadow],          avg.Counters.Values[profiler::RC_SunShadow]);
+	row("SkyAtt",    cur.Counters.Values[profiler::RC_SkyShadowAttempted], avg.Counters.Values[profiler::RC_SkyShadowAttempted]);
+	row("PortalOK",  cur.Counters.Values[profiler::RC_SkyShadowPortalPass],avg.Counters.Values[profiler::RC_SkyShadowPortalPass]);
+	row("PortalRej", cur.Counters.Values[profiler::RC_SkyShadowPortalRej], avg.Counters.Values[profiler::RC_SkyShadowPortalRej]);
+	row("ReachedSky",cur.Counters.Values[profiler::RC_SkyShadowReachedSky],avg.Counters.Values[profiler::RC_SkyShadowReachedSky]);
+	row("Blocked",   cur.Counters.Values[profiler::RC_SkyShadowBlocked],   avg.Counters.Values[profiler::RC_SkyShadowBlocked]);
+
+	ImGui::Separator();
+	ImGui::Text("%% filtered      %6.1f%%        %6.1f%%", cur.PctFiltered * 100.0,   avg.PctFiltered * 100.0);
+	ImGui::Text("sky efficiency  %6.1f%%        %6.1f%%", cur.SkyEfficiency * 100.0, avg.SkyEfficiency * 100.0);
+	ImGui::Text("rays / pixel    %6.2f         %6.2f",    cur.RaysPerPixel,          avg.RaysPerPixel);
+	ImGui::Text("RT_Dispatch ms  %6.3f         %6.3f",    cur.RtDispatchMs,          avg.RtDispatchMs);
+	ImGui::Text("avg window      %u / %u frames", Metrics.SampleCount(), Metrics.GetWindow());
+
+	ImGui::Separator();
+	{
+		const auto [pw, ph] = Window->GetWindowSize();
+		const profiler::SSceneDescriptor desc = profiler::CaptureSceneDescriptor(
+			World, *Camera, SkySettings, static_cast<uint32>(pw), static_cast<uint32>(ph));
+		ImGui::Text("Portals: %u   total screen: %.2f%%",
+			desc.PortalCount, desc.PortalCoverageTotal * 100.0);
+		for (uint32 i = 0; i < desc.Portals.Count(); ++i)
+		{
+			const profiler::SPortalInfo& p = desc.Portals[i];
+			ImGui::Text("  #%u %-7s area %.2f m^2  screen %.3f%%",
+				i, p.bEllipse ? "ellipse" : "rect", p.WorldArea, p.ScreenCoverage * 100.0);
+			ImGui::Text("     dbg w0=%.3f ndc0=(%.2f,%.2f) clipN=%d ndcN=%d",
+				p.DbgClipW0, p.DbgNdc0X, p.DbgNdc0Y, p.DbgClipCount, p.DbgNdcCount);
+		}
+	}
 	ImGui::End();
 }
 
@@ -67,6 +109,12 @@ void GameInstance::DrawRaytracingPanel ()
 	if (ImGui::SliderInt("RR start depth", &rr, 0, 16)) rt.RussianRouletteDepth = static_cast<uint32>(rr);
 	ImGui::Checkbox("Portal pre-filter", &rt.bPortalPreFilter);
 	ImGui::Checkbox("Show portal meshes", &rt.bShowPortalMeshes);
+	ImGui::Checkbox("Collect ray counters", &rt.bCollectCounters);
+
+	if (ImGui::Button("Reset accumulation"))
+	{
+		World.bAccumulationDirty = true;
+	}
 	ImGui::End();
 }
 

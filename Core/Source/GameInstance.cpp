@@ -426,6 +426,16 @@ void GameInstance::Tick (float DeltaSeconds)
 #endif
 	CalculateFrameStats();
 #if !defined(FRT_HEADLESS)
+	{
+		const auto [mw, mh] = Window->GetWindowSize();
+		Metrics.Sample(
+			Renderer->GetRayCounters().GetLastTotals(),
+			Renderer->GetGpuProfiler().GetLastResults(),
+			static_cast<double>(DeltaSeconds) * 1000.0,
+			static_cast<uint32>(mw),
+			static_cast<uint32>(mh));
+	}
+
 	DrawUI();
 
 	Renderer->Tick();

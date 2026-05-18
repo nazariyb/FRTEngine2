@@ -17,6 +17,7 @@
 #include "Containers/Array.h"
 #include "Graphics/DXRUtils.h"
 #include "Profiler/GpuProfiler.h"
+#include "Profiler/RayCounters.h"
 
 
 namespace frt
@@ -177,12 +178,16 @@ public:
 	profiler::CGpuProfiler& GetGpuProfiler () { return GpuProfiler; }
 	const profiler::CGpuProfiler& GetGpuProfiler () const { return GpuProfiler; }
 
+	profiler::CRayCounters& GetRayCounters () { return RayCounters; }
+	const profiler::CRayCounters& GetRayCounters () const { return RayCounters; }
+
 	DX12_DescriptorHeap ShaderDescriptorHeap;
 	bool bVSyncEnabled = true;
 	DXGI_RATIONAL DisplayRefreshRate = { 0u, 1u };
 
 private:
 	profiler::CGpuProfiler GpuProfiler;
+	profiler::CRayCounters RayCounters;
 
 	struct SShaderPermutation
 	{

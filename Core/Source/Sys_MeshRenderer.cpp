@@ -343,6 +343,7 @@ void Sys_MeshRenderer::CopyConstantData ()
 	passConstants.RaytracingMaxBounces = rtSettings.MaxBounces;
 	passConstants.RaytracingRussianRouletteDepth = rtSettings.RussianRouletteDepth;
 	passConstants.bPortalPreFilter = rtSettings.bPortalPreFilter ? 1u : 0u;
+	passConstants.bCountersEnabled = rtSettings.bCollectCounters ? 1u : 0u;
 
 	// ── Accumulation frame counter ────────────────────────────────────────
 	// Reset on any scene change: camera movement, object transforms, or topology.

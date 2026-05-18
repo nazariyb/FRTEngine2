@@ -11,6 +11,7 @@
 #include "EnginePaths.h"
 #include "Exception.h"
 #include "Profiler/Profiler.h"
+#include "Profiler/RayCounters.h"
 #include "Timer.h"
 #include "Window.h"
 #include "Graphics/Model.h"
@@ -164,6 +165,8 @@ CRenderer::CRenderer (CWindow* Window)
 		CommandQueue.Get(),
 		64u,
 		render::constants::FrameResourcesBufferCount);
+
+	RayCounters.Init(Device.Get(), render::constants::FrameResourcesBufferCount);
 
 	// Command allocator and list
 
@@ -528,6 +531,8 @@ void CRenderer::StartFrame ()
 {
 	ResetCurrentFrameCommandList();
 	GpuProfiler.BeginFrame();
+	RayCounters.BeginFrame();
+	RayCounters.ClearForFrame(CommandList.Get());
 	ProcessPendingResourceUploads();
 	ReloadModifiedAssetsIfNeeded();
 	const bool bRenderRaster = ShouldRenderRaster();
@@ -585,6 +590,7 @@ void CRenderer::Draw ()
 
 	// Resolve all timestamp queries recorded this frame before closing the list.
 	GpuProfiler.ResolveFrame(CommandList.Get());
+	RayCounters.ResolveFrame(CommandList.Get());
 
 	THROW_IF_FAILED(CommandList->Close());
 	bCommandListRecording = false;
@@ -1520,6 +1526,8 @@ ComPtr<ID3D12RootSignature> CRenderer::CreateRayGenSignature ()
 			1
 		}
 	});
+	// Ray-counter buffer (root UAV u1). Same VA across the frame.
+	rsc.AddRootParameter(D3D12_ROOT_PARAMETER_TYPE_UAV, render::constants::RaytracingRegister_CountersUav, 0);
 
 	return rsc.Generate(Device.Get(), true);
 }
@@ -1577,6 +1585,8 @@ ComPtr<ID3D12RootSignature> CRenderer::CreateHitSignature ()
 		D3D12_ROOT_PARAMETER_TYPE_SRV,
 		render::constants::RaytracingRegister_PortalsSrv,
 		0);
+	// Ray-counter buffer (root UAV u1). Same VA across all hit records in a frame.
+	rsc.AddRootParameter(D3D12_ROOT_PARAMETER_TYPE_UAV, render::constants::RaytracingRegister_CountersUav, 0);
 
 	const D3D12_STATIC_SAMPLER_DESC linearWrapSampler = BuildLinearWrapStaticSamplerDesc();
 	rsc.AddStaticSampler(linearWrapSampler);
@@ -1874,7 +1884,8 @@ void CRenderer::CreateShaderBindingTable ()
 			currentFrameResources.SkyCB.GpuResource->GetGPUVirtualAddress());
 	}
 
-	SbtHelper.AddRayGenerationProgram(L"RayGen", { passCbAddress, heapPointer });
+	void* countersAddr = reinterpret_cast<void*>(RayCounters.GetGpuVa());
+	SbtHelper.AddRayGenerationProgram(L"RayGen", { passCbAddress, heapPointer, countersAddr });
 
 	// Miss reads sky CB; shadow miss has no payload work but record stride must match
 	// the Miss program's record size, so we pass the same parameter list (it's harmless).
@@ -1913,7 +1924,8 @@ void CRenderer::CreateShaderBindingTable ()
 					reinterpret_cast<void*>(hitGroupEntry.IndexBufferGpuVa),
 					lightsAddr,
 					skyCbAddress,
-					portalsAddr
+					portalsAddr,
+					countersAddr
 				});
 			SbtHelper.AddHitGroup(
 				L"ShadowHitGroup",
@@ -1926,7 +1938,8 @@ void CRenderer::CreateShaderBindingTable ()
 					reinterpret_cast<void*>(hitGroupEntry.IndexBufferGpuVa),
 					lightsAddr,
 					skyCbAddress,
-					portalsAddr
+					portalsAddr,
+					countersAddr
 				});
 		}
 	}

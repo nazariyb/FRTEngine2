@@ -44,6 +44,11 @@ cbuffer PassConstantBuffer : register(b2)
 	uint gLightCount;                      // entries in gLights buffer; 0 disables NEE
 	uint gPortalCount;                     // entries in gPortals buffer; 0 disables portal pre-filter
 	uint gPortalPreFilter;                 // toggle: 0 = baseline (no filter), 1 = pre-filter on
+
+	uint gCountersEnabled;                 // 0 = skip all ray-counter atomics
+	uint gPadPCB1;
+	uint gPadPCB2;
+	uint gPadPCB3;
 }
 
 // NEE light entry. Mirror of frt::graphics::SLight (96 bytes, 16-aligned).
@@ -83,6 +88,37 @@ struct SPortal
 
 // Bound as root SRV in Hit signature at t20. Empty / dummy when gPortalCount == 0.
 StructuredBuffer<SPortal> gPortals : register(t20);
+
+
+// Ray counters — root UAV u1 in raygen + hit sigs. Slot layout mirrors ERayCounter
+// in RayCounters.h. Increment via gCounters.InterlockedAdd(slot*4, 1, ignored).
+RWByteAddressBuffer gCounters : register(u1);
+
+#define RC_PRIMARY               0u
+#define RC_BOUNCE                1u
+#define RC_SUN_SHADOW            2u
+#define RC_SKY_SHADOW_ATTEMPTED  3u
+#define RC_SKY_SHADOW_PORTAL_OK  4u
+#define RC_SKY_SHADOW_PORTAL_REJ 5u
+#define RC_SKY_SHADOW_REACHED    6u
+#define RC_SKY_SHADOW_BLOCKED    7u
+
+// Gated + wave-coalesced. When enabled, the whole wave contributes a single atomic
+// (sum of active lanes at this call) instead of one atomic per lane — keeps overhead
+// low enough to leave counters on during profiling sessions.
+void CounterAdd(uint slot)
+{
+	if (gCountersEnabled == 0u)
+	{
+		return;
+	}
+	const uint waveCount = WaveActiveCountBits(true);
+	if (WaveIsFirstLane())
+	{
+		uint ignored;
+		gCounters.InterlockedAdd(slot * 4u, waveCount, ignored);
+	}
+}
 
 // Sky / sun parameters. Bound to Miss (and any RT shader that needs sky radiance).
 // Mirror of frt::graphics::SSkyConstants — keep field order in sync.
