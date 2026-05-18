@@ -35,6 +35,40 @@ void GameInstance::DrawUI ()
 void GameInstance::DrawStatsPanel ()
 {
 	ImGui::Begin("Stats", nullptr);
+
+	if (ProfilingSession.IsActive())
+	{
+		ImGui::TextColored(ImVec4(1, 0.8f, 0.2f, 1),
+			"PROFILING %u/%u  [%s]",
+			ProfilingSession.ProfileIndex() + 1u, ProfilingSession.ProfileCount(),
+			ProfilingSession.PhaseName());
+		if (ProfilingSession.WarmupRemaining() > 0u)
+		{
+			ImGui::Text("  warmup  %u frames left", ProfilingSession.WarmupRemaining());
+		}
+		else
+		{
+			ImGui::Text("  measure %u / %u frames", Metrics.SampleCount(), Metrics.GetWindow());
+		}
+		if (ImGui::Button("Stop profiling"))
+		{
+			ProfilingSession.Stop();
+			RtSettings = SavedRtSettings;
+			World.bAccumulationDirty = true;
+		}
+		ImGui::Separator();
+	}
+	else
+	{
+		if (ImGui::Button("Start profiling session"))
+		{
+			SavedRtSettings = RtSettings;
+			ProfilingSession.Start();
+			World.bAccumulationDirty = true;
+		}
+		ImGui::Separator();
+	}
+
 	ImGui::Text("FPS: %.2f", StatFps);
 	ImGui::Text("MS/frame: %.2f", StatMsPerFrame);
 
@@ -101,6 +135,12 @@ void GameInstance::DrawRaytracingPanel ()
 	// Live RT knobs — used by sweep studies (samples × bounces × RR) without shader recompile.
 	SRtSettings& rt = RtSettings;
 	ImGui::Begin("Raytracing", nullptr);
+
+	// Parameters are driven by the session while it runs — lock the UI so manual edits
+	// don't fight the sweep.
+	const bool bLocked = ProfilingSession.IsActive();
+	ImGui::BeginDisabled(bLocked);
+
 	int samples = static_cast<int>(rt.SampleCount);
 	int bounces = static_cast<int>(rt.MaxBounces);
 	int rr = static_cast<int>(rt.RussianRouletteDepth);
@@ -115,6 +155,8 @@ void GameInstance::DrawRaytracingPanel ()
 	{
 		World.bAccumulationDirty = true;
 	}
+
+	ImGui::EndDisabled();
 	ImGui::End();
 }
 

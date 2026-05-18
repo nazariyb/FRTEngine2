@@ -436,6 +436,30 @@ void GameInstance::Tick (float DeltaSeconds)
 			static_cast<uint32>(mh));
 	}
 
+	if (ProfilingSession.IsActive())
+	{
+		ProfilingSession.Update(Metrics);
+
+		if (ProfilingSession.HasCurrent())
+		{
+			const profiler::SProfileConfig& c = ProfilingSession.Current();
+			RtSettings.SampleCount          = c.SampleCount;
+			RtSettings.MaxBounces           = c.MaxBounces;
+			RtSettings.RussianRouletteDepth = c.RussianRouletteDepth;
+			RtSettings.bPortalPreFilter     = c.bPortalPreFilter;
+			RtSettings.bCollectCounters     = true; // counters mandatory during a session
+		}
+		if (ProfilingSession.ConsumeProfileChanged())
+		{
+			World.bAccumulationDirty = true;
+		}
+		if (ProfilingSession.ConsumeFinished())
+		{
+			RtSettings = SavedRtSettings;
+			World.bAccumulationDirty = true;
+		}
+	}
+
 	DrawUI();
 
 	Renderer->Tick();

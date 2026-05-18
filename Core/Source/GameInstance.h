@@ -13,6 +13,7 @@
 #include "Memory/MemoryPool.h"
 #include "Memory/Ref.h"
 #include "Profiler/MetricsAggregator.h"
+#include "Profiler/ProfilingSession.h"
 #include "User/UserSettings.h"
 
 
@@ -172,6 +173,11 @@ protected:
 
 	// Per-frame metrics + rolling N-frame average. Sampled in Tick, read by panels.
 	profiler::CMetricsAggregator Metrics;
+
+	// Batch profiling sweep. While active it overrides RtSettings per profile; the
+	// pre-session settings are restored on completion.
+	profiler::CProfilingSession ProfilingSession;
+	SRtSettings SavedRtSettings;
 
 	bool bCameraMovementEnabled = false;
 	math::STransform CameraInitialTransform;
