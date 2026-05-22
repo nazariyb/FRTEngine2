@@ -241,6 +241,10 @@ bool PassesPortalFilter(float3 origin, float3 dir)
 
 	for (uint i = 0u; i < gPortalCount; ++i)
 	{
+		// One portal-quad test (thesis E[K]). A rejected ray examines all M portals -> +M;
+		// a ray accepted at portal k short-circuits after k examinations -> +k.
+		CounterAdd(RC_PORTAL_TESTS);
+
 		SPortal p = gPortals[i];
 
 		// Plane test: t = dot(C - O, N) / dot(D, N)
