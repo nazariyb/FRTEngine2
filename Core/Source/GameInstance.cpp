@@ -313,7 +313,7 @@ void GameInstance::Load ()
 
 	// outer 10×6 wall
 	ceilingScript.Ops.Add({ EShape::Rect, EMerge::AddBase,
-		Vector2f(0.f, 0.f), Vector2f(5.f, 3.f) });
+		Vector2f(0.f, 0.f), Vector2f(5.1f, 3.f) });
 	// window: 1×1.6 at (-1.5, 0)
 	ceilingScript.Ops.Add({ EShape::Rect, EMerge::Cut,
 		Vector2f(-1.5f, 0.f), Vector2f(0.5f, 0.8f) });
@@ -409,6 +409,11 @@ void GameInstance::Input (float DeltaSeconds)
 		UserSettings.DisplaySettings.RenderMode = NewRenderMode;
 		Renderer->SetRenderMode(NewRenderMode);
 	}
+
+	if (InputSystem.WasKeyPressed(input::KeyCode::I))
+	{
+		bShowImGui = !bShowImGui;
+	}
 #endif
 
 	if (InputSystem.WasKeyPressed(input::KeyCode::Space) && !InputSystem.IsMouseButtonDown(input::EMouseButton::Right))
@@ -473,7 +478,10 @@ void GameInstance::Tick (float DeltaSeconds)
 		}
 	}
 
-	DrawUI();
+	if (bShowImGui)
+	{
+		DrawUI();
+	}
 
 	Renderer->Tick();
 	Camera->Tick(DeltaSeconds);

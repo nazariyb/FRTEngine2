@@ -162,6 +162,7 @@ protected:
 	graphics::SSkyConstants SkySettings;
 	float TimeOfDay = 0.5f;    // [0,1]; 0.5 = noon
 	bool bUseTimeOfDay = true; // when true, ImGui slider drives SkySettings via ComputeSkyFromTimeOfDay
+	bool bShowImGui = true;    // toggled by key I; when false DrawUI is skipped
 
 	// Editor selection — index into CWorldScene::GetEntities(). -1 = nothing selected.
 	// Naive but stable as long as entities aren't reordered mid-frame.
