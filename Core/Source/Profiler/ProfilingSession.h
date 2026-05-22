@@ -22,7 +22,8 @@ struct SProfileConfig
 struct SProfileResult
 {
 	SProfileConfig Config;
-	SFrameMetrics Avg; // averaged over the full Metrics window
+	SFrameMetrics Avg;                 // window average (console log convenience)
+	std::vector<SFrameMetrics> Frames; // every measured frame — full CSV history
 };
 
 
@@ -47,6 +48,9 @@ public:
 	bool ConsumeProfileChanged ();
 	// Set true on the frame the whole session finishes; caller restores saved settings.
 	bool ConsumeFinished ();
+	// Returns the index of the profile just measured (one-shot), or -1. Caller writes that
+	// profile's file before the next configuration starts.
+	int32 ConsumeCompletedProfile ();
 
 	uint32 ProfileIndex () const { return Index; }
 	uint32 ProfileCount () const { return static_cast<uint32>(Queue.size()); }
@@ -70,5 +74,6 @@ private:
 	uint32 WarmupLeft = 0u;
 	bool bProfileChanged = false;
 	bool bFinished = false;
+	int32 CompletedIndex = -1; // profile index just recorded, consumed once
 };
 }

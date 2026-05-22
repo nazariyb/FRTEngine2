@@ -7,15 +7,19 @@
 #ifndef FRT_HEADLESS
 
 #include <cstring>
+#include <filesystem>
 #include <format>
 #include <ranges>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include "imgui.h"
 
+#include "EnginePaths.h"
 #include "Window.h"
 #include "Graphics/Camera.h"
+#include "Profiler/ProfilingExport.h"
 #include "Profiler/SceneDescriptor.h"
 #include "Graphics/Render/GraphicsCoreTypes.h"
 #include "Graphics/Render/Renderer.h"
@@ -50,19 +54,44 @@ void GameInstance::DrawStatsPanel ()
 		{
 			ImGui::Text("  measure %u / %u frames", Metrics.SampleCount(), Metrics.GetWindow());
 		}
+		// Per-config files already flushed as each profile completes — Stop just aborts.
 		if (ImGui::Button("Stop profiling"))
 		{
 			ProfilingSession.Stop();
 			RtSettings = SavedRtSettings;
 			World.bAccumulationDirty = true;
 		}
+		ImGui::SameLine();
+		ImGui::TextDisabled("-> %s", SessionNameBuf);
 		ImGui::Separator();
 	}
 	else
 	{
-		if (ImGui::Button("Start profiling session"))
+		ImGui::SetNextItemWidth(160.0f);
+		ImGui::InputText("##sessionName", SessionNameBuf, sizeof(SessionNameBuf));
+		ImGui::SameLine();
+		const bool bStart = ImGui::Button("Start profiling session");
+
+		const std::filesystem::path dir = paths::GetProfilingDir() / SessionNameBuf;
+		std::error_code ec;
+		const bool bExists = std::filesystem::exists(dir, ec);
+		if (bExists)
+		{
+			ImGui::TextColored(ImVec4(1, 0.5f, 0.2f, 1),
+				"folder '%s' exists - Start will DELETE it", SessionNameBuf);
+		}
+
+		if (bStart && SessionNameBuf[0] != '\0')
 		{
 			SavedRtSettings = RtSettings;
+			const auto [sw, sh] = Window->GetWindowSize();
+			SessionSceneDesc = profiler::CaptureSceneDescriptor(
+				World, *Camera, SkySettings, static_cast<uint32>(sw), static_cast<uint32>(sh));
+
+			SessionDir = dir;
+			std::filesystem::remove_all(SessionDir, ec);
+			std::filesystem::create_directories(SessionDir, ec);
+
 			ProfilingSession.Start();
 			World.bAccumulationDirty = true;
 		}
@@ -103,10 +132,12 @@ void GameInstance::DrawStatsPanel ()
 	row("PortalRej", cur.Counters.Values[profiler::RC_SkyShadowPortalRej], avg.Counters.Values[profiler::RC_SkyShadowPortalRej]);
 	row("ReachedSky",cur.Counters.Values[profiler::RC_SkyShadowReachedSky],avg.Counters.Values[profiler::RC_SkyShadowReachedSky]);
 	row("Blocked",   cur.Counters.Values[profiler::RC_SkyShadowBlocked],   avg.Counters.Values[profiler::RC_SkyShadowBlocked]);
+	row("PortalTests",cur.Counters.Values[profiler::RC_PortalTests],       avg.Counters.Values[profiler::RC_PortalTests]);
 
 	ImGui::Separator();
 	ImGui::Text("%% filtered      %6.1f%%        %6.1f%%", cur.PctFiltered * 100.0,   avg.PctFiltered * 100.0);
 	ImGui::Text("sky efficiency  %6.1f%%        %6.1f%%", cur.SkyEfficiency * 100.0, avg.SkyEfficiency * 100.0);
+	ImGui::Text("mean E[K]       %6.2f         %6.2f",    cur.MeanPortalTests,       avg.MeanPortalTests);
 	ImGui::Text("rays / pixel    %6.2f         %6.2f",    cur.RaysPerPixel,          avg.RaysPerPixel);
 	ImGui::Text("RT_Dispatch ms  %6.3f         %6.3f",    cur.RtDispatchMs,          avg.RtDispatchMs);
 	ImGui::Text("avg window      %u / %u frames", Metrics.SampleCount(), Metrics.GetWindow());

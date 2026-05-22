@@ -16,4 +16,7 @@ FRT_CORE_API std::filesystem::path GetIntermediateDir ();
 
 FRT_CORE_API std::filesystem::path GetDxrShaderSourceDir ();
 FRT_CORE_API std::filesystem::path GetDxrShaderCacheDir ();
+
+// Profiling-session output (CSV + scene .txt). Local/, not tracked.
+FRT_CORE_API std::filesystem::path GetProfilingDir ();
 }

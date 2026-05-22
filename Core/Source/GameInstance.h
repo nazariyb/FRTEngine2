@@ -1,5 +1,8 @@
 #pragma once
 
+#include <filesystem>
+#include <string>
+
 #include "Core.h"
 #include "Singleton.h"
 #include "Window.h"
@@ -14,6 +17,7 @@
 #include "Memory/Ref.h"
 #include "Profiler/MetricsAggregator.h"
 #include "Profiler/ProfilingSession.h"
+#include "Profiler/SceneDescriptor.h"
 #include "User/UserSettings.h"
 
 
@@ -178,6 +182,11 @@ protected:
 	// pre-session settings are restored on completion.
 	profiler::CProfilingSession ProfilingSession;
 	SRtSettings SavedRtSettings;
+	// Static scene snapshot captured at session start (camera fixed for the run).
+	profiler::SSceneDescriptor SessionSceneDesc;
+	// Output folder for the active session: GetProfilingDir()/<SessionNameBuf>.
+	std::filesystem::path SessionDir;
+	char SessionNameBuf[64] = "session";
 
 	bool bCameraMovementEnabled = false;
 	math::STransform CameraInitialTransform;

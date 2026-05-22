@@ -20,6 +20,8 @@
 #include "Graphics/Render/RenderCommonTypes.h"
 #include "Graphics/Render/Renderer.h"
 #include "Memory/Memory.h"
+#include "Profiler/ProfilingExport.h"
+#include "Profiler/SceneDescriptor.h"
 
 NAMESPACE_FRT_START
 FRT_SINGLETON_DEFINE_INSTANCE(GameInstance)
@@ -452,6 +454,17 @@ void GameInstance::Tick (float DeltaSeconds)
 		if (ProfilingSession.ConsumeProfileChanged())
 		{
 			World.bAccumulationDirty = true;
+		}
+		// One file per configuration, written the moment it finishes — before the next starts.
+		const int32 doneIdx = ProfilingSession.ConsumeCompletedProfile();
+		if (doneIdx >= 0 && static_cast<size_t>(doneIdx) < ProfilingSession.History().size())
+		{
+			const profiler::SProfileResult& res =
+				ProfilingSession.History()[static_cast<size_t>(doneIdx)];
+			profiler::WriteConfigTxt(
+				SessionDir, static_cast<uint32>(doneIdx), res.Config, SessionSceneDesc);
+			profiler::WriteConfigFramesCsv(
+				SessionDir, static_cast<uint32>(doneIdx), res);
 		}
 		if (ProfilingSession.ConsumeFinished())
 		{

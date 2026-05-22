@@ -26,6 +26,7 @@ namespace
 		M.SkyEfficiency = SafeRatio(reached, attempted);
 		M.RaysPerPixel = pixels > 0.0 ? static_cast<double>(attempted) / pixels : 0.0;
 		M.TlasDispatches = static_cast<double>(passed);
+		M.MeanPortalTests = SafeRatio(M.Counters.Values[RC_PortalTests], attempted);
 	}
 }
 
@@ -128,6 +129,7 @@ void CMetricsAggregator::Recompute ()
 	avg.PctFiltered = SafeRatio(avg.Counters.Values[RC_SkyShadowPortalRej], attempted);
 	avg.SkyEfficiency = SafeRatio(avg.Counters.Values[RC_SkyShadowReachedSky], attempted);
 	avg.TlasDispatches = static_cast<double>(avg.Counters.Values[RC_SkyShadowPortalPass]);
+	avg.MeanPortalTests = SafeRatio(avg.Counters.Values[RC_PortalTests], attempted);
 	avg.RaysPerPixel = LatestFrame.RaysPerPixel > 0.0 && LatestFrame.Counters.Values[RC_SkyShadowAttempted] > 0u
 							? (static_cast<double>(attempted)
 								* LatestFrame.RaysPerPixel

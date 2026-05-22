@@ -22,8 +22,9 @@ enum ERayCounter : uint32
 	RC_SkyShadowPortalRej  = 5u, // killed by pre-filter (the saving)
 	RC_SkyShadowReachedSky = 6u, // dispatched ray escaped -> sky (useful)
 	RC_SkyShadowBlocked    = 7u, // dispatched ray hit geometry (wasted TLAS)
+	RC_PortalTests         = 8u, // portal-quad tests summed over all sky shadow rays (thesis E[K])
 
-	RC_Count               = 8u
+	RC_Count               = 9u
 };
 
 struct SRayCounters

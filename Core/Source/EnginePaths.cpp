@@ -28,4 +28,9 @@ std::filesystem::path GetDxrShaderCacheDir ()
 {
 	return GetIntermediateDir() / "Shaders" / "DXR";
 }
+
+std::filesystem::path GetProfilingDir ()
+{
+	return std::filesystem::path("..") / "Local" / "Profiling";
+}
 }

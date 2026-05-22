@@ -21,10 +21,11 @@ struct SFrameMetrics
 	double FrameMs = 0.0;      // CPU frame delta
 
 	// Derived (from this frame's counters).
-	double PctFiltered = 0.0;    // SkyShadowPortalRej / SkyShadowAttempted
-	double SkyEfficiency = 0.0;  // SkyShadowReachedSky / SkyShadowAttempted
-	double RaysPerPixel = 0.0;   // SkyShadowAttempted / (W*H)
-	double TlasDispatches = 0.0; // SkyShadowPortalPass (sky NEE TLAS queries)
+	double PctFiltered = 0.0;     // SkyShadowPortalRej / SkyShadowAttempted
+	double SkyEfficiency = 0.0;   // SkyShadowReachedSky / SkyShadowAttempted
+	double RaysPerPixel = 0.0;    // SkyShadowAttempted / (W*H)
+	double TlasDispatches = 0.0;  // SkyShadowPortalPass (sky NEE TLAS queries)
+	double MeanPortalTests = 0.0; // PortalTests / SkyShadowAttempted — thesis E[K]
 };
 
 
@@ -47,6 +48,10 @@ public:
 	const SFrameMetrics& Latest () const { return LatestFrame; }
 	const SFrameMetrics& Average () const { return AveragedFrame; }
 	uint32 SampleCount () const { return Count; } // frames currently in the window
+
+	// Chronological access to the window (valid: i in [0, SampleCount)). Within a profiling
+	// profile the window is Reset() then filled exactly once, so Ring index == frame order.
+	const SFrameMetrics& Frame (uint32 i) const { return Ring[i]; }
 
 	void Reset ();
 

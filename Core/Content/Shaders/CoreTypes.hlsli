@@ -102,6 +102,7 @@ RWByteAddressBuffer gCounters : register(u1);
 #define RC_SKY_SHADOW_PORTAL_REJ 5u
 #define RC_SKY_SHADOW_REACHED    6u
 #define RC_SKY_SHADOW_BLOCKED    7u
+#define RC_PORTAL_TESTS          8u
 
 // Gated + wave-coalesced. When enabled, the whole wave contributes a single atomic
 // (sum of active lanes at this call) instead of one atomic per lane — keeps overhead

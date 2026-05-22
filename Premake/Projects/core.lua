@@ -46,6 +46,7 @@ project "Core"
 		rootpath("**.bat"),
 		rootpath("**.frt*"),
 		rootpath("**.md"),
+		rootpath("**.gitignore"),
 		path.join(thirdPartyDir, "DXR/**.h"), path.join(thirdPartyDir, "DXR/**.cpp"),
 	}
 

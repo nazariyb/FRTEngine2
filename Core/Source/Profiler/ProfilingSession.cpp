@@ -1,6 +1,7 @@
 #include "Profiler/ProfilingSession.h"
 
 #include <cstdio>
+#include <utility>
 
 
 namespace frt::profiler
@@ -8,7 +9,7 @@ namespace frt::profiler
 // ---- Hardcoded sweep axes. Edit here; UI exposure comes later. ----
 namespace
 {
-	constexpr uint32 kSpp[] = { 1u, 4u, 8u, 16u, 20u, 24u, 30u };
+	constexpr uint32 kSpp[] = { 4u, 16u, 24u, 32u };
 	constexpr uint32 kBounces[] = { 2u, 4u, 6u, 8u };
 	constexpr uint32 kRrDepth[] = { 2u, 3u, 4u };
 	constexpr bool kPortal[] = { false, true };
@@ -86,6 +87,14 @@ bool CProfilingSession::ConsumeFinished ()
 	return v;
 }
 
+int32 CProfilingSession::ConsumeCompletedProfile ()
+{
+	const int32 v = CompletedIndex;
+	CompletedIndex = -1;
+	return v;
+}
+
+
 void CProfilingSession::Update (CMetricsAggregator& Metrics)
 {
 	if (State == EState::Idle)
@@ -121,16 +130,24 @@ void CProfilingSession::RecordAndAdvance (CMetricsAggregator& Metrics)
 	SProfileResult r;
 	r.Config = Queue[Index];
 	r.Avg = Metrics.Average();
-	Results.push_back(r);
+	const uint32 frameCount = Metrics.SampleCount();
+	r.Frames.reserve(frameCount);
+	for (uint32 i = 0; i < frameCount; ++i)
+	{
+		r.Frames.push_back(Metrics.Frame(i));
+	}
+	Results.push_back(std::move(r));
+	CompletedIndex = static_cast<int32>(Index); // profile just measured
 
-	const SFrameMetrics& m = r.Avg;
+	const SProfileResult& rec = Results.back();
+	const SFrameMetrics& m = rec.Avg;
 	std::printf(
 		"[profiler] %u/%zu spp=%u b=%u rr=%u portal=%d | "
 		"RTms=%.3f filt=%.1f%% skyEff=%.1f%% raysPP=%.2f "
 		"att=%llu ok=%llu rej=%llu reach=%llu blk=%llu\n",
 		Index + 1u, Queue.size(),
-		r.Config.SampleCount, r.Config.MaxBounces, r.Config.RussianRouletteDepth,
-		r.Config.bPortalPreFilter ? 1 : 0,
+		rec.Config.SampleCount, rec.Config.MaxBounces, rec.Config.RussianRouletteDepth,
+		rec.Config.bPortalPreFilter ? 1 : 0,
 		m.RtDispatchMs, m.PctFiltered * 100.0, m.SkyEfficiency * 100.0, m.RaysPerPixel,
 		static_cast<unsigned long long>(m.Counters.Values[RC_SkyShadowAttempted]),
 		static_cast<unsigned long long>(m.Counters.Values[RC_SkyShadowPortalPass]),
