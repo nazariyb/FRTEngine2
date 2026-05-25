@@ -9,17 +9,20 @@ A small experimental 3D engine built on Direct3D 12 and DirectX Raytracing (DXR)
 | System | Description |
 |---|---|
 | **Renderer** | D3D12 renderer with a raytracing pipeline (DXR). Manages the swap chain, command lists, descriptor heaps, and render resource allocators. |
-| **World / Entity** | Scene graph built around a `CWorld` that owns a flat list of `CEntity` objects. Worlds drive per-frame `Tick` and `Present` calls. |
-| **Acceleration Structures** | Automatic bottom- and top-level AS construction and update for raytracing, driven by the world each frame. |
+| **Raytracing** | Path-traced direct + indirect lighting. Next-event estimation (NEE) over a unified light list (Point, Directional, AreaQuad, Sky) with multiple importance sampling (balance heuristic) against BRDF samples. Emissive surfaces are lit via the bounce path. Russian-roulette termination; runtime-tunable samples-per-pixel and max-bounce depth. |
+| **Portal pre-filter** | Analytic ray-vs-quad test (rectangular and ellipse portals) that rejects sky-NEE shadow rays before any TLAS dispatch. Portals are placed in the scene as a `Comp_Portal` entity component (with `GeometryScript`-generated visualization quads). The pre-filter is toggleable at runtime; per-portal counters and a thesis E[K] metric track its effectiveness. |
+| **World / Entity** | Scene graph built around a `CWorld` that owns a flat list of `CEntity` objects. Worlds drive per-frame `Tick` and `Present` calls. Entities carry names and a transform editor is available in-game. |
+| **Acceleration Structures** | Automatic bottom- and top-level AS construction and update for raytracing, driven by the world each frame. Multi-section models share a single BLAS with per-section hit-group entries. |
 | **Camera** | First-person camera with view/projection matrix management. |
-| **Materials & Shaders** | `CMaterialLibrary` manages materials keyed by name; shaders are compiled at runtime via DXC (bundled). |
-| **Model / Mesh** | Model loading through Assimp. Procedural mesh generation helpers are also provided. |
+| **Materials & Shaders** | `CMaterialLibrary` manages materials keyed by name; HLSL shaders are compiled at runtime via the in-process `IDxcCompiler`. |
+| **Model / Mesh** | Model loading through Assimp, plus a procedural **GeometryScript** path for runtime mesh generation (used for portal visualization and test scenes). |
 | **Input** | Platform-abstracted input system (Win32 backend). Supports raw key and mouse events plus a rebindable `InputActionLibrary`. |
 | **Math** | `Vector2`, `Vector3`, `Transform`, and general math utilities on top of DirectXMath. |
 | **Memory** | TLSF-based general allocator, a pool allocator, and reference-counted smart pointers (`TRefShared` / `TRefWeak`). |
-| **Assets** | Text-based asset I/O (`TextAssetIO`) and a generic `AssetTool` for loading content from disk. |
+| **Assets** | Visitor-archive serialization framework (`Archive.h`, `Serializer.h`) with a YAML backend (`YamlArchive`) — current format for materials (`.frtmat.yml`). A JSON Schema under `Schemas/` provides IDE auto-completion for the material format. The legacy text-based `TextAssetIO` and the generic `AssetTool` remain available. `EnginePaths` centralizes well-known directory lookups (content, profiling output, etc.). |
 | **Events** | Lightweight typed event/delegate system used throughout the engine. |
-| **ImGui** | Dear ImGui is integrated for debug UI in non-headless builds. |
+| **ImGui** | Dear ImGui is integrated for debug UI in non-headless builds. Includes live raytracing sliders, transform editor, stats panel, and frame-stat overlays. Press `I` to toggle the entire UI on/off. |
+| **Profiling** | GPU timestamps via PIX-named scopes (`CGpuProfiler`), wave-coalesced ray counters via a UAV ring (`CRayCounters`), an analytic scene-descriptor snapshot (per-portal world area + screen coverage), and a rolling per-frame metrics aggregator. A profiling-session driver sweeps a cartesian product of render settings (spp × bounces × Russian-roulette depth × portal on/off) and exports one `.txt` (settings + scene snapshot) and one `.csv` (every measured frame) per configuration under `Local/Profiling/<session>/`. A Python analysis package (`Tools/Analysis/` — see its own README) parses the output for plots, summary tables, and cost-model validation. |
 
 ### Build configurations
 
@@ -94,17 +97,22 @@ Camera movement is only active while **Right Mouse Button** is held.
 | **A / D** | Move left / right |
 | **Space / Ctrl** | Move up / down (while RMB held) |
 | **Space** | Toggle pause (while RMB **not** held) |
+| **I** | Toggle the ImGui debug UI |
+| **F2** | Cycle through render modes (debug builds) |
 
 ---
 
 ## Project layout
 
 ```
-Core/          — engine library (DLL)
-Core-Test/     — unit tests (GoogleTest)
-Demo/          — sample application
-ThirdParty/    — vendored libraries (ImGui, Stb, DXR helpers, DXC, vcpkg)
-Premake/       — Premake5 scripts
-Binaries/      — output DLLs / EXEs
-Intermediate/  — compiled object files
+Core/             — engine library (DLL)
+Core-Test/        — unit tests (GoogleTest)
+Demo/             — sample application
+Schemas/          — JSON Schemas for YAML asset formats (IDE auto-completion)
+Tools/Analysis/   — Python package + Jupyter notebook for profiling-session analysis
+ThirdParty/       — vendored libraries (ImGui, Stb, DXR helpers, DXC, yaml-cpp, vcpkg)
+Premake/          — Premake5 scripts
+Binaries/         — output DLLs / EXEs
+Intermediate/     — compiled object files
+Local/Profiling/  — profiling-session output (gitignored; one folder per session, .txt + .csv per configuration)
 ```
