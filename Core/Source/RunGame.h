@@ -6,7 +6,9 @@
 #include "CoreTypes.h"
 #include "Exception.h"
 #include "GameInstance.h"
+#include "Precision.h"
 #include "Timer.h"
+#include "ECS/CoreComponents.h"
 
 
 namespace frt
@@ -14,6 +16,16 @@ namespace frt
 template <typename TGame> requires concepts::Derived<TGame, GameInstance>
 int RunGame()
 {
+	// This template is instantiated in the host module, so the macro expands to the
+	// host's value and the check compares it against Core's.
+	FRT_VERIFY_REAL_PRECISION_ABI();
+
+	// Before the game exists, and that ordering is the whole point: the first
+	// GetComponentId<T>() for a type fixes its id permanently, and constructing a CWorld
+	// touches the registry. Called any later, this is silently a no-op and ids fall back
+	// to whatever order first touch happened to give them.
+	RegisterCoreComponents();
+
 	auto game = new TGame;
 
 	CTimer& time = game->GetTime();

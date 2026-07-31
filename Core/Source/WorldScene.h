@@ -11,6 +11,7 @@ class GameInstance;
 class Sys_MeshRenderer;
 class CEntity;
 class ISystem;
+class CWorld;
 
 
 class CWorldScene
@@ -18,6 +19,10 @@ class CWorldScene
 public:
 	CWorldScene () = delete;
 	CWorldScene (GameInstance& InGame);
+	~CWorldScene ();
+
+	CWorldScene (const CWorldScene&) = delete;
+	CWorldScene& operator= (const CWorldScene&) = delete;
 
 	bool Initialize ();
 
@@ -34,8 +39,17 @@ public:
 	const TArray<memory::TRefShared<CEntity>>& GetEntities () const { return Entities; }
 	TArray<memory::TRefShared<CEntity>>& GetEntities () { return Entities; }
 
+	/**
+	 * ECS world, created in Initialize() rather than in the constructor: CWorldScene is a
+	 * member of GameInstance and so is constructed before GameInstance's body sets up the
+	 * memory pool, and CWorld allocates its pools up front.
+	 *
+	 * Runs alongside the CEntity list during the migration - the two do not interact yet.
+	 */
+	CWorld& GetEcsWorld ();
+	const CWorld& GetEcsWorld () const;
+
 	memory::TRefUnique<Sys_MeshRenderer> MeshRenderer;
-	// TArray<memory::TRefUnique<ISystem>> Systems;
 
 	// Scene-level dirty flags consumed by Sys_MeshRenderer each frame.
 	// Set here because topology and motion are scene knowledge, not renderer knowledge.
@@ -44,7 +58,17 @@ public:
 
 
 private:
+	/** Dispatches one phase across Systems. Draw is handled separately - it needs the command list. */
+	void RunSystemsPhase (EUpdatePhase Phase, const SUpdateContext& Context);
+
 	TArray<memory::TRefShared<CEntity>> Entities; // TODO: allocate on stack
+
+	memory::TRefUnique<CWorld> EcsWorld;
+
+	// Raw pointers because TRefUnique has no derived-to-base conversion, so it cannot
+	// hold an ISystem for a concrete system type. Owned here and destroyed through the
+	// virtual destructor in ~CWorldScene.
+	TArray<ISystem*> Systems;
 
 	SFlags<EUpdatePhase> PausedPhases;
 	GameInstance& Game;

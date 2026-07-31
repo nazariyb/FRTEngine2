@@ -12,6 +12,8 @@
 
 #include "Timer.h"
 #include "Window.h"
+#include "ECS/Comp_Name.h"
+#include "ECS/World.h"
 #include "Graphics/Camera.h"
 #include "Graphics/GeometryScript.h"
 #include "Graphics/MeshGeneration.h"
@@ -19,6 +21,8 @@
 #include "Graphics/Render/GraphicsUtility.h"
 #include "Graphics/Render/RenderCommonTypes.h"
 #include "Graphics/Render/Renderer.h"
+#include "Math/Comp_LocalTransform.h"
+#include "Math/Comp_WorldTransform.h"
 #include "Memory/Memory.h"
 #include "Profiler/ProfilingExport.h"
 #include "Profiler/SceneDescriptor.h"
@@ -226,6 +230,11 @@ void GameInstance::Load ()
 			Renderer->GetMaterialLibrary().LoadOrCreateMaterial(floorMaterialPath, {})));
 	floor->bRayTraced = true;
 	floor->Transform.SetTranslation(0.f, -1.f, 0.f);
+
+	auto floorEnt = World.GetEcsWorld().Spawn();
+	World.GetEcsWorld().Add<Comp_LocalTransform>(floorEnt);
+	World.GetEcsWorld().Add<Comp_WorldTransform>(floorEnt);
+	World.GetEcsWorld().Add<Comp_Name>(floorEnt, "Floor");
 
 	std::filesystem::path pillarMaterialPath =
 		std::filesystem::path("../Core/Content/Models/Pillar") / ("pillar_mat" + std::to_string(0) + ".frtmat.yml");
