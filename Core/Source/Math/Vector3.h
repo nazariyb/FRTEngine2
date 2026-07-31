@@ -1,8 +1,11 @@
 #pragma once
 
 #include <cmath>
+#include <sstream>
+#include <string>
 
 #include "Core.h"
+#include "CoreTypes.h"
 #include "MathUtility.h"
 
 

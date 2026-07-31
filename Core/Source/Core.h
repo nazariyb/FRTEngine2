@@ -54,3 +54,15 @@
 #include "Asserts.h"
 
 #define FRT_STRUCT_PADDING(Bytes) uint8 __Padding[Bytes]
+
+// Emits a compiler warning - not an error - at every call site of the declaration it
+// is applied to. C++ has no static_warning, so [[deprecated]] is the portable stand-in
+// on MSVC (C4996); GCC and Clang have an attribute meant for exactly this.
+//
+// Suppress a deliberate call site with a localized #pragma warning(disable: 4996)
+// rather than by removing the attribute.
+#if defined(__GNUC__) || defined(__clang__)
+	#define FRT_WARN_ON_USE(Message) __attribute__((warning(Message)))
+#else
+	#define FRT_WARN_ON_USE(Message) [[deprecated(Message)]]
+#endif
