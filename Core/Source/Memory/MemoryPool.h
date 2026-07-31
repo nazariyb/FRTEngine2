@@ -53,6 +53,9 @@ public:
 	virtual void DeleteManaged (void* MemoryToDelete) override;
 
 private:
+	/** Releases the arena and clears PrimaryInstance if it points here. Idempotent. */
+	void ReleaseMemory ();
+
 	uint64 MemorySize = 0ull;
 	uint8* Memory = nullptr;
 

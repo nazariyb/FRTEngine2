@@ -1,6 +1,9 @@
 ﻿#pragma once
 
 #include <limits>
+#include <new>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "Math/MathUtility.h"
@@ -214,8 +217,11 @@ TArray<ElementType, TAllocator>& TArray<ElementType, TAllocator>::operator= (con
 		Clear();
 	}
 
-	Size = Other.Size;
+	// ReAlloc BEFORE adopting Other's count. Clear() has already emptied this array, so
+	// relocating must move zero elements; setting Size first told ReAlloc to move Other's
+	// worth of elements out of storage that had just been destroyed.
 	ReAlloc(Other.Capacity);
+	Size = Other.Size;
 
 	for (uint32 i = 0; i < Size; i++)
 	{
@@ -228,7 +234,14 @@ TArray<ElementType, TAllocator>& TArray<ElementType, TAllocator>::operator= (con
 template <typename ElementType, typename TAllocator>
 TArray<ElementType, TAllocator>& TArray<ElementType, TAllocator>::operator= (TArray&& Other) noexcept
 {
-	Clear();
+	if (this == &Other)
+	{
+		return *this;
+	}
+
+	// Free, not Clear: Clear destroys the elements but leaves the buffer allocated, and
+	// the next line overwrites the only pointer to it.
+	Free();
 
 	Data = Other.Data;
 	Size = Other.Size;
@@ -375,14 +388,44 @@ void TArray<ElementType, TAllocator>::ReAlloc (uint64 InCapacity)
 	frt_assert(InCapacity >= Size);
 	frt_assert(InCapacity <= (std::numeric_limits<uint32>::max)());
 
-	// As a quick first implementation, we rely on allocator/pool to realloc.
-	// It does the job, and, in fact, it may avoid reallocation and just merge our block with the next one if it's available.
-	// This potentially gives some efficiency, but it has its flaws:
-	// * We can't shrink
-	// * Move-constructors aren't called which may be or not be a problem depending on the type
+	const uint32 newCapacity = static_cast<uint32>(math::Max(InCapacity, static_cast<uint64>(MinAllocation)));
 
-	Capacity = static_cast<uint32>(math::Max(InCapacity, static_cast<uint64>(MinAllocation)));
-	Data = (ElementType*)TAllocator::GetPrimaryInstance()->ReAllocate(Data, sizeof(ElementType) * Capacity);
+	if constexpr (std::is_trivially_copyable_v<ElementType>)
+	{
+		// Let the allocator relocate the block. Raw movement is correct for a trivially
+		// copyable type, and the pool may be able to grow the block in place by merging
+		// it with a free neighbour instead of copying at all.
+		//
+		// Still cannot shrink - the allocator decides.
+		Data = (ElementType*)TAllocator::GetPrimaryInstance()->ReAllocate(Data, sizeof(ElementType) * newCapacity);
+	}
+	else
+	{
+		// A raw copy would leave the old and new objects both owning the same resources,
+		// and then destroy neither. Move-construct into fresh storage and destroy the
+		// originals instead.
+		//
+		// The branch is compile-time, so a trivially copyable element pays nothing for
+		// this path existing.
+		ElementType* newData =
+			(ElementType*)TAllocator::GetPrimaryInstance()->Allocate(sizeof(ElementType) * newCapacity);
+		frt_assert(newData != nullptr);
+
+		for (uint32 i = 0u; i < Size; ++i)
+		{
+			new(newData + i) ElementType(std::move(*(Data + i)));
+			(Data + i)->~ElementType();
+		}
+
+		if (Data != nullptr)
+		{
+			TAllocator::GetPrimaryInstance()->Free(Data);
+		}
+
+		Data = newData;
+	}
+
+	Capacity = newCapacity;
 }
 
 template <typename ElementType, typename TAllocator>
@@ -641,21 +684,26 @@ void TArray<ElementType, TAllocator>::RemoveAt (IndexType InIndex)
 {
 	frt_assert(IsIndexValid<TIndexType>(InIndex));
 	const uint32 Index = static_cast<uint32>(ArrayIndexStrategy::ConvertToDefault<TIndexType>(InIndex, *this));
+	const uint32 LastIndex = Size - 1u;
 
-	(Data + Index)->~ElementType();
-
+	// Move-ASSIGN over the live elements, then destroy exactly the slot that ends up
+	// vacated. Placement-new over a live object would skip its destructor, and destroying
+	// Index up front made the no-keep-order case move out of an object it had just
+	// destroyed whenever Index was already the last one. Both are invisible for trivially
+	// copyable elements and corrupting for anything that owns a resource.
 	if constexpr (bKeepOrder)
 	{
-		for (uint32 i = Index + 1u; i < Size; ++i)
+		for (uint32 i = Index; i < LastIndex; ++i)
 		{
-			new(Data + i - 1u) ElementType(std::move(*(Data + i)));
+			*(Data + i) = std::move(*(Data + i + 1u));
 		}
 	}
-	else
+	else if (Index != LastIndex)
 	{
-		new(Data + Index) ElementType(std::move(*(Data + Size - 1u)));
+		*(Data + Index) = std::move(*(Data + LastIndex));
 	}
 
+	(Data + LastIndex)->~ElementType();
 	--Size;
 }
 
@@ -808,7 +856,10 @@ const ElementType& TArray<ElementType, TAllocator>::Last () const
 }
 
 
-template <typename T>
-struct concepts::SIsIndexable<TArray<T>> : std::true_type
+// Must cover the allocator parameter too. Specializing only TArray<T> left every array
+// with a non-default allocator failing the Indexable concept, which broke Get() and
+// IsIndexValid() for it - the allocator parameter was effectively unusable.
+template <typename T, typename TAllocator>
+struct concepts::SIsIndexable<TArray<T, TAllocator>> : std::true_type
 {};
 }

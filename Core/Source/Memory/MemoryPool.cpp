@@ -20,12 +20,29 @@ CMemoryPool::CMemoryPool (CMemoryPool&& Other) noexcept
 
 CMemoryPool& CMemoryPool::operator= (CMemoryPool&& Other) noexcept
 {
+	if (this == &Other)
+	{
+		return *this;
+	}
+
+	// Without this, move-assigning onto a live pool silently leaks its whole arena -
+	// gigabytes, in the case of GameInstance's.
+	ReleaseMemory();
+
 	MemorySize = Other.MemorySize;
 	Memory = Other.Memory;
 	Tlsf = Other.Tlsf;
 	Other.MemorySize = 0;
 	Other.Memory = nullptr;
 	Other.Tlsf = nullptr;
+
+	// The arena moved, so the primary pointer has to follow it. Otherwise every holder
+	// of GetPrimaryInstance() is left pointing at a pool that no longer owns anything.
+	if (PrimaryInstance == &Other)
+	{
+		PrimaryInstance = this;
+	}
+
 	return *this;
 }
 
@@ -57,6 +74,19 @@ CMemoryPool::CMemoryPool (void* InMemory, uint64 InSize)
 
 CMemoryPool::~CMemoryPool ()
 {
+	ReleaseMemory();
+}
+
+void CMemoryPool::ReleaseMemory ()
+{
+	// Clear the primary pointer BEFORE releasing the arena. Leaving it dangling turns
+	// every later allocation into a use-after-free that reads as random corruption;
+	// nulling it makes the misuse fail immediately and visibly instead.
+	if (PrimaryInstance == this)
+	{
+		PrimaryInstance = nullptr;
+	}
+
 	if (Memory)
 	{
 		frt_assert(Tlsf);
@@ -64,12 +94,13 @@ CMemoryPool::~CMemoryPool ()
 #if _WINDOWS
 		VirtualFree(Memory, 0, MEM_RELEASE);
 #elif _UNIX
-
+		munmap(Memory, MemorySize);
 #endif
 	}
 
 	Memory = nullptr;
 	Tlsf = nullptr;
+	MemorySize = 0ull;
 }
 
 void CMemoryPool::MakeThisPrimaryInstance ()
