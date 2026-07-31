@@ -9,8 +9,11 @@ namespace frt
 {
 struct SUpdateContext
 {
-	float DeltaSeconds;
-	double TotalSeconds;
+	// Initialized: CWorldScene::RunFrame used to default-construct this and pass it along
+	// with both fields holding whatever was on the stack. Nothing read them, so it never
+	// showed, but a system reading DeltaSeconds would have integrated garbage.
+	float  DeltaSeconds = 0.0f;
+	double TotalSeconds = 0.0;
 };
 
 

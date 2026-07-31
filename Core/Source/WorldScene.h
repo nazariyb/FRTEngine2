@@ -12,6 +12,7 @@ class Sys_MeshRenderer;
 class CEntity;
 class ISystem;
 class CWorld;
+class CCommandBuffer;
 
 
 class CWorldScene
@@ -28,7 +29,7 @@ public:
 
 	memory::TRefShared<CEntity> SpawnEntity (const std::string& Name = "");
 
-	void RunFrame ();
+	void RunFrame (float InDeltaSeconds);
 	void SubmitFrame (ID3D12GraphicsCommandList4* CommandList);
 
 	bool IsPhasePaused (EUpdatePhase Phase) const;
@@ -49,6 +50,15 @@ public:
 	CWorld& GetEcsWorld ();
 	const CWorld& GetEcsWorld () const;
 
+	/**
+	 * Shared buffer for structural changes recorded by systems.
+	 *
+	 * Applied once per frame at the end of the Update phase, so everything downstream -
+	 * Sys_Transform in Finalize included - sees the resulting entity set rather than one
+	 * that changes underneath it.
+	 */
+	CCommandBuffer& GetCommands ();
+
 	memory::TRefUnique<Sys_MeshRenderer> MeshRenderer;
 
 	// Scene-level dirty flags consumed by Sys_MeshRenderer each frame.
@@ -64,6 +74,7 @@ private:
 	TArray<memory::TRefShared<CEntity>> Entities; // TODO: allocate on stack
 
 	memory::TRefUnique<CWorld> EcsWorld;
+	memory::TRefUnique<CCommandBuffer> Commands;
 
 	// Raw pointers because TRefUnique has no derived-to-base conversion, so it cannot
 	// hold an ISystem for a concrete system type. Owned here and destroyed through the

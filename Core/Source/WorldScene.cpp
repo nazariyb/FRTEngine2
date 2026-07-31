@@ -2,7 +2,9 @@
 
 #include "GameInstance.h"
 #include "Sys_MeshRenderer.h"
+#include "ECS/CommandBuffer.h"
 #include "ECS/CoreComponents.h"
+#include "ECS/Sys_Lifetime.h"
 #include "ECS/Sys_Transform.h"
 #include "ECS/World.h"
 
@@ -33,7 +35,9 @@ bool frt::CWorldScene::Initialize ()
 	// own body, which runs after CWorldScene is constructed as a member. CWorld allocates
 	// its parent and children pools up front, so it has to wait for Initialize().
 	EcsWorld = memory::NewUnique<CWorld>();
+	Commands = memory::NewUnique<CCommandBuffer>();
 
+	Systems.Add(memory::NewUnmanaged<Sys_Lifetime>(*EcsWorld, *Commands));
 	Systems.Add(memory::NewUnmanaged<Sys_Transform>(*EcsWorld));
 
 	for (ISystem* system : Systems)
@@ -57,6 +61,12 @@ const frt::CWorld& frt::CWorldScene::GetEcsWorld () const
 {
 	frt_assert(EcsWorld);
 	return *EcsWorld;
+}
+
+frt::CCommandBuffer& frt::CWorldScene::GetCommands ()
+{
+	frt_assert(Commands);
+	return *Commands;
 }
 
 void frt::CWorldScene::RunSystemsPhase (EUpdatePhase Phase, const SUpdateContext& Context)
@@ -101,9 +111,10 @@ frt::memory::TRefShared<frt::CEntity> frt::CWorldScene::SpawnEntity (const std::
 	return newEntity;
 }
 
-void frt::CWorldScene::RunFrame ()
+void frt::CWorldScene::RunFrame (float InDeltaSeconds)
 {
 	SUpdateContext Context;
+	Context.DeltaSeconds = InDeltaSeconds;
 
 	const SFlags<EUpdatePhase>& MeshRendererPhases = MeshRenderer->GetPhases();
 
@@ -120,6 +131,12 @@ void frt::CWorldScene::RunFrame ()
 	}
 
 	RunSystemsPhase(EUpdatePhase::Update, Context);
+
+	// The safe phase boundary. Systems record structural changes during Update rather than
+	// applying them in place, because destroying an entity or moving a component reorders
+	// the very pools they are iterating. Applying here means everything downstream - the
+	// Finalize systems below included - sees a settled entity set.
+	Commands->Flush(*EcsWorld);
 
 	// NOTE: Sys_MeshRenderer's Finalize runs before the entity tick below, so the
 	// acceleration structure it builds trails the transforms by a frame. That predates

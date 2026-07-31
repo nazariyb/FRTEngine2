@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ECS/Comp_Children.h"
+#include "ECS/Comp_Lifetime.h"
 #include "ECS/Comp_Name.h"
 #include "ECS/Comp_Parent.h"
 #include "ECS/ComponentRegistry.h"

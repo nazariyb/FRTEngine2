@@ -11,4 +11,5 @@ void frt::RegisterCoreComponents()
 	GetComponentId<Comp_Parent>();
 	GetComponentId<Comp_Children>();
 	GetComponentId<Comp_Name>();
+	GetComponentId<Comp_Lifetime>();
 }

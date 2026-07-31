@@ -497,7 +497,7 @@ void GameInstance::Tick (float DeltaSeconds)
 #endif
 
 	UpdateEntities(DeltaSeconds);
-	World.RunFrame();
+	World.RunFrame(DeltaSeconds);
 }
 
 #ifndef FRT_HEADLESS
