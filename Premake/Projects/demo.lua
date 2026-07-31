@@ -10,8 +10,15 @@ project "Demo"
 		kind "WindowedApp"
 	filter {}
 
+	-- Flat per platform; see the note in core.lua.
 	targetdir (rootpath("Binaries/%{cfg.platform}"))
 	objdir (rootpath("Intermediate/%{cfg.platform}/%{cfg.buildcfg}/%{prj.name}"))
+
+	-- Engine paths are resolved relative to the working directory and assume it is a
+	-- project directory one level below the repository root (see EnginePaths.cpp). That
+	-- is already the Visual Studio default, but it is stated here so the binary can move
+	-- without quietly breaking content lookup.
+	debugdir (rootpath("%{prj.name}"))
 
 	filter "configurations:Release-*"
 		targetname "%{prj.name}"
@@ -64,3 +71,6 @@ project "Demo"
 		defines { "FRT_HEADLESS" }
 
 	filter {}
+
+	-- Must match Core's precision. See Premake/common.lua.
+	applyPrecision()

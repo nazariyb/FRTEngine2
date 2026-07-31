@@ -20,6 +20,14 @@ project "Core"
 
 	filter {}
 
+	-- One directory per platform, configurations separated by the targetname suffix below.
+	-- Deliberate: a single place to find every binary beats a tree of near-empty folders.
+	--
+	-- KNOWN TRADE-OFF: the third-party DLLs copied in beside them are NOT suffixed -
+	-- gtest, gmock, draco, minizip, poly2tri and pugixml are named identically in debug
+	-- and release - so whichever configuration was built last owns them. Building A then
+	-- running B's binary without rebuilding B loads mismatched DLLs and faults before
+	-- main, with no output. Rebuild the configuration you are about to run.
 	targetdir (rootpath("Binaries/%{cfg.platform}"))
 	objdir (rootpath("Intermediate/%{cfg.platform}/%{cfg.buildcfg}/%{prj.name}"))
 
@@ -164,6 +172,10 @@ project "Core"
 		defines { "FRT_HEADLESS" }
 
 	filter {}
+
+	-- Real-number precision (frt::real). Must match every project linking Core;
+	-- a mismatch is a link error, not a silent ABI break. See Premake/common.lua.
+	applyPrecision()
 
 	------------------------------
 	----- Custom Build Steps -----
