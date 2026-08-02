@@ -81,7 +81,12 @@ project "Core"
 		removefiles
 		{
 -- 			rootpath("%{prj.name}/Source/Graphics/Render/**.h"),
-			rootpath("%{prj.name}/Source/Graphics/Render/**.cpp"),
+			-- Only the translation units that genuinely need a swap chain / window.
+			-- The rest of Graphics/Render is FRT_HEADLESS-guarded and must keep building:
+			-- the headless scene loader still resolves materials through CMaterialLibrary
+			-- (GameInstance::Load and SRenderModel::LoadFromFile), which drags in its
+			-- serializers. Removing all of Render/**.cpp left those unresolved at link.
+			rootpath("%{prj.name}/Source/Graphics/Render/Renderer.cpp"),
 			rootpath("%{prj.name}/Source/Window.cpp"),
 		}
 

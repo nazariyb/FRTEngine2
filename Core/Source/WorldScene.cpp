@@ -29,7 +29,11 @@ frt::CWorldScene::~CWorldScene ()
 
 bool frt::CWorldScene::Initialize ()
 {
+#ifndef FRT_HEADLESS
 	MeshRenderer = memory::NewUnique<Sys_MeshRenderer>(Game.GetRenderer());
+#else
+	MeshRenderer = memory::NewUnique<Sys_MeshRenderer>();
+#endif
 
 	// Safe here but not in the constructor: GameInstance builds its memory pool in its
 	// own body, which runs after CWorldScene is constructed as a member. CWorld allocates
@@ -158,6 +162,7 @@ void frt::CWorldScene::RunFrame (float InDeltaSeconds)
 	// which for Sys_Transform means every local transform touched this frame.
 	RunSystemsPhase(EUpdatePhase::Finalize, Context);
 
+#ifndef FRT_HEADLESS
 	// TODO: ideally, CBs should already be stored in one array
 	// TODO: use (when it's implemented) memory pool
 	const uint32 entityCount = Entities.Count();
@@ -179,6 +184,7 @@ void frt::CWorldScene::RunFrame (float InDeltaSeconds)
 			objectConstants.Count(),
 			currentFrameResources.UploadArena);
 	}
+#endif
 }
 
 void frt::CWorldScene::SubmitFrame (ID3D12GraphicsCommandList4* CommandList)

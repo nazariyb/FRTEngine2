@@ -16,7 +16,7 @@ public:
 	Sys_MeshRenderer () = delete;
 	explicit Sys_MeshRenderer (memory::TRefWeak<graphics::CRenderer> InRenderer);
 #else
-	CWorld ();
+	Sys_MeshRenderer ();
 #endif
 	virtual ~Sys_MeshRenderer () override {}
 

@@ -201,17 +201,14 @@ GameInstance::GameInstance ()
 	Renderer->Resize(UserSettings.DisplaySettings.FullscreenMode == EFullscreenMode::Fullscreen);
 	DisplayOptions = graphics::GetDisplayOptions(Renderer->GetAdapter());
 
-	World.Initialize();
-	MeshRenderer = World.MeshRenderer.GetWeak();
-
 	Camera = memory::NewShared<CCamera>();
 	CameraInitialTransform.SetTranslation(4.9f, 2.2f, -1.5f);
 	CameraInitialTransform.SetRotation(-0.038f, -1.356f, .0f);
 	Camera->Transform = CameraInitialTransform;
-
-#else
-	World = MemoryPool.NewUnique<Sys_MeshRenderer>();
 #endif
+
+	World.Initialize();
+	MeshRenderer = World.MeshRenderer.GetWeak();
 
 	ActiveActionMap = InputActionLibrary.LoadOrCreateActionMap(GetDefaultInputMapPath());
 
@@ -339,13 +336,21 @@ void GameInstance::Load ()
 {
 	std::cout << std::filesystem::current_path() << std::endl;
 
+	// Headless has no renderer, so materials are resolved through a standalone library.
+	// Same split as SRenderModel::LoadFromFile — see Graphics/Model.cpp.
+#ifndef FRT_HEADLESS
+	CMaterialLibrary& materialLibrary = Renderer->GetMaterialLibrary();
+#else
+	CMaterialLibrary materialLibrary;
+#endif
+
 	std::filesystem::path floorMaterialPath =
 		std::filesystem::path("../Core/Content/Models/Floor") / ("floor_mat" + std::to_string(0) + ".frtmat.yml");
 	auto floor = World.SpawnEntity("Floor");
 	floor->RenderModel->Model = memory::NewShared<SRenderModel>(
 		SRenderModel::FromMesh(
 			mesh::GenerateGrid(10.f, 10.f, 16u, 16u),
-			Renderer->GetMaterialLibrary().LoadOrCreateMaterial(floorMaterialPath, {})));
+			materialLibrary.LoadOrCreateMaterial(floorMaterialPath, {})));
 	floor->bRayTraced = true;
 	floor->Transform.SetTranslation(0.f, -1.f, 0.f);
 
@@ -361,7 +366,7 @@ void GameInstance::Load ()
 		SRenderModel::FromMesh(
 			mesh::GenerateCube(Vector3f(.65f, 1.8f, .65f), 1),
 			// mesh::GenerateCylinder(0.65f, 0.65f, 1.8f, 20u, 2u),
-			Renderer->GetMaterialLibrary().LoadOrCreateMaterial(pillarMaterialPath, {})));
+			materialLibrary.LoadOrCreateMaterial(pillarMaterialPath, {})));
 	pillar->bRayTraced = true;
 	pillar->Transform.SetTranslation(-2.5f, -0.2f, 0.f);
 
@@ -369,7 +374,7 @@ void GameInstance::Load ()
 	mirror->RenderModel->Model = memory::NewShared<SRenderModel>(
 		SRenderModel::FromMesh(
 			mesh::GenerateQuad(3.f, 3.f),
-			Renderer->GetMaterialLibrary().LoadOrCreateMaterial(pillarMaterialPath, {})));
+			materialLibrary.LoadOrCreateMaterial(pillarMaterialPath, {})));
 	mirror->Transform.SetTranslation(3.f, 1.f, -.5f);
 	mirror->Transform.SetRotation(0.f, 0.f, math::PI_OVER_TWO);
 
@@ -379,7 +384,7 @@ void GameInstance::Load ()
 	cube->RenderModel->Model = memory::NewShared<SRenderModel>(
 		SRenderModel::FromMesh(
 			mesh::GenerateCube(Vector3f(1.f), 1),
-			Renderer->GetMaterialLibrary().LoadOrCreateMaterial(cubeMaterialPath, {})));
+			materialLibrary.LoadOrCreateMaterial(cubeMaterialPath, {})));
 	cube->Transform.SetTranslation(1.5f, 0.f, -1.5f);
 
 	// Cylinder = World->SpawnEntity();
@@ -421,7 +426,7 @@ void GameInstance::Load ()
 	auto lightSource1 = World.SpawnEntity("Light 1");
 	lightSource1->RenderModel->Model = memory::NewShared<graphics::SRenderModel>(
 		SRenderModel::FromMesh(mesh::GenerateSphere(.3f, 30u, 30u),
-			Renderer->GetMaterialLibrary().LoadOrCreateMaterial(lightMaterialPath, {})));
+			materialLibrary.LoadOrCreateMaterial(lightMaterialPath, {})));
 	lightSource1->Transform.SetTranslation(0.f, 2.f, -3.f);
 
 	std::filesystem::path lightMaterialPath2 =
@@ -430,7 +435,7 @@ void GameInstance::Load ()
 	// auto lightSource2 = World.SpawnEntity("Light 2");
 	// lightSource2->RenderModel->Model = memory::NewShared<graphics::SRenderModel>(
 	// 	SRenderModel::FromMesh(mesh::GenerateQuad(1.f, 1.f),
-	// 		Renderer->GetMaterialLibrary().LoadOrCreateMaterial(lightMaterialPath2, {})));
+	// 		materialLibrary.LoadOrCreateMaterial(lightMaterialPath2, {})));
 	// lightSource2->Transform.SetTranslation(-2.5f, 2.85f, 0.f);
 	// lightSource2->Transform.SetRotation(math::PI, 0.f, 0.f);
 
@@ -452,7 +457,7 @@ void GameInstance::Load ()
 	ceiling->RenderModel->Model = memory::NewShared<SRenderModel>(
 		SRenderModel::FromMesh(
 			graphics::mesh::BuildFromScript(ceilingScript),
-			Renderer->GetMaterialLibrary().LoadOrCreateMaterial(cubeMaterialPath, {})));
+			materialLibrary.LoadOrCreateMaterial(cubeMaterialPath, {})));
 	ceiling->bRayTraced = true;
 	ceiling->Transform.SetTranslation(-0.5f, 9.f, 0.f);
 	ceiling->Transform.SetRotation(math::PI_OVER_TWO, 0.f, 0.f);

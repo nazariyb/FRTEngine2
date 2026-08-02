@@ -20,6 +20,7 @@
 using namespace frt;
 
 
+#ifndef FRT_HEADLESS
 namespace
 {
 bool IsRaytracingSupported (ID3D12Device5* Device)
@@ -34,6 +35,7 @@ bool AreMatricesEqual (const DirectX::XMFLOAT4X4& A, const DirectX::XMFLOAT4X4& 
 	return std::memcmp(&A, &B, sizeof(DirectX::XMFLOAT4X4)) == 0;
 }
 }
+#endif
 
 #if !defined(FRT_HEADLESS)
 Sys_MeshRenderer::Sys_MeshRenderer (memory::TRefWeak<graphics::CRenderer> InRenderer)
@@ -45,7 +47,7 @@ Sys_MeshRenderer::Sys_MeshRenderer (memory::TRefWeak<graphics::CRenderer> InRend
 		.AddFlag(EUpdatePhase::Draw);
 }
 #else
-Sys_MeshRenderer::CWorld ()
+Sys_MeshRenderer::Sys_MeshRenderer ()
 {}
 #endif
 
@@ -526,6 +528,7 @@ memory::TRefShared<graphics::Comp_RenderModel> Sys_MeshRenderer::SpawnRenderMode
 // 	return newEntity;
 // }
 
+#ifndef FRT_HEADLESS
 graphics::raytracing::SAccelerationStructureBuffers Sys_MeshRenderer::CreateBottomLevelAS (
 	const graphics::Comp_RenderModel& RenderModel)
 {
@@ -997,3 +1000,4 @@ void Sys_MeshRenderer::UpdateAccelerationStructures ()
 	Renderer->TopLevelASBuffers = TopLevelASBuffers;
 	scene.bAccumulationDirty = true;
 }
+#endif
