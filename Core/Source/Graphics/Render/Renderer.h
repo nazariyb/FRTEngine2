@@ -81,6 +81,13 @@ private:
 	uint64 FenceValue;
 	HANDLE FenceEvent;
 	bool bCommandListRecording = false;
+	// Set while Resize() runs, so the WM_SIZE messages DXGI sends from inside its own
+	// mode switch cannot re-enter it. Cleared by the scope guard.
+	bool bResizing = false;
+	// False whenever FrameBuffer[]/FrameBufferDescriptors do not describe live back
+	// buffers: between the release and the recreate inside Resize(), and for as long as
+	// the window stays minimized (no swapchain at all).
+	bool bFrameBuffersReady = false;
 
 	// Frame lifecycle
 public:
@@ -94,6 +101,9 @@ public:
 	bool IsRaytracingReady () const;
 	bool ShouldRenderRaster () const;
 	bool ShouldRenderRaytracing () const;
+	// The frame must be skipped entirely when this is false - there are no back buffers to
+	// clear, render into or present.
+	bool IsReadyToRender () const;
 
 private:
 	void ResetCurrentFrameCommandList ();

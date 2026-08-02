@@ -652,6 +652,14 @@ void GameInstance::Tick (float DeltaSeconds)
 #ifndef FRT_HEADLESS
 void GameInstance::Draw (float DeltaSeconds)
 {
+	// Minimized (or mid display-mode change): there are no back buffers. The message loop
+	// keeps calling us anyway, so end the ImGui frame Tick() opened and skip the GPU work.
+	if (!Renderer->IsReadyToRender())
+	{
+		ImGui::EndFrame();
+		return;
+	}
+
 	Renderer->StartFrame();
 
 	World.SubmitFrame(Renderer->GetCommandList());

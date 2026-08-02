@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <utility>
 
+#include "CoreUtils.h"
 #include "d3dx12.h"
 #include "DXRHelper.h"
 #include "EnginePaths.h"
@@ -229,13 +230,26 @@ CRenderer::CRenderer (CWindow* Window)
 
 void CRenderer::Resize (bool bNewFullscreenState)
 {
+	// Switching to exclusive fullscreen makes DXGI change the display mode, and that sends
+	// WM_SIZE synchronously - straight back in here through the window's resize event. The
+	// nested call would build a second swapchain for the same HWND (the member is still null
+	// while CreateSwapChainForHwnd is on the stack) and leave the render target views
+	// pointing at buffers the outer call releases on its way out.
+	if (bResizing)
+	{
+		return;
+	}
+	TGuardValue ResizeGuard(bResizing, true);
+
 	// Flush before changing any resources.
 	FlushCommandQueue();
 
 	THROW_IF_FAILED(CommandList->Reset(CommandAllocator.Get(), nullptr));
 	bCommandListRecording = true;
 
-	// Release the previous resources we will be recreating.
+	// Release the previous resources we will be recreating. The render target views keep
+	// pointing at the released buffers until they are rewritten below.
+	bFrameBuffersReady = false;
 	for (int i = 0; i < render::constants::SwapChainBufferCount; ++i)
 	{
 		FrameBuffer[i].Reset();
@@ -294,11 +308,18 @@ void CRenderer::Resize (bool bNewFullscreenState)
 			SwapChain->ResizeTarget(&modeDesc);
 		}
 
+		// The swapchain, not the window, decides the final back buffer size (a mode switch
+		// can land on something else than what we asked for), so depth target and viewport
+		// follow it.
+		DXGI_SWAP_CHAIN_DESC1 finalSwapChainDesc = {};
+		THROW_IF_FAILED(SwapChain->GetDesc1(&finalSwapChainDesc));
+		drawRect = { static_cast<float>(finalSwapChainDesc.Width), static_cast<float>(finalSwapChainDesc.Height) };
+
 		CurrentBackBufferIndex = 0;
 
 		for (unsigned frameIndex = 0; frameIndex < render::constants::SwapChainBufferCount; ++frameIndex)
 		{
-			SwapChain->GetBuffer(frameIndex, IID_PPV_ARGS(&FrameBuffer[frameIndex]));
+			THROW_IF_FAILED(SwapChain->GetBuffer(frameIndex, IID_PPV_ARGS(&FrameBuffer[frameIndex])));
 			Device->CreateRenderTargetView(
 				FrameBuffer[frameIndex].Get(), nullptr, FrameBufferDescriptors[frameIndex]);
 		}
@@ -310,8 +331,8 @@ void CRenderer::Resize (bool bNewFullscreenState)
 			{
 				.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D,
 				.Alignment = 0,
-				.Width = drawWidth,
-				.Height = drawHeight,
+				.Width = finalSwapChainDesc.Width,
+				.Height = finalSwapChainDesc.Height,
 				.DepthOrArraySize = 1,
 				.MipLevels = 1,
 				.Format = DXGI_FORMAT_D32_FLOAT,
@@ -335,11 +356,20 @@ void CRenderer::Resize (bool bNewFullscreenState)
 
 		CreateRaytracingOutputBuffer();
 		InitializeRaytracingResources();
+
+		bFrameBuffersReady = true;
 	}
 	else
 	{
-		SwapChain->SetFullscreenState(bNewFullscreenState, nullptr);
-		SwapChain.Reset();
+		// Minimized: no client area to present to. Leave exclusive fullscreen so the desktop
+		// mode comes back and drop the swapchain. Rendering stays suspended (IsReadyToRender)
+		// until a resize with a real size rebuilds the buffers - drawing now would clear
+		// render target views that no longer point at anything.
+		if (SwapChain)
+		{
+			SwapChain->SetFullscreenState(FALSE, nullptr);
+			SwapChain.Reset();
+		}
 	}
 
 	// Execute the resize commands.
@@ -527,6 +557,11 @@ bool CRenderer::ShouldRenderRaytracing () const
 	return RenderMode == ERenderMode::Raytracing && IsRaytracingReady();
 }
 
+bool CRenderer::IsReadyToRender () const
+{
+	return bFrameBuffersReady && SwapChain && Viewport.Width > 0.f && Viewport.Height > 0.f;
+}
+
 void CRenderer::StartFrame ()
 {
 	ResetCurrentFrameCommandList();
@@ -597,7 +632,7 @@ void CRenderer::Draw ()
 	CommandQueue->ExecuteCommandLists(1, (ID3D12CommandList**)CommandList.GetAddressOf());
 
 	SwapChain->Present(bVSyncEnabled, 0);
-	CurrentBackBufferIndex = (CurrentBackBufferIndex + 1) % render::constants::FrameResourcesBufferCount;
+	CurrentBackBufferIndex = (CurrentBackBufferIndex + 1) % render::constants::SwapChainBufferCount;
 
 	// FlushCommandQueue();
 
