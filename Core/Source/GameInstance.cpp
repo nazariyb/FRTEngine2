@@ -1,5 +1,6 @@
 #include "GameInstance.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -35,9 +36,93 @@ using namespace memory::literals;
 
 #if !defined(FRT_HEADLESS)
 static ImGui_ImplDX12_InitInfo gImGuiDx12InitInfo;
+
+/**
+ * SRV descriptor allocator handed to the ImGui DX12 backend.
+ *
+ * Since 1.92 the backend creates and destroys textures at runtime — the font atlas is
+ * rasterized on demand and re-created whenever it grows or the requested size changes —
+ * so descriptors must be recycled. DX12_DescriptorHeap only bumps, so freed handle pairs
+ * are parked here and handed back before the heap advances. The backend defers destruction
+ * until a texture has been unused for NumFramesInFlight frames, so a recycled slot is never
+ * still referenced by an in-flight command list.
+ *
+ * Storage is fixed rather than a TArray: this lives in static storage, and TArray would free
+ * through the primary CMemoryPool, which GameInstance already destroyed by then.
+ */
+static constexpr uint32 gImGuiSrvHeapCapacity = 64;
+
+struct FImGuiSrvDescriptorAllocator
+{
+	struct FSlot
+	{
+		D3D12_CPU_DESCRIPTOR_HANDLE Cpu;
+		D3D12_GPU_DESCRIPTOR_HANDLE Gpu;
+	};
+
+	graphics::DX12_DescriptorHeap* Heap = nullptr;
+	FSlot FreeSlots[gImGuiSrvHeapCapacity] = {};
+	uint32 FreeCount = 0;
+
+	void Allocate (D3D12_CPU_DESCRIPTOR_HANDLE* OutCpuHandle, D3D12_GPU_DESCRIPTOR_HANDLE* OutGpuHandle)
+	{
+		if (FreeCount > 0)
+		{
+			const FSlot Recycled = FreeSlots[--FreeCount];
+
+			if (OutCpuHandle) *OutCpuHandle = Recycled.Cpu;
+			if (OutGpuHandle) *OutGpuHandle = Recycled.Gpu;
+			return;
+		}
+
+		Heap->Allocate(OutCpuHandle, OutGpuHandle);
+	}
+
+	void Free (D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle, D3D12_GPU_DESCRIPTOR_HANDLE GpuHandle)
+	{
+		frt_assert(FreeCount < gImGuiSrvHeapCapacity);
+		FreeSlots[FreeCount++] = FSlot{ CpuHandle, GpuHandle };
+	}
+
+	void Reset ()
+	{
+		Heap = nullptr;
+		FreeCount = 0;
+	}
+};
+
+static FImGuiSrvDescriptorAllocator gImGuiSrvAllocator;
+
+// UI scale is user zoom (Ctrl+Wheel) times the monitor DPI scale, driving both fonts
+// (style.FontScaleMain — 1.92 rasterizes on demand, so this stays crisp) and metrics
+// (ScaleAllSizes). ScaleAllSizes is not idempotent, so every re-apply starts from an
+// unscaled copy of the style rather than compounding onto the live one.
+static ImGuiStyle gImGuiStyleUnscaled;
+static float gUiZoom = 1.0f;
+static float gUiScaleApplied = 0.0f;
+
+static constexpr float gUiZoomMin = 0.4f;
+static constexpr float gUiZoomMax = 3.0f;
+static constexpr float gUiZoomStepPerNotch = 1.1f;
+
+static void ApplyImGuiScale (float DpiScale)
+{
+	const float WantedScale = gUiZoom * DpiScale;
+	if (WantedScale == gUiScaleApplied)
+	{
+		return;
+	}
+
+	ImGuiStyle& Style = ImGui::GetStyle();
+	Style = gImGuiStyleUnscaled;
+	Style.ScaleAllSizes(WantedScale);
+	Style.FontScaleMain = WantedScale;
+
+	gUiScaleApplied = WantedScale;
+}
 #endif
 
-static std::filesystem::path ResolveInputContentRoot ()
+static std::filesystem::path ResolveContentSubdir (const char* Subdir)
 {
 	std::error_code ec;
 	std::filesystem::path current = std::filesystem::current_path(ec);
@@ -49,7 +134,7 @@ static std::filesystem::path ResolveInputContentRoot ()
 	std::filesystem::path dir = current;
 	while (true)
 	{
-		std::filesystem::path candidate = dir / "Core" / "Content" / "Input";
+		std::filesystem::path candidate = dir / "Core" / "Content" / Subdir;
 		if (std::filesystem::exists(candidate, ec))
 		{
 			std::filesystem::path absolute = std::filesystem::absolute(candidate, ec);
@@ -70,14 +155,14 @@ static std::filesystem::path ResolveInputContentRoot ()
 		dir = parent;
 	}
 
-	std::filesystem::path fallback = current / "Core" / "Content" / "Input";
+	std::filesystem::path fallback = current / "Core" / "Content" / Subdir;
 	std::filesystem::path absolute = std::filesystem::absolute(fallback, ec);
 	return ec ? fallback : absolute;
 }
 
 static std::filesystem::path GetDefaultInputMapPath ()
 {
-	return ResolveInputContentRoot() / "IAM_Editor.frtinputmap";
+	return ResolveContentSubdir("Input") / "IAM_Editor.frtinputmap";
 }
 
 GameInstance::GameInstance ()
@@ -97,6 +182,10 @@ GameInstance::GameInstance ()
 	windowParams.ClassName = L"FrtWindowClass";
 	windowParams.hInst = GetModuleHandle(nullptr);
 #if !defined(FRT_HEADLESS)
+	// Must precede window creation: otherwise the process stays DPI-unaware and Windows
+	// bitmap-stretches the whole swapchain on scaled monitors.
+	ImGui_ImplWin32_EnableDpiAwareness();
+
 	Window = new CWindow(windowParams);
 
 	Window->PostResizeEvent += std::bind(&GameInstance::OnWindowResize, this);
@@ -135,15 +224,36 @@ GameInstance::GameInstance ()
 	io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
 	io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
 
+	// UI font. The size given here becomes style.FontSizeBase; the scale factors set by
+	// ApplyImGuiScale() are applied on top of it, and 1.92 re-rasterizes per size, so
+	// zoomed text stays sharp. AddFontFromFileTTF() asserts on a missing file, hence the
+	// existence check — a stripped content dir should degrade to the built-in font.
+	const std::filesystem::path UiFontPath = ResolveContentSubdir("Fonts") / "Roboto-Medium.ttf";
+	std::error_code UiFontEc;
+	if (std::filesystem::exists(UiFontPath, UiFontEc))
+	{
+		io.Fonts->AddFontFromFileTTF(UiFontPath.string().c_str(), 16.0f);
+	}
+	else
+	{
+		io.Fonts->AddFontDefault();
+	}
+
+	// Reference style at scale 1.0 — ApplyImGuiScale() rebuilds the live style from this.
+	gImGuiStyleUnscaled = ImGui::GetStyle();
+
 	ImGui_ImplWin32_Init(Window->GetHandle());
 
-	// Dedicated heap for ImGui — small (font + few spares). Isolated from engine's
+	// Dedicated heap for ImGui — small (font atlas + user textures). Isolated from engine's
 	// ShaderDescriptorHeap so engine-side rebuilds on material growth never disturb ImGui.
+	// Slots are recycled by gImGuiSrvAllocator, so this only caps live textures, not churn.
 	ImGuiDescriptorHeap = graphics::DX12_DescriptorHeap(
 		Renderer->GetDevice(),
 		D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-		8,
+		gImGuiSrvHeapCapacity,
 		D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE);
+
+	gImGuiSrvAllocator.Heap = &ImGuiDescriptorHeap;
 
 	gImGuiDx12InitInfo = ImGui_ImplDX12_InitInfo();
 	gImGuiDx12InitInfo.Device = Renderer->GetDevice();
@@ -151,7 +261,7 @@ GameInstance::GameInstance ()
 	gImGuiDx12InitInfo.NumFramesInFlight = render::constants::FrameResourcesBufferCount;
 	gImGuiDx12InitInfo.RTVFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
 	gImGuiDx12InitInfo.DSVFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
-	gImGuiDx12InitInfo.UserData = &ImGuiDescriptorHeap;
+	gImGuiDx12InitInfo.UserData = &gImGuiSrvAllocator;
 	gImGuiDx12InitInfo.SrvDescriptorHeap = ImGuiDescriptorHeap.GetHeap();
 	gImGuiDx12InitInfo.SrvDescriptorAllocFn =
 		[] (
@@ -159,12 +269,15 @@ GameInstance::GameInstance ()
 		D3D12_CPU_DESCRIPTOR_HANDLE* OutCpuHandle,
 		D3D12_GPU_DESCRIPTOR_HANDLE* OutGpuHandle)
 		{
-			((graphics::DX12_DescriptorHeap*)InitInfo->UserData)->Allocate(OutCpuHandle, OutGpuHandle);
+			((FImGuiSrvDescriptorAllocator*)InitInfo->UserData)->Allocate(OutCpuHandle, OutGpuHandle);
 		};
 	gImGuiDx12InitInfo.SrvDescriptorFreeFn =
-		[] (ImGui_ImplDX12_InitInfo*, D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_GPU_DESCRIPTOR_HANDLE)
+		[] (
+		ImGui_ImplDX12_InitInfo* InitInfo,
+		D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle,
+		D3D12_GPU_DESCRIPTOR_HANDLE GpuHandle)
 		{
-			// Heap is ring/bump-allocated and lives for the GameInstance lifetime — nothing to free per-slot.
+			((FImGuiSrvDescriptorAllocator*)InitInfo->UserData)->Free(CpuHandle, GpuHandle);
 		};
 	ImGui_ImplDX12_Init(&gImGuiDx12InitInfo);
 #endif
@@ -173,7 +286,12 @@ GameInstance::GameInstance ()
 GameInstance::~GameInstance ()
 {
 #if !defined(FRT_HEADLESS)
+	// Shutdown destroys ImGui's textures, which frees their descriptors back into the
+	// allocator. Drop them — they point into a heap that is about to die, and the allocator
+	// is a static that would otherwise hand them out again on a subsequent init.
 	ImGui_ImplDX12_Shutdown();
+	gImGuiSrvAllocator.Reset();
+
 	ImGui_ImplWin32_Shutdown();
 	ImGui::DestroyContext();
 
@@ -365,6 +483,32 @@ void GameInstance::Input (float DeltaSeconds)
 		ActiveActionMap->ActionMap.Evaluate(InputSystem);
 	}
 
+	const bool bCtrlDown = InputSystem.IsKeyDown(input::KeyCode::LeftCtrl)
+		|| InputSystem.IsKeyDown(input::KeyCode::RightCtrl);
+
+#if !defined(FRT_HEADLESS)
+	// Ctrl+Wheel zooms the whole UI. ImGui discards wheel input while Ctrl is held
+	// (UpdateMouseWheel bails unless io.FontAllowUserScaling), so no ImGui window scrolls
+	// underneath; Tick() turns this into style scale before the next NewFrame().
+	if (bCtrlDown)
+	{
+		const float ZoomWheelDelta = InputSystem.GetMouseWheelDelta();
+		if (ZoomWheelDelta != 0.0f)
+		{
+			gUiZoom = math::Clamp(
+				gUiZoom * std::pow(gUiZoomStepPerNotch, ZoomWheelDelta),
+				gUiZoomMin,
+				gUiZoomMax);
+		}
+	}
+#endif
+
+	if (bCtrlDown)
+	{
+		// ctrl is higher prio than non-ctrl actions
+		return;
+	}
+
 #ifndef FRT_HEADLESS
 	input::SInputActionState* EnableMoveState = ActiveActionMap->ActionMap.FindActionState("IA_EnableMove");
 	if (EnableMoveState && EnableMoveState->bDown)
@@ -436,6 +580,11 @@ void GameInstance::Tick (float DeltaSeconds)
 	++FrameCount;
 
 #if !defined(FRT_HEADLESS)
+	// Picks up the zoom Input() just set, plus the monitor scale — re-queried every frame so
+	// moving the window to a differently scaled monitor needs no extra plumbing. Must run
+	// before NewFrame(), which is where font size and metrics are resolved for the frame.
+	ApplyImGuiScale(ImGui_ImplWin32_GetDpiScaleForHwnd(Window->GetHandle()));
+
 	ImGui_ImplDX12_NewFrame();
 	ImGui_ImplWin32_NewFrame();
 	ImGui::NewFrame();

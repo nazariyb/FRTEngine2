@@ -263,6 +263,24 @@ LRESULT CALLBACK CWindow::WindowProcessMessage (HWND hWnd, UINT Message, WPARAM 
 			return 0;
 		}
 
+		// Sent when the window moves to a monitor with a different scaling factor (the
+		// process is per-monitor DPI aware, so Windows does not rescale us on its own).
+		// Adopting the suggested rect keeps the window the same physical size; the
+		// resulting WM_SIZE drives the swapchain resize as usual.
+		case WM_DPICHANGED:
+		{
+			const RECT* SuggestedRect = reinterpret_cast<const RECT*>(lParam);
+			SetWindowPos(
+				hWnd,
+				nullptr,
+				SuggestedRect->left,
+				SuggestedRect->top,
+				SuggestedRect->right - SuggestedRect->left,
+				SuggestedRect->bottom - SuggestedRect->top,
+				SWP_NOZORDER | SWP_NOACTIVATE);
+			return 0;
+		}
+
 		// WM_SIZE is sent when the user resizes the window.
 		case WM_SIZE: if (bIgnoreNextSizeEvent)
 			{
