@@ -120,6 +120,48 @@ static void ApplyImGuiScale (float DpiScale)
 
 	gUiScaleApplied = WantedScale;
 }
+
+// Brings config-loaded display indices back inside the lists the adapter actually reports.
+// Config cannot do this itself: the lists do not exist until the renderer is up, and a
+// settings file is portable between machines while these indices are not.
+//
+// Each list is only consulted once the one above it has been clamped, because
+// GetResolutionsEncoded and GetRefreshRatesEncoded assert on an out-of-range index rather
+// than returning empty.
+static void ClampDisplaySettings (
+	frt::SDisplaySettings& Settings,
+	const frt::graphics::SDisplayOptions& Options)
+{
+	if (Options.OutputsNum == 0)
+	{
+		// No outputs enumerated. Nothing to validate against, and nothing that reads these
+		// indices will have anything to read either.
+		return;
+	}
+
+	Settings.MonitorIndex = frt::math::ClampIndex(Settings.MonitorIndex, Options.OutputsNum - 1);
+
+	const std::vector<uint64> resolutions =
+		Options.GetResolutionsEncoded(static_cast<uint8>(Settings.MonitorIndex));
+	if (resolutions.empty())
+	{
+		return;
+	}
+
+	Settings.ResolutionIndex = frt::math::ClampIndex(
+		Settings.ResolutionIndex, resolutions.size() - 1u);
+
+	const std::vector<uint64> refreshRates = Options.GetRefreshRatesEncoded(
+		static_cast<uint8>(Settings.MonitorIndex),
+		resolutions[Settings.ResolutionIndex]);
+	if (refreshRates.empty())
+	{
+		return;
+	}
+
+	Settings.RefreshRateIndex = frt::math::ClampIndex(
+		Settings.RefreshRateIndex, refreshRates.size() - 1u);
+}
 #endif
 
 static std::filesystem::path ResolveContentSubdir (const char* Subdir)
@@ -169,6 +211,13 @@ GameInstance::GameInstance ()
 	: FrameCount(0)
 	, World(*this)
 {
+	// First, and deliberately before the memory pool: config depends on nothing but the
+	// standard library, and every subsystem below is allowed to read settings out of it.
+	// An absent or malformed file leaves the compiled-in defaults in place - see
+	// Config/IniFile.h for why the format is kept this primitive.
+	Config.LoadDefaultLayers();
+	LoadUserSettings(Config, UserSettings);
+
 	MemoryPool = memory::CMemoryPool(2_Gb);
 	MemoryPool.MakeThisPrimaryInstance();
 
@@ -200,6 +249,14 @@ GameInstance::GameInstance ()
 	Renderer = MemoryPool.NewUnique<CRenderer>(Window);
 	Renderer->Resize(UserSettings.DisplaySettings.FullscreenMode == EFullscreenMode::Fullscreen);
 	DisplayOptions = graphics::GetDisplayOptions(Renderer->GetAdapter());
+
+	// The display indices in config address lists that only exist now that the adapter has
+	// been queried, so this is the earliest point they can be validated. A settings file
+	// written on another machine, or on this one before a monitor was unplugged, otherwise
+	// indexes straight out of DisplayOptions the first time a panel reads it.
+	ClampDisplaySettings(UserSettings.DisplaySettings, DisplayOptions);
+	Renderer->SetRenderMode(UserSettings.DisplaySettings.RenderMode);
+	Renderer->bVSyncEnabled = UserSettings.DisplaySettings.bVSync;
 
 	Camera = memory::NewShared<CCamera>();
 	CameraInitialTransform.SetTranslation(4.9f, 2.2f, -1.5f);

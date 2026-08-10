@@ -1,5 +1,7 @@
 #include "EnginePaths.h"
 
+#include <system_error>
+
 
 namespace frt::paths
 {
@@ -40,5 +42,71 @@ std::filesystem::path GetDxrShaderCacheDir ()
 std::filesystem::path GetProfilingDir ()
 {
 	return std::filesystem::path("..") / "Local" / "Profiling";
+}
+
+
+std::filesystem::path GetRepoRoot ()
+{
+	std::error_code ec;
+	const std::filesystem::path start = std::filesystem::current_path(ec);
+	if (ec)
+	{
+		return ".";
+	}
+
+	std::filesystem::path dir = start;
+	while (true)
+	{
+		if (std::filesystem::exists(dir / "premake5.lua", ec))
+		{
+			return dir;
+		}
+
+		if (!dir.has_parent_path())
+		{
+			break;
+		}
+
+		// A root path is its own parent; without this the loop never terminates.
+		const std::filesystem::path parent = dir.parent_path();
+		if (parent == dir)
+		{
+			break;
+		}
+
+		dir = parent;
+	}
+
+	return start;
+}
+
+
+std::filesystem::path GetEngineConfigPath ()
+{
+	return GetRepoRoot() / "Core" / "Config" / "Engine.ini";
+}
+
+
+std::filesystem::path GetProjectConfigPath ()
+{
+	// Relative to the working directory rather than the root: the working directory IS the
+	// project directory (Demo/ via debugdir), and which project is running is exactly what
+	// this layer is meant to vary on.
+	std::error_code ec;
+	const std::filesystem::path current = std::filesystem::current_path(ec);
+	if (ec)
+	{
+		return std::filesystem::path("Config") / "Game.ini";
+	}
+
+	return current / "Config" / "Game.ini";
+}
+
+
+std::filesystem::path GetUserConfigPath ()
+{
+	// Local/ is gitignored, which is the point: this is the only config file the running
+	// game writes, and it must never show up in a diff.
+	return GetRepoRoot() / "Local" / "UserSettings.ini";
 }
 }

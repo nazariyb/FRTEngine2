@@ -8,6 +8,7 @@
 #include "Window.h"
 #include "Sys_MeshRenderer.h"
 #include "WorldScene.h"
+#include "Config/Config.h"
 #include "Graphics/Render/GraphicsCoreTypes.h"
 #include "Graphics/Render/RenderCommonTypes.h"
 #include "Graphics/Render/RenderResourceAllocators.h"
@@ -50,6 +51,9 @@ public:
 	FRT_SINGLETON_GETTERS(GameInstance)
 
 	CTimer& GetTime () const;
+
+	config::CConfig& GetConfig () { return Config; }
+	const config::CConfig& GetConfig () const { return Config; }
 
 	bool HasGraphics () const;
 #if !defined(FRT_HEADLESS)
@@ -104,6 +108,10 @@ protected:
 #endif
 
 protected:
+	// Declared before the memory pool because it is loaded before it: config depends on
+	// nothing but the standard library, and everything below reads settings out of it.
+	config::CConfig Config;
+
 	memory::CMemoryPool MemoryPool;
 	CTimer* Timer;
 #ifndef FRT_HEADLESS

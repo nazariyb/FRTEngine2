@@ -389,13 +389,15 @@ void GameInstance::DrawDisplaySettingsPanel ()
 	}
 
 	{
-		const char* modeNames[] = { "Minimized", "Fullscreen", "Windowed", "Borderless" };
+		// Names come from the enum reflection, same as RenderMode below - a hand-written
+		// table here would drift the moment an enumerator is added and mislabel the slider.
+		const auto modeNames = enum_::GetValueNames<EFullscreenMode>();
 		auto labelFullscreen = "Fullscreen";
 		ImGui::SliderInt(
 			labelFullscreen,
 			(int*)&displaySettings.FullscreenMode,
 			1, (int32)EFullscreenMode::Borderless,
-			modeNames[(int32)displaySettings.FullscreenMode],
+			modeNames[(int32)displaySettings.FullscreenMode].data(),
 			ImGuiSliderFlags_AlwaysClamp);
 	}
 
@@ -437,6 +439,12 @@ void GameInstance::DrawDisplaySettingsPanel ()
 		GetRenderer()->DisplayRefreshRate = { numerator, denominator };
 
 		Window->SetDisplaySettings(displaySettings, DisplayOptions);
+
+		// Persist on Apply rather than on every widget edit: the panel writes straight into
+		// displaySettings, so saving per-frame would rewrite the file while a slider is
+		// being dragged. Applied and saved stay the same thing this way.
+		SaveUserSettings(Config, UserSettings);
+		Config.Save();
 	}
 
 	ImGui::End();
