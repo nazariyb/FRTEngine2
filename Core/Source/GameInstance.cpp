@@ -346,18 +346,22 @@ void GameInstance::Load ()
 
 	std::filesystem::path floorMaterialPath =
 		std::filesystem::path("../Core/Content/Models/Floor") / ("floor_mat" + std::to_string(0) + ".frtmat.yml");
-	auto floor = World.SpawnEntity("Floor");
-	floor->RenderModel->Model = memory::NewShared<SRenderModel>(
-		SRenderModel::FromMesh(
-			mesh::GenerateGrid(10.f, 10.f, 16u, 16u),
-			materialLibrary.LoadOrCreateMaterial(floorMaterialPath, {})));
-	floor->bRayTraced = true;
-	floor->Transform.SetTranslation(0.f, -1.f, 0.f);
+	// auto floor = World.SpawnEntity("Floor");
+	// floor->RenderModel->Model = memory::NewShared<SRenderModel>(
+	// 	SRenderModel::FromMesh(
+	// 		mesh::GenerateGrid(10.f, 10.f, 16u, 16u),
+	// 		materialLibrary.LoadOrCreateMaterial(floorMaterialPath, {})));
+	// floor->bRayTraced = true;
+	// floor->Transform.SetTranslation(0.f, -1.f, 0.f);
 
 	auto floorEnt = World.GetEcsWorld().Spawn();
-	World.GetEcsWorld().Add<Comp_LocalTransform>(floorEnt);
+	World.GetEcsWorld().Add<Comp_LocalTransform>(floorEnt, Vector3r::UpVector * 1.f);
 	World.GetEcsWorld().Add<Comp_WorldTransform>(floorEnt);
 	World.GetEcsWorld().Add<Comp_Name>(floorEnt, "Floor");
+	World.GetEcsWorld().Add<Comp_RenderModel>(floorEnt, memory::NewShared<SRenderModel>(
+		SRenderModel::FromMesh(
+			mesh::GenerateGrid(10.f, 10.f, 16u, 16u),
+			materialLibrary.LoadOrCreateMaterial(floorMaterialPath, {}))));
 
 	std::filesystem::path pillarMaterialPath =
 		std::filesystem::path("../Core/Content/Models/Pillar") / ("pillar_mat" + std::to_string(0) + ".frtmat.yml");

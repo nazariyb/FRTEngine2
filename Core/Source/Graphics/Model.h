@@ -5,8 +5,8 @@
 #include "Core.h"
 #include "Mesh.h"
 #include "Containers/Array.h"
+#include "ECS/ComponentRegistry.h"
 #include "Memory/Ref.h"
-#include "Render/ConstantBuffer.h"
 #include "Render/GraphicsCoreTypes.h"
 #include "Render/Material.h"
 
@@ -57,3 +57,5 @@ struct FRT_CORE_API Comp_RenderModel
 	// TODO: material overrides, bone pose, per-instance params.
 };
 }
+
+FRT_DECLARE_COMPONENT_NAMED(frt::graphics::Comp_RenderModel, "Comp_RenderModel");

@@ -15,6 +15,7 @@
 #include "Graphics/Model.h"
 #include "Graphics/Render/GraphicsCoreTypes.h"
 #include "Graphics/Render/Renderer.h"
+#include "Graphics/SceneExtraction.h"
 #include "Profiler/Profiler.h"
 
 using namespace frt;
@@ -143,7 +144,7 @@ void Sys_MeshRenderer::Present (float DeltaSeconds, ID3D12GraphicsCommandList4* 
 	Renderer->EnsureMaterialConstantCapacity(materialConstants.Count());
 	Renderer->SetRaytracingMaterialTextureSets(rtMaterialTextureSets);
 
-	if (!AsEntities.IsEmpty() && (AsEntities.Count() == AsModels.Count()))
+	if (!AsSources.IsEmpty() && (AsSources.Count() == AsModels.Count()))
 	{
 		// One hit group entry per (instance, section). Order MUST match the BLAS geometry order
 		// in CreateBottomLevelAS — both iterate model->Sections in the same order.
@@ -154,11 +155,12 @@ void Sys_MeshRenderer::Present (float DeltaSeconds, ID3D12GraphicsCommandList4* 
 		}
 		rtHitGroupEntries.Reset(totalSections);
 
-		for (uint32 i = 0; i < AsEntities.Count(); ++i)
+		for (uint32 i = 0; i < AsSources.Count(); ++i)
 		{
-			const CEntity* entity = AsEntities[i];
+			// The source identity is not needed here - only the model is. It exists so the
+			// update pass can tell one producer's instance from another's.
 			const graphics::SRenderModel* model = AsModels[i];
-			frt_assert(entity && model && model->VertexBufferGpu && model->IndexBufferGpu);
+			frt_assert(model && model->VertexBufferGpu && model->IndexBufferGpu);
 
 			const D3D12_GPU_VIRTUAL_ADDRESS vbBase = model->VertexBufferGpu->GetGPUVirtualAddress();
 			const D3D12_GPU_VIRTUAL_ADDRESS ibBase = model->IndexBufferGpu->GetGPUVirtualAddress();
@@ -213,14 +215,13 @@ void Sys_MeshRenderer::Present (float DeltaSeconds, ID3D12GraphicsCommandList4* 
 
 	memory::TRefWeak<graphics::CRenderer> renderer = GameInstance::GetInstance().GetRenderer();
 
+	// Same list the object constants and the acceleration structure were built from, so
+	// index i here addresses entry i there. Visibility and null models are already filtered
+	// by the collector, which is also what brings ECS entities into the raster path.
 	auto& ObjectDescriptorHandles = currentFrameResources.ObjectCB.DescriptorHeapHandleGpu;
-	for (uint32 i = 0; i < RenderModels.Count(); ++i)
+	for (uint32 i = 0; i < Drawables.Count(); ++i)
 	{
-		if (!RenderModels[i]->bVisible || !RenderModels[i]->Model)
-		{
-			continue;
-		}
-		const graphics::SRenderModel& model = *RenderModels[i]->Model;
+		const graphics::SRenderModel& model = *Drawables[i].Model;
 		if (!model.VertexBufferGpu || !model.IndexBufferGpu)
 		{
 			continue;
@@ -304,6 +305,10 @@ void Sys_MeshRenderer::InitializeRendering ()
 void Sys_MeshRenderer::CopyConstantData ()
 {
 	using namespace DirectX;
+
+	// One collection per frame, feeding raster object constants, the raster draw loop and
+	// the acceleration structure alike - so an ECS entity appears in all three or none.
+	CollectBuildEntries(Drawables);
 
 	graphics::SPassConstants passConstants;
 	const auto [renderWidth, renderHeight] = GameInstance::GetInstance().GetWindow().GetWindowSize();
@@ -500,6 +505,30 @@ void Sys_MeshRenderer::CopyConstantData ()
 	const D3D12_GPU_VIRTUAL_ADDRESS portalsGpuVa = Portals.UploadToArena(currentFrameResources.UploadArena);
 	Renderer->SetRaytracingLightsGpuVa(lightsGpuVa);
 	Renderer->SetRaytracingPortalsGpuVa(portalsGpuVa);
+
+	// ---- Raster object constants ----
+	// One per drawable, in Drawables order, because that is the order the raster loop
+	// indexes. Previously CWorldScene filled one per CEntity and the draw loop indexed by
+	// render-model slot; the two lined up only because SpawnEntity created a render model
+	// for every entity. An ECS entity has no such slot, so the correspondence is now
+	// explicit rather than a side effect of how entities are spawned.
+	Renderer->EnsureObjectConstantCapacity(Drawables.Count());
+
+	if (!Drawables.IsEmpty())
+	{
+		TArray<graphics::SObjectConstants> objectConstants;
+		objectConstants.SetSizeUninitialized(Drawables.Count());
+
+		for (uint32 i = 0u; i < Drawables.Count(); ++i)
+		{
+			objectConstants[i].World = graphics::ToWorldMatrix(Drawables[i].Transform);
+		}
+
+		currentFrameResources.ObjectCB.CopyBunch(
+			objectConstants.GetData(),
+			objectConstants.Count(),
+			currentFrameResources.UploadArena);
+	}
 }
 
 void Sys_MeshRenderer::UploadCB (ID3D12GraphicsCommandList4* CommandList)
@@ -530,15 +559,16 @@ memory::TRefShared<graphics::Comp_RenderModel> Sys_MeshRenderer::SpawnRenderMode
 
 #ifndef FRT_HEADLESS
 graphics::raytracing::SAccelerationStructureBuffers Sys_MeshRenderer::CreateBottomLevelAS (
-	const graphics::Comp_RenderModel& RenderModel)
+	const graphics::SRenderModel& Model)
 {
 	using namespace graphics;
 	using namespace graphics::raytracing;
 
 	CBottomLevelASGenerator bottomLevelAS;
 
-	frt_assert(RenderModel.Model);
-	const SRenderModel& model = *RenderModel.Model;
+	// Takes the model rather than the component wrapping it: nothing here needed the
+	// wrapper, and both instance sources can hand over a model.
+	const SRenderModel& model = Model;
 
 	// One geometry per section. Each geometry slices the shared vertex/index buffers via offsets.
 	// IMPORTANT: section indices are local to the section in our index buffer (mFaces[].mIndices
@@ -756,6 +786,61 @@ void Sys_MeshRenderer::CreateTopLevelAS (const TArray<SAccelerationInstance>& In
 		bCanUpdateOnly ? TopLevelASBuffers.Result.Get() : nullptr);
 }
 
+void Sys_MeshRenderer::CollectBuildEntries (TArray<SBuildEntry>& OutEntries)
+{
+	OutEntries.Clear();
+
+	CWorldScene& scene = GameInstance::GetInstance().GetWorldScene();
+
+	// ---- Legacy CEntity list ----
+	const auto& sceneEntities = scene.GetEntities();
+	for (uint32 i = 0; i < sceneEntities.Count(); ++i)
+	{
+		const CEntity* entity = sceneEntities[i].GetRawIgnoringLifetime();
+		if (!entity || !entity->RenderModel || !entity->RenderModel->Model || !entity->RenderModel->bVisible)
+		{
+			continue;
+		}
+
+		SBuildEntry entry = {};
+		entry.Source.Legacy = entity;
+		entry.Model = entity->RenderModel->Model.GetRawIgnoringLifetime();
+		entry.Transform = entity->Transform.GetRaytracingTransform();
+		OutEntries.Add(entry);
+	}
+
+	// ---- ECS ----
+	// Appended after the legacy entries, never interleaved, so an entity migrating from one
+	// source to the other is a set change and therefore a rebuild - which it has to be,
+	// since it moves position and every hit-group offset after it shifts.
+	//
+	// Absolute transforms (zero origin) to match what the CEntity path produces. Passing the
+	// camera position here is what would make instances camera-relative.
+	TArray<graphics::SMeshInstance> ecsInstances;
+	graphics::ExtractMeshInstances(scene.GetEcsWorld(), Vector3r::ZeroVector, ecsInstances);
+
+	for (uint32 i = 0; i < ecsInstances.Count(); ++i)
+	{
+		const graphics::SMeshInstance& instance = ecsInstances[i];
+
+		SBuildEntry entry = {};
+		entry.Source.Entity = instance.Entity;
+		entry.Model = instance.Model;
+
+		// Both are row-major 3x4 with translation in the last column; copied field-wise
+		// rather than memcpy'd so a layout change in either fails to compile.
+		for (uint32 row = 0u; row < 3u; ++row)
+		{
+			for (uint32 col = 0u; col < 4u; ++col)
+			{
+				entry.Transform.m[row][col] = instance.Transform.M[row][col];
+			}
+		}
+
+		OutEntries.Add(entry);
+	}
+}
+
 // definitely should be inside Renderer
 void Sys_MeshRenderer::CreateAccelerationStructures ()
 {
@@ -771,28 +856,14 @@ void Sys_MeshRenderer::CreateAccelerationStructures ()
 	}
 
 	CWorldScene& scene = GameInstance::GetInstance().GetWorldScene();
-	const auto& sceneEntities = scene.GetEntities();
-
-	struct SBuildEntry
-	{
-		const CEntity* Entity = nullptr;
-		const graphics::SRenderModel* Model = nullptr;
-		DirectX::XMFLOAT3X4 Transform = {};
-	};
 
 	std::unordered_map<graphics::SMaterial*, uint32> materialIndices;
 	TArray<SBuildEntry> buildEntries;
-	buildEntries.SetCapacity(sceneEntities.Count());
+	CollectBuildEntries(buildEntries);
 
-	for (uint32 i = 0; i < sceneEntities.Count(); ++i)
+	for (uint32 i = 0; i < buildEntries.Count(); ++i)
 	{
-		const CEntity* entity = sceneEntities[i].GetRawIgnoringLifetime();
-		if (!entity || !entity->RenderModel || !entity->RenderModel->Model || !entity->RenderModel->bVisible)
-		{
-			continue;
-		}
-
-		const graphics::SRenderModel& model = *entity->RenderModel->Model;
+		const graphics::SRenderModel& model = *buildEntries[i].Model;
 		for (const graphics::SRenderSection& section : model.Sections)
 		{
 			if (section.MaterialIndex >= model.Materials.Count())
@@ -820,12 +891,6 @@ void Sys_MeshRenderer::CreateAccelerationStructures ()
 				material->RuntimeIndex = it->second;
 			}
 		}
-
-		SBuildEntry entry = {};
-		entry.Entity = entity;
-		entry.Model = &model;
-		entry.Transform = entity->Transform.GetRaytracingTransform();
-		buildEntries.Add(entry);
 	}
 
 	if (buildEntries.IsEmpty())
@@ -833,7 +898,7 @@ void Sys_MeshRenderer::CreateAccelerationStructures ()
 		BottomLevelASs.Clear();
 		TopLevelASBuffers = {};
 		Renderer->TopLevelASBuffers = {};
-		AsEntities.Clear();
+		AsSources.Clear();
 		AsModels.Clear();
 		AsTransforms.Clear();
 		Instances.Clear();
@@ -854,12 +919,12 @@ void Sys_MeshRenderer::CreateAccelerationStructures ()
 		FRT_GPU_SCOPE(Renderer->GetCommandList(), "BLAS_BuildAll");
 		for (const SBuildEntry& entry : buildEntries)
 		{
-			bottomLevelBuffers.Add(CreateBottomLevelAS(*entry.Entity->GetRenderModel()));
+			bottomLevelBuffers.Add(CreateBottomLevelAS(*entry.Model));
 		}
 	}
 
 	Instances.Reset(buildEntries.Count());
-	AsEntities.Reset(buildEntries.Count());
+	AsSources.Reset(buildEntries.Count());
 	AsModels.Reset(buildEntries.Count());
 	AsTransforms.Reset(buildEntries.Count());
 
@@ -870,9 +935,9 @@ void Sys_MeshRenderer::CreateAccelerationStructures ()
 		// HitGroupIndex = cumulative sum of prior models' (sectionCount * rayTypesPerSection).
 		// 2 ray types: primary + shadow. Must match SBT layout in CreateShaderBindingTable.
 		Instances.Add({ bottomLevelBuffers[i].Result.Get(), entry.Transform, i, cumulativeHitGroups });
-		AsEntities.Add(entry.Entity);
+		AsSources.Add(entry.Source);
 		AsModels.Add(entry.Model);
-		AsTransforms.Add(entry.Entity->Transform.GetMatrix());
+		AsTransforms.Add(entry.Transform);
 
 		const uint32 sectionCount = entry.Model ? entry.Model->Sections.Count() : 0u;
 		cumulativeHitGroups += sectionCount * 2u;
@@ -902,7 +967,6 @@ void Sys_MeshRenderer::UpdateAccelerationStructures ()
 	}
 
 	CWorldScene& scene = GameInstance::GetInstance().GetWorldScene();
-	const auto& sceneEntities = scene.GetEntities();
 
 	if (!bAsInitialized || scene.bSceneTopologyDirty)
 	{
@@ -915,7 +979,7 @@ void Sys_MeshRenderer::UpdateAccelerationStructures ()
 		return;
 	}
 
-	if (AsEntities.Count() != AsModels.Count() || AsEntities.Count() != AsTransforms.Count())
+	if (AsSources.Count() != AsModels.Count() || AsSources.Count() != AsTransforms.Count())
 	{
 		scene.bSceneTopologyDirty = true;
 		CreateAccelerationStructures();
@@ -926,52 +990,43 @@ void Sys_MeshRenderer::UpdateAccelerationStructures ()
 		return;
 	}
 
-	uint32 trackedIndex = 0u;
+	// Same collector the build uses, so the two cannot disagree about what belongs in the
+	// structure or in what order.
+	TArray<SBuildEntry> currentEntries;
+	CollectBuildEntries(currentEntries);
+
 	uint32 cumulativeHitGroups = 0u;
-	bool bTopologyChanged = false;
+	bool bTopologyChanged = currentEntries.Count() != AsSources.Count();
 	bool bInstanceDataChanged = false;
 
-	for (uint32 i = 0; i < sceneEntities.Count(); ++i)
+	for (uint32 i = 0; !bTopologyChanged && i < currentEntries.Count(); ++i)
 	{
-		const CEntity* entity = sceneEntities[i].GetRawIgnoringLifetime();
-		// Filter must match CreateAccelerationStructures exactly, else trackedIndex desyncs.
-		if (!entity || !entity->RenderModel || !entity->RenderModel->Model || !entity->RenderModel->bVisible)
-		{
-			continue;
-		}
+		const SBuildEntry& entry = currentEntries[i];
 
-		if (trackedIndex >= AsEntities.Count() ||
-			AsEntities[trackedIndex] != entity ||
-			AsModels[trackedIndex] != entity->RenderModel->Model.GetRawIgnoringLifetime())
+		// A different producer or a different model at this position means the set moved,
+		// and every hit-group offset after it with it.
+		if (AsSources[i] != entry.Source || AsModels[i] != entry.Model)
 		{
 			bTopologyChanged = true;
 			break;
 		}
 
-		DirectX::XMFLOAT4X4 currentTransform = entity->GetTransform().GetMatrix();
-		if (!AreMatricesEqual(currentTransform, AsTransforms[trackedIndex]))
+		if (std::memcmp(&AsTransforms[i], &entry.Transform, sizeof(DirectX::XMFLOAT3X4)) != 0)
 		{
-			AsTransforms[trackedIndex] = currentTransform;
-			Instances[trackedIndex].Transform = entity->GetTransform().GetRaytracingTransform();
+			AsTransforms[i] = entry.Transform;
+			Instances[i].Transform = entry.Transform;
 			bInstanceDataChanged = true;
 		}
 
 		// Cumulative offset, must match CreateAccelerationStructures.
-		if (Instances[trackedIndex].HitGroupIndex != cumulativeHitGroups)
+		if (Instances[i].HitGroupIndex != cumulativeHitGroups)
 		{
-			Instances[trackedIndex].HitGroupIndex = cumulativeHitGroups;
+			Instances[i].HitGroupIndex = cumulativeHitGroups;
 			bInstanceDataChanged = true;
 		}
 
-		const uint32 sectionCount = AsModels[trackedIndex] ? AsModels[trackedIndex]->Sections.Count() : 0u;
+		const uint32 sectionCount = AsModels[i] ? AsModels[i]->Sections.Count() : 0u;
 		cumulativeHitGroups += sectionCount * 2u;
-
-		++trackedIndex;
-	}
-
-	if (!bTopologyChanged && trackedIndex != AsEntities.Count())
-	{
-		bTopologyChanged = true;
 	}
 
 	if (bTopologyChanged)

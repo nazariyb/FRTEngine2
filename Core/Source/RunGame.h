@@ -9,6 +9,7 @@
 #include "Precision.h"
 #include "Timer.h"
 #include "ECS/CoreComponents.h"
+#include "Graphics/GraphicsComponents.h"
 
 
 namespace frt
@@ -25,6 +26,7 @@ int RunGame()
 	// touches the registry. Called any later, this is silently a no-op and ids fall back
 	// to whatever order first touch happened to give them.
 	RegisterCoreComponents();
+	graphics::RegisterGraphicsComponents();
 
 	auto game = new TGame;
 

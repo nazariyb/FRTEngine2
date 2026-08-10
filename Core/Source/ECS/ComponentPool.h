@@ -135,6 +135,7 @@ public:
 		Data.RemoveAt<false>(static_cast<int64>(lastIndex));
 
 		++Version;
+		++StructuralVersion;
 	}
 
 
@@ -163,6 +164,7 @@ public:
 
 		MarkDirty(denseIndex);
 		++Version;
+		++StructuralVersion;
 
 		return Data[denseIndex];
 	}
@@ -231,6 +233,18 @@ public:
 
 	uint64 GetVersion() const { return Version; }
 
+	/**
+	 * Bumped only when the SET of entities changes - an insert or a removal - and never by
+	 * writing to a component that is already present.
+	 *
+	 * This is what makes dense order usable as a stable ordering. Swap-and-pop is the only
+	 * thing that reorders the dense arrays, so while this value holds steady, iteration
+	 * yields the same entities in the same positions every time. A consumer that has built
+	 * something order-dependent - a TLAS with per-instance shader-table offsets, say - can
+	 * refit against it and only rebuild when this changes.
+	 */
+	uint64 GetStructuralVersion() const { return StructuralVersion; }
+
 	uint32 GetBlockCount() const
 	{
 		return (Dense.Count() + DirtyBlockSize - 1u) / DirtyBlockSize;
@@ -266,6 +280,7 @@ public:
 		BlockVersions.Clear();
 		FreeSparsePages();
 		++Version;
+		++StructuralVersion;
 	}
 
 private:
@@ -358,6 +373,7 @@ private:
 	TArray<T>        Data;
 
 	uint64           Version = 0ull;
+	uint64           StructuralVersion = 0ull;
 	TArray<uint64>   BlockVersions;
 };
 }

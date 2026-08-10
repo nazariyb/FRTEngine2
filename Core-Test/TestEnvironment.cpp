@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include "ECS/CoreComponents.h"
+#include "Graphics/GraphicsComponents.h"
 
 
 namespace
@@ -21,6 +22,7 @@ public:
 	void SetUp() override
 	{
 		frt::RegisterCoreComponents();
+		frt::graphics::RegisterGraphicsComponents();
 	}
 };
 

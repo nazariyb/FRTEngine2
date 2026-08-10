@@ -41,6 +41,8 @@ bool frt::CWorldScene::Initialize ()
 	EcsWorld = memory::NewUnique<CWorld>();
 	Commands = memory::NewUnique<CCommandBuffer>();
 
+	// Registration order IS execution order within a phase, until systems can declare
+	// dependencies.
 	Systems.Add(memory::NewUnmanaged<Sys_Lifetime>(*EcsWorld, *Commands));
 	Systems.Add(memory::NewUnmanaged<Sys_Transform>(*EcsWorld));
 
@@ -162,29 +164,11 @@ void frt::CWorldScene::RunFrame (float InDeltaSeconds)
 	// which for Sys_Transform means every local transform touched this frame.
 	RunSystemsPhase(EUpdatePhase::Finalize, Context);
 
-#ifndef FRT_HEADLESS
-	// TODO: ideally, CBs should already be stored in one array
-	// TODO: use (when it's implemented) memory pool
-	const uint32 entityCount = Entities.Count();
-	Game.GetRenderer()->EnsureObjectConstantCapacity(entityCount);
-
-	auto& currentFrameResources = Game.GetRenderer()->GetCurrentFrameResource();
-
-	if (entityCount > 0u)
-	{
-		TArray<graphics::SObjectConstants> objectConstants;
-		objectConstants.SetSizeUninitialized(entityCount);
-		for (uint32 i = 0; i < entityCount; ++i)
-		{
-			objectConstants[i].World = Entities[i]->Transform.GetMatrix();
-		}
-
-		currentFrameResources.ObjectCB.CopyBunch(
-			objectConstants.GetData(),
-			objectConstants.Count(),
-			currentFrameResources.UploadArena);
-	}
-#endif
+	// Object constants used to be filled here, one per CEntity, and indexed in the raster
+	// draw loop by render-model slot. The two lined up only because SpawnEntity created a
+	// render model for every entity, drawable or not. Sys_MeshRenderer now fills them from
+	// its own drawable list - the same one the raster loop and the acceleration structure
+	// index into, and the one that includes ECS entities.
 }
 
 void frt::CWorldScene::SubmitFrame (ID3D12GraphicsCommandList4* CommandList)

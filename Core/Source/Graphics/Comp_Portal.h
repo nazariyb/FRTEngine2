@@ -2,6 +2,7 @@
 
 #include "Core.h"
 #include "CoreTypes.h"
+#include "ECS/ComponentRegistry.h"
 #include "Math/Math.h"
 
 
@@ -28,3 +29,6 @@ struct FRT_CORE_API Comp_Portal
 	bool     bEnabled = true;
 };
 }
+
+
+FRT_DECLARE_COMPONENT_NAMED(frt::graphics::Comp_Portal, "Comp_Portal");

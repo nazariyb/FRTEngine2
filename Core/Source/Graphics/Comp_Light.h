@@ -2,6 +2,7 @@
 
 #include "Core.h"
 #include "CoreTypes.h"
+#include "ECS/ComponentRegistry.h"
 #include "Graphics/SColor.h"
 #include "Math/Math.h"
 
@@ -21,17 +22,21 @@ struct FRT_CORE_API Comp_Light
 		AreaQuad    = 2u,
 	};
 
-	EKind    Kind      = EKind::Point;
-	SColor   Color     = { 1.0f, 1.0f, 1.0f, 1.0f };
-	float    Intensity = 10.0f;
+
+	EKind Kind = EKind::Point;
+	SColor Color = { 1.0f, 1.0f, 1.0f, 1.0f };
+	float Intensity = 10.0f;
 
 	// Directional / AreaQuad: unit vector pointing FROM the light TO the scene.
 	Vector3f Direction = { 0.0f, -1.0f, 0.0f };
 
 	// AreaQuad only: world-space half-extent vectors. Area = 4 * |Edge1| * |Edge2|.
-	Vector3f Edge1     = { 1.0f, 0.0f, 0.0f };
-	Vector3f Edge2     = { 0.0f, 0.0f, 1.0f };
+	Vector3f Edge1 = { 1.0f, 0.0f, 0.0f };
+	Vector3f Edge2 = { 0.0f, 0.0f, 1.0f };
 
-	bool     bEnabled  = true;
+	bool bEnabled = true;
 };
 }
+
+
+FRT_DECLARE_COMPONENT_NAMED(frt::graphics::Comp_Light, "Comp_Light");
