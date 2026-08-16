@@ -90,3 +90,19 @@ for _, cfg in ipairs(buildConfigs) do
 		table.insert(configs, cfg .. "-" .. tgt)
 	end
 end
+
+-- Linux is a placeholder for the port (see the triplet TODO at the top of this file);
+-- nothing builds for it yet.
+--
+-- It must not reach a Visual Studio action. Premake matches the platform name against its
+-- known systems, so "Linux" silently implies system "linux", and a linux WindowedApp has
+-- no executable extension - which the vcxproj exporter writes as an empty <TargetExt>
+-- element. MSBuild reads that element's value as the newline and indentation between the
+-- tags, so the NormalizePath call in Microsoft.CppCommon.targets that builds $(TargetPath)
+-- fails with "Illegal characters in path" (MSB4184). Visual Studio swallows the error on
+-- load; Rider reports it and refuses to open the project.
+buildPlatforms = { "Win64" }
+
+if not (_ACTION and _ACTION:match("^vs")) then
+	table.insert(buildPlatforms, "Linux")
+end

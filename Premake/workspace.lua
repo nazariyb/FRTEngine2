@@ -1,6 +1,6 @@
 workspace "FRTEngine2"
 	configurations(configs)
-	platforms { "Win64", "Linux" }
+	platforms(buildPlatforms)
 	location (ROOT_DIR)
 
 	language "C++"
