@@ -4,7 +4,7 @@ workspace "FRTEngine2"
 	location (ROOT_DIR)
 
 	language "C++"
-	cppdialect "C++20"
+	cppdialect "C++latest"
 
 	defines
 	{

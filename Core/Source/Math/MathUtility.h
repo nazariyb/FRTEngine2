@@ -56,9 +56,9 @@ namespace math
 	}
 
 	template <concepts::Numerical T, concepts::Numerical TIndexType>
-	T ClampIndex (const T& Value, const TIndexType& MaxValue)
+	T ClampIndex (const T& Value, const TIndexType& ContainerSize)
 	{
-		return Clamp(Value, (T)0, (T)MaxValue);
+		return Clamp(Value, (T)0, (T)(ContainerSize - (TIndexType)1));
 	}
 
 	template <concepts::Numerical T, concepts::Indexable TIndexable>

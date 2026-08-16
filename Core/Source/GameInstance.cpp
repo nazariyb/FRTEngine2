@@ -120,48 +120,6 @@ static void ApplyImGuiScale (float DpiScale)
 
 	gUiScaleApplied = WantedScale;
 }
-
-// Brings config-loaded display indices back inside the lists the adapter actually reports.
-// Config cannot do this itself: the lists do not exist until the renderer is up, and a
-// settings file is portable between machines while these indices are not.
-//
-// Each list is only consulted once the one above it has been clamped, because
-// GetResolutionsEncoded and GetRefreshRatesEncoded assert on an out-of-range index rather
-// than returning empty.
-static void ClampDisplaySettings (
-	frt::SDisplaySettings& Settings,
-	const frt::graphics::SDisplayOptions& Options)
-{
-	if (Options.OutputsNum == 0)
-	{
-		// No outputs enumerated. Nothing to validate against, and nothing that reads these
-		// indices will have anything to read either.
-		return;
-	}
-
-	Settings.MonitorIndex = frt::math::ClampIndex(Settings.MonitorIndex, Options.OutputsNum - 1);
-
-	const std::vector<uint64> resolutions =
-		Options.GetResolutionsEncoded(static_cast<uint8>(Settings.MonitorIndex));
-	if (resolutions.empty())
-	{
-		return;
-	}
-
-	Settings.ResolutionIndex = frt::math::ClampIndex(
-		Settings.ResolutionIndex, resolutions.size() - 1u);
-
-	const std::vector<uint64> refreshRates = Options.GetRefreshRatesEncoded(
-		static_cast<uint8>(Settings.MonitorIndex),
-		resolutions[Settings.ResolutionIndex]);
-	if (refreshRates.empty())
-	{
-		return;
-	}
-
-	Settings.RefreshRateIndex = frt::math::ClampIndex(
-		Settings.RefreshRateIndex, refreshRates.size() - 1u);
-}
 #endif
 
 static std::filesystem::path ResolveContentSubdir (const char* Subdir)
@@ -223,11 +181,12 @@ GameInstance::GameInstance ()
 
 	Timer = new CTimer;
 
+	const auto& [width, height, bValid] = UserSettings.DisplaySettings.GetResolution();
 	SWindowParams windowParams;
 	windowParams.StartX = 1000;
 	windowParams.StartY = 1000;
-	windowParams.Width = 1260;
-	windowParams.Height = 720;
+	windowParams.Width = bValid ? width : 1260;
+	windowParams.Height = bValid ? height : 720;
 	windowParams.ClassName = L"FrtWindowClass";
 	windowParams.hInst = GetModuleHandle(nullptr);
 #if !defined(FRT_HEADLESS)
@@ -246,22 +205,28 @@ GameInstance::GameInstance ()
 	InputSystem.SetDefaultWindow(
 		static_cast<input::WindowId>(reinterpret_cast<uintptr_t>(Window->GetHandle())));
 
-	Renderer = MemoryPool.NewUnique<CRenderer>(Window);
-	Renderer->Resize(UserSettings.DisplaySettings.FullscreenMode == EFullscreenMode::Fullscreen);
-	DisplayOptions = graphics::GetDisplayOptions(Renderer->GetAdapter());
+	{
+		SDisplaySettings& displaySettings = UserSettings.DisplaySettings;
 
-	// The display indices in config address lists that only exist now that the adapter has
-	// been queried, so this is the earliest point they can be validated. A settings file
-	// written on another machine, or on this one before a monitor was unplugged, otherwise
-	// indexes straight out of DisplayOptions the first time a panel reads it.
-	ClampDisplaySettings(UserSettings.DisplaySettings, DisplayOptions);
-	Renderer->SetRenderMode(UserSettings.DisplaySettings.RenderMode);
-	Renderer->bVSyncEnabled = UserSettings.DisplaySettings.bVSync;
+		Renderer = MemoryPool.NewUnique<CRenderer>(Window);
+		Renderer->Resize(displaySettings.FullscreenMode == EFullscreenMode::Fullscreen);
+		DisplayOptions = graphics::GetDisplayOptions(Renderer->GetAdapter());
 
-	Camera = memory::NewShared<CCamera>();
-	CameraInitialTransform.SetTranslation(4.9f, 2.2f, -1.5f);
-	CameraInitialTransform.SetRotation(-0.038f, -1.356f, .0f);
-	Camera->Transform = CameraInitialTransform;
+		displaySettings.ResolutionIndex =
+			DisplayOptions.GetResolutionIndex(displaySettings.MonitorIndex, displaySettings.GetResolution());
+		displaySettings.RefreshRateIndex =
+			DisplayOptions.GetRefreshRateIndex(displaySettings.MonitorIndex, displaySettings.RefreshRateTxt);
+
+		displaySettings.MonitorIndex = DisplayOptions.ClampMonitorIndex(displaySettings.MonitorIndex);
+		Renderer->SetRenderMode(displaySettings.RenderMode);
+		Renderer->bVSyncEnabled = displaySettings.bVSync;
+
+		Camera = memory::NewShared<CCamera>();
+		CameraInitialTransform.SetTranslation(4.9f, 2.2f, -1.5f);
+		CameraInitialTransform.SetRotation(-0.038f, -1.356f, .0f);
+		Camera->Transform = CameraInitialTransform;
+
+	}
 #endif
 
 	World.Initialize();

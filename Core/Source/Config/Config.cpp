@@ -165,6 +165,28 @@ std::string CConfig::Get (std::string_view Section, std::string_view Key, const 
 	return Get(Section, Key, std::string_view(Default != nullptr ? Default : ""));
 }
 
+void CConfig::Get (
+	char* OutBuffer,
+	uint8 BufferSize,
+	std::string_view Section,
+	std::string_view Key,
+	const char* Default) const
+{
+	frt_assert(BufferSize > 0);
+
+	const std::string* raw = FindValue(Section, Key);
+	std::string_view value = raw != nullptr ? *raw : std::string_view(Default != nullptr ? Default : "");
+
+	if (value.size() >= BufferSize)
+	{
+		// TODO: warning
+	}
+
+	const size_t copySize = std::min(static_cast<size_t>(BufferSize), value.size());
+	memcpy(OutBuffer, value.data(), copySize);
+	OutBuffer[copySize] = '\0';
+}
+
 
 void CConfig::Set (std::string_view Section, std::string_view Key, bool Value)
 {

@@ -4,11 +4,19 @@
 #include "CoreTypes.h"
 #include "Enum.h"
 #include "Graphics/Render/GraphicsCoreTypes.h"
+#include "Graphics/Render/RenderCommonTypes.h"
 
 
 namespace frt::config
 {
 class CConfig;
+}
+
+
+namespace frt::names
+{
+inline constexpr const char* DisplaySection = "Settings.Display";
+inline constexpr const char* VideoSection = "Settings.Video";
 }
 
 
@@ -29,11 +37,21 @@ struct SDisplaySettings
 	int32 ResolutionIndex = 0;
 	int32 RefreshRateIndex = 0;
 
+	static constexpr uint8 ResolutionTextBufferSize		= 9u;
+	static constexpr uint8 RefreshRateTextBufferSize	= 6u;
+	char ResolutionTxt[ResolutionTextBufferSize + 1u]	= {};
+	char RefreshRateTxt[RefreshRateTextBufferSize + 1u]	= {};
+
+	bool bVSync = true;
 	EFullscreenMode FullscreenMode = EFullscreenMode::Windowed;
 	graphics::ERenderMode RenderMode = graphics::ERenderMode::Raytracing;
-	bool bVSync = true;
 
+private:
+	mutable graphics::SResolution Resolution{};
+
+public:
 	bool IsFullscreen () const { return FullscreenMode == EFullscreenMode::Fullscreen; }
+	const graphics::SResolution& GetResolution () const;
 };
 
 
@@ -43,20 +61,28 @@ struct SUserSettings
 };
 
 
-// Config round-trip, over the [Display] section of the layered stack.
+// Config round-trip, over the [Settings.Display] section of the layered stack.
 //
 // Load leaves anything the config does not mention exactly as it found it, so the struct's
 // own member initializers are the real defaults and a partial, stale or absent file costs
 // nothing. Enums go through the reflection below, by name.
 //
-// The monitor / resolution / refresh-rate indices are indices into lists that only exist
-// once the adapter has been queried, so they are NOT validated here - the caller clamps
-// them against SDisplayOptions after the renderer comes up.
+// Resolution and refresh rate are stored as VALUES ("3840x2160", "60"), not as indices: the
+// option lists differ per monitor and per machine, so an index does not survive a monitor
+// change. Save therefore needs SDisplayOptions to turn the panel's index back into the value
+// it points at. Load leaves the text in ResolutionTxt / RefreshRateTxt for the caller to
+// resolve once the adapter has been queried.
 FRT_CORE_API void LoadDisplaySettings (const config::CConfig& Config, SDisplaySettings& OutSettings);
-FRT_CORE_API void SaveDisplaySettings (config::CConfig& Config, const SDisplaySettings& Settings);
+FRT_CORE_API void SaveDisplaySettings (
+	config::CConfig& Config,
+	const SDisplaySettings& Settings,
+	const graphics::SDisplayOptions& Options);
 
 FRT_CORE_API void LoadUserSettings (const config::CConfig& Config, SUserSettings& OutSettings);
-FRT_CORE_API void SaveUserSettings (config::CConfig& Config, const SUserSettings& Settings);
+FRT_CORE_API void SaveUserSettings (
+	config::CConfig& Config,
+	const SUserSettings& Settings,
+	const graphics::SDisplayOptions& Options);
 }
 
 

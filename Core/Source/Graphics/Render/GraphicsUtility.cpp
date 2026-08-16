@@ -1,10 +1,11 @@
-﻿#include "GraphicsUtility.h"
+#include "GraphicsUtility.h"
 
 #include <algorithm>
 #include <cstdio>
 #include <dxgi.h>
 #include <dxgi1_2.h>
 #include <ranges>
+#include <span>
 #include <vector>
 #include <wrl/client.h>
 
@@ -12,6 +13,7 @@
 #include "CoreTypes.h"
 #include "Exception.h"
 #include "RenderCommonTypes.h"
+#include "Math/MathUtility.h"
 
 
 namespace frt::graphics
@@ -69,9 +71,11 @@ uint8 CollectAdapterOutputs (IDXGIAdapter1* InAdapter, SDisplayOptions& OutOptio
 {
 	Microsoft::WRL::ComPtr<IDXGIOutput> output;
 
-	OutOptions.OutputsNum = 0;
-	while (InAdapter->EnumOutputs(OutOptions.OutputsNum, output.ReleaseAndGetAddressOf())
-		!= DXGI_ERROR_NOT_FOUND)
+	auto& resolutions = result.Resolutions;
+	auto& refreshRates = result.RefreshRates;
+
+	result.OutputsNum = 0;
+	while (InAdapter->EnumOutputs(OutOptions.OutputsNum, output.ReleaseAndGetAddressOf()) != DXGI_ERROR_NOT_FOUND)
 	{
 		++OutOptions.OutputsNum;
 
@@ -81,17 +85,29 @@ uint8 CollectAdapterOutputs (IDXGIAdapter1* InAdapter, SDisplayOptions& OutOptio
 		const RECT& rect = outputDesc.DesktopCoordinates;
 		OutOptions.OutputsRects.push_back({ rect.left, rect.top, rect.right, rect.bottom });
 
-		auto& outputModes = OutOptions.OutputsModes.emplace_back();
-		for (const DXGI_MODE_DESC& mode : GetOutputDisplayModes(output.Get(), DXGI_FORMAT_R8G8B8A8_UNORM))
+        auto& resolutionsNum = result.ResolutionOptionNums.emplace_back(0u);
+		const size_t outputFirstResolution = resolutions.size();
+
+        for (const DXGI_MODE_DESC& mode : GetOutputDisplayModes(output.Get(), DXGI_FORMAT_R8G8B8A8_UNORM))
 		{
-			outputModes.emplace_back(
-				SOutputModeInfo
-				{
-					.Width = mode.Width,
-					.Height = mode.Height,
-					.Numerator = mode.RefreshRate.Numerator,
-					.Denominator = mode.RefreshRate.Denominator
-				});
+			const uint32 resolutionEncoded = math::EncodeTwoIntoOne<uint16, uint32>(
+				(uint16)mode.Width, (uint16)mode.Height);
+
+			// Rebuilt each iteration: the emplace_back below can reallocate.
+			const auto thisOutputResolutions = std::span(resolutions).subspan(outputFirstResolution);
+
+			if (!std::ranges::contains(thisOutputResolutions, resolutionEncoded))
+			{
+				++resolutionsNum;
+				resolutions.emplace_back(resolutionEncoded);
+				result.RefreshRateOptionNums.emplace_back(0u);
+			}
+
+			// Relies on GetDisplayModeList grouping every mode of one resolution together,
+			// which it does - it sorts by width, then height, then refresh rate.
+			result.RefreshRateOptionNums.back()++;
+			refreshRates.emplace_back(math::EncodeTwoIntoOne<uint32, uint64>(
+				mode.RefreshRate.Numerator, mode.RefreshRate.Denominator));
 		}
 	}
 

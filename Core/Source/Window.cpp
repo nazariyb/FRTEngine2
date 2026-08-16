@@ -37,13 +37,6 @@ CWindow::CWindow (const SWindowParams& Params)
 		MessageBox(0, L"CreateWindow Failed.", 0, 0);
 	}
 
-	DisplaySettings = SDisplaySettings
-	{
-		.MonitorIndex = -1,
-		.ResolutionIndex = -1,
-		.RefreshRateIndex = -1
-	};
-
 	ShowWindow(hWindow, SW_SHOWDEFAULT);
 	UpdateWindow(hWindow);
 }
@@ -73,9 +66,10 @@ void CWindow::SetDisplaySettings (const SDisplaySettings& NewSettings, const gra
 	}
 	else if (NewSettings.ResolutionIndex != DisplaySettings.ResolutionIndex)
 	{
-		const auto& resolutions = Options.GetResolutionsEncoded((uint32)NewSettings.MonitorIndex);
-		Vector2u newSize;
-		math::DecodeTwoFromOne(resolutions[NewSettings.ResolutionIndex], newSize.x, newSize.y);
+		const auto& resolutions = Options.GetResolutions((uint32)NewSettings.MonitorIndex);
+		uint16 newSizeX, newSizeY;
+		math::DecodeTwoFromOne(resolutions[NewSettings.ResolutionIndex], newSizeX, newSizeY);
+		const Vector2u newSize { newSizeX, newSizeY };
 		ResizeWithMove(newSize, Options.OutputsRects[NewSettings.MonitorIndex]);
 	}
 	else

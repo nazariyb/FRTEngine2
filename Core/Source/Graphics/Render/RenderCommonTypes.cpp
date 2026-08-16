@@ -4,7 +4,13 @@
 #include <Windows.h>
 #endif
 
+#include <charconv>
+#include <format>
+#include <numeric>
+#include <ranges>
+
 #include "Math/Transform.h"
+
 
 namespace
 {
@@ -40,6 +46,7 @@ std::string WideToUtf8 (const std::wstring& Value)
 }
 }
 
+
 std::vector<std::string> frt::graphics::SDisplayOptions::GetNames () const
 {
 	std::vector<std::string> names;
@@ -51,26 +58,6 @@ std::vector<std::string> frt::graphics::SDisplayOptions::GetNames () const
 	}
 
 	return names;
-}
-
-std::vector<uint64> frt::graphics::SDisplayOptions::GetResolutionsEncoded (uint8 OutputIndex) const
-{
-	frt_assert(OutputIndex > -1);
-	frt_assert(OutputIndex < OutputsNum);
-
-	std::vector<uint64> resolutions;
-	resolutions.reserve(OutputsModes[OutputIndex].size());
-
-	for (const auto& modeInfo : OutputsModes[OutputIndex])
-	{
-		uint64 resEncoded = modeInfo.GetResolutionEncoded();
-		if (std::ranges::find(resolutions, resEncoded) == resolutions.end())
-		{
-			resolutions.emplace_back(resEncoded);
-		}
-	}
-
-	return resolutions;
 }
 
 uint64 frt::graphics::SDisplayOptions::GetFullscreenResolutionEncoded (uint8 OutputIndex) const
@@ -86,36 +73,172 @@ uint64 frt::graphics::SDisplayOptions::GetFullscreenResolutionEncoded (uint8 Out
 	return math::EncodeTwoIntoOne<int32, uint64>(width, height);
 }
 
-std::vector<uint64> frt::graphics::SDisplayOptions::GetRefreshRatesEncoded (uint8 OutputIndex, uint64 Resolution) const
+std::span<const uint32> frt::graphics::SDisplayOptions::GetResolutions (uint8 OutputIndex) const
 {
-	frt_assert(OutputIndex > -1);
 	frt_assert(OutputIndex < OutputsNum);
 
-	std::vector<uint64> refreshRates;
-	refreshRates.reserve(OutputsModes[OutputIndex].size());
+	const uint8 resolutionsNum = ResolutionOptionNums[OutputIndex];
+	const auto prevOutputsResoultions = std::span(ResolutionOptionNums).subspan(0, OutputIndex);
+	const uint16 prevResolutionsNum = std::accumulate(prevOutputsResoultions.begin(), prevOutputsResoultions.end(), 0u);
+	return std::span(Resolutions).subspan(prevResolutionsNum, resolutionsNum);
+}
 
-	for (const auto& info : OutputsModes[OutputIndex])
+std::span<const uint64> frt::graphics::SDisplayOptions::GetRefreshRates(uint8 OutputIndex, int32 ResolutionIndex) const
+{
+	frt_assert(OutputIndex < OutputsNum);
+
+	const auto prevOutputsResoultionsNums = std::span(ResolutionOptionNums).subspan(0, OutputIndex);
+	const uint16 prevResolutionsNum = std::accumulate(prevOutputsResoultionsNums.begin(), prevOutputsResoultionsNums.end(), 0u);
+
+	uint16 offset = 0u;
+	for (uint16 idx : std::views::iota(0u, prevResolutionsNum))
 	{
-		if (info.GetResolutionEncoded() == Resolution)
+		offset += RefreshRateOptionNums[static_cast<uint8>(idx)];
+	}
+
+	return std::span(RefreshRates).subspan(offset, RefreshRateOptionNums[ResolutionIndex]);
+}
+
+int32 frt::graphics::SDisplayOptions::GetResolutionIndex (uint8 OutputIndex, const struct SResolution& Resolution) const
+{
+	return GetResolutionIndex(OutputIndex, Resolution.GetEncoded());
+}
+
+int32 frt::graphics::SDisplayOptions::GetResolutionIndex (uint8 OutputIndex, uint16 Width, uint16 Height) const
+{
+	return GetResolutionIndex(OutputIndex, math::EncodeTwoIntoOne<uint16, uint32>(Width, Height));
+}
+
+int32 frt::graphics::SDisplayOptions::GetResolutionIndex (uint8 OutputIndex, uint32 ResolutionEncoded) const
+{
+	for (const auto&& [idx, value] : std::views::enumerate(GetResolutions(OutputIndex)))
+	{
+		if (value == ResolutionEncoded)
 		{
-			uint64 rrEncoded = info.GetRefreshRateEncoded();
-			if (std::ranges::find(refreshRates, rrEncoded) == refreshRates.end())
-			{
-				refreshRates.emplace_back(rrEncoded);
-			}
+			return static_cast<int32>(idx);
+		}
+	}
+	return DefaultIndex;
+}
+
+int32 frt::graphics::SDisplayOptions::GetRefreshRateIndex (uint8 OutputIndex, const std::string_view& RefreshRateTxt) const
+{
+	const char* begin = RefreshRateTxt.data();
+	const char* end = begin + RefreshRateTxt.size();
+
+	int32 refreshRateInt;
+	const auto [ptr, error] = std::from_chars(begin, end, refreshRateInt);
+
+	if (error != std::errc())
+	{
+		refreshRateInt = -1;
+
+		float refreshRateFloat;
+		const auto [ptrF, errorF] = std::from_chars(begin, end, refreshRateFloat);
+		if (errorF == std::errc())
+		{
+			refreshRateInt = static_cast<int32>(refreshRateFloat * 100.f);
 		}
 	}
 
-	// TODO: cache result
-	return refreshRates;
+	if (refreshRateInt < 0)
+	{
+		return DefaultIndex;
+	}
+
+	return GetRefreshRateIndex(OutputIndex, refreshRateInt);
 }
 
-uint64 frt::graphics::SOutputModeInfo::GetResolutionEncoded () const
+int32 frt::graphics::SDisplayOptions::GetRefreshRateIndex (uint8 OutputIndex, uint32 RefreshRate) const
 {
-	return frt::math::EncodeTwoIntoOne<uint32, uint64>(Width, Height);
+	// for (const auto&& [idx, modeInfo] : std::views::enumerate(OutputsModes[OutputIndex]))
+	// {
+	// 	if ((modeInfo.Numerator / modeInfo.Denominator) == RefreshRate)
+	// 	{
+	// 		return static_cast<int32>(idx);
+	// 	}
+	// }
+
+	return DefaultIndex;
 }
 
-uint64 frt::graphics::SOutputModeInfo::GetRefreshRateEncoded () const
+int32 frt::graphics::SDisplayOptions::GetRefreshRateIndex (uint8 OutputIndex, uint32 Numerator, uint32 Denominator) const
 {
-	return frt::math::EncodeTwoIntoOne<uint32, uint64>(Numerator, Denominator);
+	// for (const auto&& [idx, modeInfo] : std::views::enumerate(OutputsModes[OutputIndex]))
+	// {
+	// 	if (modeInfo.Numerator == Numerator && modeInfo.Denominator == Denominator)
+	// 	{
+	// 		return static_cast<int32>(idx);
+	// 	}
+	// }
+
+	return DefaultIndex;
+}
+
+uint8 frt::graphics::SDisplayOptions::ClampMonitorIndex(uint8 InMonitorIndex) const
+{
+	return math::ClampIndex(InMonitorIndex, OutputsNum);
+}
+
+bool frt::graphics::SResolution::Parse(std::string_view Str)
+{
+	// find_first_of, not a loop over the delimiters: the earliest delimiter in the STRING is
+	// the separator, not the earliest one in this list. The hand-rolled walk this replaces
+	// advanced a raw pointer guarded by `&& currentDelimeter`, which is never null once it
+	// has been incremented - a string with no delimiter at all ran off the end of the
+	// literal and read whatever followed it. "1920" parsed as 19x0; "" segfaulted, and ""
+	// is exactly what LoadDisplaySettings passes when the Resolution key is absent.
+	static constexpr std::string_view Delimiters = "xX:|-";
+
+	bValid = false;
+	Width = InvalidComponent;
+	Height = InvalidComponent;
+
+	const size_t delimiterPos = Str.find_first_of(Delimiters);
+	if (delimiterPos == std::string_view::npos)
+	{
+		return bValid;
+	}
+
+	const char* const widthEnd = Str.data() + delimiterPos;
+	const char* const heightEnd = Str.data() + Str.size();
+
+	const auto [ptrW, errorW] = std::from_chars(Str.data(), widthEnd, Width);
+	const auto [ptrH, errorH] = std::from_chars(Str.data() + delimiterPos + 1, heightEnd, Height);
+
+	// Both sides must be consumed whole. A partial parse means the text was not a
+	// resolution - "19 20x1080" is not 19, and silently accepting it is how a garbage
+	// value ends up looking like a valid setting.
+	if (errorW != std::errc() || errorH != std::errc() || ptrW != widthEnd || ptrH != heightEnd)
+	{
+		Width = InvalidComponent;
+		Height = InvalidComponent;
+		return bValid;
+	}
+
+	bValid = true;
+	return bValid;
+}
+
+std::string frt::graphics::SResolution::ToString () const
+{
+	if (!bValid)
+	{
+		return {};
+	}
+
+	return std::format("{}x{}", Width, Height);
+}
+
+uint32 frt::graphics::SResolution::GetEncoded() const
+{
+	return frt::math::EncodeTwoIntoOne<uint16, uint32>(Width, Height);
+}
+
+frt::graphics::SResolution frt::graphics::SResolution::FromEncoded (uint32 Encoded)
+{
+	SResolution result;
+	frt::math::DecodeTwoFromOne(Encoded, result.Width, result.Height);
+	result.bValid = true;
+	return result;
 }

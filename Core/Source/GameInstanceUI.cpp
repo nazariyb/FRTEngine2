@@ -6,7 +6,6 @@
 
 #ifndef FRT_HEADLESS
 
-#include <cstring>
 #include <filesystem>
 #include <format>
 #include <ranges>
@@ -19,10 +18,10 @@
 #include "EnginePaths.h"
 #include "Window.h"
 #include "Graphics/Camera.h"
-#include "Profiler/ProfilingExport.h"
-#include "Profiler/SceneDescriptor.h"
 #include "Graphics/Render/GraphicsCoreTypes.h"
 #include "Graphics/Render/Renderer.h"
+#include "Profiler/ProfilingExport.h"
+#include "Profiler/SceneDescriptor.h"
 
 NAMESPACE_FRT_START
 using namespace graphics;
@@ -347,15 +346,16 @@ void GameInstance::DrawDisplaySettingsPanel ()
 			(int)monitorNames.size());
 	}
 
-	std::vector<uint64> resolutions = DisplayOptions.GetResolutionsEncoded(displaySettings.MonitorIndex);
-	displaySettings.ResolutionIndex = math::ClampIndex(displaySettings.ResolutionIndex, resolutions.size() - 1u);
+	std::span<const uint32> resolutions = DisplayOptions.GetResolutions(displaySettings.MonitorIndex);
+	displaySettings.ResolutionIndex = math::ClampIndex(displaySettings.ResolutionIndex, resolutions.size());
 
 	{
+		// TODO: strs should be pre-made or at least pre-allocated
 		std::vector<std::string> resolutionStrs;
 		resolutionStrs.reserve(resolutions.size());
 		for (const auto& res : resolutions)
 		{
-			uint32 width, height;
+			uint16 width, height;
 			math::DecodeTwoFromOne(res, width, height);
 			resolutionStrs.emplace_back(std::format("{}:{}", width, height));
 		}
@@ -368,10 +368,10 @@ void GameInstance::DrawDisplaySettingsPanel ()
 		ImGui::EndDisabled();
 	}
 
-	std::vector<uint64> refreshRates = DisplayOptions.GetRefreshRatesEncoded(
-		displaySettings.MonitorIndex, resolutions[displaySettings.ResolutionIndex]);
+	std::span<const uint64> refreshRates = DisplayOptions.GetRefreshRates(
+		displaySettings.MonitorIndex, displaySettings.ResolutionIndex);
 	{
-		displaySettings.RefreshRateIndex = math::ClampIndex(displaySettings.RefreshRateIndex, refreshRates.size() - 1u);
+		displaySettings.RefreshRateIndex = math::ClampIndex(displaySettings.RefreshRateIndex, refreshRates.size());
 
 		std::vector<std::string> rRStrs;
 		rRStrs.reserve(refreshRates.size());
@@ -389,8 +389,6 @@ void GameInstance::DrawDisplaySettingsPanel ()
 	}
 
 	{
-		// Names come from the enum reflection, same as RenderMode below - a hand-written
-		// table here would drift the moment an enumerator is added and mislabel the slider.
 		const auto modeNames = enum_::GetValueNames<EFullscreenMode>();
 		auto labelFullscreen = "Fullscreen";
 		ImGui::SliderInt(
@@ -424,9 +422,8 @@ void GameInstance::DrawDisplaySettingsPanel ()
 			const uint64 fullscreenResolution = DisplayOptions.GetFullscreenResolutionEncoded(
 				displaySettings.MonitorIndex);
 			const auto resIt = std::ranges::find(resolutions, fullscreenResolution);
-			const int32 maxResolutionIndex = static_cast<int32>(resolutions.size() - 1u);
 			int32 resIndex = static_cast<int32>(std::distance(resolutions.begin(), resIt));
-			resIndex = math::ClampIndex(resIndex, maxResolutionIndex);
+			resIndex = math::ClampIndex(resIndex, resolutions.size());
 			displaySettings.ResolutionIndex = resIndex;
 		}
 
@@ -443,7 +440,7 @@ void GameInstance::DrawDisplaySettingsPanel ()
 		// Persist on Apply rather than on every widget edit: the panel writes straight into
 		// displaySettings, so saving per-frame would rewrite the file while a slider is
 		// being dragged. Applied and saved stay the same thing this way.
-		SaveUserSettings(Config, UserSettings);
+		SaveUserSettings(Config, UserSettings, DisplayOptions);
 		Config.Save();
 	}
 

@@ -76,6 +76,7 @@ public:
 	// Without this overload `Get(S, K, "text")` resolves to the bool one: const char* to
 	// bool is a standard conversion and beats const char* to string_view, which is not.
 	std::string Get (std::string_view Section, std::string_view Key, const char* Default) const;
+	void Get (char* OutBuffer, uint8 BufferSize, std::string_view Section, std::string_view Key, const char* Default) const;
 
 	void Set (std::string_view Section, std::string_view Key, bool Value);
 	void Set (std::string_view Section, std::string_view Key, int32 Value);

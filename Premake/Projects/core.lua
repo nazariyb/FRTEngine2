@@ -52,12 +52,6 @@ project "Core"
 		rootpath("**.lua"),
 		rootpath("**.txt"),
 		rootpath("**.bat"),
-		-- Config layers. Not built, just browsable - Core/Config/Engine.ini and any
-		-- per-project Config/Game.ini. See Core/Source/Config/IniFile.h.
-		--
-		-- Scoped to */Config/ rather than a bare **.ini on purpose: ImGui writes its own
-		-- imgui.ini into the working directory at runtime, and a recursive glob would pull
-		-- that into the project every time it was regenerated.
 		rootpath("*/Config/**.ini"),
 		rootpath("**.frt*"),
 		rootpath("**.md"),
