@@ -43,27 +43,71 @@ D3D12_STATIC_SAMPLER_DESC BuildLinearWrapStaticSamplerDesc ()
 }
 }
 
+// EnumAdapters1 order is not preference order. On a laptop index 0 is typically the
+// integrated GPU, which reaches feature level 12_0 but has no raytracing at all, so
+// taking the first FL12_0 match lands on the iGPU and trips the DXR assert below while
+// a perfectly capable discrete GPU sits at index 1.
+//
+// Walk the adapters in the driver's high-performance order instead and require DXR,
+// keeping the first FL12_0 adapter as a fallback so the assert still reports the tier
+// that was actually found rather than failing to produce a device at all.
 static void GetHardwareAdapter (IDXGIFactory4* pFactory, IDXGIAdapter1** ppAdapter)
 {
 	*ppAdapter = nullptr;
+
+	ComPtr<IDXGIFactory6> factory6;
+	const bool byPreference = SUCCEEDED(pFactory->QueryInterface(IID_PPV_ARGS(&factory6)));
+
+	ComPtr<IDXGIAdapter1> fallback;
+
 	for (UINT adapterIndex = 0; ; ++adapterIndex)
 	{
-		IDXGIAdapter1* pAdapter = nullptr;
-		if (DXGI_ERROR_NOT_FOUND == pFactory->EnumAdapters1(adapterIndex, &pAdapter))
+		ComPtr<IDXGIAdapter1> adapter;
+
+		const HRESULT enumerated = byPreference
+			? factory6->EnumAdapterByGpuPreference(
+				adapterIndex, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(&adapter))
+			: pFactory->EnumAdapters1(adapterIndex, &adapter);
+
+		if (DXGI_ERROR_NOT_FOUND == enumerated)
 		{
 			// No more adapters to enumerate.
 			break;
 		}
 
-		// Check to see if the adapter supports Direct3D 12, but don't create the
-		// actual device yet.
-		if (SUCCEEDED(D3D12CreateDevice(pAdapter, D3D_FEATURE_LEVEL_12_0, _uuidof(ID3D12Device), nullptr)))
+		DXGI_ADAPTER_DESC1 desc = {};
+		adapter->GetDesc1(&desc);
+
+		// WARP reports raytracing support and would otherwise win outright. It stays
+		// reachable through the explicit EnumWarpAdapter fallback at the call site.
+		if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
 		{
-			*ppAdapter = pAdapter;
+			continue;
+		}
+
+		// A device is needed to query OPTIONS5, so create one rather than passing
+		// nullptr as a pure capability probe.
+		ComPtr<ID3D12Device> probe;
+		if (FAILED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&probe))))
+		{
+			continue;
+		}
+
+		if (!fallback)
+		{
+			fallback = adapter;
+		}
+
+		D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5 = {};
+		if (SUCCEEDED(probe->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &options5, sizeof(options5)))
+			&& options5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_0)
+		{
+			*ppAdapter = adapter.Detach();
 			return;
 		}
-		pAdapter->Release();
 	}
+
+	*ppAdapter = fallback.Detach();
 }
 
 using namespace memory::literals;
