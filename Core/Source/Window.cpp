@@ -67,8 +67,7 @@ void CWindow::SetDisplaySettings (const SDisplaySettings& NewSettings, const gra
 	else if (NewSettings.ResolutionIndex != DisplaySettings.ResolutionIndex)
 	{
 		const auto& resolutions = Options.GetResolutions((uint32)NewSettings.MonitorIndex);
-		uint16 newSizeX, newSizeY;
-		math::DecodeTwoFromOne(resolutions[NewSettings.ResolutionIndex], newSizeX, newSizeY);
+		const auto& [newSizeX, newSizeY] = resolutions[NewSettings.ResolutionIndex].Get();
 		const Vector2u newSize { newSizeX, newSizeY };
 		ResizeWithMove(newSize, Options.OutputsRects[NewSettings.MonitorIndex]);
 	}

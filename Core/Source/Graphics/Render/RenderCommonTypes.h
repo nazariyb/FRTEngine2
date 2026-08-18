@@ -64,6 +64,7 @@ public:
 	SResolution (N InWidth, N InHeight) : Width(InWidth), Height(InHeight), bValid(true) {}
 
 public:
+	// TODO: use vec, but figure out what's wrong with its include
 	// template <concepts::Numerical N = uint16>
 	// [[nodiscard]] math::TVector2<N> Get() const { return { (N)Width, (N)Height }; }
 	[[nodiscard]] struct { uint16 W; uint16 H; } Get() const { return { Width, Height }; }
