@@ -346,7 +346,7 @@ void GameInstance::DrawDisplaySettingsPanel ()
 			(int)monitorNames.size());
 	}
 
-	std::span<const uint32> resolutions = DisplayOptions.GetResolutions(displaySettings.MonitorIndex);
+	std::span<const SResolution> resolutions = DisplayOptions.GetResolutions(displaySettings.MonitorIndex);
 	displaySettings.ResolutionIndex = math::ClampIndex(displaySettings.ResolutionIndex, resolutions.size());
 
 	{
@@ -355,9 +355,7 @@ void GameInstance::DrawDisplaySettingsPanel ()
 		resolutionStrs.reserve(resolutions.size());
 		for (const auto& res : resolutions)
 		{
-			uint16 width, height;
-			math::DecodeTwoFromOne(res, width, height);
-			resolutionStrs.emplace_back(std::format("{}:{}", width, height));
+			resolutionStrs.emplace_back(res.ToString(':'));
 		}
 
 		auto labelResolution = "Resolution";
@@ -419,7 +417,7 @@ void GameInstance::DrawDisplaySettingsPanel ()
 	{
 		if (displaySettings.IsFullscreen())
 		{
-			const uint64 fullscreenResolution = DisplayOptions.GetFullscreenResolutionEncoded(
+			const SResolution fullscreenResolution = DisplayOptions.GetFullscreenResolution(
 				displaySettings.MonitorIndex);
 			const auto resIt = std::ranges::find(resolutions, fullscreenResolution);
 			int32 resIndex = static_cast<int32>(std::distance(resolutions.begin(), resIt));

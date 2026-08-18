@@ -71,6 +71,7 @@ uint8 CollectAdapterOutputs (IDXGIAdapter1* InAdapter, SDisplayOptions& OutOptio
 {
 	Microsoft::WRL::ComPtr<IDXGIOutput> output;
 
+	auto& result = OutOptions;
 	auto& resolutions = result.Resolutions;
 	auto& refreshRates = result.RefreshRates;
 
@@ -85,21 +86,20 @@ uint8 CollectAdapterOutputs (IDXGIAdapter1* InAdapter, SDisplayOptions& OutOptio
 		const RECT& rect = outputDesc.DesktopCoordinates;
 		OutOptions.OutputsRects.push_back({ rect.left, rect.top, rect.right, rect.bottom });
 
-        auto& resolutionsNum = result.ResolutionOptionNums.emplace_back(0u);
+		auto& resolutionsNum = result.ResolutionOptionNums.emplace_back(0u);
 		const size_t outputFirstResolution = resolutions.size();
 
-        for (const DXGI_MODE_DESC& mode : GetOutputDisplayModes(output.Get(), DXGI_FORMAT_R8G8B8A8_UNORM))
+		for (const DXGI_MODE_DESC& mode : GetOutputDisplayModes(output.Get(), DXGI_FORMAT_R8G8B8A8_UNORM))
 		{
-			const uint32 resolutionEncoded = math::EncodeTwoIntoOne<uint16, uint32>(
-				(uint16)mode.Width, (uint16)mode.Height);
+			const SResolution resolution { mode.Width, mode.Height };
 
 			// Rebuilt each iteration: the emplace_back below can reallocate.
 			const auto thisOutputResolutions = std::span(resolutions).subspan(outputFirstResolution);
 
-			if (!std::ranges::contains(thisOutputResolutions, resolutionEncoded))
+			if (!std::ranges::contains(thisOutputResolutions, resolution))
 			{
 				++resolutionsNum;
-				resolutions.emplace_back(resolutionEncoded);
+				resolutions.emplace_back(resolution);
 				result.RefreshRateOptionNums.emplace_back(0u);
 			}
 

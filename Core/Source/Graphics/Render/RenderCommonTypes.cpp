@@ -60,7 +60,7 @@ std::vector<std::string> frt::graphics::SDisplayOptions::GetNames () const
 	return names;
 }
 
-uint64 frt::graphics::SDisplayOptions::GetFullscreenResolutionEncoded (uint8 OutputIndex) const
+frt::graphics::SResolution frt::graphics::SDisplayOptions::GetFullscreenResolution(uint8 OutputIndex) const
 {
 	frt_assert(OutputIndex > -1);
 	frt_assert(OutputIndex < OutputsNum);
@@ -70,16 +70,16 @@ uint64 frt::graphics::SDisplayOptions::GetFullscreenResolutionEncoded (uint8 Out
 	const int32 height = (int32)(monitorRect.Bottom - monitorRect.Top);
 	frt_assert(width > 0 && height > 0);
 
-	return math::EncodeTwoIntoOne<int32, uint64>(width, height);
+	return { width, height };
 }
 
-std::span<const uint32> frt::graphics::SDisplayOptions::GetResolutions (uint8 OutputIndex) const
+std::span<const frt::graphics::SResolution> frt::graphics::SDisplayOptions::GetResolutions (uint8 OutputIndex) const
 {
 	frt_assert(OutputIndex < OutputsNum);
 
 	const uint8 resolutionsNum = ResolutionOptionNums[OutputIndex];
-	const auto prevOutputsResoultions = std::span(ResolutionOptionNums).subspan(0, OutputIndex);
-	const uint16 prevResolutionsNum = std::accumulate(prevOutputsResoultions.begin(), prevOutputsResoultions.end(), 0u);
+	const auto prevOutputsResolutions = std::span(ResolutionOptionNums).subspan(0, OutputIndex);
+	const uint16 prevResolutionsNum = std::accumulate(prevOutputsResolutions.begin(), prevOutputsResolutions.end(), 0u);
 	return std::span(Resolutions).subspan(prevResolutionsNum, resolutionsNum);
 }
 
@@ -101,24 +101,18 @@ std::span<const uint64> frt::graphics::SDisplayOptions::GetRefreshRates(uint8 Ou
 
 int32 frt::graphics::SDisplayOptions::GetResolutionIndex (uint8 OutputIndex, const struct SResolution& Resolution) const
 {
-	return GetResolutionIndex(OutputIndex, Resolution.GetEncoded());
-}
-
-int32 frt::graphics::SDisplayOptions::GetResolutionIndex (uint8 OutputIndex, uint16 Width, uint16 Height) const
-{
-	return GetResolutionIndex(OutputIndex, math::EncodeTwoIntoOne<uint16, uint32>(Width, Height));
-}
-
-int32 frt::graphics::SDisplayOptions::GetResolutionIndex (uint8 OutputIndex, uint32 ResolutionEncoded) const
-{
 	for (const auto&& [idx, value] : std::views::enumerate(GetResolutions(OutputIndex)))
 	{
-		if (value == ResolutionEncoded)
+		if (value == Resolution)
 		{
 			return static_cast<int32>(idx);
 		}
 	}
-	return DefaultIndex;
+	return DefaultIndex;}
+
+int32 frt::graphics::SDisplayOptions::GetResolutionIndex (uint8 OutputIndex, uint16 Width, uint16 Height) const
+{
+	return GetResolutionIndex(OutputIndex, { Width, Height });
 }
 
 int32 frt::graphics::SDisplayOptions::GetRefreshRateIndex (uint8 OutputIndex, const std::string_view& RefreshRateTxt) const
@@ -175,12 +169,12 @@ int32 frt::graphics::SDisplayOptions::GetRefreshRateIndex (uint8 OutputIndex, ui
 	return DefaultIndex;
 }
 
-uint8 frt::graphics::SDisplayOptions::ClampMonitorIndex(uint8 InMonitorIndex) const
+uint8 frt::graphics::SDisplayOptions::ClampMonitorIndex (uint8 InMonitorIndex) const
 {
 	return math::ClampIndex(InMonitorIndex, OutputsNum);
 }
 
-bool frt::graphics::SResolution::Parse(std::string_view Str)
+bool frt::graphics::SResolution::Parse (std::string_view Str)
 {
 	// find_first_of, not a loop over the delimiters: the earliest delimiter in the STRING is
 	// the separator, not the earliest one in this list. The hand-rolled walk this replaces
@@ -200,11 +194,13 @@ bool frt::graphics::SResolution::Parse(std::string_view Str)
 		return bValid;
 	}
 
+	const char* const strStart = Str.data();
 	const char* const widthEnd = Str.data() + delimiterPos;
 	const char* const heightEnd = Str.data() + Str.size();
 
-	const auto [ptrW, errorW] = std::from_chars(Str.data(), widthEnd, Width);
-	const auto [ptrH, errorH] = std::from_chars(Str.data() + delimiterPos + 1, heightEnd, Height);
+	uint16 width, height;
+	const auto [ptrW, errorW] = std::from_chars(strStart, widthEnd, width);
+	const auto [ptrH, errorH] = std::from_chars(strStart + delimiterPos + 1, heightEnd, height);
 
 	// Both sides must be consumed whole. A partial parse means the text was not a
 	// resolution - "19 20x1080" is not 19, and silently accepting it is how a garbage
@@ -216,29 +212,16 @@ bool frt::graphics::SResolution::Parse(std::string_view Str)
 		return bValid;
 	}
 
-	bValid = true;
+	Set(width, height);
 	return bValid;
 }
 
-std::string frt::graphics::SResolution::ToString () const
+std::string frt::graphics::SResolution::ToString (char Delimiter) const
 {
 	if (!bValid)
 	{
 		return {};
 	}
 
-	return std::format("{}x{}", Width, Height);
-}
-
-uint32 frt::graphics::SResolution::GetEncoded() const
-{
-	return frt::math::EncodeTwoIntoOne<uint16, uint32>(Width, Height);
-}
-
-frt::graphics::SResolution frt::graphics::SResolution::FromEncoded (uint32 Encoded)
-{
-	SResolution result;
-	frt::math::DecodeTwoFromOne(Encoded, result.Width, result.Height);
-	result.bValid = true;
-	return result;
+	return std::format("{}{}{}", Width, Delimiter, Height);
 }

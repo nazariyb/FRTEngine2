@@ -181,12 +181,14 @@ GameInstance::GameInstance ()
 
 	Timer = new CTimer;
 
-	const auto& [width, height, bValid] = UserSettings.DisplaySettings.GetResolution();
+	const SResolution& resolution = UserSettings.DisplaySettings.GetResolution();
+	const auto& [width, height] = resolution.Get();
+
 	SWindowParams windowParams;
 	windowParams.StartX = 1000;
 	windowParams.StartY = 1000;
-	windowParams.Width = bValid ? width : 1260;
-	windowParams.Height = bValid ? height : 720;
+	windowParams.Width = resolution.IsValid() ? width : 1260;
+	windowParams.Height = resolution.IsValid() ? height : 720;
 	windowParams.ClassName = L"FrtWindowClass";
 	windowParams.hInst = GetModuleHandle(nullptr);
 #if !defined(FRT_HEADLESS)

@@ -11,32 +11,28 @@ using namespace frt::names;
 
 namespace
 {
+using namespace frt;
+using namespace frt::graphics;
 // The panel edits indices into the option lists. Config stores the value the index points
 // at, because an index means something different on another monitor, another machine, or
 // after a display is unplugged.
-//
-// nullopt when the index addresses nothing - a monitor with no enumerated modes, or an index
-// left over from a different display setup. Writing nothing is better than writing a
-// resolution the user never chose.
-std::optional<frt::graphics::SResolution> ResolveResolution (
-	const frt::graphics::SDisplayOptions& Options,
-	const frt::SDisplaySettings& Settings)
+SResolution ResolveResolution (const SDisplayOptions& Options, const SDisplaySettings& Settings)
 {
 	if (Settings.MonitorIndex < 0 || Settings.MonitorIndex >= Options.OutputsNum)
 	{
-		return std::nullopt;
+		return {};
 	}
 
-	const std::span<const uint32> resolutions =
+	const std::span<const SResolution> resolutions =
 		Options.GetResolutions(static_cast<uint8>(Settings.MonitorIndex));
 
 	if (Settings.ResolutionIndex < 0
 		|| static_cast<size_t>(Settings.ResolutionIndex) >= resolutions.size())
 	{
-		return std::nullopt;
+		return {};
 	}
 
-	return frt::graphics::SResolution::FromEncoded(resolutions[Settings.ResolutionIndex]);
+	return resolutions[Settings.ResolutionIndex];
 }
 
 
@@ -88,9 +84,9 @@ std::optional<std::string> ResolveRefreshRate (
 
 namespace frt
 {
-const graphics::SResolution& SDisplaySettings::GetResolution() const
+const SResolution& SDisplaySettings::GetResolution() const
 {
-	if (!Resolution.bValid)
+	if (!Resolution.IsValid())
 	{
 		Resolution.Parse(ResolutionTxt);
 	}
@@ -133,7 +129,7 @@ void SaveDisplaySettings (
 	// defaults and the user's choice was silently discarded on every launch.
 	if (const auto resolution = ResolveResolution(Options, Settings))
 	{
-		Config.Set(DisplaySection, "Resolution", resolution->ToString());
+		Config.Set(DisplaySection, "Resolution", resolution.ToString());
 	}
 
 	if (const auto refreshRate = ResolveRefreshRate(Options, Settings))
