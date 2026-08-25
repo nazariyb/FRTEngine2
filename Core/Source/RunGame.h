@@ -34,6 +34,7 @@ int RunGame()
 	time.Reset();
 
 	game->Load();
+	game->OnLoaded();
 
 	// Initialize global strings
 	// LoadStringW(hInstance, IDS_APP_TITLE, szTitle, MAX_LOADSTRING);

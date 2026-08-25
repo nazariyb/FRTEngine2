@@ -15,4 +15,5 @@ public:
 
 	FRT_SINGLETON_GETTERS(DemoGame)
 
+	void Load() override;
 };

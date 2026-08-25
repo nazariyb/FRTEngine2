@@ -27,7 +27,7 @@ public:
 
 	bool Initialize ();
 
-	memory::TRefShared<CEntity> SpawnEntity (const std::string& Name = "");
+	FRT_CORE_API memory::TRefShared<CEntity> SpawnEntity (const std::string& Name = "");
 
 	void RunFrame (float InDeltaSeconds);
 	void SubmitFrame (ID3D12GraphicsCommandList4* CommandList);
@@ -47,8 +47,8 @@ public:
 	 *
 	 * Runs alongside the CEntity list during the migration - the two do not interact yet.
 	 */
-	CWorld& GetEcsWorld ();
-	const CWorld& GetEcsWorld () const;
+	FRT_CORE_API CWorld& GetEcsWorld ();
+	FRT_CORE_API const CWorld& GetEcsWorld () const;
 
 	/**
 	 * Shared buffer for structural changes recorded by systems.

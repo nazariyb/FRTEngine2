@@ -174,7 +174,7 @@ private:
 public:
 	void EnsureObjectConstantCapacity (uint32 ObjectCount);
 	void EnsureMaterialConstantCapacity (uint32 MaterialCount);
-	CMaterialLibrary& GetMaterialLibrary ();
+	FRT_CORE_API CMaterialLibrary& GetMaterialLibrary ();
 	ID3D12PipelineState* GetPipelineStateForMaterial (const SMaterial& Material);
 	D3D12_GPU_DESCRIPTOR_HANDLE GetDefaultWhiteTextureGpu () const;
 	void CreateShaderResourceView (

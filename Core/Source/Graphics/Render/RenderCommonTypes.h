@@ -4,16 +4,16 @@
 #include <string>
 #include <vector>
 
+#include "Core.h"
 #include "CoreTypes.h"
 // #include "Math/Vector2.h"
 
 
 namespace frt::graphics
 {
-struct SDisplayOptions
+struct FRT_CORE_API SDisplayOptions
 {
 public:
-	uint8 OutputsNum = 0;
 	std::vector<uint8> ResolutionOptionNums;
 	std::vector<uint8> RefreshRateOptionNums;
 	std::vector<std::wstring> OutputsNames;
@@ -21,6 +21,9 @@ public:
 
 	std::vector<struct SResolution> Resolutions;
 	std::vector<uint64> RefreshRates;
+
+	uint8 OutputsNum = 0;
+	uint8 Padding[7];
 
 	static constexpr int32 DefaultIndex = 0;
 
@@ -86,11 +89,11 @@ public:
 	// anything else - including partially numeric text. Width/Height are left at
 	// InvalidComponent and bValid false on failure, so a rejected string never leaves a
 	// half-written resolution behind.
-	bool Parse (std::string_view Str);
+	FRT_CORE_API bool Parse (std::string_view Str);
 
 	// Round-trips through Parse. Written into config, so the delimiter has to be one Parse
 	// accepts, and the result has to fit SDisplaySettings::ResolutionTextBufferSize.
-	std::string ToString (char Delimiter = 'x') const;
+	FRT_CORE_API std::string ToString (char Delimiter = 'x') const;
 
 	operator bool () const
 	{

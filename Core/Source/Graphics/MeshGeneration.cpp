@@ -16,7 +16,7 @@ static void FlipTriangleWinding (TArray<uint32>& Indices)
 	}
 }
 
-SMesh GenerateCube(const Vector3f& Extent, uint32 SubdivisionsCount)
+FRT_CORE_API SMesh GenerateCube(const Vector3f& Extent, uint32 SubdivisionsCount)
 {
 	SMesh result;
 
@@ -198,7 +198,7 @@ SMesh GenerateCube(const Vector3f& Extent, uint32 SubdivisionsCount)
 	return result;
 }
 
-SMesh GenerateSphere(float Radius, uint32 SliceCount, uint32 StackCount)
+FRT_CORE_API SMesh GenerateSphere(float Radius, uint32 SliceCount, uint32 StackCount)
 {
 	frt_assert(SliceCount > 1u);
 	frt_assert(StackCount > 1u);
@@ -313,7 +313,7 @@ SMesh GenerateSphere(float Radius, uint32 SliceCount, uint32 StackCount)
 	return result;
 }
 
-SMesh GenerateGeosphere(float Radius, uint32 SubdivisionsCount)
+FRT_CORE_API SMesh GenerateGeosphere(float Radius, uint32 SubdivisionsCount)
 {
 	SMesh result;
 
@@ -398,7 +398,7 @@ SMesh GenerateGeosphere(float Radius, uint32 SubdivisionsCount)
 	return result;
 }
 
-SMesh GenerateCylinder(float BottomRadius, float TopRadius, float Height, uint32 SliceCount, uint32 StackCount)
+FRT_CORE_API SMesh GenerateCylinder(float BottomRadius, float TopRadius, float Height, uint32 SliceCount, uint32 StackCount)
 {
 	SMesh result;
 
@@ -475,7 +475,7 @@ SMesh GenerateCylinder(float BottomRadius, float TopRadius, float Height, uint32
 	return result;
 }
 
-SMesh GenerateGrid(float Width, float Depth, uint32 CellCountWidth, uint32 CellCountDepth)
+FRT_CORE_API SMesh GenerateGrid(float Width, float Depth, uint32 CellCountWidth, uint32 CellCountDepth)
 {
 	SMesh result;
 
@@ -540,7 +540,7 @@ SMesh GenerateGrid(float Width, float Depth, uint32 CellCountWidth, uint32 CellC
 	return result;
 }
 
-SMesh GenerateQuad(float Width, float Depth)
+FRT_CORE_API SMesh GenerateQuad(float Width, float Depth)
 {
 	SMesh result;
 

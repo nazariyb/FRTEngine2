@@ -72,6 +72,7 @@ public:
 	const input::CInputActionMap* GetActiveInputActionMap () const;
 
 	virtual void Load ();
+	virtual void OnLoaded ();
 
 	// Update
 	virtual void Input (float DeltaSeconds);
@@ -129,13 +130,6 @@ protected:
 	input::CInputSystem InputSystem;
 	input::CInputActionLibrary InputActionLibrary;
 	input::SInputActionMapAsset* ActiveActionMap = nullptr;
-
-	// temp
-	memory::TRefShared<CEntity> Cube;
-	memory::TRefShared<CEntity> Cylinder;
-	memory::TRefShared<CEntity> Sphere;
-	void UpdateEntities (float DeltaSeconds);
-	// ~temp
 
 	graphics::SDisplayOptions DisplayOptions;
 	SUserSettings UserSettings;

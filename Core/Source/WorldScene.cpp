@@ -57,13 +57,13 @@ bool frt::CWorldScene::Initialize ()
 	return true;
 }
 
-frt::CWorld& frt::CWorldScene::GetEcsWorld ()
+FRT_CORE_API frt::CWorld& frt::CWorldScene::GetEcsWorld ()
 {
 	frt_assert(EcsWorld);
 	return *EcsWorld;
 }
 
-const frt::CWorld& frt::CWorldScene::GetEcsWorld () const
+FRT_CORE_API const frt::CWorld& frt::CWorldScene::GetEcsWorld () const
 {
 	frt_assert(EcsWorld);
 	return *EcsWorld;
@@ -100,7 +100,7 @@ void frt::CWorldScene::RunSystemsPhase (EUpdatePhase Phase, const SUpdateContext
 	}
 }
 
-frt::memory::TRefShared<frt::CEntity> frt::CWorldScene::SpawnEntity (const std::string& Name)
+FRT_CORE_API frt::memory::TRefShared<frt::CEntity> frt::CWorldScene::SpawnEntity (const std::string& Name)
 {
 	auto newEntity = memory::NewShared<CEntity>();
 	if (Name.empty())

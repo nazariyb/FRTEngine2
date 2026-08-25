@@ -174,7 +174,7 @@ uint8 frt::graphics::SDisplayOptions::ClampMonitorIndex (uint8 InMonitorIndex) c
 	return math::ClampIndex(InMonitorIndex, OutputsNum);
 }
 
-bool frt::graphics::SResolution::Parse (std::string_view Str)
+FRT_CORE_API bool frt::graphics::SResolution::Parse (std::string_view Str)
 {
 	// find_first_of, not a loop over the delimiters: the earliest delimiter in the STRING is
 	// the separator, not the earliest one in this list. The hand-rolled walk this replaces
@@ -216,7 +216,7 @@ bool frt::graphics::SResolution::Parse (std::string_view Str)
 	return bValid;
 }
 
-std::string frt::graphics::SResolution::ToString (char Delimiter) const
+FRT_CORE_API std::string frt::graphics::SResolution::ToString (char Delimiter) const
 {
 	if (!bValid)
 	{

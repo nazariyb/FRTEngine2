@@ -1,6 +1,5 @@
 #pragma once
 
-#include <new>
 #include <utility>
 
 #include "Core.h"
@@ -8,8 +7,6 @@
 #include "Containers/Array.h"
 #include "ECS/ComponentPool.h"
 #include "ECS/ComponentRegistry.h"
-#include "ECS/Comp_Children.h"
-#include "ECS/Comp_Parent.h"
 #include "ECS/EntityId.h"
 #include "ECS/Hierarchy.h"
 #include "ECS/View.h"

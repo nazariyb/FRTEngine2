@@ -1281,7 +1281,7 @@ void CRenderer::PrepareRasterPass ()
 	BindDefaultRasterState();
 }
 
-CMaterialLibrary& CRenderer::GetMaterialLibrary ()
+FRT_CORE_API CMaterialLibrary& CRenderer::GetMaterialLibrary ()
 {
 	return MaterialLibrary;
 }
