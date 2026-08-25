@@ -485,6 +485,9 @@ void GameInstance::Tick (float DeltaSeconds)
 	ImGui_ImplDX12_NewFrame();
 	ImGui_ImplWin32_NewFrame();
 	ImGui::NewFrame();
+
+	ImGui::DockSpaceOverViewport(
+		0, ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
 #endif
 	CalculateFrameStats();
 #if !defined(FRT_HEADLESS)
