@@ -83,6 +83,34 @@ void CConfig::ResetUserLayer ()
 }
 
 
+void CConfig::SetOverride (std::string_view Section, std::string_view Key, std::string_view Value)
+{
+	Layers[static_cast<size_t>(EConfigLayer::CommandLine)].Set(Section, Key, Value);
+}
+
+
+uint32 CConfig::ApplyCommandLineArguments (const std::vector<std::string>& Arguments)
+{
+	uint32 applied = 0u;
+	for (std::string_view arg : Arguments)
+	{
+		while (!arg.empty() && arg.front() == '-')
+		{
+			arg.remove_prefix(1);
+		}
+		const size_t colon = arg.find(':');
+		const size_t equals = arg.find('=');
+		if (colon == std::string_view::npos || equals == std::string_view::npos || colon > equals || colon == 0u)
+		{
+			continue;
+		}
+		SetOverride(arg.substr(0, colon), arg.substr(colon + 1u, equals - colon - 1u), arg.substr(equals + 1u));
+		++applied;
+	}
+	return applied;
+}
+
+
 const std::string* CConfig::FindValue (std::string_view Section, std::string_view Key) const
 {
 	// Strongest layer first; the first hit wins.

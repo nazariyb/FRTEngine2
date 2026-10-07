@@ -15,6 +15,10 @@ FRT_CORE_API std::filesystem::path GetContentDir ();
 FRT_CORE_API std::filesystem::path GetIntermediateDir ();
 
 FRT_CORE_API std::filesystem::path GetDxrShaderSourceDir ();
+// Root of every HLSL source and of Shared/*.h (absolute; resolved from the repository root).
+FRT_CORE_API std::filesystem::path GetShaderRootDir ();
+// Frame captures (PNG / PFM) written by the renderer. Local/, not tracked.
+FRT_CORE_API std::filesystem::path GetCaptureDir ();
 FRT_CORE_API std::filesystem::path GetDxrShaderCacheDir ();
 
 // Profiling-session output (CSV + scene .txt). Local/, not tracked.

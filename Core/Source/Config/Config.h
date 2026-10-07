@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "Core.h"
 #include "CoreTypes.h"
@@ -18,6 +19,7 @@ enum class EConfigLayer : int32
 	Engine = 0, // Core/Config/Engine.ini      - shipped defaults, tracked
 	Project,    // <project>/Config/Game.ini   - per-project overrides, tracked
 	User,       // Local/UserSettings.ini      - written by the running game, untracked
+	CommandLine,// -Section:Key=Value arguments  - never saved
 	Count,
 };
 
@@ -59,6 +61,14 @@ public:
 
 	// Drops the User layer's in-memory contents. Does not touch the file until Save().
 	void ResetUserLayer ();
+
+	// Strongest layer, never written to disk. Used for "-Section:Key=Value" launch arguments
+	// (automation, profiling, A/B comparisons) so they cannot leak into UserSettings.ini.
+	void SetOverride (std::string_view Section, std::string_view Key, std::string_view Value);
+
+	// Parses arguments of the form -Section:Key=Value (or --Section:Key=Value). Others are
+	// ignored. Returns the number of overrides applied.
+	uint32 ApplyCommandLineArguments (const std::vector<std::string>& Arguments);
 
 	/////////////////////////
 	///// Typed access  /////

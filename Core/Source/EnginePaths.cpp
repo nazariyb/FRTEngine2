@@ -34,6 +34,16 @@ std::filesystem::path GetDxrShaderSourceDir ()
 	return GetContentDir() / "Shaders" / "DXR";
 }
 
+std::filesystem::path GetShaderRootDir ()
+{
+	return GetRepoRoot() / "Core" / "Content" / "Shaders";
+}
+
+std::filesystem::path GetCaptureDir ()
+{
+	return GetRepoRoot() / "Local" / "Captures";
+}
+
 std::filesystem::path GetDxrShaderCacheDir ()
 {
 	return GetIntermediateDir() / "Shaders" / "DXR";
