@@ -585,6 +585,10 @@ void CRenderer::DestroyView (CRenderView* View)
 	{
 		ShutdownView(**it);
 		Views.erase(it);
+		if (CountersView == View)
+		{
+			CountersView = nullptr;
+		}
 	}
 }
 
@@ -737,7 +741,7 @@ void CRenderer::BuildFrameConstants (CRenderView& View, const SCameraView& Camer
 	Out.Flags = 0u;
 	if (bReference) { Out.Flags |= gpu::FrameFlag_ReferenceMode; }
 	if (View.bHasPrevFrame) { Out.Flags |= gpu::FrameFlag_HistoryValid; }
-	if (Profile.Frame.bCollectRayCounters)
+	if (Profile.Frame.bCollectRayCounters && (!CountersView || CountersView == &View))
 	{
 		Out.Flags |= gpu::FrameFlag_CountersEnabled;
 		Out.RayCounterBuffer = RayCounterUav;
@@ -1067,6 +1071,14 @@ void CRenderer::BeginUiPass ()
 
 void CRenderer::EndFrame ()
 {
+	for (const std::filesystem::path& path : BackBufferCaptures)
+	{
+		std::filesystem::path png = path;
+		png.replace_extension(".png");
+		Capture->Record(CommandList.Get(), BackBuffers[CurrentBackBuffer].Get(), BackBufferState[CurrentBackBuffer], png);
+	}
+	BackBufferCaptures.clear();
+
 	rhi::CBarrierBatch barriers;
 	barriers.Transition(BackBuffers[CurrentBackBuffer].Get(), BackBufferState[CurrentBackBuffer], D3D12_RESOURCE_STATE_PRESENT);
 	BackBufferState[CurrentBackBuffer] = D3D12_RESOURCE_STATE_PRESENT;
@@ -1106,7 +1118,7 @@ bool CRenderer::HasPendingCaptures () const
 			return true;
 		}
 	}
-	return Capture && Capture->HasPending();
+	return !BackBufferCaptures.empty() || (Capture && Capture->HasPending());
 }
 
 void CRenderer::AllocateImGuiDescriptor (D3D12_CPU_DESCRIPTOR_HANDLE* OutCpu, D3D12_GPU_DESCRIPTOR_HANDLE* OutGpu)

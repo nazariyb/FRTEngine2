@@ -2,7 +2,7 @@ workspace "FRTEngine2"
 	configurations(configs)
 	platforms(buildPlatforms)
 	location (ROOT_DIR)
-	startproject "Launcher"
+	startproject "Editor"
 
 	language "C++"
 	cppdialect "C++latest"

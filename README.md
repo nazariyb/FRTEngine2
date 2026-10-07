@@ -73,7 +73,7 @@ Replace `<target>` with the Premake action for your toolchain (e.g. `vs2019`, `g
 
 1. Open the generated solution / project in your IDE or invoke your build system directly.
 2. Select a configuration (e.g. **Debug-Default | x64**).
-3. **Launcher** is the startup project: it runs the game module named in the working directory's `Config/Game.ini` (the Demo by default). Pressing F5 on the **Demo** project does the same.
+3. **Editor** is the startup project: it opens the world of the game module named in the working directory's `Config/Game.ini` (the Demo by default) for editing. **Launcher** runs that game standalone; pressing F5 on the **Demo** project does the same.
 4. Build and run.
 
 ### Cleaning generated files
@@ -86,6 +86,19 @@ Replace `<target>` with the Premake action for your toolchain (e.g. `vs2019`, `g
 ---
 
 ## Controls
+
+### Editor
+
+The editor shows the world twice, as Unity does: the **Scene** view through the editor's own camera, the **Game** view through the game's. Both are panels like any other - dock, tab, float and resize them freely; **View → Reset Layout** brings back the default arrangement.
+
+| Input | Action |
+|---|---|
+| **RMB** (hold) on the Scene view | Fly the editor camera: mouse to look, **W A S D** to move, **Space / Ctrl** up / down, wheel for speed |
+| **Shift+Space**, or double-click a viewport's tab | Maximize the viewport under the cursor over the editor / restore it |
+| **F11** | Fullscreen the viewport under the cursor (borderless, the whole screen) / back |
+| **F2** | Path tracing / raster preview for the viewport under the cursor |
+
+### Launcher
 
 Camera movement is only active while **Right Mouse Button** is held.
 
@@ -107,6 +120,7 @@ Camera movement is only active while **Right Mouse Button** is held.
 ```
 Core/             — engine library (DLL)
 Core-Test/        — unit tests (GoogleTest)
+Editor/           — editor host: loads a game module and opens its world for editing
 Launcher/         — runtime host: loads a game module and runs it standalone
 Demo/             — sample game, built as a game module (DLL)
 Schemas/          — JSON Schemas for YAML asset formats (IDE auto-completion)
@@ -115,5 +129,6 @@ ThirdParty/       — vendored libraries (ImGui, Stb, DXR helpers, DXC, yaml-cpp
 Premake/          — Premake5 scripts
 Binaries/         — output DLLs / EXEs
 Intermediate/     — compiled object files
+Local/Editor/     — the editor's layout (EditorLayout.ini) and smoke-test output (gitignored)
 Local/Profiling/  — profiling-session output (gitignored; one folder per session, .txt + .csv per configuration)
 ```

@@ -105,6 +105,11 @@ public:
 
 	// Captures requested on any view and not yet written to disk.
 	bool HasPendingCaptures () const;
+	// <Path>.png of the whole window this frame - views and UI - as presented.
+	void RequestBackBufferCapture (const std::filesystem::path& Path) { BackBufferCaptures.push_back(Path); }
+
+	// Ray counters are one buffer per frame: only this view writes them (null: every view).
+	void SetCountersView (const CRenderView* View) { CountersView = View; }
 
 	CMaterialLibrary& GetMaterialLibrary ();
 	CGpuScene& GetScene () { return *Scene; }
@@ -194,6 +199,8 @@ private:
 	uint64 HistoryEpoch = 1u;              // views reset when theirs differs (ResetAccumulation)
 	bool bFrameSceneChanged = false;       // PrepareScene: content changed, accumulation restarts
 	bool bBackBufferDrawn = false;         // a back-buffer view drew this frame: the UI composes over it
+	const CRenderView* CountersView = nullptr;
+	std::vector<std::filesystem::path> BackBufferCaptures;
 
 	uint32 BackBufferWidth = 0u;
 	uint32 BackBufferHeight = 0u;
