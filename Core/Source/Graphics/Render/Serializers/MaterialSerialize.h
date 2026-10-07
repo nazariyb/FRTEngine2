@@ -24,5 +24,5 @@ FRT_CORE_API void Serialize (assets::IWriteArchive& Ar, const SColor& C);
 
 // Current format version that the writer emits. Reader accepts any version
 // it understands and migrates as needed.
-inline constexpr int32 MaterialAssetVersion = 2;
+inline constexpr int32 MaterialAssetVersion = 3;
 }

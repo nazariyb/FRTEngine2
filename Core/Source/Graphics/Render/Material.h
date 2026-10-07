@@ -3,10 +3,11 @@
 #include <filesystem>
 #include <string>
 
+#include <d3d12.h>
+
 #include "Core.h"
 #include "CoreTypes.h"
 #include "Enum.h"
-#include "Texture.h"
 #include "Graphics/SColor.h"
 
 
@@ -19,6 +20,21 @@ enum class EMaterialFlags : uint32
 };
 FRT_DECLARE_FLAG_ENUM(EMaterialFlags)
 
+enum class EAlphaMode : uint8
+{
+	Opaque = 0,
+	Mask,      // alpha test against AlphaCutoff
+	Blend,     // stochastic transparency in the path tracer, alpha blending in raster preview
+};
+
+/**
+ * glTF 2.0 metallic-roughness material (plus the engine's raster state).
+ *
+ * Pure asset data: the GPU side (texture uploads, the material table entry) is owned by the
+ * renderer's GPU scene, which watches Version to know when to re-upload. Texture paths are
+ * stored as authored (relative to the material file); Resolve*TexturePath gives the absolute
+ * path the loader should open.
+ */
 struct FRT_CORE_API SMaterial
 {
 	static constexpr uint32 InvalidTextureIndex = 0xFFFFFFFFu;
@@ -26,18 +42,46 @@ struct FRT_CORE_API SMaterial
 	std::string Name;
 	std::string VertexShaderName;
 	std::string PixelShaderName;
-	std::string BaseColorTexturePath;
 	std::filesystem::path SourcePath;
 	std::filesystem::file_time_type LastWriteTime;
 
+	// Base colour (linear factor; the texture is sRGB-encoded).
 	SColor DiffuseAlbedo = SColor::White;
+	std::string BaseColorTexturePath;
+
+	// Metallic-roughness (texture: G = roughness, B = metallic, multiplied by the factors).
 	float Metallic = 0.0f;
 	float Roughness = 1.0f;
+	std::string MetallicRoughnessTexturePath;
+
+	// Tangent-space normal map.
+	std::string NormalTexturePath;
+	float NormalScale = 1.0f;
+
+	// Ambient occlusion (used by the raster preview only; the path tracer computes visibility).
+	std::string OcclusionTexturePath;
+	float OcclusionStrength = 1.0f;
+
+	// Emission: radiance = Emissive.rgb * EmissiveIntensity * texture (sRGB).
 	SColor Emissive = SColor::Black;
 	float EmissiveIntensity = 0.0f;
+	std::string EmissiveTexturePath;
+
+	// Transparency.
+	EAlphaMode AlphaMode = EAlphaMode::Opaque;
+	float AlphaCutoff = 0.5f;
+	bool bDoubleSided = false;
+
+	// KHR_materials_specular / ior / transmission (transmission reserved for the next BSDF).
+	float SpecularFactor = 1.0f;
+	float Ior = 1.5f;
+	float Transmission = 0.0f;
 
 	uint32 RuntimeIndex = 0u;
 	SFlags<EMaterialFlags> Flags;
+
+	// Incremented on every (re)load so the GPU scene can tell when to refresh this material.
+	uint32 Version = 1u;
 
 	D3D12_CULL_MODE CullMode = D3D12_CULL_MODE_NONE;
 	D3D12_COMPARISON_FUNC DepthFunc = D3D12_COMPARISON_FUNC_LESS;
@@ -45,8 +89,14 @@ struct FRT_CORE_API SMaterial
 	bool bDepthWrite = true;
 	bool bAlphaBlend = false;
 
-	STexture BaseColorTexture = {};
-	bool bHasBaseColorTexture = false;
-	std::filesystem::path LoadedBaseColorTexturePath;
+	std::filesystem::path ResolveTexturePath (const std::string& RelativePath) const;
+	bool IsEmissive () const;
 };
 }
+
+
+FRT_DECLARE_ENUM_REFLECTION(
+	frt::graphics::EAlphaMode,
+	FRT_ENUM_ENTRY(frt::graphics::EAlphaMode, Opaque),
+	FRT_ENUM_ENTRY(frt::graphics::EAlphaMode, Mask),
+	FRT_ENUM_ENTRY(frt::graphics::EAlphaMode, Blend));

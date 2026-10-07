@@ -2,11 +2,6 @@
 
 #include "Material.h"
 
-#include <d3d12.h>
-
-#include <stb_image.h>
-
-#include "Graphics/Render/Renderer.h"
 #include "Graphics/Render/Serializers/MaterialSerialize.h"
 #include "Graphics/Render/Serializers/MaterialSerializers.h"
 #include "Memory/Memory.h"
@@ -21,12 +16,6 @@ CMaterialLibrary::CMaterialLibrary ()
 	Serializers.Register(std::make_unique<CMaterialYamlSerializer>());
 	Serializers.Register(std::make_unique<CMaterialLegacyTextSerializer>());
 	Serializers.SetDefaultWriteFormat(assets::EAssetFormat::Yaml);
-}
-
-void CMaterialLibrary::SetRenderer (CRenderer* InRenderer)
-{
-	frt_assert(InRenderer);
-	Renderer = InRenderer;
 }
 
 memory::TRefShared<SMaterial> CMaterialLibrary::LoadOrCreateMaterial (
@@ -73,7 +62,7 @@ bool CMaterialLibrary::ReloadModifiedMaterials ()
 		if (ReadMaterial(material.SourcePath, material))
 		{
 			material.LastWriteTime = newWriteTime;
-			EnsureBaseColorTexture(material);
+			UpdateDerivedState(material);
 			anyReloaded = true;
 		}
 	}
@@ -117,7 +106,7 @@ memory::TRefShared<SMaterial> CMaterialLibrary::LoadMaterialFromFile (
 	}
 
 	material.LastWriteTime = std::filesystem::last_write_time(MaterialPath, ec);
-	EnsureBaseColorTexture(material);
+	UpdateDerivedState(material);
 	return memory::NewShared<SMaterial>(std::move(material));
 }
 
@@ -141,85 +130,40 @@ bool CMaterialLibrary::WriteMaterial (const std::filesystem::path& Path, const S
 	return writer->Write(Path, In);
 }
 
-void CMaterialLibrary::EnsureBaseColorTexture (SMaterial& Material) const
+void CMaterialLibrary::UpdateDerivedState (SMaterial& Material) const
 {
 	const bool bWantsBaseColorTexture = !Material.BaseColorTexturePath.empty();
 	Material.Flags << (EMaterialFlags::UseBaseColorTexture + bWantsBaseColorTexture);
-
-	if (!bWantsBaseColorTexture)
-	{
-		Material.bHasBaseColorTexture = false;
-		Material.LoadedBaseColorTexturePath.clear();
-		return;
-	}
-
-	if (!Renderer)
-	{
-		return;
-	}
-
-	std::filesystem::path texturePath = Material.BaseColorTexturePath;
-	if (texturePath.is_relative() && !Material.SourcePath.empty())
-	{
-		texturePath = Material.SourcePath.parent_path() / texturePath;
-	}
-	texturePath = texturePath.lexically_normal();
-
-	if (Material.bHasBaseColorTexture && Material.LoadedBaseColorTexturePath == texturePath)
-	{
-		return;
-	}
-
-	int32 channelNum = 0;
-	int32 width = 0;
-	int32 height = 0;
-	uint32* texels = (uint32*)stbi_load(texturePath.string().c_str(), &width, &height, &channelNum, 4);
-	if (!texels)
-	{
-		return;
-	}
-
-	STexture newTexture = {};
-	newTexture.Width = width;
-	newTexture.Height = height;
-	newTexture.Texels = texels;
-
-#if !defined(FRT_HEADLESS)
-	{
-		D3D12_RESOURCE_DESC Desc = {};
-		Desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-		Desc.Width = newTexture.Width;
-		Desc.Height = newTexture.Height;
-		Desc.DepthOrArraySize = 1;
-		Desc.MipLevels = 1;
-		Desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-		Desc.SampleDesc.Count = 1;
-		Desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-		newTexture.GpuTexture = Renderer->CreateTextureAsset(Desc);
-		Renderer->EnqueueTextureUpload(
-			newTexture.GpuTexture, Desc, newTexture.Texels,
-			D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-
-		D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-		srvDesc.Format = Desc.Format;
-		srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-		srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-		srvDesc.Texture2D.MostDetailedMip = 0;
-		srvDesc.Texture2D.MipLevels = 1;
-		srvDesc.Texture2D.PlaneSlice = 0;
-
-		D3D12_CPU_DESCRIPTOR_HANDLE cpuDescriptor = {};
-		Renderer->CreateShaderResourceView(newTexture.GpuTexture, srvDesc, &cpuDescriptor, &newTexture.GpuDescriptor);
-	}
-#endif
-
-	Material.BaseColorTexture = newTexture;
-	Material.bHasBaseColorTexture = true;
-	Material.LoadedBaseColorTexturePath = texturePath;
+	// Raster preview blends what the path tracer treats stochastically.
+	Material.bAlphaBlend = Material.bAlphaBlend || Material.AlphaMode == EAlphaMode::Blend;
+	++Material.Version;
 }
 
 std::string CMaterialLibrary::MakeKey (const std::filesystem::path& MaterialPath)
 {
 	return MaterialPath.lexically_normal().string();
+}
+}
+
+
+namespace frt::graphics
+{
+std::filesystem::path SMaterial::ResolveTexturePath (const std::string& RelativePath) const
+{
+	if (RelativePath.empty())
+	{
+		return {};
+	}
+	std::filesystem::path path = RelativePath;
+	if (path.is_relative() && !SourcePath.empty())
+	{
+		path = SourcePath.parent_path() / path;
+	}
+	return path.lexically_normal();
+}
+
+bool SMaterial::IsEmissive () const
+{
+	return EmissiveIntensity > 0.0f && (Emissive.R > 0.0f || Emissive.G > 0.0f || Emissive.B > 0.0f);
 }
 }

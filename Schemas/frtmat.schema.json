@@ -9,10 +9,34 @@
       "description": "LDR color, each channel clamped to [0, 1]",
       "additionalProperties": false,
       "properties": {
-        "r": { "type": "number", "minimum": 0, "maximum": 1, "default": 1, "description": "Red channel [0, 1]" },
-        "g": { "type": "number", "minimum": 0, "maximum": 1, "default": 1, "description": "Green channel [0, 1]" },
-        "b": { "type": "number", "minimum": 0, "maximum": 1, "default": 1, "description": "Blue channel [0, 1]" },
-        "a": { "type": "number", "minimum": 0, "maximum": 1, "default": 1, "description": "Alpha channel [0, 1]" }
+        "r": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 1,
+          "description": "Red channel [0, 1]"
+        },
+        "g": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 1,
+          "description": "Green channel [0, 1]"
+        },
+        "b": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 1,
+          "description": "Blue channel [0, 1]"
+        },
+        "a": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 1,
+          "description": "Alpha channel [0, 1]"
+        }
       }
     },
     "colorHDR": {
@@ -20,20 +44,46 @@
       "description": "HDR color, channels >= 0 (no upper bound)",
       "additionalProperties": false,
       "properties": {
-        "r": { "type": "number", "minimum": 0, "default": 0, "description": "Red channel" },
-        "g": { "type": "number", "minimum": 0, "default": 0, "description": "Green channel" },
-        "b": { "type": "number", "minimum": 0, "default": 0, "description": "Blue channel" },
-        "a": { "type": "number", "minimum": 0, "default": 1, "description": "Alpha channel" }
+        "r": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0,
+          "description": "Red channel"
+        },
+        "g": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0,
+          "description": "Green channel"
+        },
+        "b": {
+          "type": "number",
+          "minimum": 0,
+          "default": 0,
+          "description": "Blue channel"
+        },
+        "a": {
+          "type": "number",
+          "minimum": 0,
+          "default": 1,
+          "description": "Alpha channel"
+        }
       }
     }
   },
-  "required": ["version", "name"],
+  "required": [
+    "version",
+    "name"
+  ],
   "additionalProperties": false,
   "properties": {
     "version": {
       "type": "integer",
-      "const": 2,
-      "description": "Asset format version. Must be 2."
+      "enum": [
+        2,
+        3
+      ],
+      "description": "Asset format version. 3 is written; 2 is read (subset of 3)."
     },
     "name": {
       "type": "string",
@@ -98,6 +148,10 @@
           "minimum": 0,
           "default": 0,
           "description": "Emissive intensity multiplier. Default: 0."
+        },
+        "texture": {
+          "type": "string",
+          "description": "Emissive texture (sRGB), relative to the material file; multiplies color * intensity"
         }
       }
     },
@@ -118,7 +172,15 @@
         },
         "func": {
           "type": "string",
-          "enum": ["less", "less_equal", "equal", "greater", "greater_equal", "always", "never"],
+          "enum": [
+            "less",
+            "less_equal",
+            "equal",
+            "greater",
+            "greater_equal",
+            "always",
+            "never"
+          ],
           "default": "less",
           "description": "Depth comparison function. Default: less."
         }
@@ -126,7 +188,11 @@
     },
     "cull": {
       "type": "string",
-      "enum": ["none", "front", "back"],
+      "enum": [
+        "none",
+        "front",
+        "back"
+      ],
       "default": "none",
       "description": "Face culling mode. Default: none."
     },
@@ -139,6 +205,95 @@
           "type": "boolean",
           "default": false,
           "description": "Enable alpha blending. Default: false."
+        }
+      }
+    },
+    "metallicRoughnessTexture": {
+      "type": "string",
+      "description": "glTF metallic-roughness texture (G = roughness, B = metallic), relative to the material file; multiplies the factors"
+    },
+    "normal": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Tangent-space normal map",
+      "properties": {
+        "texture": {
+          "type": "string",
+          "description": "Normal map (linear), relative to the material file"
+        },
+        "scale": {
+          "type": "number",
+          "default": 1,
+          "description": "Normal XY scale"
+        }
+      }
+    },
+    "occlusion": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Ambient occlusion (raster preview only)",
+      "properties": {
+        "texture": {
+          "type": "string"
+        },
+        "strength": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 1
+        }
+      }
+    },
+    "alpha": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Transparency (glTF alphaMode)",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "opaque",
+            "mask",
+            "blend"
+          ],
+          "default": "opaque",
+          "description": "mask = alpha test, blend = stochastic transparency in the path tracer"
+        },
+        "cutoff": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.5
+        }
+      }
+    },
+    "doubleSided": {
+      "type": "boolean",
+      "default": false,
+      "description": "glTF doubleSided"
+    },
+    "specular": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "KHR_materials_specular / ior / transmission",
+      "properties": {
+        "factor": {
+          "type": "number",
+          "minimum": 0,
+          "default": 1,
+          "description": "Scales dielectric F0 (0.04)"
+        },
+        "ior": {
+          "type": "number",
+          "minimum": 1,
+          "default": 1.5
+        },
+        "transmission": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0,
+          "description": "Reserved (not yet rendered)"
         }
       }
     }

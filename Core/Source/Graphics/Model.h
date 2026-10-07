@@ -16,7 +16,6 @@ struct ID3D12Resource;
 namespace frt::graphics
 {
 struct SVertex;
-struct STexture;
 }
 
 
@@ -29,6 +28,7 @@ struct FRT_CORE_API SRenderSection
 	uint32 VertexOffset = 0u;
 	uint32 VertexCount = 0u;
 	uint32 MaterialIndex = 0u;
+	uint32 SourceMesh = 0u;     // importer bookkeeping
 };
 
 struct FRT_CORE_API SRenderModel
@@ -39,8 +39,11 @@ struct FRT_CORE_API SRenderModel
 	TArray<SVertex> Vertices;
 	TArray<uint32> Indices;
 
-	ComPtr<ID3D12Resource> VertexBufferGpu = nullptr;
-	ComPtr<ID3D12Resource> IndexBufferGpu = nullptr;
+	std::string SourcePath;
+
+	// Bumped whenever Vertices/Indices/Sections change; the GPU scene rebuilds the model's
+	// buffers and BLAS when it sees a new value. CPU data is the source of truth.
+	uint32 GeometryVersion = 1u;
 
 	static SRenderModel LoadFromFile (const std::string& Filename, const std::string& TexturePath);
 	static SRenderModel FromMesh (SMesh&& Mesh, memory::TRefShared<SMaterial> Material = nullptr);

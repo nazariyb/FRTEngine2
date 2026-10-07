@@ -82,11 +82,32 @@ static const char* DepthFuncToString (D3D12_COMPARISON_FUNC Func)
 
 // ---------------- SMaterial ----------------
 
+static bool ParseAlphaMode (const std::string& Input, EAlphaMode& Out)
+{
+	const std::string s = assets::text::ToLowerCopy(Input);
+	if (s == "opaque") { Out = EAlphaMode::Opaque; return true; }
+	if (s == "mask")   { Out = EAlphaMode::Mask;   return true; }
+	if (s == "blend")  { Out = EAlphaMode::Blend;  return true; }
+	return false;
+}
+
+static const char* AlphaModeToString (EAlphaMode Mode)
+{
+	switch (Mode)
+	{
+		case EAlphaMode::Mask:  return "mask";
+		case EAlphaMode::Blend: return "blend";
+		default:                return "opaque";
+	}
+}
+
 bool Serialize (assets::IReadArchive& Ar, SMaterial& M)
 {
 	int32 version = 0;
 	Ar.Read("version", version);
-	if (version != MaterialAssetVersion)
+	// v2 is a strict subset of v3: every key it has means the same thing, so it reads as-is and
+	// the keys it lacks keep the importer's values.
+	if (version != MaterialAssetVersion && version != 2)
 	{
 		return false;
 	}
@@ -114,6 +135,44 @@ bool Serialize (assets::IReadArchive& Ar, SMaterial& M)
 	{
 		assets::Read(Ar, "color", M.Emissive);
 		Ar.Read("intensity", M.EmissiveIntensity);
+		Ar.Read("texture", M.EmissiveTexturePath);
+		Ar.EndGroup();
+	}
+
+	Ar.Read("metallicRoughnessTexture", M.MetallicRoughnessTexturePath);
+
+	if (Ar.BeginGroup("normal"))
+	{
+		Ar.Read("texture", M.NormalTexturePath);
+		Ar.Read("scale", M.NormalScale);
+		Ar.EndGroup();
+	}
+
+	if (Ar.BeginGroup("occlusion"))
+	{
+		Ar.Read("texture", M.OcclusionTexturePath);
+		Ar.Read("strength", M.OcclusionStrength);
+		Ar.EndGroup();
+	}
+
+	if (Ar.BeginGroup("alpha"))
+	{
+		std::string mode;
+		if (Ar.Read("mode", mode))
+		{
+			(void)ParseAlphaMode(mode, M.AlphaMode);
+		}
+		Ar.Read("cutoff", M.AlphaCutoff);
+		Ar.EndGroup();
+	}
+
+	Ar.Read("doubleSided", M.bDoubleSided);
+
+	if (Ar.BeginGroup("specular"))
+	{
+		Ar.Read("factor", M.SpecularFactor);
+		Ar.Read("ior", M.Ior);
+		Ar.Read("transmission", M.Transmission);
 		Ar.EndGroup();
 	}
 
@@ -166,6 +225,32 @@ void Serialize (assets::IWriteArchive& Ar, const SMaterial& M)
 	Ar.BeginGroup("emissive");
 		assets::WriteFlow(Ar, "color", M.Emissive);
 		Ar.Write("intensity", M.EmissiveIntensity);
+		Ar.Write("texture", M.EmissiveTexturePath);
+	Ar.EndGroup();
+
+	Ar.Write("metallicRoughnessTexture", M.MetallicRoughnessTexturePath);
+
+	Ar.BeginGroup("normal");
+		Ar.Write("texture", M.NormalTexturePath);
+		Ar.Write("scale", M.NormalScale);
+	Ar.EndGroup();
+
+	Ar.BeginGroup("occlusion");
+		Ar.Write("texture", M.OcclusionTexturePath);
+		Ar.Write("strength", M.OcclusionStrength);
+	Ar.EndGroup();
+
+	Ar.BeginGroup("alpha");
+		Ar.Write("mode", std::string(AlphaModeToString(M.AlphaMode)));
+		Ar.Write("cutoff", M.AlphaCutoff);
+	Ar.EndGroup();
+
+	Ar.Write("doubleSided", M.bDoubleSided);
+
+	Ar.BeginGroup("specular");
+		Ar.Write("factor", M.SpecularFactor);
+		Ar.Write("ior", M.Ior);
+		Ar.Write("transmission", M.Transmission);
 	Ar.EndGroup();
 
 	Ar.BeginGroup("depth");

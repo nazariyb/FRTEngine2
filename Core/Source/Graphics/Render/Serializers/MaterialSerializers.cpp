@@ -13,7 +13,9 @@ namespace frt::graphics
 
 bool CMaterialYamlSerializer::CanRead (const std::filesystem::path& Path) const
 {
-	return assets::text::GetTextAssetVersion(Path) == MaterialAssetVersion;
+	// v2 reads as a subset of v3 (see Serialize(IReadArchive&, SMaterial&)).
+	const int32 version = assets::text::GetTextAssetVersion(Path);
+	return version == MaterialAssetVersion || version == 2;
 }
 
 bool CMaterialYamlSerializer::Read (const std::filesystem::path& Path, SMaterial& Out) const

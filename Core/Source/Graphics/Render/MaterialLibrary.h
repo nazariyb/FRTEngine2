@@ -20,8 +20,6 @@ class FRT_CORE_API CMaterialLibrary
 public:
 	CMaterialLibrary ();
 
-	void SetRenderer (CRenderer* InRenderer);
-
 	// Access the serializer registry to register/replace backends, change default write format,
 	// or query available formats. Per-project setup happens here.
 	assets::CSerializerRegistry<SMaterial>& GetSerializers () { return Serializers; }
@@ -47,12 +45,11 @@ private:
 
 	bool ReadMaterial (const std::filesystem::path& Path, SMaterial& Out) const;
 	bool WriteMaterial (const std::filesystem::path& Path, const SMaterial& In) const;
-	void EnsureBaseColorTexture (SMaterial& Material) const;
+	void UpdateDerivedState (SMaterial& Material) const;
 
 	static std::string MakeKey (const std::filesystem::path& MaterialPath);
 
 	assets::CSerializerRegistry<SMaterial> Serializers;
 	std::unordered_map<std::string, SMaterialRecord> Materials;
-	CRenderer* Renderer = nullptr;
 };
 }

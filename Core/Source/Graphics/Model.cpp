@@ -6,6 +6,10 @@
 #include <assimp/Importer.hpp>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
+#include <assimp/GltfMaterial.h>
+#include <assimp/material.h>
+
+#include <cstdio>
 
 #include "Mesh.h"
 #include "Memory/Memory.h"
@@ -21,27 +25,148 @@
 
 namespace frt::graphics
 {
+namespace
+{
+std::string FindTexturePath (const aiMaterial* Material, std::initializer_list<std::pair<aiTextureType, unsigned int>> Candidates)
+{
+	for (const auto& [type, index] : Candidates)
+	{
+		if (Material->GetTextureCount(type) <= index)
+		{
+			continue;
+		}
+		aiString name;
+		if (Material->GetTexture(type, index, &name) == AI_SUCCESS && name.length > 0)
+		{
+			return name.C_Str();
+		}
+	}
+	return {};
+}
+
+// Assimp reports texture URIs as authored (relative to the model). Materials live next to the
+// model, so a relative URI already resolves against the material file; absolute ones are made
+// relative to keep the asset relocatable.
+std::string MakeMaterialRelative (const std::filesystem::path& TexturePath, const std::filesystem::path& MaterialDir)
+{
+	if (TexturePath.empty() || !TexturePath.is_absolute())
+	{
+		return TexturePath.string();
+	}
+	std::error_code ec;
+	const std::filesystem::path rel = std::filesystem::relative(TexturePath, MaterialDir, ec);
+	return ec ? TexturePath.string() : rel.string();
+}
+
+SMaterial ImportMaterial (const aiMaterial* Material, const std::string& FallbackName, const std::filesystem::path& MaterialDir)
+{
+	SMaterial m;
+	aiString aiName;
+	m.Name = Material->Get(AI_MATKEY_NAME, aiName) == AI_SUCCESS && aiName.length > 0 ? aiName.C_Str() : FallbackName;
+	m.VertexShaderName = "VertexShader";
+	m.PixelShaderName = "PixelShader";
+
+	aiColor4D baseColor(1.0f, 1.0f, 1.0f, 1.0f);
+	if (Material->Get(AI_MATKEY_BASE_COLOR, baseColor) == AI_SUCCESS ||
+		Material->Get(AI_MATKEY_COLOR_DIFFUSE, baseColor) == AI_SUCCESS)
+	{
+		m.DiffuseAlbedo = SColor(baseColor.r, baseColor.g, baseColor.b, baseColor.a);
+	}
+
+	// glTF defaults are metallic 1, roughness 1 (the factors multiply the texture). Formats
+	// without PBR keys get a dielectric.
+	float metallic = 0.0f;
+	m.Metallic = Material->Get(AI_MATKEY_METALLIC_FACTOR, metallic) == AI_SUCCESS ? metallic : 0.0f;
+	float roughness = 1.0f;
+	if (Material->Get(AI_MATKEY_ROUGHNESS_FACTOR, roughness) == AI_SUCCESS)
+	{
+		m.Roughness = roughness;
+	}
+
+	aiColor3D emissive(0.0f, 0.0f, 0.0f);
+	if (Material->Get(AI_MATKEY_COLOR_EMISSIVE, emissive) == AI_SUCCESS)
+	{
+		m.Emissive = SColor(emissive.r, emissive.g, emissive.b, 1.0f);
+		const bool bAnyEmission = emissive.r > 0.0f || emissive.g > 0.0f || emissive.b > 0.0f;
+		float strength = 1.0f;
+		Material->Get(AI_MATKEY_EMISSIVE_INTENSITY, strength);
+		m.EmissiveIntensity = bAnyEmission ? strength : 0.0f;
+	}
+
+	aiString alphaMode;
+	if (Material->Get(AI_MATKEY_GLTF_ALPHAMODE, alphaMode) == AI_SUCCESS)
+	{
+		const std::string mode = alphaMode.C_Str();
+		m.AlphaMode = mode == "MASK" ? EAlphaMode::Mask : (mode == "BLEND" ? EAlphaMode::Blend : EAlphaMode::Opaque);
+	}
+	Material->Get(AI_MATKEY_GLTF_ALPHACUTOFF, m.AlphaCutoff);
+
+	int twoSided = 0;
+	if (Material->Get(AI_MATKEY_TWOSIDED, twoSided) == AI_SUCCESS)
+	{
+		m.bDoubleSided = twoSided != 0;
+	}
+
+	float specularFactor = 1.0f;
+	if (Material->Get(AI_MATKEY_SPECULAR_FACTOR, specularFactor) == AI_SUCCESS)
+	{
+		m.SpecularFactor = specularFactor;
+	}
+	Material->Get(AI_MATKEY_REFRACTI, m.Ior);
+	Material->Get(AI_MATKEY_TRANSMISSION_FACTOR, m.Transmission);
+
+	m.BaseColorTexturePath = MakeMaterialRelative(
+		FindTexturePath(Material, { { aiTextureType_BASE_COLOR, 0u }, { aiTextureType_DIFFUSE, 0u } }), MaterialDir);
+	m.NormalTexturePath = MakeMaterialRelative(
+		FindTexturePath(Material, { { aiTextureType_NORMALS, 0u } }), MaterialDir);
+	m.MetallicRoughnessTexturePath = MakeMaterialRelative(
+		FindTexturePath(Material, { { aiTextureType_UNKNOWN, 0u }, { aiTextureType_METALNESS, 0u }, { aiTextureType_DIFFUSE_ROUGHNESS, 0u } }), MaterialDir);
+	m.EmissiveTexturePath = MakeMaterialRelative(
+		FindTexturePath(Material, { { aiTextureType_EMISSIVE, 0u } }), MaterialDir);
+	m.OcclusionTexturePath = MakeMaterialRelative(
+		FindTexturePath(Material, { { aiTextureType_LIGHTMAP, 0u }, { aiTextureType_AMBIENT_OCCLUSION, 0u } }), MaterialDir);
+
+	// An emissive texture with a zero factor would be invisible; exporters that only set the
+	// texture mean "emit what the texture says".
+	if (!m.EmissiveTexturePath.empty() && m.EmissiveIntensity <= 0.0f)
+	{
+		m.Emissive = SColor(1.0f, 1.0f, 1.0f, 1.0f);
+		m.EmissiveIntensity = 1.0f;
+	}
+	return m;
+}
+}
+
 SRenderModel SRenderModel::LoadFromFile (const std::string& Filename, const std::string& TexturePath)
 {
+	// Coordinate conventions. glTF assets face +Z with +Y up, so in the asset's own frame +X is
+	// its left: that is exactly the engine's LUF frame, and positions, normals and tangents
+	// import unchanged (an X flip here mirrors every model). The render-space conversion
+	// (negate world X) happens once, on the instance transform.
+	//
+	// UVs: assimp stores bottom-left-origin UVs; FlipUVs restores glTF's top-left origin, which
+	// is also D3D's, and negates the bitangents to match.
 	Assimp::Importer importer;
+	importer.SetPropertyInteger(AI_CONFIG_PP_SBP_REMOVE, aiPrimitiveType_POINT | aiPrimitiveType_LINE);
 	const aiScene* scene = importer.ReadFile(
 		Filename,
 		aiProcess_Triangulate |
+		aiProcess_SortByPType |
 		aiProcess_OptimizeMeshes |
-		aiProcess_FlipWindingOrder |
 		aiProcess_FlipUVs |
 		aiProcess_PreTransformVertices |
-		aiProcess_GenNormals |
+		aiProcess_GenSmoothNormals |
 		aiProcess_CalcTangentSpace);
 	if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode)
 	{
+		std::fprintf(stderr, "[model] failed to import %s: %s\n", Filename.c_str(), importer.GetErrorString());
 		frt_assert(false);
 		return {};
 	}
 
 	SRenderModel result;
+	result.SourcePath = Filename;
 
-	// Materials
 	const std::filesystem::path modelPath = Filename;
 	const std::filesystem::path materialDir = modelPath.parent_path();
 	const std::string materialBaseName = modelPath.stem().string();
@@ -55,201 +180,119 @@ SRenderModel SRenderModel::LoadFromFile (const std::string& Filename, const std:
 #endif
 
 	result.Materials = TArray<memory::TRefShared<SMaterial>>(scene->mNumMaterials);
-	for (int64 materialIndex = 0; materialIndex < scene->mNumMaterials; ++materialIndex)
+	for (uint32 materialIndex = 0; materialIndex < scene->mNumMaterials; ++materialIndex)
 	{
 		const aiMaterial* material = scene->mMaterials[materialIndex];
 		frt_assert(material);
 
-		aiString materialAiName;
-		std::string materialName;
-		if (material->Get(AI_MATKEY_NAME, materialAiName) == AI_SUCCESS)
+		SMaterial defaultMaterial = ImportMaterial(
+			material, materialBaseName + "_mat" + std::to_string(materialIndex), materialDir);
+
+		// Optional override used by the demo for models whose glTF lacks a base colour texture.
+		if (!TexturePath.empty() && defaultMaterial.BaseColorTexturePath.empty())
 		{
-			materialName = materialAiName.C_Str();
+			std::error_code ec;
+			const std::filesystem::path abs = std::filesystem::absolute(TexturePath, ec);
+			defaultMaterial.BaseColorTexturePath = MakeMaterialRelative(abs, std::filesystem::absolute(materialDir, ec));
 		}
 
-		SMaterial defaultMaterial;
-		defaultMaterial.Name = materialName.empty()
-									? materialBaseName + "_mat" + std::to_string(materialIndex)
-									: materialName;
-		defaultMaterial.VertexShaderName = "VertexShader";
-		defaultMaterial.PixelShaderName = "PixelShader";
-
-		std::filesystem::path materialPath =
+		const std::filesystem::path materialPath =
 			materialDir / (materialBaseName + "_mat" + std::to_string(materialIndex) + ".frtmat.yml");
-
-		// Check BASE_COLOR first (PBR / glTF), then fall back to DIFFUSE (legacy formats).
-		// Assimp does not always normalize one to the other depending on importer + format.
-		const aiTextureType textureTypesInPriority[] = {
-			aiTextureType_BASE_COLOR,
-			aiTextureType_DIFFUSE,
-		};
-
-		std::filesystem::path texturePath;
-		if (!TexturePath.empty())
-		{
-			texturePath = TexturePath;
-		}
-		else
-		{
-			for (aiTextureType tt : textureTypesInPriority)
-			{
-				if (material->GetTextureCount(tt) == 0)
-				{
-					continue;
-				}
-				aiString textureName;
-				if (material->GetTexture(tt, 0, &textureName) == AI_SUCCESS && textureName.length > 0)
-				{
-					texturePath = textureName.C_Str();
-					break;
-				}
-			}
-		}
-
-		if (!texturePath.empty())
-		{
-			// Assimp returns the URI as authored in the model (typically relative to the model
-			// file itself, e.g. just a filename for gltf assets). Materials live in the same
-			// directory as the model, so the same relative path resolves correctly at load time.
-			// Only normalize when the value is absolute — std::filesystem::relative on a relative
-			// path resolves it against CWD, which produces garbage here.
-			if (texturePath.is_absolute())
-			{
-				std::error_code ec;
-				const std::filesystem::path rel =
-					std::filesystem::relative(texturePath, materialPath.parent_path(), ec);
-				defaultMaterial.BaseColorTexturePath = ec ? texturePath.string() : rel.string();
-			}
-			else
-			{
-				defaultMaterial.BaseColorTexturePath = texturePath.string();
-			}
-		}
-
-		memory::TRefShared<SMaterial> materialRef =
-			materialLibrary.LoadOrCreateMaterial(materialPath, defaultMaterial);
-		result.Materials.Add(materialRef);
+		result.Materials.Add(materialLibrary.LoadOrCreateMaterial(materialPath, defaultMaterial));
 	}
 
-	// Sections
-	const int32 meshesNum = (int32)scene->mNumMeshes;
-	result.Sections = TArray<SRenderSection>(meshesNum);
-
-	int32 indexNum = 0;
-	int32 vertexNum = 0;
-
-	for (int32 i = 0; i < meshesNum; ++i)
+	// Sections: one per aiMesh, section-local indices into one shared vertex/index buffer.
+	uint32 indexNum = 0u;
+	uint32 vertexNum = 0u;
+	result.Sections = TArray<SRenderSection>(scene->mNumMeshes);
+	for (uint32 i = 0; i < scene->mNumMeshes; ++i)
 	{
 		const aiMesh* srcMesh = scene->mMeshes[i];
 		frt_assert(srcMesh);
-		SRenderSection& dstSection = result.Sections.Add();
-
-		dstSection.MaterialIndex = static_cast<uint32>(srcMesh->mMaterialIndex);
-
-		dstSection.IndexOffset = indexNum;
-		dstSection.VertexOffset = vertexNum;
-
-		dstSection.IndexCount = srcMesh->mNumFaces * 3;
-		dstSection.VertexCount = srcMesh->mNumVertices;
-
-		indexNum += static_cast<int32>(dstSection.IndexCount);
-		vertexNum += static_cast<int32>(dstSection.VertexCount);
+		if (!(srcMesh->mPrimitiveTypes & aiPrimitiveType_TRIANGLE) || !srcMesh->mNormals)
+		{
+			continue;
+		}
+		SRenderSection& section = result.Sections.Add();
+		section.MaterialIndex = srcMesh->mMaterialIndex;
+		section.IndexOffset = indexNum;
+		section.VertexOffset = vertexNum;
+		section.IndexCount = srcMesh->mNumFaces * 3u;
+		section.VertexCount = srcMesh->mNumVertices;
+		section.SourceMesh = i;
+		indexNum += section.IndexCount;
+		vertexNum += section.VertexCount;
 	}
 
-	// Vertices & Indices
-	result.Vertices = TArray<SVertex>();
 	result.Vertices.SetSizeUninitialized(vertexNum);
-	result.Indices = TArray<uint32>();
 	result.Indices.SetSizeUninitialized(indexNum);
 
-	for (int64 i = 0; i < meshesNum; ++i)
+	for (uint32 s = 0; s < result.Sections.Count(); ++s)
 	{
-		const aiMesh* srcMesh = scene->mMeshes[i];
-		frt_assert(srcMesh);
-		SRenderSection& dstSection = result.Sections[i];
+		const SRenderSection& section = result.Sections[s];
+		const aiMesh* srcMesh = scene->mMeshes[section.SourceMesh];
 
-		for (int64 vertexIndex = 0; vertexIndex < dstSection.VertexCount; ++vertexIndex)
+		for (uint32 v = 0; v < section.VertexCount; ++v)
 		{
-			SVertex& vertex = result.Vertices[dstSection.VertexOffset + vertexIndex];
-			vertex.Position = frt::math::RubToLuf(
-				*reinterpret_cast<const Vector3f*>(&srcMesh->mVertices[vertexIndex]));
+			SVertex& vertex = result.Vertices[section.VertexOffset + v];
+			const aiVector3D& p = srcMesh->mVertices[v];
+			const aiVector3D& n = srcMesh->mNormals[v];
+			vertex.Position = Vector3f(p.x, p.y, p.z);
+			vertex.Normal = Vector3f(n.x, n.y, n.z);
 
-			vertex.Normal = frt::math::RubToLuf(
-				*reinterpret_cast<const Vector3f*>(&srcMesh->mNormals[vertexIndex]));
-			vertex.Tangent = frt::math::RubToLuf(
-				*reinterpret_cast<const Vector3f*>(&srcMesh->mTangents[vertexIndex]));
-			vertex.Bitangent = frt::math::RubToLuf(
-				*reinterpret_cast<const Vector3f*>(&srcMesh->mBitangents[vertexIndex]));
+			Vector3f tangent = Vector3f(1.0f, 0.0f, 0.0f);
+			Vector3f bitangent = Vector3f(0.0f, 0.0f, 1.0f);
+			if (srcMesh->mTangents && srcMesh->mBitangents)
+			{
+				const aiVector3D& t = srcMesh->mTangents[v];
+				const aiVector3D& b = srcMesh->mBitangents[v];
+				tangent = Vector3f(t.x, t.y, t.z);
+				// After FlipUVs assimp's bitangent points along +v of the top-left UV space,
+				// while glTF (OpenGL-convention) normal maps encode +Y toward -v. The shader
+				// rebuilds the bitangent as cross(N, T) * sign, so store the glTF one: -b.
+				bitangent = Vector3f(-b.x, -b.y, -b.z);
+			}
+			vertex.Tangent = tangent;
+			vertex.Bitangent = bitangent;
 
 			if (srcMesh->mTextureCoords[0])
 			{
-				vertex.Uv.x = srcMesh->mTextureCoords[0][vertexIndex].x;
-				vertex.Uv.y = srcMesh->mTextureCoords[0][vertexIndex].y;
+				vertex.Uv.x = srcMesh->mTextureCoords[0][v].x;
+				vertex.Uv.y = srcMesh->mTextureCoords[0][v].y;
 			}
 			else
 			{
-				vertex.Uv.x = 0;
-				vertex.Uv.y = 0;
+				vertex.Uv = Vector2f(0.0f, 0.0f);
+			}
+
+			if (srcMesh->mColors[0])
+			{
+				const aiColor4D& c = srcMesh->mColors[0][v];
+				vertex.Color = DirectX::XMFLOAT4(c.r, c.g, c.b, c.a);
+			}
+			else
+			{
+				vertex.Color = DirectX::XMFLOAT4(1.0f, 1.0f, 1.0f, 1.0f);
 			}
 		}
 
-		for (int64 faceIndex = 0; faceIndex < srcMesh->mNumFaces; ++faceIndex)
+		for (uint32 f = 0; f < srcMesh->mNumFaces; ++f)
 		{
-			uint32* indices = &result.Indices[dstSection.IndexOffset + faceIndex * 3];
-
-			indices[0] = srcMesh->mFaces[faceIndex].mIndices[0];
-			indices[1] = srcMesh->mFaces[faceIndex].mIndices[1];
-			indices[2] = srcMesh->mFaces[faceIndex].mIndices[2];
+			const aiFace& face = srcMesh->mFaces[f];
+			uint32* indices = &result.Indices[section.IndexOffset + f * 3u];
+			if (face.mNumIndices == 3u)
+			{
+				indices[0] = face.mIndices[0];
+				indices[1] = face.mIndices[1];
+				indices[2] = face.mIndices[2];
+			}
+			else
+			{
+				indices[0] = indices[1] = indices[2] = 0u; // degenerate, invisible
+			}
 		}
 	}
 
-#if !defined(FRT_HEADLESS)
-	{
-		D3D12_RESOURCE_DESC vbDesc = {};
-		vbDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-		vbDesc.Alignment = 0;
-		vbDesc.Width = sizeof(SVertex) * vertexNum;
-		vbDesc.Height = 1;
-		vbDesc.DepthOrArraySize = 1;
-		vbDesc.MipLevels = 1;
-		vbDesc.Format = DXGI_FORMAT_UNKNOWN;
-		vbDesc.SampleDesc.Count = 1;
-		vbDesc.SampleDesc.Quality = 0;
-		vbDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-		vbDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
-
-		result.VertexBufferGpu.Attach(renderer->CreateBufferAsset(vbDesc));
-		renderer->EnqueueBufferUpload(
-			result.VertexBufferGpu.Get(),
-			vbDesc.Width,
-			result.Vertices.GetData(),
-			D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER |
-			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-	}
-
-	{
-		D3D12_RESOURCE_DESC ibDesc = {};
-		ibDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-		ibDesc.Alignment = 0;
-		ibDesc.Width = sizeof(uint32) * indexNum;
-		ibDesc.Height = 1;
-		ibDesc.DepthOrArraySize = 1;
-		ibDesc.MipLevels = 1;
-		ibDesc.Format = DXGI_FORMAT_UNKNOWN;
-		ibDesc.SampleDesc.Count = 1;
-		ibDesc.SampleDesc.Quality = 0;
-		ibDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-		ibDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
-
-		result.IndexBufferGpu.Attach(renderer->CreateBufferAsset(ibDesc));
-		renderer->EnqueueBufferUpload(
-			result.IndexBufferGpu.Get(),
-			ibDesc.Width,
-			result.Indices.GetData(),
-			D3D12_RESOURCE_STATE_INDEX_BUFFER |
-			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-	}
-#endif
 	return result;
 }
 
@@ -258,8 +301,6 @@ SRenderModel SRenderModel::FromMesh (SMesh&& Mesh, memory::TRefShared<SMaterial>
 	SRenderModel result;
 	result.Vertices = std::move(Mesh.Vertices);
 	result.Indices = std::move(Mesh.Indices);
-	result.VertexBufferGpu = std::move(Mesh.VertexBufferGpu);
-	result.IndexBufferGpu = std::move(Mesh.IndexBufferGpu);
 
 	if (Material)
 	{
