@@ -323,7 +323,7 @@ CGpuScene::SModelEntry& CGpuScene::EnsureModel (CRenderContext& Context, const S
 		opacity = HashValue(opacity, IsMaterialNonOpaque(material));
 	}
 
-	const bool bGeometryStale = entry.GeometryVersion != Model.GeometryVersion || !entry.RtVertices.IsValid();
+	const bool bGeometryStale = entry.ModelIdentity != Model.Identity.Value || entry.GeometryVersion != Model.GeometryVersion || !entry.RtVertices.IsValid();
 	if (!bGeometryStale && entry.OpacitySignature == opacity && entry.Blas.IsValid())
 	{
 		return entry;
@@ -391,6 +391,7 @@ CGpuScene::SModelEntry& CGpuScene::EnsureModel (CRenderContext& Context, const S
 		Device->UploadBuffer(Context.CommandList, entry.Indices, Model.Indices.GetData(), ibDesc.Size, 0u,
 			readState | D3D12_RESOURCE_STATE_INDEX_BUFFER);
 
+		entry.ModelIdentity = Model.Identity.Value;
 		entry.GeometryVersion = Model.GeometryVersion;
 		entry.SectionCount = Model.Sections.Count();
 		entry.TriangleCount = Model.Indices.Count() / 3u;

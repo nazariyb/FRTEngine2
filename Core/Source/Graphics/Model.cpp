@@ -1,6 +1,7 @@
 #include "Model.h"
 
 #include <stdlib.h>
+#include <atomic>
 #include <filesystem>
 #include <utility>
 #include <assimp/Importer.hpp>
@@ -285,6 +286,27 @@ SRenderModel SRenderModel::LoadFromFile (const std::string& Filename, const std:
 	}
 
 	return result;
+}
+
+namespace
+{
+std::atomic<uint64> NextModelIdentity { 1u };
+}
+
+SRenderModel::SIdentity::SIdentity ()
+	: Value(NextModelIdentity.fetch_add(1u, std::memory_order_relaxed))
+{
+}
+
+SRenderModel::SIdentity::SIdentity (const SIdentity&)
+	: SIdentity()
+{
+}
+
+SRenderModel::SIdentity& SRenderModel::SIdentity::operator= (const SIdentity&)
+{
+	Value = NextModelIdentity.fetch_add(1u, std::memory_order_relaxed);
+	return *this;
 }
 
 SRenderModel SRenderModel::FromMesh (SMesh&& Mesh, memory::TRefShared<SMaterial> Material)

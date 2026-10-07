@@ -36,10 +36,11 @@ class CConfig;
 /**
  * Makes a DLL a game module: one line in the game's sources, e.g.
  *     FRT_IMPLEMENT_GAME_MODULE(DemoGame)
- * The hosts (Launcher, Editor) find these two exports by name.
+ * The hosts (Launcher, Editor) find these two exports by name. A constructor that throws
+ * yields null: no exception may cross the C boundary.
  */
 #define FRT_IMPLEMENT_GAME_MODULE(TGame)\
-	extern "C" __declspec(dllexport) ::frt::GameInstance* FrtCreateGame () { return new TGame(); }\
+	extern "C" __declspec(dllexport) ::frt::GameInstance* FrtCreateGame () { try { return new TGame(); } catch (...) { return nullptr; } }\
 	extern "C" __declspec(dllexport) unsigned int FrtGameModuleAbi () { return FRT_GAME_MODULE_ABI; }
 
 
@@ -69,7 +70,7 @@ public:
 	bool IsLoaded () const { return Handle != nullptr; }
 	const std::string& GetName () const { return Name; }
 
-	// A new game instance.
+	// A new game instance; null if the game's constructor failed.
 	std::unique_ptr<GameInstance> CreateGame () const;
 
 	// [Game] Module from the config (-Game:Module=<Name> on the command line); by default the

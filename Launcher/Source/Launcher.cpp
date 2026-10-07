@@ -42,6 +42,11 @@ int RunGameLoop (CEngine& Engine, const CGameModule& Module)
 	CWorldScene world;
 	world.Initialize();
 	std::unique_ptr<GameInstance> game = Module.CreateGame();
+	if (!game)
+	{
+		std::cout << "The game module could not create its game" << std::endl;
+		return 1;
+	}
 	const SGameContext context { world, Engine.GetMaterials(), Engine.GetInputActions(), config };
 	game->BuildWorld(context);
 	ApplySceneLaunchConfig(config, world);

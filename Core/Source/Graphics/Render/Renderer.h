@@ -74,6 +74,9 @@ public:
 
 	void InitializeRendering ();
 	void FlushCommandQueue ();
+	// Drops a frame whose recording an exception cut short: the open command list is closed
+	// without being executed. No-op between frames. For shutdown paths, before the flush.
+	void AbandonFrame ();
 
 	// ---- frame (see the class comment) ----
 	void BeginFrame ();
@@ -197,7 +200,8 @@ private:
 
 	std::vector<std::unique_ptr<CRenderView>> Views;
 	uint64 HistoryEpoch = 1u;              // views reset when theirs differs (ResetAccumulation)
-	bool bFrameSceneChanged = false;       // PrepareScene: content changed, accumulation restarts
+	uint64 SceneEpoch = 1u;                // bumped when PrepareScene finds the content changed:
+	                                       // a view's accumulation restarts when it last saw another
 	bool bBackBufferDrawn = false;         // a back-buffer view drew this frame: the UI composes over it
 	const CRenderView* CountersView = nullptr;
 	std::vector<std::filesystem::path> BackBufferCaptures;

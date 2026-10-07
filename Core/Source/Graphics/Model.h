@@ -46,6 +46,18 @@ struct FRT_CORE_API SRenderModel
 	// buffers and BLAS when it sees a new value. CPU data is the source of truth.
 	uint32 GeometryVersion = 1u;
 
+	// Never repeats within the process - a copy or an assigned-to model gets a new one. The
+	// GPU scene caches models by address, and a model freed with a dropped world (the editor's
+	// Stop) can be followed by a different one at the same address.
+	struct FRT_CORE_API SIdentity
+	{
+		SIdentity ();
+		SIdentity (const SIdentity&);
+		SIdentity& operator= (const SIdentity&);
+		uint64 Value;
+	};
+	SIdentity Identity;
+
 	// Materials resolve through MaterialLibrary (<model dir>/<model name>_mat<N>.frtmat.yml).
 	static SRenderModel LoadFromFile (const std::string& Filename, const std::string& TexturePath, CMaterialLibrary& MaterialLibrary);
 	static SRenderModel FromMesh (SMesh&& Mesh, memory::TRefShared<SMaterial> Material = nullptr);

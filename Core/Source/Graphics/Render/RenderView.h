@@ -131,6 +131,7 @@ private:
 
 	uint64 LastRenderedFrame = ~0ull;        // renderer frame number
 	uint64 SeenHistoryEpoch = 0u;            // CRenderer::HistoryEpoch at the last render
+	uint64 SeenSceneEpoch = 0u;              // CRenderer::SceneEpoch at the last render
 
 	struct SCaptureRequest
 	{

@@ -165,6 +165,8 @@ void CEngine::ShutDown ()
 #if !defined(FRT_HEADLESS)
 	if (Graphics)
 	{
+		// A host leaving through an exception may have left the frame mid-recording.
+		Graphics->Renderer->AbandonFrame();
 		Graphics->Renderer->FlushCommandQueue();
 		Graphics->Ui->ShutDown();
 		Graphics->Ui.reset();

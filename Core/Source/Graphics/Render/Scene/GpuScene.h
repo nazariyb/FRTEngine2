@@ -111,6 +111,7 @@ public:
 private:
 	struct SModelEntry
 	{
+		uint64 ModelIdentity = 0u;               // SRenderModel::Identity: the address may be reused
 		uint32 GeometryVersion = 0u;
 		uint64 OpacitySignature = 0u;
 		rhi::SGpuBuffer RtVertices;

@@ -450,6 +450,15 @@ void CRenderer::WaitForFenceValue (uint64 Value)
 	WaitForSingleObject(FenceEvent, INFINITE);
 }
 
+void CRenderer::AbandonFrame ()
+{
+	if (bCommandListRecording)
+	{
+		CommandList->Close();
+		bCommandListRecording = false;
+	}
+}
+
 void CRenderer::FlushCommandQueue ()
 {
 	if (!CommandQueue || !Fence)
@@ -511,7 +520,6 @@ void CRenderer::BeginRecording ()
 	THROW_IF_FAILED(CommandList->Reset(Frames[FrameSlot].Allocator.Get(), nullptr));
 	bCommandListRecording = true;
 	bBackBufferDrawn = false;
-	bFrameSceneChanged = false;
 
 	GpuProfiler.BeginFrame();
 	RayCounters.BeginFrame();
@@ -822,7 +830,10 @@ void CRenderer::PrepareScene ()
 	context.BindCompute();
 	{
 		FRT_GPU_SCOPE(CommandList.Get(), "Scene_Update");
-		bFrameSceneChanged = Scene->Update(context);
+		if (Scene->Update(context))
+		{
+			++SceneEpoch;
+		}
 	}
 
 	// Before any view traces: builds the state objects on first use and after a hot reload.
@@ -855,6 +866,10 @@ void CRenderer::RenderView (CRenderView& View, const SCameraView& Camera)
 		View.bForceReset = true;
 		View.SeenHistoryEpoch = HistoryEpoch;
 	}
+	// Compared per view, not taken from this frame alone: a view that was not rendered on the
+	// frame the scene changed must still see the change when it comes back.
+	const bool bSceneChanged = View.SeenSceneEpoch != SceneEpoch;
+	View.SeenSceneEpoch = SceneEpoch;
 
 	GpuProfiler.SetView(View.GetName());
 
@@ -869,7 +884,7 @@ void CRenderer::RenderView (CRenderView& View, const SCameraView& Camera)
 		BuildFrameConstants(View, Camera, View.FrameConstants, true);
 		const uint64 hash = ComputeAccumulationHash(View);
 		const bool bModeChanged = View.PrevMode != Profile.Frame.Mode || View.PrevRenderMode != View.GetRenderMode();
-		if (hash != View.AccumulationHash || bFrameSceneChanged || View.bForceReset || bModeChanged)
+		if (hash != View.AccumulationHash || bSceneChanged || View.bForceReset || bModeChanged)
 		{
 			View.AccumulationHash = hash;
 			View.AccumulationFrames = 0u;
