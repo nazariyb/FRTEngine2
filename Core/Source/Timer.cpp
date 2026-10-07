@@ -6,7 +6,6 @@
 using namespace std::chrono;
 
 NAMESPACE_FRT_START
-FRT_SINGLETON_DEFINE_INSTANCE(CTimer)
 
 CTimer::CTimer ()
 	: DeltaSeconds(0)

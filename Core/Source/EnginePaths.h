@@ -14,6 +14,13 @@ namespace frt::paths
 FRT_CORE_API std::filesystem::path GetContentDir ();
 FRT_CORE_API std::filesystem::path GetIntermediateDir ();
 
+// <ancestor>/Core/Content/<Subdir> for the nearest ancestor of the working directory that has
+// one (absolute); <workdir>/Core/Content/<Subdir> if none does.
+FRT_CORE_API std::filesystem::path FindContentSubdir (const char* Subdir);
+
+// Per-user, untracked files (<root>/Local/): settings, captures, editor layout.
+FRT_CORE_API std::filesystem::path GetLocalDir ();
+
 FRT_CORE_API std::filesystem::path GetDxrShaderSourceDir ();
 // Root of every HLSL source and of Shared/*.h (absolute; resolved from the repository root).
 FRT_CORE_API std::filesystem::path GetShaderRootDir ();

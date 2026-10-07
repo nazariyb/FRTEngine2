@@ -34,6 +34,11 @@ public:
 	bool ReloadModifiedActions ();
 	bool ReloadModifiedActionMaps ();
 
+	// Updates every loaded map's action states from this frame's device input. Once per frame
+	// (the engine does it): consumers read states, and whether one may act on them - a focused
+	// viewport, a game with input - is decided by whoever routes input, not by re-evaluating.
+	void EvaluateActionMaps (const CInputSystem& Input);
+
 	const SInputActionDefinitionAsset* FindAction (const std::string& Name) const;
 	SInputActionDefinitionAsset* FindAction (const std::string& Name);
 

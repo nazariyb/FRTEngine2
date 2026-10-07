@@ -24,7 +24,7 @@ CWindow::CWindow (const SWindowParams& Params)
 	RECT wr{ .left = Params.StartX, .top = Params.StartY, .right = right, .bottom = bottom };
 	AdjustWindowRect(&wr, WS_OVERLAPPEDWINDOW, false);
 
-	Title = L"FRTEngine";
+	Title = Params.Title;
 	hWindow = CreateWindow(
 		Params.ClassName.c_str(), Title.c_str(),
 		WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,

@@ -148,6 +148,14 @@ bool CInputActionLibrary::ReloadModifiedActions ()
 	return anyReloaded;
 }
 
+void CInputActionLibrary::EvaluateActionMaps (const CInputSystem& Input)
+{
+	for (auto& entry : ActionMaps)
+	{
+		entry.second.ActionMap.Evaluate(Input);
+	}
+}
+
 bool CInputActionLibrary::ReloadModifiedActionMaps ()
 {
 	bool anyReloaded = false;

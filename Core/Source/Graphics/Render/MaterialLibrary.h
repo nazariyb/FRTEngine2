@@ -7,11 +7,12 @@
 #include "Core.h"
 #include "Memory/Ref.h"
 #include "Assets/Serializer.h"
+// Complete type: the exported library's implicit members destroy TRefShared<SMaterial>.
+#include "Graphics/Render/Material.h"
 
 
 namespace frt::graphics
 {
-struct SMaterial;
 class CRenderer;
 
 

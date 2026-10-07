@@ -28,6 +28,7 @@ struct FRT_CORE_API SWindowParams
 #pragma warning(push)
 #pragma warning(disable: 4251)
 	std::wstring ClassName;
+	std::wstring Title = L"FRTEngine";
 #pragma warning(pop)
 };
 

@@ -1,11 +1,8 @@
-// ImGui panel implementations for GameInstance.
-// Split out of GameInstance.cpp — long-term these move out of GameInstance entirely.
-// Master entry is DrawUI(), called once per frame from GameInstance::Tick.
+#include "UI/DebugTools.h"
 
-#include "GameInstance.h"
+#if !defined(FRT_HEADLESS)
 
-#ifndef FRT_HEADLESS
-
+#include <cstring>
 #include <filesystem>
 #include <format>
 #include <ranges>
@@ -17,28 +14,123 @@
 
 #include "EnginePaths.h"
 #include "Entity.h"
-#include "Window.h"
+#include "WorldScene.h"
+#include "Engine/Engine.h"
 #include "Graphics/Camera.h"
 #include "Graphics/Render/GraphicsCoreTypes.h"
 #include "Graphics/Render/Renderer.h"
-#include "Graphics/Render/Passes/PathTracer.h"
+#include "Graphics/Render/Scene/WorldExtraction.h"
 #include "Profiler/ProfilingExport.h"
-#include "Profiler/SceneDescriptor.h"
 
-NAMESPACE_FRT_START
+
+namespace frt
+{
 using namespace graphics;
 
-void GameInstance::DrawUI ()
+void CDebugTools::Update (const SContext& Context, float RealDeltaSeconds)
 {
-	DrawStatsPanel();
-	DrawRaytracingPanel();
-	DrawSkyPanel();
-	DrawEditorPanel();
-	DrawDisplaySettingsPanel();
+	graphics::CRenderer& renderer = *Context.Engine.GetRenderer();
+
+	// Frame stats, once per second.
+	++StatFrameAccum;
+	if (Context.Engine.GetClock().GetTotalSeconds() - StatTimeElapsed >= 1.f)
+	{
+		StatFps = static_cast<float>(StatFrameAccum);
+		StatMsPerFrame = 1000.f / StatFps;
+		StatFrameAccum = 0;
+		StatTimeElapsed += 1.f;
+	}
+
+	// GPU timings of the inspected view (plus frame-wide scopes): another view's passes would
+	// otherwise be summed in under the same names.
+	const TArray<profiler::SGpuScopeResult>& results = renderer.GetGpuProfiler().GetLastResults();
+	TArray<profiler::SGpuScopeResult> viewResults;
+	for (uint32 i = 0; i < results.Count(); ++i)
+	{
+		const profiler::SGpuScopeResult& r = results[i];
+		if (!r.View || std::strcmp(r.View, Context.View.GetName()) == 0)
+		{
+			viewResults.Add(r);
+		}
+	}
+	Metrics.Sample(
+		renderer.GetRayCounters().GetLastTotals(),
+		viewResults,
+		static_cast<double>(RealDeltaSeconds) * 1000.0,
+		Context.View.GetDisplayWidth(),
+		Context.View.GetDisplayHeight());
+
+	if (ProfilingSession.IsActive())
+	{
+		ProfilingSession.Update(Metrics);
+
+		if (ProfilingSession.HasCurrent())
+		{
+			const profiler::SProfileConfig& c = ProfilingSession.Current();
+			graphics::SPathTracerSettings& pt = renderer.Profile.PathTracer;
+			pt.SamplesPerPixel      = c.SampleCount;
+			pt.MaxBounces           = c.MaxBounces;
+			pt.RussianRouletteDepth = c.RussianRouletteDepth;
+			pt.bPortalPreFilter     = c.bPortalPreFilter;
+			renderer.Profile.Frame.bCollectRayCounters = true; // counters mandatory during a session
+		}
+		if (ProfilingSession.ConsumeProfileChanged())
+		{
+			Context.World.bAccumulationDirty = true;
+		}
+		// One file per configuration, written the moment it finishes - before the next starts.
+		const int32 doneIdx = ProfilingSession.ConsumeCompletedProfile();
+		if (doneIdx >= 0 && static_cast<size_t>(doneIdx) < ProfilingSession.History().size())
+		{
+			const profiler::SProfileResult& res = ProfilingSession.History()[static_cast<size_t>(doneIdx)];
+			profiler::WriteConfigTxt(SessionDir, static_cast<uint32>(doneIdx), res.Config, SessionSceneDesc);
+			profiler::WriteConfigFramesCsv(SessionDir, static_cast<uint32>(doneIdx), res);
+		}
+		if (ProfilingSession.ConsumeFinished())
+		{
+			EndProfilingOverride(Context);
+			Context.World.bAccumulationDirty = true;
+		}
+	}
 }
 
-void GameInstance::DrawStatsPanel ()
+void CDebugTools::Draw (const SContext& Context)
 {
+	DrawStatsPanel(Context);
+	DrawRendererPanel(Context);
+	DrawSkyPanel(Context);
+	DrawEditorPanel(Context);
+	if (bShowDisplaySettings)
+	{
+		DrawDisplaySettingsPanel(Context);
+	}
+}
+
+void CDebugTools::BeginProfilingOverride (const SContext& Context)
+{
+	const graphics::CRenderer& renderer = *Context.Engine.GetRenderer();
+	const graphics::SPathTracerSettings& pt = renderer.Profile.PathTracer;
+	SavedProfilingSettings.SamplesPerPixel = pt.SamplesPerPixel;
+	SavedProfilingSettings.MaxBounces = pt.MaxBounces;
+	SavedProfilingSettings.RussianRouletteDepth = pt.RussianRouletteDepth;
+	SavedProfilingSettings.bPortalPreFilter = pt.bPortalPreFilter;
+	SavedProfilingSettings.bCollectRayCounters = renderer.Profile.Frame.bCollectRayCounters;
+}
+
+void CDebugTools::EndProfilingOverride (const SContext& Context)
+{
+	graphics::CRenderer& renderer = *Context.Engine.GetRenderer();
+	graphics::SPathTracerSettings& pt = renderer.Profile.PathTracer;
+	pt.SamplesPerPixel = SavedProfilingSettings.SamplesPerPixel;
+	pt.MaxBounces = SavedProfilingSettings.MaxBounces;
+	pt.RussianRouletteDepth = SavedProfilingSettings.RussianRouletteDepth;
+	pt.bPortalPreFilter = SavedProfilingSettings.bPortalPreFilter;
+	renderer.Profile.Frame.bCollectRayCounters = SavedProfilingSettings.bCollectRayCounters;
+}
+
+void CDebugTools::DrawStatsPanel (const SContext& Context)
+{
+	graphics::CRenderer& renderer = *Context.Engine.GetRenderer();
 	ImGui::Begin("Stats", nullptr);
 
 	if (ProfilingSession.IsActive())
@@ -59,8 +151,8 @@ void GameInstance::DrawStatsPanel ()
 		if (ImGui::Button("Stop profiling"))
 		{
 			ProfilingSession.Stop();
-			EndProfilingOverride();
-			World.bAccumulationDirty = true;
+			EndProfilingOverride(Context);
+			Context.World.bAccumulationDirty = true;
 		}
 		ImGui::SameLine();
 		ImGui::TextDisabled("-> %s", SessionNameBuf);
@@ -84,17 +176,17 @@ void GameInstance::DrawStatsPanel ()
 
 		if (bStart && SessionNameBuf[0] != '\0')
 		{
-			BeginProfilingOverride();
-			const auto [sw, sh] = Window->GetWindowSize();
+			BeginProfilingOverride(Context);
 			SessionSceneDesc = profiler::CaptureSceneDescriptor(
-				World, World.Camera, World.Environment.Sky, static_cast<uint32>(sw), static_cast<uint32>(sh));
+				Context.World, Context.Camera, Context.World.Environment.Sky,
+				Context.View.GetDisplayWidth(), Context.View.GetDisplayHeight());
 
 			SessionDir = dir;
 			std::filesystem::remove_all(SessionDir, ec);
 			std::filesystem::create_directories(SessionDir, ec);
 
 			ProfilingSession.Start();
-			World.bAccumulationDirty = true;
+			Context.World.bAccumulationDirty = true;
 		}
 		ImGui::Separator();
 	}
@@ -104,12 +196,19 @@ void GameInstance::DrawStatsPanel ()
 
 	ImGui::Separator();
 	ImGui::Text("GPU passes:");
-	const auto& gpuResults = Renderer->GetGpuProfiler().GetLastResults();
+	const auto& gpuResults = renderer.GetGpuProfiler().GetLastResults();
 	double gpuTotalMs = 0.0;
 	for (uint32 i = 0; i < gpuResults.Count(); ++i)
 	{
 		const auto& r = gpuResults[i];
-		ImGui::Text("  %-22s %7.3f ms", r.Name ? r.Name : "?", r.DurationMs);
+		if (r.View)
+		{
+			ImGui::Text("  %-22s %7.3f ms  [%s]", r.Name ? r.Name : "?", r.DurationMs, r.View);
+		}
+		else
+		{
+			ImGui::Text("  %-22s %7.3f ms", r.Name ? r.Name : "?", r.DurationMs);
+		}
 		gpuTotalMs += r.DurationMs;
 	}
 	if (!gpuResults.IsEmpty())
@@ -149,9 +248,9 @@ void GameInstance::DrawStatsPanel ()
 
 	ImGui::Separator();
 	{
-		const auto [pw, ph] = Window->GetWindowSize();
 		const profiler::SSceneDescriptor desc = profiler::CaptureSceneDescriptor(
-			World, World.Camera, World.Environment.Sky, static_cast<uint32>(pw), static_cast<uint32>(ph));
+			Context.World, Context.Camera, Context.World.Environment.Sky,
+			Context.View.GetDisplayWidth(), Context.View.GetDisplayHeight());
 		ImGui::Text("Portals: %u   total screen: %.2f%%",
 			desc.PortalCount, desc.PortalCoverageTotal * 100.0);
 		for (uint32 i = 0; i < desc.Portals.Count(); ++i)
@@ -166,27 +265,28 @@ void GameInstance::DrawStatsPanel ()
 	ImGui::End();
 }
 
-void GameInstance::DrawRaytracingPanel ()
+void CDebugTools::DrawRendererPanel (const SContext& Context)
 {
+	graphics::CRenderer& renderer = *Context.Engine.GetRenderer();
 	ImGui::Begin("Renderer", nullptr);
 	// Parameters are driven by the session while it runs: lock the UI so manual edits do not
 	// fight the sweep.
 	ImGui::BeginDisabled(ProfilingSession.IsActive());
-	Renderer->DrawRendererUi(*MainView);
+	renderer.DrawRendererUi(Context.View);
 	ImGui::Separator();
-	if (ImGui::Checkbox("Show portal meshes", &RtSettings.bShowPortalMeshes))
+	if (ImGui::Checkbox("Show portal meshes", &Context.Extract.bShowPortalMeshes))
 	{
-		World.bAccumulationDirty = true;
+		Context.World.bAccumulationDirty = true;
 	}
 	ImGui::EndDisabled();
 	ImGui::End();
 }
 
-void GameInstance::DrawSkyPanel ()
+void CDebugTools::DrawSkyPanel (const SContext& Context)
 {
 	// TimeOfDay drives SkySettings via ComputeSkyFromTimeOfDay when the toggle is on;
 	// otherwise the individual fields are tweakable directly.
-	SWorldEnvironment& env = World.Environment;
+	SWorldEnvironment& env = Context.World.Environment;
 	graphics::SSkyConstants& sky = env.Sky;
 	float& tod = env.TimeOfDay;
 	bool& useTod = env.bUseTimeOfDay;
@@ -217,7 +317,7 @@ void GameInstance::DrawSkyPanel ()
 	ImGui::End();
 }
 
-void GameInstance::DrawEditorPanel ()
+void CDebugTools::DrawEditorPanel (const SContext& Context)
 {
 	// Camera transform + entity transform editor. Modifying any transform marks scene
 	// topology dirty so AS rebuilds and accumulation resets.
@@ -225,7 +325,7 @@ void GameInstance::DrawEditorPanel ()
 
 	// ----- Camera -----
 	{
-		graphics::CCamera* Camera = &World.Camera;
+		graphics::CCamera* Camera = &Context.Camera;
 		ImGui::SeparatorText("Camera");
 		Vector3f camPos = Camera->Transform.GetTranslation();
 		Vector3f camRot = Camera->Transform.GetRotation();
@@ -248,18 +348,18 @@ void GameInstance::DrawEditorPanel ()
 		{
 			Camera->Transform.SetTranslation(camPos);
 			Camera->Transform.SetRotation(camRot);
-			World.bAccumulationDirty = true;
+			Context.World.bAccumulationDirty = true;
 		}
 		else if (ImGui::Button("Reset Camera"))
 		{
-			Camera->Transform = CameraInitialTransform;
-			World.bAccumulationDirty = true;
+			Camera->Transform = CameraHome;
+			Context.World.bAccumulationDirty = true;
 		}
 	}
 
 	// ----- Entity selection + transform -----
 	ImGui::SeparatorText("Entity");
-	auto& entities = World.GetEntities();
+	auto& entities = Context.World.GetEntities();
 	const int32 entityCount = static_cast<int32>(entities.Count());
 
 	if (SelectedEntityIndex >= entityCount)
@@ -321,14 +421,14 @@ void GameInstance::DrawEditorPanel ()
 				ent->Transform.SetTranslation(pos);
 				ent->Transform.SetRotation(rot);
 				ent->Transform.SetScale(scl);
-				World.bAccumulationDirty = true;
+				Context.World.bAccumulationDirty = true;
 			}
 		}
 	}
 	ImGui::End();
 }
 
-void GameInstance::DrawDisplaySettingsPanel ()
+void CDebugTools::DrawDisplaySettingsPanel (const SContext& Context)
 {
 	// TODO: revisit to remove per-frame reallocations.
 	ImGui::Begin("DisplaySettings");
@@ -338,7 +438,8 @@ void GameInstance::DrawDisplaySettingsPanel ()
 		return static_cast<std::string*>(UserData)[Idx].c_str();
 	};
 
-	SDisplaySettings& displaySettings = UserSettings.DisplaySettings;
+	SDisplaySettings& displaySettings = Context.Engine.GetUserSettings().DisplaySettings;
+	const graphics::SDisplayOptions& DisplayOptions = Context.Engine.GetDisplayOptions();
 
 	{
 		const auto monitorNames = DisplayOptions.GetNames();
@@ -417,36 +518,12 @@ void GameInstance::DrawDisplaySettingsPanel ()
 
 	if (ImGui::Button("Apply"))
 	{
-		if (displaySettings.IsFullscreen())
-		{
-			const SResolution fullscreenResolution = DisplayOptions.GetFullscreenResolution(
-				displaySettings.MonitorIndex);
-			const auto resIt = std::ranges::find(resolutions, fullscreenResolution);
-			int32 resIndex = static_cast<int32>(std::distance(resolutions.begin(), resIt));
-			resIndex = math::ClampIndex(resIndex, resolutions.size());
-			displaySettings.ResolutionIndex = resIndex;
-		}
-
-		MainView->SetRenderMode(displaySettings.RenderMode);
-		GetRenderer()->bVSyncEnabled = displaySettings.bVSync;
-
-		uint32 numerator = 0;
-		uint32 denominator = 0;
-		math::DecodeTwoFromOne(refreshRates[displaySettings.RefreshRateIndex], numerator, denominator);
-		GetRenderer()->DisplayRefreshRate = { numerator, denominator };
-
-		Window->SetDisplaySettings(displaySettings, DisplayOptions);
-
-		// Persist on Apply rather than on every widget edit: the panel writes straight into
-		// displaySettings, so saving per-frame would rewrite the file while a slider is
-		// being dragged. Applied and saved stay the same thing this way.
-		SaveUserSettings(Config, UserSettings, DisplayOptions);
-		Config.Save();
+		Context.View.SetRenderMode(displaySettings.RenderMode);
+		Context.Engine.ApplyDisplaySettings();
 	}
 
 	ImGui::End();
 }
-
-NAMESPACE_FRT_END
+}
 
 #endif // !FRT_HEADLESS

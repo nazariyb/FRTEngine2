@@ -119,4 +119,45 @@ std::filesystem::path GetUserConfigPath ()
 	// game writes, and it must never show up in a diff.
 	return GetRepoRoot() / "Local" / "UserSettings.ini";
 }
+
+
+std::filesystem::path FindContentSubdir (const char* Subdir)
+{
+	std::error_code ec;
+	std::filesystem::path current = std::filesystem::current_path(ec);
+	if (ec)
+	{
+		current = ".";
+	}
+
+	std::filesystem::path dir = current;
+	while (true)
+	{
+		const std::filesystem::path candidate = dir / "Core" / "Content" / Subdir;
+		if (std::filesystem::exists(candidate, ec))
+		{
+			const std::filesystem::path absolute = std::filesystem::absolute(candidate, ec);
+			return ec ? candidate : absolute;
+		}
+		if (!dir.has_parent_path())
+		{
+			break;
+		}
+		const std::filesystem::path parent = dir.parent_path();
+		if (parent == dir)
+		{
+			break;
+		}
+		dir = parent;
+	}
+
+	const std::filesystem::path fallback = current / "Core" / "Content" / Subdir;
+	const std::filesystem::path absolute = std::filesystem::absolute(fallback, ec);
+	return ec ? fallback : absolute;
+}
+
+std::filesystem::path GetLocalDir ()
+{
+	return GetRepoRoot() / "Local";
+}
 }

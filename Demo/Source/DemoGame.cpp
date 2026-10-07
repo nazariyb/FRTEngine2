@@ -1,44 +1,30 @@
-﻿#include "DemoGame.h"
+#include "DemoGame.h"
 
+#include "EnginePaths.h"
 #include "Entity.h"
+#include "WorldScene.h"
 #include "ECS/Comp_Name.h"
 #include "ECS/World.h"
+#include "Graphics/FlyCamera.h"
 #include "Graphics/GeometryScript.h"
 #include "Graphics/MeshGeneration.h"
 #include "Graphics/Model.h"
 #include "Graphics/Render/MaterialLibrary.h"
-#ifndef FRT_HEADLESS
-#include "Graphics/Render/Renderer.h"
-#endif
+#include "Input/InputActionLibrary.h"
 #include "Math/Comp_LocalTransform.h"
 #include "Math/Comp_WorldTransform.h"
 
 
-// DemoGame* frt::Singleton<DemoGame>::_instance(nullptr);
-
-DemoGame::DemoGame()
-{
-
-}
-
-DemoGame::~DemoGame()
-{
-}
-
 using namespace frt;
 using namespace frt::graphics;
 
-void DemoGame::Load()
+void DemoGame::BuildWorld (const SGameContext& Context)
 {
-	GameInstance::Load();
+	CWorldScene& World = Context.World;
+	CMaterialLibrary& materialLibrary = Context.Materials;
 
-	// Headless has no renderer, so materials are resolved through a standalone library.
-	// Models resolve their materials through the library passed to SRenderModel::LoadFromFile.
-#ifndef FRT_HEADLESS
-	CMaterialLibrary& materialLibrary = Renderer->GetMaterialLibrary();
-#else
-	CMaterialLibrary materialLibrary;
-#endif
+	World.Camera.Transform.SetTranslation(4.9f, 2.2f, -1.5f);
+	World.Camera.Transform.SetRotation(-0.038f, -1.356f, .0f);
 
 	std::filesystem::path floorMaterialPath =
 		std::filesystem::path("../Core/Content/Models/Floor") / ("floor_mat" + std::to_string(0) + ".frtmat.yml");
@@ -170,4 +156,19 @@ void DemoGame::Load()
 	portal->Portal->Normal = Vector3f(0, 0, -1);       // faces interior
 	portal->Portal->Edge1  = Vector3f(0.8f, 0, 0);     // half-width
 	portal->Portal->Edge2  = Vector3f(0, 0.8f, 0);     // half-height
+}
+
+void DemoGame::BeginPlay (const SGameContext& Context)
+{
+	FlyActions = Context.InputActions.LoadOrCreateActionMap(paths::FindContentSubdir("Input") / "IAM_Editor.frtinputmap");
+}
+
+void DemoGame::Tick (const SGameContext& Context, const SGameFrame& Frame)
+{
+	// Flies on wall-clock time, so the camera still moves while the world is paused.
+	if (Frame.Input.Device && FlyActions)
+	{
+		const SFlyCameraInput fly = ReadFlyCameraInput(FlyActions->ActionMap, *Frame.Input.Device, Frame.Input.LookDelta);
+		UpdateFlyCamera(Context.World.Camera, fly, Frame.RealDeltaSeconds, Frame.Input.ViewAspect);
+	}
 }

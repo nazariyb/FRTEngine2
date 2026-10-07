@@ -3,19 +3,17 @@
 #include <chrono>
 
 #include "Core.h"
-#include "Singleton.h"
 
 
 namespace frt
 {
-class CTimer : public Singleton<CTimer>
+// The real-time clock: frame deltas and total time. Owned by the engine.
+class CTimer
 {
 	using TimePoint = std::chrono::high_resolution_clock::time_point;
 
 public:
 	CTimer ();
-
-	FRT_SINGLETON_GETTERS(CTimer)
 
 	[[nodiscard]] float FRT_CORE_API GetTotalSeconds () const;
 	[[nodiscard]] float FRT_CORE_API GetDeltaSeconds () const;

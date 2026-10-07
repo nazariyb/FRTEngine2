@@ -1,215 +1,82 @@
 #pragma once
 
-#include <filesystem>
-#include <string>
-#include <utility>
-#include <vector>
-
 #include "Core.h"
-#include "Singleton.h"
-#include "Window.h"
-#include "Graphics/Render/RenderView.h"
-#include "WorldScene.h"
-#include "Config/Config.h"
-#include "Graphics/Render/GraphicsCoreTypes.h"
-#include "Graphics/Render/RenderCommonTypes.h"
-#include "Input/InputActionLibrary.h"
-#include "Input/InputSystem.h"
-#include "Memory/MemoryPool.h"
-#include "Memory/Ref.h"
-#include "Profiler/MetricsAggregator.h"
-#include "Profiler/ProfilingSession.h"
-#include "Profiler/SceneDescriptor.h"
-#include "User/UserSettings.h"
+#include "CoreTypes.h"
+#include "Math/Math.h"
 
+
+namespace frt
+{
+class CWorldScene;
+}
+
+namespace frt::config
+{
+class CConfig;
+}
 
 namespace frt::graphics
 {
-class CRenderer;
+class CMaterialLibrary;
+}
+
+namespace frt::input
+{
+class CInputActionLibrary;
+class CInputSystem;
 }
 
 
 namespace frt
 {
-class CTimer;
-class CWindow;
-}
-
-
-NAMESPACE_FRT_START
-class FRT_CORE_API GameInstance : public Singleton<GameInstance>
+// What a game may use while it runs. Everything else - window, renderer, UI - belongs to the
+// host (the launcher, the editor), never to the game.
+struct SGameContext
 {
-public:
-	GameInstance ();
-	virtual ~GameInstance ();
-
-	FRT_SINGLETON_GETTERS(GameInstance)
-
-	CTimer& GetTime () const;
-
-	config::CConfig& GetConfig () { return Config; }
-	const config::CConfig& GetConfig () const { return Config; }
-
-	bool HasGraphics () const;
-#if !defined(FRT_HEADLESS)
-	memory::TRefWeak<graphics::CRenderer> GetRenderer () const;
-
-	CWindow& GetWindow () const { return *Window; }
-#endif
-	input::CInputSystem& GetInputSystem () { return InputSystem; }
-	const input::CInputSystem& GetInputSystem () const { return InputSystem; }
-	input::CInputActionLibrary& GetInputActionLibrary () { return InputActionLibrary; }
-	const input::CInputActionLibrary& GetInputActionLibrary () const { return InputActionLibrary; }
-	input::CInputActionMap* GetActiveInputActionMap ();
-	const input::CInputActionMap* GetActiveInputActionMap () const;
-
-	virtual void Load ();
-	virtual void OnLoaded ();
-
-	// Update
-	virtual void Input (float DeltaSeconds);
-	virtual void Tick (float DeltaSeconds);
-#if !defined(FRT_HEADLESS)
-	virtual void Draw (float DeltaSeconds);
-#endif
-	// ~Update
-
-	uint64 GetFrameCount () const;
-
-	CWorldScene& GetWorldScene () { return World; }
-	const CWorldScene& GetWorldScene () const { return World; }
-
-protected:
-	// Pure stats computation — updates StatFps / StatMsPerFrame, no ImGui.
-	void CalculateFrameStats ();
-
-#ifndef FRT_HEADLESS
-	virtual void OnWindowResize ();
-	virtual void OnLoseFocus ();
-	virtual void OnGainFocus ();
-	virtual void OnMinimize ();
-	virtual void OnRestoreFromMinimize ();
-
-	// UI entry point, called from Tick. Master dispatches to per-panel functions.
-	// All panel bodies live in GameInstanceUI.cpp (long-term they move out of GameInstance).
-	virtual void DrawUI ();
-	void DrawStatsPanel ();
-	void DrawRaytracingPanel ();
-	void DrawSkyPanel ();
-	void DrawEditorPanel ();
-	void DrawDisplaySettingsPanel ();
-#endif
-
-protected:
-	// Declared before the memory pool because it is loaded before it: config depends on
-	// nothing but the standard library, and everything below reads settings out of it.
-	config::CConfig Config;
-
-	memory::CMemoryPool MemoryPool;
-	CTimer* Timer;
-#ifndef FRT_HEADLESS
-	CWindow* Window;
-	memory::TRefUnique<graphics::CRenderer> Renderer;
-	graphics::CRenderView* MainView = nullptr;    // owned by the renderer
-	graphics::SCameraView MainCameraView;
-
-#endif
-	CWorldScene World;
-	input::CInputSystem InputSystem;
-	input::CInputActionLibrary InputActionLibrary;
-	input::SInputActionMapAsset* ActiveActionMap = nullptr;
-
-	graphics::SDisplayOptions DisplayOptions;
-	SUserSettings UserSettings;
-
-	// Live raytracing knobs — written by ImGui sliders, read by scene extraction.
-	struct SRtSettings
-	{
-		uint32 SampleCount = 32u;
-		uint32 MaxBounces = 4u;
-		uint32 RussianRouletteDepth = 2u;
-		bool bPortalPreFilter = true;
-		bool bShowPortalMeshes = false; // portal viz quads occlude rays — off by default
-		bool bCollectCounters = false;  // ray-counter atomics — off by default (perf), on in sessions
-	};
-
-public:
-	SRtSettings& GetRtSettings () { return RtSettings; }
-	const SRtSettings& GetRtSettings () const { return RtSettings; }
-
-protected:
-	SRtSettings RtSettings;
-
-	bool bShowImGui = true;    // toggled by key I; when false DrawUI is skipped
-
-	// Editor selection — index into CWorldScene::GetEntities(). -1 = nothing selected.
-	// Naive but stable as long as entities aren't reordered mid-frame.
-	int32 SelectedEntityIndex = -1;
-
-	uint64 FrameCount;
-
-	// Frame-stats state (was static locals in CalculateFrameStats).
-	float StatFps = 0.f;
-	float StatMsPerFrame = 0.f;
-	int StatFrameAccum = 0;
-	float StatTimeElapsed = 0.f;
-
-	// Per-frame metrics + rolling N-frame average. Sampled in Tick, read by panels.
-	profiler::CMetricsAggregator Metrics;
-
-	// Batch profiling sweep. While active it overrides RtSettings per profile; the
-	// pre-session settings are restored on completion.
-	profiler::CProfilingSession ProfilingSession;
-	SRtSettings SavedRtSettings;
-	// Static scene snapshot captured at session start (camera fixed for the run).
-	profiler::SSceneDescriptor SessionSceneDesc;
-	// Output folder for the active session: GetProfilingDir()/<SessionNameBuf>.
-	std::filesystem::path SessionDir;
-	char SessionNameBuf[64] = "session";
-
-	bool bCameraMovementEnabled = false;
-	math::STransform CameraInitialTransform;
-
-#ifndef FRT_HEADLESS
-	// Launch-time configuration ([Render] / [Automation] sections, usually from the command
-	// line: -Render:Mode=Reference -Automation:CaptureFrame=300 ...).
-	void ApplyLaunchConfig ();
-	void UpdateAutomation (float DeltaSeconds);
-	void BeginProfilingOverride ();
-	void EndProfilingOverride ();
-
-	int64 AutomationCaptureFrame = -1;
-	int64 AutomationExitFrame = -1;
-	bool bAutomationCaptureHdr = true;
-	bool bAutomationCaptureRequested = false;
-	std::filesystem::path AutomationCapturePath;
-	// -Automation:ProfileFrames=N: average GPU scope times over the N frames before ExitFrame,
-	// printed to stdout at exit ("[profile] <scope> <ms>").
-	int64 AutomationProfileFrames = 0;
-	// -Automation:CameraMove="x,y,z" (camera-local metres per frame) and CameraTurn="pitch,yaw,roll"
-	// (radians per frame), applied from MotionStartFrame up to MotionEndFrame (-1 = until exit):
-	// deterministic camera motion for ghosting / disocclusion tests.
-	Vector3f AutomationCameraMove = Vector3f::ZeroVector;
-	Vector3f AutomationCameraTurn = Vector3f::ZeroVector;
-	int64 AutomationMotionStartFrame = 0;
-	int64 AutomationMotionEndFrame = -1;
-	bool bAutomationMotion = false;
-	std::vector<std::pair<std::string, std::pair<double, uint32>>> AutomationProfile;
-	double AutomationCpuFrameMs = 0.0;
-	uint32 AutomationCpuFrames = 0u;
-
-	// Path tracer settings saved while a profiling session drives them.
-	struct SProfilingSnapshot
-	{
-		uint32 SamplesPerPixel = 1u;
-		uint32 MaxBounces = 4u;
-		uint32 RussianRouletteDepth = 3u;
-		bool bPortalPreFilter = false;
-		bool bCollectRayCounters = false;
-	};
-	SProfilingSnapshot SavedProfilingSettings;
-#endif
+	CWorldScene& World;
+	graphics::CMaterialLibrary& Materials;
+	input::CInputActionLibrary& InputActions;
+	const config::CConfig& Config;
 };
 
+// The game's input for one frame, as data (DOOM's ticcmd): the host decides what the game may
+// see - in the editor only a focused Game view routes input to it.
+struct SGameInput
+{
+	const input::CInputSystem* Device = nullptr;   // null: the game has no input this frame
+	Vector2f LookDelta = Vector2f(0.0f, 0.0f);     // mouse motion, pixels
+	float ViewAspect = 1.0f;                       // of the view the game is shown in
+};
 
-NAMESPACE_FRT_END
+struct SGameFrame
+{
+	float RealDeltaSeconds = 0.0f;   // wall clock: cameras, UI-like feedback
+	float GameDeltaSeconds = 0.0f;   // the world's clock: 0 while paused
+	SGameInput Input;
+};
+
+/**
+ * A game, as a service the host calls (Muratori's platform/game split; DOOM 3's game DLL).
+ *
+ * The host owns the world, the loop and the frame. A game builds the world's content, then -
+ * for each play session - is told it began, ticked once per frame and told it ended. Game
+ * state belongs in the world: the editor plays a copy of its edit world and drops the copy on
+ * Stop, and creates a fresh instance for every session (so nothing a session leaves in the
+ * instance leaks into the next, the role of Unity's domain reload).
+ *
+ * Games are modules: a game DLL exposes its instance through FRT_IMPLEMENT_GAME_MODULE
+ * (Engine/GameModule.h), which both hosts load.
+ */
+class FRT_CORE_API GameInstance
+{
+public:
+	virtual ~GameInstance ();
+
+	// Authors the world's content (entities, camera, environment) into an empty world.
+	virtual void BuildWorld (const SGameContext& Context) = 0;
+
+	virtual void BeginPlay (const SGameContext& Context) {}
+	virtual void Tick (const SGameContext& Context, const SGameFrame& Frame) {}
+	virtual void EndPlay (const SGameContext& Context) {}
+};
+}
