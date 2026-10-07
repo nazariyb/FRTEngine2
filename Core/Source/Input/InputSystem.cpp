@@ -28,7 +28,10 @@ void CInputSystem::Update (float FrameTimeSeconds)
 void CInputSystem::Clear ()
 {
 	WindowStates.clear();
-	DefaultWindow = InvalidWindowId;
+	// Events queued before the focus change describe keys whose releases will never arrive
+	// (an Alt that went down for Alt+Tab would stay held). The default window stays: it was
+	// set by the owner, and the next event would only have to find it again.
+	CPlatformInputQueue::Clear();
 }
 
 void CInputSystem::SetDefaultWindow (WindowId Window)
@@ -74,7 +77,7 @@ bool CInputSystem::WasKeyPressed (KeyCode Key, WindowId Window) const
 		return false;
 	}
 
-	return !state->Previous.Keyboard.Keys[index].bDown && state->Current.Keyboard.Keys[index].bDown;
+	return state->Current.Keyboard.Keys[index].PressCount > 0u;
 }
 
 bool CInputSystem::WasKeyReleased (KeyCode Key, WindowId Window) const
@@ -92,7 +95,7 @@ bool CInputSystem::WasKeyReleased (KeyCode Key, WindowId Window) const
 		return false;
 	}
 
-	return state->Previous.Keyboard.Keys[index].bDown && !state->Current.Keyboard.Keys[index].bDown;
+	return state->Current.Keyboard.Keys[index].ReleaseCount > 0u;
 }
 
 float CInputSystem::GetKeyHeldSeconds (KeyCode Key, WindowId Window) const
@@ -117,6 +120,28 @@ float CInputSystem::GetKeyHeldSeconds (KeyCode Key, WindowId Window) const
 	}
 
 	return std::max(0.0f, CurrentTimeSeconds - key.LastPressedTime);
+}
+
+SFlags<EInputModifier> CInputSystem::GetModifiers (WindowId Window) const
+{
+	SFlags<EInputModifier> modifiers = EInputModifier::None;
+	if (IsKeyDown(KeyCode::LeftShift, Window) || IsKeyDown(KeyCode::RightShift, Window))
+	{
+		modifiers += EInputModifier::Shift;
+	}
+	if (IsKeyDown(KeyCode::LeftCtrl, Window) || IsKeyDown(KeyCode::RightCtrl, Window))
+	{
+		modifiers += EInputModifier::Ctrl;
+	}
+	if (IsKeyDown(KeyCode::LeftAlt, Window) || IsKeyDown(KeyCode::RightAlt, Window))
+	{
+		modifiers += EInputModifier::Alt;
+	}
+	if (IsKeyDown(KeyCode::LeftMeta, Window) || IsKeyDown(KeyCode::RightMeta, Window))
+	{
+		modifiers += EInputModifier::Super;
+	}
+	return modifiers;
 }
 
 bool CInputSystem::IsMouseButtonDown (EMouseButton Button, WindowId Window) const
@@ -152,7 +177,7 @@ bool CInputSystem::WasMouseButtonPressed (EMouseButton Button, WindowId Window) 
 		return false;
 	}
 
-	return !state->Previous.Mouse.Buttons[index].bDown && state->Current.Mouse.Buttons[index].bDown;
+	return state->Current.Mouse.Buttons[index].PressCount > 0u;
 }
 
 bool CInputSystem::WasMouseButtonReleased (EMouseButton Button, WindowId Window) const
@@ -170,7 +195,7 @@ bool CInputSystem::WasMouseButtonReleased (EMouseButton Button, WindowId Window)
 		return false;
 	}
 
-	return state->Previous.Mouse.Buttons[index].bDown && !state->Current.Mouse.Buttons[index].bDown;
+	return state->Current.Mouse.Buttons[index].ReleaseCount > 0u;
 }
 
 Vector2f CInputSystem::GetMousePosition (WindowId Window) const
@@ -217,6 +242,12 @@ float CInputSystem::GetMouseWheelDelta (WindowId Window) const
 	}
 
 	return state->Current.Mouse.WheelDelta;
+}
+
+float CInputSystem::GetMouseWheelDeltaX (WindowId Window) const
+{
+	const SWindowInputState* state = FindState(ResolveWindow(Window));
+	return state ? state->Current.Mouse.WheelDeltaX : 0.0f;
 }
 
 bool CInputSystem::IsGamepadConnected (uint8 GamepadIndex, WindowId Window) const
@@ -361,14 +392,23 @@ WindowId CInputSystem::ResolveWindow (WindowId Window) const
 
 void CInputSystem::BeginFrame (float FrameTimeSeconds)
 {
-	CurrentTimeSeconds = FrameTimeSeconds;
+	CurrentTimeSeconds += FrameTimeSeconds;
 
 	for (auto& [windowId, state] : WindowStates)
 	{
 		state.Previous = state.Current;
+		for (SButtonState& key : state.Current.Keyboard.Keys)
+		{
+			key.PressCount = key.ReleaseCount = 0u;
+		}
+		for (SButtonState& button : state.Current.Mouse.Buttons)
+		{
+			button.PressCount = button.ReleaseCount = 0u;
+		}
 		state.Current.Mouse.Delta = Vector2f(0.0f, 0.0f);
 		state.Current.Mouse.RawDelta = Vector2f(0.0f, 0.0f);
 		state.Current.Mouse.WheelDelta = 0.0f;
+		state.Current.Mouse.WheelDeltaX = 0.0f;
 	}
 }
 
@@ -400,10 +440,15 @@ void CInputSystem::HandleEvent (const SKeyboardEventData& Data)
 				keyState.LastPressedTime = CurrentTimeSeconds;
 			}
 			keyState.bDown = true;
+			keyState.PressCount = static_cast<uint8>(std::min(keyState.PressCount + 1, 255));
 			break;
 		case EInputAction::Repeat: keyState.bDown = true;
 			break;
-		case EInputAction::Released: keyState.bDown = false;
+		case EInputAction::Released: if (keyState.bDown)
+			{
+				keyState.ReleaseCount = static_cast<uint8>(std::min(keyState.ReleaseCount + 1, 255));
+			}
+			keyState.bDown = false;
 			keyState.LastReleasedTime = CurrentTimeSeconds;
 			break;
 		default: break;
@@ -440,10 +485,15 @@ void CInputSystem::HandleEvent (const SMouseButtonEventData& Data)
 				buttonState.LastPressedTime = CurrentTimeSeconds;
 			}
 			buttonState.bDown = true;
+			buttonState.PressCount = static_cast<uint8>(std::min(buttonState.PressCount + 1, 255));
 			break;
 		case EInputAction::Repeat: buttonState.bDown = true;
 			break;
-		case EInputAction::Released: buttonState.bDown = false;
+		case EInputAction::Released: if (buttonState.bDown)
+			{
+				buttonState.ReleaseCount = static_cast<uint8>(std::min(buttonState.ReleaseCount + 1, 255));
+			}
+			buttonState.bDown = false;
 			buttonState.LastReleasedTime = CurrentTimeSeconds;
 			break;
 		default: break;
@@ -493,7 +543,7 @@ void CInputSystem::HandleEvent (const SMouseWheelEventData& Data)
 	}
 
 	SWindowInputState& state = GetOrCreateState(window);
-	state.Current.Mouse.WheelDelta += Data.Delta;
+	(Data.bHorizontal ? state.Current.Mouse.WheelDeltaX : state.Current.Mouse.WheelDelta) += Data.Delta;
 
 	OnMouseWheelEvent.Invoke(Data);
 }

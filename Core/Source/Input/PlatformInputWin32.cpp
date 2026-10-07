@@ -170,6 +170,15 @@ namespace
 
 	KeyCode TranslateKey (WPARAM wParam, LPARAM lParam)
 	{
+		// Pause and NumLock share scan code 0x45 (NumLock with the extended bit): tell them apart
+		// by their virtual keys first.
+		switch (wParam)
+		{
+			case VK_PAUSE: return KeyCode::Pause;
+			case VK_NUMLOCK: return KeyCode::NumLock;
+			default: break;
+		}
+
 		const uint16 scanCode = static_cast<uint16>((lParam >> 16) & 0xFF);
 		const bool bExtended = (lParam & (1 << 24)) != 0;
 		KeyCode key = TranslateScanCode(scanCode, bExtended);
@@ -178,11 +187,9 @@ namespace
 			return key;
 		}
 
-		switch (wParam)
+		if (wParam == VK_SNAPSHOT)
 		{
-			case VK_SNAPSHOT: return KeyCode::PrintScreen;
-			case VK_PAUSE: return KeyCode::Pause;
-			default: break;
+			return KeyCode::PrintScreen;
 		}
 
 		return KeyCode::Unknown;
@@ -342,6 +349,7 @@ void HandleWin32Message (HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			SMouseWheelEventData data = {};
 			FillHeader(data.Header, hWnd, EInputDeviceType::Mouse, MouseDeviceId);
 			data.Delta = delta;
+			data.bHorizontal = message == WM_MOUSEHWHEEL;
 			data.Position = ToMousePositionFromScreen(hWnd, lParam);
 			CPlatformInputQueue::Enqueue(data);
 			break;

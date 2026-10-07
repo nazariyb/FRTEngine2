@@ -14,15 +14,22 @@ public:
 	CInputSystem () = default;
 
 	void Update (float FrameTimeSeconds);
+	// Forgets every key and button held (focus loss: their releases will go to another window)
+	// and drops input still queued from before.
 	void Clear ();
 
 	void SetDefaultWindow (WindowId Window);
 	WindowId GetDefaultWindow () const;
 
 	bool IsKeyDown (KeyCode Key, WindowId Window = InvalidWindowId) const;
+	// Pressed / released this frame - also a tap that went down and up within the frame.
+	// Auto-repeat does not count as a press.
 	bool WasKeyPressed (KeyCode Key, WindowId Window = InvalidWindowId) const;
 	bool WasKeyReleased (KeyCode Key, WindowId Window = InvalidWindowId) const;
 	float GetKeyHeldSeconds (KeyCode Key, WindowId Window = InvalidWindowId) const;
+	// Shift, Ctrl, Alt and Super held now, either side of the keyboard. Lock states are not
+	// included.
+	SFlags<EInputModifier> GetModifiers (WindowId Window = InvalidWindowId) const;
 
 	bool IsMouseButtonDown (EMouseButton Button, WindowId Window = InvalidWindowId) const;
 	bool WasMouseButtonPressed (EMouseButton Button, WindowId Window = InvalidWindowId) const;
@@ -34,7 +41,10 @@ public:
 	// clipped or hidden - what a captured camera should read. Falls back to GetMouseDelta()
 	// where the platform delivers no raw input (e.g. remote sessions).
 	Vector2f GetRawMouseDelta (WindowId Window = InvalidWindowId) const;
+	// Wheel motion this frame, in notches (fractional for high-resolution wheels): vertical,
+	// positive away from the user; horizontal (tilt), positive to the right.
 	float GetMouseWheelDelta (WindowId Window = InvalidWindowId) const;
+	float GetMouseWheelDeltaX (WindowId Window = InvalidWindowId) const;
 
 	bool IsGamepadConnected (uint8 GamepadIndex, WindowId Window = InvalidWindowId) const;
 	bool IsGamepadButtonDown (uint8 GamepadIndex, EGamepadButton Button, WindowId Window = InvalidWindowId) const;
@@ -76,7 +86,7 @@ private:
 private:
 	std::unordered_map<WindowId, SWindowInputState> WindowStates;
 	WindowId DefaultWindow = InvalidWindowId;
-	float CurrentTimeSeconds = 0.0f;
+	float CurrentTimeSeconds = 0.0f;         // since the first Update
 	bool bRawMouseSeen = false;
 };
 }

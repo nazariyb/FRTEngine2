@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <array>
 
@@ -281,6 +281,7 @@ struct SMouseWheelEventData
 {
 	SInputEventHeader Header;
 	float Delta = 0.0f;
+	bool bHorizontal = false;          // a tilt wheel (WM_MOUSEHWHEEL), not the vertical wheel
 	Vector2f Position = {};
 };
 
@@ -322,7 +323,11 @@ using InputEventDeviceConnection = CEvent<SDeviceConnectionEventData>;
 struct SButtonState
 {
 	bool bDown = false;
-	FRT_STRUCT_PADDING(3);
+	// Presses and releases this frame. A tap shorter than a frame still counts as pressed
+	// (and released), where comparing the level against last frame's would miss it.
+	uint8 PressCount = 0u;
+	uint8 ReleaseCount = 0u;
+	FRT_STRUCT_PADDING(1);
 	float LastPressedTime = 0.0f;
 	float LastReleasedTime = 0.0f;
 };
@@ -340,7 +345,8 @@ struct SMouseState
 	Vector2f Position = {};
 	Vector2f Delta = {};
 	Vector2f RawDelta = {};
-	float WheelDelta = 0.0f;
+	float WheelDelta = 0.0f;           // vertical, notches, positive away from the user
+	float WheelDeltaX = 0.0f;          // horizontal (tilt), notches, positive to the right
 };
 
 
@@ -360,3 +366,126 @@ struct SInputState
 	std::array<SGamepadState, MaxGamepads> Gamepads = {};
 };
 }
+
+
+// Key and mouse button names, as written in config files and binding text (see InputChord.h).
+// Every key has one: the enum's own spelling, matched case-insensitively.
+FRT_DECLARE_ENUM_REFLECTION(
+	frt::input::KeyCode,
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Escape),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, F1),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, F2),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, F3),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, F4),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, F5),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, F6),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, F7),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, F8),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, F9),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, F10),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, F11),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, F12),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, PrintScreen),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, ScrollLock),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Pause),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Grave),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Digit1),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Digit2),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Digit3),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Digit4),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Digit5),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Digit6),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Digit7),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Digit8),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Digit9),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Digit0),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Minus),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Equals),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Backspace),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Tab),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Q),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, W),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, E),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, R),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, T),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Y),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, U),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, I),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, O),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, P),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, LeftBracket),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, RightBracket),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Backslash),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, CapsLock),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, A),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, S),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, D),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, F),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, G),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, H),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, J),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, K),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, L),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Semicolon),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Apostrophe),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Enter),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, LeftShift),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Z),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, X),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, C),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, V),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, B),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, N),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, M),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Comma),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Period),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Slash),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, RightShift),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, LeftCtrl),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, LeftAlt),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, LeftMeta),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Space),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, RightAlt),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, RightMeta),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Menu),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, RightCtrl),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Insert),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Delete),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Home),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, End),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, PageUp),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, PageDown),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, ArrowUp),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, ArrowDown),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, ArrowLeft),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, ArrowRight),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, NumLock),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, NumpadDivide),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, NumpadMultiply),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, NumpadMinus),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, NumpadPlus),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, NumpadEnter),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Numpad1),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Numpad2),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Numpad3),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Numpad4),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Numpad5),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Numpad6),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Numpad7),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Numpad8),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Numpad9),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, Numpad0),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, NumpadDecimal),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, NonUSBackslash),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, IntlRo),
+	FRT_ENUM_ENTRY(frt::input::KeyCode, IntlYen)
+);
+
+FRT_DECLARE_ENUM_REFLECTION(
+	frt::input::EMouseButton,
+	FRT_ENUM_ENTRY(frt::input::EMouseButton, Left),
+	FRT_ENUM_ENTRY(frt::input::EMouseButton, Right),
+	FRT_ENUM_ENTRY(frt::input::EMouseButton, Middle),
+	FRT_ENUM_ENTRY(frt::input::EMouseButton, X1),
+	FRT_ENUM_ENTRY(frt::input::EMouseButton, X2)
+);
