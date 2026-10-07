@@ -1,16 +1,32 @@
-version: 2
+version: 3
 name: Sponza_mat20
 shaders:
   vertex: VertexShader
   pixel: PixelShader
 albedo:
-  color: {r: 1, g: 1, b: 1, a: 1}
+  color: {r: 0.588, g: 0.588, b: 0.588, a: 1}
   texture: 16275776544635328252.png
-metallic: 0
+metallic: 1
 roughness: 1
 emissive:
   color: {r: 0, g: 0, b: 0, a: 1}
   intensity: 0
+  texture: ""
+metallicRoughnessTexture: 1219024358953944284.jpg
+normal:
+  texture: 14170708867020035030.jpg
+  scale: 1
+occlusion:
+  texture: ""
+  strength: 1
+alpha:
+  mode: mask
+  cutoff: 0.5
+doubleSided: true
+specular:
+  factor: 1
+  ior: 1.5
+  transmission: 0
 depth:
   enable: true
   write: true

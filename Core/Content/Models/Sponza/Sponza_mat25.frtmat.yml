@@ -1,4 +1,4 @@
-version: 2
+version: 3
 name: Sponza_mat25
 shaders:
   vertex: VertexShader
@@ -6,11 +6,27 @@ shaders:
 albedo:
   color: {r: 1, g: 1, b: 1, a: 1}
   texture: ""
-metallic: 0
+metallic: 1
 roughness: 1
 emissive:
   color: {r: 0, g: 0, b: 0, a: 1}
   intensity: 0
+  texture: ""
+metallicRoughnessTexture: ""
+normal:
+  texture: ""
+  scale: 1
+occlusion:
+  texture: ""
+  strength: 1
+alpha:
+  mode: opaque
+  cutoff: 0.5
+doubleSided: false
+specular:
+  factor: 1
+  ior: 1.5
+  transmission: 0
 depth:
   enable: true
   write: true
