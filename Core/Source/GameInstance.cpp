@@ -31,11 +31,14 @@
 #include "Graphics/Render/GraphicsUtility.h"
 #include "Graphics/Render/RenderCommonTypes.h"
 #include "Graphics/Render/Renderer.h"
+#if !defined(FRT_HEADLESS)
+// Exported classes with virtuals: seeing them emits references to code headless Core omits.
 #include "Graphics/Render/Passes/Denoiser.h"
 #include "Graphics/Render/Passes/PathTracer.h"
 #include "Graphics/Render/Passes/PostProcess.h"
 #include "Graphics/Render/Passes/Upscaler.h"
 #include "Graphics/Render/Scene/GpuScene.h"
+#endif
 #include "EnginePaths.h"
 #include "Math/Comp_LocalTransform.h"
 #include "Math/Comp_WorldTransform.h"

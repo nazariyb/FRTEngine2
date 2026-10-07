@@ -88,8 +88,9 @@ project "Core"
 			-- serializers. Removing all of Render/**.cpp left those unresolved at link.
 			rootpath("%{prj.name}/Source/Graphics/Render/Renderer.cpp"),
 			rootpath("%{prj.name}/Source/Window.cpp"),
-			-- GPU-only backend and passes.
-			rootpath("%{prj.name}/Source/Graphics/Render/RHI/**.cpp"),
+			-- GPU-only passes. The RHI stays: it needs no window, and CRenderContext - exported,
+			-- so all of its inline members are emitted wherever its header is seen - calls into
+			-- it, which left headless Core with unresolved RHI symbols at link.
 			rootpath("%{prj.name}/Source/Graphics/Render/Passes/**.cpp"),
 			rootpath("%{prj.name}/Source/Graphics/Render/Scene/**.cpp"),
 		}
