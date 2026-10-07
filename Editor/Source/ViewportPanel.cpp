@@ -10,6 +10,8 @@
 #include "Graphics/Render/Renderer.h"
 #include "Graphics/Render/RenderView.h"
 
+#include "ViewportCamera.h"
+
 
 namespace frt::editor
 {
@@ -118,12 +120,15 @@ const SViewportFrame& CViewportPanel::Draw (graphics::CRenderer& Renderer, const
 	}
 	if (!bOpen)
 	{
+		// A drag ends with its panel; reopened, it starts a new one only on a new press.
+		bNavigating = false;
 		return Frame;
 	}
 
 	const bool bDocked = Args.Presentation == EViewportPresentation::Docked;
 	const bool bMaximized = Args.Presentation == EViewportPresentation::Maximized;
 	const bool bFullscreen = Args.Presentation == EViewportPresentation::Fullscreen;
+	bSurfaceDrawn = false;
 
 	// The panel's own window is submitted every frame, also while covered or shown over the
 	// editor: that keeps its dock slot and its tab.
@@ -142,7 +147,7 @@ const SViewportFrame& CViewportPanel::Draw (graphics::CRenderer& Renderer, const
 	}
 	if (ImGui::BeginPopupContextItem("##TabMenu"))
 	{
-		if (ImGui::MenuItem(bMaximized ? "Restore" : "Maximize", "Shift+Space"))
+		if (ImGui::MenuItem(bMaximized ? "Restore" : "Maximize", Args.MaximizeShortcut))
 		{
 			Frame.bToggleMaximize = true;
 		}
@@ -175,6 +180,12 @@ const SViewportFrame& CViewportPanel::Draw (graphics::CRenderer& Renderer, const
 		DrawContents(Renderer, Args, !bFullscreen);
 		ImGui::End();
 	}
+
+	// A drag ends with its surface: covered, closed, collapsed.
+	if (!bSurfaceDrawn)
+	{
+		bNavigating = false;
+	}
 	return Frame;
 }
 
@@ -206,15 +217,33 @@ void CViewportPanel::DrawToolbar (graphics::CRenderer& Renderer, const SViewport
 	const bool bRaster = View->GetRenderMode() == graphics::ERenderMode::Raster;
 	if (ImGui::BeginMenu(bRaster ? "Raster" : "Path Traced"))
 	{
-		if (ImGui::MenuItem("Path Traced", "F2", !bRaster, Renderer.CanTrace()))
+		if (ImGui::MenuItem("Path Traced", Args.RenderModeShortcut, !bRaster, Renderer.CanTrace()))
 		{
 			View->SetRenderMode(graphics::ERenderMode::Raytracing);
 		}
-		if (ImGui::MenuItem("Raster", "F2", bRaster))
+		if (ImGui::MenuItem("Raster", Args.RenderModeShortcut, bRaster))
 		{
 			View->SetRenderMode(graphics::ERenderMode::Raster);
 		}
 		ImGui::EndMenu();
+	}
+
+	if (Args.CameraSpeed)
+	{
+		// Unreal's camera speed control. The wheel changes it during a drag, too.
+		char label[48];
+		std::snprintf(label, sizeof(label), "Speed %.2f###CameraSpeed", *Args.CameraSpeed);
+		if (ImGui::BeginMenu(label))
+		{
+			ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
+			ImGui::SliderFloat("##Speed", Args.CameraSpeed, 0.33f, 32.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+			ImGui::TextDisabled("Wheel while dragging to change it");
+			if (ImGui::MenuItem("Reset", nullptr, false, *Args.CameraSpeed != Args.DefaultCameraSpeed))
+			{
+				*Args.CameraSpeed = Args.DefaultCameraSpeed;
+			}
+			ImGui::EndMenu();
+		}
 	}
 
 	if (Kind == EViewportKind::Game && ImGui::BeginMenu(GetAspectName(Aspect)))
@@ -305,21 +334,48 @@ void CViewportPanel::DrawSurface (graphics::CRenderer& Renderer, const SViewport
 	// letterbox included - belongs to the viewport, never to a window move or a dock drag.
 	ImGui::InvisibleButton("##Surface", area,
 		ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
-	ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);
-	if (ImGui::IsItemActive())
-	{
-		// ImGui's navigation cancels the active item on an unowned Escape, which would drop a
-		// fly or a game's mouse look with the button still held. Escape belongs to the drag.
-		ImGui::SetKeyOwner(ImGuiKey_Escape, ImGui::GetItemID());
-	}
+	const ImGuiID surface = ImGui::GetItemID();
+	bSurfaceDrawn = true;
 	Frame.bVisible = true;
 	Frame.bHovered = ImGui::IsItemHovered();
-	Frame.bSurfaceActive = ImGui::IsItemActive();
-	Frame.bRightHeld = Frame.bSurfaceActive && ImGui::GetCurrentContext()->ActiveIdMouseButton == ImGuiMouseButton_Right;
 	if (ImGui::IsItemActivated())
 	{
-		// Any button focuses the viewport, as in Unity - ImGui alone focuses on the left one.
+		// Any button focuses the viewport - ImGui alone focuses on the left one - and starts a
+		// navigation drag.
 		ImGui::SetWindowFocus();
+		bNavigating = true;
+	}
+	// The drag outlives the button that started it: ImGui deactivates the surface when that
+	// button is released, while Unreal's LMB -> LMB+RMB -> RMB is one continuous navigation.
+	uint8 buttons = 0u;
+	if (bNavigating)
+	{
+		buttons |= ImGui::IsMouseDown(ImGuiMouseButton_Left) ? viewport_button::Left : 0u;
+		buttons |= ImGui::IsMouseDown(ImGuiMouseButton_Right) ? viewport_button::Right : 0u;
+		buttons |= ImGui::IsMouseDown(ImGuiMouseButton_Middle) ? viewport_button::Middle : 0u;
+		bNavigating = buttons != 0u;
+	}
+	Frame.bNavigating = bNavigating;
+	Frame.NavigationButtons = bNavigating ? buttons : 0u;
+
+	if (bNavigating)
+	{
+		// ImGui's navigation cancels the active item on an unowned Escape, and the wheel would
+		// scroll whatever the cursor drifts over: both belong to the drag.
+		ImGui::SetKeyOwner(ImGuiKey_Escape, surface);
+		ImGui::SetKeyOwner(ImGuiKey_MouseWheelY, surface);
+	}
+	else
+	{
+		ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);
+	}
+	if (bNavigating || Frame.bHovered)
+	{
+		// Alt is the orbit modifier here. A tap of it must not open a panel's menu bar, which
+		// ImGui does on an unowned Alt press and release.
+		ImGui::SetKeyOwner(ImGuiKey_LeftAlt, surface);
+		ImGui::SetKeyOwner(ImGuiKey_RightAlt, surface);
+		ImGui::SetKeyOwner(ImGuiMod_Alt, surface);
 	}
 
 	// The view's image, centred; scaled down only while a resize is pending.
@@ -395,9 +451,9 @@ void CViewportPanel::DrawOverlays (graphics::CRenderer& Renderer, const SViewpor
 	if (Args.Presentation == EViewportPresentation::Fullscreen)
 	{
 		const double shown = ImGui::GetTime() - PresentationChangeTime;
-		if (shown < FullscreenHintSeconds)
+		if (shown < FullscreenHintSeconds && *Args.FullscreenExitHint)
 		{
-			const char* text = "F11  exit fullscreen";
+			const char* text = Args.FullscreenExitHint;
 			const float fade = static_cast<float>((std::min)(1.0, (FullscreenHintSeconds - shown) / 0.5));
 			const float textWidth = ImGui::CalcTextSize(text).x + style.FramePadding.x * 2.0f;
 			DrawLabel(drawList, ImVec2(std::floor((Min.x + Max.x - textWidth) * 0.5f), Max.y - unit * 3.0f), text, OverlayText, fade);

@@ -109,15 +109,30 @@ Replace `<target>` with the Premake action for your toolchain (e.g. `vs2019`, `g
 
 The editor shows the world twice, as Unity does: the **Scene** view through the editor's own camera, the **Game** view through the game's. Both are panels like any other - dock, tab, float and resize them freely; **View → Reset Layout** brings back the default arrangement.
 
-| Input | Action |
+The Scene view's camera navigates exactly like Unreal Engine's level viewport (same controls, speeds and sensitivities):
+
+| Scene view | Action |
 |---|---|
-| **RMB** (hold) on the Scene view | Fly the editor camera: mouse to look, **W A S D** to move, **Space / Ctrl** up / down, wheel for speed |
-| **Shift+Space**, or double-click a viewport's tab | Maximize the viewport under the cursor over the editor / restore it |
-| **F11** | Fullscreen the viewport under the cursor (borderless, the whole screen) / back |
-| **F2** | Path tracing / raster preview for the viewport under the cursor |
-| **Ctrl+P** | Play / stop |
-| **Ctrl+Shift+P** | Pause / resume (in edit mode: start the next session paused) |
-| **Ctrl+Alt+P** | Step one game frame |
+| **RMB** drag | Look around. While held: **W A S D** move, **E / Q** up / down, **R / F** up / down along the view, **Z / C** widen / narrow the view (it springs back on release), **wheel** changes the camera speed |
+| **LMB** drag | Move along the ground and turn |
+| **LMB+RMB** drag | Pan sideways and up / down |
+| **MMB** drag | Pan along the view |
+| **Wheel** | Move forward / back |
+| **Alt + LMB / RMB / MMB** drag | Orbit / dolly / track around the point ahead |
+| **Arrows, PageUp / PageDown, numpad** | Move while the Scene view has focus, no mouse button needed |
+
+The camera speed is in the Scene view's toolbar (and changed by the wheel during a drag).
+
+| Editor | Default |
+|---|---|
+| Maximize the viewport under the cursor over the editor / restore (or double-click its tab) | **Shift+Space** |
+| Fullscreen that viewport (borderless, the whole screen) / back | **F11**, back also **Esc** |
+| Path tracing / raster preview for that viewport | **F2** |
+| Play / stop | **Ctrl+P** |
+| Pause / resume (in edit mode: start the next session paused) | **Ctrl+Shift+P** |
+| Step one game frame | **Ctrl+Alt+P** |
+
+Every key above is a binding in [`Editor/Config/EditorInput.ini`](Editor/Config/EditorInput.ini), along with the camera's settings (speed, sensitivity, inversions). To change one, put the same section and key with your value in `Local/Editor/EditorInput.ini`; the editor re-reads both files while it runs and reports anything it cannot read in its toolbar. Mouse navigation itself is fixed, as in Unreal.
 
 **Play mode** runs the game on a copy of the edited world, so nothing a session does survives Stop, and each session starts from the same state with a fresh game instance. Both viewports show the running copy; the editor's chrome turns blue as a reminder. The game receives input only while the Game view has focus (a right-drag there captures the mouse for it); the Scene view stays free to fly around.
 
@@ -152,6 +167,6 @@ ThirdParty/       — vendored libraries (ImGui, Stb, DXR helpers, DXC, yaml-cpp
 Premake/          — Premake5 scripts
 Binaries/         — output DLLs / EXEs
 Intermediate/     — compiled object files
-Local/Editor/     — the editor's layout (EditorLayout.ini) and smoke-test output (gitignored)
+Local/Editor/     — the editor's layout (EditorLayout.ini), the user's input overrides (EditorInput.ini) and smoke-test output (gitignored)
 Local/Profiling/  — profiling-session output (gitignored; one folder per session, .txt + .csv per configuration)
 ```

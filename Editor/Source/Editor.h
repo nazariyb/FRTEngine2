@@ -12,8 +12,10 @@
 
 #include "CursorCapture.h"
 #include "EditorCommands.h"
+#include "EditorInput.h"
 #include "EditorLayout.h"
 #include "PlaySession.h"
+#include "ViewportCamera.h"
 #include "ViewportPanel.h"
 
 
@@ -23,12 +25,6 @@ class CEngine;
 class CGameModule;
 class CWorldScene;
 }
-
-namespace frt::input
-{
-struct SInputActionMapAsset;
-}
-
 
 namespace frt::editor
 {
@@ -51,6 +47,10 @@ class CEditorSmokeTest;
  * game code on the edited world. As in Unity, both viewports show the world that is live: the
  * edit world in edit mode, the session's copy while playing. Only the Game view passes input
  * to the game, and only while it has focus.
+ *
+ * The editor's own input is plain key bindings (CEditorInput, Editor/Config/EditorInput.ini):
+ * chords that run commands, and keys that move the Scene camera, which navigates the way
+ * Unreal's level viewport does (CViewportCameraController).
  */
 class CEditor
 {
@@ -76,9 +76,15 @@ public:
 	CWorldScene& GetActiveWorld ();
 	const CPlaySession& GetPlaySession () const { return Play; }
 	CViewportPanel& GetViewport (EViewportTarget Target);
-	// The viewport shown over the editor (Shift+Space) or the screen (F11); null if none.
+	// The viewport shown over the editor or the screen; null if none.
 	const CViewportPanel* GetMaximizedViewport () const;
 	bool IsFullscreen () const { return FullscreenViewport >= 0; }
+	const CEditorInput& GetInput () const { return Input; }
+	CEditorInput& GetInput () { return Input; }
+	const graphics::CCamera& GetSceneCamera () const { return SceneCamera; }
+	const CViewportCameraController& GetSceneCameraController () const { return SceneCameraController; }
+	// Gives the viewport keyboard focus on the next frame.
+	void FocusViewport (EViewportTarget Viewport);
 
 private:
 	void ApplyCommands ();
@@ -91,6 +97,8 @@ private:
 	SGameInput RouteGameInput () const;
 	void StartPlay ();
 	void StopPlay ();
+	void ApplyInputConfig (bool bInitial);
+	void PostNotice (std::string Text, bool bError);
 	void RenderFrame ();
 	void ApplyWindowMode ();
 	int32 ResolveViewport (EViewportTarget Target) const;
@@ -100,13 +108,19 @@ private:
 
 	std::unique_ptr<CWorldScene> EditWorld;
 	graphics::CCamera SceneCamera;                     // the Scene view's camera: the editor's, not the world's
-	input::SInputActionMapAsset* FlyActions = nullptr; // IAM_Editor: RMB + WASD
+	CViewportCameraController SceneCameraController;
+
+	CEditorInput Input;
+	float ConfiguredCameraSpeed = 0.0f;                // the config's Speed, as last applied
 
 	CPlaySession Play;
 	bool bStartPaused = false;                         // Pause pressed in edit mode
 	bool bGameLook = false;                            // the game has the mouse captured this frame
-	std::string PlayMessage;                           // why the last session ended early
-	double PlayMessageTime = 0.0;
+
+	// A line in the toolbar for a few seconds: why play stopped, what the input config said.
+	std::string Notice;
+	double NoticeTime = 0.0;
+	bool bNoticeIsError = false;
 
 	// Indexed by EViewportTarget.
 	static constexpr int32 ViewportCount = 2;

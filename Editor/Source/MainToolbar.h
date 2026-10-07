@@ -16,7 +16,12 @@ struct SToolbarState
 	bool bPaused = false;          // in edit mode: the next session starts paused
 	double PlaySeconds = 0.0;      // the session's game time
 	uint64 PlayFrames = 0u;        // ... and simulated frames
-	const char* Message = nullptr; // a notice to show (the last session's failure), or null
+	const char* Message = nullptr; // a notice to show, or null
+	bool bMessageIsError = false;
+	// Shortcut texts for the tooltips ("" when unbound).
+	const char* PlayShortcut = "";
+	const char* PauseShortcut = "";
+	const char* StepShortcut = "";
 };
 
 /**

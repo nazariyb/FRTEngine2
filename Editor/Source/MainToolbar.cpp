@@ -1,6 +1,7 @@
 #include "MainToolbar.h"
 
 #include <cstdio>
+#include <string>
 
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -54,6 +55,12 @@ void DrawIcon (ImDrawList& DrawList, EIcon Icon, const ImVec2& Min, const ImVec2
 	}
 }
 
+// "Play (Ctrl+P)", or just "Play" when unbound.
+std::string Tooltip (const char* Action, const char* Shortcut)
+{
+	return *Shortcut ? std::string(Action) + " (" + Shortcut + ")" : std::string(Action);
+}
+
 bool IconButton (const char* Id, EIcon Icon, bool bToggled, bool bEnabled, const char* Tooltip)
 {
 	const float height = ImGui::GetFrameHeight();
@@ -89,17 +96,17 @@ std::optional<EEditorCommand> DrawMainToolbar (const SToolbarState& State)
 		const float button = ImGui::GetFrameHeight() * 1.6f;
 		const float controls = button * 3.0f + style.ItemSpacing.x * 2.0f;
 		ImGui::SetCursorPosX((ImGui::GetWindowWidth() - controls) * 0.5f);
-		if (IconButton("##Play", EIcon::Play, State.bPlaying, true, State.bPlaying ? "Stop (Ctrl+P)" : "Play (Ctrl+P)"))
+		if (IconButton("##Play", EIcon::Play, State.bPlaying, true, Tooltip(State.bPlaying ? "Stop" : "Play", State.PlayShortcut).c_str()))
 		{
 			command = EEditorCommand::TogglePlay;
 		}
 		ImGui::SameLine();
-		if (IconButton("##Pause", EIcon::Pause, State.bPaused, true, State.bPlaying ? "Pause (Ctrl+Shift+P)" : "Start paused (Ctrl+Shift+P)"))
+		if (IconButton("##Pause", EIcon::Pause, State.bPaused, true, Tooltip(State.bPlaying ? "Pause" : "Start paused", State.PauseShortcut).c_str()))
 		{
 			command = EEditorCommand::TogglePause;
 		}
 		ImGui::SameLine();
-		if (IconButton("##Step", EIcon::Step, false, State.bPlaying, "Step one frame (Ctrl+Alt+P)"))
+		if (IconButton("##Step", EIcon::Step, false, State.bPlaying, Tooltip("Step one frame", State.StepShortcut).c_str()))
 		{
 			command = EEditorCommand::Step;
 		}
@@ -124,7 +131,7 @@ std::optional<EEditorCommand> DrawMainToolbar (const SToolbarState& State)
 		ImGui::AlignTextToFramePadding();
 		if (State.Message)
 		{
-			ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), "%s", status);
+			ImGui::TextColored(State.bMessageIsError ? ImVec4(1.0f, 0.45f, 0.35f, 1.0f) : ImVec4(0.55f, 0.85f, 0.55f, 1.0f), "%s", status);
 		}
 		else
 		{

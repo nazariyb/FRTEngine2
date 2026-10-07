@@ -4,6 +4,7 @@
 #include <string>
 
 #include "CoreTypes.h"
+#include "Math/Math.h"
 
 
 namespace frt
@@ -24,7 +25,9 @@ class CEditor;
 /**
  * A scripted editor session (-Editor:SmokeTest=1): drives the editor through the same commands
  * the user issues - maximize, fullscreen, play, pause, step, stop - checks the state after each
- * (Stop must leave the edit world exactly as Play found it),
+ * (Stop must leave the edit world exactly as Play found it), presses bound keys through the
+ * window's own message queue, rewrites its input overrides to check they are re-read, checks
+ * the Unreal camera controller against Unreal's numbers,
  * captures the whole window to PNG along the way, and exits with 0 when every check passed (2
  * otherwise). Captures and a log go to [Editor] SmokeTestDir, by default Local/Editor/SmokeTest.
  */
@@ -33,11 +36,16 @@ class CEditorSmokeTest
 public:
 	explicit CEditorSmokeTest (const config::CConfig& Config);
 
-	// Every frame, before the editor applies its commands.
+	// Every frame, after the editor applied its commands.
 	void Update (CEditor& Editor, CEngine& Engine);
+
+	// Where captures, the log and the run's own input overrides go.
+	const std::filesystem::path& GetOutputDir () const { return OutputDir; }
 
 private:
 	void Check (bool bPassed, const char* What);
+	void CheckCameraController ();
+	void WriteInputOverrides (const char* Text);
 	void Capture (CEngine& Engine, const char* Name);
 	void Log (const std::string& Line);
 
@@ -49,6 +57,9 @@ private:
 	uint64 EditWorldHash = 0u;
 	uint64 PlayWorldHash = 0u;
 	uint64 PausedFrames = 0u;
+	uint32 InputGeneration = 0u;
+	Vector3f CameraStart = Vector3f(0.0f, 0.0f, 0.0f);
+	float ReleaseSpeed = 0.0f;
 	bool bFinished = false;
 };
 }

@@ -1,6 +1,7 @@
 #include "Editor.h"
 
 #include <chrono>
+#include <format>
 #include <span>
 #include <thread>
 
@@ -13,10 +14,8 @@
 #include "Engine/Engine.h"
 #include "Engine/GameModule.h"
 #include "Engine/LaunchConfig.h"
-#include "Graphics/FlyCamera.h"
 #include "Graphics/Render/Renderer.h"
 #include "Graphics/Render/RenderView.h"
-#include "Input/InputActionLibrary.h"
 #include "Input/InputSystem.h"
 #include "UI/ImGuiLayer.h"
 
@@ -39,8 +38,13 @@ constexpr std::chrono::milliseconds BackgroundFrameSleep(33);
 // mode, where changes are kept.
 // Strong on purpose: the dark theme leaves little to multiply.
 constexpr float PlayTint[3] = { 0.72f, 0.85f, 1.60f };
-// How long a play session's failure stays in the toolbar.
-constexpr double PlayMessageSeconds = 8.0;
+// How long a notice stays in the toolbar.
+constexpr double NoticeSeconds = 8.0;
+
+bool HasAnyModifier (SFlags<input::EInputModifier> Modifiers)
+{
+	return Modifiers.Flags != 0u;
+}
 }
 
 CEditor::CEditor (CEngine& InEngine, const CGameModule& InModule)
@@ -83,7 +87,6 @@ bool CEditor::StartUp ()
 	Tools.SetCameraHome(EditWorld->Camera.Transform);
 	// The game's display settings panel would drive the editor's own window.
 	Tools.bShowDisplaySettings = false;
-	FlyActions = Engine.GetInputActions().LoadOrCreateActionMap(paths::FindContentSubdir("Input") / "IAM_Editor.frtinputmap");
 
 	for (CViewportPanel& viewport : Viewports)
 	{
@@ -99,6 +102,12 @@ bool CEditor::StartUp ()
 		// the file on its first frame, which has not happened yet.
 		ImGui::GetIO().IniFilename = nullptr;
 	}
+
+	// Shipped bindings, then the user's overrides - a scripted run's own, so that it neither
+	// depends on nor touches the user's.
+	Input.Load(paths::GetRepoRoot() / "Editor" / "Config" / "EditorInput.ini",
+		SmokeTest ? SmokeTest->GetOutputDir() / "EditorInput.ini" : paths::GetLocalDir() / "Editor" / "EditorInput.ini");
+	ApplyInputConfig(true);
 	bStarted = true;
 	return true;
 }
@@ -129,6 +138,11 @@ int CEditor::Run ()
 	while (Engine.PumpMessages())
 	{
 		const float realDeltaSeconds = Engine.BeginFrame();
+
+		if (Input.ReloadIfChanged())
+		{
+			ApplyInputConfig(false);
+		}
 
 		// ---- commands: queued by last frame's UI, shortcuts and scripts ----
 		ApplyCommands();
@@ -163,10 +177,14 @@ int CEditor::Run ()
 				toolbar.PlaySeconds = playWorld->Clock.TotalSeconds;
 				toolbar.PlayFrames = playWorld->Clock.SimulatedFrames;
 			}
-			if (!PlayMessage.empty() && ImGui::GetTime() - PlayMessageTime < PlayMessageSeconds)
+			if (!Notice.empty() && ImGui::GetTime() - NoticeTime < NoticeSeconds)
 			{
-				toolbar.Message = PlayMessage.c_str();
+				toolbar.Message = Notice.c_str();
+				toolbar.bMessageIsError = bNoticeIsError;
 			}
+			toolbar.PlayShortcut = Input.GetShortcutText(EEditorCommand::TogglePlay).c_str();
+			toolbar.PauseShortcut = Input.GetShortcutText(EEditorCommand::TogglePause).c_str();
+			toolbar.StepShortcut = Input.GetShortcutText(EEditorCommand::Step).c_str();
 			if (const std::optional<EEditorCommand> command = DrawMainToolbar(toolbar))
 			{
 				Execute(*command);
@@ -196,8 +214,7 @@ int CEditor::Run ()
 		{
 			if (!Play.Tick(realDeltaSeconds, RouteGameInput()))
 			{
-				PlayMessage = "The game failed; play stopped (see the log)";
-				PlayMessageTime = ImGui::GetTime();
+				PostNotice("The game failed; play stopped (see the log)", true);
 				Execute(EEditorCommand::Stop);
 			}
 		}
@@ -222,6 +239,42 @@ int CEditor::Run ()
 void CEditor::Execute (EEditorCommand Command, EViewportTarget Viewport)
 {
 	Commands.push_back({ Command, static_cast<EViewportTarget>(ResolveViewport(Viewport)) });
+}
+
+void CEditor::FocusViewport (EViewportTarget Viewport)
+{
+	FocusRequest = ResolveViewport(Viewport);
+}
+
+void CEditor::PostNotice (std::string Text, bool bError)
+{
+	Notice = std::move(Text);
+	NoticeTime = ImGui::GetTime();
+	bNoticeIsError = bError;
+}
+
+void CEditor::ApplyInputConfig (bool bInitial)
+{
+	const SViewportCameraSettings& settings = Input.GetCameraSettings();
+	SceneCameraController.Settings = settings;
+	// The configured speed is where a session starts; the wheel and the toolbar change it from
+	// there. A new value in the file applies at once.
+	if (bInitial || settings.Speed != ConfiguredCameraSpeed)
+	{
+		SceneCameraController.Speed = settings.Speed;
+		ConfiguredCameraSpeed = settings.Speed;
+	}
+
+	const std::vector<std::string>& problems = Input.GetProblems();
+	if (!problems.empty())
+	{
+		PostNotice(problems.size() == 1u ? "Input config: " + problems.front()
+			: std::format("Input config: {} problems, first: {}", problems.size(), problems.front()), true);
+	}
+	else if (!bInitial)
+	{
+		PostNotice("Input config reloaded", false);
+	}
 }
 
 CWorldScene& CEditor::GetActiveWorld ()
@@ -333,6 +386,15 @@ void CEditor::ApplyCommand (const SEditorCommand& Command)
 			}
 			break;
 		}
+		case EEditorCommand::ExitFullscreen:
+		{
+			if (FullscreenViewport >= 0)
+			{
+				FocusRequest = FullscreenViewport;
+				FullscreenViewport = -1;
+			}
+			break;
+		}
 		case EEditorCommand::ToggleRenderMode:
 		{
 			graphics::CRenderView& view = Viewports[viewport].GetView();
@@ -392,11 +454,9 @@ void CEditor::StartPlay ()
 	{
 		return;
 	}
-	PlayMessage.clear();
 	if (!Play.Begin(*EditWorld, bStartPaused))
 	{
-		PlayMessage = "The game failed to start (see the log)";
-		PlayMessageTime = ImGui::GetTime();
+		PostNotice("The game failed to start (see the log)", true);
 		return;
 	}
 	bStartPaused = false;
@@ -437,9 +497,11 @@ void CEditor::DrawMainMenu ()
 	{
 		return;
 	}
+	const auto shortcut = [this] (EEditorCommand Command) { return Input.GetShortcutText(Command).c_str(); };
 	if (ImGui::BeginMenu("File"))
 	{
-		if (ImGui::MenuItem("Exit", "Alt+F4"))
+		// Alt+F4 is the window's own, whatever is bound.
+		if (ImGui::MenuItem("Exit", *shortcut(EEditorCommand::Exit) ? shortcut(EEditorCommand::Exit) : "Alt+F4"))
 		{
 			Execute(EEditorCommand::Exit);
 		}
@@ -455,20 +517,20 @@ void CEditor::DrawMainMenu ()
 			}
 		}
 		ImGui::Separator();
-		if (ImGui::MenuItem("Maximize Viewport", "Shift+Space", MaximizedViewport >= 0))
+		if (ImGui::MenuItem("Maximize Viewport", shortcut(EEditorCommand::ToggleMaximize), MaximizedViewport >= 0))
 		{
 			Execute(EEditorCommand::ToggleMaximize);
 		}
-		if (ImGui::MenuItem("Fullscreen Viewport", "F11", FullscreenViewport >= 0))
+		if (ImGui::MenuItem("Fullscreen Viewport", shortcut(EEditorCommand::ToggleFullscreen), FullscreenViewport >= 0))
 		{
 			Execute(EEditorCommand::ToggleFullscreen);
 		}
-		if (ImGui::MenuItem("Toggle Path Tracing", "F2"))
+		if (ImGui::MenuItem("Toggle Path Tracing", shortcut(EEditorCommand::ToggleRenderMode)))
 		{
 			Execute(EEditorCommand::ToggleRenderMode);
 		}
 		ImGui::Separator();
-		if (ImGui::MenuItem("Reset Layout"))
+		if (ImGui::MenuItem("Reset Layout", shortcut(EEditorCommand::ResetLayout)))
 		{
 			Execute(EEditorCommand::ResetLayout);
 		}
@@ -477,15 +539,15 @@ void CEditor::DrawMainMenu ()
 	if (ImGui::BeginMenu("Play"))
 	{
 		const bool bPlaying = Play.IsPlaying();
-		if (ImGui::MenuItem(bPlaying ? "Stop" : "Play", "Ctrl+P"))
+		if (ImGui::MenuItem(bPlaying ? "Stop" : "Play", shortcut(EEditorCommand::TogglePlay)))
 		{
 			Execute(EEditorCommand::TogglePlay);
 		}
-		if (ImGui::MenuItem(bPlaying ? "Pause" : "Start Paused", "Ctrl+Shift+P", bPlaying ? Play.IsPaused() : bStartPaused))
+		if (ImGui::MenuItem(bPlaying ? "Pause" : "Start Paused", shortcut(EEditorCommand::TogglePause), bPlaying ? Play.IsPaused() : bStartPaused))
 		{
 			Execute(EEditorCommand::TogglePause);
 		}
-		if (ImGui::MenuItem("Step", "Ctrl+Alt+P", false, bPlaying))
+		if (ImGui::MenuItem("Step", shortcut(EEditorCommand::Step), false, bPlaying))
 		{
 			Execute(EEditorCommand::Step);
 		}
@@ -497,6 +559,21 @@ void CEditor::DrawMainMenu ()
 void CEditor::DrawViewports (float FrameMilliseconds)
 {
 	const int32 shown = FullscreenViewport >= 0 ? FullscreenViewport : MaximizedViewport;
+	// "F11 or Esc  exit fullscreen", from whatever is bound.
+	std::string exitHint;
+	for (const EEditorCommand command : { EEditorCommand::ToggleFullscreen, EEditorCommand::ExitFullscreen })
+	{
+		const std::string& text = Input.GetShortcutText(command);
+		if (!text.empty())
+		{
+			exitHint += exitHint.empty() ? text : " or " + text;
+		}
+	}
+	if (!exitHint.empty())
+	{
+		exitHint += "  exit fullscreen";
+	}
+
 	for (int32 i = 0; i < ViewportCount; ++i)
 	{
 		SViewportDrawArgs args;
@@ -509,6 +586,14 @@ void CEditor::DrawViewports (float FrameMilliseconds)
 		args.bPlaying = Play.IsPlaying();
 		args.bPaused = Play.IsPaused();
 		args.FrameMilliseconds = FrameMilliseconds;
+		args.MaximizeShortcut = Input.GetShortcutText(EEditorCommand::ToggleMaximize).c_str();
+		args.RenderModeShortcut = Input.GetShortcutText(EEditorCommand::ToggleRenderMode).c_str();
+		args.FullscreenExitHint = exitHint.c_str();
+		if (i == SceneIndex)
+		{
+			args.CameraSpeed = &SceneCameraController.Speed;
+			args.DefaultCameraSpeed = ConfiguredCameraSpeed;
+		}
 
 		const SViewportFrame& frame = Viewports[i].Draw(*Engine.GetRenderer(), args);
 		if (frame.bToggleMaximize)
@@ -525,69 +610,79 @@ void CEditor::DrawViewports (float FrameMilliseconds)
 
 void CEditor::HandleShortcuts ()
 {
-	// Typing belongs to the text field; while a camera flies, its keys are movement.
-	if (ImGui::GetIO().WantTextInput || Capture.IsActive())
+	// Typing belongs to the text field; while the Scene camera navigates, the keys move it
+	// (Unreal swallows them while its camera flies). A button held in the Game view is the
+	// game's input, not a navigation: Stop and Pause must still work then.
+	if (ImGui::GetIO().WantTextInput || Viewports[SceneIndex].GetFrame().bNavigating || Capture.IsActive())
 	{
 		return;
 	}
-	if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiKey_P))
+	const input::CInputSystem& device = Engine.GetInput();
+	for (uint8 i = 0u; i < static_cast<uint8>(EEditorCommand::Count); ++i)
 	{
-		Execute(EEditorCommand::TogglePlay);
-	}
-	if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_P))
-	{
-		Execute(EEditorCommand::TogglePause);
-	}
-	if (ImGui::IsKeyChordPressed(ImGuiMod_Ctrl | ImGuiMod_Alt | ImGuiKey_P))
-	{
-		Execute(EEditorCommand::Step);
-	}
-	if (ImGui::IsKeyChordPressed(ImGuiMod_Shift | ImGuiKey_Space))
-	{
-		Execute(EEditorCommand::ToggleMaximize);
-	}
-	if (ImGui::IsKeyChordPressed(ImGuiKey_F11))
-	{
-		Execute(EEditorCommand::ToggleFullscreen);
-	}
-	if (ImGui::IsKeyChordPressed(ImGuiKey_F2))
-	{
-		Execute(EEditorCommand::ToggleRenderMode);
+		const EEditorCommand command = static_cast<EEditorCommand>(i);
+		if (Input.WasCommandPressed(command, device))
+		{
+			Execute(command);
+		}
 	}
 }
 
 void CEditor::UpdateCameraInput (float RealDeltaSeconds)
 {
+	const input::CInputSystem& device = Engine.GetInput();
 	const SViewportFrame& scene = Viewports[SceneIndex].GetFrame();
 	const SViewportFrame& game = Viewports[GameIndex].GetFrame();
+	const SFlags<input::EInputModifier> modifiers = device.GetModifiers();
+	const bool bTyping = ImGui::GetIO().WantTextInput;
 
-	// Unity's Scene view flight: hold the right button on the view, look with the mouse, move
-	// with WASD (Space / Ctrl up and down, the wheel sets the speed).
-	const bool bFly = scene.bRightHeld && FlyActions != nullptr;
-	// A right-drag on the Game view while it has the game's input: the mouse is the game's
-	// until the button is released (Unreal's "capture during mouse down"). A placeholder for
-	// a cursor mode the game itself will request.
-	bGameLook = !bFly && game.bRightHeld && Play.IsPlaying();
-	const SViewportFrame& captured = bFly ? scene : game;
-	Capture.Update(*Engine.GetWindow(), bFly || bGameLook, captured.ImageMin, captured.ImageMax);
-
-	if (bFly)
+	// The Scene camera, Unreal's way. Mouse input belongs to a drag that began on the view;
+	// the wheel to the view under the cursor. Flight keys need that drag and no modifier;
+	// keyboard keys need the view's focus and no modifier.
+	SViewportNavigationInput navigation;
+	navigation.bAlt = modifiers.HasFlag(input::EInputModifier::Alt);
+	navigation.bCtrl = modifiers.HasFlag(input::EInputModifier::Ctrl);
+	navigation.bShift = modifiers.HasFlag(input::EInputModifier::Shift);
+	if (scene.bNavigating)
 	{
-		const input::CInputSystem& device = Engine.GetInput();
-		const graphics::SFlyCameraInput fly = graphics::ReadFlyCameraInput(FlyActions->ActionMap, device, device.GetRawMouseDelta());
-		graphics::UpdateFlyCamera(SceneCamera, fly, RealDeltaSeconds, Viewports[SceneIndex].GetAspect());
+		navigation.Buttons = scene.NavigationButtons;
+		navigation.MouseDelta = device.GetRawMouseDelta();
 	}
+	if ((scene.bHovered || scene.bNavigating) && !bTyping)
+	{
+		navigation.Wheel = device.GetMouseWheelDelta();
+	}
+	const bool bFlightKeys = scene.bNavigating && !HasAnyModifier(modifiers);
+	const bool bKeyboardKeys = scene.bVisible && scene.bFocused && !bTyping && !HasAnyModifier(modifiers);
+	for (uint8 i = 0u; i < static_cast<uint8>(EViewportKey::Count); ++i)
+	{
+		const EViewportKey key = static_cast<EViewportKey>(i);
+		navigation.Keys[i] =
+			(bFlightKeys && Input.IsKeyDown(EViewportKeySet::Flight, key, device)) ||
+			(bKeyboardKeys && Input.IsKeyDown(EViewportKeySet::Keyboard, key, device));
+	}
+	SceneCameraController.Update(SceneCamera, navigation, RealDeltaSeconds);
+
+	// A right-drag on the Game view while playing: the mouse is the game's until the button is
+	// released (Unreal's "capture during mouse down"). A placeholder for a cursor mode the game
+	// itself will request.
+	bGameLook = !scene.bNavigating && game.bNavigating && (game.NavigationButtons & viewport_button::Right) != 0u && Play.IsPlaying();
+
+	// The cursor hides and stays put while a drag navigates (Unreal), and comes back where the
+	// drag started.
+	const SViewportFrame& captured = scene.bNavigating ? scene : game;
+	Capture.Update(*Engine.GetWindow(), scene.bNavigating || bGameLook, captured.ImageMin, captured.ImageMax);
 }
 
 SGameInput CEditor::RouteGameInput () const
 {
 	// Unity's rule: the game has input while its view has focus. Never while the user types
-	// into a panel, flies the Scene view, or drags something that started outside the view.
+	// into a panel, navigates the Scene view, or drags something that started outside the view.
 	const SViewportFrame& game = Viewports[GameIndex].GetFrame();
 	const ImGuiIO& io = ImGui::GetIO();
-	const bool bMouseElsewhere = ImGui::IsAnyMouseDown() && !game.bSurfaceActive;
+	const bool bMouseElsewhere = ImGui::IsAnyMouseDown() && !game.bNavigating;
 	const bool bHasInput = game.bVisible && game.bFocused && !io.WantTextInput && !bMouseElsewhere &&
-		!Viewports[SceneIndex].GetFrame().bRightHeld;
+		!Viewports[SceneIndex].GetFrame().bNavigating;
 
 	SGameInput input;
 	input.ViewAspect = Viewports[GameIndex].GetAspect();

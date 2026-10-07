@@ -15,6 +15,7 @@ project "Editor"
 	{
 		rootpath("%{prj.name}/Source/**.h"),
 		rootpath("%{prj.name}/Source/**.cpp"),
+		rootpath("%{prj.name}/Config/**.ini"),
 	}
 
 	includedirs
