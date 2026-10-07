@@ -67,6 +67,7 @@ int RunGameLoop (CEngine& Engine, const CGameModule& Module)
 	tools.SetCameraHome(world.Camera.Transform);
 	graphics::SRenderExtractOptions extract;
 	bool bShowUi = config.Get("Display", "ShowUi", true);
+	bool bUiOwnsDrag = false;
 #endif
 
 	game->BeginPlay(context);
@@ -79,12 +80,31 @@ int RunGameLoop (CEngine& Engine, const CGameModule& Module)
 		frame.RealDeltaSeconds = deltaSeconds;
 		frame.GameDeltaSeconds = world.Clock.Advance(deltaSeconds);
 
-		// Ctrl is the UI's modifier (Ctrl+Wheel zoom): it outranks every other binding.
+		// Ctrl is the UI's modifier (Ctrl+Wheel zoom): it outranks every other binding. Keys typed
+		// into a text field, and a right-drag that started over a debug panel, belong to the UI.
 		const bool bCtrlDown = device.IsKeyDown(input::KeyCode::LeftCtrl) || device.IsKeyDown(input::KeyCode::RightCtrl);
-		if (!bCtrlDown)
+#if !defined(FRT_HEADLESS)
+		const ImGuiIO& io = ImGui::GetIO();
+		const bool bTyping = io.WantTextInput;
+		if (device.WasMouseButtonPressed(input::EMouseButton::Right))
 		{
-			frame.Input.Device = &device;
-			frame.Input.LookDelta = device.GetMouseDelta();
+			bUiOwnsDrag = bShowUi && io.WantCaptureMouse;
+		}
+		else if (!device.IsMouseButtonDown(input::EMouseButton::Right))
+		{
+			bUiOwnsDrag = false;
+		}
+#else
+		const bool bTyping = false;
+		const bool bUiOwnsDrag = false;
+#endif
+		if (!bCtrlDown && !bTyping)
+		{
+			if (!bUiOwnsDrag)
+			{
+				frame.Input.Device = &device;
+				frame.Input.LookDelta = device.GetMouseDelta();
+			}
 #if !defined(FRT_HEADLESS)
 			const Vector2f windowSize = Engine.GetWindow()->GetWindowSize();
 			frame.Input.ViewAspect = math::Max(windowSize.x, 1.0f) / math::Max(windowSize.y, 1.0f);

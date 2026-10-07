@@ -39,6 +39,82 @@ CWindow::CWindow (const SWindowParams& Params)
 
 	ShowWindow(hWindow, SW_SHOWDEFAULT);
 	UpdateWindow(hWindow);
+
+	// Raw mouse motion (WM_INPUT) for captured cameras: unaccelerated, and it keeps coming while
+	// the cursor is clipped or hidden. Legacy mouse messages stay on - the UI needs them.
+	RAWINPUTDEVICE mouse = {};
+	mouse.usUsagePage = 0x01; // generic desktop
+	mouse.usUsage = 0x02;     // mouse
+	mouse.dwFlags = 0;
+	mouse.hwndTarget = hWindow;
+	RegisterRawInputDevices(&mouse, 1, sizeof(mouse));
+}
+
+bool CWindow::IsForeground () const
+{
+	return GetForegroundWindow() == hWindow;
+}
+
+void CWindow::SetImmersive (bool bInImmersive)
+{
+	if (bInImmersive == bImmersive)
+	{
+		return;
+	}
+	// Raymond Chen, "How do I switch a window between normal and fullscreen?"
+	if (bInImmersive)
+	{
+		MONITORINFO monitor = { sizeof(monitor) };
+		if (!GetWindowPlacement(hWindow, &PlacementBeforeImmersive) ||
+			!GetMonitorInfo(MonitorFromWindow(hWindow, MONITOR_DEFAULTTONEAREST), &monitor))
+		{
+			return;
+		}
+		StyleBeforeImmersive = GetWindowLongPtr(hWindow, GWL_STYLE);
+		SetWindowLongPtr(hWindow, GWL_STYLE, StyleBeforeImmersive & ~WS_OVERLAPPEDWINDOW);
+		SetWindowPos(hWindow, HWND_TOP,
+			monitor.rcMonitor.left, monitor.rcMonitor.top,
+			monitor.rcMonitor.right - monitor.rcMonitor.left, monitor.rcMonitor.bottom - monitor.rcMonitor.top,
+			SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+	}
+	else
+	{
+		SetWindowLongPtr(hWindow, GWL_STYLE, StyleBeforeImmersive);
+		SetWindowPlacement(hWindow, &PlacementBeforeImmersive);
+		SetWindowPos(hWindow, nullptr, 0, 0, 0, 0,
+			SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_FRAMECHANGED);
+	}
+	bImmersive = bInImmersive;
+}
+
+void CWindow::ClipCursorToClientRect (int32 Left, int32 Top, int32 Right, int32 Bottom) const
+{
+	POINT topLeft = { Left, Top };
+	POINT bottomRight = { Right, Bottom };
+	ClientToScreen(hWindow, &topLeft);
+	ClientToScreen(hWindow, &bottomRight);
+	const RECT rect = { topLeft.x, topLeft.y, bottomRight.x, bottomRight.y };
+	ClipCursor(&rect);
+}
+
+void CWindow::ReleaseCursorClip () const
+{
+	ClipCursor(nullptr);
+}
+
+Vector2i CWindow::GetCursorClientPosition () const
+{
+	POINT point = {};
+	GetCursorPos(&point);
+	ScreenToClient(hWindow, &point);
+	return Vector2i(point.x, point.y);
+}
+
+void CWindow::SetCursorClientPosition (const Vector2i& Position) const
+{
+	POINT point = { Position.x, Position.y };
+	ClientToScreen(hWindow, &point);
+	SetCursorPos(point.x, point.y);
 }
 
 HWND CWindow::GetHandle () const
@@ -159,7 +235,7 @@ CWindow::SPosSize CWindow::CalcPositionAndSize (const graphics::SRect& MonitorRe
 {
 	return SPosSize
 	{
-		.Position = { (int32)MonitorRect.Left, (int32)MonitorRect.Right },
+		.Position = { (int32)MonitorRect.Left, (int32)MonitorRect.Top },
 		.Size = { (int32)(MonitorRect.Right - MonitorRect.Left), (int32)(MonitorRect.Bottom - MonitorRect.Top) }
 	};
 }
@@ -250,10 +326,26 @@ LRESULT CALLBACK CWindow::WindowProcessMessage (HWND hWnd, UINT Message, WPARAM 
 				// TODO:
 				// mAppPaused = false;
 				// mTimer.Start();
-				ShowWindow(hWindow, SW_RESTORE);
+				// Only un-minimise: an unconditional restore would also un-maximise the window on
+				// every activation.
+				if (IsIconic(hWindow))
+				{
+					ShowWindow(hWindow, SW_RESTORE);
+				}
 				PostGainFocusEvent.Invoke();
 			}
-			return 0;
+			// DefWindowProc is what gives the window keyboard focus on activation.
+			return DefWindowProc(hWnd, Message, wParam, lParam);
+		}
+
+		// A tapped Alt would otherwise enter the system menu's modal loop and freeze the frame.
+		case WM_SYSCOMMAND:
+		{
+			if ((wParam & 0xFFF0) == SC_KEYMENU)
+			{
+				return 0;
+			}
+			return DefWindowProc(hWnd, Message, wParam, lParam);
 		}
 
 		// Sent when the window moves to a monitor with a different scaling factor (the
@@ -286,8 +378,6 @@ LRESULT CALLBACK CWindow::WindowProcessMessage (HWND hWnd, UINT Message, WPARAM 
 			if (wParam == SIZE_MINIMIZED)
 			{
 				bMinimized = true;
-				// mMaximized = false;
-				DisplaySettings.FullscreenMode = EFullscreenMode::Minimized;
 				PostMinimizeEvent.Invoke();
 				return 0;
 			}

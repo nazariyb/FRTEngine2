@@ -284,6 +284,32 @@ void HandleWin32Message (HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			break;
 		}
 
+		case WM_INPUT:
+		{
+			// Relative motion only: absolute devices (tablets, remote desktop) report positions,
+			// which the WM_MOUSEMOVE path already covers.
+			RAWINPUT raw = {};
+			UINT size = sizeof(raw);
+			if (GetRawInputData(reinterpret_cast<HRAWINPUT>(lParam), RID_INPUT, &raw, &size, sizeof(RAWINPUTHEADER)) == static_cast<UINT>(-1))
+			{
+				break;
+			}
+			if (raw.header.dwType != RIM_TYPEMOUSE || (raw.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE) != 0)
+			{
+				break;
+			}
+			if (raw.data.mouse.lLastX == 0 && raw.data.mouse.lLastY == 0)
+			{
+				break;
+			}
+			SMouseMoveEventData data = {};
+			FillHeader(data.Header, hWnd, EInputDeviceType::Mouse, MouseDeviceId);
+			data.Delta = Vector2f(static_cast<float>(raw.data.mouse.lLastX), static_cast<float>(raw.data.mouse.lLastY));
+			data.bRaw = true;
+			CPlatformInputQueue::Enqueue(data);
+			break;
+		}
+
 		case WM_LBUTTONDOWN:
 		case WM_LBUTTONUP:
 		case WM_RBUTTONDOWN:

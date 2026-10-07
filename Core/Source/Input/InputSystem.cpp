@@ -197,6 +197,16 @@ Vector2f CInputSystem::GetMouseDelta (WindowId Window) const
 	return state->Current.Mouse.Delta;
 }
 
+Vector2f CInputSystem::GetRawMouseDelta (WindowId Window) const
+{
+	if (!bRawMouseSeen)
+	{
+		return GetMouseDelta(Window);
+	}
+	const SWindowInputState* state = FindState(ResolveWindow(Window));
+	return state ? state->Current.Mouse.RawDelta : Vector2f(0.0f, 0.0f);
+}
+
 float CInputSystem::GetMouseWheelDelta (WindowId Window) const
 {
 	const WindowId resolved = ResolveWindow(Window);
@@ -357,6 +367,7 @@ void CInputSystem::BeginFrame (float FrameTimeSeconds)
 	{
 		state.Previous = state.Current;
 		state.Current.Mouse.Delta = Vector2f(0.0f, 0.0f);
+		state.Current.Mouse.RawDelta = Vector2f(0.0f, 0.0f);
 		state.Current.Mouse.WheelDelta = 0.0f;
 	}
 }
@@ -456,6 +467,12 @@ void CInputSystem::HandleEvent (const SMouseMoveEventData& Data)
 	}
 
 	SWindowInputState& state = GetOrCreateState(window);
+	if (Data.bRaw)
+	{
+		state.Current.Mouse.RawDelta += Data.Delta;
+		bRawMouseSeen = true;
+		return;
+	}
 	state.Current.Mouse.Position = Data.Position;
 	state.Current.Mouse.Delta += Data.Delta;
 

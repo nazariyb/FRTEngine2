@@ -30,6 +30,10 @@ public:
 
 	Vector2f GetMousePosition (WindowId Window = InvalidWindowId) const;
 	Vector2f GetMouseDelta (WindowId Window = InvalidWindowId) const;
+	// Unaccelerated device motion this frame (raw input). Keeps reporting while the cursor is
+	// clipped or hidden - what a captured camera should read. Falls back to GetMouseDelta()
+	// where the platform delivers no raw input (e.g. remote sessions).
+	Vector2f GetRawMouseDelta (WindowId Window = InvalidWindowId) const;
 	float GetMouseWheelDelta (WindowId Window = InvalidWindowId) const;
 
 	bool IsGamepadConnected (uint8 GamepadIndex, WindowId Window = InvalidWindowId) const;
@@ -73,5 +77,6 @@ private:
 	std::unordered_map<WindowId, SWindowInputState> WindowStates;
 	WindowId DefaultWindow = InvalidWindowId;
 	float CurrentTimeSeconds = 0.0f;
+	bool bRawMouseSeen = false;
 };
 }

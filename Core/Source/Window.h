@@ -53,6 +53,22 @@ public:
 	void SetDisplaySettings (const SDisplaySettings& NewSettings, const graphics::SDisplayOptions& Options);
 	void UpdateTitle (const std::wstring& NewTitleDetails) const;
 
+	// The window is the foreground (active) window: input reaches it.
+	bool IsForeground () const;
+
+	// Borderless fullscreen over the window's monitor, and back to the exact previous placement
+	// (Unreal's immersive mode, the editor's F11). Never DXGI exclusive: tools must survive focus
+	// changes. The swap chain follows through the regular WM_SIZE path.
+	void SetImmersive (bool bImmersive);
+	bool IsImmersive () const { return bImmersive; }
+
+	// ---- cursor capture (a viewport flying its camera) ----
+	// Client-area rectangle, in client pixels; the cursor cannot leave it until released.
+	void ClipCursorToClientRect (int32 Left, int32 Top, int32 Right, int32 Bottom) const;
+	void ReleaseCursorClip () const;
+	Vector2i GetCursorClientPosition () const;
+	void SetCursorClientPosition (const Vector2i& Position) const;
+
 protected:
 	void RegisterWinAPIClass ();
 
@@ -89,6 +105,9 @@ protected:
 	SDisplaySettings DisplaySettings;
 	bool bMinimized = false;
 	bool bIgnoreNextSizeEvent = false;
+	bool bImmersive = false;
+	WINDOWPLACEMENT PlacementBeforeImmersive = { sizeof(WINDOWPLACEMENT) };
+	LONG_PTR StyleBeforeImmersive = 0;
 
 #pragma warning(push)
 #pragma warning(disable: 4251)

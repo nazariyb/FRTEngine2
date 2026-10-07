@@ -271,6 +271,9 @@ struct SMouseMoveEventData
 	SInputEventHeader Header;
 	Vector2f Position = {};
 	Vector2f Delta = {};
+	// Raw device motion (WM_INPUT): Delta only - unaccelerated counts that keep coming while the
+	// cursor is clipped, hidden or pinned against a screen edge. Position is not set.
+	bool bRaw = false;
 };
 
 
@@ -336,6 +339,7 @@ struct SMouseState
 	std::array<SButtonState, MouseButtonCount> Buttons = {};
 	Vector2f Position = {};
 	Vector2f Delta = {};
+	Vector2f RawDelta = {};
 	float WheelDelta = 0.0f;
 };
 

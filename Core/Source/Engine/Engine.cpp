@@ -357,9 +357,11 @@ void CEngine::OnMinimize ()
 void CEngine::OnRestoreFromMinimize ()
 {
 #if !defined(FRT_HEADLESS)
-	Graphics->Window->SetDisplaySettings(UserSettings.DisplaySettings, DisplayOptions);
+	// Minimising left exclusive fullscreen (OnMinimize); windowed and borderless windows simply
+	// come back as they were.
 	if (IsExclusiveFullscreen())
 	{
+		Graphics->Renderer->Resize(true);
 		Clock->Start();
 	}
 #endif
