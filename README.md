@@ -97,6 +97,11 @@ The editor shows the world twice, as Unity does: the **Scene** view through the 
 | **Shift+Space**, or double-click a viewport's tab | Maximize the viewport under the cursor over the editor / restore it |
 | **F11** | Fullscreen the viewport under the cursor (borderless, the whole screen) / back |
 | **F2** | Path tracing / raster preview for the viewport under the cursor |
+| **Ctrl+P** | Play / stop |
+| **Ctrl+Shift+P** | Pause / resume (in edit mode: start the next session paused) |
+| **Ctrl+Alt+P** | Step one game frame |
+
+**Play mode** runs the game on a copy of the edited world, so nothing a session does survives Stop, and each session starts from the same state with a fresh game instance. Both viewports show the running copy; the editor's chrome turns blue as a reminder. The game receives input only while the Game view has focus (a right-drag there captures the mouse for it); the Scene view stays free to fly around.
 
 ### Launcher
 

@@ -1,9 +1,11 @@
 #pragma once
 
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "CoreTypes.h"
+#include "GameInstance.h"
 #include "Graphics/Camera.h"
 #include "Graphics/Render/Scene/WorldExtraction.h"
 #include "UI/DebugTools.h"
@@ -11,6 +13,7 @@
 #include "CursorCapture.h"
 #include "EditorCommands.h"
 #include "EditorLayout.h"
+#include "PlaySession.h"
 #include "ViewportPanel.h"
 
 
@@ -33,8 +36,8 @@ class CEditorSmokeTest;
 
 /**
  * The editor: a host, like the launcher, that owns its loop and drives the engine's frame
- * (CEngine). It holds the world being edited, the panels that show it, and the commands that
- * act on them.
+ * (CEngine). It holds the world being edited, the play session running a copy of it, the
+ * panels that show them, and the commands that act on all of these.
  *
  * Structure, kept flat on purpose (Blow, Muratori: the frame reads top to bottom):
  *   - commands (EditorCommands.h) are applied at the start of a frame, whoever queued them;
@@ -44,8 +47,10 @@ class CEditorSmokeTest;
  * New tools are new panels and new commands; nothing here is a framework to register with.
  *
  * The world is the game's content. The game module builds it once, through a short-lived game
- * instance, and is otherwise only run in play mode - the editor never ticks game code on the
- * edited world (Unity's edit mode).
+ * instance, and is otherwise only run in play mode (CPlaySession) - the editor never ticks
+ * game code on the edited world. As in Unity, both viewports show the world that is live: the
+ * edit world in edit mode, the session's copy while playing. Only the Game view passes input
+ * to the game, and only while it has focus.
  */
 class CEditor
 {
@@ -67,8 +72,9 @@ public:
 
 	// ---- state, for tools and scripted runs ----
 	CWorldScene& GetEditWorld () { return *EditWorld; }
-	// The world the viewports show this frame.
+	// The world the viewports show this frame: the play session's while playing.
 	CWorldScene& GetActiveWorld ();
+	const CPlaySession& GetPlaySession () const { return Play; }
 	CViewportPanel& GetViewport (EViewportTarget Target);
 	// The viewport shown over the editor (Shift+Space) or the screen (F11); null if none.
 	const CViewportPanel* GetMaximizedViewport () const;
@@ -80,7 +86,10 @@ private:
 	void DrawMainMenu ();
 	void DrawViewports (float FrameMilliseconds);
 	void HandleShortcuts ();
-	void UpdateSceneCamera (float RealDeltaSeconds);
+	void UpdateCameraInput (float RealDeltaSeconds);
+	SGameInput RouteGameInput () const;
+	void StartPlay ();
+	void StopPlay ();
 	void RenderFrame ();
 	void ApplyWindowMode ();
 	int32 ResolveViewport (EViewportTarget Target) const;
@@ -91,6 +100,12 @@ private:
 	std::unique_ptr<CWorldScene> EditWorld;
 	graphics::CCamera SceneCamera;                     // the Scene view's camera: the editor's, not the world's
 	input::SInputActionMapAsset* FlyActions = nullptr; // IAM_Editor: RMB + WASD
+
+	CPlaySession Play;
+	bool bStartPaused = false;                         // Pause pressed in edit mode
+	bool bGameLook = false;                            // the game has the mouse captured this frame
+	std::string PlayMessage;                           // why the last session ended early
+	double PlayMessageTime = 0.0;
 
 	// Indexed by EViewportTarget.
 	static constexpr int32 ViewportCount = 2;
