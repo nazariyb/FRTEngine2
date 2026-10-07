@@ -391,8 +391,9 @@ namespace refs
 		}
 
 	protected:
-		T* Ptr () { return Control->Ptr(); }
-		const T* Ptr () const { return Control->Ptr(); }
+		// Empty refs must yield nullptr, not nullptr + sizeof(control block).
+		T* Ptr () { return Control ? Control->Ptr() : nullptr; }
+		const T* Ptr () const { return Control ? Control->Ptr() : nullptr; }
 		TRefControlBlock<T>* Control = nullptr;
 	};
 
@@ -469,7 +470,7 @@ namespace refs
 		T& operator* () { return *Ptr(); }
 
 		const T* GetRawIgnoringLifetime () const { return Ptr(); }
-		const T* operator-> () const { return Control->Ptr(); }
+		const T* operator-> () const { return Ptr(); }
 		const T& operator* () const { return *Ptr(); }
 
 		explicit constexpr operator bool () const { return Ptr() != nullptr; }
@@ -487,8 +488,9 @@ namespace refs
 		}
 
 	protected:
-		T* Ptr () { return Control->Ptr(); }
-		const T* Ptr () const { return Control->Ptr(); }
+		// Empty refs must yield nullptr, not nullptr + sizeof(control block).
+		T* Ptr () { return Control ? Control->Ptr() : nullptr; }
+		const T* Ptr () const { return Control ? Control->Ptr() : nullptr; }
 		TRefControlBlock<T>* Control = nullptr;
 	};
 
@@ -554,8 +556,9 @@ namespace refs
 		}
 
 	protected:
-		T* Ptr () { return Control->Ptr(); }
-		const T* Ptr () const { return Control->Ptr(); }
+		// Empty refs must yield nullptr, not nullptr + sizeof(control block).
+		T* Ptr () { return Control ? Control->Ptr() : nullptr; }
+		const T* Ptr () const { return Control ? Control->Ptr() : nullptr; }
 		TRefControlBlock<T>* Control;
 	};
 }
