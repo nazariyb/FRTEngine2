@@ -109,6 +109,8 @@ project "Core"
 	--------------------
 	includedirs
 	{
+		-- D3D12 Agility SDK headers must win over the Windows SDK's d3d12.h, so they go first.
+		path.join(thirdPartyDir, "D3D12Agility/include"),
 		path.join(vcpkgRoot, "installed", triplet, "include"),
 		rootpath("%{prj.name}/Source"),
 		path.join(thirdPartyDir, "Stb"),
@@ -194,6 +196,10 @@ project "Core"
 -- 		"\"" .. dxcExe .. "\" -E main -Fo %{prj.location}Content/Shaders/Bin/PixelShader.shader -T ps_6_0 -Zi -Zpc -Qembed_debug %{prj.location}Content/Shaders/PixelShader.hlsl",
 		"{COPYFILE} " .. path.join(thirdPartyDir, "Dxc/bin/x64/dxcompiler.dll") .. " %[%{cfg.buildtarget.directory}]",
 		"{COPYFILE} " .. path.join(thirdPartyDir, "Dxc/bin/x64/dxil.dll") .. " %[%{cfg.buildtarget.directory}]",
+		-- Agility SDK runtime: loaded from <exe dir>/D3D12/ (D3D12SDKPath exported by FRT_RUN_GAME).
+		"{MKDIR} %[%{cfg.buildtarget.directory}/D3D12]",
+		"{COPYFILE} %[" .. path.join(thirdPartyDir, "D3D12Agility/bin/x64/D3D12Core.dll") .. "] %[%{cfg.buildtarget.directory}/D3D12]",
+		"{COPYFILE} %[" .. path.join(thirdPartyDir, "D3D12Agility/bin/x64/d3d12SDKLayers.dll") .. "] %[%{cfg.buildtarget.directory}/D3D12]",
 	}
 
 	filter "configurations:Release-*"

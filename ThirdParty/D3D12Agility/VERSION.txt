@@ -1,0 +1,4 @@
+Microsoft.Direct3D.D3D12 (D3D12 Agility SDK) 1.619.6 from nuget.org
+D3D12_SDK_VERSION = 619. Only the redistributable runtime DLLs (see "distributable files.txt") are vendored.
+The executables export D3D12SDKVersion/D3D12SDKPath (see FRT_RUN_GAME in Core/Source/RunGame.h);
+the DLLs are copied to <bin>/D3D12/ by the Core prebuild step.

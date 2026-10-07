@@ -1,0 +1,3 @@
+DirectX Shader Compiler v1.9.2609 (dxcompiler 1.9.2609.5), release dxc_2026_09_29.zip from
+https://github.com/microsoft/DirectXShaderCompiler/releases/tag/v1.9.2609
+Supports up to SM 6.9 (DXR 1.2 HitObject / MaybeReorderThread).

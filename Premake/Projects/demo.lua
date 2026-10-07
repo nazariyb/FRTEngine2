@@ -38,6 +38,7 @@ project "Demo"
 
 	includedirs
 	{
+		path.join(thirdPartyDir, "D3D12Agility/include"),
 		rootpath("Core/Source"),
 		path.join(thirdPartyDir, "DXR"),
 		path.join(thirdPartyDir, "Dxc/inc"),

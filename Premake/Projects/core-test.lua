@@ -46,6 +46,7 @@ project "Core-Test"
 
 	includedirs
 	{
+		path.join(thirdPartyDir, "D3D12Agility/include"),
 		path.join(vcpkgRoot, "installed", triplet, "include"),
 		-- Tests live directly under Core-Test/, not in a Source/ subdirectory, so the
 		-- project root is what makes TestCommon.h reachable from ECS/ and Math/.
