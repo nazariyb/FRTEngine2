@@ -36,9 +36,14 @@ void CCursorCapture::Release (CWindow& Window)
 		return;
 	}
 	Window.ReleaseCursorClip();
-	Window.SetCursorClientPosition(RestorePosition);
-	// The jump back is not mouse motion: nothing under the cursor may read it as a drag.
-	ImGui::TeleportMousePos(ImVec2(static_cast<float>(RestorePosition.x), static_cast<float>(RestorePosition.y)));
+	// Put back where the drag started - unless the user has moved on to another window, or the
+	// window is minimized or gone, where the cursor is no longer the editor's to move.
+	if (Window.IsForeground() && !IsIconic(Window.GetHandle()))
+	{
+		Window.SetCursorClientPosition(RestorePosition);
+		// The jump back is not mouse motion: nothing under the cursor may read it as a drag.
+		ImGui::TeleportMousePos(ImVec2(static_cast<float>(RestorePosition.x), static_cast<float>(RestorePosition.y)));
+	}
 	bActive = false;
 }
 }

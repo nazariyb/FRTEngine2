@@ -58,13 +58,14 @@ SGameContext CPlaySession::MakeContext () const
 bool CPlaySession::Begin (const CWorldScene& EditWorld, bool bStartPaused)
 {
 	frt_assert(!IsPlaying());
-	World = EditWorld.Clone();
-	World->Clock.bPaused = bStartPaused;
-	World->Clock.PendingSteps = 0u;
-
-	Game = Module.CreateGame();
-	const SGameContext context = MakeContext();
-	if (!Game || !CallGame("BeginPlay", [&] { Game->BeginPlay(context); }))
+	const bool bCreated = CallGame("Begin", [&]
+	{
+		World = EditWorld.Clone();
+		World->Clock.bPaused = bStartPaused;
+		World->Clock.PendingSteps = 0u;
+		Game = Module.CreateGame();   // null if the game's constructor threw
+	});
+	if (!bCreated || !Game || !CallGame("BeginPlay", [&] { Game->BeginPlay(MakeContext()); }))
 	{
 		Game.reset();
 		World.reset();

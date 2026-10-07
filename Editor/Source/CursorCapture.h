@@ -25,7 +25,8 @@ class CCursorCapture
 public:
 	// Every frame, after the UI was built. bWant: some viewport wants the mouse this frame;
 	// Min / Max: its image, in client pixels. Capture ends when bWant drops, the window loses
-	// the foreground, or Release() is called.
+	// the foreground, or Release() is called; the cursor is put back only if the window is
+	// still in front.
 	void Update (CWindow& Window, bool bWant, const ImVec2& Min, const ImVec2& Max);
 	void Release (CWindow& Window);
 

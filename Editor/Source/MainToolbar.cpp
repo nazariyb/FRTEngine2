@@ -58,6 +58,8 @@ bool IconButton (const char* Id, EIcon Icon, bool bToggled, bool bEnabled, const
 {
 	const float height = ImGui::GetFrameHeight();
 	ImGui::BeginDisabled(!bEnabled);
+	// A click must not take focus: pausing or stepping leaves the game's input with the Game view.
+	ImGui::PushItemFlag(ImGuiItemFlags_NoFocus, true);
 	// Neutral unless toggled, so the one that is on stands out.
 	ImGui::PushStyleColor(ImGuiCol_Button, bToggled ? ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive) : ImVec4(0.5f, 0.5f, 0.5f, 0.18f));
 	const bool bPressed = ImGui::Button(Id, ImVec2(height * 1.6f, height));
@@ -65,6 +67,7 @@ bool IconButton (const char* Id, EIcon Icon, bool bToggled, bool bEnabled, const
 	// GetColorU32 applies the disabled alpha.
 	DrawIcon(*ImGui::GetWindowDrawList(), Icon, ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), ImGui::GetColorU32(ImGuiCol_Text));
 	ImGui::SetItemTooltip("%s", Tooltip);
+	ImGui::PopItemFlag();
 	ImGui::EndDisabled();
 	return bPressed;
 }

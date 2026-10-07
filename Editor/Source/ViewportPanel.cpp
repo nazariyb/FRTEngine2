@@ -271,9 +271,10 @@ void CViewportPanel::UpdateSize (graphics::CRenderer& Renderer, uint32 Width, ui
 	}
 
 	// Follow at once unless a drag is going on (a splitter, a floating window's edge); then
-	// once the size has held for a few frames, or the drag ends.
+	// once the size has held for a few frames, or the drag ends. A held click that has not
+	// moved - the double-click that maximizes - is not a drag.
 	const bool bFirst = CommittedWidth == 0u;
-	const bool bDragging = ImGui::IsMouseDown(ImGuiMouseButton_Left);
+	const bool bDragging = ImGui::IsMouseDragging(ImGuiMouseButton_Left);
 	if (bFirst || !bDragging || PendingFrames >= ResizeSettleFrames)
 	{
 		Renderer.SetViewSize(*View, Width, Height);
@@ -305,6 +306,12 @@ void CViewportPanel::DrawSurface (graphics::CRenderer& Renderer, const SViewport
 	ImGui::InvisibleButton("##Surface", area,
 		ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
 	ImGui::SetItemKeyOwner(ImGuiKey_MouseWheelY);
+	if (ImGui::IsItemActive())
+	{
+		// ImGui's navigation cancels the active item on an unowned Escape, which would drop a
+		// fly or a game's mouse look with the button still held. Escape belongs to the drag.
+		ImGui::SetKeyOwner(ImGuiKey_Escape, ImGui::GetItemID());
+	}
 	Frame.bVisible = true;
 	Frame.bHovered = ImGui::IsItemHovered();
 	Frame.bSurfaceActive = ImGui::IsItemActive();

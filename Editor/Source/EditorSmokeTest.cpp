@@ -158,6 +158,38 @@ void CEditorSmokeTest::Update (CEditor& Editor, CEngine& Engine)
 			T.Check(!E.GetPlaySession().IsPlaying() && &E.GetActiveWorld() == &E.GetEditWorld(), "back in edit mode");
 			T.Check(HashWorld(E.GetEditWorld()) == T.EditWorldHash, "Stop left the edit world exactly as Play found it");
 			T.Capture(G, "13_stopped");
+			E.Execute(EEditorCommand::ToggleMaximize, EViewportTarget::Game);
+		} },
+		// Closing a maximized viewport (here as the View menu does) must hand the editor back.
+		{ 260u, "close while maximized", [] (CEditorSmokeTest& T, CEditor& E, CEngine&)
+		{
+			T.Check(E.GetMaximizedViewport() == &E.GetViewport(EViewportTarget::Game), "the Game view is maximized");
+			E.GetViewport(EViewportTarget::Game).bOpen = false;
+		} },
+		{ 262u, "closed", [] (CEditorSmokeTest& T, CEditor& E, CEngine&)
+		{
+			T.Check(E.GetMaximizedViewport() == nullptr, "closing the maximized viewport restores the editor");
+			T.Check(E.GetViewport(EViewportTarget::Scene).GetFrame().bVisible, "the Scene view shows again");
+			E.GetViewport(EViewportTarget::Game).bOpen = true;
+			E.Execute(EEditorCommand::ToggleMaximize, EViewportTarget::Scene);
+		} },
+		// Play while another viewport fills the editor: the Game view takes its place.
+		{ 280u, "play over a maximized Scene view", [] (CEditorSmokeTest& T, CEditor& E, CEngine&)
+		{
+			T.Check(E.GetMaximizedViewport() == &E.GetViewport(EViewportTarget::Scene), "the Scene view is maximized");
+			E.Execute(EEditorCommand::Play);
+		} },
+		{ 300u, "playing maximized", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G)
+		{
+			const SViewportFrame& game = E.GetViewport(EViewportTarget::Game).GetFrame();
+			T.Check(E.GetMaximizedViewport() == &E.GetViewport(EViewportTarget::Game), "the Game view took the maximized place");
+			T.Check(game.bVisible && game.bFocused, "... visible and focused");
+			T.Capture(G, "14_playing_maximized");
+			E.Execute(EEditorCommand::Stop);
+		} },
+		{ 320u, "done", [] (CEditorSmokeTest& T, CEditor& E, CEngine&)
+		{
+			T.Check(!E.GetPlaySession().IsPlaying() && HashWorld(E.GetEditWorld()) == T.EditWorldHash, "stopped, edit world unchanged");
 		} },
 	};
 

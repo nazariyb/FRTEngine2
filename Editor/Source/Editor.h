@@ -82,6 +82,7 @@ public:
 
 private:
 	void ApplyCommands ();
+	void ForgetClosedViewports ();
 	void ApplyCommand (const SEditorCommand& Command);
 	void DrawMainMenu ();
 	void DrawViewports (float FrameMilliseconds);

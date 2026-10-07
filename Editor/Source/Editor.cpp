@@ -132,6 +132,7 @@ int CEditor::Run ()
 
 		// ---- commands: queued by last frame's UI, shortcuts and scripts ----
 		ApplyCommands();
+		ForgetClosedViewports();
 		if (SmokeTest)
 		{
 			// After the commands: what it queues applies next frame, like a click would.
@@ -359,6 +360,32 @@ void CEditor::ApplyCommand (const SEditorCommand& Command)
 	}
 }
 
+void CEditor::ForgetClosedViewports ()
+{
+	// A viewport closed from its tab or the View menu gives up every role it had: otherwise
+	// the other one stays covered by an overlay that is no longer drawn, and commands and the
+	// tools keep targeting a view that is not rendered.
+	if (MaximizedViewport >= 0 && !Viewports[MaximizedViewport].bOpen)
+	{
+		MaximizedViewport = -1;
+	}
+	if (FullscreenViewport >= 0 && !Viewports[FullscreenViewport].bOpen)
+	{
+		FullscreenViewport = -1;
+	}
+	if (!Viewports[ActiveViewport].bOpen)
+	{
+		for (int32 i = 0; i < ViewportCount; ++i)
+		{
+			if (Viewports[i].bOpen)
+			{
+				ActiveViewport = i;
+				break;
+			}
+		}
+	}
+}
+
 void CEditor::StartPlay ()
 {
 	if (Play.IsPlaying())
@@ -376,7 +403,17 @@ void CEditor::StartPlay ()
 	// Another world: no history carries over.
 	Engine.GetRenderer()->ResetAccumulation();
 	Engine.GetUi()->SetTint(PlayTint[0], PlayTint[1], PlayTint[2]);
-	// Unity's "focus on play": the game's view comes forward, with input.
+	// Unity's "focus on play": the game's view comes forward, with input - reopened if it was
+	// closed, and in the place of another viewport that fills the editor or the screen.
+	Viewports[GameIndex].bOpen = true;
+	if (MaximizedViewport >= 0)
+	{
+		MaximizedViewport = GameIndex;
+	}
+	if (FullscreenViewport >= 0)
+	{
+		FullscreenViewport = GameIndex;
+	}
 	FocusRequest = GameIndex;
 }
 
