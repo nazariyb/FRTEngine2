@@ -5,6 +5,15 @@
 #include <cstring>
 #include <filesystem>
 #include <iostream>
+#include <algorithm>
+#include <string>
+#include <vector>
+
+#if defined(_WINDOWS)
+#include <Windows.h>
+#include <shellapi.h>
+#pragma comment(lib, "shell32.lib")
+#endif
 
 #include "Exception.h"
 #include "imgui.h"
@@ -22,6 +31,12 @@
 #include "Graphics/Render/GraphicsUtility.h"
 #include "Graphics/Render/RenderCommonTypes.h"
 #include "Graphics/Render/Renderer.h"
+#include "Graphics/Render/Passes/Denoiser.h"
+#include "Graphics/Render/Passes/PathTracer.h"
+#include "Graphics/Render/Passes/PostProcess.h"
+#include "Graphics/Render/Passes/Upscaler.h"
+#include "Graphics/Render/Scene/GpuScene.h"
+#include "EnginePaths.h"
 #include "Math/Comp_LocalTransform.h"
 #include "Math/Comp_WorldTransform.h"
 #include "Memory/Memory.h"
@@ -37,61 +52,8 @@ using namespace memory::literals;
 #if !defined(FRT_HEADLESS)
 static ImGui_ImplDX12_InitInfo gImGuiDx12InitInfo;
 
-/**
- * SRV descriptor allocator handed to the ImGui DX12 backend.
- *
- * Since 1.92 the backend creates and destroys textures at runtime — the font atlas is
- * rasterized on demand and re-created whenever it grows or the requested size changes —
- * so descriptors must be recycled. DX12_DescriptorHeap only bumps, so freed handle pairs
- * are parked here and handed back before the heap advances. The backend defers destruction
- * until a texture has been unused for NumFramesInFlight frames, so a recycled slot is never
- * still referenced by an in-flight command list.
- *
- * Storage is fixed rather than a TArray: this lives in static storage, and TArray would free
- * through the primary CMemoryPool, which GameInstance already destroyed by then.
- */
-static constexpr uint32 gImGuiSrvHeapCapacity = 64;
-
-struct FImGuiSrvDescriptorAllocator
-{
-	struct FSlot
-	{
-		D3D12_CPU_DESCRIPTOR_HANDLE Cpu;
-		D3D12_GPU_DESCRIPTOR_HANDLE Gpu;
-	};
-
-	graphics::DX12_DescriptorHeap* Heap = nullptr;
-	FSlot FreeSlots[gImGuiSrvHeapCapacity] = {};
-	uint32 FreeCount = 0;
-
-	void Allocate (D3D12_CPU_DESCRIPTOR_HANDLE* OutCpuHandle, D3D12_GPU_DESCRIPTOR_HANDLE* OutGpuHandle)
-	{
-		if (FreeCount > 0)
-		{
-			const FSlot Recycled = FreeSlots[--FreeCount];
-
-			if (OutCpuHandle) *OutCpuHandle = Recycled.Cpu;
-			if (OutGpuHandle) *OutGpuHandle = Recycled.Gpu;
-			return;
-		}
-
-		Heap->Allocate(OutCpuHandle, OutGpuHandle);
-	}
-
-	void Free (D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle, D3D12_GPU_DESCRIPTOR_HANDLE GpuHandle)
-	{
-		frt_assert(FreeCount < gImGuiSrvHeapCapacity);
-		FreeSlots[FreeCount++] = FSlot{ CpuHandle, GpuHandle };
-	}
-
-	void Reset ()
-	{
-		Heap = nullptr;
-		FreeCount = 0;
-	}
-};
-
-static FImGuiSrvDescriptorAllocator gImGuiSrvAllocator;
+// ImGui's font atlas and user textures live in the renderer's bindless heap: one shader-visible
+// heap for the whole frame, no SetDescriptorHeaps churn between engine passes and the UI.
 
 // UI scale is user zoom (Ctrl+Wheel) times the monitor DPI scale, driving both fonts
 // (style.FontScaleMain — 1.92 rasterizes on demand, so this stays crisp) and metrics
@@ -104,6 +66,10 @@ static float gUiScaleApplied = 0.0f;
 static constexpr float gUiZoomMin = 0.4f;
 static constexpr float gUiZoomMax = 3.0f;
 static constexpr float gUiZoomStepPerNotch = 1.1f;
+
+// -Automation:TimeOfDayFrame=N / TimeOfDayValue=v: a lighting change mid-run (renderer lag tests).
+static int64 gAutomationTimeOfDayFrame = -1;
+static float gAutomationTimeOfDayValue = 0.5f;
 
 static void ApplyImGuiScale (float DpiScale)
 {
@@ -174,6 +140,32 @@ GameInstance::GameInstance ()
 	// An absent or malformed file leaves the compiled-in defaults in place - see
 	// Config/IniFile.h for why the format is kept this primitive.
 	Config.LoadDefaultLayers();
+#if defined(_WINDOWS)
+	{
+		// Strongest config layer: -Section:Key=Value launch arguments (never saved).
+		int argc = 0;
+		LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+		std::vector<std::string> arguments;
+		for (int i = 1; argv && i < argc; ++i)
+		{
+			std::string narrow;
+			for (const wchar_t* c = argv[i]; *c; ++c)
+			{
+				narrow.push_back(*c < 0x80 ? static_cast<char>(*c) : '?');
+			}
+			arguments.push_back(std::move(narrow));
+		}
+		if (argv)
+		{
+			LocalFree(argv);
+		}
+		const uint32 applied = Config.ApplyCommandLineArguments(arguments);
+		if (applied > 0u)
+		{
+			std::printf("[config] %u command-line override(s)\n", applied);
+		}
+	}
+#endif
 	LoadUserSettings(Config, UserSettings);
 
 	MemoryPool = memory::CMemoryPool(2_Gb);
@@ -265,32 +257,21 @@ GameInstance::GameInstance ()
 
 	ImGui_ImplWin32_Init(Window->GetHandle());
 
-	// Dedicated heap for ImGui — small (font atlas + user textures). Isolated from engine's
-	// ShaderDescriptorHeap so engine-side rebuilds on material growth never disturb ImGui.
-	// Slots are recycled by gImGuiSrvAllocator, so this only caps live textures, not churn.
-	ImGuiDescriptorHeap = graphics::DX12_DescriptorHeap(
-		Renderer->GetDevice(),
-		D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV,
-		gImGuiSrvHeapCapacity,
-		D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE);
-
-	gImGuiSrvAllocator.Heap = &ImGuiDescriptorHeap;
-
 	gImGuiDx12InitInfo = ImGui_ImplDX12_InitInfo();
 	gImGuiDx12InitInfo.Device = Renderer->GetDevice();
 	gImGuiDx12InitInfo.CommandQueue = Renderer->GetCommandQueue();
-	gImGuiDx12InitInfo.NumFramesInFlight = render::constants::FrameResourcesBufferCount;
+	gImGuiDx12InitInfo.NumFramesInFlight = graphics::rhi::MaxFramesInFlight;
 	gImGuiDx12InitInfo.RTVFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
-	gImGuiDx12InitInfo.DSVFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
-	gImGuiDx12InitInfo.UserData = &gImGuiSrvAllocator;
-	gImGuiDx12InitInfo.SrvDescriptorHeap = ImGuiDescriptorHeap.GetHeap();
+	gImGuiDx12InitInfo.DSVFormat = DXGI_FORMAT_UNKNOWN;
+	gImGuiDx12InitInfo.UserData = Renderer.GetRawIgnoringLifetime();
+	gImGuiDx12InitInfo.SrvDescriptorHeap = Renderer->GetBindlessHeap();
 	gImGuiDx12InitInfo.SrvDescriptorAllocFn =
 		[] (
 		ImGui_ImplDX12_InitInfo* InitInfo,
 		D3D12_CPU_DESCRIPTOR_HANDLE* OutCpuHandle,
 		D3D12_GPU_DESCRIPTOR_HANDLE* OutGpuHandle)
 		{
-			((FImGuiSrvDescriptorAllocator*)InitInfo->UserData)->Allocate(OutCpuHandle, OutGpuHandle);
+			static_cast<CRenderer*>(InitInfo->UserData)->AllocateImGuiDescriptor(OutCpuHandle, OutGpuHandle);
 		};
 	gImGuiDx12InitInfo.SrvDescriptorFreeFn =
 		[] (
@@ -298,9 +279,11 @@ GameInstance::GameInstance ()
 		D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle,
 		D3D12_GPU_DESCRIPTOR_HANDLE GpuHandle)
 		{
-			((FImGuiSrvDescriptorAllocator*)InitInfo->UserData)->Free(CpuHandle, GpuHandle);
+			static_cast<CRenderer*>(InitInfo->UserData)->FreeImGuiDescriptor(CpuHandle, GpuHandle);
 		};
 	ImGui_ImplDX12_Init(&gImGuiDx12InitInfo);
+
+	ApplyLaunchConfig();
 #endif
 }
 
@@ -310,8 +293,8 @@ GameInstance::~GameInstance ()
 	// Shutdown destroys ImGui's textures, which frees their descriptors back into the
 	// allocator. Drop them — they point into a heap that is about to die, and the allocator
 	// is a static that would otherwise hand them out again on a subsequent init.
+	Renderer->FlushCommandQueue();
 	ImGui_ImplDX12_Shutdown();
-	gImGuiSrvAllocator.Reset();
 
 	ImGui_ImplWin32_Shutdown();
 	ImGui::DestroyContext();
@@ -453,7 +436,9 @@ void GameInstance::Input (float DeltaSeconds)
 
 	if (InputSystem.WasKeyPressed(input::KeyCode::F2))
 	{
-		const ERenderMode NewRenderMode = enum_::NextValue(Renderer->GetRenderMode());
+		// Raster preview <-> path tracing (Hybrid is an alias of path tracing).
+		const ERenderMode NewRenderMode = Renderer->GetRenderMode() == ERenderMode::Raster
+			? ERenderMode::Raytracing : ERenderMode::Raster;
 
 		// TODO: should be synced automatically
 		UserSettings.DisplaySettings.RenderMode = NewRenderMode;
@@ -508,11 +493,12 @@ void GameInstance::Tick (float DeltaSeconds)
 		if (ProfilingSession.HasCurrent())
 		{
 			const profiler::SProfileConfig& c = ProfilingSession.Current();
-			RtSettings.SampleCount          = c.SampleCount;
-			RtSettings.MaxBounces           = c.MaxBounces;
-			RtSettings.RussianRouletteDepth = c.RussianRouletteDepth;
-			RtSettings.bPortalPreFilter     = c.bPortalPreFilter;
-			RtSettings.bCollectCounters     = true; // counters mandatory during a session
+			graphics::SPathTracerSettings& pt = Renderer->GetPathTracer().Settings;
+			pt.SamplesPerPixel      = c.SampleCount;
+			pt.MaxBounces           = c.MaxBounces;
+			pt.RussianRouletteDepth = c.RussianRouletteDepth;
+			pt.bPortalPreFilter     = c.bPortalPreFilter;
+			Renderer->Settings.bCollectRayCounters = true; // counters mandatory during a session
 		}
 		if (ProfilingSession.ConsumeProfileChanged())
 		{
@@ -531,7 +517,7 @@ void GameInstance::Tick (float DeltaSeconds)
 		}
 		if (ProfilingSession.ConsumeFinished())
 		{
-			RtSettings = SavedRtSettings;
+			EndProfilingOverride();
 			World.bAccumulationDirty = true;
 		}
 	}
@@ -559,6 +545,8 @@ void GameInstance::Draw (float DeltaSeconds)
 		return;
 	}
 
+	UpdateAutomation(DeltaSeconds);
+
 	Renderer->StartFrame();
 
 	World.SubmitFrame(Renderer->GetCommandList());
@@ -567,10 +555,7 @@ void GameInstance::Draw (float DeltaSeconds)
 
 	ImGui::Render();
 	{
-		// Bind ImGui's dedicated heap before its draw. ImGui_ImplDX12_RenderDrawData binds
-		// its own heap internally too, but doing it here keeps state explicit and avoids
-		// surprises if engine code later expects a particular heap bound after ImGui.
-		ID3D12DescriptorHeap* heaps[] = { ImGuiDescriptorHeap.GetHeap() };
+		ID3D12DescriptorHeap* heaps[] = { Renderer->GetBindlessHeap() };
 		Renderer->GetCommandList()->SetDescriptorHeaps(_countof(heaps), heaps);
 	}
 	ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), Renderer->GetCommandList());
@@ -633,6 +618,249 @@ void GameInstance::OnRestoreFromMinimize ()
 	{
 		Timer->Start();
 	}
+}
+
+namespace
+{
+bool ParseVector3 (const std::string& Text, Vector3f& Out)
+{
+	float x = 0.0f, y = 0.0f, z = 0.0f;
+	if (sscanf_s(Text.c_str(), "%f,%f,%f", &x, &y, &z) == 3)
+	{
+		Out = Vector3f(x, y, z);
+		return true;
+	}
+	return false;
+}
+}
+
+void GameInstance::ApplyLaunchConfig ()
+{
+	graphics::SRenderSettings& render = Renderer->Settings;
+	graphics::SPathTracerSettings& pt = Renderer->GetPathTracer().Settings;
+
+	// Session-only override of the persisted [Settings.Display] RenderMode (not written back).
+	const std::string renderMode = Config.Get("Render", "RenderMode", "");
+	if (renderMode == "Raytracing" || renderMode == "raytracing")
+	{
+		Renderer->SetRenderMode(ERenderMode::Raytracing);
+	}
+	else if (renderMode == "Raster" || renderMode == "raster")
+	{
+		Renderer->SetRenderMode(ERenderMode::Raster);
+	}
+
+	const std::string mode = Config.Get("Render", "Mode", "RealTime");
+	render.Mode = (mode == "Reference" || mode == "reference") ? EPathTracingMode::Reference : EPathTracingMode::RealTime;
+	render.RenderScale = Config.Get("Render", "RenderScale", render.RenderScale);
+	render.bDenoiser = Config.Get("Render", "Denoiser", render.bDenoiser);
+	render.ReferenceSampleTarget = Config.Get("Render", "SampleTarget", render.ReferenceSampleTarget);
+	render.bCollectRayCounters = Config.Get("Render", "CollectRayCounters", render.bCollectRayCounters);
+	render.FieldOfViewY = Config.Get("Render", "FieldOfViewY", render.FieldOfViewY);
+	const std::string upscaler = Config.Get("Render", "Upscaler", "Temporal");
+	if (upscaler == "None" || upscaler == "Off")
+	{
+		Renderer->SetUpscalerKind(EUpscalerKind::None);
+	}
+
+	pt.SamplesPerPixel = Config.Get("Render", "Spp", pt.SamplesPerPixel);
+	pt.MaxBounces = Config.Get("Render", "MaxBounces", pt.MaxBounces);
+	pt.RussianRouletteDepth = Config.Get("Render", "RussianRouletteDepth", pt.RussianRouletteDepth);
+	pt.RisCandidates = Config.Get("Render", "RisCandidates", pt.RisCandidates);
+	pt.RisCandidatesSecondary = Config.Get("Render", "RisCandidatesSecondary", pt.RisCandidatesSecondary);
+	pt.IndirectClamp = Config.Get("Render", "IndirectClamp", pt.IndirectClamp);
+	pt.bShaderExecutionReordering = Config.Get("Render", "SER", pt.bShaderExecutionReordering);
+	pt.bInlineRayQueries = Config.Get("Render", "InlineRT", pt.bInlineRayQueries);
+	pt.bNormalMaps = Config.Get("Render", "NormalMaps", pt.bNormalMaps);
+	pt.bPortalGuiding = Config.Get("Render", "PortalGuiding", pt.bPortalGuiding);
+	pt.bPortalPreFilter = Config.Get("Render", "PortalPreFilter", pt.bPortalPreFilter);
+	pt.bPrimarySurfaceReplacement = Config.Get("Render", "PSR", pt.bPrimarySurfaceReplacement);
+	pt.bDisableNee = Config.Get("Render", "DisableNee", pt.bDisableNee);
+	pt.bDisableBsdfMis = Config.Get("Render", "DisableBsdfMis", pt.bDisableBsdfMis);
+	pt.bWhiteFurnace = Config.Get("Render", "WhiteFurnace", pt.bWhiteFurnace);
+	pt.DebugMode = Config.Get("Render", "DebugMode", pt.DebugMode);
+
+	graphics::SRadianceCacheSettings& rc = Renderer->GetPathTracer().RadianceCache.Settings;
+	rc.bEnabled = Config.Get("Render", "RadianceCache", rc.bEnabled);
+	rc.CapacityLog2 = Config.Get("Render", "RcCapacityLog2", rc.CapacityLog2);
+	rc.CellScale = Config.Get("Render", "RcCellScale", rc.CellScale);
+	rc.UpdateTileSize = Config.Get("Render", "RcUpdateTile", rc.UpdateTileSize);
+	rc.AccumulationFrames = Config.Get("Render", "RcAccumFrames", rc.AccumulationFrames);
+	rc.StaleFrames = Config.Get("Render", "RcStaleFrames", rc.StaleFrames);
+	rc.RoughnessThreshold = Config.Get("Render", "RcRoughness", rc.RoughnessThreshold);
+	rc.FootprintScale = Config.Get("Render", "RcFootprint", rc.FootprintScale);
+	rc.MinSampleWeight = Config.Get("Render", "RcMinSamples", rc.MinSampleWeight);
+	rc.SampleClamp = Config.Get("Render", "RcSampleClamp", rc.SampleClamp);
+	rc.bFeedback = Config.Get("Render", "RcFeedback", rc.bFeedback);
+	rc.bJitter = Config.Get("Render", "RcJitter", rc.bJitter);
+	rc.FeedbackMaxDepth = Config.Get("Render", "RcFeedbackDepth", rc.FeedbackMaxDepth);
+	rc.SpecularShareMax = Config.Get("Render", "RcSpecShare", rc.SpecularShareMax);
+	Renderer->GetScene().bPortalWeightedLightSelection =
+		Config.Get("Render", "PortalLightSelection", Renderer->GetScene().bPortalWeightedLightSelection);
+
+	graphics::SPostProcessSettings& post = Renderer->GetPostProcess().Settings;
+	post.bAutoExposure = Config.Get("Render", "AutoExposure", post.bAutoExposure);
+	post.ManualExposureEV = Config.Get("Render", "ExposureEV", post.ManualExposureEV);
+	post.ExposureCompensationEV = Config.Get("Render", "ExposureCompensationEV", post.ExposureCompensationEV);
+	post.bBloom = Config.Get("Render", "Bloom", post.bBloom);
+	// [Post] keys (-Post:Key=Value): bloom and metering parameters, for A/B captures.
+	post.BloomIntensity = Config.Get("Post", "BloomIntensity", post.BloomIntensity);
+	post.BloomRadius = Config.Get("Post", "BloomRadius", post.BloomRadius);
+	post.BloomFalloff = Config.Get("Post", "BloomFalloff", post.BloomFalloff);
+	post.BloomMips = Config.Get("Post", "BloomMips", post.BloomMips);
+	post.HistogramLowPercentile = Config.Get("Post", "LowPercentile", post.HistogramLowPercentile);
+	post.HistogramHighPercentile = Config.Get("Post", "HighPercentile", post.HistogramHighPercentile);
+	post.MeteringCenterWeight = Config.Get("Post", "CenterWeight", post.MeteringCenterWeight);
+	post.ToneMapper = static_cast<graphics::EToneMapper>(Config.Get("Post", "ToneMapper", static_cast<uint32>(post.ToneMapper)));
+
+	// [Taa] keys (-Taa:Key=Value): in-house TAA / TAAU settings, for A/B captures.
+	if (auto* taa = dynamic_cast<graphics::CTemporalUpscaler*>(Renderer->GetUpscaler()))
+	{
+		graphics::STemporalUpscalerSettings& t = taa->Settings;
+		t.HistoryBlend = Config.Get("Taa", "HistoryBlend", t.HistoryBlend);
+		t.Sharpness = Config.Get("Taa", "Sharpness", t.Sharpness);
+		t.VarianceGamma = Config.Get("Taa", "VarianceGamma", t.VarianceGamma);
+		t.TemporalGamma = Config.Get("Taa", "TemporalGamma", t.TemporalGamma);
+		t.bAntiFlicker = Config.Get("Taa", "AntiFlicker", t.bAntiFlicker);
+		t.bVarianceClip = Config.Get("Taa", "VarianceClip", t.bVarianceClip);
+		t.bLanczosKernel = Config.Get("Taa", "Lanczos", t.bLanczosKernel);
+		t.bCatmullRomHistory = Config.Get("Taa", "CatmullRom", t.bCatmullRomHistory);
+		t.bDepthTest = Config.Get("Taa", "DepthTest", t.bDepthTest);
+		t.DebugMode = Config.Get("Taa", "Debug", t.DebugMode);
+	}
+
+	// [Denoiser] keys (-Denoiser:Key=Value), parsed by the pass itself.
+	Renderer->GetDenoiser().ApplyConfig(Config);
+
+	TimeOfDay =Config.Get("Scene", "TimeOfDay", TimeOfDay);
+	if (Config.Get("Scene", "PauseWorld", false))
+	{
+		World.TogglePhasePause(EUpdatePhase::Update);
+	}
+	Vector3f camPos;
+	if (ParseVector3(Config.Get("Scene", "CameraPosition", ""), camPos))
+	{
+		Camera->Transform.SetTranslation(camPos);
+	}
+	Vector3f camRot;
+	if (ParseVector3(Config.Get("Scene", "CameraRotation", ""), camRot))
+	{
+		Camera->Transform.SetRotation(camRot);
+	}
+	if (Config.Has("Display", "VSync"))
+	{
+		Renderer->bVSyncEnabled = Config.Get("Display", "VSync", Renderer->bVSyncEnabled);
+	}
+	if (Config.Has("Display", "ShowUi"))
+	{
+		bShowImGui = Config.Get("Display", "ShowUi", bShowImGui);
+	}
+
+	AutomationCaptureFrame = Config.Get("Automation", "CaptureFrame", -1);
+	AutomationExitFrame = Config.Get("Automation", "ExitFrame", -1);
+	AutomationProfileFrames = Config.Get("Automation", "ProfileFrames", 0);
+	bAutomationMotion = ParseVector3(Config.Get("Automation", "CameraMove", ""), AutomationCameraMove);
+	bAutomationMotion = ParseVector3(Config.Get("Automation", "CameraTurn", ""), AutomationCameraTurn) || bAutomationMotion;
+	AutomationMotionStartFrame = Config.Get("Automation", "MotionStartFrame", 0);
+	AutomationMotionEndFrame = Config.Get("Automation", "MotionEndFrame", -1);
+	gAutomationTimeOfDayFrame = Config.Get("Automation", "TimeOfDayFrame", -1);
+	gAutomationTimeOfDayValue = Config.Get("Automation", "TimeOfDayValue", TimeOfDay);
+	bAutomationCaptureHdr = Config.Get("Automation", "CaptureHdr", true);
+	const std::string capturePath = Config.Get("Automation", "CapturePath", "");
+	AutomationCapturePath = capturePath.empty() ? (paths::GetCaptureDir() / "automation") : std::filesystem::path(capturePath);
+}
+
+void GameInstance::UpdateAutomation (float DeltaSeconds)
+{
+	const int64 frame = static_cast<int64>(FrameCount);
+	if (frame == gAutomationTimeOfDayFrame)
+	{
+		// Picked up by the sky panel (ComputeSkyFromTimeOfDay) on the next UI frame.
+		TimeOfDay = gAutomationTimeOfDayValue;
+	}
+	if (bAutomationMotion && frame >= AutomationMotionStartFrame && (AutomationMotionEndFrame < 0 || frame < AutomationMotionEndFrame))
+	{
+		using namespace DirectX;
+		const Vector3f rot = Camera->Transform.GetRotation();
+		const XMMATRIX rotM = XMMatrixRotationRollPitchYaw(rot.x, rot.y, rot.z);
+		const XMVECTOR local = XMLoadFloat3(reinterpret_cast<const XMFLOAT3*>(&AutomationCameraMove));
+		Vector3f worldMove{};
+		XMStoreFloat3(reinterpret_cast<XMFLOAT3*>(&worldMove), XMVector3TransformNormal(local, rotM));
+		Camera->Transform.MoveBy(worldMove);
+		Camera->Transform.SetRotation(rot + AutomationCameraTurn);
+	}
+
+	if (AutomationCaptureFrame >= 0 && !bAutomationCaptureRequested &&
+		static_cast<int64>(FrameCount) >= AutomationCaptureFrame)
+	{
+		Renderer->RequestCapture(AutomationCapturePath, bAutomationCaptureHdr);
+		bAutomationCaptureRequested = true;
+		const Vector3f camPos = Camera->Transform.GetTranslation();
+		const Vector3f camRot = Camera->Transform.GetRotation();
+		std::printf("[automation] capture requested at frame %llu (%u spp accumulated) camera %.6f,%.6f,%.6f rotation %.6f,%.6f,%.6f\n",
+			static_cast<unsigned long long>(FrameCount), Renderer->GetAccumulatedSamples(),
+			camPos.x, camPos.y, camPos.z, camRot.x, camRot.y, camRot.z);
+		std::fflush(stdout);
+	}
+	if (AutomationProfileFrames > 0 && AutomationExitFrame >= 0 &&
+		static_cast<int64>(FrameCount) >= AutomationExitFrame - AutomationProfileFrames &&
+		static_cast<int64>(FrameCount) < AutomationExitFrame)
+	{
+		for (const profiler::SGpuScopeResult& r : Renderer->GetGpuProfiler().GetLastResults())
+		{
+			if (!r.Name)
+			{
+				continue;
+			}
+			auto it = std::find_if(AutomationProfile.begin(), AutomationProfile.end(),
+				[&](const auto& e) { return e.first == r.Name; });
+			if (it == AutomationProfile.end())
+			{
+				AutomationProfile.push_back({ std::string(r.Name), { 0.0, 0u } });
+				it = AutomationProfile.end() - 1;
+			}
+			it->second.first += r.DurationMs;
+			++it->second.second;
+		}
+		AutomationCpuFrameMs += static_cast<double>(DeltaSeconds) * 1000.0;
+		++AutomationCpuFrames;
+	}
+	if (AutomationExitFrame >= 0 && static_cast<int64>(FrameCount) >= AutomationExitFrame &&
+		!Renderer->HasPendingCaptures())
+	{
+		for (const auto& e : AutomationProfile)
+		{
+			std::printf("[profile] %-28s %8.3f ms\n", e.first.c_str(), e.second.second ? e.second.first / e.second.second : 0.0);
+		}
+		if (AutomationCpuFrames > 0u)
+		{
+			std::printf("[profile] %-28s %8.3f ms\n", "CPU frame", AutomationCpuFrameMs / AutomationCpuFrames);
+		}
+		std::printf("[automation] exit at frame %llu\n", static_cast<unsigned long long>(FrameCount));
+		std::fflush(stdout);
+		AutomationExitFrame = -1;
+		PostQuitMessage(0);
+	}
+}
+
+void GameInstance::BeginProfilingOverride ()
+{
+	const graphics::SPathTracerSettings& pt = Renderer->GetPathTracer().Settings;
+	SavedProfilingSettings.SamplesPerPixel = pt.SamplesPerPixel;
+	SavedProfilingSettings.MaxBounces = pt.MaxBounces;
+	SavedProfilingSettings.RussianRouletteDepth = pt.RussianRouletteDepth;
+	SavedProfilingSettings.bPortalPreFilter = pt.bPortalPreFilter;
+	SavedProfilingSettings.bCollectRayCounters = Renderer->Settings.bCollectRayCounters;
+}
+
+void GameInstance::EndProfilingOverride ()
+{
+	graphics::SPathTracerSettings& pt = Renderer->GetPathTracer().Settings;
+	pt.SamplesPerPixel = SavedProfilingSettings.SamplesPerPixel;
+	pt.MaxBounces = SavedProfilingSettings.MaxBounces;
+	pt.RussianRouletteDepth = SavedProfilingSettings.RussianRouletteDepth;
+	pt.bPortalPreFilter = SavedProfilingSettings.bPortalPreFilter;
+	Renderer->Settings.bCollectRayCounters = SavedProfilingSettings.bCollectRayCounters;
 }
 
 // UI panel bodies (DrawUI, DrawStatsPanel, DrawRaytracingPanel, DrawSkyPanel,

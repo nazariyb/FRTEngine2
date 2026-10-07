@@ -20,6 +20,7 @@
 #include "Graphics/Camera.h"
 #include "Graphics/Render/GraphicsCoreTypes.h"
 #include "Graphics/Render/Renderer.h"
+#include "Graphics/Render/Passes/PathTracer.h"
 #include "Profiler/ProfilingExport.h"
 #include "Profiler/SceneDescriptor.h"
 
@@ -57,7 +58,7 @@ void GameInstance::DrawStatsPanel ()
 		if (ImGui::Button("Stop profiling"))
 		{
 			ProfilingSession.Stop();
-			RtSettings = SavedRtSettings;
+			EndProfilingOverride();
 			World.bAccumulationDirty = true;
 		}
 		ImGui::SameLine();
@@ -82,7 +83,7 @@ void GameInstance::DrawStatsPanel ()
 
 		if (bStart && SessionNameBuf[0] != '\0')
 		{
-			SavedRtSettings = RtSettings;
+			BeginProfilingOverride();
 			const auto [sw, sh] = Window->GetWindowSize();
 			SessionSceneDesc = profiler::CaptureSceneDescriptor(
 				World, *Camera, SkySettings, static_cast<uint32>(sw), static_cast<uint32>(sh));
@@ -132,6 +133,10 @@ void GameInstance::DrawStatsPanel ()
 	row("ReachedSky",cur.Counters.Values[profiler::RC_SkyShadowReachedSky],avg.Counters.Values[profiler::RC_SkyShadowReachedSky]);
 	row("Blocked",   cur.Counters.Values[profiler::RC_SkyShadowBlocked],   avg.Counters.Values[profiler::RC_SkyShadowBlocked]);
 	row("PortalTests",cur.Counters.Values[profiler::RC_PortalTests],       avg.Counters.Values[profiler::RC_PortalTests]);
+	row("OtherShadow",cur.Counters.Values[profiler::RC_OtherShadow],       avg.Counters.Values[profiler::RC_OtherShadow]);
+	row("Escaped",   cur.Counters.Values[profiler::RC_Escaped],            avg.Counters.Values[profiler::RC_Escaped]);
+	row("RR killed", cur.Counters.Values[profiler::RC_RussianRoulette],    avg.Counters.Values[profiler::RC_RussianRoulette]);
+	row("Invalid",   cur.Counters.Values[profiler::RC_InvalidSample],      avg.Counters.Values[profiler::RC_InvalidSample]);
 
 	ImGui::Separator();
 	ImGui::Text("%% filtered      %6.1f%%        %6.1f%%", cur.PctFiltered * 100.0,   avg.PctFiltered * 100.0);
@@ -162,30 +167,16 @@ void GameInstance::DrawStatsPanel ()
 
 void GameInstance::DrawRaytracingPanel ()
 {
-	// Live RT knobs — used by sweep studies (samples × bounces × RR) without shader recompile.
-	SRtSettings& rt = RtSettings;
-	ImGui::Begin("Raytracing", nullptr);
-
-	// Parameters are driven by the session while it runs — lock the UI so manual edits
-	// don't fight the sweep.
-	const bool bLocked = ProfilingSession.IsActive();
-	ImGui::BeginDisabled(bLocked);
-
-	int samples = static_cast<int>(rt.SampleCount);
-	int bounces = static_cast<int>(rt.MaxBounces);
-	int rr = static_cast<int>(rt.RussianRouletteDepth);
-	if (ImGui::SliderInt("Samples / pixel", &samples, 1, 64)) rt.SampleCount = static_cast<uint32>(samples);
-	if (ImGui::SliderInt("Max bounces", &bounces, 0, 16)) rt.MaxBounces = static_cast<uint32>(bounces);
-	if (ImGui::SliderInt("RR start depth", &rr, 0, 16)) rt.RussianRouletteDepth = static_cast<uint32>(rr);
-	ImGui::Checkbox("Portal pre-filter", &rt.bPortalPreFilter);
-	ImGui::Checkbox("Show portal meshes", &rt.bShowPortalMeshes);
-	ImGui::Checkbox("Collect ray counters", &rt.bCollectCounters);
-
-	if (ImGui::Button("Reset accumulation"))
+	ImGui::Begin("Renderer", nullptr);
+	// Parameters are driven by the session while it runs: lock the UI so manual edits do not
+	// fight the sweep.
+	ImGui::BeginDisabled(ProfilingSession.IsActive());
+	Renderer->DrawRendererUi();
+	ImGui::Separator();
+	if (ImGui::Checkbox("Show portal meshes", &RtSettings.bShowPortalMeshes))
 	{
 		World.bAccumulationDirty = true;
 	}
-
 	ImGui::EndDisabled();
 	ImGui::End();
 }
@@ -199,6 +190,11 @@ void GameInstance::DrawSkyPanel ()
 	bool& useTod = bUseTimeOfDay;
 
 	ImGui::Begin("Sky / Sun");
+	float sunDegrees = SunAngularRadius * 57.29578f;
+	if (ImGui::SliderFloat("Sun angular radius", &sunDegrees, 0.01f, 5.0f, "%.3f deg"))
+	{
+		SunAngularRadius = sunDegrees / 57.29578f;
+	}
 	ImGui::Checkbox("Drive from Time of Day", &useTod);
 	if (useTod)
 	{

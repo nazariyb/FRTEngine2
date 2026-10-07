@@ -2,6 +2,8 @@
 
 #include <filesystem>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "Core.h"
 #include "Singleton.h"
@@ -11,7 +13,6 @@
 #include "Config/Config.h"
 #include "Graphics/Render/GraphicsCoreTypes.h"
 #include "Graphics/Render/RenderCommonTypes.h"
-#include "Graphics/Render/RenderResourceAllocators.h"
 #include "Input/InputActionLibrary.h"
 #include "Input/InputSystem.h"
 #include "Memory/MemoryPool.h"
@@ -120,10 +121,6 @@ protected:
 	memory::TRefUnique<graphics::CRenderer> Renderer;
 	memory::TRefShared<graphics::CCamera> Camera;
 
-	// Dedicated descriptor heap for ImGui (font + a few spares).
-	// Kept separate from Renderer's ShaderDescriptorHeap so engine-side heap rebuilds
-	// on material/texture growth never invalidate ImGui's font slot or trash its state.
-	graphics::DX12_DescriptorHeap ImGuiDescriptorHeap;
 #endif
 	CWorldScene World;
 	memory::TRefWeak<Sys_MeshRenderer> MeshRenderer;
@@ -153,6 +150,8 @@ public:
 	graphics::SSkyConstants& GetSkySettings () { return SkySettings; }
 	const graphics::SSkyConstants& GetSkySettings () const { return SkySettings; }
 
+	float GetSunAngularRadius () const { return SunAngularRadius; }
+
 	float& GetTimeOfDay () { return TimeOfDay; }
 	float GetTimeOfDay () const { return TimeOfDay; }
 	bool& UseTimeOfDay () { return bUseTimeOfDay; }
@@ -163,6 +162,7 @@ protected:
 
 	graphics::SSkyConstants SkySettings;
 	float TimeOfDay = 0.5f;    // [0,1]; 0.5 = noon
+	float SunAngularRadius = 0.004654f; // radians; the real sun is ~0.267 deg
 	bool bUseTimeOfDay = true; // when true, ImGui slider drives SkySettings via ComputeSkyFromTimeOfDay
 	bool bShowImGui = true;    // toggled by key I; when false DrawUI is skipped
 
@@ -193,6 +193,46 @@ protected:
 
 	bool bCameraMovementEnabled = false;
 	math::STransform CameraInitialTransform;
+
+#ifndef FRT_HEADLESS
+	// Launch-time configuration ([Render] / [Automation] sections, usually from the command
+	// line: -Render:Mode=Reference -Automation:CaptureFrame=300 ...).
+	void ApplyLaunchConfig ();
+	void UpdateAutomation (float DeltaSeconds);
+	void BeginProfilingOverride ();
+	void EndProfilingOverride ();
+
+	int64 AutomationCaptureFrame = -1;
+	int64 AutomationExitFrame = -1;
+	bool bAutomationCaptureHdr = true;
+	bool bAutomationCaptureRequested = false;
+	std::filesystem::path AutomationCapturePath;
+	// -Automation:ProfileFrames=N: average GPU scope times over the N frames before ExitFrame,
+	// printed to stdout at exit ("[profile] <scope> <ms>").
+	int64 AutomationProfileFrames = 0;
+	// -Automation:CameraMove="x,y,z" (camera-local metres per frame) and CameraTurn="pitch,yaw,roll"
+	// (radians per frame), applied from MotionStartFrame up to MotionEndFrame (-1 = until exit):
+	// deterministic camera motion for ghosting / disocclusion tests.
+	Vector3f AutomationCameraMove = Vector3f::ZeroVector;
+	Vector3f AutomationCameraTurn = Vector3f::ZeroVector;
+	int64 AutomationMotionStartFrame = 0;
+	int64 AutomationMotionEndFrame = -1;
+	bool bAutomationMotion = false;
+	std::vector<std::pair<std::string, std::pair<double, uint32>>> AutomationProfile;
+	double AutomationCpuFrameMs = 0.0;
+	uint32 AutomationCpuFrames = 0u;
+
+	// Path tracer settings saved while a profiling session drives them.
+	struct SProfilingSnapshot
+	{
+		uint32 SamplesPerPixel = 1u;
+		uint32 MaxBounces = 4u;
+		uint32 RussianRouletteDepth = 3u;
+		bool bPortalPreFilter = false;
+		bool bCollectRayCounters = false;
+	};
+	SProfilingSnapshot SavedProfilingSettings;
+#endif
 };
 
 
