@@ -217,22 +217,25 @@ TEST(WorldTransform, CameraRelativeSubtractionHappensAtFullPrecision)
 	EXPECT_NEAR(relative.M[2][3], -0.75f, Tolerance);
 }
 
-TEST(WorldTransform, HandednessFlipNegatesTheBasisXColumnNotThePosition)
+TEST(WorldTransform, HandednessFlipNegatesTheWorldXRowIncludingThePosition)
 {
-	// Right-multiply by diag(-1,1,1): it converts the source basis, so the translation
-	// column is deliberately untouched. Negating row 0 instead would also mirror the
-	// world position, which is NOT what STransform does.
+	// Left-multiply by diag(-1,1,1): the X of every transformed point is negated, translation
+	// included, which is exactly how camera, light and portal positions are converted
+	// (ToDirectXCoordinates). Columns 1..2 of row 0 flip too; rows 1..2 are untouched.
 	math::TMatrix3x4<float> m;
-	m.M[0][0] = 1.0f; m.M[1][0] = 2.0f; m.M[2][0] = 3.0f;
+	m.M[0][0] = 1.0f; m.M[0][1] = 4.0f; m.M[0][2] = 5.0f;
+	m.M[1][0] = 2.0f; m.M[2][0] = 3.0f;
 	m.M[0][3] = 7.0f; m.M[1][3] = 8.0f; m.M[2][3] = 9.0f;
 
 	const math::TMatrix3x4<float> flipped = math::ToDirectXHandedness(m);
 
 	EXPECT_NEAR(flipped.M[0][0], -1.0f, Tolerance);
-	EXPECT_NEAR(flipped.M[1][0], -2.0f, Tolerance);
-	EXPECT_NEAR(flipped.M[2][0], -3.0f, Tolerance);
+	EXPECT_NEAR(flipped.M[0][1], -4.0f, Tolerance);
+	EXPECT_NEAR(flipped.M[0][2], -5.0f, Tolerance);
+	EXPECT_NEAR(flipped.M[1][0], 2.0f, Tolerance);
+	EXPECT_NEAR(flipped.M[2][0], 3.0f, Tolerance);
 
-	EXPECT_NEAR(flipped.M[0][3], 7.0f, Tolerance) << "translation must not be mirrored";
+	EXPECT_NEAR(flipped.M[0][3], -7.0f, Tolerance) << "the world position converts like any other point";
 	EXPECT_NEAR(flipped.M[1][3], 8.0f, Tolerance);
 	EXPECT_NEAR(flipped.M[2][3], 9.0f, Tolerance);
 }

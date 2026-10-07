@@ -425,12 +425,10 @@ TEST(ExtractMeshInstances, CarriesEntityModelAndTransform)
 
 	// Row-major 3x4 with translation in column 3.
 	//
-	// NOT negated on X, unlike a light's position. ToDirectXHandedness right-multiplies by
-	// diag(-1,1,1), which mirrors the source basis and leaves the world position alone,
-	// whereas ToDirectXCoordinates negates a bare vector. This reproduces exactly what
-	// STransform::GetRaytracingTransform does today - see the byte-for-byte comparison
-	// below - so the asymmetry between geometry and lights is inherited, not introduced.
-	EXPECT_NEAR(instances[0].Transform.M[0][3], 1.0, Tolerance);
+	// Negated on X exactly like a light's or the camera's position: ToDirectXHandedness
+	// converts the transformed point (left-multiplies by diag(-1,1,1)), so geometry and the
+	// things that light or view it share one render space.
+	EXPECT_NEAR(instances[0].Transform.M[0][3], -1.0, Tolerance);
 	EXPECT_NEAR(instances[0].Transform.M[1][3], 2.0, Tolerance);
 	EXPECT_NEAR(instances[0].Transform.M[2][3], 3.0, Tolerance);
 }
@@ -646,7 +644,8 @@ TEST(ExtractMeshInstances, InheritsAParentTransform)
 	graphics::ExtractMeshInstances(world, Vector3r::ZeroVector, instances);
 
 	ASSERT_EQ(instances.Count(), 1u);
-	EXPECT_NEAR(instances[0].Transform.M[0][3], 10.0, Tolerance);
+	// Render space negates world X (see the handedness test above).
+	EXPECT_NEAR(instances[0].Transform.M[0][3], -10.0, Tolerance);
 	EXPECT_NEAR(instances[0].Transform.M[1][3], 5.0, Tolerance);
 }
 

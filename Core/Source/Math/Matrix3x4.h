@@ -77,27 +77,20 @@ inline const TMatrix3x4<T> TMatrix3x4<T>::Identity = TMatrix3x4<T>{};
 
 
 /**
- * Engine space (left-up-forward) -> DirectX space, by negating X.
+ * Engine space (left-up-forward) -> DirectX space, by negating X of the transformed result.
  *
- * This is the lufToDx flip currently fused into STransform::GetMatrix. It is a
- * backend concern: scene math, bounds, and culling all work in engine space, and the
- * conversion happens once, here, at the point of upload. Keeping it out of the
- * transform pipeline is what lets the render backend change without touching any of
- * the systems above it.
+ * Left-multiply by diag(-1, 1, 1): negate row 0, translation included. That is the conversion
+ * of world-space positions (ToDirectXCoordinates) applied after the transform, so instances,
+ * lights, portals and the camera all agree. It matches STransform::GetMatrix (v * M * F).
  */
 template <concepts::Numerical T>
 constexpr TMatrix3x4<T> ToDirectXHandedness(const TMatrix3x4<T>& InMatrix)
 {
-	// Right-multiply by diag(-1, 1, 1), i.e. negate column 0 - the image of the X axis.
-	//
-	// The flip converts the SOURCE basis before the transform runs, so the translation
-	// column is deliberately left alone. Negating row 0 instead would also mirror the
-	// world position, which is not what STransform::GetMatrix does; verified against it
-	// numerically.
 	TMatrix3x4<T> result = InMatrix;
 	result.M[0][0] = -result.M[0][0];
-	result.M[1][0] = -result.M[1][0];
-	result.M[2][0] = -result.M[2][0];
+	result.M[0][1] = -result.M[0][1];
+	result.M[0][2] = -result.M[0][2];
+	result.M[0][3] = -result.M[0][3];
 
 	return result;
 }

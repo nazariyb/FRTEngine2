@@ -65,8 +65,13 @@ inline const DirectX::XMFLOAT4X4& STransform::GetMatrix () const
 	const XMMATRIX scale = XMMatrixScaling(Scale.x, Scale.y, Scale.z);
 	const XMMATRIX translation = XMMatrixTranslation(Translation.x, Translation.y, Translation.z);
 	const XMMATRIX engineMatrix = XMMatrixMultiply(XMMatrixMultiply(rotation, scale), translation);
+	// Engine (LUF) -> render (DirectX, RUF) by negating X of the WORLD result: v * M * F.
+	// This is the same conversion camera, lights and portals use (ToDirectXCoordinates), so
+	// positions agree everywhere. Flipping the local X instead (F * M) mirrors objects in place
+	// but leaves their translation unconverted, which put meshes on the opposite side of X
+	// from the lights and the camera.
 	const XMMATRIX lufToDx = XMMatrixScaling(-1.f, 1.f, 1.f);
-	MatrixIntr = XMMatrixMultiply(lufToDx, engineMatrix);
+	MatrixIntr = XMMatrixMultiply(engineMatrix, lufToDx);
 
 	XMStoreFloat4x4(&Matrix4x4, MatrixIntr);
 
