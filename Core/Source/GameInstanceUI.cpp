@@ -171,7 +171,7 @@ void GameInstance::DrawRaytracingPanel ()
 	// Parameters are driven by the session while it runs: lock the UI so manual edits do not
 	// fight the sweep.
 	ImGui::BeginDisabled(ProfilingSession.IsActive());
-	Renderer->DrawRendererUi();
+	Renderer->DrawRendererUi(*MainView);
 	ImGui::Separator();
 	if (ImGui::Checkbox("Show portal meshes", &RtSettings.bShowPortalMeshes))
 	{
@@ -421,7 +421,7 @@ void GameInstance::DrawDisplaySettingsPanel ()
 			displaySettings.ResolutionIndex = resIndex;
 		}
 
-		GetRenderer()->SetRenderMode(displaySettings.RenderMode);
+		MainView->SetRenderMode(displaySettings.RenderMode);
 		GetRenderer()->bVSyncEnabled = displaySettings.bVSync;
 
 		uint32 numerator = 0;

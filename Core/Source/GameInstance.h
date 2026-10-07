@@ -120,6 +120,8 @@ protected:
 	CWindow* Window;
 	memory::TRefUnique<graphics::CRenderer> Renderer;
 	memory::TRefShared<graphics::CCamera> Camera;
+	graphics::CRenderView* MainView = nullptr;    // owned by the renderer
+	graphics::SCameraView MainCameraView;
 
 #endif
 	CWorldScene World;

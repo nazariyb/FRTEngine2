@@ -157,6 +157,7 @@ void CGpuProfiler::BeginFrame ()
 	frame.ScopeCount = 0u;
 	frame.bRecorded = false;
 	frame.ScopeNames.Clear();
+	frame.ScopeViews.Clear();
 }
 
 int32 CGpuProfiler::BeginScope (ID3D12GraphicsCommandList* CmdList, const char* Name)
@@ -174,6 +175,7 @@ int32 CGpuProfiler::BeginScope (ID3D12GraphicsCommandList* CmdList, const char* 
 
 	const int32 scopeIndex = static_cast<int32>(frame.ScopeCount);
 	frame.ScopeNames.Add(Name);
+	frame.ScopeViews.Add(CurrentView);
 	++frame.ScopeCount;
 
 	const uint32 slot = (CurrentFrame * MaxScopesPerFrame + static_cast<uint32>(scopeIndex)) * 2u;
@@ -245,6 +247,7 @@ void CGpuProfiler::ReadbackFrame (uint32 FrameSlot)
 
 		SGpuScopeResult& r = LastResults.Add();
 		r.Name = frame.ScopeNames[i];
+		r.View = frame.ScopeViews[i];
 		r.DurationMs = static_cast<double>(ticks) * msPerTick;
 	}
 

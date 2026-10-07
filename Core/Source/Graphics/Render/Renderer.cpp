@@ -18,6 +18,7 @@
 #include "Graphics/Render/Passes/PostProcess.h"
 #include "Graphics/Render/Passes/RasterPreview.h"
 #include "Graphics/Render/Passes/Upscaler.h"
+#include "Graphics/Render/RenderView.h"
 #include "Graphics/Render/Scene/GpuScene.h"
 #include "Profiler/Profiler.h"
 
@@ -203,7 +204,6 @@ CRenderer::CRenderer (CWindow* InWindow)
 	if (caps.RaytracingTier < D3D12_RAYTRACING_TIER_1_1)
 	{
 		std::fprintf(stderr, "[renderer] DXR tier 1.1 is required for the path tracer; raster preview only.\n");
-		Profile.RenderMode = ERenderMode::Raster;
 	}
 
 	ShaderCompiler.Init(paths::GetShaderRootDir());
@@ -212,7 +212,8 @@ CRenderer::CRenderer (CWindow* InWindow)
 	Pipelines.SetHotReloadEnabled(false);
 #endif
 
-	GpuProfiler.Init(Device.Get(), CommandQueue.Get(), 96u, rhi::MaxFramesInFlight);
+	// Per view ~19 scopes (a real-time path-traced view), plus a few scene ones.
+	GpuProfiler.Init(Device.Get(), CommandQueue.Get(), 256u, rhi::MaxFramesInFlight);
 	RayCounters.Init(Device.Get(), rhi::MaxFramesInFlight);
 	RayCounterUav = Rhi.GetBindlessHeap().AllocatePersistent();
 	Rhi.WriteBufferUav(RayCounterUav, RayCounters.GetResource(), rhi::EBufferViewKind::Raw, profiler::CRayCounters::GetBufferBytes(), 0u);
@@ -221,18 +222,8 @@ CRenderer::CRenderer (CWindow* InWindow)
 	Scene->Initialize(Rhi, Pipelines);
 	PathTracerPrograms = std::make_unique<CPathTracerPrograms>();
 	PathTracerPrograms->Initialize(Rhi, Pipelines);
-	PathTracer = std::make_unique<CPathTracer>();
-	PathTracer->Initialize(Rhi, Pipelines, *PathTracerPrograms);
-	Denoiser = std::make_unique<CDenoiser>();
-	Denoiser->Initialize(Rhi, Pipelines);
-	Upscaler = CreateUpscaler(EUpscalerKind::Temporal);
-	Upscaler->Initialize(Rhi, Pipelines);
 	ReferenceResampler = CreateUpscaler(EUpscalerKind::None);
 	ReferenceResampler->Initialize(Rhi, Pipelines);
-	PostProcess = std::make_unique<CPostProcess>();
-	PostProcess->Initialize(Rhi, Pipelines);
-	RasterPreview = std::make_unique<CRasterPreview>();
-	RasterPreview->Initialize(Rhi, Pipelines);
 	Capture = std::make_unique<CFrameCapture>();
 	Capture->Initialize(Rhi);
 
@@ -242,16 +233,15 @@ CRenderer::CRenderer (CWindow* InWindow)
 CRenderer::~CRenderer ()
 {
 	FlushCommandQueue();
+	for (std::unique_ptr<CRenderView>& view : Views)
+	{
+		ShutdownView(*view);
+	}
+	Views.clear();
 	if (Capture) { Capture->Shutdown(); }
-	if (RasterPreview) { RasterPreview->Shutdown(); }
-	if (PostProcess) { PostProcess->Shutdown(Rhi); }
-	if (Upscaler) { Upscaler->Shutdown(Rhi); }
 	if (ReferenceResampler) { ReferenceResampler->Shutdown(Rhi); }
-	if (Denoiser) { Denoiser->Shutdown(Rhi); }
-	if (PathTracer) { PathTracer->Shutdown(); }
 	if (PathTracerPrograms) { PathTracerPrograms->Shutdown(); }
 	if (Scene) { Scene->Shutdown(); }
-	if (DisplayColor.IsValid()) { Rhi.Destroy(DisplayColor); }
 	for (uint32 i = 0; i < SwapChainBufferCount; ++i)
 	{
 		BackBuffers[i].Reset();
@@ -415,8 +405,8 @@ void CRenderer::Resize (bool bNewFullscreenState)
 
 		DXGI_SWAP_CHAIN_DESC1 desc = {};
 		THROW_IF_FAILED(SwapChain->GetDesc1(&desc));
-		DisplayWidth = desc.Width;
-		DisplayHeight = desc.Height;
+		BackBufferWidth = desc.Width;
+		BackBufferHeight = desc.Height;
 		for (uint32 i = 0; i < SwapChainBufferCount; ++i)
 		{
 			THROW_IF_FAILED(SwapChain->GetBuffer(i, IID_PPV_ARGS(&BackBuffers[i])));
@@ -426,7 +416,14 @@ void CRenderer::Resize (bool bNewFullscreenState)
 			BackBufferState[i] = D3D12_RESOURCE_STATE_PRESENT;
 		}
 		bFrameBuffersReady = true;
-		bForceReset = true;
+		// Only views drawing into the swap chain changed size; texture views keep their history.
+		for (std::unique_ptr<CRenderView>& view : Views)
+		{
+			if (view->GetTarget() == EViewTarget::BackBuffer)
+			{
+				view->bForceReset = true;
+			}
+		}
 	}
 	else if (SwapChain)
 	{
@@ -442,11 +439,6 @@ ID3D12Device5* CRenderer::GetDevice () { return Device.Get(); }
 ID3D12CommandQueue* CRenderer::GetCommandQueue () { return CommandQueue.Get(); }
 ID3D12GraphicsCommandList4* CRenderer::GetCommandList () { return CommandList.Get(); }
 CMaterialLibrary& CRenderer::GetMaterialLibrary () { return MaterialLibrary; }
-
-void CRenderer::InitializeRendering ()
-{
-	// Everything is created lazily by the GPU scene during the first frames.
-}
 
 void CRenderer::WaitForFenceValue (uint64 Value)
 {
@@ -476,71 +468,50 @@ void CRenderer::FlushCommandQueue ()
 	Rhi.SetSubmissionFenceValue(FenceValue + 1u);
 }
 
-void CRenderer::SetRenderMode (ERenderMode Mode)
+bool CRenderer::CanTrace () const
 {
-	// Hybrid is not a separate pipeline any more: it maps to the path tracer.
-	Profile.RenderMode = Mode == ERenderMode::Hybrid ? ERenderMode::Raytracing : Mode;
+	return Rhi.GetCaps().RaytracingTier >= D3D12_RAYTRACING_TIER_1_1;
 }
 
-ERenderMode CRenderer::GetRenderMode () const
-{
-	const bool bCanTrace = Rhi.GetCaps().RaytracingTier >= D3D12_RAYTRACING_TIER_1_1;
-	return Profile.RenderMode == ERenderMode::Raster || !bCanTrace ? ERenderMode::Raster : ERenderMode::Raytracing;
-}
+bool CRenderer::IsRaytracingReady () const { return CanTrace() && PathTracerPrograms && PathTracerPrograms->IsReady(); }
 
-bool CRenderer::IsRaytracingReady () const { return PathTracer && PathTracer->IsReady(); }
-bool CRenderer::ShouldRenderRaster () const { return GetRenderMode() == ERenderMode::Raster || !IsRaytracingReady(); }
-bool CRenderer::ShouldRenderRaytracing () const { return GetRenderMode() == ERenderMode::Raytracing && IsRaytracingReady(); }
+bool CRenderer::IsTracing (const CRenderView& View) const
+{
+	return View.GetRenderMode() == ERenderMode::Raytracing && IsRaytracingReady();
+}
 
 bool CRenderer::IsReadyToRender () const
 {
-	return bFrameBuffersReady && SwapChain && DisplayWidth > 0u && DisplayHeight > 0u;
-}
-
-EUpscalerKind CRenderer::GetUpscalerKind () const
-{
-	return Upscaler ? Upscaler->GetKind() : EUpscalerKind::None;
+	return bFrameBuffersReady && SwapChain && BackBufferWidth > 0u && BackBufferHeight > 0u;
 }
 
 void CRenderer::SetUpscalerKind (EUpscalerKind Kind)
 {
-	if (Upscaler && Upscaler->GetKind() == Kind)
+	const std::unique_ptr<IUpscaler> probe = CreateUpscaler(Kind);
+	if (probe && probe->IsAvailable())
 	{
-		return;
+		Profile.Upscaler = Kind;
 	}
-	std::unique_ptr<IUpscaler> next = CreateUpscaler(Kind);
-	if (!next || !next->IsAvailable())
-	{
-		return;
-	}
-	FlushCommandQueue();
-	if (Upscaler)
-	{
-		Upscaler->Shutdown(Rhi);
-	}
-	Upscaler = std::move(next);
-	Upscaler->Initialize(Rhi, Pipelines);
-	Profile.Upscaler = Kind;
-	RenderWidth = 0u; // force resize
-	bForceReset = true;
 }
 
-void CRenderer::Tick ()
+void CRenderer::BeginFrame ()
 {
 	FrameSlot = (FrameSlot + 1u) % rhi::MaxFramesInFlight;
 	WaitForFenceValue(Frames[FrameSlot].FenceValue);
 	const uint64 completed = Fence->GetCompletedValue();
 	Rhi.ProcessDeferredReleases(completed);
 	Capture->Poll(completed);
-	// Everything recorded this frame is retired by the signal Draw() will issue.
+	// Everything recorded this frame is retired by the signal EndFrame() will issue.
 	Rhi.BeginFrame(FrameSlot, FenceValue + 1u);
 }
 
-void CRenderer::StartFrame ()
+void CRenderer::BeginRecording ()
 {
 	THROW_IF_FAILED(Frames[FrameSlot].Allocator->Reset());
 	THROW_IF_FAILED(CommandList->Reset(Frames[FrameSlot].Allocator.Get(), nullptr));
 	bCommandListRecording = true;
+	bBackBufferDrawn = false;
+	bFrameSceneChanged = false;
 
 	GpuProfiler.BeginFrame();
 	RayCounters.BeginFrame();
@@ -553,43 +524,144 @@ void CRenderer::StartFrame ()
 	barriers.Flush(CommandList.Get());
 }
 
-void CRenderer::UpdateResolution ()
+CRenderView::CRenderView (const SRenderViewDesc& InDesc)
+	: Desc(InDesc)
+{}
+
+CRenderView::~CRenderView () = default;
+
+void CRenderView::RequestCapture (const std::filesystem::path& Path, bool bHdr)
 {
-	const bool bReference = Profile.Frame.Mode == EPathTracingMode::Reference && GetRenderMode() == ERenderMode::Raytracing;
-	const float scale = bReference ? 1.0f : std::clamp(Profile.Frame.RenderScale, 0.25f, 1.0f);
-	const uint32 renderW = (std::max)(1u, static_cast<uint32>(std::lround(DisplayWidth * scale)));
-	const uint32 renderH = (std::max)(1u, static_cast<uint32>(std::lround(DisplayHeight * scale)));
-	if (renderW == RenderWidth && renderH == RenderHeight && DisplayColor.IsValid() &&
-		DisplayColor.Width == DisplayWidth && DisplayColor.Height == DisplayHeight)
+	CaptureRequests.push_back({ Path, bHdr });
+}
+
+CRenderView* CRenderer::CreateView (const SRenderViewDesc& Desc)
+{
+	// Pass instances are cheap to create: CPipelineLibrary hands every instance after the first
+	// the already compiled programs, and the path tracer's state objects are shared.
+	std::unique_ptr<CRenderView> view(new CRenderView(Desc));
+	view->PathTracer = std::make_unique<CPathTracer>();
+	view->PathTracer->Initialize(Rhi, Pipelines, *PathTracerPrograms);
+	view->Denoiser = std::make_unique<CDenoiser>();
+	view->Denoiser->Initialize(Rhi, Pipelines);
+	view->Upscaler = CreateUpscaler(Profile.Upscaler);
+	if (!view->Upscaler)
+	{
+		view->Upscaler = CreateUpscaler(EUpscalerKind::Temporal);
+	}
+	view->Upscaler->Initialize(Rhi, Pipelines);
+	view->PostProcess = std::make_unique<CPostProcess>();
+	view->PostProcess->Initialize(Rhi, Pipelines);
+	view->RasterPreview = std::make_unique<CRasterPreview>();
+	view->RasterPreview->Initialize(Rhi, Pipelines);
+	view->SeenHistoryEpoch = HistoryEpoch;
+	Views.push_back(std::move(view));
+	return Views.back().get();
+}
+
+void CRenderer::ShutdownView (CRenderView& View)
+{
+	// Every pass releases through the RHI's deferred queue: nothing in flight is freed early.
+	View.RasterPreview->Shutdown();
+	View.PostProcess->Shutdown(Rhi);
+	View.Upscaler->Shutdown(Rhi);
+	View.Denoiser->Shutdown(Rhi);
+	View.PathTracer->Shutdown();
+	if (View.DisplayColor.IsValid()) { Rhi.Destroy(View.DisplayColor); }
+	if (View.Output.IsValid()) { Rhi.Destroy(View.Output); }
+	View.TextureId = 0u;
+}
+
+void CRenderer::DestroyView (CRenderView* View)
+{
+	if (!View)
 	{
 		return;
 	}
-	RenderWidth = renderW;
-	RenderHeight = renderH;
-
-	PathTracer->Resize(RenderWidth, RenderHeight);
-	RasterPreview->Resize(RenderWidth, RenderHeight);
-	Denoiser->Resize(Rhi, RenderWidth, RenderHeight);
-	Upscaler->Resize(Rhi, RenderWidth, RenderHeight, DisplayWidth, DisplayHeight);
-	ReferenceResampler->Resize(Rhi, RenderWidth, RenderHeight, DisplayWidth, DisplayHeight);
-	PostProcess->Resize(Rhi, DisplayWidth, DisplayHeight);
-
-	if (DisplayColor.IsValid())
+	frt_assert(!bCommandListRecording);
+	const auto it = std::find_if(Views.begin(), Views.end(), [View](const std::unique_ptr<CRenderView>& v) { return v.get() == View; });
+	frt_assert(it != Views.end());
+	if (it != Views.end())
 	{
-		Rhi.Destroy(DisplayColor);
+		ShutdownView(**it);
+		Views.erase(it);
+	}
+}
+
+void CRenderer::SetViewSize (CRenderView& View, uint32 Width, uint32 Height)
+{
+	frt_assert(View.GetTarget() == EViewTarget::Texture);
+	Width = (std::max)(Width, 1u);
+	Height = (std::max)(Height, 1u);
+	if (View.Output.IsValid() && View.Output.Width == Width && View.Output.Height == Height)
+	{
+		return;
+	}
+	// The old texture may still be sampled by frames in flight - and by this frame's UI, if the
+	// id was handed out before the resize. Destroy is deferred to this frame's fence (BeginFrame
+	// ran before the UI), so neither the resource nor its descriptor slot is reused too early.
+	if (View.Output.IsValid())
+	{
+		Rhi.Destroy(View.Output);
 	}
 	rhi::STextureDesc desc;
-	desc.Width = DisplayWidth;
-	desc.Height = DisplayHeight;
+	desc.Width = Width;
+	desc.Height = Height;
+	desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;   // display-encoded, sampled as is by the UI
+	desc.bSrv = true;
+	desc.bRtv = true;
+	desc.InitialState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+	desc.Name = L"ViewOutput";
+	View.Output = Rhi.CreateTexture(desc);
+	View.TextureId = Rhi.GetBindlessHeap().GetGpuHandle(View.Output.Srv).ptr;
+}
+
+void CRenderer::UpdateResolution (CRenderView& View)
+{
+	uint32 displayW = BackBufferWidth;
+	uint32 displayH = BackBufferHeight;
+	if (View.GetTarget() == EViewTarget::Texture)
+	{
+		displayW = View.Output.Width;
+		displayH = View.Output.Height;
+	}
+	const bool bReference = Profile.Frame.Mode == EPathTracingMode::Reference && View.GetRenderMode() == ERenderMode::Raytracing;
+	const float scale = bReference ? 1.0f : std::clamp(Profile.Frame.RenderScale, 0.25f, 1.0f);
+	const uint32 renderW = (std::max)(1u, static_cast<uint32>(std::lround(displayW * scale)));
+	const uint32 renderH = (std::max)(1u, static_cast<uint32>(std::lround(displayH * scale)));
+	if (renderW == View.RenderWidth && renderH == View.RenderHeight && View.DisplayColor.IsValid() &&
+		View.DisplayColor.Width == displayW && View.DisplayColor.Height == displayH)
+	{
+		return;
+	}
+	View.RenderWidth = renderW;
+	View.RenderHeight = renderH;
+	View.DisplayWidth = displayW;
+	View.DisplayHeight = displayH;
+
+	View.PathTracer->Resize(View.RenderWidth, View.RenderHeight);
+	View.RasterPreview->Resize(View.RenderWidth, View.RenderHeight);
+	View.Denoiser->Resize(Rhi, View.RenderWidth, View.RenderHeight);
+	View.Upscaler->Resize(Rhi, View.RenderWidth, View.RenderHeight, View.DisplayWidth, View.DisplayHeight);
+	ReferenceResampler->Resize(Rhi, View.RenderWidth, View.RenderHeight, View.DisplayWidth, View.DisplayHeight);
+	View.PostProcess->Resize(Rhi, View.DisplayWidth, View.DisplayHeight);
+
+	if (View.DisplayColor.IsValid())
+	{
+		Rhi.Destroy(View.DisplayColor);
+	}
+	rhi::STextureDesc desc;
+	desc.Width = View.DisplayWidth;
+	desc.Height = View.DisplayHeight;
 	desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
 	desc.bUav = true;
 	desc.InitialState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
 	desc.Name = L"DisplayColor";
-	DisplayColor = Rhi.CreateTexture(desc);
-	bForceReset = true;
+	View.DisplayColor = Rhi.CreateTexture(desc);
+	View.bForceReset = true;
 }
 
-void CRenderer::BuildFrameConstants (gpu::SFrameConstants& Out, bool bSceneValid)
+void CRenderer::BuildFrameConstants (CRenderView& View, const SCameraView& CameraView, gpu::SFrameConstants& Out, bool bSceneValid) const
 {
 	using namespace DirectX;
 	Out = {};
@@ -599,17 +671,21 @@ void CRenderer::BuildFrameConstants (gpu::SFrameConstants& Out, bool bSceneValid
 	const XMVECTOR up = XMLoadFloat3(&CameraView.Up);
 	const XMMATRIX view = XMMatrixLookToLH(position, forward, up);
 
+	const uint32 DisplayWidth = View.DisplayWidth;
+	const uint32 DisplayHeight = View.DisplayHeight;
+	const uint32 RenderWidth = View.RenderWidth;
+	const uint32 RenderHeight = View.RenderHeight;
 	const float aspect = static_cast<float>(DisplayWidth) / static_cast<float>((std::max)(DisplayHeight, 1u));
-	const float fov = std::clamp(Profile.Frame.FieldOfViewY, 0.1f, 3.0f);
-	const float nearZ = (std::max)(Profile.Frame.NearZ, 1e-4f);
+	const float fov = std::clamp(CameraView.FieldOfViewY, 0.1f, 3.0f);
+	const float nearZ = (std::max)(CameraView.NearZ, 1e-4f);
 	const XMMATRIX projNoJitter = MakeReversedInfinitePerspective(fov, aspect, nearZ);
 
 	float jitterX = 0.0f;
 	float jitterY = 0.0f;
-	const bool bReference = GetRenderMode() == ERenderMode::Raytracing && Profile.Frame.Mode == EPathTracingMode::Reference;
-	if (!bReference && Upscaler && Upscaler->GetKind() != EUpscalerKind::None)
+	const bool bReference = View.GetRenderMode() == ERenderMode::Raytracing && Profile.Frame.Mode == EPathTracingMode::Reference;
+	if (!bReference && View.Upscaler && View.Upscaler->GetKind() != EUpscalerKind::None)
 	{
-		Upscaler->GetJitter(FrameNumber, RenderWidth, DisplayWidth, jitterX, jitterY);
+		View.Upscaler->GetJitter(FrameNumber, RenderWidth, DisplayWidth, jitterX, jitterY);
 	}
 	XMMATRIX proj = projNoJitter;
 	// Pixel k must sample the unjittered image at k + 0.5 + Jitter (the convention of the path
@@ -630,11 +706,11 @@ void CRenderer::BuildFrameConstants (gpu::SFrameConstants& Out, bool bSceneValid
 	XMStoreFloat4x4(&Out.ViewProj, viewProj);
 	XMStoreFloat4x4(&Out.InvViewProj, XMMatrixInverse(nullptr, viewProj));
 	XMStoreFloat4x4(&Out.ViewProjNoJitter, viewProjNoJitter);
-	if (bHasPrevFrame)
+	if (View.bHasPrevFrame)
 	{
-		Out.PrevViewProjNoJitter = PrevViewProjNoJitter;
-		Out.PrevCameraPosition = PrevCameraPosition;
-		Out.PrevJitter = { PrevJitter[0], PrevJitter[1] };
+		Out.PrevViewProjNoJitter = View.PrevViewProjNoJitter;
+		Out.PrevCameraPosition = View.PrevCameraPosition;
+		Out.PrevJitter = { View.PrevJitter[0], View.PrevJitter[1] };
 	}
 	else
 	{
@@ -656,11 +732,11 @@ void CRenderer::BuildFrameConstants (gpu::SFrameConstants& Out, bool bSceneValid
 	Out.AspectRatio = aspect;
 	Out.PixelSpreadAngle = std::atan(2.0f * Out.TanHalfFovY / static_cast<float>(RenderHeight));
 	Out.FrameIndex = static_cast<uint32>(FrameNumber);
-	Out.AccumulationIndex = AccumulationFrames;
+	Out.AccumulationIndex = View.AccumulationFrames;
 	Out.PreExposure = 1.0f;
 	Out.Flags = 0u;
 	if (bReference) { Out.Flags |= gpu::FrameFlag_ReferenceMode; }
-	if (bHasPrevFrame) { Out.Flags |= gpu::FrameFlag_HistoryValid; }
+	if (View.bHasPrevFrame) { Out.Flags |= gpu::FrameFlag_HistoryValid; }
 	if (Profile.Frame.bCollectRayCounters)
 	{
 		Out.Flags |= gpu::FrameFlag_CountersEnabled;
@@ -681,46 +757,102 @@ void CRenderer::BuildFrameConstants (gpu::SFrameConstants& Out, bool bSceneValid
 	}
 }
 
-uint64 CRenderer::ComputeAccumulationHash () const
+uint64 CRenderer::ComputeAccumulationHash (const CRenderView& View) const
 {
 	uint64 hash = 1469598103934665603ull;
-	hash = HashBytes(hash, &FrameConstants.View, sizeof(FrameConstants.View));
-	hash = HashBytes(hash, &FrameConstants.ViewProjNoJitter, sizeof(FrameConstants.ViewProjNoJitter));
-	hash = HashBytes(hash, &RenderWidth, sizeof(RenderWidth));
-	hash = HashBytes(hash, &RenderHeight, sizeof(RenderHeight));
-	hash = HashBytes(hash, &PathTracer->Settings, sizeof(SPathTracerSettings));
+	hash = HashBytes(hash, &View.FrameConstants.View, sizeof(View.FrameConstants.View));
+	hash = HashBytes(hash, &View.FrameConstants.ViewProjNoJitter, sizeof(View.FrameConstants.ViewProjNoJitter));
+	hash = HashBytes(hash, &View.RenderWidth, sizeof(View.RenderWidth));
+	hash = HashBytes(hash, &View.RenderHeight, sizeof(View.RenderHeight));
+	hash = HashBytes(hash, &View.PathTracer->Settings, sizeof(SPathTracerSettings));
 	hash = HashBytes(hash, &Profile.Frame.Mode, sizeof(Profile.Frame.Mode));
 	return hash;
 }
 
-void CRenderer::ApplyProfileToPasses ()
+void CRenderer::ApplyProfile (CRenderView& View)
 {
-	PathTracer->Settings = Profile.PathTracer;
-	PathTracer->RadianceCache.Settings = Profile.RadianceCache;
-	Denoiser->Settings = Profile.Denoiser;
-	Upscaler->ApplyProfile(Profile);
-	PostProcess->Settings = Profile.Post;
+	if (View.Upscaler->GetKind() != Profile.Upscaler)
+	{
+		std::unique_ptr<IUpscaler> next = CreateUpscaler(Profile.Upscaler);
+		if (next && next->IsAvailable())
+		{
+			// Shutdown only defers releases, so this needs no GPU flush.
+			View.Upscaler->Shutdown(Rhi);
+			View.Upscaler = std::move(next);
+			View.Upscaler->Initialize(Rhi, Pipelines);
+			View.RenderWidth = 0u; // force a resize
+			View.bForceReset = true;
+		}
+	}
+	View.PathTracer->Settings = Profile.PathTracer;
+	View.PathTracer->RadianceCache.Settings = Profile.RadianceCache;
+	View.Denoiser->Settings = Profile.Denoiser;
+	View.Upscaler->ApplyProfile(Profile);
+	View.PostProcess->Settings = Profile.Post;
 }
 
-void CRenderer::PrepareCurrentPass ()
+void CRenderer::PrepareScene ()
 {
-	if (!IsReadyToRender())
-	{
-		return;
-	}
-	ApplyProfileToPasses();
-	UpdateResolution();
-
+	frt_assert(bCommandListRecording);
 #ifndef RELEASE
 	if (MaterialLibrary.ReloadModifiedMaterials())
 	{
-		bForceReset = true;
+		ResetAccumulation();
 	}
 #endif
 	if (Pipelines.PollHotReload())
 	{
-		bForceReset = true;
+		ResetAccumulation();
 	}
+
+	// Scene passes read no camera data: neutral frame constants only give b1 a valid buffer.
+	gpu::SFrameConstants sceneConstants = {};
+	sceneConstants.RayCounterBuffer = sceneConstants.BlueNoiseTexture = FRT_INVALID_INDEX;
+	CRenderContext context;
+	context.Device = &Rhi;
+	context.Pipelines = &Pipelines;
+	context.CommandList = CommandList.Get();
+	context.FrameNumber = FrameNumber;
+	context.FrameConstantsVa = Rhi.GetUploadRing().Push(sceneConstants).Gpu;
+	context.Frame = &sceneConstants;
+	context.BindCompute();
+	{
+		FRT_GPU_SCOPE(CommandList.Get(), "Scene_Update");
+		bFrameSceneChanged = Scene->Update(context);
+	}
+
+	// Before any view traces: builds the state objects on first use and after a hot reload.
+	const bool bAnyTracing = std::any_of(Views.begin(), Views.end(),
+		[] (const std::unique_ptr<CRenderView>& v) { return v->GetRenderMode() == ERenderMode::Raytracing; });
+	if (CanTrace() && bAnyTracing)
+	{
+		PathTracerPrograms->Update(CommandList.Get());
+	}
+}
+
+void CRenderer::RenderView (CRenderView& View, const SCameraView& Camera)
+{
+	frt_assert(bCommandListRecording);
+	if (View.GetTarget() == EViewTarget::Texture && !View.Output.IsValid())
+	{
+		return; // no size yet (SetViewSize)
+	}
+	ApplyProfile(View);
+	UpdateResolution(View);
+
+	// A view skipped for a frame, or one created since the last reset, starts over: its
+	// histories describe a camera and a scene that are no longer current.
+	if (View.LastRenderedFrame != ~0ull && View.LastRenderedFrame + 1u != FrameNumber)
+	{
+		View.bHasPrevFrame = false;
+	}
+	if (View.SeenHistoryEpoch != HistoryEpoch)
+	{
+		View.bForceReset = true;
+		View.SeenHistoryEpoch = HistoryEpoch;
+	}
+
+	GpuProfiler.SetView(View.GetName());
 
 	CRenderContext context;
 	context.Device = &Rhi;
@@ -728,78 +860,65 @@ void CRenderer::PrepareCurrentPass ()
 	context.CommandList = CommandList.Get();
 	context.FrameNumber = FrameNumber;
 
-	// Provisional constants (camera only) so scene passes have a valid b1; the final version
-	// with this frame's scene table indices is uploaded right after the scene update.
-	BuildFrameConstants(FrameConstants, false);
-	context.FrameConstantsVa = Rhi.GetUploadRing().Push(FrameConstants).Gpu;
-	context.Frame = &FrameConstants;
-	context.BindCompute();
-
-	bool bSceneChanged = false;
-	{
-		FRT_GPU_SCOPE(CommandList.Get(), "Scene_Update");
-		bSceneChanged = Scene->Update(context);
-	}
-
 	// Progressive accumulation bookkeeping (reference mode).
 	{
-		BuildFrameConstants(FrameConstants, true);
-		const uint64 hash = ComputeAccumulationHash();
-		const bool bModeChanged = PrevMode != Profile.Frame.Mode || PrevRenderMode != GetRenderMode();
-		if (hash != AccumulationHash || bSceneChanged || bForceReset || bModeChanged)
+		BuildFrameConstants(View, Camera, View.FrameConstants, true);
+		const uint64 hash = ComputeAccumulationHash(View);
+		const bool bModeChanged = View.PrevMode != Profile.Frame.Mode || View.PrevRenderMode != View.GetRenderMode();
+		if (hash != View.AccumulationHash || bFrameSceneChanged || View.bForceReset || bModeChanged)
 		{
-			AccumulationHash = hash;
-			AccumulationFrames = 0u;
+			View.AccumulationHash = hash;
+			View.AccumulationFrames = 0u;
 		}
 		else
 		{
-			++AccumulationFrames;
+			++View.AccumulationFrames;
 		}
-		FrameConstants.AccumulationIndex = AccumulationFrames;
-		AccumulatedSamples = (AccumulationFrames + 1u) * (std::max)(PathTracer->Settings.SamplesPerPixel, 1u);
+		View.FrameConstants.AccumulationIndex = View.AccumulationFrames;
+		View.AccumulatedSamples = (View.AccumulationFrames + 1u) * (std::max)(View.PathTracer->Settings.SamplesPerPixel, 1u);
 	}
-	context.FrameConstantsVa = Rhi.GetUploadRing().Push(FrameConstants).Gpu;
+	context.FrameConstantsVa = Rhi.GetUploadRing().Push(View.FrameConstants).Gpu;
+	context.Frame = &View.FrameConstants;
 	context.SceneTlasVa = Scene->GetTlasAddress();
 	context.BindCompute();
 
-	const bool bResetHistory = bForceReset || !bHasPrevFrame || PrevMode != Profile.Frame.Mode || PrevRenderMode != GetRenderMode();
-	if (GetRenderMode() == ERenderMode::Raytracing)
+	const bool bResetHistory = View.bForceReset || !View.bHasPrevFrame || View.PrevMode != Profile.Frame.Mode || View.PrevRenderMode != View.GetRenderMode();
+	if (IsTracing(View))
 	{
-		PathTracerPrograms->Update(CommandList.Get());
-	}
-	if (ShouldRenderRaytracing())
-	{
-		RecordRaytracing(context, bResetHistory);
+		RecordRaytracing(View, context, bResetHistory);
 	}
 	else
 	{
-		RecordRaster(context, bResetHistory);
+		RecordRaster(View, context, bResetHistory);
 	}
 
-	PrevViewProjNoJitter = FrameConstants.ViewProjNoJitter;
-	PrevCameraPosition = FrameConstants.CameraPosition;
-	PrevJitter[0] = FrameConstants.Jitter.x;
-	PrevJitter[1] = FrameConstants.Jitter.y;
-	bHasPrevFrame = true;
-	bForceReset = false;
-	PrevMode = Profile.Frame.Mode;
-	PrevRenderMode = GetRenderMode();
+	View.PrevViewProjNoJitter = View.FrameConstants.ViewProjNoJitter;
+	View.PrevCameraPosition = View.FrameConstants.CameraPosition;
+	View.PrevJitter[0] = View.FrameConstants.Jitter.x;
+	View.PrevJitter[1] = View.FrameConstants.Jitter.y;
+	View.bHasPrevFrame = true;
+	View.bForceReset = false;
+	View.PrevMode = Profile.Frame.Mode;
+	View.PrevRenderMode = View.GetRenderMode();
+	View.LastRenderedFrame = FrameNumber;
+
+	GpuProfiler.SetView(nullptr);
 }
 
-void CRenderer::RecordRaytracing (CRenderContext& Context, bool bResetHistory)
+void CRenderer::RecordRaytracing (CRenderView& View, CRenderContext& Context, bool bResetHistory)
 {
 	const bool bReference = Profile.Frame.Mode == EPathTracingMode::Reference;
-	SPathTracerTargets& targets = PathTracer->GetTargets();
+	SPathTracerTargets& targets = View.PathTracer->GetTargets();
 
 	const bool bTargetReached = bReference && Profile.Frame.ReferenceSampleTarget > 0u &&
-		AccumulationFrames > 0u && AccumulatedSamples > Profile.Frame.ReferenceSampleTarget;
+		View.AccumulationFrames > 0u && View.AccumulatedSamples > Profile.Frame.ReferenceSampleTarget;
 	if (!bTargetReached)
 	{
-		PathTracer->Dispatch(Context, bReference, bReference);
+		View.PathTracer->Dispatch(Context, bReference, bReference);
 	}
-	else if (AccumulationFrames > 0u)
+	else if (View.AccumulationFrames > 0u)
 	{
-		--AccumulationFrames; // hold the counter at the target
+		--View.AccumulationFrames; // hold the counter at the target
 	}
 
 	rhi::SGpuTexture* hdr = &targets.Composite;
@@ -809,7 +928,7 @@ void CRenderer::RecordRaytracing (CRenderContext& Context, bool bResetHistory)
 	}
 	else
 	{
-		if (Profile.Frame.bDenoiser && Denoiser->Settings.bEnabled)
+		if (Profile.Frame.bDenoiser && View.Denoiser->Settings.bEnabled)
 		{
 			SDenoiserInputs inputs;
 			inputs.Diffuse = &targets.Diffuse;
@@ -818,12 +937,12 @@ void CRenderer::RecordRaytracing (CRenderContext& Context, bool bResetHistory)
 			inputs.ViewZ = &targets.ViewZ;
 			inputs.MotionVectors = &targets.MotionVectors;
 			inputs.bResetHistory = bResetHistory;
-			Denoiser->Execute(Context, inputs);
-			PathTracer->Remodulate(Context, Denoiser->GetDiffuseOutput(), Denoiser->GetSpecularOutput(), targets.Composite);
+			View.Denoiser->Execute(Context, inputs);
+			View.PathTracer->Remodulate(Context, View.Denoiser->GetDiffuseOutput(), View.Denoiser->GetSpecularOutput(), targets.Composite);
 		}
 		else
 		{
-			PathTracer->Remodulate(Context, targets.Diffuse, targets.Specular, targets.Composite);
+			View.PathTracer->Remodulate(Context, targets.Diffuse, targets.Specular, targets.Composite);
 		}
 	}
 
@@ -831,96 +950,122 @@ void CRenderer::RecordRaytracing (CRenderContext& Context, bool bResetHistory)
 	up.Color = hdr;
 	up.ViewZ = &targets.ViewZ;
 	up.MotionVectors = &targets.MotionVectors;
-	up.JitterX = FrameConstants.Jitter.x;
-	up.JitterY = FrameConstants.Jitter.y;
+	up.JitterX = View.FrameConstants.Jitter.x;
+	up.JitterY = View.FrameConstants.Jitter.y;
 	up.bResetHistory = bResetHistory;
-	up.Exposure = PostProcess->GetLastExposure();
+	up.Exposure = View.PostProcess->GetLastExposure();
 	if (bReference)
 	{
 		// The accumulation is already anti-aliased and converged: resample only.
-		ReferenceResampler->Execute(Context, up, DisplayColor);
+		ReferenceResampler->Execute(Context, up, View.DisplayColor);
 	}
 	else
 	{
-		Upscaler->Execute(Context, up, DisplayColor);
+		View.Upscaler->Execute(Context, up, View.DisplayColor);
 	}
-	LastHdrForCapture = bReference ? &targets.Accumulation : &DisplayColor;
+	View.LastHdrForCapture = bReference ? &targets.Accumulation : &View.DisplayColor;
 
-	rhi::SGpuTexture* debug = PathTracer->Settings.DebugMode != gpu::PathDebug_None ? &targets.Debug : nullptr;
+	rhi::SGpuTexture* debug = View.PathTracer->Settings.DebugMode != gpu::PathDebug_None ? &targets.Debug : nullptr;
 	if (debug)
 	{
-		LastHdrForCapture = debug; // HDR captures of a debug view hold the raw linear values
+		View.LastHdrForCapture = debug; // HDR captures of a debug view hold the raw linear values
 	}
-	RecordPostAndPresentTarget(Context, DisplayColor, debug, bResetHistory);
+	RecordPost(View, Context, debug, bResetHistory);
 }
 
-void CRenderer::RecordRaster (CRenderContext& Context, bool bResetHistory)
+void CRenderer::RecordRaster (CRenderView& View, CRenderContext& Context, bool bResetHistory)
 {
-	const float mipBias = Upscaler ? Upscaler->GetMipBias(RenderWidth, DisplayWidth) : 0.0f;
-	RasterPreview->Execute(Context, *Scene, mipBias);
+	const float mipBias = View.Upscaler ? View.Upscaler->GetMipBias(View.RenderWidth, View.DisplayWidth) : 0.0f;
+	View.RasterPreview->Execute(Context, *Scene, mipBias);
 	Context.BindCompute();
 
 	SUpscalerInputs up;
-	up.Color = &RasterPreview->GetColor();
-	up.ViewZ = &RasterPreview->GetViewZ();
-	up.MotionVectors = &RasterPreview->GetMotionVectors();
-	up.JitterX = FrameConstants.Jitter.x;
-	up.JitterY = FrameConstants.Jitter.y;
+	up.Color = &View.RasterPreview->GetColor();
+	up.ViewZ = &View.RasterPreview->GetViewZ();
+	up.MotionVectors = &View.RasterPreview->GetMotionVectors();
+	up.JitterX = View.FrameConstants.Jitter.x;
+	up.JitterY = View.FrameConstants.Jitter.y;
 	up.bResetHistory = bResetHistory;
-	up.Exposure = PostProcess->GetLastExposure();
-	Upscaler->Execute(Context, up, DisplayColor);
-	LastHdrForCapture = &DisplayColor;
-	RecordPostAndPresentTarget(Context, DisplayColor, nullptr, bResetHistory);
+	up.Exposure = View.PostProcess->GetLastExposure();
+	View.Upscaler->Execute(Context, up, View.DisplayColor);
+	View.LastHdrForCapture = &View.DisplayColor;
+	RecordPost(View, Context, nullptr, bResetHistory);
 }
 
-void CRenderer::RecordPostAndPresentTarget (CRenderContext& Context, rhi::SGpuTexture& Color, rhi::SGpuTexture* Debug, bool bResetExposure)
+void CRenderer::RecordPost (CRenderView& View, CRenderContext& Context, rhi::SGpuTexture* Debug, bool bResetExposure)
 {
-	const D3D12_CPU_DESCRIPTOR_HANDLE rtv = Rhi.GetRtvHeap().GetCpuHandle(BackBufferRtv[CurrentBackBuffer] - 1u);
+	const bool bBackBuffer = View.GetTarget() == EViewTarget::BackBuffer;
+	ID3D12Resource* target = bBackBuffer ? BackBuffers[CurrentBackBuffer].Get() : View.Output.Resource.Get();
+	const D3D12_CPU_DESCRIPTOR_HANDLE rtv = bBackBuffer
+		? Rhi.GetRtvHeap().GetCpuHandle(BackBufferRtv[CurrentBackBuffer] - 1u)
+		: Rhi.GetRtvHeap().GetCpuHandle(View.Output.Rtv);
+	if (!bBackBuffer)
+	{
+		// The back buffer is already a render target (BeginRecording); the view's texture is
+		// shader-readable between frames, for the UI.
+		Context.Barriers.Transition(View.Output, D3D12_RESOURCE_STATE_RENDER_TARGET);
+		Context.FlushBarriers();
+	}
 
 	SPostProcessInputs post;
-	post.HdrColor = &Color;
+	post.HdrColor = &View.DisplayColor;
 	post.OutputRtv = rtv;
 	post.OutputFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
-	post.OutputWidth = DisplayWidth;
-	post.OutputHeight = DisplayHeight;
-	post.bResetExposure = bResetExposure && AccumulationFrames == 0u && !bHasPrevFrame;
+	post.OutputWidth = View.DisplayWidth;
+	post.OutputHeight = View.DisplayHeight;
+	post.bResetExposure = bResetExposure && View.AccumulationFrames == 0u && !View.bHasPrevFrame;
 	post.DebugTexture = Debug;
 	post.bDebugIsLinear = true;
-	PostProcess->Execute(Context, post);
+	View.PostProcess->Execute(Context, post);
 
-	// Captures see exactly what the user sees minus the UI.
-	if (!CaptureRequests.empty())
+	// Captures see exactly what the view shows, without the UI.
+	if (!View.CaptureRequests.empty())
 	{
-		for (const SCaptureRequest& request : CaptureRequests)
+		for (const CRenderView::SCaptureRequest& request : View.CaptureRequests)
 		{
 			std::filesystem::path png = request.Path;
 			png.replace_extension(".png");
-			Capture->Record(CommandList.Get(), BackBuffers[CurrentBackBuffer].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, png);
-			if (request.bHdr && LastHdrForCapture)
+			Capture->Record(CommandList.Get(), target, D3D12_RESOURCE_STATE_RENDER_TARGET, png);
+			if (request.bHdr && View.LastHdrForCapture)
 			{
 				std::filesystem::path pfm = request.Path;
 				pfm.replace_extension(".pfm");
-				Capture->Record(CommandList.Get(), LastHdrForCapture->Resource.Get(), LastHdrForCapture->State, pfm);
+				Capture->Record(CommandList.Get(), View.LastHdrForCapture->Resource.Get(), View.LastHdrForCapture->State, pfm);
 			}
 		}
-		CaptureRequests.clear();
+		View.CaptureRequests.clear();
 	}
 
-	// Leave the back buffer bound for the UI.
+	if (bBackBuffer)
+	{
+		bBackBufferDrawn = true;
+	}
+	else
+	{
+		Context.Barriers.Transition(View.Output, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+		Context.FlushBarriers();
+	}
+}
+
+void CRenderer::BeginUiPass ()
+{
+	const D3D12_CPU_DESCRIPTOR_HANDLE rtv = Rhi.GetRtvHeap().GetCpuHandle(BackBufferRtv[CurrentBackBuffer] - 1u);
+	if (!bBackBufferDrawn)
+	{
+		// Nothing was rendered behind the UI (editor: every view is a texture).
+		const float clear[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+		CommandList->ClearRenderTargetView(rtv, clear, 0u, nullptr);
+	}
 	CommandList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
-	const D3D12_VIEWPORT viewport = { 0.0f, 0.0f, static_cast<float>(DisplayWidth), static_cast<float>(DisplayHeight), 0.0f, 1.0f };
-	const D3D12_RECT scissor = { 0, 0, static_cast<LONG>(DisplayWidth), static_cast<LONG>(DisplayHeight) };
+	const D3D12_VIEWPORT viewport = { 0.0f, 0.0f, static_cast<float>(BackBufferWidth), static_cast<float>(BackBufferHeight), 0.0f, 1.0f };
+	const D3D12_RECT scissor = { 0, 0, static_cast<LONG>(BackBufferWidth), static_cast<LONG>(BackBufferHeight) };
 	CommandList->RSSetViewports(1, &viewport);
 	CommandList->RSSetScissorRects(1, &scissor);
 	ID3D12DescriptorHeap* heaps[] = { Rhi.GetBindlessHeap().GetHeap() };
 	CommandList->SetDescriptorHeaps(1, heaps);
 }
 
-void CRenderer::RebindAfterUi ()
-{
-}
-
-void CRenderer::Draw ()
+void CRenderer::EndFrame ()
 {
 	rhi::CBarrierBatch barriers;
 	barriers.Transition(BackBuffers[CurrentBackBuffer].Get(), BackBufferState[CurrentBackBuffer], D3D12_RESOURCE_STATE_PRESENT);
@@ -951,14 +1096,17 @@ void CRenderer::Draw ()
 	++FrameNumber;
 }
 
-void CRenderer::RequestCapture (const std::filesystem::path& Path, bool bHdr)
-{
-	CaptureRequests.push_back({ Path, bHdr });
-}
 
 bool CRenderer::HasPendingCaptures () const
 {
-	return !CaptureRequests.empty() || (Capture && Capture->HasPending());
+	for (const std::unique_ptr<CRenderView>& view : Views)
+	{
+		if (!view->CaptureRequests.empty())
+		{
+			return true;
+		}
+	}
+	return Capture && Capture->HasPending();
 }
 
 void CRenderer::AllocateImGuiDescriptor (D3D12_CPU_DESCRIPTOR_HANDLE* OutCpu, D3D12_GPU_DESCRIPTOR_HANDLE* OutGpu)
@@ -977,19 +1125,19 @@ void CRenderer::FreeImGuiDescriptor (D3D12_CPU_DESCRIPTOR_HANDLE Cpu, D3D12_GPU_
 	Rhi.DeferFreeDescriptor(index);
 }
 
-void CRenderer::DrawRendererUi ()
+void CRenderer::DrawRendererUi (CRenderView& Inspected)
 {
 	const rhi::SDeviceCaps& caps = Rhi.GetCaps();
 	ImGui::Text("SM %s  DXR %d.%d  SER %s", ShaderModelName(caps.HighestShaderModel),
 		caps.RaytracingTier / 10, caps.RaytracingTier % 10,
-		PathTracer->IsSerActive() ? (caps.bSerActuallyReorders ? "active" : "active (no-op on this GPU)") : "off");
-	ImGui::Text("Render %ux%u -> display %ux%u", RenderWidth, RenderHeight, DisplayWidth, DisplayHeight);
+		Inspected.PathTracer->IsSerActive() ? (caps.bSerActuallyReorders ? "active" : "active (no-op on this GPU)") : "off");
+	ImGui::Text("%s: render %ux%u -> display %ux%u", Inspected.GetName(), Inspected.RenderWidth, Inspected.RenderHeight, Inspected.DisplayWidth, Inspected.DisplayHeight);
 
-	int mode = static_cast<int>(GetRenderMode() == ERenderMode::Raster ? 0 : 1);
+	int mode = static_cast<int>(Inspected.GetRenderMode() == ERenderMode::Raster ? 0 : 1);
 	const char* renderModes[] = { "Raster preview", "Path tracing" };
 	if (ImGui::Combo("Renderer", &mode, renderModes, 2))
 	{
-		SetRenderMode(mode == 0 ? ERenderMode::Raster : ERenderMode::Raytracing);
+		Inspected.SetRenderMode(mode == 0 ? ERenderMode::Raster : ERenderMode::Raytracing);
 	}
 
 	int ptMode = static_cast<int>(Profile.Frame.Mode);
@@ -1001,7 +1149,7 @@ void CRenderer::DrawRendererUi ()
 
 	if (Profile.Frame.Mode == EPathTracingMode::Reference)
 	{
-		ImGui::Text("Accumulated: %u spp", AccumulatedSamples);
+		ImGui::Text("Accumulated: %u spp", Inspected.AccumulatedSamples);
 		int target = static_cast<int>(Profile.Frame.ReferenceSampleTarget);
 		if (ImGui::InputInt("Stop at spp (0 = never)", &target))
 		{
@@ -1032,24 +1180,24 @@ void CRenderer::DrawRendererUi ()
 	ImGui::SameLine();
 	if (ImGui::Button("Capture"))
 	{
-		RequestCapture(paths::GetCaptureDir() / ("capture_" + std::to_string(FrameNumber)), true);
+		Inspected.RequestCapture(paths::GetCaptureDir() / ("capture_" + std::to_string(FrameNumber)), true);
 	}
 
 	if (ImGui::CollapsingHeader("Path tracer", ImGuiTreeNodeFlags_DefaultOpen))
 	{
-		PathTracer->DrawSettingsUi(Profile.PathTracer, Profile.RadianceCache);
+		Inspected.PathTracer->DrawSettingsUi(Profile.PathTracer, Profile.RadianceCache);
 	}
 	if (ImGui::CollapsingHeader("Denoiser"))
 	{
-		Denoiser->DrawSettingsUi(Profile.Denoiser);
+		Inspected.Denoiser->DrawSettingsUi(Profile.Denoiser);
 	}
 	if (ImGui::CollapsingHeader("Upscaler / TAA"))
 	{
-		Upscaler->DrawSettingsUi(Profile);
+		Inspected.Upscaler->DrawSettingsUi(Profile);
 	}
 	if (ImGui::CollapsingHeader("Post processing", ImGuiTreeNodeFlags_DefaultOpen))
 	{
-		PostProcess->DrawSettingsUi(Profile.Post);
+		Inspected.PostProcess->DrawSettingsUi(Profile.Post);
 	}
 	if (ImGui::CollapsingHeader("Scene"))
 	{

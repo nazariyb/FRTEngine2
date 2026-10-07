@@ -215,7 +215,9 @@ GameInstance::GameInstance ()
 			DisplayOptions.GetRefreshRateIndex(displaySettings.MonitorIndex, displaySettings.RefreshRateTxt);
 
 		displaySettings.MonitorIndex = DisplayOptions.ClampMonitorIndex(displaySettings.MonitorIndex);
-		Renderer->SetRenderMode(displaySettings.RenderMode);
+		// The standalone game draws one view, straight into the swap chain.
+		MainView = Renderer->CreateView({ "Main", EViewTarget::BackBuffer });
+		MainView->SetRenderMode(displaySettings.RenderMode);
 		Renderer->bVSyncEnabled = displaySettings.bVSync;
 
 		Camera = memory::NewShared<CCamera>();
@@ -440,12 +442,12 @@ void GameInstance::Input (float DeltaSeconds)
 	if (InputSystem.WasKeyPressed(input::KeyCode::F2))
 	{
 		// Raster preview <-> path tracing (Hybrid is an alias of path tracing).
-		const ERenderMode NewRenderMode = Renderer->GetRenderMode() == ERenderMode::Raster
+		const ERenderMode NewRenderMode = MainView->GetRenderMode() == ERenderMode::Raster
 			? ERenderMode::Raytracing : ERenderMode::Raster;
 
 		// TODO: should be synced automatically
 		UserSettings.DisplaySettings.RenderMode = NewRenderMode;
-		Renderer->SetRenderMode(NewRenderMode);
+		MainView->SetRenderMode(NewRenderMode);
 	}
 
 	if (InputSystem.WasKeyPressed(input::KeyCode::I))
@@ -465,6 +467,10 @@ void GameInstance::Tick (float DeltaSeconds)
 	++FrameCount;
 
 #if !defined(FRT_HEADLESS)
+	// Waits for this frame's GPU slot and retires what it used. Before the UI, so everything the
+	// UI creates or destroys belongs to this frame's fence.
+	Renderer->BeginFrame();
+
 	// Picks up the zoom Input() just set, plus the monitor scale — re-queried every frame so
 	// moving the window to a differently scaled monitor needs no extra plumbing. Must run
 	// before NewFrame(), which is where font size and metrics are resolved for the frame.
@@ -530,11 +536,24 @@ void GameInstance::Tick (float DeltaSeconds)
 		DrawUI();
 	}
 
-	Renderer->Tick();
 	Camera->Tick(DeltaSeconds);
 #endif
 
 	World.RunFrame(DeltaSeconds);
+
+#if !defined(FRT_HEADLESS)
+	// Taken here, where scene extraction used to hand it over: automation moves the camera in
+	// Draw(), and captures rely on that motion landing a frame later.
+	{
+		const Vector3f position = math::ToDirectXCoordinates(Camera->Transform.GetTranslation());
+		const Vector3f forward = math::ToDirectXCoordinates(Camera->GetLookDirection());
+		MainCameraView.Position = { position.x, position.y, position.z };
+		MainCameraView.Forward = { forward.x, forward.y, forward.z };
+		MainCameraView.Up = { 0.0f, 1.0f, 0.0f };
+		MainCameraView.FieldOfViewY = Renderer->Profile.Frame.FieldOfViewY;
+		MainCameraView.NearZ = Renderer->Profile.Frame.NearZ;
+	}
+#endif
 }
 
 #ifndef FRT_HEADLESS
@@ -550,11 +569,13 @@ void GameInstance::Draw (float DeltaSeconds)
 
 	UpdateAutomation(DeltaSeconds);
 
-	Renderer->StartFrame();
+	Renderer->BeginRecording();
 
 	World.SubmitFrame(Renderer->GetCommandList());
 
-	Renderer->PrepareCurrentPass();
+	Renderer->PrepareScene();
+	Renderer->RenderView(*MainView, MainCameraView);
+	Renderer->BeginUiPass();
 
 	ImGui::Render();
 	{
@@ -563,7 +584,7 @@ void GameInstance::Draw (float DeltaSeconds)
 	}
 	ImGui_ImplDX12_RenderDrawData(ImGui::GetDrawData(), Renderer->GetCommandList());
 
-	Renderer->Draw();
+	Renderer->EndFrame();
 }
 #endif
 
@@ -646,11 +667,11 @@ void GameInstance::ApplyLaunchConfig ()
 	const std::string renderMode = Config.Get("Render", "RenderMode", "");
 	if (renderMode == "Raytracing" || renderMode == "raytracing")
 	{
-		Renderer->SetRenderMode(ERenderMode::Raytracing);
+		MainView->SetRenderMode(ERenderMode::Raytracing);
 	}
 	else if (renderMode == "Raster" || renderMode == "raster")
 	{
-		Renderer->SetRenderMode(ERenderMode::Raster);
+		MainView->SetRenderMode(ERenderMode::Raster);
 	}
 
 	const std::string mode = Config.Get("Render", "Mode", "RealTime");
@@ -795,12 +816,12 @@ void GameInstance::UpdateAutomation (float DeltaSeconds)
 	if (AutomationCaptureFrame >= 0 && !bAutomationCaptureRequested &&
 		static_cast<int64>(FrameCount) >= AutomationCaptureFrame)
 	{
-		Renderer->RequestCapture(AutomationCapturePath, bAutomationCaptureHdr);
+		MainView->RequestCapture(AutomationCapturePath, bAutomationCaptureHdr);
 		bAutomationCaptureRequested = true;
 		const Vector3f camPos = Camera->Transform.GetTranslation();
 		const Vector3f camRot = Camera->Transform.GetRotation();
 		std::printf("[automation] capture requested at frame %llu (%u spp accumulated) camera %.6f,%.6f,%.6f rotation %.6f,%.6f,%.6f\n",
-			static_cast<unsigned long long>(FrameCount), Renderer->GetAccumulatedSamples(),
+			static_cast<unsigned long long>(FrameCount), MainView->GetAccumulatedSamples(),
 			camPos.x, camPos.y, camPos.z, camRot.x, camRot.y, camRot.z);
 		std::fflush(stdout);
 	}

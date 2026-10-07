@@ -251,9 +251,10 @@ struct SPostProcessSettings
 	bool bDebugToneMap = false;
 };
 
+// Shared quality settings. The render mode (path tracing or raster preview) is a property of
+// each view instead (CRenderView), so a viewport can preview in raster while another traces.
 struct SRenderProfile
 {
-	ERenderMode RenderMode = ERenderMode::Raytracing;
 	SRenderSettings Frame;
 	EUpscalerKind Upscaler = EUpscalerKind::Temporal;
 	SPathTracerSettings PathTracer;

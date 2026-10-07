@@ -277,18 +277,6 @@ void Sys_MeshRenderer::DescribeScene ()
 		gpuScene.SetSky(sky);
 	}
 
-	// ---- Camera ----
-	if (const auto camera = game.GetCamera())
-	{
-		SCameraView view;
-		const Vector3f position = math::ToDirectXCoordinates(camera->Transform.GetTranslation());
-		const Vector3f forward = math::ToDirectXCoordinates(camera->GetLookDirection());
-		view.Position = { position.x, position.y, position.z };
-		view.Forward = { forward.x, forward.y, forward.z };
-		view.Up = { 0.0f, 1.0f, 0.0f };
-		Renderer->SetCameraView(view);
-	}
-
 	if (scene.bAccumulationDirty)
 	{
 		Renderer->ResetAccumulation();
