@@ -17,11 +17,6 @@ struct SUpdateContext
 };
 
 
-struct SDrawUpdateContext : SUpdateContext
-{
-	ID3D12GraphicsCommandList4* CommandList;
-};
-
 
 enum class EUpdatePhase : uint8
 {
@@ -29,7 +24,6 @@ enum class EUpdatePhase : uint8
 	Prepare  = 1u << 1u,
 	Update   = 1u << 2u,
 	Finalize = 1u << 3u,
-	Draw     = 1u << 4u,
 };
 
 
@@ -51,6 +45,5 @@ public:
 	virtual void Prepare (const SUpdateContext& Context) {}
 	virtual void Update (const SUpdateContext& Context) {}
 	virtual void Finalize (const SUpdateContext& Context) {}
-	virtual void Draw (const SDrawUpdateContext& Context) {}
 };
 }

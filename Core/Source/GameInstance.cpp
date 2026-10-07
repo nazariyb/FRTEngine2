@@ -38,6 +38,7 @@
 #include "Graphics/Render/Passes/PostProcess.h"
 #include "Graphics/Render/Passes/Upscaler.h"
 #include "Graphics/Render/Scene/GpuScene.h"
+#include "Graphics/Render/Scene/WorldExtraction.h"
 #endif
 #include "EnginePaths.h"
 #include "Math/Comp_LocalTransform.h"
@@ -136,7 +137,6 @@ static std::filesystem::path GetDefaultInputMapPath ()
 
 GameInstance::GameInstance ()
 	: FrameCount(0)
-	, World(*this)
 {
 	// First, and deliberately before the memory pool: config depends on nothing but the
 	// standard library, and every subsystem below is allowed to read settings out of it.
@@ -220,16 +220,14 @@ GameInstance::GameInstance ()
 		MainView->SetRenderMode(displaySettings.RenderMode);
 		Renderer->bVSyncEnabled = displaySettings.bVSync;
 
-		Camera = memory::NewShared<CCamera>();
 		CameraInitialTransform.SetTranslation(4.9f, 2.2f, -1.5f);
 		CameraInitialTransform.SetRotation(-0.038f, -1.356f, .0f);
-		Camera->Transform = CameraInitialTransform;
+		World.Camera.Transform = CameraInitialTransform;
 
 	}
 #endif
 
 	World.Initialize();
-	MeshRenderer = World.MeshRenderer.GetWeak();
 
 	ActiveActionMap = InputActionLibrary.LoadOrCreateActionMap(GetDefaultInputMapPath());
 
@@ -351,9 +349,6 @@ void GameInstance::Load ()
 
 void GameInstance::OnLoaded ()
 {
-#ifndef FRT_HEADLESS
-	MeshRenderer->InitializeRendering();
-#endif
 }
 
 void GameInstance::Input (float DeltaSeconds)
@@ -401,15 +396,15 @@ void GameInstance::Input (float DeltaSeconds)
 		// Look
 		const Vector2f ViewportSize = Window->GetWindowSize();
 		const float ViewportAspectRatio = math::Max(ViewportSize.x, 1.0f) / math::Max(ViewportSize.y, 1.0f);
-		const Vector2f MouseDelta = InputSystem.GetMouseDelta() * Camera->RotationSpeed;
+		const Vector2f MouseDelta = InputSystem.GetMouseDelta() * World.Camera.RotationSpeed;
 
-		Vector3f CameraRotation = Camera->Transform.GetRotation();
+		Vector3f CameraRotation = World.Camera.Transform.GetRotation();
 		CameraRotation += Vector3f::LeftVector * (MouseDelta.y * DeltaSeconds);
 		CameraRotation += Vector3f::DownVector * ((MouseDelta.x / ViewportAspectRatio) * DeltaSeconds);
 
 		constexpr float CameraPitchLimit = math::PI_OVER_TWO - 0.001f;
 		CameraRotation.x = math::Clamp(CameraRotation.x, -CameraPitchLimit, CameraPitchLimit);
-		Camera->Transform.SetRotation(CameraRotation);
+		World.Camera.Transform.SetRotation(CameraRotation);
 
 		// Speed
 		Vector3f CameraMoveVector = Vector3f::ZeroVector;
@@ -424,7 +419,7 @@ void GameInstance::Input (float DeltaSeconds)
 		const Vector3f localMove = CameraMoveVector;
 
 		using namespace DirectX;
-		const Vector3f rot = Camera->Transform.GetRotation(); // pitch, yaw, roll (radians)
+		const Vector3f rot = World.Camera.Transform.GetRotation(); // pitch, yaw, roll (radians)
 		const XMMATRIX rotM = XMMatrixRotationRollPitchYaw(rot.x, rot.y, rot.z);
 
 		const XMVECTOR v = XMLoadFloat3(reinterpret_cast<const XMFLOAT3*>(&localMove));
@@ -434,9 +429,9 @@ void GameInstance::Input (float DeltaSeconds)
 		XMStoreFloat3(reinterpret_cast<XMFLOAT3*>(&worldMove), worldMoveV);
 
 		const float WheelDelta = InputSystem.GetMouseWheelDelta();
-		Camera->MovementSpeed = math::Max(Camera->MovementSpeed + WheelDelta * 0.3f, 0.001f);
+		World.Camera.MovementSpeed = math::Max(World.Camera.MovementSpeed + WheelDelta * 0.3f, 0.001f);
 
-		Camera->Transform.MoveBy(worldMove * DeltaSeconds * Camera->MovementSpeed);
+		World.Camera.Transform.MoveBy(worldMove * DeltaSeconds * World.Camera.MovementSpeed);
 	}
 
 	if (InputSystem.WasKeyPressed(input::KeyCode::F2))
@@ -536,23 +531,20 @@ void GameInstance::Tick (float DeltaSeconds)
 		DrawUI();
 	}
 
-	Camera->Tick(DeltaSeconds);
 #endif
 
 	World.RunFrame(DeltaSeconds);
 
 #if !defined(FRT_HEADLESS)
-	// Taken here, where scene extraction used to hand it over: automation moves the camera in
-	// Draw(), and captures rely on that motion landing a frame later.
+	// Described after the world's update, so the renderer sees this frame's transforms. The
+	// camera is taken now: automation moves it in Draw(), landing a frame later by design.
+	ExtractRenderScene(World, { RtSettings.bShowPortalMeshes }, Renderer->GetScene());
+	if (World.bAccumulationDirty)
 	{
-		const Vector3f position = math::ToDirectXCoordinates(Camera->Transform.GetTranslation());
-		const Vector3f forward = math::ToDirectXCoordinates(Camera->GetLookDirection());
-		MainCameraView.Position = { position.x, position.y, position.z };
-		MainCameraView.Forward = { forward.x, forward.y, forward.z };
-		MainCameraView.Up = { 0.0f, 1.0f, 0.0f };
-		MainCameraView.FieldOfViewY = Renderer->Profile.Frame.FieldOfViewY;
-		MainCameraView.NearZ = Renderer->Profile.Frame.NearZ;
+		Renderer->ResetAccumulation();
+		World.bAccumulationDirty = false;
 	}
+	MainCameraView = MakeCameraView(World.Camera);
 #endif
 }
 
@@ -570,8 +562,6 @@ void GameInstance::Draw (float DeltaSeconds)
 	UpdateAutomation(DeltaSeconds);
 
 	Renderer->BeginRecording();
-
-	World.SubmitFrame(Renderer->GetCommandList());
 
 	Renderer->PrepareScene();
 	Renderer->RenderView(*MainView, MainCameraView);
@@ -680,7 +670,7 @@ void GameInstance::ApplyLaunchConfig ()
 	render.bDenoiser = Config.Get("Render", "Denoiser", render.bDenoiser);
 	render.ReferenceSampleTarget = Config.Get("Render", "SampleTarget", render.ReferenceSampleTarget);
 	render.bCollectRayCounters = Config.Get("Render", "CollectRayCounters", render.bCollectRayCounters);
-	render.FieldOfViewY = Config.Get("Render", "FieldOfViewY", render.FieldOfViewY);
+	World.Camera.FieldOfViewY = Config.Get("Render", "FieldOfViewY", World.Camera.FieldOfViewY);
 	const std::string upscaler = Config.Get("Render", "Upscaler", "Temporal");
 	if (upscaler == "None" || upscaler == "Off")
 	{
@@ -755,7 +745,7 @@ void GameInstance::ApplyLaunchConfig ()
 	// [Denoiser] keys (-Denoiser:Key=Value), parsed by the pass itself.
 	graphics::CDenoiser::ApplyConfig(Config, Renderer->Profile.Denoiser);
 
-	TimeOfDay =Config.Get("Scene", "TimeOfDay", TimeOfDay);
+	World.Environment.TimeOfDay = Config.Get("Scene", "TimeOfDay", World.Environment.TimeOfDay);
 	if (Config.Get("Scene", "PauseWorld", false))
 	{
 		World.TogglePhasePause(EUpdatePhase::Update);
@@ -763,12 +753,12 @@ void GameInstance::ApplyLaunchConfig ()
 	Vector3f camPos;
 	if (ParseVector3(Config.Get("Scene", "CameraPosition", ""), camPos))
 	{
-		Camera->Transform.SetTranslation(camPos);
+		World.Camera.Transform.SetTranslation(camPos);
 	}
 	Vector3f camRot;
 	if (ParseVector3(Config.Get("Scene", "CameraRotation", ""), camRot))
 	{
-		Camera->Transform.SetRotation(camRot);
+		World.Camera.Transform.SetRotation(camRot);
 	}
 	if (Config.Has("Display", "VSync"))
 	{
@@ -787,7 +777,7 @@ void GameInstance::ApplyLaunchConfig ()
 	AutomationMotionStartFrame = Config.Get("Automation", "MotionStartFrame", 0);
 	AutomationMotionEndFrame = Config.Get("Automation", "MotionEndFrame", -1);
 	gAutomationTimeOfDayFrame = Config.Get("Automation", "TimeOfDayFrame", -1);
-	gAutomationTimeOfDayValue = Config.Get("Automation", "TimeOfDayValue", TimeOfDay);
+	gAutomationTimeOfDayValue = Config.Get("Automation", "TimeOfDayValue", World.Environment.TimeOfDay);
 	bAutomationCaptureHdr = Config.Get("Automation", "CaptureHdr", true);
 	const std::string capturePath = Config.Get("Automation", "CapturePath", "");
 	AutomationCapturePath = capturePath.empty() ? (paths::GetCaptureDir() / "automation") : std::filesystem::path(capturePath);
@@ -799,18 +789,18 @@ void GameInstance::UpdateAutomation (float DeltaSeconds)
 	if (frame == gAutomationTimeOfDayFrame)
 	{
 		// Picked up by the sky panel (ComputeSkyFromTimeOfDay) on the next UI frame.
-		TimeOfDay = gAutomationTimeOfDayValue;
+		World.Environment.TimeOfDay = gAutomationTimeOfDayValue;
 	}
 	if (bAutomationMotion && frame >= AutomationMotionStartFrame && (AutomationMotionEndFrame < 0 || frame < AutomationMotionEndFrame))
 	{
 		using namespace DirectX;
-		const Vector3f rot = Camera->Transform.GetRotation();
+		const Vector3f rot = World.Camera.Transform.GetRotation();
 		const XMMATRIX rotM = XMMatrixRotationRollPitchYaw(rot.x, rot.y, rot.z);
 		const XMVECTOR local = XMLoadFloat3(reinterpret_cast<const XMFLOAT3*>(&AutomationCameraMove));
 		Vector3f worldMove{};
 		XMStoreFloat3(reinterpret_cast<XMFLOAT3*>(&worldMove), XMVector3TransformNormal(local, rotM));
-		Camera->Transform.MoveBy(worldMove);
-		Camera->Transform.SetRotation(rot + AutomationCameraTurn);
+		World.Camera.Transform.MoveBy(worldMove);
+		World.Camera.Transform.SetRotation(rot + AutomationCameraTurn);
 	}
 
 	if (AutomationCaptureFrame >= 0 && !bAutomationCaptureRequested &&
@@ -818,8 +808,8 @@ void GameInstance::UpdateAutomation (float DeltaSeconds)
 	{
 		MainView->RequestCapture(AutomationCapturePath, bAutomationCaptureHdr);
 		bAutomationCaptureRequested = true;
-		const Vector3f camPos = Camera->Transform.GetTranslation();
-		const Vector3f camRot = Camera->Transform.GetRotation();
+		const Vector3f camPos = World.Camera.Transform.GetTranslation();
+		const Vector3f camRot = World.Camera.Transform.GetRotation();
 		std::printf("[automation] capture requested at frame %llu (%u spp accumulated) camera %.6f,%.6f,%.6f rotation %.6f,%.6f,%.6f\n",
 			static_cast<unsigned long long>(FrameCount), MainView->GetAccumulatedSamples(),
 			camPos.x, camPos.y, camPos.z, camRot.x, camRot.y, camRot.z);

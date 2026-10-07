@@ -1,65 +1,20 @@
-#include "Sys_MeshRenderer.h"
+#include "Graphics/Render/Scene/WorldExtraction.h"
 
 #include <cmath>
 
-#include "GameInstance.h"
+#include "Entity.h"
+#include "WorldScene.h"
 #include "Graphics/Camera.h"
 #include "Graphics/GeometryScript.h"
 #include "Graphics/Model.h"
 #include "Graphics/SceneExtraction.h"
-
-#ifndef FRT_HEADLESS
 #include "Graphics/Render/Scene/GpuScene.h"
-#endif
-
-using namespace frt;
 
 
-#if !defined(FRT_HEADLESS)
-Sys_MeshRenderer::Sys_MeshRenderer (memory::TRefWeak<graphics::CRenderer> InRenderer)
-	: Renderer(InRenderer)
+namespace frt::graphics
 {
-	Phases
-		.AddFlag(EUpdatePhase::Update)
-		.AddFlag(EUpdatePhase::Finalize)
-		.AddFlag(EUpdatePhase::Draw);
-}
-#else
-Sys_MeshRenderer::Sys_MeshRenderer ()
-{}
-#endif
-
-SFlags<EUpdatePhase>& Sys_MeshRenderer::GetPhases ()
-{
-	return Phases;
-}
-
-void Sys_MeshRenderer::Update (const SUpdateContext& Context)
-{
-}
-
-void Sys_MeshRenderer::Finalize (const SUpdateContext& Context)
-{
-#ifndef FRT_HEADLESS
-	DescribeScene();
-#endif
-}
-
-void Sys_MeshRenderer::Draw (const SDrawUpdateContext& Context)
-{
-}
-
-memory::TRefShared<graphics::Comp_RenderModel> Sys_MeshRenderer::SpawnRenderModel ()
-{
-	memory::TRefShared<graphics::Comp_RenderModel> renderModel = memory::NewShared<graphics::Comp_RenderModel>();
-	RenderModels.Add(renderModel);
-	return renderModel;
-}
-
-#ifndef FRT_HEADLESS
 namespace
 {
-using namespace frt::graphics;
 
 gpu::float3 ToFloat3 (const Vector3f& V)
 {
@@ -154,22 +109,13 @@ Vector3f TransformDirectionDx (const DirectX::XMFLOAT4X4& RenderMatrix, const Ve
 }
 }
 
-void Sys_MeshRenderer::InitializeRendering ()
-{
-}
 
-void Sys_MeshRenderer::DescribeScene ()
+void ExtractRenderScene (CWorldScene& World, const SRenderExtractOptions& Options, CGpuScene& Scene)
 {
-	using namespace graphics;
-	GameInstance& game = GameInstance::GetInstance();
-	CWorldScene& scene = game.GetWorldScene();
-	CGpuScene& gpuScene = Renderer->GetScene();
-	gpuScene.BeginFrame();
-
-	const bool bShowPortalMeshes = game.GetRtSettings().bShowPortalMeshes;
+	Scene.BeginFrame();
 
 	// ---- Legacy CEntity list: instances, lights, portals ----
-	auto& entities = scene.GetEntities();
+	auto& entities = World.GetEntities();
 	for (uint32 i = 0; i < entities.Count(); ++i)
 	{
 		CEntity* entity = entities[i].GetRawIgnoringLifetime();
@@ -195,7 +141,7 @@ void Sys_MeshRenderer::DescribeScene ()
 			}
 			portal.Normal = n;
 			portal.Flags = cp.Shape == Comp_Portal::EShape::Ellipse ? portal_flags::Ellipse : 0u;
-			gpuScene.AddPortal(ConvertPortal(portal));
+			Scene.AddPortal(ConvertPortal(portal));
 
 			// Visualisation quad, built once from the component; camera rays only.
 			if (entity->RenderModel)
@@ -205,7 +151,7 @@ void Sys_MeshRenderer::DescribeScene ()
 					entity->RenderModel->Model = memory::NewShared<SRenderModel>(
 						SRenderModel::FromMesh(mesh::BuildPortalQuad(cp.Edge1, cp.Edge2, cp.Normal)));
 				}
-				entity->RenderModel->bVisible = bShowPortalMeshes;
+				entity->RenderModel->bVisible = Options.bShowPortalMeshes;
 			}
 		}
 
@@ -221,7 +167,7 @@ void Sys_MeshRenderer::DescribeScene ()
 			light.Edge2 = math::ToDirectXCoordinates(cl.Edge2);
 			light.Type = static_cast<uint32>(cl.Kind == Comp_Light::EKind::Directional ? ELightType::Directional
 				: (cl.Kind == Comp_Light::EKind::AreaQuad ? ELightType::AreaQuad : ELightType::Point));
-			gpuScene.AddLight(ConvertLight(light));
+			Scene.AddLight(ConvertLight(light));
 		}
 
 		if (entity->RenderModel && entity->RenderModel->Model && entity->RenderModel->bVisible)
@@ -231,14 +177,14 @@ void Sys_MeshRenderer::DescribeScene ()
 			instance.ObjectToWorld = entity->Transform.GetRaytracingTransform();
 			instance.Key = reinterpret_cast<uint64>(entity);
 			instance.bHelper = static_cast<bool>(entity->Portal);
-			gpuScene.AddInstance(instance);
+			Scene.AddInstance(instance);
 		}
 	}
 
 	// ---- ECS ----
 	{
 		TArray<SMeshInstance> ecsInstances;
-		ExtractMeshInstances(scene.GetEcsWorld(), Vector3r::ZeroVector, ecsInstances);
+		ExtractMeshInstances(World.GetEcsWorld(), Vector3r::ZeroVector, ecsInstances);
 		for (uint32 i = 0; i < ecsInstances.Count(); ++i)
 		{
 			const SMeshInstance& src = ecsInstances[i];
@@ -252,35 +198,42 @@ void Sys_MeshRenderer::DescribeScene ()
 				}
 			}
 			instance.Key = (1ull << 63u) | static_cast<uint64>(src.Entity.Value);
-			gpuScene.AddInstance(instance);
+			Scene.AddInstance(instance);
 		}
 
 		TArray<SLight> ecsLights;
-		ExtractLights(scene.GetEcsWorld(), ecsLights);
+		ExtractLights(World.GetEcsWorld(), ecsLights);
 		for (uint32 i = 0; i < ecsLights.Count(); ++i)
 		{
-			gpuScene.AddLight(ConvertLight(ecsLights[i]));
+			Scene.AddLight(ConvertLight(ecsLights[i]));
 		}
 		TArray<SPortal> ecsPortals;
-		ExtractPortals(scene.GetEcsWorld(), ecsPortals);
+		ExtractPortals(World.GetEcsWorld(), ecsPortals);
 		for (uint32 i = 0; i < ecsPortals.Count(); ++i)
 		{
-			gpuScene.AddPortal(ConvertPortal(ecsPortals[i]));
+			Scene.AddPortal(ConvertPortal(ecsPortals[i]));
 		}
 	}
 
 	// ---- Sky ----
 	{
 		SSceneSky sky;
-		sky.Constants = game.GetSkySettings();
-		sky.SunAngularRadius = game.GetSunAngularRadius();
-		gpuScene.SetSky(sky);
-	}
-
-	if (scene.bAccumulationDirty)
-	{
-		Renderer->ResetAccumulation();
-		scene.bAccumulationDirty = false;
+		sky.Constants = World.Environment.Sky;
+		sky.SunAngularRadius = World.Environment.SunAngularRadius;
+		Scene.SetSky(sky);
 	}
 }
-#endif
+
+SCameraView MakeCameraView (const CCamera& Camera)
+{
+	SCameraView view;
+	const Vector3f position = math::ToDirectXCoordinates(Camera.Transform.GetTranslation());
+	const Vector3f forward = math::ToDirectXCoordinates(Camera.GetLookDirection());
+	view.Position = { position.x, position.y, position.z };
+	view.Forward = { forward.x, forward.y, forward.z };
+	view.Up = { 0.0f, 1.0f, 0.0f };
+	view.FieldOfViewY = Camera.FieldOfViewY;
+	view.NearZ = Camera.NearZ;
+	return view;
+}
+}

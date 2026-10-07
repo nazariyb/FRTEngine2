@@ -1167,11 +1167,6 @@ void CRenderer::DrawRendererUi (CRenderView& Inspected)
 		}
 		ImGui::Checkbox("Denoiser", &Profile.Frame.bDenoiser);
 	}
-	float fovDeg = Profile.Frame.FieldOfViewY * 57.29578f;
-	if (ImGui::SliderFloat("Vertical FOV", &fovDeg, 20.0f, 120.0f, "%.1f deg"))
-	{
-		Profile.Frame.FieldOfViewY = fovDeg / 57.29578f;
-	}
 	ImGui::Checkbox("Collect ray counters", &Profile.Frame.bCollectRayCounters);
 	if (ImGui::Button("Reset accumulation / history"))
 	{

@@ -16,6 +16,7 @@ struct ID3D12Resource;
 namespace frt::graphics
 {
 struct SVertex;
+class CMaterialLibrary;
 }
 
 
@@ -45,7 +46,8 @@ struct FRT_CORE_API SRenderModel
 	// buffers and BLAS when it sees a new value. CPU data is the source of truth.
 	uint32 GeometryVersion = 1u;
 
-	static SRenderModel LoadFromFile (const std::string& Filename, const std::string& TexturePath);
+	// Materials resolve through MaterialLibrary (<model dir>/<model name>_mat<N>.frtmat.yml).
+	static SRenderModel LoadFromFile (const std::string& Filename, const std::string& TexturePath, CMaterialLibrary& MaterialLibrary);
 	static SRenderModel FromMesh (SMesh&& Mesh, memory::TRefShared<SMaterial> Material = nullptr);
 };
 

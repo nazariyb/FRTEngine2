@@ -2,24 +2,38 @@
 
 #include "System.h"
 #include "Containers/Array.h"
+#include "Graphics/Camera.h"
 #include "Graphics/Render/GraphicsCoreTypes.h"
 
 
 namespace frt
 {
-class GameInstance;
-class Sys_MeshRenderer;
 class CEntity;
 class ISystem;
 class CWorld;
 class CCommandBuffer;
 
 
-class CWorldScene
+// Lighting environment of a world: sky, sun and the time of day that can drive them.
+struct SWorldEnvironment
+{
+	graphics::SSkyConstants Sky;
+	float TimeOfDay = 0.5f;               // [0,1]; 0.5 = noon
+	bool bUseTimeOfDay = true;            // Sky follows TimeOfDay (graphics::ComputeSkyFromTimeOfDay)
+	float SunAngularRadius = 0.004654f;   // radians; the real sun is ~0.267 deg
+};
+
+
+/**
+ * A world: everything a game simulates and the renderer shows - entities (the legacy list and
+ * the ECS), the systems that update them, the game camera and the lighting environment. Holds
+ * no reference to the game, the engine or the renderer, so several can coexist (the editor's
+ * edit world and its play copy) and the renderer is fed by ExtractRenderScene.
+ */
+class FRT_CORE_API CWorldScene
 {
 public:
-	CWorldScene () = delete;
-	CWorldScene (GameInstance& InGame);
+	CWorldScene ();
 	~CWorldScene ();
 
 	CWorldScene (const CWorldScene&) = delete;
@@ -27,10 +41,9 @@ public:
 
 	bool Initialize ();
 
-	FRT_CORE_API memory::TRefShared<CEntity> SpawnEntity (const std::string& Name = "");
+	memory::TRefShared<CEntity> SpawnEntity (const std::string& Name = "");
 
 	void RunFrame (float InDeltaSeconds);
-	void SubmitFrame (ID3D12GraphicsCommandList4* CommandList);
 
 	bool IsPhasePaused (EUpdatePhase Phase) const;
 	void PausePhases (SFlags<EUpdatePhase> Phases);
@@ -47,8 +60,8 @@ public:
 	 *
 	 * Runs alongside the CEntity list during the migration - the two do not interact yet.
 	 */
-	FRT_CORE_API CWorld& GetEcsWorld ();
-	FRT_CORE_API const CWorld& GetEcsWorld () const;
+	CWorld& GetEcsWorld ();
+	const CWorld& GetEcsWorld () const;
 
 	/**
 	 * Shared buffer for structural changes recorded by systems.
@@ -59,11 +72,13 @@ public:
 	 */
 	CCommandBuffer& GetCommands ();
 
-	memory::TRefUnique<Sys_MeshRenderer> MeshRenderer;
+	// The game's point of view. Part of the world, so a play session's camera moves revert
+	// with everything else when it ends.
+	graphics::CCamera Camera;
+	SWorldEnvironment Environment;
 
-	// Scene-level dirty flags consumed by Sys_MeshRenderer each frame.
-	// Set here because topology and motion are scene knowledge, not renderer knowledge.
-	bool bSceneTopologyDirty = false;
+	// Set by anything that changes what the world looks like outside the renderer's own change
+	// tracking (e.g. a settings panel); the frame's owner resets the renderer's accumulation.
 	bool bAccumulationDirty = false;
 
 
@@ -82,6 +97,5 @@ private:
 	TArray<ISystem*> Systems;
 
 	SFlags<EUpdatePhase> PausedPhases;
-	GameInstance& Game;
 };
 }

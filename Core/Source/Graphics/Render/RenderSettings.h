@@ -30,8 +30,6 @@ struct SRenderSettings
 	bool bDenoiser = true;
 	uint32 ReferenceSampleTarget = 0u;   // stop tracing after this many samples (0 = never)
 	bool bCollectRayCounters = false;
-	float FieldOfViewY = 1.5707963f;     // radians (vertical)
-	float NearZ = 0.05f;
 };
 
 struct SPathTracerSettings

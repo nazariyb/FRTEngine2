@@ -1,8 +1,9 @@
 #pragma once
 
 #include "CoreTypes.h"
-#include "GameInstance.h"
 #include "Containers/Array.h"
+#include "Graphics/Mesh.h"
+#include "Math/Math.h"
 
 
 namespace frt::graphics::mesh

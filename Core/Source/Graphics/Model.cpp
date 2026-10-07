@@ -18,9 +18,7 @@
 #define STBI_ASSERT(x) frt_assert(x)
 #include <stb_image.h>
 
-#include "GameInstance.h"
 #include "Render/MaterialLibrary.h"
-#include "Render/Renderer.h"
 
 
 namespace frt::graphics
@@ -137,7 +135,7 @@ SMaterial ImportMaterial (const aiMaterial* Material, const std::string& Fallbac
 }
 }
 
-SRenderModel SRenderModel::LoadFromFile (const std::string& Filename, const std::string& TexturePath)
+SRenderModel SRenderModel::LoadFromFile (const std::string& Filename, const std::string& TexturePath, CMaterialLibrary& MaterialLibrary)
 {
 	// Coordinate conventions. glTF assets face +Z with +Y up, so in the asset's own frame +X is
 	// its left: that is exactly the engine's LUF frame, and positions, normals and tangents
@@ -171,13 +169,6 @@ SRenderModel SRenderModel::LoadFromFile (const std::string& Filename, const std:
 	const std::filesystem::path materialDir = modelPath.parent_path();
 	const std::string materialBaseName = modelPath.stem().string();
 
-#if !defined(FRT_HEADLESS)
-	memory::TRefWeak<CRenderer> renderer = GameInstance::GetInstance().GetRenderer();
-	frt_assert(renderer);
-	CMaterialLibrary& materialLibrary = renderer->GetMaterialLibrary();
-#else
-	CMaterialLibrary materialLibrary;
-#endif
 
 	result.Materials = TArray<memory::TRefShared<SMaterial>>(scene->mNumMaterials);
 	for (uint32 materialIndex = 0; materialIndex < scene->mNumMaterials; ++materialIndex)
@@ -198,7 +189,7 @@ SRenderModel SRenderModel::LoadFromFile (const std::string& Filename, const std:
 
 		const std::filesystem::path materialPath =
 			materialDir / (materialBaseName + "_mat" + std::to_string(materialIndex) + ".frtmat.yml");
-		result.Materials.Add(materialLibrary.LoadOrCreateMaterial(materialPath, defaultMaterial));
+		result.Materials.Add(MaterialLibrary.LoadOrCreateMaterial(materialPath, defaultMaterial));
 	}
 
 	// Sections: one per aiMesh, section-local indices into one shared vertex/index buffer.

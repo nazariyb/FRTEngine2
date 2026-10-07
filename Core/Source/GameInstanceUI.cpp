@@ -16,6 +16,7 @@
 #include "imgui.h"
 
 #include "EnginePaths.h"
+#include "Entity.h"
 #include "Window.h"
 #include "Graphics/Camera.h"
 #include "Graphics/Render/GraphicsCoreTypes.h"
@@ -86,7 +87,7 @@ void GameInstance::DrawStatsPanel ()
 			BeginProfilingOverride();
 			const auto [sw, sh] = Window->GetWindowSize();
 			SessionSceneDesc = profiler::CaptureSceneDescriptor(
-				World, *Camera, SkySettings, static_cast<uint32>(sw), static_cast<uint32>(sh));
+				World, World.Camera, World.Environment.Sky, static_cast<uint32>(sw), static_cast<uint32>(sh));
 
 			SessionDir = dir;
 			std::filesystem::remove_all(SessionDir, ec);
@@ -150,7 +151,7 @@ void GameInstance::DrawStatsPanel ()
 	{
 		const auto [pw, ph] = Window->GetWindowSize();
 		const profiler::SSceneDescriptor desc = profiler::CaptureSceneDescriptor(
-			World, *Camera, SkySettings, static_cast<uint32>(pw), static_cast<uint32>(ph));
+			World, World.Camera, World.Environment.Sky, static_cast<uint32>(pw), static_cast<uint32>(ph));
 		ImGui::Text("Portals: %u   total screen: %.2f%%",
 			desc.PortalCount, desc.PortalCoverageTotal * 100.0);
 		for (uint32 i = 0; i < desc.Portals.Count(); ++i)
@@ -185,15 +186,16 @@ void GameInstance::DrawSkyPanel ()
 {
 	// TimeOfDay drives SkySettings via ComputeSkyFromTimeOfDay when the toggle is on;
 	// otherwise the individual fields are tweakable directly.
-	graphics::SSkyConstants& sky = SkySettings;
-	float& tod = TimeOfDay;
-	bool& useTod = bUseTimeOfDay;
+	SWorldEnvironment& env = World.Environment;
+	graphics::SSkyConstants& sky = env.Sky;
+	float& tod = env.TimeOfDay;
+	bool& useTod = env.bUseTimeOfDay;
 
 	ImGui::Begin("Sky / Sun");
-	float sunDegrees = SunAngularRadius * 57.29578f;
+	float sunDegrees = env.SunAngularRadius * 57.29578f;
 	if (ImGui::SliderFloat("Sun angular radius", &sunDegrees, 0.01f, 5.0f, "%.3f deg"))
 	{
-		SunAngularRadius = sunDegrees / 57.29578f;
+		env.SunAngularRadius = sunDegrees / 57.29578f;
 	}
 	ImGui::Checkbox("Drive from Time of Day", &useTod);
 	if (useTod)
@@ -222,8 +224,8 @@ void GameInstance::DrawEditorPanel ()
 	ImGui::Begin("Editor");
 
 	// ----- Camera -----
-	if (Camera)
 	{
+		graphics::CCamera* Camera = &World.Camera;
 		ImGui::SeparatorText("Camera");
 		Vector3f camPos = Camera->Transform.GetTranslation();
 		Vector3f camRot = Camera->Transform.GetRotation();
@@ -234,6 +236,11 @@ void GameInstance::DrawEditorPanel ()
 		camChanged |= ImGui::DragFloat3("rotation", &camRot.x, 0.01f);
 		ImGui::SliderFloat("move speed", &camMovementSpeed, 0.001f, 50.0f);
 		ImGui::SliderFloat("rot  speed", &camRotationSpeed, 0.001f, 5.0f);
+		float fovDeg = Camera->FieldOfViewY * 57.29578f;
+		if (ImGui::SliderFloat("vertical FOV", &fovDeg, 20.0f, 120.0f, "%.1f deg"))
+		{
+			Camera->FieldOfViewY = fovDeg / 57.29578f;
+		}
 
 		Camera->MovementSpeed = camMovementSpeed;
 		Camera->RotationSpeed = camRotationSpeed;
@@ -314,7 +321,6 @@ void GameInstance::DrawEditorPanel ()
 				ent->Transform.SetTranslation(pos);
 				ent->Transform.SetRotation(rot);
 				ent->Transform.SetScale(scl);
-				World.bSceneTopologyDirty = true;
 				World.bAccumulationDirty = true;
 			}
 		}

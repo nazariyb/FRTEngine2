@@ -1,9 +1,15 @@
 ﻿#include "DemoGame.h"
 
+#include "Entity.h"
 #include "ECS/Comp_Name.h"
 #include "ECS/World.h"
 #include "Graphics/GeometryScript.h"
 #include "Graphics/MeshGeneration.h"
+#include "Graphics/Model.h"
+#include "Graphics/Render/MaterialLibrary.h"
+#ifndef FRT_HEADLESS
+#include "Graphics/Render/Renderer.h"
+#endif
 #include "Math/Comp_LocalTransform.h"
 #include "Math/Comp_WorldTransform.h"
 
@@ -27,7 +33,7 @@ void DemoGame::Load()
 	GameInstance::Load();
 
 	// Headless has no renderer, so materials are resolved through a standalone library.
-	// Same split as SRenderModel::LoadFromFile — see Graphics/Model.cpp.
+	// Models resolve their materials through the library passed to SRenderModel::LoadFromFile.
 #ifndef FRT_HEADLESS
 	CMaterialLibrary& materialLibrary = Renderer->GetMaterialLibrary();
 #else
@@ -93,7 +99,7 @@ void DemoGame::Load()
 	skullEnt->RenderModel->Model = memory::NewShared<graphics::SRenderModel>(
 		graphics::SRenderModel::LoadFromFile(
 			R"(..\Core\Content\Models\Skull\scene.gltf)",
-			R"(..\Core\Content\Models\Skull\textures\defaultMat_baseColor.jpeg)"));
+			R"(..\Core\Content\Models\Skull\textures\defaultMat_baseColor.jpeg)", materialLibrary));
 	skullEnt->Transform.SetTranslation(-2.5f, 1.5f, 0.f);
 	skullEnt->Transform.SetScale(Vector3f(.45f));
 	skullEnt->RotationSpeed = Vector3f::UpVector * (math::PI_OVER_FOUR * 0.25f);
@@ -102,7 +108,7 @@ void DemoGame::Load()
 	duckEnt->RenderModel->Model = memory::NewShared<graphics::SRenderModel>(
 		graphics::SRenderModel::LoadFromFile(
 			R"(..\Core\Content\Models\Duck\Duck.gltf)",
-			R"(..\Core\Content\Models\Duck\DuckCM.png)"));
+			R"(..\Core\Content\Models\Duck\DuckCM.png)", materialLibrary));
 	duckEnt->Transform.SetTranslation(0.f, 0.f, 0.f);
 
 	// TODO: When Sponza is added, the renderer crashes. Probably multiple sections aren't handled properly
@@ -110,7 +116,7 @@ void DemoGame::Load()
 	sponzaEnt->RenderModel->Model = memory::NewShared<graphics::SRenderModel>(
 		graphics::SRenderModel::LoadFromFile(
 			R"(..\Core\Content\Models\Sponza\Sponza.gltf)",
-			""));
+			"", materialLibrary));
 	// sponzaEnt->Transform.SetTranslation(1.f, 0.f, 0.f);
 	sponzaEnt->bRayTraced = false;
 

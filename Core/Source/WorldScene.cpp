@@ -1,16 +1,13 @@
 ﻿#include "WorldScene.h"
 
-#include "GameInstance.h"
-#include "Sys_MeshRenderer.h"
+#include "Entity.h"
 #include "ECS/CommandBuffer.h"
 #include "ECS/CoreComponents.h"
 #include "ECS/Sys_Lifetime.h"
 #include "ECS/Sys_Transform.h"
 #include "ECS/World.h"
 
-frt::CWorldScene::CWorldScene (GameInstance& InGame)
-	: Game(InGame)
-{}
+frt::CWorldScene::CWorldScene () = default;
 
 frt::CWorldScene::~CWorldScene ()
 {
@@ -29,12 +26,6 @@ frt::CWorldScene::~CWorldScene ()
 
 bool frt::CWorldScene::Initialize ()
 {
-#ifndef FRT_HEADLESS
-	MeshRenderer = memory::NewUnique<Sys_MeshRenderer>(Game.GetRenderer());
-#else
-	MeshRenderer = memory::NewUnique<Sys_MeshRenderer>();
-#endif
-
 	// Safe here but not in the constructor: GameInstance builds its memory pool in its
 	// own body, which runs after CWorldScene is constructed as a member. CWorld allocates
 	// its parent and children pools up front, so it has to wait for Initialize().
@@ -57,13 +48,13 @@ bool frt::CWorldScene::Initialize ()
 	return true;
 }
 
-FRT_CORE_API frt::CWorld& frt::CWorldScene::GetEcsWorld ()
+frt::CWorld& frt::CWorldScene::GetEcsWorld ()
 {
 	frt_assert(EcsWorld);
 	return *EcsWorld;
 }
 
-FRT_CORE_API const frt::CWorld& frt::CWorldScene::GetEcsWorld () const
+const frt::CWorld& frt::CWorldScene::GetEcsWorld () const
 {
 	frt_assert(EcsWorld);
 	return *EcsWorld;
@@ -100,7 +91,7 @@ void frt::CWorldScene::RunSystemsPhase (EUpdatePhase Phase, const SUpdateContext
 	}
 }
 
-FRT_CORE_API frt::memory::TRefShared<frt::CEntity> frt::CWorldScene::SpawnEntity (const std::string& Name)
+frt::memory::TRefShared<frt::CEntity> frt::CWorldScene::SpawnEntity (const std::string& Name)
 {
 	auto newEntity = memory::NewShared<CEntity>();
 	if (Name.empty())
@@ -112,8 +103,7 @@ FRT_CORE_API frt::memory::TRefShared<frt::CEntity> frt::CWorldScene::SpawnEntity
 		newEntity->Name = Name;
 	}
 	Entities.Add(newEntity);
-	newEntity->RenderModel = MeshRenderer->SpawnRenderModel();
-	bSceneTopologyDirty = true;
+	newEntity->RenderModel = memory::NewShared<graphics::Comp_RenderModel>();
 	return newEntity;
 }
 
@@ -122,20 +112,7 @@ void frt::CWorldScene::RunFrame (float InDeltaSeconds)
 	SUpdateContext Context;
 	Context.DeltaSeconds = InDeltaSeconds;
 
-	const SFlags<EUpdatePhase>& MeshRendererPhases = MeshRenderer->GetPhases();
-
-	if (!IsPhasePaused(EUpdatePhase::Prepare) && (MeshRendererPhases && EUpdatePhase::Prepare))
-	{
-		MeshRenderer->Prepare(Context);
-	}
-
 	RunSystemsPhase(EUpdatePhase::Prepare, Context);
-
-	if (!IsPhasePaused(EUpdatePhase::Update) && (MeshRendererPhases && EUpdatePhase::Update))
-	{
-		MeshRenderer->Update(Context);
-	}
-
 	RunSystemsPhase(EUpdatePhase::Update, Context);
 
 	// The safe phase boundary. Systems record structural changes during Update rather than
@@ -143,14 +120,6 @@ void frt::CWorldScene::RunFrame (float InDeltaSeconds)
 	// the very pools they are iterating. Applying here means everything downstream - the
 	// Finalize systems below included - sees a settled entity set.
 	Commands->Flush(*EcsWorld);
-
-	// NOTE: Sys_MeshRenderer's Finalize runs before the entity tick below, so the
-	// acceleration structure it builds trails the transforms by a frame. That predates
-	// the ECS and is left alone here rather than silently reordered.
-	if (!IsPhasePaused(EUpdatePhase::Finalize) && (MeshRendererPhases && EUpdatePhase::Finalize))
-	{
-		MeshRenderer->Finalize(Context);
-	}
 
 	if (!IsPhasePaused(EUpdatePhase::Update))
 	{
@@ -161,34 +130,9 @@ void frt::CWorldScene::RunFrame (float InDeltaSeconds)
 	}
 
 	// Deliberately last: Finalize exists so a system can observe every Update-phase write,
-	// which for Sys_Transform means every local transform touched this frame.
+	// which for Sys_Transform means every local transform touched this frame. The renderer
+	// is described afterwards (ExtractRenderScene), so it sees this frame's transforms.
 	RunSystemsPhase(EUpdatePhase::Finalize, Context);
-
-	// Object constants used to be filled here, one per CEntity, and indexed in the raster
-	// draw loop by render-model slot. The two lined up only because SpawnEntity created a
-	// render model for every entity, drawable or not. Sys_MeshRenderer now fills them from
-	// its own drawable list - the same one the raster loop and the acceleration structure
-	// index into, and the one that includes ECS entities.
-}
-
-void frt::CWorldScene::SubmitFrame (ID3D12GraphicsCommandList4* CommandList)
-{
-	SDrawUpdateContext Context;
-	Context.CommandList = CommandList;
-
-	const SFlags<EUpdatePhase>& MeshRendererPhases = MeshRenderer->GetPhases();
-	if (MeshRendererPhases && EUpdatePhase::Draw)
-	{
-		MeshRenderer->Draw(Context);
-	}
-
-	for (ISystem* system : Systems)
-	{
-		if (system->GetPhases() && EUpdatePhase::Draw)
-		{
-			system->Draw(Context);
-		}
-	}
 }
 
 bool frt::CWorldScene::IsPhasePaused (EUpdatePhase Phase) const

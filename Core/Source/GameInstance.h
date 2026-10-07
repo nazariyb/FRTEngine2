@@ -8,7 +8,7 @@
 #include "Core.h"
 #include "Singleton.h"
 #include "Window.h"
-#include "Sys_MeshRenderer.h"
+#include "Graphics/Render/RenderView.h"
 #include "WorldScene.h"
 #include "Config/Config.h"
 #include "Graphics/Render/GraphicsCoreTypes.h"
@@ -21,12 +21,6 @@
 #include "Profiler/ProfilingSession.h"
 #include "Profiler/SceneDescriptor.h"
 #include "User/UserSettings.h"
-
-
-namespace frt::graphics
-{
-class CCamera;
-}
 
 
 namespace frt::graphics
@@ -60,10 +54,7 @@ public:
 #if !defined(FRT_HEADLESS)
 	memory::TRefWeak<graphics::CRenderer> GetRenderer () const;
 
-	// temp
 	CWindow& GetWindow () const { return *Window; }
-	memory::TRefWeak<graphics::CCamera> GetCamera () const { return Camera.GetWeak(); }
-	// ~temp
 #endif
 	input::CInputSystem& GetInputSystem () { return InputSystem; }
 	const input::CInputSystem& GetInputSystem () const { return InputSystem; }
@@ -119,13 +110,11 @@ protected:
 #ifndef FRT_HEADLESS
 	CWindow* Window;
 	memory::TRefUnique<graphics::CRenderer> Renderer;
-	memory::TRefShared<graphics::CCamera> Camera;
 	graphics::CRenderView* MainView = nullptr;    // owned by the renderer
 	graphics::SCameraView MainCameraView;
 
 #endif
 	CWorldScene World;
-	memory::TRefWeak<Sys_MeshRenderer> MeshRenderer;
 	input::CInputSystem InputSystem;
 	input::CInputActionLibrary InputActionLibrary;
 	input::SInputActionMapAsset* ActiveActionMap = nullptr;
@@ -133,8 +122,7 @@ protected:
 	graphics::SDisplayOptions DisplayOptions;
 	SUserSettings UserSettings;
 
-	// Live raytracing knobs — written by ImGui sliders, read by Sys_MeshRenderer when
-	// filling SPassConstants. Tweak at runtime without shader recompile.
+	// Live raytracing knobs — written by ImGui sliders, read by scene extraction.
 	struct SRtSettings
 	{
 		uint32 SampleCount = 32u;
@@ -149,23 +137,9 @@ public:
 	SRtSettings& GetRtSettings () { return RtSettings; }
 	const SRtSettings& GetRtSettings () const { return RtSettings; }
 
-	graphics::SSkyConstants& GetSkySettings () { return SkySettings; }
-	const graphics::SSkyConstants& GetSkySettings () const { return SkySettings; }
-
-	float GetSunAngularRadius () const { return SunAngularRadius; }
-
-	float& GetTimeOfDay () { return TimeOfDay; }
-	float GetTimeOfDay () const { return TimeOfDay; }
-	bool& UseTimeOfDay () { return bUseTimeOfDay; }
-	bool UseTimeOfDay () const { return bUseTimeOfDay; }
-
 protected:
 	SRtSettings RtSettings;
 
-	graphics::SSkyConstants SkySettings;
-	float TimeOfDay = 0.5f;    // [0,1]; 0.5 = noon
-	float SunAngularRadius = 0.004654f; // radians; the real sun is ~0.267 deg
-	bool bUseTimeOfDay = true; // when true, ImGui slider drives SkySettings via ComputeSkyFromTimeOfDay
 	bool bShowImGui = true;    // toggled by key I; when false DrawUI is skipped
 
 	// Editor selection — index into CWorldScene::GetEntities(). -1 = nothing selected.

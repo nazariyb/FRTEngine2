@@ -1,6 +1,6 @@
 #include "MeshGeneration.h"
 
-#include "Render/Renderer.h"
+#include "Graphics/Render/Material.h"
 #include "Containers/Array.h"
 
 
