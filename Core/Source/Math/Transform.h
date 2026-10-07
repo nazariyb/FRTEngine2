@@ -61,17 +61,22 @@ inline const DirectX::XMFLOAT4X4& STransform::GetMatrix () const
 {
 	using namespace DirectX;
 
+	// Rotation * Scale * Translation * F, with F the engine (LUF) -> render (DirectX, RUF)
+	// conversion: negating X of the WORLD result, v * M * F. This is the same conversion camera,
+	// lights and portals use (ToDirectXCoordinates), so positions agree everywhere. Flipping the
+	// local X instead (F * M) mirrors objects in place but leaves their translation unconverted,
+	// which put meshes on the opposite side of X from the lights and the camera.
+	//
+	// Written out rather than as XMMatrixMultiply by scale, translation and flip matrices - the
+	// same values exactly. MSVC 14.44's optimizer miscompiled the multiply chain in Release
+	// (Core.dll's exported copy splatted the wrong lane for the translation row and dropped Z
+	// translation), and the explicit form has nothing for it to fold.
 	const XMMATRIX rotation = XMMatrixRotationRollPitchYaw(Rotation.x, Rotation.y, Rotation.z);
-	const XMMATRIX scale = XMMatrixScaling(Scale.x, Scale.y, Scale.z);
-	const XMMATRIX translation = XMMatrixTranslation(Translation.x, Translation.y, Translation.z);
-	const XMMATRIX engineMatrix = XMMatrixMultiply(XMMatrixMultiply(rotation, scale), translation);
-	// Engine (LUF) -> render (DirectX, RUF) by negating X of the WORLD result: v * M * F.
-	// This is the same conversion camera, lights and portals use (ToDirectXCoordinates), so
-	// positions agree everywhere. Flipping the local X instead (F * M) mirrors objects in place
-	// but leaves their translation unconverted, which put meshes on the opposite side of X
-	// from the lights and the camera.
-	const XMMATRIX lufToDx = XMMatrixScaling(-1.f, 1.f, 1.f);
-	MatrixIntr = XMMatrixMultiply(engineMatrix, lufToDx);
+	const XMVECTOR rowScale = XMVectorSet(-Scale.x, Scale.y, Scale.z, 1.0f);
+	MatrixIntr.r[0] = XMVectorMultiply(rotation.r[0], rowScale);
+	MatrixIntr.r[1] = XMVectorMultiply(rotation.r[1], rowScale);
+	MatrixIntr.r[2] = XMVectorMultiply(rotation.r[2], rowScale);
+	MatrixIntr.r[3] = XMVectorSet(-Translation.x, Translation.y, Translation.z, 1.0f);
 
 	XMStoreFloat4x4(&Matrix4x4, MatrixIntr);
 
