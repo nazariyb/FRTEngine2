@@ -100,9 +100,11 @@ namespace refs
 			return this;
 		}
 
+		// A weak reference may outlive the object (that is its point), so copying one only
+		// needs the control block to be alive, not the object.
 		TRefControlBlock* CopyWeak ()
 		{
-			frt_assert(StrongRefCount > 0u);
+			frt_assert(WeakRefCount > 0u);
 			++WeakRefCount;
 			return this;
 		}
@@ -318,7 +320,8 @@ namespace refs
 	{
 		TRefShared () = default;
 
-		TRefShared (const TRefShared& Other) { Control = Other.Control->CopyStrong(); }
+		// Copying an empty ref yields an empty ref (the old code dereferenced the null control).
+		TRefShared (const TRefShared& Other) : Control{ Other.Control ? Other.Control->CopyStrong() : nullptr } {}
 
 		TRefShared& operator= (const TRefShared& Other)
 		{
@@ -326,11 +329,12 @@ namespace refs
 			{
 				return *this;
 			}
+			TRefControlBlock<T>* const NewControl = Other.Control ? Other.Control->CopyStrong() : nullptr;
 			if (Control)
 			{
 				Control->DecrementStrong();
 			}
-			Control = Other.Control->CopyStrong();
+			Control = NewControl;
 			return *this;
 		}
 
@@ -338,6 +342,10 @@ namespace refs
 
 		TRefShared& operator= (TRefShared&& Other) noexcept
 		{
+			if (this == &Other)
+			{
+				return *this;
+			}
 			if (Control)
 			{
 				Control->DecrementStrong();
@@ -357,7 +365,7 @@ namespace refs
 
 		TRefShared (TRefControlBlock<T>* InControl) : Control{ InControl } {}
 
-		TRefWeak<T> GetWeak () const { return TRefWeak<T>(Control->CopyWeak()); }
+		TRefWeak<T> GetWeak () const { return TRefWeak<T>(Control ? Control->CopyWeak() : nullptr); }
 		TRefObserver<T, false> GetObserver () const { return TRefObserver<T, false>(Ptr()); }
 		TRefBorrowed<T, false> GetBorrowed () const { return TRefBorrowed<T, false>(Ptr()); }
 
@@ -381,7 +389,7 @@ namespace refs
 			Control = nullptr;
 		}
 
-		void Reset (const TRefControlBlock<T>* NewPtr = nullptr)
+		void Reset (TRefControlBlock<T>* NewPtr = nullptr)
 		{
 			if (Control)
 			{
@@ -403,7 +411,7 @@ namespace refs
 	{
 		TRefWeak () = default;
 
-		TRefWeak (const TRefWeak& Other) : Control{ Other.Control->CopyWeak() } {}
+		TRefWeak (const TRefWeak& Other) : Control{ Other.Control ? Other.Control->CopyWeak() : nullptr } {}
 
 		TRefWeak& operator= (const TRefWeak& Other)
 		{
@@ -411,11 +419,12 @@ namespace refs
 			{
 				return *this;
 			}
+			TRefControlBlock<T>* const NewControl = Other.Control ? Other.Control->CopyWeak() : nullptr;
 			if (Control)
 			{
 				Control->DecrementWeak();
 			}
-			Control = Other.Control->CopyWeak();
+			Control = NewControl;
 			return *this;
 		}
 
@@ -423,6 +432,10 @@ namespace refs
 
 		TRefWeak& operator= (TRefWeak&& Other) noexcept
 		{
+			if (this == &Other)
+			{
+				return *this;
+			}
 			if (Control)
 			{
 				Control->DecrementWeak();
@@ -473,10 +486,12 @@ namespace refs
 		const T* operator-> () const { return Ptr(); }
 		const T& operator* () const { return *Ptr(); }
 
-		explicit constexpr operator bool () const { return Ptr() != nullptr; }
+		// Valid while the object is alive: the control block (and so Ptr()) outlives the object
+		// for as long as weak refs exist, so a non-null Ptr() alone said nothing.
+		explicit constexpr operator bool () const { return Control && Control->StrongRefCount > 0u; }
 		explicit operator const T* () const { return Ptr(); }
 
-		TRefShared<T> Lock () { return TRefShared<T>(Control->CopyStrong()); }
+		TRefShared<T> Lock () { return TRefShared<T>(*this ? Control->CopyStrong() : nullptr); }
 
 		void Reset (TRefControlBlock<T>* NewControl = nullptr)
 		{
@@ -505,8 +520,14 @@ namespace refs
 
 		TRefUnique (TRefUnique&& Other) noexcept { Move(std::move(Other)); }
 
+		// Releases the current object first: assigning a new unique ref used to leak the old one.
 		TRefUnique& operator= (TRefUnique&& Other) noexcept
 		{
+			if (this == &Other)
+			{
+				return *this;
+			}
+			Release();
 			Move(std::move(Other));
 			return *this;
 		}
@@ -522,7 +543,7 @@ namespace refs
 
 		TRefUnique (TRefControlBlock<T>* InControl) : Control{ InControl } {}
 
-		TRefWeak<T> GetWeak () const { return TRefWeak<T>(Control->CopyWeak()); }
+		TRefWeak<T> GetWeak () const { return TRefWeak<T>(Control ? Control->CopyWeak() : nullptr); }
 		TRefObserver<T, false> GetObserver () const { return TRefObserver<T, false>(Ptr()); }
 		TRefBorrowed<T, false> GetBorrowed () const { return TRefBorrowed<T, false>(Ptr()); }
 
@@ -546,7 +567,7 @@ namespace refs
 			Control = nullptr;
 		}
 
-		void Reset (const TRefControlBlock<T>* NewPtr = nullptr)
+		void Reset (TRefControlBlock<T>* NewPtr = nullptr)
 		{
 			if (Control)
 			{
@@ -559,7 +580,7 @@ namespace refs
 		// Empty refs must yield nullptr, not nullptr + sizeof(control block).
 		T* Ptr () { return Control ? Control->Ptr() : nullptr; }
 		const T* Ptr () const { return Control ? Control->Ptr() : nullptr; }
-		TRefControlBlock<T>* Control;
+		TRefControlBlock<T>* Control = nullptr;
 	};
 }
 }
