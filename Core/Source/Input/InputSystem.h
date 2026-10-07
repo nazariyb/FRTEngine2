@@ -86,7 +86,7 @@ private:
 private:
 	std::unordered_map<WindowId, SWindowInputState> WindowStates;
 	WindowId DefaultWindow = InvalidWindowId;
-	float CurrentTimeSeconds = 0.0f;         // since the first Update
+	double CurrentTimeSeconds = 0.0;         // since the first Update; double so it keeps ticking in long sessions
 	bool bRawMouseSeen = false;
 };
 }

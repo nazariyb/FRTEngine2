@@ -133,7 +133,13 @@ namespace
 			case 0x0044: return KeyCode::F10;
 			case 0x0057: return KeyCode::F11;
 			case 0x0058: return KeyCode::F12;
-			case 0x0045: return KeyCode::NumLock;
+			// The physical key decides, never the virtual one: with Ctrl held NumLock reports
+			// VK_PAUSE, and its release may come without Ctrl (GLFW's mapping).
+			case 0x0045: return KeyCode::Pause;
+			case 0x0145: return KeyCode::NumLock;
+			case 0x0146: return KeyCode::Pause;           // Ctrl+Pause
+			case 0x0137: return KeyCode::PrintScreen;
+			case 0x0054: return KeyCode::PrintScreen;     // Alt+PrintScreen
 			case 0x0046: return KeyCode::ScrollLock;
 			case 0x0047: return KeyCode::Numpad7;
 			case 0x0048: return KeyCode::Numpad8;
@@ -170,15 +176,6 @@ namespace
 
 	KeyCode TranslateKey (WPARAM wParam, LPARAM lParam)
 	{
-		// Pause and NumLock share scan code 0x45 (NumLock with the extended bit): tell them apart
-		// by their virtual keys first.
-		switch (wParam)
-		{
-			case VK_PAUSE: return KeyCode::Pause;
-			case VK_NUMLOCK: return KeyCode::NumLock;
-			default: break;
-		}
-
 		const uint16 scanCode = static_cast<uint16>((lParam >> 16) & 0xFF);
 		const bool bExtended = (lParam & (1 << 24)) != 0;
 		KeyCode key = TranslateScanCode(scanCode, bExtended);
@@ -187,9 +184,13 @@ namespace
 			return key;
 		}
 
-		if (wParam == VK_SNAPSHOT)
+		// Synthetic input may carry no scan code at all.
+		switch (wParam)
 		{
-			return KeyCode::PrintScreen;
+			case VK_SNAPSHOT: return KeyCode::PrintScreen;
+			case VK_PAUSE: return KeyCode::Pause;
+			case VK_NUMLOCK: return KeyCode::NumLock;
+			default: break;
 		}
 
 		return KeyCode::Unknown;

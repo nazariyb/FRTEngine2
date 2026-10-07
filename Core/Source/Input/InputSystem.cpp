@@ -119,7 +119,7 @@ float CInputSystem::GetKeyHeldSeconds (KeyCode Key, WindowId Window) const
 		return 0.0f;
 	}
 
-	return std::max(0.0f, CurrentTimeSeconds - key.LastPressedTime);
+	return static_cast<float>(std::max(0.0, CurrentTimeSeconds - key.LastPressedTime));
 }
 
 SFlags<EInputModifier> CInputSystem::GetModifiers (WindowId Window) const

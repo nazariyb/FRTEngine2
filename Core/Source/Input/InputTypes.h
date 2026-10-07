@@ -328,8 +328,8 @@ struct SButtonState
 	uint8 PressCount = 0u;
 	uint8 ReleaseCount = 0u;
 	FRT_STRUCT_PADDING(1);
-	float LastPressedTime = 0.0f;
-	float LastReleasedTime = 0.0f;
+	double LastPressedTime = 0.0;          // CInputSystem's clock
+	double LastReleasedTime = 0.0;
 };
 
 
