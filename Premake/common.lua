@@ -106,3 +106,69 @@ buildPlatforms = { "Win64" }
 if not (_ACTION and _ACTION:match("^vs")) then
 	table.insert(buildPlatforms, "Linux")
 end
+
+-----------------------------------------
+-----------  Project helpers  -----------
+-----------------------------------------
+-- The game project the hosts (Launcher, Editor) run by default: their working directory -
+-- project config and content resolve from it - and, through its Config/Game.ini, the game
+-- module they load. Another game: -Game:Module=<Name> with that project as working directory.
+defaultGameProject = "Demo"
+
+-- One directory per platform, configurations separated by the target name (see core.lua).
+function flatBinaries()
+	targetdir (rootpath("Binaries/%{cfg.platform}"))
+	objdir (rootpath("Intermediate/%{cfg.platform}/%{cfg.buildcfg}/%{prj.name}"))
+
+	filter "configurations:Release-*"
+		targetname "%{prj.name}"
+	filter "configurations:not Release-*"
+		targetname "%{prj.name}-%{cfg.buildcfg}"
+	filter {}
+end
+
+-- Everything a project linking Core needs: includes, link, defines, warnings, precision.
+function useCore()
+	includedirs
+	{
+		-- D3D12 Agility SDK headers must win over the Windows SDK's d3d12.h, so they go first.
+		path.join(thirdPartyDir, "D3D12Agility/include"),
+		rootpath("Core/Source"),
+		rootpath("Core/Content/Shaders"),
+		path.join(thirdPartyDir, "Dxc/inc"),
+		-- Dear ImGui is compiled into and exported from Core (Core/Source/UI/ImGuiConfig.h).
+		path.join(thirdPartyDir, "Imgui"),
+	}
+
+	links { "Core" }
+
+	filter "platforms:Win64"
+		defines { "WIN64", "_WINDOWS" }
+
+	-- Core exports templated/STL members across the DLL boundary. Same compiler+runtime on both
+	-- sides, so C4251/C4275 are benign. Mirrors the suppression in core.lua.
+	filter "action:vs*"
+		disablewarnings { "4251", "4275" }
+
+	filter "configurations:Debug-*"
+		defines { "_DEBUG" }
+		symbols "On"
+
+	filter "configurations:Release-*"
+		defines { "NDEBUG", "RELEASE" }
+		optimize "On"
+
+	filter "configurations:*-Headless"
+		defines { "FRT_HEADLESS" }
+
+	filter {}
+
+	-- Must match Core's precision. See the top of this file.
+	applyPrecision()
+end
+
+-- A host executable: debugs in the default game's project directory and builds its module.
+function hostProject()
+	debugdir (rootpath(defaultGameProject))
+	dependson { defaultGameProject }
+end

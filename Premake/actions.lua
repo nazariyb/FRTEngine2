@@ -28,7 +28,7 @@ newaction
 		removeDirectory(rootpath("Binaries"))
 		removeDirectory(rootpath("Intermediate"))
 
-		for _, folder in ipairs({ ".", "Core", "Core-Test", "Demo" }) do
+		for _, folder in ipairs({ ".", "Core", "Core-Test", "Demo", "Launcher", "Editor" }) do
 			os.remove(rootpath(folder.."/".."*.sln"))
 			os.remove(rootpath(folder.."/".."*.vcxproj"))
 			os.remove(rootpath(folder.."/".."*.vcxproj.filters"))

@@ -73,7 +73,7 @@ Replace `<target>` with the Premake action for your toolchain (e.g. `vs2019`, `g
 
 1. Open the generated solution / project in your IDE or invoke your build system directly.
 2. Select a configuration (e.g. **Debug-Default | x64**).
-3. Set **Demo** as the startup project (if applicable).
+3. **Launcher** is the startup project: it runs the game module named in the working directory's `Config/Game.ini` (the Demo by default). Pressing F5 on the **Demo** project does the same.
 4. Build and run.
 
 ### Cleaning generated files
@@ -107,7 +107,8 @@ Camera movement is only active while **Right Mouse Button** is held.
 ```
 Core/             — engine library (DLL)
 Core-Test/        — unit tests (GoogleTest)
-Demo/             — sample application
+Launcher/         — runtime host: loads a game module and runs it standalone
+Demo/             — sample game, built as a game module (DLL)
 Schemas/          — JSON Schemas for YAML asset formats (IDE auto-completion)
 Tools/Analysis/   — Python package + Jupyter notebook for profiling-session analysis
 ThirdParty/       — vendored libraries (ImGui, Stb, DXR helpers, DXC, yaml-cpp, vcpkg)

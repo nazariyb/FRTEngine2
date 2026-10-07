@@ -1,4 +1,9 @@
-#include "RunGame.h"
+/**
+ * The launcher: the runtime host. Loads the game module named by the config, gives it one
+ * world and one view straight into the swap chain, and runs the frame. The debug tools are an
+ * overlay (I toggles them). With FRT_HEADLESS: no window, renderer or UI, the same simulation.
+ */
+#include "Engine/HostEntry.h"
 
 #include <cstdio>
 #include <exception>
@@ -11,6 +16,7 @@
 #include "WorldScene.h"
 #include "Engine/Automation.h"
 #include "Engine/Engine.h"
+#include "Engine/GameModule.h"
 #include "Engine/LaunchConfig.h"
 #include "Input/InputSystem.h"
 
@@ -27,7 +33,7 @@ namespace frt
 {
 namespace
 {
-int RunGameLoop (CEngine& Engine, GameFactory CreateGame)
+int RunGameLoop (CEngine& Engine, const CGameModule& Module)
 {
 	config::CConfig& config = Engine.GetConfig();
 	const input::CInputSystem& device = Engine.GetInput();
@@ -35,7 +41,7 @@ int RunGameLoop (CEngine& Engine, GameFactory CreateGame)
 
 	CWorldScene world;
 	world.Initialize();
-	std::unique_ptr<GameInstance> game(CreateGame());
+	std::unique_ptr<GameInstance> game = Module.CreateGame();
 	const SGameContext context { world, Engine.GetMaterials(), Engine.GetInputActions(), config };
 	game->BuildWorld(context);
 	ApplySceneLaunchConfig(config, world);
@@ -141,7 +147,7 @@ int RunGameLoop (CEngine& Engine, GameFactory CreateGame)
 }
 }
 
-int RunGame (GameFactory CreateGame)
+int RunLauncher ()
 {
 	CEngine engine;
 	if (!engine.StartUp({}))
@@ -149,28 +155,44 @@ int RunGame (GameFactory CreateGame)
 		return 1;
 	}
 
-	int exitCode = 0;
-	try
+	int exitCode = 1;
 	{
-		exitCode = RunGameLoop(engine, CreateGame);
-	}
-	catch (const Exception& e)
-	{
-		std::cout << e.What() << " " << e.GetErrorCode() << " : " << e.GetErrorDescription() << std::endl;
-		exitCode = 1;
-	}
-	catch (const std::exception& e)
-	{
-		std::cout << e.what() << std::endl;
-		exitCode = 1;
-	}
-	catch (...)
-	{
-		std::cout << "Unknown exception" << std::endl;
-		exitCode = 1;
+		CGameModule module;
+		if (module.Load(CGameModule::GetConfiguredName(engine.GetConfig())))
+		{
+			try
+			{
+				exitCode = RunGameLoop(engine, module);
+			}
+			catch (const Exception& e)
+			{
+				std::cout << e.What() << " " << e.GetErrorCode() << " : " << e.GetErrorDescription() << std::endl;
+			}
+			catch (const std::exception& e)
+			{
+				std::cout << e.what() << std::endl;
+			}
+			catch (...)
+			{
+				std::cout << "Unknown exception" << std::endl;
+			}
+		}
 	}
 
 	engine.ShutDown();
 	return exitCode;
 }
+}
+
+
+FRT_D3D12_AGILITY_EXPORTS
+
+#if !defined(FRT_HEADLESS)
+int APIENTRY wWinMain (_In_ HINSTANCE, _In_opt_ HINSTANCE, _In_ LPWSTR, _In_ int)
+#else
+int main ()
+#endif
+{
+	FRT_VERIFY_REAL_PRECISION_ABI();
+	return frt::RunLauncher();
 }

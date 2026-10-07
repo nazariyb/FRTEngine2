@@ -1,6 +1,5 @@
 #include "DemoGame.h"
-#include "RunGame.h"
+#include "Engine/GameModule.h"
 
-using namespace frt;
-
-FRT_RUN_GAME(DemoGame);
+// Makes this DLL a game module: the launcher and the editor find the game through it.
+FRT_IMPLEMENT_GAME_MODULE(DemoGame)
