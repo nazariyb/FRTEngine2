@@ -77,15 +77,23 @@ void ExtractPortals (CWorld& InWorld, TArray<SPortal>& OutPortals)
 			continue;
 		}
 
-		// Only the centre comes from the transform. Normal and the half-extent edges are
-		// authored in world space, as in the scan this replaces.
+		// Normal and half extents are authored in the entity's local frame and follow its
+		// world basis, exactly like the portal visualisation quad built from the same fields;
+		// before, only the centre followed the entity and a rotated portal tested a quad that
+		// did not match the opening it marked.
 		const Vector3f center = math::VectorCast<float>(transform.Translation);
+		Vector3f normal = transform.TransformNormal(source.Normal);
+		const float normalLength = std::sqrt(normal.SizeSquared());
+		if (normalLength > 0.0f)
+		{
+			normal = normal * (1.0f / normalLength);
+		}
 
 		SPortal portal;
 		portal.Center = math::ToDirectXCoordinates(center);
-		portal.Normal = math::ToDirectXCoordinates(source.Normal);
-		portal.Edge1  = math::ToDirectXCoordinates(source.Edge1);
-		portal.Edge2  = math::ToDirectXCoordinates(source.Edge2);
+		portal.Normal = math::ToDirectXCoordinates(normal);
+		portal.Edge1  = math::ToDirectXCoordinates(transform.TransformDirection(source.Edge1));
+		portal.Edge2  = math::ToDirectXCoordinates(transform.TransformDirection(source.Edge2));
 		portal.Flags  = (source.Shape == Comp_Portal::EShape::Ellipse)
 			? portal_flags::Ellipse
 			: 0u;
