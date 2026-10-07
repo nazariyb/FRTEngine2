@@ -24,6 +24,24 @@ A small experimental 3D engine built on Direct3D 12 and DirectX Raytracing (DXR)
 | **ImGui** | Dear ImGui is integrated for debug UI in non-headless builds. Includes live raytracing sliders, transform editor, stats panel, and frame-stat overlays. Press `I` to toggle the entire UI on/off. |
 | **Profiling** | GPU timestamps via PIX-named scopes (`CGpuProfiler`), wave-coalesced ray counters via a UAV ring (`CRayCounters`), an analytic scene-descriptor snapshot (per-portal world area + screen coverage), and a rolling per-frame metrics aggregator. A profiling-session driver sweeps a cartesian product of render settings (spp × bounces × Russian-roulette depth × portal on/off) and exports one `.txt` (settings + scene snapshot) and one `.csv` (every measured frame) per configuration under `Local/Profiling/<session>/`. A Python analysis package (`Tools/Analysis/` — see its own README) parses the output for plots, summary tables, and cost-model validation. |
 
+### Architecture
+
+```
+Editor.exe / Launcher.exe   hosts: own the loop, the worlds, the views
+        │  load by name ([Game] Module in Config/Game.ini)
+        ▼
+Demo.dll (game module)      GameInstance: BuildWorld, BeginPlay, Tick, EndPlay
+        │  both link
+        ▼
+Core.dll                    CEngine (window, renderer, input, UI, config),
+                            CWorldScene, CRenderer + CRenderView, CDebugTools
+```
+
+- **`CEngine`** starts and stops every subsystem explicitly, in dependency order, and provides the frame (`BeginFrame` … `RenderFrame`). It knows nothing about worlds or games: the hosts own those and call the game as a service.
+- **Games are modules.** `FRT_IMPLEMENT_GAME_MODULE(MyGame)` turns a DLL into one; `CGameModule` loads it and checks its ABI. Neither host is built per game.
+- **Views.** The renderer draws any number of `CRenderView`s per frame — each with its own histories, size and render mode — from one shared scene. The launcher draws one straight into the swap chain; the editor draws its viewports into textures shown by ImGui.
+- **Editor frame.** Queued commands are applied first; panels then draw and report what happened as plain data, from which the editor routes camera and game input; the world updates; the visible viewports render. Play mode runs the game on a clone of the edited world with a fresh game instance, dropped on Stop.
+
 ### Build configurations
 
 Each build has two axes:
