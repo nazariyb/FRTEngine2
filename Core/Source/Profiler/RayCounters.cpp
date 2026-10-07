@@ -7,7 +7,7 @@
 
 namespace frt::profiler
 {
-static constexpr uint64 kCounterBytes = static_cast<uint64>(RC_Count) * sizeof(uint32);
+static constexpr uint64 kCounterBytes = CRayCounters::GetBufferBytes();
 
 bool CRayCounters::Init (ID3D12Device* Device, uint32 InFrameCount)
 {
@@ -32,9 +32,11 @@ bool CRayCounters::Init (ID3D12Device* Device, uint32 InFrameCount)
 
 	D3D12_HEAP_PROPERTIES defaultHeap = {};
 	defaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
+	// Buffers are created in COMMON (the runtime ignores anything else) and promoted to
+	// UNORDERED_ACCESS on first use; the explicit transitions below start from UAV.
 	if (FAILED(Device->CreateCommittedResource(
 			&defaultHeap, D3D12_HEAP_FLAG_NONE, &bufDesc,
-			D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
+			D3D12_RESOURCE_STATE_COMMON, nullptr,
 			IID_PPV_ARGS(CounterBuffer.GetAddressOf()))))
 	{
 		return false;
@@ -140,8 +142,10 @@ void CRayCounters::ClearForFrame (ID3D12GraphicsCommandList* CmdList)
 	{
 		return;
 	}
-	// Counter buffer lives in UAV state; copy zero in, return to UAV for shader writes.
-	Barrier(CmdList, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST);
+	// Counter buffer lives in UAV state; copy zero in, return to UAV for shader writes. The very
+	// first clear starts from COMMON (creation state); buffers promote implicitly from COMMON.
+	Barrier(CmdList, bFirstClear ? D3D12_RESOURCE_STATE_COMMON : D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_DEST);
+	bFirstClear = false;
 	CmdList->CopyBufferRegion(CounterBuffer.Get(), 0, ZeroBuffer.Get(), 0, kCounterBytes);
 	Barrier(CmdList, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 }
@@ -172,7 +176,7 @@ void CRayCounters::ReadbackFrame (uint32 FrameSlot)
 		return;
 	}
 
-	const uint32* src = static_cast<const uint32*>(mapped);
+	const uint64* src = static_cast<const uint64*>(mapped);
 	for (uint32 i = 0; i < RC_Count; ++i)
 	{
 		LastTotals.Values[i] = src[i];

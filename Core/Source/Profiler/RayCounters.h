@@ -10,8 +10,9 @@
 
 namespace frt::profiler
 {
-// Ray-counter slot layout. Mirror of the indices used in Hit.hlsl / RayGen.hlsl
-// (gCounters.InterlockedAdd at slot*4). Keep both sides in sync.
+// Ray-counter slot layout. Mirror of the RC_* defines in Shaders/Common/RayTracing.hlsli.
+// Each slot is 64-bit (low word with carry into the high word, slot * 8). Slots 0-8 keep the
+// meaning they had in the profiling CSVs; new slots are only ever appended.
 enum ERayCounter : uint32
 {
 	RC_Primary             = 0u, // camera rays
@@ -23,8 +24,12 @@ enum ERayCounter : uint32
 	RC_SkyShadowReachedSky = 6u, // dispatched ray escaped -> sky (useful)
 	RC_SkyShadowBlocked    = 7u, // dispatched ray hit geometry (wasted TLAS)
 	RC_PortalTests         = 8u, // portal-quad tests summed over all sky shadow rays (thesis E[K])
+	RC_OtherShadow         = 9u, // NEE shadow rays toward emissive triangles / local lights
+	RC_Escaped             = 10u, // bounce rays that left the scene (environment hits)
+	RC_RussianRoulette     = 11u, // paths terminated by Russian roulette
+	RC_InvalidSample       = 12u, // NaN / Inf contributions dropped
 
-	RC_Count               = 9u
+	RC_Count               = 13u
 };
 
 struct SRayCounters
@@ -54,6 +59,8 @@ public:
 	void ResolveFrame (ID3D12GraphicsCommandList* CmdList);
 
 	D3D12_GPU_VIRTUAL_ADDRESS GetGpuVa () const;
+	ID3D12Resource* GetResource () const { return CounterBuffer.Get(); }
+	static constexpr uint64 GetBufferBytes () { return static_cast<uint64>(RC_Count) * sizeof(uint64); }
 	const SRayCounters& GetLastTotals () const { return LastTotals; }
 
 private:
@@ -70,5 +77,6 @@ private:
 	uint32 FrameCount = 0u;
 	uint32 CurrentFrame = 0u;
 	bool bWarmedUp = false;
+	bool bFirstClear = true;
 };
 }

@@ -78,7 +78,8 @@ bool WriteConfigFramesCsv (
 	f << "frame,"
 	     "rt_ms,gpu_ms,frame_ms,"
 	     "pct_filtered,sky_efficiency,rays_per_pixel,tlas_dispatches,mean_portal_tests,"
-	     "primary,bounce,sun_shadow,sky_attempted,portal_pass,portal_rej,reached_sky,blocked,portal_tests\n";
+	     "primary,bounce,sun_shadow,sky_attempted,portal_pass,portal_rej,reached_sky,blocked,portal_tests,"
+	     "other_shadow,escaped,rr_terminated,invalid_samples\n";
 
 	for (std::size_t i = 0; i < Result.Frames.size(); ++i)
 	{
@@ -100,7 +101,11 @@ bool WriteConfigFramesCsv (
 		  << m.Counters.Values[RC_SkyShadowPortalRej] << ','
 		  << m.Counters.Values[RC_SkyShadowReachedSky] << ','
 		  << m.Counters.Values[RC_SkyShadowBlocked] << ','
-		  << m.Counters.Values[RC_PortalTests] << '\n';
+		  << m.Counters.Values[RC_PortalTests] << ','
+		  << m.Counters.Values[RC_OtherShadow] << ','
+		  << m.Counters.Values[RC_Escaped] << ','
+		  << m.Counters.Values[RC_RussianRoulette] << ','
+		  << m.Counters.Values[RC_InvalidSample] << '\n';
 	}
 
 	std::printf("[profiler] wrote %s (%zu frames)\n", path.string().c_str(), Result.Frames.size());
