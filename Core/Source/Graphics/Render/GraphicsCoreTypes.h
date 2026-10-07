@@ -1,18 +1,15 @@
 #pragma once
 
 #include <DirectXMath.h>
+#include <d3d12.h>
 #include <wrl/client.h>
 
-#include "ConstantBuffer.h"
 #include "CoreUtils.h"
 #include "Enum.h"
-#include "RenderConstants.h"
-#include "RenderResourceAllocators.h"
 #include "Containers/Array.h"
 #include "Graphics/SColor.h"
 #include "Math/Math.h"
 
-struct ID3D12Heap;
 
 
 namespace frt::graphics
@@ -31,60 +28,8 @@ struct SVertex
 };
 #pragma pack(pop)
 
-struct SObjectConstants
-{
-	DirectX::XMFLOAT4X4 World;
-};
-
-
-struct SPassConstants
-{
-	DirectX::XMFLOAT4X4 View;
-	DirectX::XMFLOAT4X4 ViewInverse;
-	DirectX::XMFLOAT4X4 Projection;
-	DirectX::XMFLOAT4X4 ProjectionInverse;
-	DirectX::XMFLOAT4X4 ViewProjection;
-	DirectX::XMFLOAT4X4 ViewProjectionInverse;
-	Vector3f CameraPosition;
-	float Pad1;
-	Vector2f RenderTargetSize;
-	Vector2f RenderTargetSizeInverse;
-	float NearPlane = 0.f;
-	float FarPlane = 0.f;
-	float TotalTime = 0.f;
-	float DeltaTime = 0.f;
-	uint32 FrameIndex = 0u;
-	uint32 RaytracingSampleCount = 32u;   // samples per pixel per frame
-	uint32 AccumulationFrameIndex = 0u;   // resets to 0 whenever the camera or any object moves
-	uint32 RaytracingMaxBounces = 4u;     // upper bound on path depth in Hit.hlsl
-
-	uint32 RaytracingRussianRouletteDepth = 2u;  // depth at which RR termination kicks in
-	uint32 LightCount = 0u;               // entries in gLights buffer; 0 disables NEE
-	uint32 PortalCount = 0u;              // entries in gPortals buffer; 0 disables portal pre-filter
-	uint32 bPortalPreFilter = 1u;         // toggle: 0 = baseline (no filter), 1 = pre-filter on
-
-	uint32 bCountersEnabled = 0u;         // 0 = skip all ray-counter atomics (zero overhead)
-	uint32 PadPCB1 = 0u;
-	uint32 PadPCB2 = 0u;
-	uint32 PadPCB3 = 0u;                  // 16-byte alignment
-};
-
-
-struct SMaterialConstants
-{
-	SColor DiffuseAlbedo = { 1.f, 1.f, 1.f, 1.f };
-	uint32 TextureIndices[render::constants::RootMaterialTextureCount] = {};
-	uint32 Flags = 0u;
-	float Roughness = 1.f;
-	float Metallic = 0.f;
-	float EmissiveIntensity = 0.f;
-	SColor Emissive = { 0.f, 0.f, 0.f, 1.f };
-};
-
-
-// Sky / sun parameters consumed by the Miss shader (and later by NEE for the sun directional light).
-// Layout matches `cbuffer SkyConstantBuffer : register(b3)` in CoreTypes.hlsli.
-// Keep 16-byte-aligned groups; pad explicitly.
+// Sky / sun parameters as the editor exposes them. CGpuScene converts them into the baked sky
+// environment, the sun light and the frame constants.
 struct SSkyConstants
 {
 	Vector3f SunDirection      = { -0.30f, -0.70f, 0.60f }; // unit vector pointing FROM sun TO scene
@@ -109,8 +54,8 @@ struct SSkyConstants
 FRT_CORE_API void ComputeSkyFromTimeOfDay (float TimeOfDay, SSkyConstants& Out);
 
 
-// Tagged-union light entry. Layout matches struct SLight in CoreTypes.hlsli (96 bytes, 16-aligned).
-// Bound to RT shaders as `StructuredBuffer<SLight> gLights` for NEE sampling.
+// CPU-side light description produced by scene extraction (ECS Comp_Light) and converted
+// to gpu::SLightData by Sys_MeshRenderer.
 enum class ELightType : uint32
 {
 	Point       = 0u,
@@ -139,30 +84,9 @@ struct SLight
 	int32    Pad2        = -1;
 	int32    Pad3        = 0;
 };
-static_assert(sizeof(SLight) == 96u, "SLight layout must match HLSL");
 
 
-// CPU-side list of lights for the frame. Cleared and refilled by the light collector.
-// Uploaded into per-frame upload arena, returning a GPU VA the renderer patches into hit-group SBT records.
-class FRT_CORE_API CLightList
-{
-public:
-	void Clear ();
-	void Add (const SLight& Light);
-
-	// Copy the current list into the frame upload arena. Returns 0 if empty.
-	D3D12_GPU_VIRTUAL_ADDRESS UploadToArena (DX12_UploadArena& Arena) const;
-
-	uint32 Count () const;
-	const TArray<SLight>& GetLights () const { return Lights; }
-
-private:
-	TArray<SLight> Lights;
-};
-
-
-// Portal quad for the thesis pre-filter test. World-space rectangle through which sky-NEE
-// shadow rays may pass. Layout matches `struct SPortal` in CoreTypes.hlsli (64 bytes, 16-aligned).
+// CPU-side sky portal (window / door opening), render space. Converted to gpu::SPortalData.
 struct SPortal
 {
 	Vector3f Center    = { 0.f, 0.f, 0.f };
@@ -177,76 +101,11 @@ struct SPortal
 	Vector3f Edge2     = { 0.f, 1.f, 0.f }; // half-extent along up (world-space)
 	uint32   Flags     = 0u;                // bit0: 0 = rect, 1 = ellipse (inscribed in the rect)
 };
-static_assert(sizeof(SPortal) == 64u, "SPortal layout must match HLSL");
 
 namespace portal_flags
 {
 	static constexpr uint32 Ellipse = 1u << 0u;
 }
-
-
-class FRT_CORE_API CPortalList
-{
-public:
-	void Clear ();
-	void Add (const SPortal& Portal);
-
-	// Same upload-into-arena pattern as CLightList. Always returns a valid GPU VA
-	// (allocates a dummy slot when empty) so the SBT root SRV pointer is never null.
-	D3D12_GPU_VIRTUAL_ADDRESS UploadToArena (DX12_UploadArena& Arena) const;
-
-	uint32 Count () const;
-	const TArray<SPortal>& GetPortals () const { return Portals; }
-
-private:
-	TArray<SPortal> Portals;
-};
-
-
-struct SFrameResources
-{
-	FRT_DELETE_COPY_OPS(SFrameResources)
-	FRT_DEFAULT_MOVE_OPS(SFrameResources)
-
-	ComPtr<ID3D12CommandAllocator> CommandListAllocator;
-	SConstantBuffer<SPassConstants> PassCB;
-	SConstantBuffer<SSkyConstants> SkyCB;
-	SConstantBuffer<SObjectConstants> ObjectCB;
-	SConstantBuffer<SMaterialConstants> MaterialCB;
-	DX12_UploadArena UploadArena;
-
-	uint64 FenceValue = 0;
-
-	SFrameResources () = default;
-	SFrameResources (
-		ID3D12Device* Device,
-		uint32 PassCount,
-		uint32 ObjectCount,
-		uint32 MaterialCount,
-		DX12_Arena& BufferArena,
-		DX12_DescriptorHeap& DescriptorHeap);
-	~SFrameResources ();
-
-	void Init (
-		ID3D12Device* Device,
-		uint32 PassCount,
-		uint32 ObjectCount,
-		uint32 MaterialCount,
-		DX12_Arena& BufferArena,
-		DX12_DescriptorHeap& DescriptorHeap);
-
-	void EnsureObjectCapacity (
-		ID3D12Device* Device,
-		uint32 ObjectCount,
-		DX12_Arena& BufferArena,
-		DX12_DescriptorHeap& DescriptorHeap);
-
-	void EnsureMaterialCapacity (
-		ID3D12Device* Device,
-		uint32 MaterialCount,
-		DX12_Arena& BufferArena,
-		DX12_DescriptorHeap& DescriptorHeap);
-};
 
 
 enum class ERenderMode : int32
@@ -258,15 +117,6 @@ enum class ERenderMode : int32
 };
 
 
-namespace raytracing
-{
-	struct SAccelerationStructureBuffers
-	{
-		ComPtr<ID3D12Resource> Scratch;
-		ComPtr<ID3D12Resource> Result;
-		ComPtr<ID3D12Resource> InstanceDesc;
-	};
-}
 }
 
 

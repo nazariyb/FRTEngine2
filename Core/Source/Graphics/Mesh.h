@@ -4,7 +4,6 @@
 #include "CoreTypes.h"
 #include "Containers/Array.h"
 #include "Graphics/Render/GraphicsCoreTypes.h"
-#include "Render/Texture.h"
 
 
 namespace frt::graphics
@@ -19,12 +18,6 @@ struct FRT_CORE_API SMesh
 
 	TArray<SVertex> Vertices;
 	TArray<uint32> Indices;
-
-	ComPtr<ID3D12Resource> VertexBufferGpu = nullptr;
-	ComPtr<ID3D12Resource> IndexBufferGpu = nullptr;
-
-	// temp?
-	memory::TRefShared<STexture> Texture;
 
 	SMesh ()
 		: IndexOffset(0u)

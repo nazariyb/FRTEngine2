@@ -1,42 +1,19 @@
-﻿#include "Sys_MeshRenderer.h"
+#include "Sys_MeshRenderer.h"
 
 #include <cmath>
-#include <cstring>
-#include <limits>
-#include <unordered_map>
 
-#include "Exception.h"
 #include "GameInstance.h"
-#include "Timer.h"
-#include "Window.h"
 #include "Graphics/Camera.h"
-#include "Graphics/DXRUtils.h"
 #include "Graphics/GeometryScript.h"
 #include "Graphics/Model.h"
-#include "Graphics/Render/GraphicsCoreTypes.h"
-#include "Graphics/Render/Renderer.h"
 #include "Graphics/SceneExtraction.h"
-#include "Profiler/Profiler.h"
+
+#ifndef FRT_HEADLESS
+#include "Graphics/Render/Scene/GpuScene.h"
+#endif
 
 using namespace frt;
 
-
-#ifndef FRT_HEADLESS
-namespace
-{
-bool IsRaytracingSupported (ID3D12Device5* Device)
-{
-	D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5 = {};
-	return SUCCEEDED(Device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &options5, sizeof(options5)))
-			&& options5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_0;
-}
-
-bool AreMatricesEqual (const DirectX::XMFLOAT4X4& A, const DirectX::XMFLOAT4X4& B)
-{
-	return std::memcmp(&A, &B, sizeof(DirectX::XMFLOAT4X4)) == 0;
-}
-}
-#endif
 
 #if !defined(FRT_HEADLESS)
 Sys_MeshRenderer::Sys_MeshRenderer (memory::TRefWeak<graphics::CRenderer> InRenderer)
@@ -64,481 +41,13 @@ void Sys_MeshRenderer::Update (const SUpdateContext& Context)
 void Sys_MeshRenderer::Finalize (const SUpdateContext& Context)
 {
 #ifndef FRT_HEADLESS
-	CopyConstantData();
+	DescribeScene();
 #endif
 }
 
 void Sys_MeshRenderer::Draw (const SDrawUpdateContext& Context)
 {
-#ifndef FRT_HEADLESS
-	UploadCB(Context.CommandList);
-	UpdateAccelerationStructures();
-	Present(Context.DeltaSeconds, Context.CommandList);
-#endif
 }
-
-#ifndef FRT_HEADLESS
-void Sys_MeshRenderer::Present (float DeltaSeconds, ID3D12GraphicsCommandList4* CommandList)
-{
-	FRT_GPU_SCOPE(CommandList, "MeshRenderer_Present");
-
-	auto& currentFrameResources = Renderer->GetCurrentFrameResource();
-
-	// TODO: assign stable material indices in MaterialLibrary and update constants only when dirty.
-	std::unordered_map<const graphics::SMaterial*, uint32> materialIndices;
-	TArray<graphics::SMaterialConstants> materialConstants;
-	TArray<graphics::CRenderer::SRaytracingMaterialTextureSet> rtMaterialTextureSets;
-	TArray<graphics::CRenderer::SRaytracingHitGroupEntry> rtHitGroupEntries;
-
-	for (auto RenderModel : RenderModels)
-	{
-		graphics::SRenderModel& model = *RenderModel->Model;
-		for (const graphics::SRenderSection& section : model.Sections)
-		{
-			if (section.MaterialIndex >= model.Materials.Count())
-			{
-				continue;
-			}
-
-			graphics::SMaterial* material = model.Materials[section.MaterialIndex].GetRawIgnoringLifetime();
-			frt_assert(material);
-
-			auto it = materialIndices.find(material);
-			if (it == materialIndices.end())
-			{
-				const uint32 materialIndex = materialConstants.Count();
-				materialIndices.emplace(material, materialIndex);
-
-				graphics::SMaterialConstants& constants = materialConstants.Add();
-				constants.DiffuseAlbedo = material->DiffuseAlbedo;
-				constants.Roughness = material->Roughness;
-				constants.Metallic = material->Metallic;
-				constants.Emissive = material->Emissive;
-				constants.EmissiveIntensity = material->EmissiveIntensity;
-
-				constants.Flags = material->Flags.Flags;
-				for (uint32 textureIndex = 0; textureIndex < render::constants::RootMaterialTextureCount; ++
-					textureIndex)
-				{
-					constants.TextureIndices[textureIndex] = render::constants::MaterialTextureIndexInvalid;
-				}
-
-				auto& textureSet = rtMaterialTextureSets.Add();
-				if (material->bHasBaseColorTexture && material->BaseColorTexture.GpuTexture)
-				{
-					constants.TextureIndices[render::constants::MaterialTextureSlot_BaseColor] =
-						render::constants::MaterialTextureSlot_BaseColor;
-					textureSet.Textures[render::constants::MaterialTextureSlot_BaseColor] =
-						material->BaseColorTexture.GpuTexture;
-				}
-
-				material->RuntimeIndex = materialIndex;
-			}
-			else
-			{
-				material->RuntimeIndex = it->second;
-			}
-		}
-	}
-
-	Renderer->EnsureMaterialConstantCapacity(materialConstants.Count());
-	Renderer->SetRaytracingMaterialTextureSets(rtMaterialTextureSets);
-
-	if (!AsSources.IsEmpty() && (AsSources.Count() == AsModels.Count()))
-	{
-		// One hit group entry per (instance, section). Order MUST match the BLAS geometry order
-		// in CreateBottomLevelAS — both iterate model->Sections in the same order.
-		uint32 totalSections = 0u;
-		for (uint32 i = 0; i < AsModels.Count(); ++i)
-		{
-			totalSections += AsModels[i] ? AsModels[i]->Sections.Count() : 0u;
-		}
-		rtHitGroupEntries.Reset(totalSections);
-
-		for (uint32 i = 0; i < AsSources.Count(); ++i)
-		{
-			// The source identity is not needed here - only the model is. It exists so the
-			// update pass can tell one producer's instance from another's.
-			const graphics::SRenderModel* model = AsModels[i];
-			frt_assert(model && model->VertexBufferGpu && model->IndexBufferGpu);
-
-			const D3D12_GPU_VIRTUAL_ADDRESS vbBase = model->VertexBufferGpu->GetGPUVirtualAddress();
-			const D3D12_GPU_VIRTUAL_ADDRESS ibBase = model->IndexBufferGpu->GetGPUVirtualAddress();
-
-			for (uint32 sectionIdx = 0; sectionIdx < model->Sections.Count(); ++sectionIdx)
-			{
-				const graphics::SRenderSection& section = model->Sections[sectionIdx];
-
-				uint32 materialIndex = 0u;
-				if (section.MaterialIndex < model->Materials.Count())
-				{
-					const graphics::SMaterial* material =
-						model->Materials[section.MaterialIndex].GetRawIgnoringLifetime();
-					if (material)
-					{
-						materialIndex = material->RuntimeIndex;
-					}
-				}
-
-				// PrimitiveIndex() in the hit shader is section-local, so feed offset GPU VAs.
-				auto& entry = rtHitGroupEntries.Add();
-				entry.MaterialIndex = materialIndex;
-				entry.VertexBufferGpuVa = vbBase + static_cast<uint64>(section.VertexOffset) * sizeof(graphics::SVertex);
-				entry.IndexBufferGpuVa  = ibBase + static_cast<uint64>(section.IndexOffset) * sizeof(uint32);
-			}
-		}
-	}
-
-	Renderer->SetRaytracingHitGroupEntries(rtHitGroupEntries);
-	if (!materialConstants.IsEmpty())
-	{
-		currentFrameResources.MaterialCB.CopyBunch(
-			materialConstants.GetData(),
-			materialConstants.Count(),
-			currentFrameResources.UploadArena);
-	}
-
-	currentFrameResources.ObjectCB.Upload(currentFrameResources.UploadArena, CommandList);
-	currentFrameResources.MaterialCB.Upload(currentFrameResources.UploadArena, CommandList);
-
-	if (!Renderer->ShouldRenderRaster())
-	{
-		return;
-	}
-
-	if (!currentFrameResources.PassCB.DescriptorHeapHandleGpu.empty())
-	{
-		CommandList->SetGraphicsRootDescriptorTable(
-			render::constants::RootParam_PassCbv,
-			currentFrameResources.PassCB.DescriptorHeapHandleGpu[0]);
-	}
-
-	memory::TRefWeak<graphics::CRenderer> renderer = GameInstance::GetInstance().GetRenderer();
-
-	// Same list the object constants and the acceleration structure were built from, so
-	// index i here addresses entry i there. Visibility and null models are already filtered
-	// by the collector, which is also what brings ECS entities into the raster path.
-	auto& ObjectDescriptorHandles = currentFrameResources.ObjectCB.DescriptorHeapHandleGpu;
-	for (uint32 i = 0; i < Drawables.Count(); ++i)
-	{
-		const graphics::SRenderModel& model = *Drawables[i].Model;
-		if (!model.VertexBufferGpu || !model.IndexBufferGpu)
-		{
-			continue;
-		}
-
-		if (i < ObjectDescriptorHandles.size())
-		{
-			CommandList->SetGraphicsRootDescriptorTable(
-				render::constants::RootParam_ObjectCbv,
-				ObjectDescriptorHandles[i]);
-		}
-
-		{
-			D3D12_INDEX_BUFFER_VIEW indexBufferView = {};
-			indexBufferView.BufferLocation = model.IndexBufferGpu->GetGPUVirtualAddress();
-			indexBufferView.SizeInBytes = model.Indices.Count() * sizeof(uint32);
-			indexBufferView.Format = DXGI_FORMAT_R32_UINT;
-			CommandList->IASetIndexBuffer(&indexBufferView);
-		}
-		{
-			D3D12_VERTEX_BUFFER_VIEW vertexBufferViews[1] = {};
-			vertexBufferViews[0].BufferLocation = model.VertexBufferGpu->GetGPUVirtualAddress();
-			vertexBufferViews[0].SizeInBytes = model.Vertices.Count() * sizeof(graphics::SVertex);
-			vertexBufferViews[0].StrideInBytes = sizeof(graphics::SVertex);
-			CommandList->IASetVertexBuffers(0, 1, vertexBufferViews);
-		}
-
-		for (uint32 sectionIndex = 0; sectionIndex < model.Sections.Count(); ++sectionIndex)
-		{
-			const graphics::SRenderSection& section = model.Sections[sectionIndex];
-			if (section.MaterialIndex < model.Materials.Count())
-			{
-				memory::TRefShared<graphics::SMaterial> material = model.Materials[section.MaterialIndex];
-				D3D12_GPU_DESCRIPTOR_HANDLE textureHandle = renderer->GetDefaultWhiteTextureGpu();
-				if (material && material->bHasBaseColorTexture)
-				{
-					textureHandle = material->BaseColorTexture.GpuDescriptor;
-				}
-
-				CommandList->SetGraphicsRootDescriptorTable(
-					render::constants::RootParam_BaseColorTexture,
-					textureHandle);
-
-				if (material)
-				{
-					ID3D12PipelineState* pipelineState = renderer->GetPipelineStateForMaterial(*material);
-					if (pipelineState)
-					{
-						CommandList->SetPipelineState(pipelineState);
-					}
-
-					graphics::SFrameResources& frameResources = renderer->GetCurrentFrameResource();
-					const auto& materialHandles = frameResources.MaterialCB.DescriptorHeapHandleGpu;
-					if (material->RuntimeIndex < materialHandles.size())
-					{
-						CommandList->SetGraphicsRootDescriptorTable(
-							render::constants::RootParam_MaterialCbv,
-							materialHandles[material->RuntimeIndex]);
-					}
-				}
-			}
-
-			CommandList->DrawIndexedInstanced(
-				section.IndexCount,
-				1,
-				section.IndexOffset,
-				section.VertexOffset,
-				0);
-		}
-	}
-}
-
-void Sys_MeshRenderer::InitializeRendering ()
-{
-	Renderer->BeginInitializationCommands();
-	CreateAccelerationStructures();
-	Renderer->InitializeRaytracingResources();
-	Renderer->EndInitializationCommands();
-}
-
-void Sys_MeshRenderer::CopyConstantData ()
-{
-	using namespace DirectX;
-
-	// One collection per frame, feeding raster object constants, the raster draw loop and
-	// the acceleration structure alike - so an ECS entity appears in all three or none.
-	CollectBuildEntries(Drawables);
-
-	graphics::SPassConstants passConstants;
-	const auto [renderWidth, renderHeight] = GameInstance::GetInstance().GetWindow().GetWindowSize();
-
-	const auto Camera = GameInstance::GetInstance().GetCamera();
-	XMMATRIX view = Camera->GetViewMatrix();
-	XMMATRIX projection = Camera->GetProjectionMatrix(
-		math::PI_OVER_TWO, (float)renderWidth / renderHeight, 1.f, 1'000.f);
-
-	XMMATRIX viewProj = XMMatrixMultiply(view, projection);
-
-	auto viewDeterminant = XMMatrixDeterminant(view);
-	XMMATRIX invView = XMMatrixInverse(&viewDeterminant, view);
-
-	auto projectionDeterminant = XMMatrixDeterminant(projection);
-	XMMATRIX invProj = XMMatrixInverse(&projectionDeterminant, projection);
-
-	auto viewProjDeterminant = XMMatrixDeterminant(viewProj);
-	XMMATRIX invViewProj = XMMatrixInverse(&viewProjDeterminant, viewProj);
-
-	XMStoreFloat4x4(&passConstants.View, view);
-	XMStoreFloat4x4(&passConstants.ViewInverse, invView);
-	XMStoreFloat4x4(&passConstants.Projection, projection);
-	XMStoreFloat4x4(&passConstants.ProjectionInverse, invProj);
-	XMStoreFloat4x4(&passConstants.ViewProjection, viewProj);
-	XMStoreFloat4x4(&passConstants.ViewProjectionInverse, invViewProj);
-	passConstants.CameraPosition = math::ToDirectXCoordinates(Camera->Transform.GetTranslation());
-	passConstants.RenderTargetSize = Vector2f(renderWidth, renderHeight);
-	passConstants.RenderTargetSizeInverse = Vector2f(1.0f / renderWidth, 1.0f / renderHeight);
-	passConstants.NearPlane = .1f;
-	passConstants.FarPlane = 1'000.0f;
-	passConstants.TotalTime = GameInstance::GetInstance().GetTime().GetTotalSeconds();
-	passConstants.DeltaTime = GameInstance::GetInstance().GetTime().GetDeltaSeconds();
-	passConstants.FrameIndex = static_cast<uint32>(GameInstance::GetInstance().GetFrameCount());
-
-	// Live RT knobs (samples, bounces, RR depth) come from GameInstance — set via ImGui sliders.
-	const auto& rtSettings = GameInstance::GetInstance().GetRtSettings();
-	passConstants.RaytracingSampleCount = rtSettings.SampleCount;
-	passConstants.RaytracingMaxBounces = rtSettings.MaxBounces;
-	passConstants.RaytracingRussianRouletteDepth = rtSettings.RussianRouletteDepth;
-	passConstants.bPortalPreFilter = rtSettings.bPortalPreFilter ? 1u : 0u;
-	passConstants.bCountersEnabled = rtSettings.bCollectCounters ? 1u : 0u;
-
-	// ── Accumulation frame counter ────────────────────────────────────────
-	// Reset on any scene change: camera movement, object transforms, or topology.
-	// bAccumulationDirty is owned by CWorldScene; renderers and systems set it
-	// there so all consumers share one authoritative signal.
-	CWorldScene& scene = GameInstance::GetInstance().GetWorldScene();
-	{
-		DirectX::XMFLOAT4X4 currentView;
-		XMStoreFloat4x4(&currentView, view);
-		if (!AreMatricesEqual(currentView, PrevCameraViewMatrix))
-		{
-			scene.bAccumulationDirty = true;
-			PrevCameraViewMatrix = currentView;
-		}
-	}
-
-	if (scene.bAccumulationDirty)
-	{
-		AccumulationFrameIndex = 0u;
-		scene.bAccumulationDirty = false;
-	}
-	else
-	{
-		++AccumulationFrameIndex;
-	}
-
-	passConstants.AccumulationFrameIndex = AccumulationFrameIndex;
-
-	auto& currentFrameResources = Renderer->GetCurrentFrameResource();
-	currentFrameResources.PassCB.CopyBunch(&passConstants, 1u, currentFrameResources.UploadArena);
-
-	// Sky CB — owned by GameInstance, copied into the per-frame SConstantBuffer.
-	graphics::SSkyConstants skyConstants = GameInstance::GetInstance().GetSkySettings();
-	currentFrameResources.SkyCB.CopyBunch(&skyConstants, 1u, currentFrameResources.UploadArena);
-
-	// ---- Light collector ----
-	// Rebuild every frame for now (cheap, list is tiny). When portals land we can flip to dirty-driven.
-	Lights.Clear();
-
-	// Sun: directional light from sky settings.
-	{
-		graphics::SLight sun;
-		sun.Type = static_cast<uint32>(graphics::ELightType::Directional);
-		sun.Direction = skyConstants.SunDirection;
-		sun.Emission = skyConstants.SunColor;
-		sun.Intensity = skyConstants.SunIntensity;
-		Lights.Add(sun);
-	}
-
-	// Sky: single hemispherical NEE entry. Direction / radiance evaluated in the shader
-	// per-sample (uniform hemisphere). Shadow ray that escapes the scene = unblocked sky.
-	// This is the dominant indoor light that portal pre-filtering will optimize.
-	{
-		graphics::SLight sky;
-		sky.Type = static_cast<uint32>(graphics::ELightType::Sky);
-		Lights.Add(sky);
-	}
-
-	// Walk scene entities and pick up explicit Comp_Light components.
-	// Emissive mesh sections are NOT registered as NEE lights — their contribution flows through
-	// the BRDF bounce path (Hit.hlsl returns emission on closest-hit). To get low-variance NEE
-	// for an emissive panel, attach a Comp_Light next to it.
-	const auto& sceneEntities = scene.GetEntities();
-	for (uint32 ei = 0; ei < sceneEntities.Count(); ++ei)
-	{
-		const CEntity* entity = sceneEntities[ei].GetRawIgnoringLifetime();
-		if (!entity || !entity->Light || !entity->Light->bEnabled)
-		{
-			continue;
-		}
-
-		const graphics::Comp_Light& cl = *entity->Light;
-		const Vector3f origin = entity->Transform.GetTranslation();
-
-		graphics::SLight light;
-		light.Position = math::ToDirectXCoordinates(origin);
-		light.Emission = cl.Color;
-		light.Intensity = cl.Intensity;
-		light.Direction = math::ToDirectXCoordinates(cl.Direction);
-		switch (cl.Kind)
-		{
-			case graphics::Comp_Light::EKind::Directional:
-				light.Type = static_cast<uint32>(graphics::ELightType::Directional);
-				break;
-			case graphics::Comp_Light::EKind::AreaQuad:
-			{
-				light.Type = static_cast<uint32>(graphics::ELightType::AreaQuad);
-				light.Edge1 = math::ToDirectXCoordinates(cl.Edge1);
-				light.Edge2 = math::ToDirectXCoordinates(cl.Edge2);
-				const float e1 = std::sqrt(cl.Edge1.SizeSquared());
-				const float e2 = std::sqrt(cl.Edge2.SizeSquared());
-				light.Area  = 4.0f * e1 * e2;
-				break;
-			}
-			case graphics::Comp_Light::EKind::Point:
-			default:
-				light.Type = static_cast<uint32>(graphics::ELightType::Point);
-				break;
-		}
-		Lights.Add(light);
-	}
-
-	passConstants.LightCount = Lights.Count();
-
-	// ---- Portal collector ----
-	// Walk scene entities for Comp_Portal. Translation comes from entity transform; orientation
-	// (Normal / Edge1 / Edge2) is authored on the component directly.
-	Portals.Clear();
-	const bool bShowPortalMeshes = GameInstance::GetInstance().GetRtSettings().bShowPortalMeshes;
-	auto& mutableEntities = scene.GetEntities();
-	for (uint32 ei = 0; ei < mutableEntities.Count(); ++ei)
-	{
-		CEntity* entity = mutableEntities[ei].GetRawIgnoringLifetime();
-		if (!entity || !entity->Portal || !entity->Portal->bEnabled)
-		{
-			continue;
-		}
-		const graphics::Comp_Portal& cp = *entity->Portal;
-
-		graphics::SPortal portal;
-		portal.Center = math::ToDirectXCoordinates(entity->Transform.GetTranslation());
-		portal.Normal = math::ToDirectXCoordinates(cp.Normal);
-		portal.Edge1  = math::ToDirectXCoordinates(cp.Edge1);
-		portal.Edge2  = math::ToDirectXCoordinates(cp.Edge2);
-		portal.Flags  = (cp.Shape == graphics::Comp_Portal::EShape::Ellipse)
-							? graphics::portal_flags::Ellipse
-							: 0u;
-		Portals.Add(portal);
-
-		// Lazily build a visualization quad for this portal (once), then drive its
-		// visibility from the UI toggle. Hidden quads are skipped by raster + AS so
-		// they don't occlude rays during measurement.
-		if (entity->RenderModel)
-		{
-			if (!entity->RenderModel->Model)
-			{
-				entity->RenderModel->Model = memory::NewShared<graphics::SRenderModel>(
-					graphics::SRenderModel::FromMesh(
-						graphics::mesh::BuildPortalQuad(cp.Edge1, cp.Edge2, cp.Normal)));
-			}
-			entity->RenderModel->bVisible = bShowPortalMeshes;
-		}
-	}
-	passConstants.PortalCount = Portals.Count();
-
-	// Re-upload PassCB now that LightCount + PortalCount are set. CopyBunch above already ran
-	// with stale values; overwrite the same slot.
-	currentFrameResources.PassCB.CopyBunch(&passConstants, 1u, currentFrameResources.UploadArena);
-
-	// Allocate light + portal buffers in the frame upload arena and push GPU VAs to the renderer.
-	const D3D12_GPU_VIRTUAL_ADDRESS lightsGpuVa  = Lights.UploadToArena(currentFrameResources.UploadArena);
-	const D3D12_GPU_VIRTUAL_ADDRESS portalsGpuVa = Portals.UploadToArena(currentFrameResources.UploadArena);
-	Renderer->SetRaytracingLightsGpuVa(lightsGpuVa);
-	Renderer->SetRaytracingPortalsGpuVa(portalsGpuVa);
-
-	// ---- Raster object constants ----
-	// One per drawable, in Drawables order, because that is the order the raster loop
-	// indexes. Previously CWorldScene filled one per CEntity and the draw loop indexed by
-	// render-model slot; the two lined up only because SpawnEntity created a render model
-	// for every entity. An ECS entity has no such slot, so the correspondence is now
-	// explicit rather than a side effect of how entities are spawned.
-	Renderer->EnsureObjectConstantCapacity(Drawables.Count());
-
-	if (!Drawables.IsEmpty())
-	{
-		TArray<graphics::SObjectConstants> objectConstants;
-		objectConstants.SetSizeUninitialized(Drawables.Count());
-
-		for (uint32 i = 0u; i < Drawables.Count(); ++i)
-		{
-			objectConstants[i].World = graphics::ToWorldMatrix(Drawables[i].Transform);
-		}
-
-		currentFrameResources.ObjectCB.CopyBunch(
-			objectConstants.GetData(),
-			objectConstants.Count(),
-			currentFrameResources.UploadArena);
-	}
-}
-
-void Sys_MeshRenderer::UploadCB (ID3D12GraphicsCommandList4* CommandList)
-{
-	auto& currentFrameResources = Renderer->GetCurrentFrameResource();
-
-	currentFrameResources.PassCB.Upload(currentFrameResources.UploadArena, CommandList);
-	currentFrameResources.SkyCB.Upload(currentFrameResources.UploadArena, CommandList);
-}
-#endif
 
 memory::TRefShared<graphics::Comp_RenderModel> Sys_MeshRenderer::SpawnRenderModel ()
 {
@@ -547,512 +56,243 @@ memory::TRefShared<graphics::Comp_RenderModel> Sys_MeshRenderer::SpawnRenderMode
 	return renderModel;
 }
 
-// memory::TRefShared<CEntity> Sys_MeshRenderer::SpawnEntity ()
-// {
-// 	auto newEntity = memory::NewShared<CEntity>();
-// 	Entities.Add(newEntity);
-// #ifndef FRT_HEADLESS
-// 	bAsTopologyDirty = true;
-// #endif
-// 	return newEntity;
-// }
-
 #ifndef FRT_HEADLESS
-graphics::raytracing::SAccelerationStructureBuffers Sys_MeshRenderer::CreateBottomLevelAS (
-	const graphics::SRenderModel& Model)
+namespace
 {
-	using namespace graphics;
-	using namespace graphics::raytracing;
+using namespace frt::graphics;
 
-	CBottomLevelASGenerator bottomLevelAS;
-
-	// Takes the model rather than the component wrapping it: nothing here needed the
-	// wrapper, and both instance sources can hand over a model.
-	const SRenderModel& model = Model;
-
-	// One geometry per section. Each geometry slices the shared vertex/index buffers via offsets.
-	// IMPORTANT: section indices are local to the section in our index buffer (mFaces[].mIndices
-	// are written as-is in Model.cpp), so VertexBufferOffset bakes in per-section VertexOffset
-	// to make the indices effectively absolute for each geometry.
-	frt_assert(!model.Sections.IsEmpty());
-	for (uint32 sectionIdx = 0; sectionIdx < model.Sections.Count(); ++sectionIdx)
-	{
-		const SRenderSection& section = model.Sections[sectionIdx];
-		bottomLevelAS.AddVertexBuffer(
-			model.VertexBufferGpu.Get(),
-			static_cast<uint64>(section.VertexOffset) * sizeof(SVertex),
-			section.VertexCount,
-			sizeof(SVertex),
-			model.IndexBufferGpu.Get(),
-			static_cast<uint64>(section.IndexOffset) * sizeof(uint32),
-			section.IndexCount,
-			nullptr, 0);
-	}
-
-	// The AS build requires some scratch space to store temporary information.
-	// The amount of scratch memory is dependent on the scene complexity.
-	uint64 scratchSizeInBytes = 0;
-	// The final AS also needs to be stored in addition to the existing vertex
-	// buffers. Its size is also dependent on the scene complexity.
-	uint64 resultSizeInBytes = 0;
-
-	ID3D12Device5* device = Renderer->GetDevice();
-
-	bottomLevelAS.ComputeASBufferSizes(device, false, &scratchSizeInBytes, &resultSizeInBytes);
-
-	// Once the sizes are obtained, the application is responsible for allocating
-	// the necessary buffers. Since the entire generation will be done on the GPU,
-	// we can directly allocate those on the default heap
-	SAccelerationStructureBuffers buffers;
-	buffers.Scratch = CreateBuffer(
-		device, scratchSizeInBytes,
-		D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON,
-		DefaultHeapProps);
-	buffers.Result = CreateBuffer(
-		device, resultSizeInBytes,
-		D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_RAYTRACING_ACCELERATION_STRUCTURE,
-		D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
-		DefaultHeapProps);
-	if (buffers.Scratch)
-	{
-		buffers.Scratch->SetName(L"BLAS Scratch");
-	}
-	if (buffers.Result)
-	{
-		buffers.Result->SetName(L"BLAS Result");
-	}
-
-	ID3D12GraphicsCommandList4* commandList = Renderer->GetCommandList();
-
-	// BLAS build expects geometry buffers in NON_PIXEL_SHADER_RESOURCE, and scratch/result in UAV/RTAS.
-	D3D12_RESOURCE_BARRIER barriers[4] = {};
-	uint32 barrierCount = 0;
-	auto addTransition = [&] (
-		ID3D12Resource* resource,
-		D3D12_RESOURCE_STATES before,
-		D3D12_RESOURCE_STATES after)
-	{
-		D3D12_RESOURCE_BARRIER& barrier = barriers[barrierCount++];
-		barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-		barrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-		barrier.Transition.pResource = resource;
-		barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-		barrier.Transition.StateBefore = before;
-		barrier.Transition.StateAfter = after;
-	};
-
-	addTransition(
-		model.VertexBufferGpu.Get(),
-		D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-	addTransition(
-		model.IndexBufferGpu.Get(),
-		D3D12_RESOURCE_STATE_INDEX_BUFFER | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-	addTransition(
-		buffers.Scratch.Get(),
-		D3D12_RESOURCE_STATE_COMMON,
-		D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-	if (barrierCount > 0)
-	{
-		commandList->ResourceBarrier(barrierCount, barriers);
-	}
-
-	// Build the acceleration structure. Note that this call integrates a barrier
-	// on the generated AS, so that it can be used to compute a top-level AS right
-	// after this method.
-	bottomLevelAS.Generate(
-		commandList, buffers.Scratch.Get(),
-		buffers.Result.Get(), false, nullptr);
-
-	// Restore geometry buffers for rasterization.
-	barrierCount = 0;
-	addTransition(
-		model.VertexBufferGpu.Get(),
-		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-		D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-	addTransition(
-		model.IndexBufferGpu.Get(),
-		D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE,
-		D3D12_RESOURCE_STATE_INDEX_BUFFER | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-	commandList->ResourceBarrier(barrierCount, barriers);
-
-	return buffers;
+gpu::float3 ToFloat3 (const Vector3f& V)
+{
+	return { V.x, V.y, V.z };
 }
 
-void Sys_MeshRenderer::CreateTopLevelAS (const TArray<SAccelerationInstance>& Instances, bool bUpdateOnly)
+float Length (const Vector3f& V)
 {
-	using namespace graphics;
-	using namespace graphics::raytracing;
-
-	TopLevelASGenerator = {};
-
-	for (uint32 i = 0; i < Instances.Count(); i++)
-	{
-		TopLevelASGenerator.AddInstance(
-			Instances[i].BottomLevelAS,
-			Instances[i].Transform,
-			Instances[i].InstanceId,
-			Instances[i].HitGroupIndex);
-	}
-
-	ID3D12Device5* device = Renderer->GetDevice();
-
-	// As for the bottom-level AS, the building the AS requires some scratch space
-	// to store temporary data in addition to the actual AS. In the case of the
-	// top-level AS, the instance descriptors also need to be stored in GPU
-	// memory. This call outputs the memory requirements for each (scratch,
-	// results, instance descriptors) so that the application can allocate the
-	// corresponding memory
-	uint64 scratchSize, resultSize, instanceDescsSize;
-
-
-	TopLevelASGenerator.ComputeASBufferSizes(
-		device, true, &scratchSize,
-		&resultSize, &instanceDescsSize);
-
-	const bool bHasValidBuffers = TopLevelASBuffers.Result && TopLevelASBuffers.InstanceDesc;
-	const bool bCanUpdateOnly = bUpdateOnly && bHasValidBuffers;
-	if (!bCanUpdateOnly)
-	{
-		TopLevelASBuffers.Result = CreateBuffer(
-			device, resultSize,
-			D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_RAYTRACING_ACCELERATION_STRUCTURE,
-			D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
-			DefaultHeapProps);
-	}
-
-	// Scratch and descriptor buffers can be recreated if required by size.
-	const uint64 currentScratchSize = TopLevelASBuffers.Scratch ? TopLevelASBuffers.Scratch->GetDesc().Width : 0u;
-	bool bScratchBufferRecreated = false;
-	if (!TopLevelASBuffers.Scratch || currentScratchSize < scratchSize)
-	{
-		TopLevelASBuffers.Scratch = CreateBuffer(
-			device, scratchSize, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-			D3D12_RESOURCE_STATE_COMMON,
-			DefaultHeapProps);
-		bScratchBufferRecreated = true;
-	}
-
-	const uint64 currentDescSize = TopLevelASBuffers.InstanceDesc
-										? TopLevelASBuffers.InstanceDesc->GetDesc().Width
-										: 0u;
-	if (instanceDescsSize > 0u && (!TopLevelASBuffers.InstanceDesc || currentDescSize < instanceDescsSize))
-	{
-		TopLevelASBuffers.InstanceDesc = CreateBuffer(
-			device, instanceDescsSize, D3D12_RESOURCE_FLAG_NONE,
-			D3D12_RESOURCE_STATE_GENERIC_READ, UploadHeapProps);
-	}
-
-#ifndef RELEASE
-	if (TopLevelASBuffers.Scratch)
-	{
-		TopLevelASBuffers.Scratch->SetName(L"TLAS Scratch");
-	}
-	if (TopLevelASBuffers.Result)
-	{
-		TopLevelASBuffers.Result->SetName(L"TLAS Result");
-	}
-	if (TopLevelASBuffers.InstanceDesc)
-	{
-		TopLevelASBuffers.InstanceDesc->SetName(L"TLAS InstanceDesc");
-	}
-#endif
-
-	ID3D12GraphicsCommandList4* commandList = Renderer->GetCommandList();
-
-	if (bScratchBufferRecreated)
-	{
-		D3D12_RESOURCE_BARRIER scratchBarrier = {};
-		scratchBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-		scratchBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
-		scratchBarrier.Transition.pResource = TopLevelASBuffers.Scratch.Get();
-		scratchBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-		scratchBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COMMON;
-		scratchBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-		commandList->ResourceBarrier(1, &scratchBarrier);
-	}
-
-	// After all the buffers are allocated, or if only an update is required, we
-	// can build the acceleration structure. Note that in the case of the update
-	// we also pass the existing AS as the 'previous' AS, so that it can be
-	// refitted in place.
-	TopLevelASGenerator.Generate(
-		commandList,
-		TopLevelASBuffers.Scratch.Get(),
-		TopLevelASBuffers.Result.Get(),
-		TopLevelASBuffers.InstanceDesc.Get(),
-		bCanUpdateOnly,
-		bCanUpdateOnly ? TopLevelASBuffers.Result.Get() : nullptr);
+	return std::sqrt(V.x * V.x + V.y * V.y + V.z * V.z);
 }
 
-void Sys_MeshRenderer::CollectBuildEntries (TArray<SBuildEntry>& OutEntries)
+Vector3f Cross (const Vector3f& A, const Vector3f& B)
 {
-	OutEntries.Clear();
+	return Vector3f(A.y * B.z - A.z * B.y, A.z * B.x - A.x * B.z, A.x * B.y - A.y * B.x);
+}
 
-	CWorldScene& scene = GameInstance::GetInstance().GetWorldScene();
+float Dot (const Vector3f& A, const Vector3f& B)
+{
+	return A.x * B.x + A.y * B.y + A.z * B.z;
+}
 
-	// ---- Legacy CEntity list ----
-	const auto& sceneEntities = scene.GetEntities();
-	for (uint32 i = 0; i < sceneEntities.Count(); ++i)
+// Render-space light from the CPU description (positions/directions already render space).
+gpu::SLightData ConvertLight (const SLight& Light)
+{
+	constexpr float kPi = 3.14159265358979323846f;
+	gpu::SLightData out = {};
+	const Vector3f color = Vector3f(Light.Emission.R, Light.Emission.G, Light.Emission.B) * Light.Intensity;
+	out.Position = ToFloat3(Light.Position);
+	out.Flags = gpu::LightFlag_CastsShadows;
+	switch (static_cast<ELightType>(Light.Type))
 	{
-		const CEntity* entity = sceneEntities[i].GetRawIgnoringLifetime();
-		if (!entity || !entity->RenderModel || !entity->RenderModel->Model || !entity->RenderModel->bVisible)
+		case ELightType::Directional:
+		{
+			// Authored directional lights get a small disk (0.5 deg) for soft, MIS-able shadows.
+			const float angularRadius = 0.5f * kPi / 180.0f;
+			out.Type = gpu::LightType_Sun;
+			out.Radius = std::cos(angularRadius);
+			out.SolidAngle = 2.0f * kPi * (1.0f - out.Radius);
+			Vector3f toLight = Light.Direction * -1.0f;
+			const float len = Length(toLight);
+			toLight = len > 0.0f ? toLight * (1.0f / len) : Vector3f(0.0f, 1.0f, 0.0f);
+			out.AxisU = ToFloat3(toLight);
+			out.Radiance = ToFloat3(color * (1.0f / out.SolidAngle));
+			break;
+		}
+		case ELightType::AreaQuad:
+		{
+			out.Type = gpu::LightType_Rect;
+			Vector3f u = Light.Edge1;
+			Vector3f v = Light.Edge2;
+			// Rect lights emit along cross(AxisU, AxisV); orient that toward the authored facing.
+			if (Dot(Cross(u, v), Light.Direction) < 0.0f)
+			{
+				std::swap(u, v);
+			}
+			out.AxisU = ToFloat3(u);
+			out.AxisV = ToFloat3(v);
+			out.SolidAngle = 4.0f * Length(Cross(u, v));
+			out.Radiance = ToFloat3(color);
+			break;
+		}
+		case ELightType::Point:
+		default:
+			out.Type = gpu::LightType_Sphere;
+			out.Radius = 0.0f;
+			out.Radiance = ToFloat3(color); // intensity for point lights
+			break;
+	}
+	return out;
+}
+
+gpu::SPortalData ConvertPortal (const SPortal& Portal)
+{
+	gpu::SPortalData out = {};
+	out.Center = ToFloat3(Portal.Center);
+	out.Normal = ToFloat3(Portal.Normal);
+	out.AxisU = ToFloat3(Portal.Edge1);
+	out.AxisV = ToFloat3(Portal.Edge2);
+	out.Flags = (Portal.Flags & portal_flags::Ellipse) ? gpu::PortalFlag_Ellipse : 0u;
+	const float rectArea = 4.0f * Length(Cross(Portal.Edge1, Portal.Edge2));
+	out.Area = out.Flags & gpu::PortalFlag_Ellipse ? rectArea * 0.78539816f : rectArea;
+	return out;
+}
+
+Vector3f TransformDirectionDx (const DirectX::XMFLOAT4X4& RenderMatrix, const Vector3f& LocalDirection)
+{
+	using namespace DirectX;
+	const XMVECTOR v = XMVector3TransformNormal(XMVectorSet(LocalDirection.x, LocalDirection.y, LocalDirection.z, 0.0f), XMLoadFloat4x4(&RenderMatrix));
+	XMFLOAT3 out;
+	XMStoreFloat3(&out, v);
+	return Vector3f(out.x, out.y, out.z);
+}
+}
+
+void Sys_MeshRenderer::InitializeRendering ()
+{
+}
+
+void Sys_MeshRenderer::DescribeScene ()
+{
+	using namespace graphics;
+	GameInstance& game = GameInstance::GetInstance();
+	CWorldScene& scene = game.GetWorldScene();
+	CGpuScene& gpuScene = Renderer->GetScene();
+	gpuScene.BeginFrame();
+
+	const bool bShowPortalMeshes = game.GetRtSettings().bShowPortalMeshes;
+
+	// ---- Legacy CEntity list: instances, lights, portals ----
+	auto& entities = scene.GetEntities();
+	for (uint32 i = 0; i < entities.Count(); ++i)
+	{
+		CEntity* entity = entities[i].GetRawIgnoringLifetime();
+		if (!entity)
 		{
 			continue;
 		}
 
-		SBuildEntry entry = {};
-		entry.Source.Legacy = entity;
-		entry.Model = entity->RenderModel->Model.GetRawIgnoringLifetime();
-		entry.Transform = entity->Transform.GetRaytracingTransform();
-		OutEntries.Add(entry);
+		if (entity->Portal && entity->Portal->bEnabled)
+		{
+			const Comp_Portal& cp = *entity->Portal;
+			const DirectX::XMFLOAT4X4& m = entity->Transform.GetMatrix();
+			SPortal portal;
+			portal.Center = math::ToDirectXCoordinates(entity->Transform.GetTranslation());
+			portal.Edge1 = TransformDirectionDx(m, cp.Edge1);
+			portal.Edge2 = TransformDirectionDx(m, cp.Edge2);
+			Vector3f n = Cross(portal.Edge1, portal.Edge2);
+			const float nl = Length(n);
+			n = nl > 0.0f ? n * (1.0f / nl) : Vector3f(0.0f, 1.0f, 0.0f);
+			if (Dot(n, TransformDirectionDx(m, cp.Normal)) < 0.0f)
+			{
+				n = n * -1.0f;
+			}
+			portal.Normal = n;
+			portal.Flags = cp.Shape == Comp_Portal::EShape::Ellipse ? portal_flags::Ellipse : 0u;
+			gpuScene.AddPortal(ConvertPortal(portal));
+
+			// Visualisation quad, built once from the component; camera rays only.
+			if (entity->RenderModel)
+			{
+				if (!entity->RenderModel->Model)
+				{
+					entity->RenderModel->Model = memory::NewShared<SRenderModel>(
+						SRenderModel::FromMesh(mesh::BuildPortalQuad(cp.Edge1, cp.Edge2, cp.Normal)));
+				}
+				entity->RenderModel->bVisible = bShowPortalMeshes;
+			}
+		}
+
+		if (entity->Light && entity->Light->bEnabled)
+		{
+			const Comp_Light& cl = *entity->Light;
+			SLight light;
+			light.Position = math::ToDirectXCoordinates(entity->Transform.GetTranslation());
+			light.Emission = cl.Color;
+			light.Intensity = cl.Intensity;
+			light.Direction = math::ToDirectXCoordinates(cl.Direction);
+			light.Edge1 = math::ToDirectXCoordinates(cl.Edge1);
+			light.Edge2 = math::ToDirectXCoordinates(cl.Edge2);
+			light.Type = static_cast<uint32>(cl.Kind == Comp_Light::EKind::Directional ? ELightType::Directional
+				: (cl.Kind == Comp_Light::EKind::AreaQuad ? ELightType::AreaQuad : ELightType::Point));
+			gpuScene.AddLight(ConvertLight(light));
+		}
+
+		if (entity->RenderModel && entity->RenderModel->Model && entity->RenderModel->bVisible)
+		{
+			SSceneInstance instance;
+			instance.Model = entity->RenderModel->Model.GetRawIgnoringLifetime();
+			instance.ObjectToWorld = entity->Transform.GetRaytracingTransform();
+			instance.Key = reinterpret_cast<uint64>(entity);
+			instance.bHelper = static_cast<bool>(entity->Portal);
+			gpuScene.AddInstance(instance);
+		}
 	}
 
 	// ---- ECS ----
-	// Appended after the legacy entries, never interleaved, so an entity migrating from one
-	// source to the other is a set change and therefore a rebuild - which it has to be,
-	// since it moves position and every hit-group offset after it shifts.
-	//
-	// Absolute transforms (zero origin) to match what the CEntity path produces. Passing the
-	// camera position here is what would make instances camera-relative.
-	TArray<graphics::SMeshInstance> ecsInstances;
-	graphics::ExtractMeshInstances(scene.GetEcsWorld(), Vector3r::ZeroVector, ecsInstances);
-
-	for (uint32 i = 0; i < ecsInstances.Count(); ++i)
 	{
-		const graphics::SMeshInstance& instance = ecsInstances[i];
-
-		SBuildEntry entry = {};
-		entry.Source.Entity = instance.Entity;
-		entry.Model = instance.Model;
-
-		// Both are row-major 3x4 with translation in the last column; copied field-wise
-		// rather than memcpy'd so a layout change in either fails to compile.
-		for (uint32 row = 0u; row < 3u; ++row)
+		TArray<SMeshInstance> ecsInstances;
+		ExtractMeshInstances(scene.GetEcsWorld(), Vector3r::ZeroVector, ecsInstances);
+		for (uint32 i = 0; i < ecsInstances.Count(); ++i)
 		{
-			for (uint32 col = 0u; col < 4u; ++col)
+			const SMeshInstance& src = ecsInstances[i];
+			SSceneInstance instance;
+			instance.Model = src.Model;
+			for (uint32 row = 0u; row < 3u; ++row)
 			{
-				entry.Transform.m[row][col] = instance.Transform.M[row][col];
+				for (uint32 col = 0u; col < 4u; ++col)
+				{
+					instance.ObjectToWorld.m[row][col] = src.Transform.M[row][col];
+				}
 			}
+			instance.Key = (1ull << 63u) | static_cast<uint64>(src.Entity.Value);
+			gpuScene.AddInstance(instance);
 		}
 
-		OutEntries.Add(entry);
-	}
-}
-
-// definitely should be inside Renderer
-void Sys_MeshRenderer::CreateAccelerationStructures ()
-{
-	ID3D12Device5* device = Renderer->GetDevice();
-	if (!bRaytracingSupportChecked)
-	{
-		bRaytracingSupported = IsRaytracingSupported(device);
-		bRaytracingSupportChecked = true;
-	}
-	if (!bRaytracingSupported)
-	{
-		return;
-	}
-
-	CWorldScene& scene = GameInstance::GetInstance().GetWorldScene();
-
-	std::unordered_map<graphics::SMaterial*, uint32> materialIndices;
-	TArray<SBuildEntry> buildEntries;
-	CollectBuildEntries(buildEntries);
-
-	for (uint32 i = 0; i < buildEntries.Count(); ++i)
-	{
-		const graphics::SRenderModel& model = *buildEntries[i].Model;
-		for (const graphics::SRenderSection& section : model.Sections)
+		TArray<SLight> ecsLights;
+		ExtractLights(scene.GetEcsWorld(), ecsLights);
+		for (uint32 i = 0; i < ecsLights.Count(); ++i)
 		{
-			if (section.MaterialIndex >= model.Materials.Count())
-			{
-				continue;
-			}
-
-			graphics::SMaterial* material = const_cast<graphics::SMaterial*>(model.Materials[section.MaterialIndex].
-				GetRawIgnoringLifetime());
-			if (!material)
-			{
-				continue;
-			}
-
-			auto it = materialIndices.find(material);
-			if (it == materialIndices.end())
-			{
-				frt_assert(materialIndices.size() <= (std::numeric_limits<uint32>::max)());
-				const uint32 materialIndex = static_cast<uint32>(materialIndices.size());
-				materialIndices.emplace(material, materialIndex);
-				material->RuntimeIndex = materialIndex;
-			}
-			else
-			{
-				material->RuntimeIndex = it->second;
-			}
+			gpuScene.AddLight(ConvertLight(ecsLights[i]));
 		}
-	}
-
-	if (buildEntries.IsEmpty())
-	{
-		BottomLevelASs.Clear();
-		TopLevelASBuffers = {};
-		Renderer->TopLevelASBuffers = {};
-		AsSources.Clear();
-		AsModels.Clear();
-		AsTransforms.Clear();
-		Instances.Clear();
-		bAsInitialized = true;
-		scene.bSceneTopologyDirty = false;
-		return;
-	}
-
-	if (!materialIndices.empty())
-	{
-		Renderer->EnsureMaterialConstantCapacity(static_cast<uint32>(materialIndices.size()));
-	}
-
-	TArray<graphics::raytracing::SAccelerationStructureBuffers> bottomLevelBuffers;
-	bottomLevelBuffers.SetCapacity(buildEntries.Count());
-
-	{
-		FRT_GPU_SCOPE(Renderer->GetCommandList(), "BLAS_BuildAll");
-		for (const SBuildEntry& entry : buildEntries)
+		TArray<SPortal> ecsPortals;
+		ExtractPortals(scene.GetEcsWorld(), ecsPortals);
+		for (uint32 i = 0; i < ecsPortals.Count(); ++i)
 		{
-			bottomLevelBuffers.Add(CreateBottomLevelAS(*entry.Model));
+			gpuScene.AddPortal(ConvertPortal(ecsPortals[i]));
 		}
 	}
 
-	Instances.Reset(buildEntries.Count());
-	AsSources.Reset(buildEntries.Count());
-	AsModels.Reset(buildEntries.Count());
-	AsTransforms.Reset(buildEntries.Count());
-
-	uint32 cumulativeHitGroups = 0u;
-	for (uint32 i = 0; i < buildEntries.Count(); ++i)
+	// ---- Sky ----
 	{
-		const SBuildEntry& entry = buildEntries[i];
-		// HitGroupIndex = cumulative sum of prior models' (sectionCount * rayTypesPerSection).
-		// 2 ray types: primary + shadow. Must match SBT layout in CreateShaderBindingTable.
-		Instances.Add({ bottomLevelBuffers[i].Result.Get(), entry.Transform, i, cumulativeHitGroups });
-		AsSources.Add(entry.Source);
-		AsModels.Add(entry.Model);
-		AsTransforms.Add(entry.Transform);
-
-		const uint32 sectionCount = entry.Model ? entry.Model->Sections.Count() : 0u;
-		cumulativeHitGroups += sectionCount * 2u;
+		SSceneSky sky;
+		sky.Constants = game.GetSkySettings();
+		sky.SunAngularRadius = game.GetSunAngularRadius();
+		gpuScene.SetSky(sky);
 	}
 
+	// ---- Camera ----
+	if (const auto camera = game.GetCamera())
 	{
-		FRT_GPU_SCOPE(Renderer->GetCommandList(), "TLAS_Build");
-		CreateTopLevelAS(Instances, false);
+		SCameraView view;
+		const Vector3f position = math::ToDirectXCoordinates(camera->Transform.GetTranslation());
+		const Vector3f forward = math::ToDirectXCoordinates(camera->GetLookDirection());
+		view.Position = { position.x, position.y, position.z };
+		view.Forward = { forward.x, forward.y, forward.z };
+		view.Up = { 0.0f, 1.0f, 0.0f };
+		Renderer->SetCameraView(view);
 	}
 
-	BottomLevelASs.Reset(bottomLevelBuffers.Count());
-	for (const auto& buffer : bottomLevelBuffers)
+	if (scene.bAccumulationDirty)
 	{
-		BottomLevelASs.Add(buffer.Result);
+		Renderer->ResetAccumulation();
+		scene.bAccumulationDirty = false;
 	}
-
-	Renderer->TopLevelASBuffers = TopLevelASBuffers;
-	bAsInitialized = true;
-	scene.bSceneTopologyDirty = false;
-}
-
-void Sys_MeshRenderer::UpdateAccelerationStructures ()
-{
-	if (!Renderer->ShouldRenderRaytracing())
-	{
-		return;
-	}
-
-	CWorldScene& scene = GameInstance::GetInstance().GetWorldScene();
-
-	if (!bAsInitialized || scene.bSceneTopologyDirty)
-	{
-		CreateAccelerationStructures();
-		if (TopLevelASBuffers.Result)
-		{
-			Renderer->InitializeRaytracingResources();
-		}
-		scene.bAccumulationDirty = true;
-		return;
-	}
-
-	if (AsSources.Count() != AsModels.Count() || AsSources.Count() != AsTransforms.Count())
-	{
-		scene.bSceneTopologyDirty = true;
-		CreateAccelerationStructures();
-		if (TopLevelASBuffers.Result)
-		{
-			Renderer->InitializeRaytracingResources();
-		}
-		return;
-	}
-
-	// Same collector the build uses, so the two cannot disagree about what belongs in the
-	// structure or in what order.
-	TArray<SBuildEntry> currentEntries;
-	CollectBuildEntries(currentEntries);
-
-	uint32 cumulativeHitGroups = 0u;
-	bool bTopologyChanged = currentEntries.Count() != AsSources.Count();
-	bool bInstanceDataChanged = false;
-
-	for (uint32 i = 0; !bTopologyChanged && i < currentEntries.Count(); ++i)
-	{
-		const SBuildEntry& entry = currentEntries[i];
-
-		// A different producer or a different model at this position means the set moved,
-		// and every hit-group offset after it with it.
-		if (AsSources[i] != entry.Source || AsModels[i] != entry.Model)
-		{
-			bTopologyChanged = true;
-			break;
-		}
-
-		if (std::memcmp(&AsTransforms[i], &entry.Transform, sizeof(DirectX::XMFLOAT3X4)) != 0)
-		{
-			AsTransforms[i] = entry.Transform;
-			Instances[i].Transform = entry.Transform;
-			bInstanceDataChanged = true;
-		}
-
-		// Cumulative offset, must match CreateAccelerationStructures.
-		if (Instances[i].HitGroupIndex != cumulativeHitGroups)
-		{
-			Instances[i].HitGroupIndex = cumulativeHitGroups;
-			bInstanceDataChanged = true;
-		}
-
-		const uint32 sectionCount = AsModels[i] ? AsModels[i]->Sections.Count() : 0u;
-		cumulativeHitGroups += sectionCount * 2u;
-	}
-
-	if (bTopologyChanged)
-	{
-		scene.bSceneTopologyDirty = true;
-		CreateAccelerationStructures();
-		if (TopLevelASBuffers.Result)
-		{
-			Renderer->InitializeRaytracingResources();
-		}
-		scene.bAccumulationDirty = true;
-		return;
-	}
-
-	if (!bInstanceDataChanged || Instances.IsEmpty())
-	{
-		return;
-	}
-
-	// Per-frame transform update (objects moving): reset accumulation so
-	// the stale history isn't blended with the new object positions.
-	{
-		FRT_GPU_SCOPE(Renderer->GetCommandList(), "TLAS_Refit");
-		CreateTopLevelAS(Instances, true);
-	}
-	Renderer->TopLevelASBuffers = TopLevelASBuffers;
-	scene.bAccumulationDirty = true;
 }
 #endif

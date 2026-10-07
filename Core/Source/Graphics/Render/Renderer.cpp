@@ -1,2200 +1,1049 @@
-﻿#include "Renderer.h"
+#include "Renderer.h"
 
-#include <complex>
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
-#include <execution>
-#include <filesystem>
-#include <utility>
+#include <cstring>
 
-#include "CoreUtils.h"
-#include "d3dx12.h"
-#include "DXRHelper.h"
+#include "imgui.h"
+
 #include "EnginePaths.h"
 #include "Exception.h"
-#include "Profiler/Profiler.h"
-#include "Profiler/RayCounters.h"
-#include "Timer.h"
 #include "Window.h"
-#include "Graphics/Model.h"
 #include "Graphics/Render/Material.h"
+#include "Graphics/Render/Passes/Denoiser.h"
+#include "Graphics/Render/Passes/FrameCapture.h"
+#include "Graphics/Render/Passes/PathTracer.h"
+#include "Graphics/Render/Passes/PostProcess.h"
+#include "Graphics/Render/Passes/RasterPreview.h"
+#include "Graphics/Render/Passes/Upscaler.h"
+#include "Graphics/Render/Scene/GpuScene.h"
+#include "Profiler/Profiler.h"
 
 
 namespace frt::graphics
 {
 namespace
 {
-D3D12_STATIC_SAMPLER_DESC BuildLinearWrapStaticSamplerDesc ()
+// Adapters in high-performance order, requiring DXR tier 1.1 (inline ray queries). WARP is
+// skipped: it reports ray tracing but is useless for it.
+ComPtr<IDXGIAdapter1> PickAdapter (IDXGIFactory6* Factory)
 {
-	D3D12_STATIC_SAMPLER_DESC sampler = {};
-	sampler.Filter = D3D12_FILTER_MIN_MAG_LINEAR_MIP_POINT;
-	sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-	sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-	sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
-	sampler.MipLODBias = 0.f;
-	sampler.MaxAnisotropy = 1u;
-	sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
-	sampler.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
-	sampler.MinLOD = 0.f;
-	sampler.MaxLOD = D3D12_FLOAT32_MAX;
-	sampler.ShaderRegister = 0u;
-	sampler.RegisterSpace = 0u;
-	sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
-	return sampler;
-}
-}
-
-// EnumAdapters1 order is not preference order. On a laptop index 0 is typically the
-// integrated GPU, which reaches feature level 12_0 but has no raytracing at all, so
-// taking the first FL12_0 match lands on the iGPU and trips the DXR assert below while
-// a perfectly capable discrete GPU sits at index 1.
-//
-// Walk the adapters in the driver's high-performance order instead and require DXR,
-// keeping the first FL12_0 adapter as a fallback so the assert still reports the tier
-// that was actually found rather than failing to produce a device at all.
-static void GetHardwareAdapter (IDXGIFactory4* pFactory, IDXGIAdapter1** ppAdapter)
-{
-	*ppAdapter = nullptr;
-
-	ComPtr<IDXGIFactory6> factory6;
-	const bool byPreference = SUCCEEDED(pFactory->QueryInterface(IID_PPV_ARGS(&factory6)));
-
 	ComPtr<IDXGIAdapter1> fallback;
-
-	for (UINT adapterIndex = 0; ; ++adapterIndex)
+	for (UINT index = 0; ; ++index)
 	{
 		ComPtr<IDXGIAdapter1> adapter;
-
-		const HRESULT enumerated = byPreference
-			? factory6->EnumAdapterByGpuPreference(
-				adapterIndex, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(&adapter))
-			: pFactory->EnumAdapters1(adapterIndex, &adapter);
-
-		if (DXGI_ERROR_NOT_FOUND == enumerated)
+		if (Factory->EnumAdapterByGpuPreference(index, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(&adapter)) == DXGI_ERROR_NOT_FOUND)
 		{
-			// No more adapters to enumerate.
 			break;
 		}
-
 		DXGI_ADAPTER_DESC1 desc = {};
 		adapter->GetDesc1(&desc);
-
-		// WARP reports raytracing support and would otherwise win outright. It stays
-		// reachable through the explicit EnumWarpAdapter fallback at the call site.
 		if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
 		{
 			continue;
 		}
-
-		// A device is needed to query OPTIONS5, so create one rather than passing
-		// nullptr as a pure capability probe.
 		ComPtr<ID3D12Device> probe;
 		if (FAILED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&probe))))
 		{
 			continue;
 		}
-
 		if (!fallback)
 		{
 			fallback = adapter;
 		}
-
 		D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5 = {};
-		if (SUCCEEDED(probe->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &options5, sizeof(options5)))
-			&& options5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_0)
+		if (SUCCEEDED(probe->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &options5, sizeof(options5))) &&
+			options5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_1)
 		{
-			*ppAdapter = adapter.Detach();
-			return;
+			return adapter;
 		}
 	}
-
-	*ppAdapter = fallback.Detach();
+	return fallback;
 }
 
-using namespace memory::literals;
-
-#pragma region Core
-CRenderer::CRenderer (CWindow* Window)
-	: Window(Window)
-	, Adapter(nullptr)
-	, Device(nullptr)
-	, SwapChain(nullptr)
-	, CurrentBackBufferIndex(0)
-	, CommandQueue(nullptr)
-	, CommandAllocator(nullptr)
-	, CommandList(nullptr)
-	, FenceValue(0)
-	, FenceEvent(nullptr)
+rhi::SDeviceCaps QueryCaps (ID3D12Device5* Device)
 {
-#if defined(DEBUG) || defined(_DEBUG)
-	// Enable the D3D12 debug layer.
+	rhi::SDeviceCaps caps;
+	for (const D3D_SHADER_MODEL model : { D3D_SHADER_MODEL_6_9, D3D_SHADER_MODEL_6_8, D3D_SHADER_MODEL_6_7, D3D_SHADER_MODEL_6_6 })
 	{
-		ID3D12Debug* debugController = nullptr;
-		THROW_IF_FAILED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)));
-		debugController->EnableDebugLayer();
+		D3D12_FEATURE_DATA_SHADER_MODEL sm = { model };
+		if (SUCCEEDED(Device->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &sm, sizeof(sm))))
+		{
+			caps.HighestShaderModel = sm.HighestShaderModel;
+			break;
+		}
 	}
+	D3D12_FEATURE_DATA_D3D12_OPTIONS options = {};
+	if (SUCCEEDED(Device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options))))
+	{
+		caps.ResourceBindingTier = options.ResourceBindingTier;
+		caps.bTypedUavLoadAdditionalFormats = options.TypedUAVLoadAdditionalFormats;
+	}
+	D3D12_FEATURE_DATA_D3D12_OPTIONS1 options1 = {};
+	if (SUCCEEDED(Device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS1, &options1, sizeof(options1))))
+	{
+		caps.WaveLaneCountMin = options1.WaveLaneCountMin;
+		caps.WaveLaneCountMax = options1.WaveLaneCountMax;
+	}
+	D3D12_FEATURE_DATA_D3D12_OPTIONS4 options4 = {};
+	if (SUCCEEDED(Device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS4, &options4, sizeof(options4))))
+	{
+		caps.bNative16BitOps = options4.Native16BitShaderOpsSupported;
+	}
+	D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5 = {};
+	if (SUCCEEDED(Device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &options5, sizeof(options5))))
+	{
+		caps.RaytracingTier = options5.RaytracingTier;
+	}
+	D3D12_FEATURE_DATA_D3D12_OPTIONS9 options9 = {};
+	if (SUCCEEDED(Device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS9, &options9, sizeof(options9))))
+	{
+		caps.bInt64Atomics = options9.AtomicInt64OnTypedResourceSupported;
+	}
+	D3D12_FEATURE_DATA_D3D12_OPTIONS12 options12 = {};
+	if (SUCCEEDED(Device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS12, &options12, sizeof(options12))))
+	{
+		caps.bEnhancedBarriers = options12.EnhancedBarriersSupported;
+	}
+	caps.bOpacityMicromaps = caps.RaytracingTier >= D3D12_RAYTRACING_TIER_1_2;
+	caps.bShaderExecutionReordering = caps.HighestShaderModel >= D3D_SHADER_MODEL_6_9 && caps.RaytracingTier >= D3D12_RAYTRACING_TIER_1_2;
+	D3D12_FEATURE_DATA_D3D12_OPTIONS22 options22 = {};
+	if (SUCCEEDED(Device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS22, &options22, sizeof(options22))))
+	{
+		caps.bSerActuallyReorders = options22.ShaderExecutionReorderingActuallyReorders;
+	}
+	return caps;
+}
+
+const char* ShaderModelName (D3D_SHADER_MODEL Model)
+{
+	switch (Model)
+	{
+		case D3D_SHADER_MODEL_6_9: return "6.9";
+		case D3D_SHADER_MODEL_6_8: return "6.8";
+		case D3D_SHADER_MODEL_6_7: return "6.7";
+		case D3D_SHADER_MODEL_6_6: return "6.6";
+		default: return "<6.6";
+	}
+}
+
+void ReportDeviceRemoved (ID3D12Device5* Device)
+{
+	const HRESULT reason = Device->GetDeviceRemovedReason();
+	std::fprintf(stderr, "[renderer] DEVICE REMOVED: 0x%08lx\n", reason);
+	ComPtr<ID3D12DeviceRemovedExtendedData1> dred;
+	if (SUCCEEDED(Device->QueryInterface(IID_PPV_ARGS(&dred))))
+	{
+		D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 breadcrumbs = {};
+		if (SUCCEEDED(dred->GetAutoBreadcrumbsOutput1(&breadcrumbs)))
+		{
+			for (const D3D12_AUTO_BREADCRUMB_NODE1* node = breadcrumbs.pHeadAutoBreadcrumbNode; node; node = node->pNext)
+			{
+				const uint32 completed = node->pLastBreadcrumbValue ? *node->pLastBreadcrumbValue : 0u;
+				if (completed < node->BreadcrumbCount)
+				{
+					std::fprintf(stderr, "  [dred] list '%ls' stopped at op %u / %u\n",
+						node->pCommandListDebugNameW ? node->pCommandListDebugNameW : L"?", completed, node->BreadcrumbCount);
+				}
+			}
+		}
+		D3D12_DRED_PAGE_FAULT_OUTPUT1 pageFault = {};
+		if (SUCCEEDED(dred->GetPageFaultAllocationOutput1(&pageFault)) && pageFault.PageFaultVA)
+		{
+			std::fprintf(stderr, "  [dred] page fault at VA 0x%llx\n", static_cast<unsigned long long>(pageFault.PageFaultVA));
+		}
+	}
+	std::fflush(stderr);
+}
+
+// Reversed-Z infinite perspective (row-vector convention): NDC z = Near / viewZ.
+DirectX::XMMATRIX MakeReversedInfinitePerspective (float FovY, float Aspect, float Near)
+{
+	const float f = 1.0f / std::tan(0.5f * FovY);
+	return DirectX::XMMATRIX(
+		f / Aspect, 0.0f, 0.0f, 0.0f,
+		0.0f, f, 0.0f, 0.0f,
+		0.0f, 0.0f, 0.0f, 1.0f,
+		0.0f, 0.0f, Near, 0.0f);
+}
+
+uint64 HashBytes (uint64 Hash, const void* Data, size_t Size)
+{
+	const uint8* bytes = static_cast<const uint8*>(Data);
+	for (size_t i = 0; i < Size; ++i)
+	{
+		Hash ^= bytes[i];
+		Hash *= 1099511628211ull;
+	}
+	return Hash;
+}
+}
+
+
+CRenderer::CRenderer (CWindow* InWindow)
+	: Window(InWindow)
+{
+	CreateDevice();
+
+	Rhi.Init(Device.Get(), CommandQueue.Get(), QueryCaps(Device.Get()));
+	const rhi::SDeviceCaps& caps = Rhi.GetCaps();
+	{
+		DXGI_ADAPTER_DESC1 desc = {};
+		Adapter->GetDesc1(&desc);
+		std::fprintf(stdout, "[renderer] %ls | SM %s | DXR tier %d.%d | SER %s%s | bindless tier %d\n",
+			desc.Description, ShaderModelName(caps.HighestShaderModel),
+			caps.RaytracingTier / 10, caps.RaytracingTier % 10,
+			caps.bShaderExecutionReordering ? "yes" : "no",
+			caps.bShaderExecutionReordering ? (caps.bSerActuallyReorders ? " (reorders)" : " (no-op)") : "",
+			static_cast<int>(caps.ResourceBindingTier));
+		std::fflush(stdout);
+	}
+	if (caps.RaytracingTier < D3D12_RAYTRACING_TIER_1_1)
+	{
+		std::fprintf(stderr, "[renderer] DXR tier 1.1 is required for the path tracer; raster preview only.\n");
+		RenderMode = ERenderMode::Raster;
+	}
+
+	ShaderCompiler.Init(paths::GetShaderRootDir());
+	Pipelines.Init(Rhi, ShaderCompiler);
+#ifdef RELEASE
+	Pipelines.SetHotReloadEnabled(false);
 #endif
 
-	const auto [renderWidth, renderHeight] = Window->GetWindowSize();
+	GpuProfiler.Init(Device.Get(), CommandQueue.Get(), 96u, rhi::MaxFramesInFlight);
+	RayCounters.Init(Device.Get(), rhi::MaxFramesInFlight);
+	RayCounterUav = Rhi.GetBindlessHeap().AllocatePersistent();
+	Rhi.WriteBufferUav(RayCounterUav, RayCounters.GetResource(), rhi::EBufferViewKind::Raw, profiler::CRayCounters::GetBufferBytes(), 0u);
 
-	Viewport =
+	Scene = std::make_unique<CGpuScene>();
+	Scene->Initialize(Rhi, Pipelines);
+	PathTracer = std::make_unique<CPathTracer>();
+	PathTracer->Initialize(Rhi, Pipelines);
+	Denoiser = std::make_unique<CDenoiser>();
+	Denoiser->Initialize(Rhi, Pipelines);
+	Upscaler = CreateUpscaler(EUpscalerKind::Temporal);
+	Upscaler->Initialize(Rhi, Pipelines);
+	ReferenceResampler = CreateUpscaler(EUpscalerKind::None);
+	ReferenceResampler->Initialize(Rhi, Pipelines);
+	PostProcess = std::make_unique<CPostProcess>();
+	PostProcess->Initialize(Rhi, Pipelines);
+	RasterPreview = std::make_unique<CRasterPreview>();
+	RasterPreview->Initialize(Rhi, Pipelines);
+	Capture = std::make_unique<CFrameCapture>();
+	Capture->Initialize(Rhi);
+
+	CreateSwapChain(false);
+}
+
+CRenderer::~CRenderer ()
+{
+	FlushCommandQueue();
+	if (Capture) { Capture->Shutdown(); }
+	if (RasterPreview) { RasterPreview->Shutdown(); }
+	if (PostProcess) { PostProcess->Shutdown(Rhi); }
+	if (Upscaler) { Upscaler->Shutdown(Rhi); }
+	if (ReferenceResampler) { ReferenceResampler->Shutdown(Rhi); }
+	if (Denoiser) { Denoiser->Shutdown(Rhi); }
+	if (PathTracer) { PathTracer->Shutdown(); }
+	if (Scene) { Scene->Shutdown(); }
+	if (DisplayColor.IsValid()) { Rhi.Destroy(DisplayColor); }
+	for (uint32 i = 0; i < SwapChainBufferCount; ++i)
 	{
-		.TopLeftX = 0,
-		.TopLeftY = 0,
-		.Width = static_cast<float>(renderWidth),
-		.Height = static_cast<float>(renderHeight),
-		.MinDepth = 0.0f,
-		.MaxDepth = 1.0f
-	};
-
-	ScissorRect =
+		BackBuffers[i].Reset();
+	}
+	FlushCommandQueue();
+	Pipelines.Shutdown();
+	GpuProfiler.Shutdown();
+	RayCounters.Shutdown();
+	Rhi.Shutdown();
+	if (FenceEvent)
 	{
-		.left = 0,
-		.top = 0,
-		.right = static_cast<long>(renderWidth),
-		.bottom = static_cast<long>(renderHeight)
-	};
+		CloseHandle(FenceEvent);
+	}
+}
 
-	// Initialization
+void CRenderer::CreateDevice ()
+{
+#if defined(DEBUG) || defined(_DEBUG)
+	{
+		ComPtr<ID3D12Debug1> debug;
+		if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))
+		{
+			debug->EnableDebugLayer();
+			char gbv[8] = {};
+			if (GetEnvironmentVariableA("FRT_GBV", gbv, sizeof(gbv)) > 0 && gbv[0] == '1')
+			{
+				debug->SetEnableGPUBasedValidation(TRUE);
+			}
+		}
+		ComPtr<ID3D12DeviceRemovedExtendedDataSettings1> dred;
+		if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dred))))
+		{
+			dred->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+			dred->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+		}
+	}
+	const UINT factoryFlags = DXGI_CREATE_FACTORY_DEBUG;
+#else
+	const UINT factoryFlags = 0u;
+#endif
 
-	THROW_IF_FAILED(CreateDXGIFactory2(0, IID_PPV_ARGS(&Factory)));
-
-	GetHardwareAdapter(Factory.Get(), &Adapter);
+	THROW_IF_FAILED(CreateDXGIFactory2(factoryFlags, IID_PPV_ARGS(&Factory)));
+	Adapter = PickAdapter(Factory.Get());
+	frt_assert(Adapter);
 
 	HRESULT hr = D3D12CreateDevice(Adapter.Get(), D3D_FEATURE_LEVEL_12_2, IID_PPV_ARGS(&Device));
 	if (FAILED(hr))
 	{
-		hr = D3D12CreateDevice(Adapter.Get(), D3D_FEATURE_LEVEL_12_1, IID_PPV_ARGS(&Device));
+		THROW_IF_FAILED(D3D12CreateDevice(Adapter.Get(), D3D_FEATURE_LEVEL_12_1, IID_PPV_ARGS(&Device)));
 	}
-	if (FAILED(hr))
+	Device->SetName(L"FRT Device");
+
+	BOOL allowTearing = FALSE;
+	if (SUCCEEDED(Factory->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allowTearing, sizeof(allowTearing))))
 	{
-		hr = D3D12CreateDevice(Adapter.Get(), D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&Device));
-	}
-	if (FAILED(hr))
-	{
-		ComPtr<IDXGIAdapter> warpAdapter;
-		THROW_IF_FAILED(Factory->EnumWarpAdapter(IID_PPV_ARGS(&warpAdapter)));
-		THROW_IF_FAILED(D3D12CreateDevice(warpAdapter.Get(), D3D_FEATURE_LEVEL_12_1, IID_PPV_ARGS(&Device)));
+		bTearingSupported = allowTearing == TRUE;
 	}
 
-	// Check supported features
-	D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5 = {};
-	THROW_IF_FAILED(Device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &options5, sizeof(options5)));
-	frt_assert(options5.RaytracingTier >= D3D12_RAYTRACING_TIER_1_0);
-
-	D3D12_FEATURE_DATA_MULTISAMPLE_QUALITY_LEVELS multisampleQualityLevels = {};
-	multisampleQualityLevels.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-	multisampleQualityLevels.SampleCount = 4;
-	multisampleQualityLevels.Flags = D3D12_MULTISAMPLE_QUALITY_LEVELS_FLAG_NONE;
-	multisampleQualityLevels.NumQualityLevels = 0;
-	THROW_IF_FAILED(
-		Device->CheckFeatureSupport(
-			D3D12_FEATURE_MULTISAMPLE_QUALITY_LEVELS,
-			&multisampleQualityLevels,
-			sizeof(multisampleQualityLevels)));
-
-	// TODO: save as member
-	uint32 msaaQuality = multisampleQualityLevels.NumQualityLevels;
-	frt_assert(msaaQuality > 0);
-
-	// Describe and create the command queue.
 	D3D12_COMMAND_QUEUE_DESC queueDesc = {};
 	queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-	queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
-
 	THROW_IF_FAILED(Device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&CommandQueue)));
+	CommandQueue->SetName(L"FRT Direct Queue");
 
-	// GPU profiler — must come after Device + CommandQueue exist.
-	// 64 scopes/frame is plenty for current pass count; bump if it ever fills up.
-	GpuProfiler.Init(
-		Device.Get(),
-		CommandQueue.Get(),
-		64u,
-		render::constants::FrameResourcesBufferCount);
-
-	RayCounters.Init(Device.Get(), render::constants::FrameResourcesBufferCount);
-
-	// Command allocator and list
-
-	THROW_IF_FAILED(Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&CommandAllocator)));
-	THROW_IF_FAILED(
-		Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, CommandAllocator.Get(), nullptr, IID_PPV_ARGS(&
-			CommandList)));
-	THROW_IF_FAILED(Device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&Fence)));
+	for (uint32 i = 0; i < rhi::MaxFramesInFlight; ++i)
+	{
+		THROW_IF_FAILED(Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&Frames[i].Allocator)));
+	}
+	THROW_IF_FAILED(Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, Frames[0].Allocator.Get(), nullptr, IID_PPV_ARGS(&CommandList)));
+	CommandList->SetName(L"FRT Frame");
 	CommandList->Close();
 
-	// Describe and create swap chain
-	CreateSwapChain(false); // TODO: create & use startup display settings
+	THROW_IF_FAILED(Device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&Fence)));
+	FenceEvent = CreateEventEx(nullptr, nullptr, 0, EVENT_ALL_ACCESS);
+}
 
-	RtvArena = DX12_Arena(
-		Device.Get(), D3D12_HEAP_TYPE_DEFAULT, 50_Mb,
-		D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES);
-	DsvHeap = DX12_DescriptorHeap(Device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_DSV, 1);
-
-	BufferArena = DX12_Arena(
-		Device.Get(), D3D12_HEAP_TYPE_DEFAULT, 500_Mb,
-		D3D12_HEAP_FLAG_ALLOW_ONLY_BUFFERS);
-	TextureArena = DX12_Arena(
-		Device.Get(), D3D12_HEAP_TYPE_DEFAULT, 500_Mb,
-		D3D12_HEAP_FLAG_ALLOW_ONLY_NON_RT_DS_TEXTURES);
-
-	ShaderDescriptorHeap = DX12_DescriptorHeap(
-		Device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, 50, D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE);
-
-	RtvHeap = DX12_DescriptorHeap(
-		Device.Get(), D3D12_DESCRIPTOR_HEAP_TYPE_RTV, render::constants::FrameResourcesBufferCount);
-
-	for (uint8 i = 0; i < render::constants::FrameResourcesBufferCount; ++i)
+void CRenderer::CreateSwapChain (bool bFullscreen)
+{
+	for (uint32 i = 0; i < SwapChainBufferCount; ++i)
 	{
-		FramesResources[i].Init(
-			Device.Get(),
-			render::constants::InitialPassCount,
-			render::constants::InitialObjectCount,
-			render::constants::InitialMaterialCount,
-			BufferArena,
-			GetDescriptorHeap());
+		BackBuffers[i].Reset();
 	}
+	SwapChain.Reset();
 
-	for (unsigned frameIndex = 0; frameIndex < render::constants::SwapChainBufferCount; ++frameIndex)
-	{
-		RtvHeap.Allocate(&FrameBufferDescriptors[frameIndex], nullptr);
-	}
+	const Vector2f size = Window->GetWindowSize();
+	DXGI_SWAP_CHAIN_DESC1 desc = {};
+	desc.Width = static_cast<UINT>(size.x);
+	desc.Height = static_cast<UINT>(size.y);
+	desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+	desc.SampleDesc.Count = 1;
+	desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+	desc.BufferCount = SwapChainBufferCount;
+	desc.Scaling = DXGI_SCALING_NONE;
+	desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+	desc.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
+	desc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH | (bTearingSupported ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0u);
 
-	DsvHeap.Allocate(&DepthStencilDescriptor, nullptr);
+	DXGI_SWAP_CHAIN_FULLSCREEN_DESC fullscreen = {};
+	fullscreen.RefreshRate = DisplayRefreshRate;
+	fullscreen.Windowed = !bFullscreen;
 
-	CreateDefaultWhiteTexture();
-	CreateRootSignature();
-	CreatePipelineState();
-
-	(void)CreateRaytracingPipeline();
-	CreateRaytracingOutputBuffer();
-	// CreateShaderResourceHeap();
-
-	MaterialLibrary.SetRenderer(this);
+	ComPtr<IDXGISwapChain1> swapChain1;
+	THROW_IF_FAILED(Factory->CreateSwapChainForHwnd(CommandQueue.Get(), Window->GetHandle(), &desc, &fullscreen, nullptr, &swapChain1));
+	THROW_IF_FAILED(swapChain1.As(&SwapChain));
+	// Alt+Enter is handled by the engine's display settings.
+	Factory->MakeWindowAssociation(Window->GetHandle(), DXGI_MWA_NO_ALT_ENTER);
 }
 
 void CRenderer::Resize (bool bNewFullscreenState)
 {
-	// Switching to exclusive fullscreen makes DXGI change the display mode, and that sends
-	// WM_SIZE synchronously - straight back in here through the window's resize event. The
-	// nested call would build a second swapchain for the same HWND (the member is still null
-	// while CreateSwapChainForHwnd is on the stack) and leave the render target views
-	// pointing at buffers the outer call releases on its way out.
 	if (bResizing)
 	{
 		return;
 	}
-	TGuardValue ResizeGuard(bResizing, true);
-
-	// Flush before changing any resources.
+	bResizing = true;
 	FlushCommandQueue();
 
-	THROW_IF_FAILED(CommandList->Reset(CommandAllocator.Get(), nullptr));
-	bCommandListRecording = true;
-
-	// Release the previous resources we will be recreating. The render target views keep
-	// pointing at the released buffers until they are rewritten below.
 	bFrameBuffersReady = false;
-	for (int i = 0; i < render::constants::SwapChainBufferCount; ++i)
+	for (uint32 i = 0; i < SwapChainBufferCount; ++i)
 	{
-		FrameBuffer[i].Reset();
+		BackBuffers[i].Reset();
+		if (BackBufferRtv[i] != 0u)
+		{
+			Rhi.GetRtvHeap().Free(BackBufferRtv[i] - 1u);
+			BackBufferRtv[i] = 0u;
+		}
 	}
-	DepthStencilBuffer.Reset();
 
-	// start logic
-
-	BOOL bWasInFullscreenRaw = FALSE;
+	BOOL bWasFullscreenRaw = FALSE;
 	if (SwapChain)
 	{
-		THROW_IF_FAILED(SwapChain->GetFullscreenState(&bWasInFullscreenRaw, nullptr));
+		SwapChain->GetFullscreenState(&bWasFullscreenRaw, nullptr);
 	}
-	const bool bWasInFullscreen = bWasInFullscreenRaw != FALSE;
-
-	const bool bExitingFullscreen = bWasInFullscreen && !bNewFullscreenState;
-	const bool bEnteringFullscreen = !bWasInFullscreen && bNewFullscreenState;
-
-	Vector2f drawRect = Window->GetWindowSize();
-
-	if (SwapChain && bExitingFullscreen)
+	const bool bWasFullscreen = bWasFullscreenRaw != FALSE;
+	if (SwapChain && bWasFullscreen && !bNewFullscreenState)
 	{
-		SwapChain->SetFullscreenState(bNewFullscreenState, nullptr);
+		SwapChain->SetFullscreenState(FALSE, nullptr);
 	}
 
-	if (drawRect.x > 0.f && drawRect.y > 0.f)
+	const Vector2f size = Window->GetWindowSize();
+	if (size.x > 0.0f && size.y > 0.0f)
 	{
-		const UINT drawWidth = static_cast<UINT>(drawRect.x);
-		const UINT drawHeight = static_cast<UINT>(drawRect.y);
-		if (!SwapChain || (bWasInFullscreen != bNewFullscreenState))
+		if (!SwapChain || bWasFullscreen != bNewFullscreenState)
 		{
 			CreateSwapChain(bNewFullscreenState);
 		}
 		else
 		{
-			// Resize the swap chain.
-			THROW_IF_FAILED(
-				SwapChain->ResizeBuffers(
-					render::constants::SwapChainBufferCount,
-					drawWidth, drawHeight,
-					DXGI_FORMAT_R8G8B8A8_UNORM,
-					DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH));
+			THROW_IF_FAILED(SwapChain->ResizeBuffers(
+				SwapChainBufferCount, static_cast<UINT>(size.x), static_cast<UINT>(size.y), DXGI_FORMAT_R8G8B8A8_UNORM,
+				DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH | (bTearingSupported ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0u)));
 		}
-
-		if (bWasInFullscreen && bNewFullscreenState)
+		if (bWasFullscreen && bNewFullscreenState)
 		{
-			DXGI_MODE_DESC modeDesc =
-			{
-				.Width = drawWidth,
-				.Height = drawHeight,
-				.RefreshRate = DisplayRefreshRate,
-				.Format = DXGI_FORMAT_R8G8B8A8_UNORM,
-				.ScanlineOrdering = DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED,
-				.Scaling = DXGI_MODE_SCALING_UNSPECIFIED,
-			};
-			SwapChain->ResizeTarget(&modeDesc);
+			DXGI_MODE_DESC mode = {};
+			mode.Width = static_cast<UINT>(size.x);
+			mode.Height = static_cast<UINT>(size.y);
+			mode.RefreshRate = DisplayRefreshRate;
+			mode.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+			SwapChain->ResizeTarget(&mode);
 		}
 
-		// The swapchain, not the window, decides the final back buffer size (a mode switch
-		// can land on something else than what we asked for), so depth target and viewport
-		// follow it.
-		DXGI_SWAP_CHAIN_DESC1 finalSwapChainDesc = {};
-		THROW_IF_FAILED(SwapChain->GetDesc1(&finalSwapChainDesc));
-		drawRect = { static_cast<float>(finalSwapChainDesc.Width), static_cast<float>(finalSwapChainDesc.Height) };
-
-		CurrentBackBufferIndex = 0;
-
-		for (unsigned frameIndex = 0; frameIndex < render::constants::SwapChainBufferCount; ++frameIndex)
+		DXGI_SWAP_CHAIN_DESC1 desc = {};
+		THROW_IF_FAILED(SwapChain->GetDesc1(&desc));
+		DisplayWidth = desc.Width;
+		DisplayHeight = desc.Height;
+		for (uint32 i = 0; i < SwapChainBufferCount; ++i)
 		{
-			THROW_IF_FAILED(SwapChain->GetBuffer(frameIndex, IID_PPV_ARGS(&FrameBuffer[frameIndex])));
-			Device->CreateRenderTargetView(
-				FrameBuffer[frameIndex].Get(), nullptr, FrameBufferDescriptors[frameIndex]);
+			THROW_IF_FAILED(SwapChain->GetBuffer(i, IID_PPV_ARGS(&BackBuffers[i])));
+			const uint32 rtv = Rhi.GetRtvHeap().Allocate();
+			Device->CreateRenderTargetView(BackBuffers[i].Get(), nullptr, Rhi.GetRtvHeap().GetCpuHandle(rtv));
+			BackBufferRtv[i] = rtv + 1u;
+			BackBufferState[i] = D3D12_RESOURCE_STATE_PRESENT;
 		}
-
-		{
-			// depth stencil
-
-			D3D12_RESOURCE_DESC resourceDesc =
-			{
-				.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D,
-				.Alignment = 0,
-				.Width = finalSwapChainDesc.Width,
-				.Height = finalSwapChainDesc.Height,
-				.DepthOrArraySize = 1,
-				.MipLevels = 1,
-				.Format = DXGI_FORMAT_D32_FLOAT,
-				.SampleDesc = DXGI_SAMPLE_DESC{ .Count = 1, .Quality = 0 },
-				// TODO
-				.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN,
-				.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL,
-			};
-
-			D3D12_CLEAR_VALUE clearValue =
-			{
-				.Format = resourceDesc.Format,
-				.DepthStencil = D3D12_DEPTH_STENCIL_VALUE{ .Depth = 1.0f, .Stencil = 0 },
-			};
-
-			RtvArena.Free();
-			DepthStencilBuffer = RtvArena.Allocate(resourceDesc, D3D12_RESOURCE_STATE_DEPTH_WRITE, &clearValue);
-
-			Device->CreateDepthStencilView(DepthStencilBuffer.Get(), nullptr, DepthStencilDescriptor);
-		}
-
-		CreateRaytracingOutputBuffer();
-		InitializeRaytracingResources();
-
 		bFrameBuffersReady = true;
+		bForceReset = true;
 	}
-	else
+	else if (SwapChain)
 	{
-		// Minimized: no client area to present to. Leave exclusive fullscreen so the desktop
-		// mode comes back and drop the swapchain. Rendering stays suspended (IsReadyToRender)
-		// until a resize with a real size rebuilds the buffers - drawing now would clear
-		// render target views that no longer point at anything.
-		if (SwapChain)
-		{
-			SwapChain->SetFullscreenState(FALSE, nullptr);
-			SwapChain.Reset();
-		}
+		// Minimised: drop the swap chain until a real size comes back.
+		SwapChain->SetFullscreenState(FALSE, nullptr);
+		SwapChain.Reset();
 	}
-
-	// Execute the resize commands.
-	THROW_IF_FAILED(CommandList->Close());
-	bCommandListRecording = false;
-	ID3D12CommandList* cmdsLists[] = { CommandList.Get() };
-	CommandQueue->ExecuteCommandLists(_countof(cmdsLists), cmdsLists);
-
-	// Wait until resize is complete.
-	FlushCommandQueue();
-
-	// Update the viewport transform to cover the client area.
-	Viewport.TopLeftX = 0;
-	Viewport.TopLeftY = 0;
-	Viewport.Width = drawRect.x;
-	Viewport.Height = drawRect.y;
-	Viewport.MinDepth = 0.0f;
-	Viewport.MaxDepth = 1.0f;
-
-	ScissorRect.left = 0;
-	ScissorRect.top = 0;
-	ScissorRect.right = static_cast<LONG>(drawRect.x);
-	ScissorRect.bottom = static_cast<LONG>(drawRect.y);
+	bResizing = false;
 }
 
-IDXGIAdapter1* CRenderer::GetAdapter ()
-{
-	return Adapter.Get();
-}
-
-ID3D12Device5* CRenderer::GetDevice ()
-{
-	return Device.Get();
-}
-
-ID3D12CommandQueue* CRenderer::GetCommandQueue ()
-{
-	return CommandQueue.Get();
-}
-
-ID3D12GraphicsCommandList4* CRenderer::GetCommandList ()
-{
-	return CommandList.Get();
-}
-
-void CRenderer::CreateSwapChain (bool bFullscreen)
-{
-	SwapChain.Reset();
-
-	Vector2f drawRect = Window->GetWindowSize();
-
-	DXGI_SWAP_CHAIN_DESC1 swapChainDesc =
-	{
-		.Width = static_cast<unsigned int>(drawRect.x),
-		.Height = static_cast<unsigned int>(drawRect.y),
-		.Format = DXGI_FORMAT_R8G8B8A8_UNORM,
-		.Stereo = false,
-		.SampleDesc = DXGI_SAMPLE_DESC{ .Count = 1, .Quality = 0 },
-		// TODO: use sampling
-		.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT,
-		.BufferCount = render::constants::SwapChainBufferCount,
-		.Scaling = DXGI_SCALING_NONE,
-		.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD,
-		.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED,
-		.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_MODE_SWITCH,
-	};
-
-	DXGI_SWAP_CHAIN_FULLSCREEN_DESC fullscreenDesc =
-	{
-		.RefreshRate = DisplayRefreshRate,
-		.ScanlineOrdering = DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED,
-		.Scaling = DXGI_MODE_SCALING_UNSPECIFIED,
-		.Windowed = !bFullscreen,
-	};
-
-	THROW_IF_FAILED(
-		Factory->CreateSwapChainForHwnd(
-			CommandQueue.Get(), Window->GetHandle(), &swapChainDesc, &fullscreenDesc, nullptr, &SwapChain));
-}
-
-void CRenderer::BeginInitializationCommands ()
-{
-	auto commandListAllocator = GetCurrentFrameResource().CommandListAllocator;
-	THROW_IF_FAILED(commandListAllocator->Reset());
-	THROW_IF_FAILED(CommandList->Reset(commandListAllocator.Get(), nullptr));
-	bCommandListRecording = true;
-	ProcessPendingResourceUploads();
-}
-
-void CRenderer::EndInitializationCommands ()
-{
-	ProcessPendingResourceUploads();
-
-	THROW_IF_FAILED(CommandList->Close());
-	bCommandListRecording = false;
-	ID3D12CommandList* commandLists[] = { CommandList.Get() };
-	CommandQueue->ExecuteCommandLists(_countof(commandLists), commandLists);
-	FlushCommandQueue();
-
-	GetCurrentFrameResource().UploadArena.Clear();
-}
+IDXGIAdapter1* CRenderer::GetAdapter () { return Adapter.Get(); }
+ID3D12Device5* CRenderer::GetDevice () { return Device.Get(); }
+ID3D12CommandQueue* CRenderer::GetCommandQueue () { return CommandQueue.Get(); }
+ID3D12GraphicsCommandList4* CRenderer::GetCommandList () { return CommandList.Get(); }
+CMaterialLibrary& CRenderer::GetMaterialLibrary () { return MaterialLibrary; }
 
 void CRenderer::InitializeRendering ()
 {
-	BeginInitializationCommands();
-	EndInitializationCommands();
-}
-
-void CRenderer::FlushCommandQueue ()
-{
-	FenceValue++;
-	CommandQueue->Signal(Fence.Get(), FenceValue);
-
-	WaitForFenceValue(FenceValue);
+	// Everything is created lazily by the GPU scene during the first frames.
 }
 
 void CRenderer::WaitForFenceValue (uint64 Value)
 {
-	if (Fence->GetCompletedValue() >= Value)
+	if (Value == 0u || Fence->GetCompletedValue() >= Value)
 	{
 		return;
 	}
-
-	HANDLE eventHandle = CreateEventEx(nullptr, nullptr, false, EVENT_ALL_ACCESS);
-	THROW_IF_FAILED(Fence->SetEventOnCompletion(Value, eventHandle));
-	WaitForSingleObject(eventHandle, INFINITE);
-	CloseHandle(eventHandle);
-}
-#pragma endregion Core
-
-#pragma region Frame lifecycle
-void CRenderer::ResetCurrentFrameCommandList ()
-{
-	auto commandListAllocator = GetCurrentFrameResource().CommandListAllocator;
-	THROW_IF_FAILED(commandListAllocator->Reset());
-
-	// TODO: assign different PSO
-	THROW_IF_FAILED(CommandList->Reset(commandListAllocator.Get(), nullptr));
-	bCommandListRecording = true;
+	THROW_IF_FAILED(Fence->SetEventOnCompletion(Value, FenceEvent));
+	WaitForSingleObject(FenceEvent, INFINITE);
 }
 
-void CRenderer::ReloadModifiedAssetsIfNeeded ()
+void CRenderer::FlushCommandQueue ()
 {
-#ifndef RELEASE
-	const bool bMaterialsReloaded = MaterialLibrary.ReloadModifiedMaterials();
-	const bool bShadersReloaded = ShaderLibrary.ReloadModifiedShaders();
-	if (bMaterialsReloaded || bShadersReloaded)
+	if (!CommandQueue || !Fence)
 	{
-		bPendingPipelineStateRebuild = true;
+		return;
 	}
-	if (bShadersReloaded)
-	{
-		bPendingRaytracingPipelineRebuild = true;
-	}
-#endif
+	++FenceValue;
+	CommandQueue->Signal(Fence.Get(), FenceValue);
+	WaitForFenceValue(FenceValue);
+	Rhi.ProcessDeferredReleases(Fence->GetCompletedValue());
 }
 
 void CRenderer::SetRenderMode (ERenderMode Mode)
 {
-	RenderMode = Mode;
+	// Hybrid is not a separate pipeline any more: it maps to the path tracer.
+	RenderMode = Mode == ERenderMode::Hybrid ? ERenderMode::Raytracing : Mode;
+	if (RenderMode == ERenderMode::Raytracing && Rhi.GetCaps().RaytracingTier < D3D12_RAYTRACING_TIER_1_1)
+	{
+		RenderMode = ERenderMode::Raster;
+	}
 }
 
-ERenderMode CRenderer::GetRenderMode () const
-{
-	return RenderMode;
-}
-
-bool CRenderer::IsRaytracingReady () const
-{
-	return RtStateObject
-			&& RtOutputResource
-			&& SrvUavHeap
-			&& SbtStorage
-			&& TopLevelASBuffers.Result;
-}
-
-bool CRenderer::ShouldRenderRaster () const
-{
-	// fallback to raster
-	return RenderMode == ERenderMode::Raster || !IsRaytracingReady() || RenderMode == ERenderMode::Hybrid;
-}
-
-bool CRenderer::ShouldRenderRaytracing () const
-{
-	return RenderMode == ERenderMode::Raytracing && IsRaytracingReady();
-}
+bool CRenderer::IsRaytracingReady () const { return PathTracer && PathTracer->IsReady(); }
+bool CRenderer::ShouldRenderRaster () const { return RenderMode == ERenderMode::Raster || !IsRaytracingReady(); }
+bool CRenderer::ShouldRenderRaytracing () const { return RenderMode == ERenderMode::Raytracing && IsRaytracingReady(); }
 
 bool CRenderer::IsReadyToRender () const
 {
-	return bFrameBuffersReady && SwapChain && Viewport.Width > 0.f && Viewport.Height > 0.f;
+	return bFrameBuffersReady && SwapChain && DisplayWidth > 0u && DisplayHeight > 0u;
 }
 
-void CRenderer::StartFrame ()
+EUpscalerKind CRenderer::GetUpscalerKind () const
 {
-	ResetCurrentFrameCommandList();
-	GpuProfiler.BeginFrame();
-	RayCounters.BeginFrame();
-	RayCounters.ClearForFrame(CommandList.Get());
-	ProcessPendingResourceUploads();
-	ReloadModifiedAssetsIfNeeded();
-	const bool bRenderRaster = ShouldRenderRaster();
-	const bool bRenderRaytracing = ShouldRenderRaytracing();
-
-	if (bRenderRaster)
-	{
-		PrepareRasterPass();
-	}
-	else
-	{
-		TransitionCurrentBackBufferToRenderTarget();
-	}
+	return Upscaler ? Upscaler->GetKind() : EUpscalerKind::None;
 }
 
-void CRenderer::PrepareCurrentPass ()
+void CRenderer::SetUpscalerKind (EUpscalerKind Kind)
 {
-	const bool bRenderRaytracing = ShouldRenderRaytracing();
-	if (bRenderRaytracing)
+	if (Upscaler && Upscaler->GetKind() == Kind)
 	{
-		if (bRaytracingSbtDirty)
-		{
-			CreateShaderBindingTable();
-			bRaytracingSbtDirty = false;
-		}
-		DispatchRaytracingToCurrentFrameBuffer();
-		SetupCurrentBackBufferRenderTargetNoClear();
+		return;
 	}
+	std::unique_ptr<IUpscaler> next = CreateUpscaler(Kind);
+	if (!next || !next->IsAvailable())
+	{
+		return;
+	}
+	FlushCommandQueue();
+	if (Upscaler)
+	{
+		Upscaler->Shutdown(Rhi);
+	}
+	Upscaler = std::move(next);
+	Upscaler->Initialize(Rhi, Pipelines);
+	RenderWidth = 0u; // force resize
+	bForceReset = true;
 }
 
 void CRenderer::Tick ()
 {
-	CurrentFrameResourceIndex = (CurrentFrameResourceIndex + 1) % render::constants::FrameResourcesBufferCount;
+	FrameSlot = (FrameSlot + 1u) % rhi::MaxFramesInFlight;
+	WaitForFenceValue(Frames[FrameSlot].FenceValue);
+	const uint64 completed = Fence->GetCompletedValue();
+	Rhi.ProcessDeferredReleases(completed);
+	Capture->Poll(completed);
+	// Everything recorded this frame is retired by the signal Draw() will issue.
+	Rhi.BeginFrame(FrameSlot, FenceValue + 1u);
+}
 
-	if (GetCurrentFrameResource().FenceValue != 0 && Fence->GetCompletedValue() < GetCurrentFrameResource().FenceValue)
+void CRenderer::StartFrame ()
+{
+	THROW_IF_FAILED(Frames[FrameSlot].Allocator->Reset());
+	THROW_IF_FAILED(CommandList->Reset(Frames[FrameSlot].Allocator.Get(), nullptr));
+	bCommandListRecording = true;
+
+	GpuProfiler.BeginFrame();
+	RayCounters.BeginFrame();
+	RayCounters.ClearForFrame(CommandList.Get());
+
+	CurrentBackBuffer = SwapChain->GetCurrentBackBufferIndex();
+	rhi::CBarrierBatch barriers;
+	barriers.Transition(BackBuffers[CurrentBackBuffer].Get(), BackBufferState[CurrentBackBuffer], D3D12_RESOURCE_STATE_RENDER_TARGET);
+	BackBufferState[CurrentBackBuffer] = D3D12_RESOURCE_STATE_RENDER_TARGET;
+	barriers.Flush(CommandList.Get());
+}
+
+void CRenderer::UpdateResolution ()
+{
+	const bool bReference = Settings.Mode == EPathTracingMode::Reference && RenderMode == ERenderMode::Raytracing;
+	const float scale = bReference ? 1.0f : std::clamp(Settings.RenderScale, 0.25f, 1.0f);
+	const uint32 renderW = (std::max)(1u, static_cast<uint32>(std::lround(DisplayWidth * scale)));
+	const uint32 renderH = (std::max)(1u, static_cast<uint32>(std::lround(DisplayHeight * scale)));
+	if (renderW == RenderWidth && renderH == RenderHeight && DisplayColor.IsValid() &&
+		DisplayColor.Width == DisplayWidth && DisplayColor.Height == DisplayHeight)
 	{
-		HANDLE eventHandle = CreateEventEx(nullptr, nullptr, false, EVENT_ALL_ACCESS);
-		THROW_IF_FAILED(Fence->SetEventOnCompletion(GetCurrentFrameResource().FenceValue, eventHandle));
-		WaitForSingleObject(eventHandle, INFINITE);
-		CloseHandle(eventHandle);
+		return;
 	}
+	RenderWidth = renderW;
+	RenderHeight = renderH;
+
+	PathTracer->Resize(RenderWidth, RenderHeight);
+	RasterPreview->Resize(RenderWidth, RenderHeight);
+	Denoiser->Resize(Rhi, RenderWidth, RenderHeight);
+	Upscaler->Resize(Rhi, RenderWidth, RenderHeight, DisplayWidth, DisplayHeight);
+	ReferenceResampler->Resize(Rhi, RenderWidth, RenderHeight, DisplayWidth, DisplayHeight);
+	PostProcess->Resize(Rhi, DisplayWidth, DisplayHeight);
+
+	if (DisplayColor.IsValid())
+	{
+		Rhi.Destroy(DisplayColor);
+	}
+	rhi::STextureDesc desc;
+	desc.Width = DisplayWidth;
+	desc.Height = DisplayHeight;
+	desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+	desc.bUav = true;
+	desc.InitialState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+	desc.Name = L"DisplayColor";
+	DisplayColor = Rhi.CreateTexture(desc);
+	bForceReset = true;
+}
+
+void CRenderer::BuildFrameConstants (gpu::SFrameConstants& Out, bool bSceneValid)
+{
+	using namespace DirectX;
+	Out = {};
+
+	const XMVECTOR position = XMLoadFloat3(&CameraView.Position);
+	XMVECTOR forward = XMVector3Normalize(XMLoadFloat3(&CameraView.Forward));
+	const XMVECTOR up = XMLoadFloat3(&CameraView.Up);
+	const XMMATRIX view = XMMatrixLookToLH(position, forward, up);
+
+	const float aspect = static_cast<float>(DisplayWidth) / static_cast<float>((std::max)(DisplayHeight, 1u));
+	const float fov = std::clamp(Settings.FieldOfViewY, 0.1f, 3.0f);
+	const float nearZ = (std::max)(Settings.NearZ, 1e-4f);
+	const XMMATRIX projNoJitter = MakeReversedInfinitePerspective(fov, aspect, nearZ);
+
+	float jitterX = 0.0f;
+	float jitterY = 0.0f;
+	const bool bReference = RenderMode == ERenderMode::Raytracing && Settings.Mode == EPathTracingMode::Reference;
+	if (!bReference && Upscaler && Upscaler->GetKind() != EUpscalerKind::None)
+	{
+		Upscaler->GetJitter(FrameNumber, RenderWidth, DisplayWidth, jitterX, jitterY);
+	}
+	XMMATRIX proj = projNoJitter;
+	// Pixel k must sample the unjittered image at k + 0.5 + Jitter (the convention of the path
+	// tracer's primary rays, the denoiser and the TAA). Offsetting NDC by +2J/size moves the
+	// projected image by +J pixels, so pixel k would see k + 0.5 - J: hence the minus (x) / plus
+	// (y, NDC up) here. With the opposite sign every raster frame was misregistered by 2 J render
+	// pixels in the TAA (up to 2 display px per frame at RenderScale 0.5: combed, stair-stepped
+	// edges) and depth edges failed its reprojection test.
+	proj.r[2] = XMVectorAdd(proj.r[2], XMVectorSet(-2.0f * jitterX / RenderWidth, 2.0f * jitterY / RenderHeight, 0.0f, 0.0f));
+
+	const XMMATRIX viewProj = XMMatrixMultiply(view, proj);
+	const XMMATRIX viewProjNoJitter = XMMatrixMultiply(view, projNoJitter);
+
+	XMStoreFloat4x4(&Out.View, view);
+	XMStoreFloat4x4(&Out.InvView, XMMatrixInverse(nullptr, view));
+	XMStoreFloat4x4(&Out.Proj, proj);
+	XMStoreFloat4x4(&Out.InvViewProjNoJitter, XMMatrixInverse(nullptr, viewProjNoJitter));
+	XMStoreFloat4x4(&Out.ViewProj, viewProj);
+	XMStoreFloat4x4(&Out.InvViewProj, XMMatrixInverse(nullptr, viewProj));
+	XMStoreFloat4x4(&Out.ViewProjNoJitter, viewProjNoJitter);
+	if (bHasPrevFrame)
+	{
+		Out.PrevViewProjNoJitter = PrevViewProjNoJitter;
+		Out.PrevCameraPosition = PrevCameraPosition;
+		Out.PrevJitter = { PrevJitter[0], PrevJitter[1] };
+	}
+	else
+	{
+		Out.PrevViewProjNoJitter = Out.ViewProjNoJitter;
+		Out.PrevCameraPosition = CameraView.Position;
+		Out.PrevJitter = { jitterX, jitterY };
+	}
+
+	Out.CameraPosition = CameraView.Position;
+	XMStoreFloat3(&Out.CameraForward, forward);
+	Out.NearZ = nearZ;
+	Out.FarZ = 1e6f;
+	Out.TanHalfFovY = std::tan(0.5f * fov);
+	Out.RenderSize = { static_cast<float>(RenderWidth), static_cast<float>(RenderHeight) };
+	Out.InvRenderSize = { 1.0f / RenderWidth, 1.0f / RenderHeight };
+	Out.DisplaySize = { static_cast<float>(DisplayWidth), static_cast<float>(DisplayHeight) };
+	Out.InvDisplaySize = { 1.0f / DisplayWidth, 1.0f / DisplayHeight };
+	Out.Jitter = { jitterX, jitterY };
+	Out.AspectRatio = aspect;
+	Out.PixelSpreadAngle = std::atan(2.0f * Out.TanHalfFovY / static_cast<float>(RenderHeight));
+	Out.FrameIndex = static_cast<uint32>(FrameNumber);
+	Out.AccumulationIndex = AccumulationFrames;
+	Out.PreExposure = 1.0f;
+	Out.Flags = 0u;
+	if (bReference) { Out.Flags |= gpu::FrameFlag_ReferenceMode; }
+	if (bHasPrevFrame) { Out.Flags |= gpu::FrameFlag_HistoryValid; }
+	if (Settings.bCollectRayCounters)
+	{
+		Out.Flags |= gpu::FrameFlag_CountersEnabled;
+		Out.RayCounterBuffer = RayCounterUav;
+	}
+	else
+	{
+		Out.RayCounterBuffer = FRT_INVALID_INDEX;
+	}
+	Out.BlueNoiseTexture = FRT_INVALID_INDEX;
+	Out.InstanceBuffer = Out.GeometryBuffer = Out.MaterialBuffer = Out.LightBuffer = FRT_INVALID_INDEX;
+	Out.EmissiveTriangleBuffer = Out.LightAliasTable = Out.SkyEnvironmentMap = Out.SkyLuminancePyramid = FRT_INVALID_INDEX;
+	Out.PortalBuffer = Out.EnergyCompensationLut = FRT_INVALID_INDEX;
+	Out.SunLightIndex = Out.SkyLightIndex = FRT_INVALID_INDEX;
+	if (bSceneValid)
+	{
+		Scene->FillFrameConstants(Out);
+	}
+}
+
+uint64 CRenderer::ComputeAccumulationHash () const
+{
+	uint64 hash = 1469598103934665603ull;
+	hash = HashBytes(hash, &FrameConstants.View, sizeof(FrameConstants.View));
+	hash = HashBytes(hash, &FrameConstants.ViewProjNoJitter, sizeof(FrameConstants.ViewProjNoJitter));
+	hash = HashBytes(hash, &RenderWidth, sizeof(RenderWidth));
+	hash = HashBytes(hash, &RenderHeight, sizeof(RenderHeight));
+	hash = HashBytes(hash, &PathTracer->Settings, sizeof(SPathTracerSettings));
+	hash = HashBytes(hash, &Settings.Mode, sizeof(Settings.Mode));
+	return hash;
+}
+
+void CRenderer::PrepareCurrentPass ()
+{
+	if (!IsReadyToRender())
+	{
+		return;
+	}
+	UpdateResolution();
+
+#ifndef RELEASE
+	if (MaterialLibrary.ReloadModifiedMaterials())
+	{
+		bForceReset = true;
+	}
+#endif
+	if (Pipelines.PollHotReload())
+	{
+		bForceReset = true;
+	}
+
+	CRenderContext context;
+	context.Device = &Rhi;
+	context.Pipelines = &Pipelines;
+	context.CommandList = CommandList.Get();
+	context.FrameNumber = FrameNumber;
+
+	// Provisional constants (camera only) so scene passes have a valid b1; the final version
+	// with this frame's scene table indices is uploaded right after the scene update.
+	BuildFrameConstants(FrameConstants, false);
+	context.FrameConstantsVa = Rhi.GetUploadRing().Push(FrameConstants).Gpu;
+	context.Frame = &FrameConstants;
+	context.BindCompute();
+
+	bool bSceneChanged = false;
+	{
+		FRT_GPU_SCOPE(CommandList.Get(), "Scene_Update");
+		bSceneChanged = Scene->Update(context);
+	}
+
+	// Progressive accumulation bookkeeping (reference mode).
+	{
+		BuildFrameConstants(FrameConstants, true);
+		const uint64 hash = ComputeAccumulationHash();
+		const bool bModeChanged = PrevMode != Settings.Mode || PrevRenderMode != RenderMode;
+		if (hash != AccumulationHash || bSceneChanged || bForceReset || bModeChanged)
+		{
+			AccumulationHash = hash;
+			AccumulationFrames = 0u;
+		}
+		else
+		{
+			++AccumulationFrames;
+		}
+		FrameConstants.AccumulationIndex = AccumulationFrames;
+		AccumulatedSamples = (AccumulationFrames + 1u) * (std::max)(PathTracer->Settings.SamplesPerPixel, 1u);
+	}
+	context.FrameConstantsVa = Rhi.GetUploadRing().Push(FrameConstants).Gpu;
+	context.SceneTlasVa = Scene->GetTlasAddress();
+	context.BindCompute();
+
+	const bool bResetHistory = bForceReset || !bHasPrevFrame || PrevMode != Settings.Mode || PrevRenderMode != RenderMode;
+	if (RenderMode == ERenderMode::Raytracing)
+	{
+		PathTracer->UpdatePipelines(CommandList.Get());
+	}
+	if (ShouldRenderRaytracing())
+	{
+		RecordRaytracing(context, bResetHistory);
+	}
+	else
+	{
+		RecordRaster(context, bResetHistory);
+	}
+
+	PrevViewProjNoJitter = FrameConstants.ViewProjNoJitter;
+	PrevCameraPosition = FrameConstants.CameraPosition;
+	PrevJitter[0] = FrameConstants.Jitter.x;
+	PrevJitter[1] = FrameConstants.Jitter.y;
+	bHasPrevFrame = true;
+	bForceReset = false;
+	PrevMode = Settings.Mode;
+	PrevRenderMode = RenderMode;
+}
+
+void CRenderer::RecordRaytracing (CRenderContext& Context, bool bResetHistory)
+{
+	const bool bReference = Settings.Mode == EPathTracingMode::Reference;
+	SPathTracerTargets& targets = PathTracer->GetTargets();
+
+	const bool bTargetReached = bReference && Settings.ReferenceSampleTarget > 0u &&
+		AccumulationFrames > 0u && AccumulatedSamples > Settings.ReferenceSampleTarget;
+	if (!bTargetReached)
+	{
+		PathTracer->Dispatch(Context, bReference, bReference);
+	}
+	else if (AccumulationFrames > 0u)
+	{
+		--AccumulationFrames; // hold the counter at the target
+	}
+
+	rhi::SGpuTexture* hdr = &targets.Composite;
+	if (bReference)
+	{
+		hdr = &targets.Accumulation;
+	}
+	else
+	{
+		if (Settings.bDenoiser && Denoiser->Settings.bEnabled)
+		{
+			SDenoiserInputs inputs;
+			inputs.Diffuse = &targets.Diffuse;
+			inputs.Specular = &targets.Specular;
+			inputs.NormalRoughness = &targets.NormalRoughness;
+			inputs.ViewZ = &targets.ViewZ;
+			inputs.MotionVectors = &targets.MotionVectors;
+			inputs.bResetHistory = bResetHistory;
+			Denoiser->Execute(Context, inputs);
+			PathTracer->Remodulate(Context, Denoiser->GetDiffuseOutput(), Denoiser->GetSpecularOutput(), targets.Composite);
+		}
+		else
+		{
+			PathTracer->Remodulate(Context, targets.Diffuse, targets.Specular, targets.Composite);
+		}
+	}
+
+	SUpscalerInputs up;
+	up.Color = hdr;
+	up.ViewZ = &targets.ViewZ;
+	up.MotionVectors = &targets.MotionVectors;
+	up.JitterX = FrameConstants.Jitter.x;
+	up.JitterY = FrameConstants.Jitter.y;
+	up.bResetHistory = bResetHistory;
+	up.Exposure = PostProcess->GetLastExposure();
+	if (bReference)
+	{
+		// The accumulation is already anti-aliased and converged: resample only.
+		ReferenceResampler->Execute(Context, up, DisplayColor);
+	}
+	else
+	{
+		Upscaler->Execute(Context, up, DisplayColor);
+	}
+	LastHdrForCapture = bReference ? &targets.Accumulation : &DisplayColor;
+
+	rhi::SGpuTexture* debug = PathTracer->Settings.DebugMode != gpu::PathDebug_None ? &targets.Debug : nullptr;
+	if (debug)
+	{
+		LastHdrForCapture = debug; // HDR captures of a debug view hold the raw linear values
+	}
+	RecordPostAndPresentTarget(Context, DisplayColor, debug, bResetHistory);
+}
+
+void CRenderer::RecordRaster (CRenderContext& Context, bool bResetHistory)
+{
+	const float mipBias = Upscaler ? Upscaler->GetMipBias(RenderWidth, DisplayWidth) : 0.0f;
+	RasterPreview->Execute(Context, *Scene, mipBias);
+	Context.BindCompute();
+
+	SUpscalerInputs up;
+	up.Color = &RasterPreview->GetColor();
+	up.ViewZ = &RasterPreview->GetViewZ();
+	up.MotionVectors = &RasterPreview->GetMotionVectors();
+	up.JitterX = FrameConstants.Jitter.x;
+	up.JitterY = FrameConstants.Jitter.y;
+	up.bResetHistory = bResetHistory;
+	up.Exposure = PostProcess->GetLastExposure();
+	Upscaler->Execute(Context, up, DisplayColor);
+	LastHdrForCapture = &DisplayColor;
+	RecordPostAndPresentTarget(Context, DisplayColor, nullptr, bResetHistory);
+}
+
+void CRenderer::RecordPostAndPresentTarget (CRenderContext& Context, rhi::SGpuTexture& Color, rhi::SGpuTexture* Debug, bool bResetExposure)
+{
+	const D3D12_CPU_DESCRIPTOR_HANDLE rtv = Rhi.GetRtvHeap().GetCpuHandle(BackBufferRtv[CurrentBackBuffer] - 1u);
+
+	SPostProcessInputs post;
+	post.HdrColor = &Color;
+	post.OutputRtv = rtv;
+	post.OutputFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+	post.OutputWidth = DisplayWidth;
+	post.OutputHeight = DisplayHeight;
+	post.bResetExposure = bResetExposure && AccumulationFrames == 0u && !bHasPrevFrame;
+	post.DebugTexture = Debug;
+	post.bDebugIsLinear = true;
+	PostProcess->Execute(Context, post);
+
+	// Captures see exactly what the user sees minus the UI.
+	if (!CaptureRequests.empty())
+	{
+		for (const SCaptureRequest& request : CaptureRequests)
+		{
+			std::filesystem::path png = request.Path;
+			png.replace_extension(".png");
+			Capture->Record(CommandList.Get(), BackBuffers[CurrentBackBuffer].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, png);
+			if (request.bHdr && LastHdrForCapture)
+			{
+				std::filesystem::path pfm = request.Path;
+				pfm.replace_extension(".pfm");
+				Capture->Record(CommandList.Get(), LastHdrForCapture->Resource.Get(), LastHdrForCapture->State, pfm);
+			}
+		}
+		CaptureRequests.clear();
+	}
+
+	// Leave the back buffer bound for the UI.
+	CommandList->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+	const D3D12_VIEWPORT viewport = { 0.0f, 0.0f, static_cast<float>(DisplayWidth), static_cast<float>(DisplayHeight), 0.0f, 1.0f };
+	const D3D12_RECT scissor = { 0, 0, static_cast<LONG>(DisplayWidth), static_cast<LONG>(DisplayHeight) };
+	CommandList->RSSetViewports(1, &viewport);
+	CommandList->RSSetScissorRects(1, &scissor);
+	ID3D12DescriptorHeap* heaps[] = { Rhi.GetBindlessHeap().GetHeap() };
+	CommandList->SetDescriptorHeaps(1, heaps);
+}
+
+void CRenderer::RebindAfterUi ()
+{
 }
 
 void CRenderer::Draw ()
 {
-	{
-		D3D12_RESOURCE_BARRIER resourceBarrier = {};
-		resourceBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-		resourceBarrier.Transition.pResource = FrameBuffer[CurrentBackBufferIndex].Get();
-		resourceBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-		resourceBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_RENDER_TARGET;
-		resourceBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PRESENT;
-		CommandList->ResourceBarrier(1, &resourceBarrier);
-	}
+	rhi::CBarrierBatch barriers;
+	barriers.Transition(BackBuffers[CurrentBackBuffer].Get(), BackBufferState[CurrentBackBuffer], D3D12_RESOURCE_STATE_PRESENT);
+	BackBufferState[CurrentBackBuffer] = D3D12_RESOURCE_STATE_PRESENT;
+	barriers.Flush(CommandList.Get());
 
-	// Resolve all timestamp queries recorded this frame before closing the list.
 	GpuProfiler.ResolveFrame(CommandList.Get());
 	RayCounters.ResolveFrame(CommandList.Get());
 
 	THROW_IF_FAILED(CommandList->Close());
 	bCommandListRecording = false;
-	CommandQueue->ExecuteCommandLists(1, (ID3D12CommandList**)CommandList.GetAddressOf());
+	ID3D12CommandList* lists[] = { CommandList.Get() };
+	CommandQueue->ExecuteCommandLists(1, lists);
 
-	SwapChain->Present(bVSyncEnabled, 0);
-	CurrentBackBufferIndex = (CurrentBackBufferIndex + 1) % render::constants::SwapChainBufferCount;
-
-	// FlushCommandQueue();
+	BOOL bFullscreen = FALSE;
+	SwapChain->GetFullscreenState(&bFullscreen, nullptr);
+	const bool bTear = !bVSyncEnabled && bTearingSupported && !bFullscreen;
+	const HRESULT hr = SwapChain->Present(bVSyncEnabled ? 1u : 0u, bTear ? DXGI_PRESENT_ALLOW_TEARING : 0u);
+	if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
+	{
+		ReportDeviceRemoved(Device.Get());
+		THROW_IF_FAILED(hr);
+	}
 
 	++FenceValue;
-	GetCurrentFrameResource().FenceValue = FenceValue;
 	CommandQueue->Signal(Fence.Get(), FenceValue);
+	Frames[FrameSlot].FenceValue = FenceValue;
+	++FrameNumber;
+}
 
-#ifndef RELEASE
-	if (bPendingPipelineStateRebuild)
+void CRenderer::RequestCapture (const std::filesystem::path& Path, bool bHdr)
+{
+	CaptureRequests.push_back({ Path, bHdr });
+}
+
+bool CRenderer::HasPendingCaptures () const
+{
+	return !CaptureRequests.empty() || (Capture && Capture->HasPending());
+}
+
+void CRenderer::AllocateImGuiDescriptor (D3D12_CPU_DESCRIPTOR_HANDLE* OutCpu, D3D12_GPU_DESCRIPTOR_HANDLE* OutGpu)
+{
+	const uint32 index = Rhi.GetBindlessHeap().AllocatePersistent();
+	if (OutCpu) { *OutCpu = Rhi.GetBindlessHeap().GetCpuHandle(index); }
+	if (OutGpu) { *OutGpu = Rhi.GetBindlessHeap().GetGpuHandle(index); }
+}
+
+void CRenderer::FreeImGuiDescriptor (D3D12_CPU_DESCRIPTOR_HANDLE Cpu, D3D12_GPU_DESCRIPTOR_HANDLE Gpu)
+{
+	(void)Cpu;
+	const D3D12_GPU_DESCRIPTOR_HANDLE start = Rhi.GetBindlessHeap().GetGpuHandle(0u);
+	const UINT increment = Device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+	const uint32 index = static_cast<uint32>((Gpu.ptr - start.ptr) / increment);
+	Rhi.DeferFreeDescriptor(index);
+}
+
+void CRenderer::DrawRendererUi ()
+{
+	const rhi::SDeviceCaps& caps = Rhi.GetCaps();
+	ImGui::Text("SM %s  DXR %d.%d  SER %s", ShaderModelName(caps.HighestShaderModel),
+		caps.RaytracingTier / 10, caps.RaytracingTier % 10,
+		PathTracer->IsSerActive() ? (caps.bSerActuallyReorders ? "active" : "active (no-op on this GPU)") : "off");
+	ImGui::Text("Render %ux%u -> display %ux%u", RenderWidth, RenderHeight, DisplayWidth, DisplayHeight);
+
+	int mode = static_cast<int>(RenderMode == ERenderMode::Raster ? 0 : 1);
+	const char* renderModes[] = { "Raster preview", "Path tracing" };
+	if (ImGui::Combo("Renderer", &mode, renderModes, 2))
 	{
-		WaitForFenceValue(FenceValue);
-		CreatePipelineState();
-		bPendingPipelineStateRebuild = false;
+		SetRenderMode(mode == 0 ? ERenderMode::Raster : ERenderMode::Raytracing);
 	}
 
-	if (bPendingRaytracingPipelineRebuild)
+	int ptMode = static_cast<int>(Settings.Mode);
+	const char* ptModes[] = { "Real time (denoised)", "Reference (progressive)" };
+	if (ImGui::Combo("Path tracing mode", &ptMode, ptModes, 2))
 	{
-		WaitForFenceValue(FenceValue);
-		if (CreateRaytracingPipeline())
+		Settings.Mode = static_cast<EPathTracingMode>(ptMode);
+	}
+
+	if (Settings.Mode == EPathTracingMode::Reference)
+	{
+		ImGui::Text("Accumulated: %u spp", AccumulatedSamples);
+		int target = static_cast<int>(Settings.ReferenceSampleTarget);
+		if (ImGui::InputInt("Stop at spp (0 = never)", &target))
 		{
-			bRaytracingSbtDirty = true;
-			bPendingRaytracingPipelineRebuild = false;
+			Settings.ReferenceSampleTarget = static_cast<uint32>((std::max)(target, 0));
 		}
 	}
-#endif
-
-	GetCurrentFrameResource().UploadArena.Clear();
-}
-
-SFrameResources& CRenderer::GetCurrentFrameResource ()
-{
-	return FramesResources[CurrentFrameResourceIndex];
-}
-
-#pragma endregion Frame lifecycle
-
-#pragma region Resource uploads
-DX12_Arena& CRenderer::GetBufferArena ()
-{
-	return BufferArena;
-}
-
-void CRenderer::RecordBufferUpload (
-	ID3D12Resource* Resource,
-	uint64 SizeInBytes,
-	const void* BufferData,
-	D3D12_RESOURCE_STATES FinalState)
-{
-	frt_assert(Resource);
-
-	uint64 uploadOffset = 0;
-	uint8* dest = GetCurrentFrameResource().UploadArena.Allocate(SizeInBytes, &uploadOffset);
-	if (BufferData && SizeInBytes > 0u)
+	else
 	{
-		memcpy(dest, BufferData, SizeInBytes);
-	}
-	else if (SizeInBytes > 0u)
-	{
-		memset(dest, 0, SizeInBytes);
-	}
-
-	CommandList->CopyBufferRegion(
-		Resource, 0, GetCurrentFrameResource().UploadArena.GetGPUBuffer(), uploadOffset, SizeInBytes);
-
-	D3D12_RESOURCE_BARRIER resourceBarrier = {};
-	resourceBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-	resourceBarrier.Transition.pResource = Resource;
-	resourceBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-	resourceBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-	resourceBarrier.Transition.StateAfter = FinalState;
-	CommandList->ResourceBarrier(1, &resourceBarrier);
-}
-
-uint32 CRenderer::BuildPackedTextureData (
-	const D3D12_RESOURCE_DESC& Desc,
-	const void* Texels,
-	TArray<uint8>& OutPackedTexels) const
-{
-	frt_assert(Texels);
-	frt_assert(Desc.DepthOrArraySize == 1);
-
-	const uint64 bytesPerPixel = Dx12GetBytesPerPixel(Desc.Format);
-	const uint64 sourceRowBytes = static_cast<uint64>(Desc.Width) * bytesPerPixel;
-	const uint32 rowPitch = static_cast<uint32>(AlignAddress(sourceRowBytes, D3D12_TEXTURE_DATA_PITCH_ALIGNMENT));
-	const uint64 totalBytes = static_cast<uint64>(rowPitch) * static_cast<uint64>(Desc.Height);
-	frt_assert(totalBytes <= UINT32_MAX);
-
-	OutPackedTexels.SetSizeUninitialized<true>(static_cast<uint32>(totalBytes));
-
-	const uint8* sourceTexels = reinterpret_cast<const uint8*>(Texels);
-	uint8* packedTexels = OutPackedTexels.GetData();
-	for (uint32 y = 0; y < Desc.Height; ++y)
-	{
-		memcpy(
-			packedTexels + static_cast<uint64>(y) * static_cast<uint64>(rowPitch),
-			sourceTexels + static_cast<uint64>(y) * sourceRowBytes,
-			sourceRowBytes);
-	}
-
-	return rowPitch;
-}
-
-void CRenderer::RecordTextureUpload (
-	ID3D12Resource* Resource,
-	const D3D12_RESOURCE_DESC& Desc,
-	uint32 RowPitch,
-	const void* PackedTexels,
-	D3D12_RESOURCE_STATES FinalState)
-{
-	frt_assert(Resource);
-	frt_assert(PackedTexels);
-
-	const uint64 packedBytes = static_cast<uint64>(RowPitch) * static_cast<uint64>(Desc.Height);
-	uint64 uploadOffset = 0;
-	uint8* destTexels = GetCurrentFrameResource().UploadArena.Allocate(packedBytes, &uploadOffset);
-	memcpy(destTexels, PackedTexels, packedBytes);
-
-	D3D12_PLACED_SUBRESOURCE_FOOTPRINT placedFootprint = {};
-	placedFootprint.Offset = uploadOffset;
-	placedFootprint.Footprint.Format = Desc.Format;
-	placedFootprint.Footprint.Width = static_cast<uint32>(Desc.Width);
-	placedFootprint.Footprint.Height = Desc.Height;
-	placedFootprint.Footprint.Depth = 1;
-	placedFootprint.Footprint.RowPitch = RowPitch;
-
-	D3D12_TEXTURE_COPY_LOCATION srcLocation = {};
-	srcLocation.pResource = GetCurrentFrameResource().UploadArena.GetGPUBuffer();
-	srcLocation.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
-	srcLocation.PlacedFootprint = placedFootprint;
-
-	D3D12_TEXTURE_COPY_LOCATION destLocation = {};
-	destLocation.pResource = Resource;
-	destLocation.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
-	destLocation.SubresourceIndex = 0;
-
-	CommandList->CopyTextureRegion(&destLocation, 0, 0, 0, &srcLocation, nullptr);
-
-	D3D12_RESOURCE_BARRIER resourceBarrier = {};
-	resourceBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-	resourceBarrier.Transition.pResource = Resource;
-	resourceBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-	resourceBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_COPY_DEST;
-	resourceBarrier.Transition.StateAfter = FinalState;
-	CommandList->ResourceBarrier(1, &resourceBarrier);
-}
-
-void CRenderer::ProcessPendingResourceUploads ()
-{
-	if (PendingBufferUploads.IsEmpty() && PendingTextureUploads.IsEmpty())
-	{
-		return;
-	}
-
-	frt_assert(bCommandListRecording);
-
-	for (uint32 i = 0; i < PendingBufferUploads.Count(); ++i)
-	{
-		SPendingBufferUpload& upload = PendingBufferUploads[i];
-		if (!upload.Resource)
+		ImGui::SliderFloat("Render scale", &Settings.RenderScale, 0.33f, 1.0f, "%.2f");
+		int kind = static_cast<int>(GetUpscalerKind());
+		const char* kinds[] = { "Off", "TAAU (in-house)", "DLSS (n/a)", "FSR (n/a)", "XeSS (n/a)" };
+		if (ImGui::Combo("Upscaler / AA", &kind, kinds, 5))
 		{
-			continue;
+			SetUpscalerKind(static_cast<EUpscalerKind>(kind));
 		}
-
-		RecordBufferUpload(
-			upload.Resource,
-			static_cast<uint64>(upload.Data.Count()),
-			upload.Data.GetData(),
-			upload.FinalState);
+		ImGui::Checkbox("Denoiser", &Settings.bDenoiser);
 	}
-	PendingBufferUploads.Clear();
-
-	for (uint32 i = 0; i < PendingTextureUploads.Count(); ++i)
+	float fovDeg = Settings.FieldOfViewY * 57.29578f;
+	if (ImGui::SliderFloat("Vertical FOV", &fovDeg, 20.0f, 120.0f, "%.1f deg"))
 	{
-		SPendingTextureUpload& upload = PendingTextureUploads[i];
-		if (!upload.Resource || upload.PackedTexels.IsEmpty())
+		Settings.FieldOfViewY = fovDeg / 57.29578f;
+	}
+	ImGui::Checkbox("Collect ray counters", &Settings.bCollectRayCounters);
+	if (ImGui::Button("Reset accumulation / history"))
+	{
+		ResetAccumulation();
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Capture"))
+	{
+		RequestCapture(paths::GetCaptureDir() / ("capture_" + std::to_string(FrameNumber)), true);
+	}
+
+	if (ImGui::CollapsingHeader("Path tracer", ImGuiTreeNodeFlags_DefaultOpen))
+	{
+		PathTracer->DrawSettingsUi();
+	}
+	if (ImGui::CollapsingHeader("Denoiser"))
+	{
+		Denoiser->DrawSettingsUi();
+	}
+	if (ImGui::CollapsingHeader("Upscaler / TAA"))
+	{
+		Upscaler->DrawSettingsUi();
+	}
+	if (ImGui::CollapsingHeader("Post processing", ImGuiTreeNodeFlags_DefaultOpen))
+	{
+		PostProcess->DrawSettingsUi();
+	}
+	if (ImGui::CollapsingHeader("Scene"))
+	{
+		const SSceneStats& s = Scene->GetStats();
+		ImGui::Text("Instances %u  models %u  triangles %llu", s.Instances, s.Models, static_cast<unsigned long long>(s.Triangles));
+		ImGui::Text("Materials %u  lights %u  emissive triangles %u", s.Materials, s.AnalyticLights, s.EmissiveTriangles);
+		ImGui::Text("BLAS %.1f MB (%u compacted)", s.BlasBytes / (1024.0 * 1024.0), s.BlasCompacted);
+		ImGui::Text("Textures %u resident (%.1f MB), %u streaming", s.TexturesResident, s.TextureBytes / (1024.0 * 1024.0), s.TexturesPending);
+		ImGui::Text("Bindless descriptors %u / %u", Rhi.GetBindlessHeap().GetPersistentInUse(), Rhi.GetBindlessHeap().GetPersistentCapacity());
+	}
+	const std::vector<std::string>& errors = Pipelines.GetErrors();
+	if (!errors.empty() && ImGui::CollapsingHeader("Shader errors", ImGuiTreeNodeFlags_DefaultOpen))
+	{
+		for (const std::string& e : errors)
 		{
-			continue;
-		}
-
-		RecordTextureUpload(
-			upload.Resource,
-			upload.Desc,
-			upload.RowPitch,
-			upload.PackedTexels.GetData(),
-			upload.FinalState);
-	}
-	PendingTextureUploads.Clear();
-}
-
-ID3D12Resource* CRenderer::CreateBufferAsset (const D3D12_RESOURCE_DESC& Desc)
-{
-	ID3D12Resource* resource = BufferArena.Allocate(Desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr);
-	frt_assert(resource);
-	return resource;
-}
-
-void CRenderer::EnqueueBufferUpload (
-	ID3D12Resource* Resource,
-	uint64 SizeInBytes,
-	const void* BufferData,
-	D3D12_RESOURCE_STATES FinalState)
-{
-	frt_assert(Resource);
-	frt_assert(SizeInBytes <= UINT32_MAX);
-
-	SPendingBufferUpload& pendingUpload = PendingBufferUploads.Add();
-	pendingUpload.Resource = Resource;
-	pendingUpload.FinalState = FinalState;
-	pendingUpload.Data.SetSizeUninitialized<true>(static_cast<uint32>(SizeInBytes));
-	if (BufferData && SizeInBytes > 0u)
-	{
-		memcpy(pendingUpload.Data.GetData(), BufferData, SizeInBytes);
-	}
-	else if (SizeInBytes > 0u)
-	{
-		memset(pendingUpload.Data.GetData(), 0, SizeInBytes);
-	}
-}
-
-ID3D12Resource* CRenderer::CreateTextureAsset (const D3D12_RESOURCE_DESC& Desc)
-{
-	ID3D12Resource* resource = TextureArena.Allocate(Desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr);
-	frt_assert(resource);
-	return resource;
-}
-
-void CRenderer::EnqueueTextureUpload (
-	ID3D12Resource* Resource,
-	const D3D12_RESOURCE_DESC& Desc,
-	const void* Texels,
-	D3D12_RESOURCE_STATES FinalState)
-{
-	frt_assert(Resource);
-
-	TArray<uint8> packedTexels;
-	const uint32 rowPitch = BuildPackedTextureData(Desc, Texels, packedTexels);
-
-	SPendingTextureUpload& pendingUpload = PendingTextureUploads.Add();
-	pendingUpload.Resource = Resource;
-	pendingUpload.Desc = Desc;
-	pendingUpload.FinalState = FinalState;
-	pendingUpload.RowPitch = rowPitch;
-	pendingUpload.PackedTexels = std::move(packedTexels);
-}
-
-#pragma endregion Resource uploads
-
-#pragma region Rasterization
-void CRenderer::CreateRootSignature ()
-{
-	CD3DX12_ROOT_PARAMETER rootParameters[render::constants::RootParamCount];
-
-	CD3DX12_DESCRIPTOR_RANGE texTable0(
-		D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
-		1,
-		render::constants::RootRegister_BaseColorTexture,
-		render::constants::RootSpace_Global);
-
-	rootParameters[render::constants::RootParam_BaseColorTexture].InitAsDescriptorTable(1, &texTable0);
-
-	CD3DX12_DESCRIPTOR_RANGE objCbvTable0(
-		D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
-		1,
-		render::constants::RootRegister_ObjectCbv,
-		render::constants::RootSpace_Global);
-	CD3DX12_DESCRIPTOR_RANGE materialCbvTable0(
-		D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
-		1,
-		render::constants::RootRegister_MaterialCbv,
-		render::constants::RootSpace_Global);
-	CD3DX12_DESCRIPTOR_RANGE passCbvTable0(
-		D3D12_DESCRIPTOR_RANGE_TYPE_CBV,
-		1,
-		render::constants::RootRegister_PassCbv,
-		render::constants::RootSpace_Global);
-
-	rootParameters[render::constants::RootParam_ObjectCbv].InitAsDescriptorTable(1, &objCbvTable0);
-	rootParameters[render::constants::RootParam_MaterialCbv].InitAsDescriptorTable(1, &materialCbvTable0);
-	rootParameters[render::constants::RootParam_PassCbv].InitAsDescriptorTable(1, &passCbvTable0);
-
-	CD3DX12_DESCRIPTOR_RANGE materialTextureTable0(
-		D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
-		render::constants::RootMaterialTextureCount,
-		render::constants::RootRegister_MaterialTextureStart,
-		render::constants::RootSpace_Material);
-	rootParameters[render::constants::RootParam_MaterialTextures].InitAsDescriptorTable(
-		1,
-		&materialTextureTable0);
-
-	const D3D12_STATIC_SAMPLER_DESC samplerDesc = BuildLinearWrapStaticSamplerDesc();
-
-	CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc(
-		render::constants::RootParamCount, rootParameters, 1, &samplerDesc,
-		D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
-
-	ID3DBlob* serializedRootSignature = nullptr;
-	ID3DBlob* errorMessage = nullptr;
-
-	THROW_IF_FAILED(
-		D3D12SerializeRootSignature(
-			&rootSignatureDesc, D3D_ROOT_SIGNATURE_VERSION_1_0, &serializedRootSignature, &errorMessage));
-
-	THROW_IF_FAILED(
-		Device->CreateRootSignature(
-			0,
-			serializedRootSignature->GetBufferPointer(),
-			serializedRootSignature->GetBufferSize(),
-			IID_PPV_ARGS(&RootSignature)));
-
-	if (serializedRootSignature)
-	{
-		serializedRootSignature->Release();
-	}
-	if (errorMessage)
-	{
-		errorMessage->Release();
-	}
-}
-
-static std::string MakePipelineStateKey (
-	const std::string& VertexShaderName,
-	const std::string& PixelShaderName,
-	D3D12_CULL_MODE CullMode,
-	D3D12_COMPARISON_FUNC DepthFunc,
-	bool bDepthEnable,
-	bool bDepthWrite,
-	bool bAlphaBlend)
-{
-	return VertexShaderName + "|" + PixelShaderName
-			+ "|" + std::to_string(static_cast<uint32>(CullMode))
-			+ "|" + std::to_string(static_cast<uint32>(DepthFunc))
-			+ "|" + (bDepthEnable ? "1" : "0")
-			+ "|" + (bDepthWrite ? "1" : "0")
-			+ "|" + (bAlphaBlend ? "1" : "0");
-}
-
-static uint64 HashDefines (const TArray<SShaderDefine>& Defines)
-{
-	constexpr uint64 offsetBasis = 1469598103934665603ull;
-	constexpr uint64 prime = 1099511628211ull;
-
-	uint64 hash = offsetBasis;
-	for (uint32 i = 0; i < Defines.Count(); ++i)
-	{
-		const SShaderDefine& define = Defines[i];
-		for (unsigned char ch : define.Name)
-		{
-			hash ^= ch;
-			hash *= prime;
-		}
-		hash ^= static_cast<unsigned char>('=');
-		hash *= prime;
-		for (unsigned char ch : define.Value)
-		{
-			hash ^= ch;
-			hash *= prime;
-		}
-		hash ^= static_cast<unsigned char>(';');
-		hash *= prime;
-	}
-
-	return hash;
-}
-
-static std::string MakeShaderPermutationName (const std::string& BaseName, const TArray<SShaderDefine>& Defines)
-{
-	if (Defines.IsEmpty())
-	{
-		return BaseName;
-	}
-
-	const uint64 hash = HashDefines(Defines);
-	char buffer[17] = {};
-#if defined(_MSC_VER)
-	_snprintf_s(buffer, sizeof(buffer), "%016llx", hash);
-#else
-	std::snprintf(buffer, sizeof(buffer), "%016llx", static_cast<unsigned long long>(hash));
-#endif
-	return BaseName + "_perm_" + buffer;
-}
-
-static void BuildShaderDefines (
-	const SMaterial& Material,
-	EShaderStage Stage,
-	TArray<SShaderDefine>& OutDefines)
-{
-	OutDefines.Clear();
-
-	if (Stage == EShaderStage::Pixel && (Material.Flags && EMaterialFlags::UseBaseColorTexture))
-	{
-		SShaderDefine& define = OutDefines.Add();
-		define.Name = "FRT_HAS_BASE_COLOR_TEXTURE";
-		define.Value = "1";
-	}
-}
-
-CRenderer::SShaderPermutation CRenderer::BuildShaderPermutation (
-	const std::string& BaseName,
-	const SMaterial& Material,
-	EShaderStage Stage) const
-{
-	SShaderPermutation permutation;
-	BuildShaderDefines(Material, Stage, permutation.Defines);
-	permutation.Name = MakeShaderPermutationName(BaseName, permutation.Defines);
-
-	const std::filesystem::path shaderSourceDir = R"(..\Core\Content\Shaders)";
-	const std::filesystem::path shaderBinDir = shaderSourceDir / "Bin";
-	permutation.CompiledPath = shaderBinDir / (permutation.Name + ".shader");
-	permutation.SourcePath = shaderSourceDir / (BaseName + ".hlsl");
-	return permutation;
-}
-
-ComPtr<ID3D12PipelineState> CRenderer::BuildPipelineState (
-	const SShaderPermutation& VertexShader,
-	const SShaderPermutation& PixelShader,
-	D3D12_CULL_MODE CullMode,
-	D3D12_COMPARISON_FUNC DepthFunc,
-	bool bDepthEnable,
-	bool bDepthWrite,
-	bool bAlphaBlend)
-{
-	D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
-	psoDesc.pRootSignature = RootSignature.Get();
-
-	const std::filesystem::path shaderSourceDir = R"(..\Core\Content\Shaders)";
-
-	const SShaderAsset* vertexShader = ShaderLibrary.LoadShader(
-		VertexShader.Name,
-		VertexShader.CompiledPath,
-		VertexShader.SourcePath,
-		shaderSourceDir,
-		"main",
-		"vs_6_0",
-		EShaderStage::Vertex,
-		VertexShader.Defines);
-	const SShaderAsset* pixelShader = ShaderLibrary.LoadShader(
-		PixelShader.Name,
-		PixelShader.CompiledPath,
-		PixelShader.SourcePath,
-		shaderSourceDir,
-		"main",
-		"ps_6_0",
-		EShaderStage::Pixel,
-		PixelShader.Defines);
-
-	psoDesc.VS = vertexShader->GetBytecode();
-	psoDesc.PS = pixelShader->GetBytecode();
-
-	psoDesc.BlendState.RenderTarget[0].BlendEnable = bAlphaBlend;
-	psoDesc.BlendState.RenderTarget[0].LogicOpEnable = false;
-	psoDesc.BlendState.RenderTarget[0].SrcBlend = bAlphaBlend ? D3D12_BLEND_SRC_ALPHA : D3D12_BLEND_ONE;
-	psoDesc.BlendState.RenderTarget[0].DestBlend = bAlphaBlend ? D3D12_BLEND_INV_SRC_ALPHA : D3D12_BLEND_ZERO;
-	psoDesc.BlendState.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
-	psoDesc.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
-	psoDesc.BlendState.RenderTarget[0].DestBlendAlpha = bAlphaBlend ? D3D12_BLEND_INV_SRC_ALPHA : D3D12_BLEND_ZERO;
-	psoDesc.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
-	psoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-	psoDesc.SampleMask = UINT_MAX;
-	psoDesc.SampleDesc.Count = 1;
-	psoDesc.SampleDesc.Quality = 0;
-
-	psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-	psoDesc.RasterizerState.CullMode = CullMode;
-	psoDesc.RasterizerState.FrontCounterClockwise = false;
-	psoDesc.RasterizerState.DepthClipEnable = true;
-
-	psoDesc.DepthStencilState.DepthEnable = bDepthEnable;
-	psoDesc.DepthStencilState.StencilEnable = false;
-	psoDesc.DepthStencilState.DepthWriteMask =
-		bDepthWrite ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO;
-	psoDesc.DepthStencilState.DepthFunc = DepthFunc;
-
-	D3D12_INPUT_ELEMENT_DESC inputElementDescs[6] = {};
-	inputElementDescs[0].SemanticName = "POSITION";
-	inputElementDescs[0].SemanticIndex = 0;
-	inputElementDescs[0].Format = DXGI_FORMAT_R32G32B32_FLOAT;
-	inputElementDescs[0].InputSlot = 0;
-	inputElementDescs[0].AlignedByteOffset = 0;
-	inputElementDescs[0].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
-
-	inputElementDescs[1].SemanticName = "TEXCOORD";
-	inputElementDescs[1].SemanticIndex = 0;
-	inputElementDescs[1].Format = DXGI_FORMAT_R32G32_FLOAT;
-	inputElementDescs[1].InputSlot = 0;
-	inputElementDescs[1].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
-	inputElementDescs[1].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
-
-	inputElementDescs[2].SemanticName = "NORMAL";
-	inputElementDescs[2].SemanticIndex = 0;
-	inputElementDescs[2].Format = DXGI_FORMAT_R32G32B32_FLOAT;
-	inputElementDescs[2].InputSlot = 0;
-	inputElementDescs[2].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
-	inputElementDescs[2].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
-
-	inputElementDescs[3].SemanticName = "TANGENT";
-	inputElementDescs[3].SemanticIndex = 0;
-	inputElementDescs[3].Format = DXGI_FORMAT_R32G32B32_FLOAT;
-	inputElementDescs[3].InputSlot = 0;
-	inputElementDescs[3].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
-	inputElementDescs[3].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
-
-	inputElementDescs[4].SemanticName = "BITANGENT";
-	inputElementDescs[4].SemanticIndex = 0;
-	inputElementDescs[4].Format = DXGI_FORMAT_R32G32B32_FLOAT;
-	inputElementDescs[4].InputSlot = 0;
-	inputElementDescs[4].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
-	inputElementDescs[4].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
-
-	inputElementDescs[5].SemanticName = "COLOR";
-	inputElementDescs[5].SemanticIndex = 0;
-	inputElementDescs[5].Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
-	inputElementDescs[5].InputSlot = 0;
-	inputElementDescs[5].AlignedByteOffset = D3D12_APPEND_ALIGNED_ELEMENT;
-	inputElementDescs[5].InputSlotClass = D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA;
-
-	psoDesc.InputLayout.pInputElementDescs = inputElementDescs;
-	psoDesc.InputLayout.NumElements = 6;
-
-	psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-	psoDesc.NumRenderTargets = 1;
-	psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-	psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
-
-	ComPtr<ID3D12PipelineState> pipelineState;
-	THROW_IF_FAILED(Device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&pipelineState)));
-	return pipelineState;
-}
-
-void CRenderer::CreatePipelineState ()
-{
-	PipelineStateCache.clear();
-	const SMaterial defaultMaterial = {};
-	const SShaderPermutation vertexShader = BuildShaderPermutation(
-		"VertexShader", defaultMaterial, EShaderStage::Vertex);
-	const SShaderPermutation pixelShader = BuildShaderPermutation("PixelShader", defaultMaterial, EShaderStage::Pixel);
-	PipelineState = BuildPipelineState(
-		vertexShader,
-		pixelShader,
-		defaultMaterial.CullMode,
-		defaultMaterial.DepthFunc,
-		defaultMaterial.bDepthEnable,
-		defaultMaterial.bDepthWrite,
-		defaultMaterial.bAlphaBlend);
-	PipelineStateCache.emplace(
-		MakePipelineStateKey(
-			vertexShader.Name,
-			pixelShader.Name,
-			defaultMaterial.CullMode,
-			defaultMaterial.DepthFunc,
-			defaultMaterial.bDepthEnable,
-			defaultMaterial.bDepthWrite,
-			defaultMaterial.bAlphaBlend),
-		PipelineState);
-}
-
-void CRenderer::TransitionCurrentBackBufferToRenderTarget ()
-{
-	D3D12_RESOURCE_BARRIER resourceBarrier = {};
-	resourceBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
-	resourceBarrier.Transition.pResource = FrameBuffer[CurrentBackBufferIndex].Get();
-	resourceBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
-	resourceBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
-	resourceBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
-	CommandList->ResourceBarrier(1, &resourceBarrier);
-}
-
-void CRenderer::SetupCurrentBackBufferRenderTarget ()
-{
-	CommandList->RSSetViewports(1, &Viewport);
-	CommandList->RSSetScissorRects(1, &ScissorRect);
-
-	FLOAT clearColor[] = { 0.1f, 0.3f, 0.3f, 1.f };
-	CommandList->ClearRenderTargetView(FrameBufferDescriptors[CurrentBackBufferIndex], clearColor, 0, nullptr);
-	CommandList->ClearDepthStencilView(
-		DepthStencilDescriptor, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL, 1, 0, 0, nullptr);
-
-	CommandList->OMSetRenderTargets(
-		1, &FrameBufferDescriptors[CurrentBackBufferIndex], false, &DepthStencilDescriptor);
-}
-
-void CRenderer::SetupCurrentBackBufferRenderTargetNoClear ()
-{
-	CommandList->RSSetViewports(1, &Viewport);
-	CommandList->RSSetScissorRects(1, &ScissorRect);
-	CommandList->OMSetRenderTargets(
-		1, &FrameBufferDescriptors[CurrentBackBufferIndex], false, &DepthStencilDescriptor);
-}
-
-void CRenderer::BindDefaultRasterState ()
-{
-	CommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-	CommandList->SetGraphicsRootSignature(RootSignature.Get());
-	CommandList->SetPipelineState(PipelineState.Get());
-
-	CommandList->SetDescriptorHeaps(1, &ShaderDescriptorHeap._heap);
-}
-
-void CRenderer::PrepareRasterPass ()
-{
-	TransitionCurrentBackBufferToRenderTarget();
-	SetupCurrentBackBufferRenderTarget();
-	BindDefaultRasterState();
-}
-
-FRT_CORE_API CMaterialLibrary& CRenderer::GetMaterialLibrary ()
-{
-	return MaterialLibrary;
-}
-
-ID3D12PipelineState* CRenderer::GetPipelineStateForMaterial (const SMaterial& Material)
-{
-	const std::string vertexShaderBase = Material.VertexShaderName.empty()
-											? "VertexShader"
-											: Material.VertexShaderName;
-	const std::string pixelShaderBase = Material.PixelShaderName.empty()
-											? "PixelShader"
-											: Material.PixelShaderName;
-
-	const SShaderPermutation vertexShader = BuildShaderPermutation(vertexShaderBase, Material, EShaderStage::Vertex);
-	const SShaderPermutation pixelShader = BuildShaderPermutation(pixelShaderBase, Material, EShaderStage::Pixel);
-
-	const std::string key = MakePipelineStateKey(
-		vertexShader.Name,
-		pixelShader.Name,
-		Material.CullMode,
-		Material.DepthFunc,
-		Material.bDepthEnable,
-		Material.bDepthWrite,
-		Material.bAlphaBlend);
-	auto it = PipelineStateCache.find(key);
-	if (it != PipelineStateCache.end())
-	{
-		return it->second.Get();
-	}
-
-	ComPtr<ID3D12PipelineState> pipelineState = BuildPipelineState(
-		vertexShader,
-		pixelShader,
-		Material.CullMode,
-		Material.DepthFunc,
-		Material.bDepthEnable,
-		Material.bDepthWrite,
-		Material.bAlphaBlend);
-	ID3D12PipelineState* pipelineRaw = pipelineState.Get();
-	PipelineStateCache.emplace(key, std::move(pipelineState));
-	return pipelineRaw;
-}
-
-D3D12_GPU_DESCRIPTOR_HANDLE CRenderer::GetDefaultWhiteTextureGpu () const
-{
-	return DefaultWhiteTexture.GpuDescriptor;
-}
-
-void CRenderer::EnsureObjectConstantCapacity (uint32 ObjectCount)
-{
-	if (ObjectCount == 0u)
-	{
-		return;
-	}
-
-	const uint32 currentObjectCount = FramesResources[0].ObjectCB.ObjectCount;
-	if (ObjectCount <= currentObjectCount)
-	{
-		return;
-	}
-
-	const uint32 frameCount = render::constants::FrameResourcesBufferCount;
-	const uint32 requiredTotal =
-		static_cast<uint32>(ShaderDescriptorHeap.GetCount()) + frameCount * ObjectCount;
-
-	EnsureShaderDescriptorCapacity(requiredTotal);
-
-	for (uint32 i = 0; i < render::constants::FrameResourcesBufferCount; ++i)
-	{
-		FramesResources[i].EnsureObjectCapacity(Device.Get(), ObjectCount, BufferArena, ShaderDescriptorHeap);
-	}
-
-	bRaytracingSbtDirty = true;
-}
-
-void CRenderer::EnsureMaterialConstantCapacity (uint32 MaterialCount)
-{
-	if (MaterialCount == 0u)
-	{
-		return;
-	}
-
-	const uint32 currentMaterialCount = FramesResources[0].MaterialCB.ObjectCount;
-	if (MaterialCount <= currentMaterialCount)
-	{
-		return;
-	}
-
-	const uint32 frameCount = render::constants::FrameResourcesBufferCount;
-	const uint32 requiredTotal =
-		static_cast<uint32>(ShaderDescriptorHeap.GetCount()) + frameCount * MaterialCount;
-
-	EnsureShaderDescriptorCapacity(requiredTotal);
-
-	for (uint32 i = 0; i < render::constants::FrameResourcesBufferCount; ++i)
-	{
-		FramesResources[i].EnsureMaterialCapacity(Device.Get(), MaterialCount, BufferArena, ShaderDescriptorHeap);
-	}
-
-	bRaytracingSbtDirty = true;
-}
-
-void CRenderer::EnsureShaderDescriptorCapacity (uint32 RequiredCount)
-{
-	const uint32 currentCapacity = static_cast<uint32>(ShaderDescriptorHeap.GetCapacity());
-	if (RequiredCount <= currentCapacity)
-	{
-		return;
-	}
-
-	const uint32 grownCapacity = static_cast<uint32>(currentCapacity == 0u ? 1u : currentCapacity);
-	uint32 newCapacity = grownCapacity;
-	while (newCapacity < RequiredCount)
-	{
-		newCapacity *= 2u;
-	}
-
-	RebuildShaderDescriptorHeap(newCapacity);
-}
-
-void CRenderer::RebuildShaderDescriptorHeap (uint32 NewCapacity)
-{
-	FlushCommandQueue();
-
-	ShaderDescriptorHeap = DX12_DescriptorHeap(
-		Device.Get(),
-		ShaderDescriptorHeapType,
-		NewCapacity,
-		ShaderDescriptorHeapFlags);
-
-	RebuildShaderDescriptors();
-
-	OnShaderDescriptorHeapRebuild.Invoke();
-}
-
-void CRenderer::RebuildShaderDescriptors ()
-{
-	for (uint32 i = 0; i < render::constants::FrameResourcesBufferCount; ++i)
-	{
-		FramesResources[i].PassCB.RebuildDescriptors(Device.Get(), ShaderDescriptorHeap);
-		FramesResources[i].ObjectCB.RebuildDescriptors(Device.Get(), ShaderDescriptorHeap);
-		FramesResources[i].MaterialCB.RebuildDescriptors(Device.Get(), ShaderDescriptorHeap);
-	}
-
-	for (uint32 i = 0; i < TrackedSrvs.Count(); ++i)
-	{
-		SShaderResourceViewRecord& record = TrackedSrvs[i];
-		if (!record.Resource)
-		{
-			continue;
-		}
-
-		D3D12_CPU_DESCRIPTOR_HANDLE cpuHandle = {};
-		D3D12_GPU_DESCRIPTOR_HANDLE gpuHandle = {};
-		ShaderDescriptorHeap.Allocate(&cpuHandle, &gpuHandle);
-
-		if (record.GpuHandle)
-		{
-			*record.GpuHandle = gpuHandle;
-		}
-
-		Device->CreateShaderResourceView(record.Resource, &record.Desc, cpuHandle);
-	}
-}
-
-void CRenderer::CreateShaderResourceView (
-	ID3D12Resource* Texture,
-	const D3D12_SHADER_RESOURCE_VIEW_DESC& Desc,
-	D3D12_CPU_DESCRIPTOR_HANDLE* OutCpuHandle,
-	D3D12_GPU_DESCRIPTOR_HANDLE* OutGpuHandle)
-{
-	EnsureShaderDescriptorCapacity(static_cast<uint32>(ShaderDescriptorHeap.GetCount() + 1u));
-
-	ShaderDescriptorHeap.Allocate(OutCpuHandle, OutGpuHandle);
-	Device->CreateShaderResourceView(Texture, &Desc, *OutCpuHandle);
-
-	if (OutGpuHandle)
-	{
-		SShaderResourceViewRecord& record = TrackedSrvs.Add();
-		record.Resource = Texture;
-		record.Desc = Desc;
-		record.GpuHandle = OutGpuHandle;
-	}
-}
-
-void CRenderer::CreateDefaultWhiteTexture ()
-{
-	constexpr uint32 whiteTexel = 0xFFFFFFFFu;
-
-	D3D12_RESOURCE_DESC desc = {};
-	desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-	desc.Width = 1;
-	desc.Height = 1;
-	desc.DepthOrArraySize = 1;
-	desc.MipLevels = 1;
-	desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-	desc.SampleDesc.Count = 1;
-	desc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-
-	DefaultWhiteTexture.GpuTexture = CreateTextureAsset(desc);
-	DefaultWhiteTexture.Width = 1;
-	DefaultWhiteTexture.Height = 1;
-	DefaultWhiteTexture.Texels = nullptr;
-
-	EnqueueTextureUpload(
-		DefaultWhiteTexture.GpuTexture, desc, &whiteTexel,
-		D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-
-	D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-	srvDesc.Format = desc.Format;
-	srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-	srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-	srvDesc.Texture2D.MostDetailedMip = 0;
-	srvDesc.Texture2D.MipLevels = 1;
-	srvDesc.Texture2D.PlaneSlice = 0;
-
-	D3D12_CPU_DESCRIPTOR_HANDLE cpuDescriptor = {};
-	CreateShaderResourceView(
-		DefaultWhiteTexture.GpuTexture, srvDesc, &cpuDescriptor, &DefaultWhiteTexture.GpuDescriptor);
-
-	// Upload is queued; it will be processed during initialization or the first frame.
-}
-
-
-DX12_DescriptorHeap& CRenderer::GetDescriptorHeap ()
-{
-	return ShaderDescriptorHeap;
-}
-
-#pragma endregion Rasterization
-
-#pragma region Raytracing
-void CRenderer::InitializeRaytracingResources ()
-{
-	if (!TopLevelASBuffers.Result)
-	{
-		return;
-	}
-
-	CreateShaderBindingTable();
-}
-
-void CRenderer::SetRaytracingMaterialTextureSets (const TArray<SRaytracingMaterialTextureSet>& MaterialTextureSets)
-{
-	bool bChanged = RaytracingMaterialTextureSets.Count() != MaterialTextureSets.Count();
-	if (!bChanged)
-	{
-		for (uint32 i = 0; i < MaterialTextureSets.Count(); ++i)
-		{
-			for (uint32 slot = 0; slot < render::constants::RootMaterialTextureCount; ++slot)
-			{
-				if (RaytracingMaterialTextureSets[i].Textures[slot] != MaterialTextureSets[i].Textures[slot])
-				{
-					bChanged = true;
-					break;
-				}
-			}
-			if (bChanged)
-			{
-				break;
-			}
-		}
-	}
-
-	if (!bChanged)
-	{
-		return;
-	}
-
-	RaytracingMaterialTextureSets = MaterialTextureSets;
-	bRaytracingSbtDirty = true;
-}
-
-void CRenderer::SetRaytracingHitGroupEntries (
-	const TArray<SRaytracingHitGroupEntry>& HitGroupEntries)
-{
-	bool bChanged = RaytracingHitGroupEntries.Count() != HitGroupEntries.Count();
-	if (!bChanged)
-	{
-		for (uint32 i = 0; i < HitGroupEntries.Count(); ++i)
-		{
-			const SRaytracingHitGroupEntry& currentEntry = RaytracingHitGroupEntries[i];
-			const SRaytracingHitGroupEntry& newEntry = HitGroupEntries[i];
-			if (currentEntry.MaterialIndex != newEntry.MaterialIndex ||
-				currentEntry.VertexBufferGpuVa != newEntry.VertexBufferGpuVa ||
-				currentEntry.IndexBufferGpuVa != newEntry.IndexBufferGpuVa)
-			{
-				bChanged = true;
-				break;
-			}
-		}
-	}
-
-	if (!bChanged)
-	{
-		return;
-	}
-
-	RaytracingHitGroupEntries = HitGroupEntries;
-	bRaytracingSbtDirty = true;
-}
-
-ComPtr<ID3D12RootSignature> CRenderer::CreateRayGenSignature ()
-{
-	raytracing::CRootSignatureGenerator rsc;
-	rsc.AddRootParameter(D3D12_ROOT_PARAMETER_TYPE_CBV, render::constants::RootRegister_PassCbv, 0);
-	rsc.AddHeapRangesParameter(
-	{
-		{
-			0 /*u0*/,
-			1 /*1 descriptor */,
-			0 /*use the implicit register space 0*/,
-			D3D12_DESCRIPTOR_RANGE_TYPE_UAV /* UAV representing the output buffer*/,
-			0 /*heap slot where the UAV is defined*/
-		},
-		{
-			0 /*t0*/,
-			1,
-			0,
-			D3D12_DESCRIPTOR_RANGE_TYPE_SRV /*Top-level acceleration structure*/,
-			1
-		}
-	});
-	// Ray-counter buffer (root UAV u1). Same VA across the frame.
-	rsc.AddRootParameter(D3D12_ROOT_PARAMETER_TYPE_UAV, render::constants::RaytracingRegister_CountersUav, 0);
-
-	return rsc.Generate(Device.Get(), true);
-}
-
-ComPtr<ID3D12RootSignature> CRenderer::CreateMissSignature ()
-{
-	raytracing::CRootSignatureGenerator rsc;
-	// Sky CB at b3 — read by Miss to compute environment radiance from ray direction.
-	rsc.AddRootParameter(D3D12_ROOT_PARAMETER_TYPE_CBV, render::constants::RootRegister_SkyCbv, 0);
-	return rsc.Generate(Device.Get(), true);
-}
-
-ComPtr<ID3D12RootSignature> CRenderer::CreateHitSignature ()
-{
-	raytracing::CRootSignatureGenerator rsc;
-	rsc.AddRootParameter(D3D12_ROOT_PARAMETER_TYPE_CBV, render::constants::RootRegister_MaterialCbv, 0);
-	rsc.AddRootParameter(D3D12_ROOT_PARAMETER_TYPE_CBV, render::constants::RootRegister_PassCbv, 0);
-	rsc.AddHeapRangesParameter(
-	{
-		{
-			0 /*t0*/,
-			1,
-			0 /*space0*/,
-			D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
-			0
-		}
-	});
-	rsc.AddHeapRangesParameter(
-	{
-		{
-			render::constants::RaytracingRegister_MaterialTextureStart,
-			render::constants::RootMaterialTextureCount,
-			0 /*space0*/,
-			D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
-			0
-		}
-	});
-	rsc.AddRootParameter(
-		D3D12_ROOT_PARAMETER_TYPE_SRV,
-		render::constants::RaytracingRegister_VertexBufferSrv,
-		0);
-	rsc.AddRootParameter(
-		D3D12_ROOT_PARAMETER_TYPE_SRV,
-		render::constants::RaytracingRegister_IndexBufferSrv,
-		0);
-	// Lights buffer (NEE). Same VA across all hit records in a frame.
-	rsc.AddRootParameter(
-		D3D12_ROOT_PARAMETER_TYPE_SRV,
-		render::constants::RaytracingRegister_LightsSrv,
-		0);
-	// Sky CB (b3) — Hit shader needs sky radiance for sky-NEE. Same VA across all hit records.
-	rsc.AddRootParameter(D3D12_ROOT_PARAMETER_TYPE_CBV, render::constants::RootRegister_SkyCbv, 0);
-	// Portals buffer (thesis pre-filter). Same VA across all hit records in a frame.
-	rsc.AddRootParameter(
-		D3D12_ROOT_PARAMETER_TYPE_SRV,
-		render::constants::RaytracingRegister_PortalsSrv,
-		0);
-	// Ray-counter buffer (root UAV u1). Same VA across all hit records in a frame.
-	rsc.AddRootParameter(D3D12_ROOT_PARAMETER_TYPE_UAV, render::constants::RaytracingRegister_CountersUav, 0);
-
-	const D3D12_STATIC_SAMPLER_DESC linearWrapSampler = BuildLinearWrapStaticSamplerDesc();
-	rsc.AddStaticSampler(linearWrapSampler);
-
-	return rsc.Generate(Device.Get(), true);
-}
-
-bool CRenderer::CreateRaytracingPipeline ()
-{
-	raytracing::CRayTracingPipelineGenerator pipeline(Device.Get());
-	const std::filesystem::path shaderSourceDir = paths::GetDxrShaderSourceDir();
-	const std::filesystem::path shaderBinDir = paths::GetDxrShaderCacheDir();
-
-	const SShaderAsset* rayGenLibrary = ShaderLibrary.LoadShader(
-		"RayGenLibrary",
-		shaderBinDir / "RayGen.lib",
-		shaderSourceDir / "RayGen.hlsl",
-		shaderSourceDir,
-		"",
-		"lib_6_3",
-		EShaderStage::Compute,
-		{});
-	ComPtr<IDxcBlob> rayGenBlob = rayGenLibrary ? rayGenLibrary->GetDxcBlob() : nullptr;
-	const SShaderAsset* missLibrary = ShaderLibrary.LoadShader(
-		"MissLibrary",
-		shaderBinDir / "Miss.lib",
-		shaderSourceDir / "Miss.hlsl",
-		shaderSourceDir,
-		"",
-		"lib_6_3",
-		EShaderStage::Compute,
-		{});
-	ComPtr<IDxcBlob> missBlob = missLibrary ? missLibrary->GetDxcBlob() : nullptr;
-	const SShaderAsset* hitLibrary = ShaderLibrary.LoadShader(
-		"HitLibrary",
-		shaderBinDir / "Hit.lib",
-		shaderSourceDir / "Hit.hlsl",
-		shaderSourceDir,
-		"",
-		"lib_6_3",
-		EShaderStage::Compute,
-		{});
-	ComPtr<IDxcBlob> hitBlob = hitLibrary ? hitLibrary->GetDxcBlob() : nullptr;
-	const SShaderAsset* shadowLibrary = ShaderLibrary.LoadShader(
-		"ShadowLibrary",
-		shaderBinDir / "ShadowRay.lib",
-		shaderSourceDir / "ShadowRay.hlsl",
-		shaderSourceDir,
-		"",
-		"lib_6_3",
-		EShaderStage::Compute,
-		{});
-	ComPtr<IDxcBlob> shadowBlob = shadowLibrary ? shadowLibrary->GetDxcBlob() : nullptr;
-
-	if (!rayGenBlob || !missBlob || !hitBlob || !shadowBlob)
-	{
-#ifdef _WINDOWS
-		OutputDebugStringA("DXR hot-reload: missing DXIL library blob, keeping previous raytracing pipeline.\n");
-#endif
-		return false;
-	}
-
-	// In a way similar to DLLs, each library is associated with a number of
-	// exported symbols. This
-	// has to be done explicitly in the lines below. Note that a single library
-	// can contain an arbitrary number of symbols, whose semantic is given in HLSL
-	// using the [shader("xxx")] syntax
-	pipeline.AddLibrary(rayGenBlob.Get(), { L"RayGen" });
-	pipeline.AddLibrary(missBlob.Get(), { L"Miss" });
-	pipeline.AddLibrary(hitBlob.Get(), { L"ClosestHit" });
-	pipeline.AddLibrary(shadowBlob.Get(), { L"ShadowClosestHit", L"ShadowMiss" });
-
-	RayGenSignature = CreateRayGenSignature();
-	MissSignature = CreateMissSignature();
-	HitSignature = CreateHitSignature();
-	ShadowSignature = CreateHitSignature();
-
-	// Note that for triangular geometry the intersection shader is built-in. An
-	// empty any-hit shader is also defined by default, so in our simple case each
-	// hit group contains only the closest hit shader. Note that since the
-	// exported symbols are defined above the shaders can be simply referred to by
-	// name.
-
-	// Hit group for the triangles, with a shader simply interpolating vertex
-	// colors
-	pipeline.AddHitGroup(L"HitGroup", L"ClosestHit");
-	pipeline.AddHitGroup(L"ShadowHitGroup", L"ShadowClosestHit");
-
-	// The following section associates the root signature to each shader. Note
-	// that we can explicitly show that some shaders share the same root signature
-	// (eg. Miss and ShadowMiss). Note that the hit shaders are now only referred
-	// to as hit groups, meaning that the underlying intersection, any-hit and
-	// closest-hit shaders share the same root signature.
-	pipeline.AddRootSignatureAssociation(RayGenSignature.Get(), { L"RayGen" });
-	pipeline.AddRootSignatureAssociation(MissSignature.Get(), { L"Miss" });
-	pipeline.AddRootSignatureAssociation(HitSignature.Get(), { L"HitGroup" });
-	pipeline.AddRootSignatureAssociation(ShadowSignature.Get(), { L"ShadowHitGroup" });
-	pipeline.AddRootSignatureAssociation(MissSignature.Get(), { L"ShadowMiss" });
-
-	// The payload size defines the maximum size of the data carried by the rays,
-	// ie. the the data
-	// exchanged between shaders, such as the HitInfo structure in the HLSL code.
-	// It is important to keep this value as low as possible as a too high value
-	// would result in unnecessary memory consumption and cache trashing.
-	pipeline.SetMaxPayloadSize(3 * sizeof(float) + 2 * sizeof(uint32)); // RGB(float3) + depth(uint) + rngState(uint) = 20 bytes
-
-	// Upon hitting a surface, DXR can provide several attributes to the hit. In
-	// our sample we just use the barycentric coordinates defined by the weights
-	// u,v of the last two vertices of the triangle. The actual barycentrics can
-	// be obtained using float3 barycentrics = float3(1.f-u-v, u, v);
-	pipeline.SetMaxAttributeSize(2 * sizeof(float)); // barycentric coordinates
-
-	// The raytracing process can shoot rays from existing hit points, resulting
-	// in nested TraceRay calls. Our sample code traces only primary rays, which
-	// then requires a trace depth of 1. Note that this recursion depth should be
-	// kept to a minimum for best performance. Path tracing algorithms can be
-	// easily flattened into a simple loop in the ray generation.
-	pipeline.SetMaxRecursionDepth(30);
-
-	// Compile the pipeline for execution on the GPU
-	ID3D12StateObject* generatedStateObject = pipeline.Generate();
-	if (!generatedStateObject)
-	{
-#ifdef _WINDOWS
-		OutputDebugStringA("DXR hot-reload: pipeline generation failed, keeping previous raytracing pipeline.\n");
-#endif
-		return false;
-	}
-
-	ComPtr<ID3D12StateObject> newStateObject = generatedStateObject;
-	ComPtr<ID3D12StateObjectProperties> newStateObjectProperties;
-	const HRESULT propertiesHr = newStateObject->QueryInterface(IID_PPV_ARGS(&newStateObjectProperties));
-	if (FAILED(propertiesHr) || !newStateObjectProperties)
-	{
-#ifdef _WINDOWS
-		OutputDebugStringA("DXR hot-reload: failed to query state object properties, keeping previous raytracing pipeline.\n");
-#endif
-		return false;
-	}
-
-	RtStateObject = newStateObject;
-	RtStateObjectProperties = newStateObjectProperties;
-	return true;
-}
-
-void CRenderer::CreateRaytracingOutputBuffer ()
-{
-	Vector2f drawRect = Window->GetWindowSize();
-
-	D3D12_RESOURCE_DESC resDesc = {};
-	resDesc.DepthOrArraySize = 1;
-	resDesc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
-	// The backbuffer is actually DXGI_FORMAT_R8G8B8A8_UNORM_SRGB, but sRGB
-	// formats cannot be used with UAVs. For accuracy we should convert to sRGB
-	// ourselves in the shader
-	resDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-
-	resDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-	resDesc.Width = static_cast<uint64>(drawRect.x);
-	resDesc.Height = static_cast<uint64>(drawRect.y);
-	resDesc.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
-	resDesc.MipLevels = 1;
-	resDesc.SampleDesc.Count = 1;
-	THROW_IF_FAILED(
-		Device->CreateCommittedResource(
-			&raytracing::DefaultHeapProps, D3D12_HEAP_FLAG_NONE, &resDesc,
-			D3D12_RESOURCE_STATE_COPY_SOURCE, nullptr,
-			IID_PPV_ARGS(&RtOutputResource)));
-}
-
-void CRenderer::CreateShaderResourceHeap ()
-{
-	const uint32 materialCountFromCb = FramesResources[0].MaterialCB.ObjectCount;
-	const uint32 materialCountFromSet = RaytracingMaterialTextureSets.Count();
-	const uint32 materialCount = materialCountFromCb > materialCountFromSet
-									? materialCountFromCb
-									: materialCountFromSet;
-	RaytracingMaterialCapacity = materialCount > 0u ? materialCount : 1u;
-
-	const uint32 textureDescriptorCount =
-		RaytracingMaterialCapacity * render::constants::RootMaterialTextureCount;
-	const uint32 descriptorCount =
-		render::constants::RaytracingHeapSlot_MaterialTextures + textureDescriptorCount;
-
-	SrvUavHeap = nv_helpers_dx12::CreateDescriptorHeap(
-		Device.Get(), descriptorCount, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV, true);
-
-	const uint32 descriptorSize = Device->GetDescriptorHandleIncrementSize(
-		D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-	const D3D12_CPU_DESCRIPTOR_HANDLE heapStart = SrvUavHeap->GetCPUDescriptorHandleForHeapStart();
-	auto descriptorAt = [&] (uint32 descriptorIndex)
-	{
-		D3D12_CPU_DESCRIPTOR_HANDLE handle = heapStart;
-		handle.ptr += static_cast<SIZE_T>(descriptorSize) * descriptorIndex;
-		return handle;
-	};
-
-	D3D12_UNORDERED_ACCESS_VIEW_DESC uavDesc = {};
-	uavDesc.ViewDimension = D3D12_UAV_DIMENSION_TEXTURE2D;
-	Device->CreateUnorderedAccessView(
-		RtOutputResource.Get(), nullptr, &uavDesc,
-		descriptorAt(render::constants::RaytracingHeapSlot_OutputUav));
-
-	D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-	srvDesc.Format = DXGI_FORMAT_UNKNOWN;
-	srvDesc.ViewDimension = D3D12_SRV_DIMENSION_RAYTRACING_ACCELERATION_STRUCTURE;
-	srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-	srvDesc.RaytracingAccelerationStructure.Location =
-		TopLevelASBuffers.Result->GetGPUVirtualAddress();
-	Device->CreateShaderResourceView(
-		nullptr, &srvDesc, descriptorAt(render::constants::RaytracingHeapSlot_TlasSrv));
-
-	for (uint32 materialIndex = 0; materialIndex < RaytracingMaterialCapacity; ++materialIndex)
-	{
-		const SRaytracingMaterialTextureSet* textureSet = materialIndex < RaytracingMaterialTextureSets.Count()
-															? &RaytracingMaterialTextureSets[materialIndex]
-															: nullptr;
-		for (uint32 textureSlot = 0; textureSlot < render::constants::RootMaterialTextureCount; ++textureSlot)
-		{
-			const uint32 descriptorIndex = render::constants::RaytracingHeapSlot_MaterialTextures +
-											materialIndex * render::constants::RootMaterialTextureCount +
-											textureSlot;
-			ID3D12Resource* texture = DefaultWhiteTexture.GpuTexture;
-			if (textureSet && textureSet->Textures[textureSlot])
-			{
-				texture = textureSet->Textures[textureSlot];
-			}
-
-			WriteRaytracingTextureSrv(descriptorAt(descriptorIndex), texture);
+			ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", e.c_str());
 		}
 	}
 }
-
-void CRenderer::WriteRaytracingTextureSrv (
-	D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle,
-	ID3D12Resource* Texture) const
-{
-	ID3D12Resource* textureResource = Texture ? Texture : DefaultWhiteTexture.GpuTexture;
-	frt_assert(textureResource);
-
-	const D3D12_RESOURCE_DESC textureDesc = textureResource->GetDesc();
-	D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-	srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-	srvDesc.Format = textureDesc.Format;
-	srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-	srvDesc.Texture2D.MostDetailedMip = 0;
-	srvDesc.Texture2D.MipLevels = textureDesc.MipLevels > 0 ? textureDesc.MipLevels : 1;
-	srvDesc.Texture2D.PlaneSlice = 0;
-	srvDesc.Texture2D.ResourceMinLODClamp = 0.f;
-
-	Device->CreateShaderResourceView(textureResource, &srvDesc, CpuHandle);
-}
-
-void CRenderer::CreateShaderBindingTable ()
-{
-	CreateShaderResourceHeap();
-
-	// The SBT helper class collects calls to Add*Program.  If called several
-	// times, the helper must be emptied before re-adding shaders.
-	SbtHelper.Reset();
-
-	const SFrameResources& currentFrameResources = GetCurrentFrameResource();
-
-	// The pointer to the beginning of the heap is the only parameter required by
-	// shaders without root parameters
-	D3D12_GPU_DESCRIPTOR_HANDLE srvUavHeapHandle =
-		SrvUavHeap->GetGPUDescriptorHandleForHeapStart();
-
-	// The helper treats both root parameter pointers and heap pointers as void*,
-	// while DX12 uses the
-	// D3D12_GPU_DESCRIPTOR_HANDLE to define heap pointers. The pointer in this
-	// struct is a UINT64, which then has to be reinterpreted as a pointer.
-	auto heapPointer = reinterpret_cast<void*>(srvUavHeapHandle.ptr);
-	const uint32 descriptorSize = Device->GetDescriptorHandleIncrementSize(
-		D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-	void* tlasDescriptorTablePointer = reinterpret_cast<void*>(
-		srvUavHeapHandle.ptr + static_cast<uint64>(descriptorSize) * render::constants::RaytracingHeapSlot_TlasSrv);
-	const uint64 materialTextureHeapStart = srvUavHeapHandle.ptr +
-											static_cast<uint64>(descriptorSize) *
-											render::constants::RaytracingHeapSlot_MaterialTextures;
-
-	// Ray generation uses pass constants and global heap descriptors.
-	void* passCbAddress = nullptr;
-	if (currentFrameResources.PassCB.GpuResource)
-	{
-		passCbAddress = reinterpret_cast<void*>(
-			currentFrameResources.PassCB.GpuResource->GetGPUVirtualAddress());
-	}
-
-	// Sky CB — bound to Miss (and later other RT shaders that need sky radiance).
-	void* skyCbAddress = nullptr;
-	if (currentFrameResources.SkyCB.GpuResource)
-	{
-		skyCbAddress = reinterpret_cast<void*>(
-			currentFrameResources.SkyCB.GpuResource->GetGPUVirtualAddress());
-	}
-
-	void* countersAddr = reinterpret_cast<void*>(RayCounters.GetGpuVa());
-	SbtHelper.AddRayGenerationProgram(L"RayGen", { passCbAddress, heapPointer, countersAddr });
-
-	// Miss reads sky CB; shadow miss has no payload work but record stride must match
-	// the Miss program's record size, so we pass the same parameter list (it's harmless).
-	SbtHelper.AddMissProgram(L"Miss", { skyCbAddress });
-	SbtHelper.AddMissProgram(L"ShadowMiss", { skyCbAddress });
-
-	const auto& materialCB = currentFrameResources.MaterialCB;
-	if (materialCB.GpuResource)
-	{
-		for (uint32 i = 0; i < RaytracingHitGroupEntries.Count(); ++i)
-		{
-			const SRaytracingHitGroupEntry& hitGroupEntry = RaytracingHitGroupEntries[i];
-			frt_assert(hitGroupEntry.VertexBufferGpuVa && hitGroupEntry.IndexBufferGpuVa);
-
-			uint32 materialIndex = hitGroupEntry.MaterialIndex;
-			if (materialIndex >= materialCB.ObjectCount)
-			{
-				materialIndex = 0u;
-			}
-
-			const uint64 materialCbAddress =
-				materialCB.GpuResource->GetGPUVirtualAddress() + materialIndex * materialCB.DataSize;
-			const uint64 materialTextureTableAddress = materialTextureHeapStart +
-														static_cast<uint64>(materialIndex) *
-														render::constants::RootMaterialTextureCount * descriptorSize;
-			void* lightsAddr  = reinterpret_cast<void*>(RaytracingLightsGpuVa);
-			void* portalsAddr = reinterpret_cast<void*>(RaytracingPortalsGpuVa);
-			SbtHelper.AddHitGroup(
-				L"HitGroup",
-				{
-					reinterpret_cast<void*>(materialCbAddress),
-					passCbAddress,
-					tlasDescriptorTablePointer,
-					reinterpret_cast<void*>(materialTextureTableAddress),
-					reinterpret_cast<void*>(hitGroupEntry.VertexBufferGpuVa),
-					reinterpret_cast<void*>(hitGroupEntry.IndexBufferGpuVa),
-					lightsAddr,
-					skyCbAddress,
-					portalsAddr,
-					countersAddr
-				});
-			SbtHelper.AddHitGroup(
-				L"ShadowHitGroup",
-				{
-					reinterpret_cast<void*>(materialCbAddress),
-					passCbAddress,
-					tlasDescriptorTablePointer,
-					reinterpret_cast<void*>(materialTextureTableAddress),
-					reinterpret_cast<void*>(hitGroupEntry.VertexBufferGpuVa),
-					reinterpret_cast<void*>(hitGroupEntry.IndexBufferGpuVa),
-					lightsAddr,
-					skyCbAddress,
-					portalsAddr,
-					countersAddr
-				});
-		}
-	}
-
-	// Compute the size of the SBT given the number of shaders and their
-	// parameters
-	uint32 sbtSize = SbtHelper.ComputeSBTSize();
-
-	// Create the SBT on the upload heap. This is required as the helper will use
-	// mapping to write the SBT contents. After the SBT compilation it could be
-	// copied to the default heap for performance.
-	SbtStorage = raytracing::CreateBuffer(
-		Device.Get(), sbtSize, D3D12_RESOURCE_FLAG_NONE,
-		D3D12_RESOURCE_STATE_GENERIC_READ, raytracing::UploadHeapProps);
-	frt_assert(SbtStorage)
-
-	SbtHelper.Generate(SbtStorage.Get(), RtStateObjectProperties.Get());
-}
-
-void CRenderer::UpdateRaytracingShaderTableAddresses ()
-{
-	if (!SbtStorage)
-	{
-		return;
-	}
-
-	const SFrameResources& currentFrameResources = GetCurrentFrameResource();
-	if (!currentFrameResources.PassCB.GpuResource && !currentFrameResources.MaterialCB.GpuResource)
-	{
-		return;
-	}
-
-	uint8* sbtData = nullptr;
-	THROW_IF_FAILED(SbtStorage->Map(0, nullptr, reinterpret_cast<void**>(&sbtData)));
-
-	if (currentFrameResources.PassCB.GpuResource)
-	{
-		const uint64 passCbAddress = currentFrameResources.PassCB.GpuResource->GetGPUVirtualAddress();
-		const uint64 passCbOffset = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
-		memcpy(sbtData + passCbOffset, &passCbAddress, sizeof(passCbAddress));
-	}
-
-	// Patch sky CB address into Miss + ShadowMiss records. Miss section has 2 records
-	// (Miss, ShadowMiss); both carry the sky CB pointer. Stride is uniform across the section.
-	if (currentFrameResources.SkyCB.GpuResource)
-	{
-		const uint64 missSectionOffset = SbtHelper.GetRayGenSectionSize();
-		const uint32 missRecordStride = SbtHelper.GetMissEntrySize();
-		const uint64 skyCbOffset = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
-		const uint64 skyCbAddress = currentFrameResources.SkyCB.GpuResource->GetGPUVirtualAddress();
-		for (uint32 i = 0; i < 2u; ++i)
-		{
-			const uint64 recordOffset = missSectionOffset + static_cast<uint64>(i) * missRecordStride;
-			memcpy(sbtData + recordOffset + skyCbOffset, &skyCbAddress, sizeof(skyCbAddress));
-		}
-	}
-
-	const auto& materialCB = currentFrameResources.MaterialCB;
-	if (materialCB.GpuResource)
-	{
-		const uint64 hitGroupsSectionOffset =
-			static_cast<uint64>(SbtHelper.GetRayGenSectionSize()) +
-			static_cast<uint64>(SbtHelper.GetMissSectionSize());
-		const uint64 hitRecordCbOffset = D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES;
-		const uint64 hitRecordPassCbOffset = hitRecordCbOffset + sizeof(uint64);
-		// Lights GPU VA lives at the 7th root parameter slot (matCB, passCB, TLAS table, matTexTable, VB, IB, Lights).
-		const uint64 hitRecordLightsOffset = hitRecordCbOffset + sizeof(uint64) * 6u;
-		// Sky CB (b3) at slot 8, Portals SRV at slot 9 — last two added in hit signature.
-		const uint64 hitRecordSkyCbOffset   = hitRecordCbOffset + sizeof(uint64) * 7u;
-		const uint64 hitRecordPortalsOffset = hitRecordCbOffset + sizeof(uint64) * 8u;
-		const uint32 hitRecordStride = SbtHelper.GetHitGroupEntrySize();
-		const uint64 skyCbAddrU64 = currentFrameResources.SkyCB.GpuResource
-										? currentFrameResources.SkyCB.GpuResource->GetGPUVirtualAddress()
-										: 0u;
-		const uint64 passCbAddress = currentFrameResources.PassCB.GpuResource
-										? currentFrameResources.PassCB.GpuResource->GetGPUVirtualAddress()
-										: 0u;
-
-		for (uint32 i = 0; i < RaytracingHitGroupEntries.Count(); ++i)
-		{
-			uint32 materialIndex = RaytracingHitGroupEntries[i].MaterialIndex;
-			if (materialIndex >= materialCB.ObjectCount)
-			{
-				materialIndex = 0u;
-			}
-
-			const uint64 materialCbAddress =
-				materialCB.GpuResource->GetGPUVirtualAddress() + materialIndex * materialCB.DataSize;
-			const uint64 primaryHitRecordOffset =
-				hitGroupsSectionOffset + static_cast<uint64>(i * 2u) * hitRecordStride;
-			const uint64 shadowHitRecordOffset = primaryHitRecordOffset + hitRecordStride;
-
-			memcpy(sbtData + primaryHitRecordOffset + hitRecordCbOffset, &materialCbAddress, sizeof(materialCbAddress));
-			memcpy(sbtData + primaryHitRecordOffset + hitRecordPassCbOffset, &passCbAddress, sizeof(passCbAddress));
-			memcpy(sbtData + primaryHitRecordOffset + hitRecordLightsOffset, &RaytracingLightsGpuVa, sizeof(RaytracingLightsGpuVa));
-			memcpy(sbtData + primaryHitRecordOffset + hitRecordSkyCbOffset, &skyCbAddrU64, sizeof(skyCbAddrU64));
-			memcpy(sbtData + primaryHitRecordOffset + hitRecordPortalsOffset, &RaytracingPortalsGpuVa, sizeof(RaytracingPortalsGpuVa));
-			memcpy(sbtData + shadowHitRecordOffset + hitRecordCbOffset, &materialCbAddress, sizeof(materialCbAddress));
-			memcpy(sbtData + shadowHitRecordOffset + hitRecordPassCbOffset, &passCbAddress, sizeof(passCbAddress));
-			memcpy(sbtData + shadowHitRecordOffset + hitRecordLightsOffset, &RaytracingLightsGpuVa, sizeof(RaytracingLightsGpuVa));
-			memcpy(sbtData + shadowHitRecordOffset + hitRecordSkyCbOffset, &skyCbAddrU64, sizeof(skyCbAddrU64));
-			memcpy(sbtData + shadowHitRecordOffset + hitRecordPortalsOffset, &RaytracingPortalsGpuVa, sizeof(RaytracingPortalsGpuVa));
-		}
-	}
-
-	SbtStorage->Unmap(0, nullptr);
-}
-
-D3D12_DISPATCH_RAYS_DESC CRenderer::BuildDispatchRaysDesc ()
-{
-	D3D12_DISPATCH_RAYS_DESC desc = {};
-
-	// The ray generation shaders are always at the beginning of the SBT.
-	const uint32_t rayGenerationSectionSizeInBytes = SbtHelper.GetRayGenSectionSize();
-	desc.RayGenerationShaderRecord.StartAddress = SbtStorage->GetGPUVirtualAddress();
-	desc.RayGenerationShaderRecord.SizeInBytes = rayGenerationSectionSizeInBytes;
-
-	// Miss shaders come immediately after ray generation.
-	const uint32_t missSectionSizeInBytes = SbtHelper.GetMissSectionSize();
-	desc.MissShaderTable.StartAddress = SbtStorage->GetGPUVirtualAddress() + rayGenerationSectionSizeInBytes;
-	desc.MissShaderTable.SizeInBytes = missSectionSizeInBytes;
-	desc.MissShaderTable.StrideInBytes = SbtHelper.GetMissEntrySize();
-
-	// Hit groups follow miss shaders.
-	const uint32_t hitGroupsSectionSize = SbtHelper.GetHitGroupSectionSize();
-	desc.HitGroupTable.StartAddress = SbtStorage->GetGPUVirtualAddress() +
-									rayGenerationSectionSizeInBytes +
-									missSectionSizeInBytes;
-	desc.HitGroupTable.SizeInBytes = hitGroupsSectionSize;
-	desc.HitGroupTable.StrideInBytes = SbtHelper.GetHitGroupEntrySize();
-
-	const Vector2f drawRect = Window->GetWindowSize();
-	desc.Width = static_cast<uint32>(drawRect.x);
-	desc.Height = static_cast<uint32>(drawRect.y);
-	desc.Depth = 1;
-
-	return desc;
-}
-
-void CRenderer::DispatchRaytracingToCurrentFrameBuffer ()
-{
-	FRT_GPU_SCOPE(CommandList.Get(), "RT_Dispatch");
-
-	ID3D12DescriptorHeap* heaps[] = { SrvUavHeap.Get() };
-	CommandList->SetDescriptorHeaps(_countof(heaps), heaps);
-
-	UpdateRaytracingShaderTableAddresses();
-
-	CD3DX12_RESOURCE_BARRIER transition = CD3DX12_RESOURCE_BARRIER::Transition(
-		RtOutputResource.Get(), D3D12_RESOURCE_STATE_COPY_SOURCE,
-		D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-	CommandList->ResourceBarrier(1, &transition);
-
-	D3D12_DISPATCH_RAYS_DESC dispatchDesc = BuildDispatchRaysDesc();
-	CommandList->SetPipelineState1(RtStateObject.Get());
-	CommandList->DispatchRays(&dispatchDesc);
-
-	// Copy the DXR output into the active frame buffer used for display.
-	transition = CD3DX12_RESOURCE_BARRIER::Transition(
-		RtOutputResource.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-		D3D12_RESOURCE_STATE_COPY_SOURCE);
-	CommandList->ResourceBarrier(1, &transition);
-	transition = CD3DX12_RESOURCE_BARRIER::Transition(
-		FrameBuffer[CurrentBackBufferIndex].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET,
-		D3D12_RESOURCE_STATE_COPY_DEST);
-	CommandList->ResourceBarrier(1, &transition);
-
-	CommandList->CopyResource(
-		FrameBuffer[CurrentBackBufferIndex].Get(),
-		RtOutputResource.Get());
-
-	transition = CD3DX12_RESOURCE_BARRIER::Transition(
-		FrameBuffer[CurrentBackBufferIndex].Get(), D3D12_RESOURCE_STATE_COPY_DEST,
-		D3D12_RESOURCE_STATE_RENDER_TARGET);
-	CommandList->ResourceBarrier(1, &transition);
-}
-
-#pragma endregion Raytracing
 }

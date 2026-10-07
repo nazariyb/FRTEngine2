@@ -2,49 +2,10 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstring>
-
-#include "Exception.h"
-#include "Memory/Memory.h"
 
 
 namespace frt::graphics
 {
-SFrameResources::SFrameResources (
-	ID3D12Device* Device,
-	uint32 PassCount,
-	uint32 ObjectCount,
-	uint32 MaterialCount,
-	DX12_Arena& BufferArena,
-	DX12_DescriptorHeap& DescriptorHeap)
-{
-	Init(Device, PassCount, ObjectCount, MaterialCount, BufferArena, DescriptorHeap);
-}
-
-SFrameResources::~SFrameResources ()
-{}
-
-void SFrameResources::Init (
-	ID3D12Device* Device,
-	uint32 PassCount,
-	uint32 ObjectCount,
-	uint32 MaterialCount,
-	DX12_Arena& BufferArena,
-	DX12_DescriptorHeap& DescriptorHeap)
-{
-	THROW_IF_FAILED(
-		Device->CreateCommandAllocator(
-			D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(CommandListAllocator.GetAddressOf())));
-
-	UploadArena = DX12_UploadArena(Device, 200 * memory::MegaByte);
-
-	PassCB = SConstantBuffer<SPassConstants>(Device, BufferArena, DescriptorHeap, PassCount);
-	SkyCB = SConstantBuffer<SSkyConstants>(Device, BufferArena, DescriptorHeap, PassCount);
-	ObjectCB = SConstantBuffer<SObjectConstants>(Device, BufferArena, DescriptorHeap, ObjectCount);
-	MaterialCB = SConstantBuffer<SMaterialConstants>(Device, BufferArena, DescriptorHeap, MaterialCount);
-}
-
-
 // ---- Time-of-day → sky parameters ----
 
 static float Saturate (float V) { return V < 0.0f ? 0.0f : (V > 1.0f ? 1.0f : V); }
@@ -96,98 +57,5 @@ void ComputeSkyFromTimeOfDay (float TimeOfDay, SSkyConstants& Out)
 	Out.GroundColor = SColor(0.04f, 0.04f, 0.04f);
 	Out.SkyIntensity = Lerp(0.05f, 1.0f, dayness);
 	Out.HorizonSoftness = 0.20f;
-}
-
-void SFrameResources::EnsureObjectCapacity (
-	ID3D12Device* Device,
-	uint32 ObjectCount,
-	DX12_Arena& BufferArena,
-	DX12_DescriptorHeap& DescriptorHeap)
-{
-	if (ObjectCount <= ObjectCB.ObjectCount)
-	{
-		return;
-	}
-
-	ObjectCB = SConstantBuffer<SObjectConstants>(Device, BufferArena, DescriptorHeap, ObjectCount);
-}
-
-// ---- CLightList ----
-
-void CLightList::Clear () { Lights.Clear(); }
-
-void CLightList::Add (const SLight& Light) { Lights.Add(Light); }
-
-uint32 CLightList::Count () const { return Lights.Count(); }
-
-// ---- CPortalList ----
-
-void CPortalList::Clear () { Portals.Clear(); }
-void CPortalList::Add (const SPortal& Portal) { Portals.Add(Portal); }
-uint32 CPortalList::Count () const { return Portals.Count(); }
-
-D3D12_GPU_VIRTUAL_ADDRESS CPortalList::UploadToArena (DX12_UploadArena& Arena) const
-{
-	const uint32 count = math::Max(Portals.Count(), 1u);
-	const uint64 byteCount = static_cast<uint64>(count) * sizeof(SPortal);
-
-	uint64 offset = 0u;
-	uint8* dst = Arena.Allocate(byteCount, &offset);
-	if (!dst)
-	{
-		return 0u;
-	}
-
-	if (!Portals.IsEmpty())
-	{
-		std::memcpy(dst, Portals.GetData(), Portals.Count() * sizeof(SPortal));
-	}
-	else
-	{
-		std::memset(dst, 0, sizeof(SPortal));
-	}
-	return Arena.GetGPUBuffer()->GetGPUVirtualAddress() + offset;
-}
-
-
-D3D12_GPU_VIRTUAL_ADDRESS CLightList::UploadToArena (DX12_UploadArena& Arena) const
-{
-	// Always allocate at least one slot so the SBT root-SRV pointer is valid even when
-	// the list is empty (DXR rejects null root SRVs at dispatch time).
-	// Shaders gate access on gLightCount; the dummy slot is never read.
-	const uint32 count = math::Max(Lights.Count(), 1u);
-	const uint64 byteCount = static_cast<uint64>(count) * sizeof(SLight);
-
-	uint64 offset = 0u;
-	uint8* dst = Arena.Allocate(byteCount, &offset);
-	if (!dst)
-	{
-		return 0u;
-	}
-
-	if (!Lights.IsEmpty())
-	{
-		std::memcpy(dst, Lights.GetData(), Lights.Count() * sizeof(SLight));
-	}
-	else
-	{
-		std::memset(dst, 0, sizeof(SLight));
-	}
-	return Arena.GetGPUBuffer()->GetGPUVirtualAddress() + offset;
-}
-
-
-void SFrameResources::EnsureMaterialCapacity (
-	ID3D12Device* Device,
-	uint32 MaterialCount,
-	DX12_Arena& BufferArena,
-	DX12_DescriptorHeap& DescriptorHeap)
-{
-	if (MaterialCount <= MaterialCB.ObjectCount)
-	{
-		return;
-	}
-
-	MaterialCB = SConstantBuffer<SMaterialConstants>(Device, BufferArena, DescriptorHeap, MaterialCount);
 }
 }

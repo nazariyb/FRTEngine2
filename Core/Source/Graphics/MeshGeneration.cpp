@@ -191,10 +191,6 @@ FRT_CORE_API SMesh GenerateCube(const Vector3f& Extent, uint32 SubdivisionsCount
 	i[30] = 20; i[31] = 21; i[32] = 22;
 	i[33] = 20; i[34] = 22; i[35] = 23;
 
-#if !defined(FRT_HEADLESS)
-	// TODO: temp
-	_private::CreateGpuResources(v, i, result.VertexBufferGpu, result.IndexBufferGpu);
-#endif
 	return result;
 }
 
@@ -306,10 +302,6 @@ FRT_CORE_API SMesh GenerateSphere(float Radius, uint32 SliceCount, uint32 StackC
 
 	FlipTriangleWinding(i);
 
-#if !defined(FRT_HEADLESS)
-	// TODO: temp
-	_private::CreateGpuResources(v, i, result.VertexBufferGpu, result.IndexBufferGpu);
-#endif
 	return result;
 }
 
@@ -391,10 +383,6 @@ FRT_CORE_API SMesh GenerateGeosphere(float Radius, uint32 SubdivisionsCount)
 
 	FlipTriangleWinding(i);
 
-#if !defined(FRT_HEADLESS)
-	// TODO: temp
-	_private::CreateGpuResources(v, i, result.VertexBufferGpu, result.IndexBufferGpu);
-#endif
 	return result;
 }
 
@@ -468,10 +456,6 @@ FRT_CORE_API SMesh GenerateCylinder(float BottomRadius, float TopRadius, float H
 	_private::BuildCylinderCap(true, TopRadius, Height, SliceCount, v, i);
 	_private::BuildCylinderCap(false, BottomRadius, Height, SliceCount, v, i);
 
-#if !defined(FRT_HEADLESS)
-	// TODO: temp
-	_private::CreateGpuResources(v, i, result.VertexBufferGpu, result.IndexBufferGpu);
-#endif
 	return result;
 }
 
@@ -533,10 +517,6 @@ FRT_CORE_API SMesh GenerateGrid(float Width, float Depth, uint32 CellCountWidth,
 		}
 	}
 
-#if !defined(FRT_HEADLESS)
-	// TODO: temp
-	_private::CreateGpuResources(v, i, result.VertexBufferGpu, result.IndexBufferGpu);
-#endif
 	return result;
 }
 
@@ -585,10 +565,6 @@ FRT_CORE_API SMesh GenerateQuad(float Width, float Depth)
 	i[0] = 0u; i[1] = 2u; i[2] = 1u;
 	i[3] = 0u; i[4] = 3u; i[5] = 2u;
 
-#if !defined(FRT_HEADLESS)
-	// TODO: temp
-	_private::CreateGpuResources(v, i, result.VertexBufferGpu, result.IndexBufferGpu);
-#endif
 	return result;
 }
 
@@ -745,60 +721,4 @@ void _private::BuildCylinderCap(
 	}
 }
 
-#if !defined(FRT_HEADLESS)
-void _private::CreateGpuResources(
-	const TArray<SVertex>& Vertices,
-	const TArray<uint32>& Indices,
-	ComPtr<ID3D12Resource>& OutVertexBufferGpu,
-	ComPtr<ID3D12Resource>& OutIndexBufferGpu)
-{
-	memory::TRefWeak<CRenderer> renderer = GameInstance::GetInstance().GetRenderer();
-
-	{
-		D3D12_RESOURCE_DESC vbDesc = {};
-		vbDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-		vbDesc.Alignment = 0;
-		vbDesc.Width = sizeof(SVertex) * Vertices.Count();
-		vbDesc.Height = 1;
-		vbDesc.DepthOrArraySize = 1;
-		vbDesc.MipLevels = 1;
-		vbDesc.Format = DXGI_FORMAT_UNKNOWN;
-		vbDesc.SampleDesc.Count = 1;
-		vbDesc.SampleDesc.Quality = 0;
-		vbDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-		vbDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
-
-		OutVertexBufferGpu = renderer->CreateBufferAsset(vbDesc);
-		renderer->EnqueueBufferUpload(
-			OutVertexBufferGpu.Get(),
-			vbDesc.Width,
-			Vertices.GetData(),
-			D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER |
-			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-	}
-
-	{
-		D3D12_RESOURCE_DESC ibDesc = {};
-		ibDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-		ibDesc.Alignment = 0;
-		ibDesc.Width = sizeof(uint32) * Indices.Count();
-		ibDesc.Height = 1;
-		ibDesc.DepthOrArraySize = 1;
-		ibDesc.MipLevels = 1;
-		ibDesc.Format = DXGI_FORMAT_UNKNOWN;
-		ibDesc.SampleDesc.Count = 1;
-		ibDesc.SampleDesc.Quality = 0;
-		ibDesc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
-		ibDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
-
-		OutIndexBufferGpu = renderer->CreateBufferAsset(ibDesc);
-		renderer->EnqueueBufferUpload(
-			OutIndexBufferGpu.Get(),
-			ibDesc.Width,
-			Indices.GetData(),
-			D3D12_RESOURCE_STATE_INDEX_BUFFER |
-			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-	}
-}
-#endif
 }

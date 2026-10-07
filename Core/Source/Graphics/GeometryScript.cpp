@@ -175,14 +175,6 @@ SMesh BuildFromScript (const SGeometryScript& Script)
 		}
 	}
 
-#ifndef FRT_HEADLESS
-	// Match the upload pattern of the other generators so the result drops straight
-	// into SRenderModel::FromMesh without further GPU plumbing.
-	if (!V.IsEmpty() && !I.IsEmpty())
-	{
-		_private::CreateGpuResources(V, I, result.VertexBufferGpu, result.IndexBufferGpu);
-	}
-#endif
 
 	return result;
 }
@@ -217,9 +209,6 @@ SMesh BuildPortalQuad (const Vector3f& Edge1, const Vector3f& Edge2, const Vecto
 	I.Add(0u); I.Add(1u); I.Add(2u);
 	I.Add(0u); I.Add(2u); I.Add(3u);
 
-#ifndef FRT_HEADLESS
-	_private::CreateGpuResources(V, I, result.VertexBufferGpu, result.IndexBufferGpu);
-#endif
 
 	return result;
 }

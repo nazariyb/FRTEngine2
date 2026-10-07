@@ -56,7 +56,6 @@ project "Core"
 		rootpath("**.frt*"),
 		rootpath("**.md"),
 		rootpath("**.gitignore"),
-		path.join(thirdPartyDir, "DXR/**.h"), path.join(thirdPartyDir, "DXR/**.cpp"),
 	}
 
 	filter "configurations:not *-Headless"
@@ -89,6 +88,10 @@ project "Core"
 			-- serializers. Removing all of Render/**.cpp left those unresolved at link.
 			rootpath("%{prj.name}/Source/Graphics/Render/Renderer.cpp"),
 			rootpath("%{prj.name}/Source/Window.cpp"),
+			-- GPU-only backend and passes.
+			rootpath("%{prj.name}/Source/Graphics/Render/RHI/**.cpp"),
+			rootpath("%{prj.name}/Source/Graphics/Render/Passes/**.cpp"),
+			rootpath("%{prj.name}/Source/Graphics/Render/Scene/**.cpp"),
 		}
 
 	filter "action:vs*"
@@ -113,9 +116,10 @@ project "Core"
 		path.join(thirdPartyDir, "D3D12Agility/include"),
 		path.join(vcpkgRoot, "installed", triplet, "include"),
 		rootpath("%{prj.name}/Source"),
+		-- C++/HLSL shared structs live with the shaders (Shared/*.h is compiled by both).
+		rootpath("%{prj.name}/Content/Shaders"),
 		path.join(thirdPartyDir, "Stb"),
 		path.join(thirdPartyDir, "Imgui"),
-		path.join(thirdPartyDir, "DXR"),
 		path.join(thirdPartyDir, "Dxc/inc"),
 	}
 

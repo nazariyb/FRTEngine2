@@ -1,22 +1,21 @@
-﻿#pragma once
+#pragma once
 
 #include <d3d12.h>
-#include <dxcapi.h>
-#include <dxgi1_4.h>
 #include <dxgi1_6.h>
-#include <filesystem>
-#include <string>
-#include <unordered_map>
 #include <wrl/client.h>
+
+#include <filesystem>
+#include <memory>
+#include <string>
+#include <vector>
 
 #include "Event.h"
 #include "GraphicsCoreTypes.h"
 #include "MaterialLibrary.h"
-#include "RenderConstants.h"
-#include "ShaderAsset.h"
-#include "Texture.h"
-#include "Containers/Array.h"
-#include "Graphics/DXRUtils.h"
+#include "Graphics/Render/RenderContext.h"
+#include "Graphics/Render/RHI/Device.h"
+#include "Graphics/Render/RHI/Pipelines.h"
+#include "Graphics/Render/RHI/ShaderCompiler.h"
 #include "Profiler/GpuProfiler.h"
 #include "Profiler/RayCounters.h"
 
@@ -27,17 +26,52 @@ class CWindow;
 }
 
 
-using Microsoft::WRL::ComPtr;
-
-
 namespace frt::graphics
 {
-class CRenderer
+class CGpuScene;
+class CPathTracer;
+class CDenoiser;
+class IUpscaler;
+class CPostProcess;
+class CRasterPreview;
+class CFrameCapture;
+enum class EUpscalerKind : uint8;
+
+using Microsoft::WRL::ComPtr;
+
+enum class EPathTracingMode : uint8
 {
-	// Core
+	RealTime = 0,   // 1-4 spp, denoised, temporally upscaled
+	Reference,      // progressive accumulation, unbiased, converges to ground truth
+};
+
+struct SRenderSettings
+{
+	EPathTracingMode Mode = EPathTracingMode::RealTime;
+	float RenderScale = 1.0f;            // real time: render resolution / display resolution
+	bool bDenoiser = true;
+	uint32 ReferenceSampleTarget = 0u;   // stop tracing after this many samples (0 = never)
+	bool bCollectRayCounters = false;
+	float FieldOfViewY = 1.5707963f;     // radians (vertical)
+	float NearZ = 0.05f;
+};
+
+// Camera as the renderer consumes it, already in render (DirectX) space.
+struct SCameraView
+{
+	DirectX::XMFLOAT3 Position = {};
+	DirectX::XMFLOAT3 Forward = { 0.0f, 0.0f, 1.0f };
+	DirectX::XMFLOAT3 Up = { 0.0f, 1.0f, 0.0f };
+};
+
+class FRT_CORE_API CRenderer
+{
 public:
 	CRenderer () = delete;
 	explicit CRenderer (CWindow* Window);
+	~CRenderer ();
+	CRenderer (const CRenderer&) = delete;
+	CRenderer& operator= (const CRenderer&) = delete;
 
 	void Resize (bool bNewFullscreenState);
 
@@ -45,351 +79,159 @@ public:
 	ID3D12Device5* GetDevice ();
 	ID3D12CommandQueue* GetCommandQueue ();
 	ID3D12GraphicsCommandList4* GetCommandList ();
+	rhi::CDevice& GetRhi () { return Rhi; }
+	const rhi::SDeviceCaps& GetCaps () const { return Rhi.GetCaps(); }
 
-	// Initialization & sync
 	void InitializeRendering ();
-	void BeginInitializationCommands ();
-	void EndInitializationCommands ();
 	void FlushCommandQueue ();
 
-private:
-	void CreateSwapChain (bool bFullscreen);
-	void WaitForFenceValue (uint64 Value);
-
-	CWindow* Window;
-
-	// Core device/swapchain
-	D3D12_VIEWPORT Viewport;
-	D3D12_RECT ScissorRect;
-	ComPtr<IDXGIAdapter1> Adapter;
-	ComPtr<ID3D12Device5> Device;
-	ComPtr<IDXGIFactory4> Factory;
-
-	ComPtr<IDXGISwapChain1> SwapChain;
-	ComPtr<ID3D12Resource> FrameBuffer[render::constants::SwapChainBufferCount];
-	D3D12_CPU_DESCRIPTOR_HANDLE FrameBufferDescriptors[render::constants::SwapChainBufferCount];
-	unsigned CurrentBackBufferIndex;
-
-	SFrameResources FramesResources[render::constants::FrameResourcesBufferCount];
-	uint8 CurrentFrameResourceIndex = render::constants::FrameResourcesBufferCount - 1;
-
-	ComPtr<ID3D12CommandQueue> CommandQueue;
-	ComPtr<ID3D12CommandAllocator> CommandAllocator;
-	ComPtr<ID3D12GraphicsCommandList4> CommandList;
-
-	// Synchronization
-	ComPtr<ID3D12Fence> Fence;
-	uint64 FenceValue;
-	HANDLE FenceEvent;
-	bool bCommandListRecording = false;
-	// Set while Resize() runs, so the WM_SIZE messages DXGI sends from inside its own
-	// mode switch cannot re-enter it. Cleared by the scope guard.
-	bool bResizing = false;
-	// False whenever FrameBuffer[]/FrameBufferDescriptors do not describe live back
-	// buffers: between the release and the recreate inside Resize(), and for as long as
-	// the window stays minimized (no swapchain at all).
-	bool bFrameBuffersReady = false;
-
-	// Frame lifecycle
-public:
-	void StartFrame ();
-	void PrepareCurrentPass ();
+	// ---- frame lifecycle ----
+	// Tick: wait until the next frame slot is free on the GPU, then recycle its resources.
 	void Tick ();
+	// StartFrame: open the command list for this frame.
+	void StartFrame ();
+	// PrepareCurrentPass: scene upload, tracing/rasterisation, denoise, upscale, post -> back
+	// buffer (left bound as render target for the UI).
+	void PrepareCurrentPass ();
+	// Draw: back buffer to present, submit, present, signal.
 	void Draw ();
-	SFrameResources& GetCurrentFrameResource ();
+
 	void SetRenderMode (ERenderMode Mode);
-	ERenderMode GetRenderMode () const;
+	ERenderMode GetRenderMode () const { return RenderMode; }
 	bool IsRaytracingReady () const;
 	bool ShouldRenderRaster () const;
 	bool ShouldRenderRaytracing () const;
-	// The frame must be skipped entirely when this is false - there are no back buffers to
-	// clear, render into or present.
 	bool IsReadyToRender () const;
 
-private:
-	void ResetCurrentFrameCommandList ();
-	void ReloadModifiedAssetsIfNeeded ();
-	ERenderMode RenderMode = ERenderMode::Raytracing;
+	void SetCameraView (const SCameraView& View) { CameraView = View; }
+	void ResetAccumulation () { bForceReset = true; }
+	uint32 GetAccumulatedSamples () const { return AccumulatedSamples; }
+	uint32 GetRenderWidth () const { return RenderWidth; }
+	uint32 GetRenderHeight () const { return RenderHeight; }
+	uint32 GetDisplayWidth () const { return DisplayWidth; }
+	uint32 GetDisplayHeight () const { return DisplayHeight; }
 
-	// Resource uploads
-public:
-	ID3D12Resource* CreateBufferAsset (const D3D12_RESOURCE_DESC& Desc);
-	ID3D12Resource* CreateTextureAsset (const D3D12_RESOURCE_DESC& Desc);
-	void EnqueueBufferUpload (
-		ID3D12Resource* Resource,
-		uint64 SizeInBytes,
-		const void* BufferData,
-		D3D12_RESOURCE_STATES FinalState);
-	void EnqueueTextureUpload (
-		ID3D12Resource* Resource,
-		const D3D12_RESOURCE_DESC& Desc,
-		const void* Texels,
-		D3D12_RESOURCE_STATES FinalState);
-	DX12_Arena& GetBufferArena ();
+	// Writes <Path>.png (display, tone mapped, no UI) and optionally <Path>.pfm (linear HDR).
+	void RequestCapture (const std::filesystem::path& Path, bool bHdr);
+	bool HasPendingCaptures () const;
 
-private:
-	void ProcessPendingResourceUploads ();
-	void RecordBufferUpload (
-		ID3D12Resource* Resource,
-		uint64 SizeInBytes,
-		const void* BufferData,
-		D3D12_RESOURCE_STATES FinalState);
-	void RecordTextureUpload (
-		ID3D12Resource* Resource,
-		const D3D12_RESOURCE_DESC& Desc,
-		uint32 RowPitch,
-		const void* PackedTexels,
-		D3D12_RESOURCE_STATES FinalState);
-	uint32 BuildPackedTextureData (
-		const D3D12_RESOURCE_DESC& Desc,
-		const void* Texels,
-		TArray<uint8>& OutPackedTexels) const;
-
-
-	struct SPendingBufferUpload
-	{
-		ID3D12Resource* Resource = nullptr;
-		D3D12_RESOURCE_STATES FinalState = D3D12_RESOURCE_STATE_COMMON;
-		TArray<uint8> Data;
-	};
-
-
-	struct SPendingTextureUpload
-	{
-		ID3D12Resource* Resource = nullptr;
-		D3D12_RESOURCE_DESC Desc = {};
-		D3D12_RESOURCE_STATES FinalState = D3D12_RESOURCE_STATE_COMMON;
-		uint32 RowPitch = 0u;
-		TArray<uint8> PackedTexels;
-	};
-
-
-	DX12_Arena BufferArena;
-	DX12_Arena TextureArena;
-
-	TArray<SPendingBufferUpload> PendingBufferUploads;
-	TArray<SPendingTextureUpload> PendingTextureUploads;
-
-	// Rasterization
-public:
-	void EnsureObjectConstantCapacity (uint32 ObjectCount);
-	void EnsureMaterialConstantCapacity (uint32 MaterialCount);
-	FRT_CORE_API CMaterialLibrary& GetMaterialLibrary ();
-	ID3D12PipelineState* GetPipelineStateForMaterial (const SMaterial& Material);
-	D3D12_GPU_DESCRIPTOR_HANDLE GetDefaultWhiteTextureGpu () const;
-	void CreateShaderResourceView (
-		ID3D12Resource* Texture,
-		const D3D12_SHADER_RESOURCE_VIEW_DESC& Desc,
-		D3D12_CPU_DESCRIPTOR_HANDLE* OutCpuHandle,
-		D3D12_GPU_DESCRIPTOR_HANDLE* OutGpuHandle);
-	DX12_DescriptorHeap& GetDescriptorHeap ();
-
-	frt::CEvent<> OnShaderDescriptorHeapRebuild;
+	CMaterialLibrary& GetMaterialLibrary ();
+	CGpuScene& GetScene () { return *Scene; }
+	CPathTracer& GetPathTracer () { return *PathTracer; }
+	CDenoiser& GetDenoiser () { return *Denoiser; }
+	CPostProcess& GetPostProcess () { return *PostProcess; }
+	IUpscaler* GetUpscaler () { return Upscaler.get(); }
+	EUpscalerKind GetUpscalerKind () const;
+	void SetUpscalerKind (EUpscalerKind Kind);
+	rhi::CPipelineLibrary& GetPipelines () { return Pipelines; }
 
 	profiler::CGpuProfiler& GetGpuProfiler () { return GpuProfiler; }
 	const profiler::CGpuProfiler& GetGpuProfiler () const { return GpuProfiler; }
-
 	profiler::CRayCounters& GetRayCounters () { return RayCounters; }
 	const profiler::CRayCounters& GetRayCounters () const { return RayCounters; }
 
-	DX12_DescriptorHeap ShaderDescriptorHeap;
+	// ImGui allocates its font atlas and user textures out of the bindless heap.
+	void AllocateImGuiDescriptor (D3D12_CPU_DESCRIPTOR_HANDLE* OutCpu, D3D12_GPU_DESCRIPTOR_HANDLE* OutGpu);
+	void FreeImGuiDescriptor (D3D12_CPU_DESCRIPTOR_HANDLE Cpu, D3D12_GPU_DESCRIPTOR_HANDLE Gpu);
+	ID3D12DescriptorHeap* GetBindlessHeap () { return Rhi.GetBindlessHeap().GetHeap(); }
+	void RebindAfterUi ();
+
+	void DrawRendererUi ();
+
+	SRenderSettings Settings;
 	bool bVSyncEnabled = true;
 	DXGI_RATIONAL DisplayRefreshRate = { 0u, 1u };
 
+	frt::CEvent<> OnShaderDescriptorHeapRebuild; // kept for API compatibility; never fires
+
 private:
+	void CreateDevice ();
+	void CreateSwapChain (bool bFullscreen);
+	void WaitForFenceValue (uint64 Value);
+	void UpdateResolution ();
+	void BuildFrameConstants (gpu::SFrameConstants& Out, bool bSceneValid);
+	uint64 ComputeAccumulationHash () const;
+	void RecordRaytracing (CRenderContext& Context, bool bResetHistory);
+	void RecordRaster (CRenderContext& Context, bool bResetHistory);
+	void RecordPostAndPresentTarget (CRenderContext& Context, rhi::SGpuTexture& DisplayColor, rhi::SGpuTexture* Debug, bool bResetExposure);
+
+	CWindow* Window = nullptr;
+
+	ComPtr<IDXGIFactory6> Factory;
+	ComPtr<IDXGIAdapter1> Adapter;
+	ComPtr<ID3D12Device5> Device;
+	ComPtr<ID3D12CommandQueue> CommandQueue;
+	ComPtr<ID3D12GraphicsCommandList4> CommandList;
+	ComPtr<IDXGISwapChain3> SwapChain;
+	bool bTearingSupported = false;
+
+	static constexpr uint32 SwapChainBufferCount = 3u;
+	ComPtr<ID3D12Resource> BackBuffers[SwapChainBufferCount];
+	uint32 BackBufferRtv[SwapChainBufferCount] = {};
+	D3D12_RESOURCE_STATES BackBufferState[SwapChainBufferCount] = {};
+	uint32 CurrentBackBuffer = 0u;
+	bool bFrameBuffersReady = false;
+	bool bResizing = false;
+	bool bCommandListRecording = false;
+
+	struct SFrameSlot
+	{
+		ComPtr<ID3D12CommandAllocator> Allocator;
+		uint64 FenceValue = 0u;
+	};
+	SFrameSlot Frames[rhi::MaxFramesInFlight];
+	uint32 FrameSlot = 0u;
+	uint64 FrameNumber = 0u;
+
+	ComPtr<ID3D12Fence> Fence;
+	uint64 FenceValue = 0u;
+	HANDLE FenceEvent = nullptr;
+
+	rhi::CDevice Rhi;
+	rhi::CShaderCompiler ShaderCompiler;
+	rhi::CPipelineLibrary Pipelines;
+	CMaterialLibrary MaterialLibrary;
 	profiler::CGpuProfiler GpuProfiler;
 	profiler::CRayCounters RayCounters;
+	uint32 RayCounterUav = rhi::InvalidDescriptorIndex;
 
-	struct SShaderPermutation
+	std::unique_ptr<CGpuScene> Scene;
+	std::unique_ptr<CPathTracer> PathTracer;
+	std::unique_ptr<CDenoiser> Denoiser;
+	std::unique_ptr<IUpscaler> Upscaler;
+	std::unique_ptr<IUpscaler> ReferenceResampler;     // reference mode: plain resample
+	std::unique_ptr<CPostProcess> PostProcess;
+	std::unique_ptr<CRasterPreview> RasterPreview;
+	std::unique_ptr<CFrameCapture> Capture;
+
+	rhi::SGpuTexture DisplayColor;           // upscaler output, display resolution
+	rhi::SGpuTexture* LastHdrForCapture = nullptr;
+
+	ERenderMode RenderMode = ERenderMode::Raytracing;
+	SCameraView CameraView;
+	gpu::SFrameConstants FrameConstants = {};
+	DirectX::XMFLOAT4X4 PrevViewProjNoJitter = {};
+	DirectX::XMFLOAT3 PrevCameraPosition = {};
+	float PrevJitter[2] = {};
+	bool bHasPrevFrame = false;
+
+	uint32 RenderWidth = 0u;
+	uint32 RenderHeight = 0u;
+	uint32 DisplayWidth = 0u;
+	uint32 DisplayHeight = 0u;
+
+	uint64 AccumulationHash = 0u;
+	uint32 AccumulatedSamples = 0u;
+	uint32 AccumulationFrames = 0u;
+	bool bForceReset = true;
+	EPathTracingMode PrevMode = EPathTracingMode::RealTime;
+	ERenderMode PrevRenderMode = ERenderMode::Raytracing;
+
+	struct SCaptureRequest
 	{
-		std::string Name;
-		std::filesystem::path CompiledPath;
-		std::filesystem::path SourcePath;
-		TArray<SShaderDefine> Defines;
+		std::filesystem::path Path;
+		bool bHdr = false;
 	};
-
-
-	void CreateRootSignature ();
-	void CreatePipelineState ();
-	[[nodiscard]] SShaderPermutation BuildShaderPermutation (
-		const std::string& BaseName,
-		const SMaterial& Material,
-		EShaderStage Stage) const;
-	ComPtr<ID3D12PipelineState> BuildPipelineState (
-		const SShaderPermutation& VertexShader,
-		const SShaderPermutation& PixelShader,
-		D3D12_CULL_MODE CullMode,
-		D3D12_COMPARISON_FUNC DepthFunc,
-		bool bDepthEnable,
-		bool bDepthWrite,
-		bool bAlphaBlend);
-	void CreateDefaultWhiteTexture ();
-	void EnsureShaderDescriptorCapacity (uint32 RequiredCount);
-	void RebuildShaderDescriptorHeap (uint32 NewCapacity);
-	void RebuildShaderDescriptors ();
-	void PrepareRasterPass ();
-	void TransitionCurrentBackBufferToRenderTarget ();
-	void SetupCurrentBackBufferRenderTarget ();
-	void SetupCurrentBackBufferRenderTargetNoClear ();
-	void BindDefaultRasterState ();
-
-	ComPtr<ID3D12RootSignature> RootSignature;
-	ComPtr<ID3D12PipelineState> PipelineState;
-	CShaderLibrary ShaderLibrary;
-	CMaterialLibrary MaterialLibrary;
-	std::unordered_map<std::string, ComPtr<ID3D12PipelineState>> PipelineStateCache;
-	STexture DefaultWhiteTexture = {};
-	bool bPendingPipelineStateRebuild = false;
-	bool bPendingRaytracingPipelineRebuild = false;
-
-	ComPtr<ID3D12Resource> CommonConstantBuffer;
-	D3D12_GPU_DESCRIPTOR_HANDLE CommonConstantBufferDescriptor;
-
-
-	struct SShaderResourceViewRecord
-	{
-		ID3D12Resource* Resource = nullptr;
-		D3D12_SHADER_RESOURCE_VIEW_DESC Desc = {};
-		D3D12_GPU_DESCRIPTOR_HANDLE* GpuHandle = nullptr;
-	};
-
-
-	DX12_DescriptorHeap RtvHeap;
-	DX12_Arena RtvArena;
-
-	DX12_DescriptorHeap DsvHeap;
-	ComPtr<ID3D12Resource> DepthStencilBuffer;
-	D3D12_CPU_DESCRIPTOR_HANDLE DepthStencilDescriptor;
-
-	TArray<SShaderResourceViewRecord> TrackedSrvs;
-
-	D3D12_DESCRIPTOR_HEAP_TYPE ShaderDescriptorHeapType = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-	D3D12_DESCRIPTOR_HEAP_FLAGS ShaderDescriptorHeapFlags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-
-	// Raytracing
-public:
-	struct SRaytracingMaterialTextureSet
-	{
-		ID3D12Resource* Textures[render::constants::RootMaterialTextureCount] = {};
-	};
-
-	struct SRaytracingHitGroupEntry
-	{
-		uint32 MaterialIndex = 0u;
-		// Per-section GPU VA: base buffer addr + section offset.
-		// Hit shader's PrimitiveIndex() is section-local, so these must point to
-		// the section's first vertex / first index respectively.
-		D3D12_GPU_VIRTUAL_ADDRESS VertexBufferGpuVa = 0u;
-		D3D12_GPU_VIRTUAL_ADDRESS IndexBufferGpuVa = 0u;
-	};
-
-	void InitializeRaytracingResources ();
-	void SetRaytracingMaterialTextureSets (const TArray<SRaytracingMaterialTextureSet>& MaterialTextureSets);
-	void SetRaytracingHitGroupEntries (const TArray<SRaytracingHitGroupEntry>& HitGroupEntries);
-	// Lights buffer GPU VA, refreshed each frame by Sys_MeshRenderer. SBT records pick it up
-	// in UpdateRaytracingShaderTableAddresses.
-	void SetRaytracingLightsGpuVa (D3D12_GPU_VIRTUAL_ADDRESS Va) { RaytracingLightsGpuVa = Va; }
-	D3D12_GPU_VIRTUAL_ADDRESS GetRaytracingLightsGpuVa () const { return RaytracingLightsGpuVa; }
-	void SetRaytracingPortalsGpuVa (D3D12_GPU_VIRTUAL_ADDRESS Va) { RaytracingPortalsGpuVa = Va; }
-	D3D12_GPU_VIRTUAL_ADDRESS GetRaytracingPortalsGpuVa () const { return RaytracingPortalsGpuVa; }
-	raytracing::SAccelerationStructureBuffers TopLevelASBuffers;
-
-private:
-	ComPtr<ID3D12RootSignature> CreateRayGenSignature ();
-	ComPtr<ID3D12RootSignature> CreateMissSignature ();
-	ComPtr<ID3D12RootSignature> CreateHitSignature ();
-
-	bool CreateRaytracingPipeline ();
-	void CreateRaytracingOutputBuffer ();
-	void CreateShaderResourceHeap ();
-	void CreateShaderBindingTable ();
-	void UpdateRaytracingShaderTableAddresses ();
-	void WriteRaytracingTextureSrv (
-		D3D12_CPU_DESCRIPTOR_HANDLE CpuHandle,
-		ID3D12Resource* Texture) const;
-	D3D12_DISPATCH_RAYS_DESC BuildDispatchRaysDesc ();
-	void DispatchRaytracingToCurrentFrameBuffer ();
-
-	ComPtr<ID3D12RootSignature> RayGenSignature;
-	ComPtr<ID3D12RootSignature> MissSignature;
-	ComPtr<ID3D12RootSignature> HitSignature;
-	ComPtr<ID3D12RootSignature> ShadowSignature;
-
-	ComPtr<ID3D12StateObject> RtStateObject;
-	ComPtr<ID3D12StateObjectProperties> RtStateObjectProperties;
-
-	ComPtr<ID3D12Resource> RtOutputResource;
-	ComPtr<ID3D12DescriptorHeap> SrvUavHeap;
-	uint32 RaytracingMaterialCapacity = 0u;
-	TArray<SRaytracingMaterialTextureSet> RaytracingMaterialTextureSets;
-	TArray<SRaytracingHitGroupEntry> RaytracingHitGroupEntries;
-	D3D12_GPU_VIRTUAL_ADDRESS RaytracingLightsGpuVa = 0u;
-	D3D12_GPU_VIRTUAL_ADDRESS RaytracingPortalsGpuVa = 0u;
-
-	raytracing::CShaderBindingTableGenerator SbtHelper;
-	ComPtr<ID3D12Resource> SbtStorage;
-	bool bRaytracingSbtDirty = false;
+	std::vector<SCaptureRequest> CaptureRequests;
 };
-
-
-inline static uint32 Dx12GetBytesPerPixel (DXGI_FORMAT Format)
-{
-	switch (Format)
-	{
-		case DXGI_FORMAT_R32G32B32A32_TYPELESS:
-		case DXGI_FORMAT_R32G32B32A32_FLOAT:
-		case DXGI_FORMAT_R32G32B32A32_UINT:
-		case DXGI_FORMAT_R32G32B32A32_SINT: return 16u;
-
-		case DXGI_FORMAT_R16G16B16A16_TYPELESS:
-		case DXGI_FORMAT_R16G16B16A16_FLOAT:
-		case DXGI_FORMAT_R16G16B16A16_UNORM:
-		case DXGI_FORMAT_R16G16B16A16_UINT:
-		case DXGI_FORMAT_R16G16B16A16_SNORM:
-		case DXGI_FORMAT_R16G16B16A16_SINT:
-		case DXGI_FORMAT_R32G32_TYPELESS:
-		case DXGI_FORMAT_R32G32_FLOAT:
-		case DXGI_FORMAT_R32G32_UINT:
-		case DXGI_FORMAT_R32G32_SINT: return 8u;
-
-		case DXGI_FORMAT_R8G8B8A8_TYPELESS:
-		case DXGI_FORMAT_R8G8B8A8_UNORM:
-		case DXGI_FORMAT_R8G8B8A8_UNORM_SRGB:
-		case DXGI_FORMAT_R8G8B8A8_UINT:
-		case DXGI_FORMAT_R8G8B8A8_SNORM:
-		case DXGI_FORMAT_R8G8B8A8_SINT:
-		case DXGI_FORMAT_R16G16_TYPELESS:
-		case DXGI_FORMAT_R16G16_FLOAT:
-		case DXGI_FORMAT_R16G16_UNORM:
-		case DXGI_FORMAT_R16G16_UINT:
-		case DXGI_FORMAT_R16G16_SNORM:
-		case DXGI_FORMAT_R16G16_SINT:
-		case DXGI_FORMAT_R32_TYPELESS:
-		case DXGI_FORMAT_D32_FLOAT:
-		case DXGI_FORMAT_R32_FLOAT:
-		case DXGI_FORMAT_R32_UINT:
-		case DXGI_FORMAT_R32_SINT: return 4u;
-
-		case DXGI_FORMAT_R8G8_TYPELESS:
-		case DXGI_FORMAT_R8G8_UNORM:
-		case DXGI_FORMAT_R8G8_UINT:
-		case DXGI_FORMAT_R8G8_SNORM:
-		case DXGI_FORMAT_R8G8_SINT:
-		case DXGI_FORMAT_R16_TYPELESS:
-		case DXGI_FORMAT_R16_FLOAT:
-		case DXGI_FORMAT_D16_UNORM:
-		case DXGI_FORMAT_R16_UNORM:
-		case DXGI_FORMAT_R16_UINT:
-		case DXGI_FORMAT_R16_SNORM:
-		case DXGI_FORMAT_R16_SINT: return 2u;
-
-		case DXGI_FORMAT_R8_TYPELESS:
-		case DXGI_FORMAT_R8_UNORM:
-		case DXGI_FORMAT_R8_UINT:
-		case DXGI_FORMAT_R8_SNORM:
-		case DXGI_FORMAT_R8_SINT:
-		case DXGI_FORMAT_A8_UNORM:
-		default: return 1u;
-	}
-}
 }

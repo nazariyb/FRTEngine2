@@ -40,7 +40,7 @@ project "Demo"
 	{
 		path.join(thirdPartyDir, "D3D12Agility/include"),
 		rootpath("Core/Source"),
-		path.join(thirdPartyDir, "DXR"),
+		rootpath("Core/Content/Shaders"),
 		path.join(thirdPartyDir, "Dxc/inc"),
 	}
 

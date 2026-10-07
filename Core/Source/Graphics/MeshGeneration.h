@@ -28,12 +28,5 @@ namespace _private
 		TArray<SVertex>& OutVertices,
 		TArray<uint32>& OutIndices);
 
-#if !defined(FRT_HEADLESS)
-	void CreateGpuResources(
-		const TArray<SVertex>& Vertices,
-		const TArray<uint32>& Indices,
-		ComPtr<ID3D12Resource>& OutVertexBufferGpu,
-		ComPtr<ID3D12Resource>& OutIndexBufferGpu);
-#endif
 }
 }

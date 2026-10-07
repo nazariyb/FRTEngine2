@@ -53,6 +53,7 @@ project "Core-Test"
 		rootpath("%{prj.name}"),
 		rootpath("%{prj.name}/Source"),
 		rootpath("Core/Source"),
+		rootpath("Core/Content/Shaders"),
 	}
 
 	filter "configurations:Debug-*"
