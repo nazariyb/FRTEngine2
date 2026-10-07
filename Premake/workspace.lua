@@ -9,7 +9,9 @@ workspace "FRTEngine2"
 	defines
 	{
 		'FRT_PLATFORM_NAME="%{cfg.platform}"',
-		'FRT_CONFIG_NAME="%{cfg.buildcfg}"'
+		'FRT_CONFIG_NAME="%{cfg.buildcfg}"',
+		-- One ImGui for the whole process, exported from Core.dll (see the header).
+		'IMGUI_USER_CONFIG="UI/ImGuiConfig.h"'
 	}
 
 	filter "platforms:Win64"
