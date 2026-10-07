@@ -27,6 +27,37 @@ CWorld::~CWorld()
 	}
 }
 
+void CWorld::CopyFrom(const CWorld& InSource)
+{
+	frt_assert(AliveCount == 0u && Records.IsEmpty());
+
+	Records = InSource.Records;
+	FreeIndices = InSource.FreeIndices;
+	AliveCount = InSource.AliveCount;
+
+	for (uint32 id = 0u; id < InSource.Pools.Count(); ++id)
+	{
+		const IComponentPool* source = InSource.Pools[id];
+		if (source == nullptr)
+		{
+			continue;
+		}
+		while (Pools.Count() <= id)
+		{
+			Pools.Add(nullptr);
+		}
+		// Copied into the existing pool when there is one: the hierarchy holds references to
+		// the parent and children pools.
+		if (Pools[id] == nullptr)
+		{
+			Pools[id] = source->CreateEmpty();
+		}
+		Pools[id]->CopyFrom(*source);
+	}
+
+	Hierarchy.InvalidateCaches();
+}
+
 EntityId CWorld::Spawn()
 {
 	++AliveCount;

@@ -1,5 +1,7 @@
 ﻿#pragma once
 
+#include <memory>
+
 #include "System.h"
 #include "Containers/Array.h"
 #include "Graphics/Camera.h"
@@ -25,6 +27,30 @@ struct SWorldEnvironment
 
 
 /**
+ * A world's game time (Gregory, GEA "Abstract Timelines"): separate from the engine's real-time
+ * clock, so pausing, stepping or slowing a game leaves the UI, the editor's cameras and
+ * rendering running at full rate.
+ */
+struct FRT_CORE_API SWorldClock
+{
+	float TimeScale = 1.0f;
+	float MaxDeltaSeconds = 0.1f;            // a hitch (a debugger break) must not become one huge step
+	float FixedDeltaSeconds = 0.0f;          // > 0: every simulated frame advances exactly this (scripted runs)
+	float StepDeltaSeconds = 1.0f / 60.0f;   // what one Step() advances while paused
+	bool bPaused = false;
+	uint32 PendingSteps = 0u;
+
+	double TotalSeconds = 0.0;
+	uint64 SimulatedFrames = 0u;
+
+	// This frame's game delta, and advances the clock: 0 while paused (unless a step is pending).
+	float Advance (float RealDeltaSeconds);
+	// Pauses, and advances the next Count frames by StepDeltaSeconds each.
+	void Step (uint32 Count = 1u);
+};
+
+
+/**
  * A world: everything a game simulates and the renderer shows - entities (the legacy list and
  * the ECS), the systems that update them, the game camera and the lighting environment. Holds
  * no reference to the game, the engine or the renderer, so several can coexist (the editor's
@@ -41,14 +67,22 @@ public:
 
 	bool Initialize ();
 
+	/**
+	 * A deep copy, as a new initialised world: the editor plays a copy of its edit world and
+	 * drops it on Stop (Unreal's PIE duplication; no restore step that could forget something).
+	 * ECS entities keep their handles, legacy entities their ids; immutable model data is
+	 * shared, everything a session can change is copied. Call between frames.
+	 */
+	std::unique_ptr<CWorldScene> Clone () const;
+
 	memory::TRefShared<CEntity> SpawnEntity (const std::string& Name = "");
 
-	void RunFrame (float InDeltaSeconds);
-
-	bool IsPhasePaused (EUpdatePhase Phase) const;
-	void PausePhases (SFlags<EUpdatePhase> Phases);
-	void UnpausePhases (SFlags<EUpdatePhase> Phases);
-	bool TogglePhasePause (EUpdatePhase Phase);
+	/**
+	 * One frame. Simulation - the Prepare and Update phases, the legacy entity tick - runs only
+	 * when GameDeltaSeconds > 0 (Clock.Advance's result); Finalize (transform propagation) runs
+	 * every frame, so edits to a paused or edit-mode world still show.
+	 */
+	void Update (float GameDeltaSeconds);
 
 	const TArray<memory::TRefShared<CEntity>>& GetEntities () const { return Entities; }
 	TArray<memory::TRefShared<CEntity>>& GetEntities () { return Entities; }
@@ -76,6 +110,7 @@ public:
 	// with everything else when it ends.
 	graphics::CCamera Camera;
 	SWorldEnvironment Environment;
+	SWorldClock Clock;
 
 	// Set by anything that changes what the world looks like outside the renderer's own change
 	// tracking (e.g. a settings panel); the frame's owner resets the renderer's accumulation.
@@ -96,6 +131,6 @@ private:
 	// virtual destructor in ~CWorldScene.
 	TArray<ISystem*> Systems;
 
-	SFlags<EUpdatePhase> PausedPhases;
+	uint32 NextEntityId = 1u;
 };
 }

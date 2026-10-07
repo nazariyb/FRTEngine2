@@ -45,13 +45,15 @@ int RunGameLoop (CEngine& Engine, const CGameModule& Module)
 	const SGameContext context { world, Engine.GetMaterials(), Engine.GetInputActions(), config };
 	game->BuildWorld(context);
 	ApplySceneLaunchConfig(config, world);
-	if (config.Get("Scene", "PauseWorld", false))
-	{
-		world.TogglePhasePause(EUpdatePhase::Update);
-	}
+	world.Clock.bPaused = config.Get("Scene", "PauseWorld", false);
 
 	CAutomation automation;
 	automation.Configure(config, world);
+	if (automation.IsActive())
+	{
+		// Scripted runs are frame-indexed: every simulated frame advances the same game time.
+		world.Clock.FixedDeltaSeconds = 1.0f / 60.0f;
+	}
 
 #if !defined(FRT_HEADLESS)
 	graphics::CRenderer& renderer = *Engine.GetRenderer();
@@ -75,7 +77,7 @@ int RunGameLoop (CEngine& Engine, const CGameModule& Module)
 
 		SGameFrame frame;
 		frame.RealDeltaSeconds = deltaSeconds;
-		frame.GameDeltaSeconds = world.IsPhasePaused(EUpdatePhase::Update) ? 0.0f : deltaSeconds;
+		frame.GameDeltaSeconds = world.Clock.Advance(deltaSeconds);
 
 		// Ctrl is the UI's modifier (Ctrl+Wheel zoom): it outranks every other binding.
 		const bool bCtrlDown = device.IsKeyDown(input::KeyCode::LeftCtrl) || device.IsKeyDown(input::KeyCode::RightCtrl);
@@ -101,7 +103,7 @@ int RunGameLoop (CEngine& Engine, const CGameModule& Module)
 #endif
 			if (device.WasKeyPressed(input::KeyCode::Space) && !device.IsMouseButtonDown(input::EMouseButton::Right))
 			{
-				world.TogglePhasePause(EUpdatePhase::Update);
+				world.Clock.bPaused = !world.Clock.bPaused;
 			}
 		}
 
@@ -116,7 +118,7 @@ int RunGameLoop (CEngine& Engine, const CGameModule& Module)
 #endif
 
 		game->Tick(context, frame);
-		world.RunFrame(deltaSeconds);
+		world.Update(frame.GameDeltaSeconds);
 
 #if !defined(FRT_HEADLESS)
 		// Described after the world's update, so the renderer sees this frame's transforms. The

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstring>
 #include <type_traits>
 #include <utility>
 
@@ -33,6 +34,14 @@ public:
 	virtual void        Remove(EntityId InEntity) = 0;
 
 	virtual EntityId    EntityAt(uint32 InDenseIndex) const = 0;
+
+	// ----- Duplication (CWorld::CopyFrom) -----
+
+	/** A new, empty pool of the same component type, allocated the way CWorld allocates pools. */
+	virtual IComponentPool* CreateEmpty() const = 0;
+
+	/** Replaces this pool's contents with a copy of InSource, which must hold the same type. */
+	virtual void        CopyFrom(const IComponentPool& InSource) = 0;
 };
 
 
@@ -65,6 +74,9 @@ public:
 	static_assert(std::is_move_constructible_v<T> && std::is_move_assignable_v<T>,
 		"Component must be move-constructible and move-assignable: pool growth relocates by "
 		"moving, and swap-and-pop removal move-assigns the tail element into the hole.");
+	static_assert(std::is_copy_constructible_v<T> && std::is_copy_assignable_v<T>,
+		"Component must be copyable: worlds are duplicated wholesale (the editor plays a copy "
+		"of its edit world). Shared, immutable data belongs behind a shared reference.");
 
 	/** Entities per sparse page. 4096 x 4 bytes = one 16 KiB page. */
 	static constexpr uint32 SparsePageSize = 4096u;
@@ -104,6 +116,47 @@ public:
 	{
 		frt_assert(InDenseIndex < Dense.Count());
 		return Dense[InDenseIndex];
+	}
+
+	IComponentPool* CreateEmpty() const override
+	{
+		void* storage = memory::NewUnmanaged(sizeof(TComponentPool<T>));
+		frt_assert(storage != nullptr);
+		return new (storage) TComponentPool<T>();
+	}
+
+	void CopyFrom(const IComponentPool& InSource) override
+	{
+		frt_assert(InSource.GetComponentId() == ComponentIdValue);
+		const TComponentPool<T>& source = static_cast<const TComponentPool<T>&>(InSource);
+		if (&source == this)
+		{
+			return;
+		}
+
+		FreeSparsePages();
+		for (uint32 i = 0u; i < source.SparsePages.Count(); ++i)
+		{
+			uint32* page = nullptr;
+			if (source.SparsePages[i] != nullptr)
+			{
+				page = static_cast<uint32*>(memory::NewUnmanaged(sizeof(uint32) * SparsePageSize));
+				std::memcpy(page, source.SparsePages[i], sizeof(uint32) * SparsePageSize);
+			}
+			SparsePages.Add(page);
+		}
+		Dense = source.Dense;
+		Data = source.Data;
+
+		// Newer than anything either pool reported, and every block dirty: a consumer that
+		// tracked this pool before sees all of its contents as changed.
+		Version = (Version > source.Version ? Version : source.Version) + 1ull;
+		StructuralVersion = (StructuralVersion > source.StructuralVersion ? StructuralVersion : source.StructuralVersion) + 1ull;
+		BlockVersions.Clear();
+		for (uint32 block = 0u; block < GetBlockCount(); ++block)
+		{
+			BlockVersions.Add(Version);
+		}
 	}
 
 	void Remove(EntityId InEntity) override

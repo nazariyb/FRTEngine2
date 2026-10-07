@@ -118,6 +118,9 @@ public:
 	/** Bumped by any structural change. */
 	uint64 GetTopologyVersion() const { return TopologyVersion; }
 
+	/** Forget derived orderings (depth order) - after the pools were replaced wholesale. */
+	void InvalidateCaches() { ++TopologyVersion; }
+
 	uint32 GetParentedCount() const { return ParentPool.Count(); }
 
 

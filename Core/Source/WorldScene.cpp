@@ -68,11 +68,6 @@ frt::CCommandBuffer& frt::CWorldScene::GetCommands ()
 
 void frt::CWorldScene::RunSystemsPhase (EUpdatePhase Phase, const SUpdateContext& Context)
 {
-	if (IsPhasePaused(Phase))
-	{
-		return;
-	}
-
 	for (ISystem* system : Systems)
 	{
 		if (!(system->GetPhases() && Phase))
@@ -103,17 +98,23 @@ frt::memory::TRefShared<frt::CEntity> frt::CWorldScene::SpawnEntity (const std::
 		newEntity->Name = Name;
 	}
 	Entities.Add(newEntity);
+	newEntity->Id = NextEntityId++;
 	newEntity->RenderModel = memory::NewShared<graphics::Comp_RenderModel>();
 	return newEntity;
 }
 
-void frt::CWorldScene::RunFrame (float InDeltaSeconds)
+void frt::CWorldScene::Update (float GameDeltaSeconds)
 {
 	SUpdateContext Context;
-	Context.DeltaSeconds = InDeltaSeconds;
+	Context.DeltaSeconds = GameDeltaSeconds;
+	Context.TotalSeconds = Clock.TotalSeconds;
+	const bool bSimulate = GameDeltaSeconds > 0.0f;
 
-	RunSystemsPhase(EUpdatePhase::Prepare, Context);
-	RunSystemsPhase(EUpdatePhase::Update, Context);
+	if (bSimulate)
+	{
+		RunSystemsPhase(EUpdatePhase::Prepare, Context);
+		RunSystemsPhase(EUpdatePhase::Update, Context);
+	}
 
 	// The safe phase boundary. Systems record structural changes during Update rather than
 	// applying them in place, because destroying an entity or moving a component reorders
@@ -121,11 +122,11 @@ void frt::CWorldScene::RunFrame (float InDeltaSeconds)
 	// Finalize systems below included - sees a settled entity set.
 	Commands->Flush(*EcsWorld);
 
-	if (!IsPhasePaused(EUpdatePhase::Update))
+	if (bSimulate)
 	{
 		for (auto& entity : Entities)
 		{
-			entity->Tick(1.f / 60.f);
+			entity->Tick(GameDeltaSeconds);
 		}
 	}
 
@@ -135,23 +136,78 @@ void frt::CWorldScene::RunFrame (float InDeltaSeconds)
 	RunSystemsPhase(EUpdatePhase::Finalize, Context);
 }
 
-bool frt::CWorldScene::IsPhasePaused (EUpdatePhase Phase) const
+std::unique_ptr<frt::CWorldScene> frt::CWorldScene::Clone () const
 {
-	return PausedPhases && Phase;
+	frt_assert(Commands->IsEmpty());
+
+	std::unique_ptr<CWorldScene> copy = std::make_unique<CWorldScene>();
+	copy->Initialize();
+	copy->EcsWorld->CopyFrom(*EcsWorld);
+
+	for (const memory::TRefShared<CEntity>& source : Entities)
+	{
+		memory::TRefShared<CEntity> entity = memory::NewShared<CEntity>();
+		entity->Name = source->Name;
+		entity->Id = source->Id;
+		entity->Transform = source->Transform;
+		entity->RotationSpeed = source->RotationSpeed;
+		entity->bRayTraced = source->bRayTraced;
+		// A component of the copy's own (extraction writes bVisible and creates portal quads)
+		// around the same, immutable model: no re-upload, no new BLAS.
+		if (source->RenderModel)
+		{
+			entity->RenderModel = memory::NewShared<graphics::Comp_RenderModel>(*source->RenderModel);
+		}
+		if (source->Light)
+		{
+			entity->Light = memory::NewShared<graphics::Comp_Light>(*source->Light);
+		}
+		if (source->Portal)
+		{
+			entity->Portal = memory::NewShared<graphics::Comp_Portal>(*source->Portal);
+		}
+		copy->Entities.Add(std::move(entity));
+	}
+	copy->NextEntityId = NextEntityId;
+
+	copy->Camera = Camera;
+	copy->Environment = Environment;
+	copy->Clock = Clock;
+	copy->bAccumulationDirty = bAccumulationDirty;
+	return copy;
 }
 
-void frt::CWorldScene::PausePhases (SFlags<EUpdatePhase> Phases)
+float frt::SWorldClock::Advance (float RealDeltaSeconds)
 {
-	PausedPhases += Phases;
+	float delta = 0.0f;
+	if (bPaused)
+	{
+		if (PendingSteps == 0u)
+		{
+			return 0.0f;
+		}
+		--PendingSteps;
+		delta = StepDeltaSeconds;
+	}
+	else if (FixedDeltaSeconds > 0.0f)
+	{
+		delta = FixedDeltaSeconds;
+	}
+	else
+	{
+		delta = (RealDeltaSeconds < MaxDeltaSeconds ? RealDeltaSeconds : MaxDeltaSeconds) * TimeScale;
+	}
+	if (delta <= 0.0f)
+	{
+		return 0.0f;
+	}
+	TotalSeconds += delta;
+	++SimulatedFrames;
+	return delta;
 }
 
-void frt::CWorldScene::UnpausePhases (SFlags<EUpdatePhase> Phases)
+void frt::SWorldClock::Step (uint32 Count)
 {
-	PausedPhases -= Phases;
-}
-
-bool frt::CWorldScene::TogglePhasePause (EUpdatePhase Phase)
-{
-	PausedPhases ^= Phase;
-	return PausedPhases && Phase;
+	bPaused = true;
+	PendingSteps += Count;
 }

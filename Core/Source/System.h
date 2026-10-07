@@ -7,17 +7,17 @@
 
 namespace frt
 {
+// Game time, from the world's clock (SWorldClock): 0 delta while the world is paused.
 struct SUpdateContext
 {
-	// Initialized: CWorldScene::RunFrame used to default-construct this and pass it along
-	// with both fields holding whatever was on the stack. Nothing read them, so it never
-	// showed, but a system reading DeltaSeconds would have integrated garbage.
 	float  DeltaSeconds = 0.0f;
 	double TotalSeconds = 0.0;
 };
 
 
 
+// Prepare and Update are simulation: they run only while the world's clock advances. Finalize
+// runs every frame (transform propagation), so edits to a paused or edit-mode world still show.
 enum class EUpdatePhase : uint8
 {
 	Input    = 1u << 0u,

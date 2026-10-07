@@ -175,7 +175,7 @@ void ExtractRenderScene (CWorldScene& World, const SRenderExtractOptions& Option
 			SSceneInstance instance;
 			instance.Model = entity->RenderModel->Model.GetRawIgnoringLifetime();
 			instance.ObjectToWorld = entity->Transform.GetRaytracingTransform();
-			instance.Key = reinterpret_cast<uint64>(entity);
+			instance.Key = (1ull << 62u) | entity->Id;
 			instance.bHelper = static_cast<bool>(entity->Portal);
 			Scene.AddInstance(instance);
 		}

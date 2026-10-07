@@ -34,6 +34,13 @@ public:
 	CWorld(const CWorld&) = delete;
 	CWorld& operator=(const CWorld&) = delete;
 
+	/**
+	 * Makes this world an exact copy of InSource: same entities with the same handles (so
+	 * references between entities - parents, children - stay valid without remapping), same
+	 * free list, a copy of every component. This world must be freshly constructed.
+	 */
+	void CopyFrom(const CWorld& InSource);
+
 
 	// ----- Entities -----
 

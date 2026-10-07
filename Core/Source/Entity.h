@@ -20,6 +20,10 @@ public:
 	// Editor uses it in combo + label fields. Free-form, no uniqueness guarantee.
 	std::string Name;
 
+	// Stable for the entity's life and kept by world copies: the renderer keys instances on it
+	// (motion vectors), and the editor will select by it.
+	uint32 Id = 0u;
+
 	const math::STransform& GetTransform () const { return Transform; }
 	math::STransform Transform;
 	Vector3f RotationSpeed = Vector3f::ZeroVector; // TODO: also temp
