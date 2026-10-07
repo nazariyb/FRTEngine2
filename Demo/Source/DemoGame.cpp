@@ -45,7 +45,7 @@ void DemoGame::Load()
 	// floor->Transform.SetTranslation(0.f, -1.f, 0.f);
 
 	auto floorEnt = World.GetEcsWorld().Spawn();
-	World.GetEcsWorld().Add<Comp_LocalTransform>(floorEnt, Vector3r::UpVector * 1.f);
+	World.GetEcsWorld().Add<Comp_LocalTransform>(floorEnt, Vector3r::DownVector * 1.f);
 	World.GetEcsWorld().Add<Comp_WorldTransform>(floorEnt);
 	World.GetEcsWorld().Add<Comp_Name>(floorEnt, "Floor");
 	World.GetEcsWorld().Add<Comp_RenderModel>(floorEnt, memory::NewShared<SRenderModel>(
