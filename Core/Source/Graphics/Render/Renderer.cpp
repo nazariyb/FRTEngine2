@@ -14,6 +14,7 @@
 #include "Graphics/Render/Passes/Denoiser.h"
 #include "Graphics/Render/Passes/FrameCapture.h"
 #include "Graphics/Render/Passes/PathTracer.h"
+#include "Graphics/Render/Passes/PathTracerPrograms.h"
 #include "Graphics/Render/Passes/PostProcess.h"
 #include "Graphics/Render/Passes/RasterPreview.h"
 #include "Graphics/Render/Passes/Upscaler.h"
@@ -218,8 +219,10 @@ CRenderer::CRenderer (CWindow* InWindow)
 
 	Scene = std::make_unique<CGpuScene>();
 	Scene->Initialize(Rhi, Pipelines);
+	PathTracerPrograms = std::make_unique<CPathTracerPrograms>();
+	PathTracerPrograms->Initialize(Rhi, Pipelines);
 	PathTracer = std::make_unique<CPathTracer>();
-	PathTracer->Initialize(Rhi, Pipelines);
+	PathTracer->Initialize(Rhi, Pipelines, *PathTracerPrograms);
 	Denoiser = std::make_unique<CDenoiser>();
 	Denoiser->Initialize(Rhi, Pipelines);
 	Upscaler = CreateUpscaler(EUpscalerKind::Temporal);
@@ -246,6 +249,7 @@ CRenderer::~CRenderer ()
 	if (ReferenceResampler) { ReferenceResampler->Shutdown(Rhi); }
 	if (Denoiser) { Denoiser->Shutdown(Rhi); }
 	if (PathTracer) { PathTracer->Shutdown(); }
+	if (PathTracerPrograms) { PathTracerPrograms->Shutdown(); }
 	if (Scene) { Scene->Shutdown(); }
 	if (DisplayColor.IsValid()) { Rhi.Destroy(DisplayColor); }
 	for (uint32 i = 0; i < SwapChainBufferCount; ++i)
@@ -460,10 +464,16 @@ void CRenderer::FlushCommandQueue ()
 	{
 		return;
 	}
+	// A flush while the frame's command list is open would retire - and free - resources that
+	// list still references: the list is not part of the signal below.
+	frt_assert(!bCommandListRecording);
 	++FenceValue;
 	CommandQueue->Signal(Fence.Get(), FenceValue);
 	WaitForFenceValue(FenceValue);
 	Rhi.ProcessDeferredReleases(Fence->GetCompletedValue());
+	// Releases deferred later this frame are retired by the frame's own signal (++FenceValue in
+	// EndFrame), not by the value BeginFrame chose, which the signal above just consumed.
+	Rhi.SetSubmissionFenceValue(FenceValue + 1u);
 }
 
 void CRenderer::SetRenderMode (ERenderMode Mode)
@@ -742,7 +752,7 @@ void CRenderer::PrepareCurrentPass ()
 	const bool bResetHistory = bForceReset || !bHasPrevFrame || PrevMode != Settings.Mode || PrevRenderMode != RenderMode;
 	if (RenderMode == ERenderMode::Raytracing)
 	{
-		PathTracer->UpdatePipelines(CommandList.Get());
+		PathTracerPrograms->Update(CommandList.Get());
 	}
 	if (ShouldRenderRaytracing())
 	{

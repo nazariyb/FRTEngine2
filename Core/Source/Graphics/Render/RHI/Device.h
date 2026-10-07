@@ -105,6 +105,10 @@ public:
 	void BeginFrame (uint32 FrameSlot, uint64 SubmissionFenceValue);
 	void ProcessDeferredReleases (uint64 CompletedFenceValue);
 	uint64 GetSubmissionFenceValue () const { return SubmissionFence; }
+	// After a full queue flush between BeginFrame and the frame's signal: the value BeginFrame
+	// set has just been signalled by the flush, so releases deferred from here on must wait for
+	// the next one instead (see CRenderer::FlushCommandQueue).
+	void SetSubmissionFenceValue (uint64 Value) { SubmissionFence = Value; }
 	uint32 GetFrameSlot () const { return FrameSlot; }
 
 	// Lifetime.

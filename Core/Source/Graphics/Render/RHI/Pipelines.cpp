@@ -1,6 +1,7 @@
 #include "Graphics/Render/RHI/Pipelines.h"
 
 #include <cstdio>
+#include <cstring>
 
 #include "Graphics/Render/RHI/Device.h"
 
@@ -109,41 +110,106 @@ void CPipelineLibrary::Init (CDevice& InDevice, CShaderCompiler& InCompiler)
 void CPipelineLibrary::Shutdown ()
 {
 	Programs.clear();
+	ProgramIndex.clear();
 	ComputeRootSignature.Reset();
 	GraphicsRootSignature.Reset();
+}
+
+namespace
+{
+[[maybe_unused]] bool SameShader (const SShaderCompileDesc& A, const SShaderCompileDesc& B)
+{
+	if (A.SourcePath != B.SourcePath || A.EntryPoint != B.EntryPoint || A.Profile != B.Profile ||
+		A.ExtraArguments != B.ExtraArguments || A.Defines.size() != B.Defines.size())
+	{
+		return false;
+	}
+	for (size_t i = 0; i < A.Defines.size(); ++i)
+	{
+		if (A.Defines[i].Name != B.Defines[i].Name || A.Defines[i].Value != B.Defines[i].Value)
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+[[maybe_unused]] bool SameGraphics (const SGraphicsPipelineDesc& A, const SGraphicsPipelineDesc& B)
+{
+	if (!SameShader(A.VertexShader, B.VertexShader) || !SameShader(A.PixelShader, B.PixelShader) ||
+		A.RenderTargetCount != B.RenderTargetCount || A.DepthFormat != B.DepthFormat ||
+		A.bDepthTest != B.bDepthTest || A.bDepthWrite != B.bDepthWrite || A.DepthFunc != B.DepthFunc ||
+		A.CullMode != B.CullMode || A.bAlphaBlend != B.bAlphaBlend || A.Topology != B.Topology ||
+		A.InputLayout.size() != B.InputLayout.size())
+	{
+		return false;
+	}
+	for (uint32 i = 0; i < A.RenderTargetCount && i < 8u; ++i)
+	{
+		if (A.RenderTargetFormats[i] != B.RenderTargetFormats[i])
+		{
+			return false;
+		}
+	}
+	for (size_t i = 0; i < A.InputLayout.size(); ++i)
+	{
+		const D3D12_INPUT_ELEMENT_DESC& a = A.InputLayout[i];
+		const D3D12_INPUT_ELEMENT_DESC& b = B.InputLayout[i];
+		if (std::strcmp(a.SemanticName, b.SemanticName) != 0 || a.SemanticIndex != b.SemanticIndex ||
+			a.Format != b.Format || a.InputSlot != b.InputSlot || a.AlignedByteOffset != b.AlignedByteOffset ||
+			a.InputSlotClass != b.InputSlotClass || a.InstanceDataStepRate != b.InstanceDataStepRate)
+		{
+			return false;
+		}
+	}
+	return true;
+}
+}
+
+uint32 CPipelineLibrary::FindOrAdd (EKind Kind, std::string_view Name, SProgram&& Program)
+{
+	std::string key;
+	key.reserve(Name.size() + 2u);
+	key.push_back(static_cast<char>('0' + static_cast<uint8>(Kind)));
+	key.push_back(':');
+	key.append(Name);
+
+	if (const auto it = ProgramIndex.find(key); it != ProgramIndex.end())
+	{
+		// Same name, different program: two passes picked one name for different shaders.
+		[[maybe_unused]] const SProgram& existing = Programs[it->second];
+		frt_assert(Kind == EKind::Graphics ? SameGraphics(existing.Graphics, Program.Graphics) : SameShader(existing.Shader, Program.Shader));
+		return it->second;
+	}
+
+	Program.Name = std::string(Name);
+	Program.Kind = Kind;
+	Build(Program);
+	Programs.push_back(std::move(Program));
+	const uint32 index = static_cast<uint32>(Programs.size() - 1u);
+	ProgramIndex.emplace(std::move(key), index);
+	return index;
 }
 
 HPipeline CPipelineLibrary::CreateCompute (std::string_view Name, const SShaderCompileDesc& Shader)
 {
 	SProgram program;
-	program.Name = std::string(Name);
-	program.Kind = EKind::Compute;
 	program.Shader = Shader;
-	Build(program);
-	Programs.push_back(std::move(program));
-	return static_cast<HPipeline>(Programs.size() - 1u);
+	return static_cast<HPipeline>(FindOrAdd(EKind::Compute, Name, std::move(program)));
 }
 
 HPipeline CPipelineLibrary::CreateGraphics (std::string_view Name, const SGraphicsPipelineDesc& Desc)
 {
 	SProgram program;
-	program.Name = std::string(Name);
-	program.Kind = EKind::Graphics;
 	program.Graphics = Desc;
-	Build(program);
-	Programs.push_back(std::move(program));
-	return static_cast<HPipeline>(Programs.size() - 1u);
+	return static_cast<HPipeline>(FindOrAdd(EKind::Graphics, Name, std::move(program)));
 }
 
 HShaderLibrary CPipelineLibrary::RegisterLibrary (std::string_view Name, const SShaderCompileDesc& Desc)
 {
 	SProgram program;
-	program.Name = std::string(Name);
-	program.Kind = EKind::Library;
 	program.Shader = Desc;
-	Build(program);
-	Programs.push_back(std::move(program));
-	return static_cast<HShaderLibrary>(Programs.size() - 1u);
+	return static_cast<HShaderLibrary>(FindOrAdd(EKind::Library, Name, std::move(program)));
 }
 
 ID3D12PipelineState* CPipelineLibrary::Get (HPipeline Handle) const

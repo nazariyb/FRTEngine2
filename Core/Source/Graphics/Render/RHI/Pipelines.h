@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "Graphics/Render/RHI/ShaderCompiler.h"
@@ -61,6 +62,9 @@ public:
 	ID3D12RootSignature* GetComputeRootSignature () const { return ComputeRootSignature.Get(); }
 	ID3D12RootSignature* GetGraphicsRootSignature () const { return GraphicsRootSignature.Get(); }
 
+	// Programs are identified by kind + name. Creating one that already exists returns the
+	// existing handle (debug builds assert the description matches), so every instance of a
+	// pass - one per render view - shares one compiled program and one hot-reload watch.
 	HPipeline CreateCompute (std::string_view Name, const SShaderCompileDesc& Shader);
 	HPipeline CreateGraphics (std::string_view Name, const SGraphicsPipelineDesc& Desc);
 	ID3D12PipelineState* Get (HPipeline Handle) const;
@@ -103,6 +107,7 @@ private:
 		std::vector<SWatchedFile> Watched;
 	};
 
+	uint32 FindOrAdd (EKind Kind, std::string_view Name, SProgram&& Program);
 	bool Build (SProgram& Program);
 	void Watch (SProgram& Program, const std::vector<std::filesystem::path>& Dependencies);
 	bool IsStale (const SProgram& Program) const;
@@ -112,6 +117,7 @@ private:
 	ComPtr<ID3D12RootSignature> ComputeRootSignature;
 	ComPtr<ID3D12RootSignature> GraphicsRootSignature;
 	std::vector<SProgram> Programs;
+	std::unordered_map<std::string, uint32> ProgramIndex;   // "<kind>:<name>" -> Programs index
 	std::vector<std::string> Errors;
 	bool bHotReload = true;
 	uint32 PollCounter = 0u;

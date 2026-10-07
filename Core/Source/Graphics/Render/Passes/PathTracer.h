@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Graphics/Render/RenderContext.h"
+#include "Graphics/Render/Passes/PathTracerPrograms.h"
 #include "Graphics/Render/Passes/RadianceCache.h"
 #include "Shared/PathTracerData.h"
 
@@ -46,10 +47,10 @@ struct SPathTracerTargets
 };
 
 /**
- * Host side of PathTracing/PathTracer.hlsl: ray tracing state objects (a Shader Execution
- * Reordering build on SM 6.9 devices and a plain SM 6.8 build), the shader table, the
- * render-resolution targets and the remodulation pass that turns (denoised) demodulated
- * signals back into radiance.
+ * Host side of PathTracing/PathTracer.hlsl for one render view: the render-resolution targets,
+ * the view's radiance cache and the remodulation pass that turns (denoised) demodulated signals
+ * back into radiance. The programs - ray tracing state objects and pipelines - are shared by
+ * every view through CPathTracerPrograms.
  */
 class FRT_CORE_API CPathTracer
 {
@@ -58,13 +59,9 @@ public:
 	CPathTracer (const CPathTracer&) = delete;
 	CPathTracer& operator= (const CPathTracer&) = delete;
 
-	void Initialize (rhi::CDevice& Device, rhi::CPipelineLibrary& Pipelines);
+	void Initialize (rhi::CDevice& Device, rhi::CPipelineLibrary& Pipelines, const CPathTracerPrograms& Programs);
 	void Shutdown ();
 	void Resize (uint32 Width, uint32 Height);
-
-	// (Re)builds the state objects whose DXIL library changed (startup, hot reload). Must run
-	// before IsReady() can report true; Dispatch() also calls it.
-	void UpdatePipelines (ID3D12GraphicsCommandList* CommandList);
 
 	// Traces the frame. bReference selects progressive accumulation (and full-mixture BSDF
 	// weights); otherwise the demodulated lobe split for the denoiser is produced, after the
@@ -86,24 +83,10 @@ public:
 	CRadianceCache RadianceCache;        // real-time mode only; updated and resolved inside Dispatch
 
 private:
-	struct SPipelineVariant
-	{
-		rhi::HShaderLibrary Library = rhi::InvalidPipelineHandle;
-		uint32 BuiltVersion = 0u;
-		rhi::ComPtr<ID3D12StateObject> StateObject;
-		rhi::SGpuBuffer ShaderTable;
-		D3D12_DISPATCH_RAYS_DESC DispatchTemplate = {};
-		bool bValid = false;
-	};
-
-	bool BuildVariant (SPipelineVariant& Variant, const wchar_t* Name, ID3D12GraphicsCommandList* CommandList);
 	void DestroyTargets ();
 
 	rhi::CDevice* Device = nullptr;
-	rhi::CPipelineLibrary* Pipelines = nullptr;
-	SPipelineVariant SerVariant;
-	SPipelineVariant BaseVariant;
-	rhi::HPipeline RemodulatePipeline = rhi::InvalidPipelineHandle;
+	const CPathTracerPrograms* Programs = nullptr;
 	SPathTracerTargets Targets;
 	uint32 Width = 0u;
 	uint32 Height = 0u;

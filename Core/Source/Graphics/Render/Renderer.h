@@ -30,6 +30,7 @@ namespace frt::graphics
 {
 class CGpuScene;
 class CPathTracer;
+class CPathTracerPrograms;
 class CDenoiser;
 class IUpscaler;
 class CPostProcess;
@@ -196,6 +197,7 @@ private:
 	uint32 RayCounterUav = rhi::InvalidDescriptorIndex;
 
 	std::unique_ptr<CGpuScene> Scene;
+	std::unique_ptr<CPathTracerPrograms> PathTracerPrograms;   // shared by every view's CPathTracer
 	std::unique_ptr<CPathTracer> PathTracer;
 	std::unique_ptr<CDenoiser> Denoiser;
 	std::unique_ptr<IUpscaler> Upscaler;

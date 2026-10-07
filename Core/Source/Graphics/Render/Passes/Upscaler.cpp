@@ -220,9 +220,8 @@ void CTemporalUpscaler::Initialize (rhi::CDevice& Device, rhi::CPipelineLibrary&
 	{
 		Impl->Sharpen = Pipelines.CreateCompute("Upscaler_Sharpen", MakeShaderDesc("Upscaler/Sharpen.hlsl", "main", "cs_6_6"));
 	}
-	// Impl->Fallback is created lazily by Execute, only if the resolve has no PSO.
-	// CPipelineLibrary cannot destroy programs, so an unconditional third program would add up
-	// on every upscaler switch.
+	// Impl->Fallback is created lazily by Execute, only if the resolve has no PSO: it would
+	// otherwise be compiled for nothing in the common case.
 }
 
 void CTemporalUpscaler::Shutdown (rhi::CDevice& Device)
