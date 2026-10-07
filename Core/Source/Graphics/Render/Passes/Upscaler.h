@@ -4,7 +4,7 @@
 #include <string_view>
 
 #include "Graphics/Render/RenderContext.h"
-
+#include "Graphics/Render/RenderSettings.h"
 
 namespace frt::graphics
 {
@@ -18,15 +18,6 @@ namespace frt::graphics
  * renderer: they consume exactly these inputs (jitter in pixels, MVs in render pixels as
  * previous-minus-current, linear view depth).
  */
-enum class EUpscalerKind : uint8
-{
-	None = 0,        // bilinear resample, no temporal accumulation
-	Temporal,        // in-house TAA / TAAU
-	Dlss,            // reserved (NVIDIA Streamline / NGX)
-	Fsr,             // reserved (AMD FidelityFX FSR 3.1)
-	Xess,            // reserved (Intel XeSS)
-	Count
-};
 
 struct SUpscalerInputs
 {
@@ -61,34 +52,9 @@ public:
 	// Texture LOD bias the renderer should apply when rendering below display resolution.
 	virtual float GetMipBias (uint32 RenderWidth, uint32 DisplayWidth) const = 0;
 
-	virtual void DrawSettingsUi () {}
-};
-
-struct STemporalUpscalerSettings
-{
-	float HistoryBlend = 0.06f;            // base weight of the current frame
-	float Sharpness = 0.25f;               // post-resolve sharpening (RCAS-like), 0 = off
-	bool bCatmullRomHistory = true;        // 5-tap bicubic history fetch
-	bool bVarianceClip = true;             // YCoCg variance clipping (vs. min/max clamp)
-	float VarianceGamma = 1.25f;           // rectification slack in spatial standard deviations
-	// Rectification slack in temporal standard deviations of the pixel's own input. Lets a
-	// noisy or jitter-aliased pixel keep a history whose mean its neighbourhood rarely shows
-	// (path-traced input, sub-pixel highlights); 0 = classic variance clipping.
-	float TemporalGamma = 3.0f;
-	// Karis 1 / (1 + L) blend weights. Off by default: on a path-traced (sparse) input they
-	// pull the history toward the harmonic mean and lose energy (20% on the default view).
-	bool bAntiFlicker = false;
-	uint32 JitterPhases = 16u;             // Halton(2,3) sequence length (scaled by upscale ratio)
-
-	bool bLanczosKernel = true;            // Lanczos-2 reconstruction (false = Blackman-Harris, softer)
-	float KernelWidth = 1.0f;              // > 1 widens the reconstruction kernel (softer, steadier)
-	float MotionHistoryScale = 0.5f;       // history cap multiplier at >= MotionSpeedRange
-	float MotionSpeedRange = 32.0f;        // display pixels / frame
-	bool bDepthTest = true;                // depth-reprojection disocclusion test
-	float DepthTolerance = 0.03f;          // relative view-depth tolerance of that test
-	bool bSharpenDenoise = true;           // RCAS noise attenuation (do not sharpen residual noise)
-	float MipBiasOffset = -1.0f;           // GetMipBias = log2(Render/Display) + this, clamped
-	uint32 DebugMode = 0u;                 // gpu::UpscalerDebug_* (Shared/UpscalerData.h)
+	// Each implementation applies / edits its own part of the profile.
+	virtual void ApplyProfile (const SRenderProfile& Profile) {}
+	virtual void DrawSettingsUi (SRenderProfile& Profile) {}
 };
 
 class FRT_CORE_API CTemporalUpscaler final : public IUpscaler
@@ -104,7 +70,8 @@ public:
 	void Execute (CRenderContext& Context, const SUpscalerInputs& Inputs, rhi::SGpuTexture& Output) override;
 	void GetJitter (uint64 FrameIndex, uint32 RenderWidth, uint32 DisplayWidth, float& OutX, float& OutY) const override;
 	float GetMipBias (uint32 RenderWidth, uint32 DisplayWidth) const override;
-	void DrawSettingsUi () override;
+	void ApplyProfile (const SRenderProfile& Profile) override { Settings = Profile.Taa; }
+	void DrawSettingsUi (SRenderProfile& Profile) override;
 
 	STemporalUpscalerSettings Settings;
 

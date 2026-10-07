@@ -13,18 +13,17 @@
 #include "GraphicsCoreTypes.h"
 #include "MaterialLibrary.h"
 #include "Graphics/Render/RenderContext.h"
+#include "Graphics/Render/RenderSettings.h"
 #include "Graphics/Render/RHI/Device.h"
 #include "Graphics/Render/RHI/Pipelines.h"
 #include "Graphics/Render/RHI/ShaderCompiler.h"
 #include "Profiler/GpuProfiler.h"
 #include "Profiler/RayCounters.h"
 
-
 namespace frt
 {
 class CWindow;
 }
-
 
 namespace frt::graphics
 {
@@ -36,26 +35,8 @@ class IUpscaler;
 class CPostProcess;
 class CRasterPreview;
 class CFrameCapture;
-enum class EUpscalerKind : uint8;
 
 using Microsoft::WRL::ComPtr;
-
-enum class EPathTracingMode : uint8
-{
-	RealTime = 0,   // 1-4 spp, denoised, temporally upscaled
-	Reference,      // progressive accumulation, unbiased, converges to ground truth
-};
-
-struct SRenderSettings
-{
-	EPathTracingMode Mode = EPathTracingMode::RealTime;
-	float RenderScale = 1.0f;            // real time: render resolution / display resolution
-	bool bDenoiser = true;
-	uint32 ReferenceSampleTarget = 0u;   // stop tracing after this many samples (0 = never)
-	bool bCollectRayCounters = false;
-	float FieldOfViewY = 1.5707963f;     // radians (vertical)
-	float NearZ = 0.05f;
-};
 
 // Camera as the renderer consumes it, already in render (DirectX) space.
 struct SCameraView
@@ -97,8 +78,9 @@ public:
 	// Draw: back buffer to present, submit, present, signal.
 	void Draw ();
 
+	// Writes Profile.RenderMode. The mode rendered is Raster whenever the device cannot trace.
 	void SetRenderMode (ERenderMode Mode);
-	ERenderMode GetRenderMode () const { return RenderMode; }
+	ERenderMode GetRenderMode () const;
 	bool IsRaytracingReady () const;
 	bool ShouldRenderRaster () const;
 	bool ShouldRenderRaytracing () const;
@@ -139,7 +121,9 @@ public:
 
 	void DrawRendererUi ();
 
-	SRenderSettings Settings;
+	// Every setting the renderer applies, shared by all views (see RenderSettings.h). Written by
+	// the settings UI, launch configuration and profiling sessions.
+	SRenderProfile Profile;
 	bool bVSyncEnabled = true;
 	DXGI_RATIONAL DisplayRefreshRate = { 0u, 1u };
 
@@ -154,6 +138,7 @@ private:
 	uint64 ComputeAccumulationHash () const;
 	void RecordRaytracing (CRenderContext& Context, bool bResetHistory);
 	void RecordRaster (CRenderContext& Context, bool bResetHistory);
+	void ApplyProfileToPasses ();
 	void RecordPostAndPresentTarget (CRenderContext& Context, rhi::SGpuTexture& DisplayColor, rhi::SGpuTexture* Debug, bool bResetExposure);
 
 	CWindow* Window = nullptr;
@@ -209,7 +194,6 @@ private:
 	rhi::SGpuTexture DisplayColor;           // upscaler output, display resolution
 	rhi::SGpuTexture* LastHdrForCapture = nullptr;
 
-	ERenderMode RenderMode = ERenderMode::Raytracing;
 	SCameraView CameraView;
 	gpu::SFrameConstants FrameConstants = {};
 	DirectX::XMFLOAT4X4 PrevViewProjNoJitter = {};

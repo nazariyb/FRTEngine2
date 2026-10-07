@@ -200,48 +200,48 @@ void CRadianceCache::Update (CRenderContext& Context, const gpu::SPathTracerCons
 	Context.FlushBarriers();
 }
 
-void CRadianceCache::DrawSettingsUi ()
+void CRadianceCache::DrawSettingsUi (SRadianceCacheSettings& Edit)
 {
 	if (!bSupported)
 	{
 		ImGui::TextDisabled("Radiance cache unavailable (needs 64-bit atomics on heap resources)");
 		return;
 	}
-	ImGui::Checkbox("Radiance cache", &Settings.bEnabled);
-	ImGui::BeginDisabled(!Settings.bEnabled);
-	int capacity = static_cast<int>(Settings.CapacityLog2);
+	ImGui::Checkbox("Radiance cache", &Edit.bEnabled);
+	ImGui::BeginDisabled(!Edit.bEnabled);
+	int capacity = static_cast<int>(Edit.CapacityLog2);
 	if (ImGui::SliderInt("Capacity (log2 entries)", &capacity, static_cast<int>(kMinCapacityLog2), static_cast<int>(kMaxCapacityLog2)))
 	{
-		Settings.CapacityLog2 = static_cast<uint32>(capacity);
+		Edit.CapacityLog2 = static_cast<uint32>(capacity);
 	}
-	ImGui::SliderFloat("Cell size at 1 m", &Settings.CellScale, 0.005f, 0.25f, "%.3f m", ImGuiSliderFlags_Logarithmic);
-	int tile = static_cast<int>(Settings.UpdateTileSize);
+	ImGui::SliderFloat("Cell size at 1 m", &Edit.CellScale, 0.005f, 0.25f, "%.3f m", ImGuiSliderFlags_Logarithmic);
+	int tile = static_cast<int>(Edit.UpdateTileSize);
 	if (ImGui::SliderInt("Update tile (1 path / tile^2)", &tile, 1, 16))
 	{
-		Settings.UpdateTileSize = static_cast<uint32>(tile);
+		Edit.UpdateTileSize = static_cast<uint32>(tile);
 	}
-	int accumulation = static_cast<int>(Settings.AccumulationFrames);
+	int accumulation = static_cast<int>(Edit.AccumulationFrames);
 	if (ImGui::SliderInt("Accumulation frames", &accumulation, 1, 256))
 	{
-		Settings.AccumulationFrames = static_cast<uint32>(accumulation);
+		Edit.AccumulationFrames = static_cast<uint32>(accumulation);
 	}
-	int stale = static_cast<int>(Settings.StaleFrames);
+	int stale = static_cast<int>(Edit.StaleFrames);
 	if (ImGui::SliderInt("Stale frames", &stale, 1, 1024))
 	{
-		Settings.StaleFrames = static_cast<uint32>(stale);
+		Edit.StaleFrames = static_cast<uint32>(stale);
 	}
-	ImGui::SliderFloat("Roughness threshold", &Settings.RoughnessThreshold, 0.0f, 1.0f, "%.2f");
-	ImGui::SliderFloat("Footprint scale", &Settings.FootprintScale, 0.0f, 8.0f, "%.2f");
-	ImGui::SliderFloat("Min sample weight", &Settings.MinSampleWeight, 1.0f, 256.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
-	ImGui::SliderFloat("Update sample clamp", &Settings.SampleClamp, 1.0f, 16384.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
-	ImGui::SliderFloat("Max specular share", &Settings.SpecularShareMax, 0.0f, 1.0f, "%.2f");
-	ImGui::Checkbox("Multi-bounce feedback", &Settings.bFeedback);
-	int depth = static_cast<int>(Settings.FeedbackMaxDepth);
+	ImGui::SliderFloat("Roughness threshold", &Edit.RoughnessThreshold, 0.0f, 1.0f, "%.2f");
+	ImGui::SliderFloat("Footprint scale", &Edit.FootprintScale, 0.0f, 8.0f, "%.2f");
+	ImGui::SliderFloat("Min sample weight", &Edit.MinSampleWeight, 1.0f, 256.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
+	ImGui::SliderFloat("Update sample clamp", &Edit.SampleClamp, 1.0f, 16384.0f, "%.0f", ImGuiSliderFlags_Logarithmic);
+	ImGui::SliderFloat("Max specular share", &Edit.SpecularShareMax, 0.0f, 1.0f, "%.2f");
+	ImGui::Checkbox("Multi-bounce feedback", &Edit.bFeedback);
+	int depth = static_cast<int>(Edit.FeedbackMaxDepth);
 	if (ImGui::SliderInt("Feedback max depth", &depth, 1, 8))
 	{
-		Settings.FeedbackMaxDepth = static_cast<uint32>(depth);
+		Edit.FeedbackMaxDepth = static_cast<uint32>(depth);
 	}
-	ImGui::Checkbox("Jittered lookups", &Settings.bJitter);
+	ImGui::Checkbox("Jittered lookups", &Edit.bJitter);
 	if (ImGui::Button("Clear cache"))
 	{
 		bNeedsClear = true;

@@ -496,12 +496,12 @@ void GameInstance::Tick (float DeltaSeconds)
 		if (ProfilingSession.HasCurrent())
 		{
 			const profiler::SProfileConfig& c = ProfilingSession.Current();
-			graphics::SPathTracerSettings& pt = Renderer->GetPathTracer().Settings;
+			graphics::SPathTracerSettings& pt = Renderer->Profile.PathTracer;
 			pt.SamplesPerPixel      = c.SampleCount;
 			pt.MaxBounces           = c.MaxBounces;
 			pt.RussianRouletteDepth = c.RussianRouletteDepth;
 			pt.bPortalPreFilter     = c.bPortalPreFilter;
-			Renderer->Settings.bCollectRayCounters = true; // counters mandatory during a session
+			Renderer->Profile.Frame.bCollectRayCounters = true; // counters mandatory during a session
 		}
 		if (ProfilingSession.ConsumeProfileChanged())
 		{
@@ -639,8 +639,8 @@ bool ParseVector3 (const std::string& Text, Vector3f& Out)
 
 void GameInstance::ApplyLaunchConfig ()
 {
-	graphics::SRenderSettings& render = Renderer->Settings;
-	graphics::SPathTracerSettings& pt = Renderer->GetPathTracer().Settings;
+	graphics::SRenderSettings& render = Renderer->Profile.Frame;
+	graphics::SPathTracerSettings& pt = Renderer->Profile.PathTracer;
 
 	// Session-only override of the persisted [Settings.Display] RenderMode (not written back).
 	const std::string renderMode = Config.Get("Render", "RenderMode", "");
@@ -683,7 +683,7 @@ void GameInstance::ApplyLaunchConfig ()
 	pt.bWhiteFurnace = Config.Get("Render", "WhiteFurnace", pt.bWhiteFurnace);
 	pt.DebugMode = Config.Get("Render", "DebugMode", pt.DebugMode);
 
-	graphics::SRadianceCacheSettings& rc = Renderer->GetPathTracer().RadianceCache.Settings;
+	graphics::SRadianceCacheSettings& rc = Renderer->Profile.RadianceCache;
 	rc.bEnabled = Config.Get("Render", "RadianceCache", rc.bEnabled);
 	rc.CapacityLog2 = Config.Get("Render", "RcCapacityLog2", rc.CapacityLog2);
 	rc.CellScale = Config.Get("Render", "RcCellScale", rc.CellScale);
@@ -701,7 +701,7 @@ void GameInstance::ApplyLaunchConfig ()
 	Renderer->GetScene().bPortalWeightedLightSelection =
 		Config.Get("Render", "PortalLightSelection", Renderer->GetScene().bPortalWeightedLightSelection);
 
-	graphics::SPostProcessSettings& post = Renderer->GetPostProcess().Settings;
+	graphics::SPostProcessSettings& post = Renderer->Profile.Post;
 	post.bAutoExposure = Config.Get("Render", "AutoExposure", post.bAutoExposure);
 	post.ManualExposureEV = Config.Get("Render", "ExposureEV", post.ManualExposureEV);
 	post.ExposureCompensationEV = Config.Get("Render", "ExposureCompensationEV", post.ExposureCompensationEV);
@@ -717,9 +717,8 @@ void GameInstance::ApplyLaunchConfig ()
 	post.ToneMapper = static_cast<graphics::EToneMapper>(Config.Get("Post", "ToneMapper", static_cast<uint32>(post.ToneMapper)));
 
 	// [Taa] keys (-Taa:Key=Value): in-house TAA / TAAU settings, for A/B captures.
-	if (auto* taa = dynamic_cast<graphics::CTemporalUpscaler*>(Renderer->GetUpscaler()))
 	{
-		graphics::STemporalUpscalerSettings& t = taa->Settings;
+		graphics::STemporalUpscalerSettings& t = Renderer->Profile.Taa;
 		t.HistoryBlend = Config.Get("Taa", "HistoryBlend", t.HistoryBlend);
 		t.Sharpness = Config.Get("Taa", "Sharpness", t.Sharpness);
 		t.VarianceGamma = Config.Get("Taa", "VarianceGamma", t.VarianceGamma);
@@ -733,7 +732,7 @@ void GameInstance::ApplyLaunchConfig ()
 	}
 
 	// [Denoiser] keys (-Denoiser:Key=Value), parsed by the pass itself.
-	Renderer->GetDenoiser().ApplyConfig(Config);
+	graphics::CDenoiser::ApplyConfig(Config, Renderer->Profile.Denoiser);
 
 	TimeOfDay =Config.Get("Scene", "TimeOfDay", TimeOfDay);
 	if (Config.Get("Scene", "PauseWorld", false))
@@ -848,22 +847,22 @@ void GameInstance::UpdateAutomation (float DeltaSeconds)
 
 void GameInstance::BeginProfilingOverride ()
 {
-	const graphics::SPathTracerSettings& pt = Renderer->GetPathTracer().Settings;
+	const graphics::SPathTracerSettings& pt = Renderer->Profile.PathTracer;
 	SavedProfilingSettings.SamplesPerPixel = pt.SamplesPerPixel;
 	SavedProfilingSettings.MaxBounces = pt.MaxBounces;
 	SavedProfilingSettings.RussianRouletteDepth = pt.RussianRouletteDepth;
 	SavedProfilingSettings.bPortalPreFilter = pt.bPortalPreFilter;
-	SavedProfilingSettings.bCollectRayCounters = Renderer->Settings.bCollectRayCounters;
+	SavedProfilingSettings.bCollectRayCounters = Renderer->Profile.Frame.bCollectRayCounters;
 }
 
 void GameInstance::EndProfilingOverride ()
 {
-	graphics::SPathTracerSettings& pt = Renderer->GetPathTracer().Settings;
+	graphics::SPathTracerSettings& pt = Renderer->Profile.PathTracer;
 	pt.SamplesPerPixel = SavedProfilingSettings.SamplesPerPixel;
 	pt.MaxBounces = SavedProfilingSettings.MaxBounces;
 	pt.RussianRouletteDepth = SavedProfilingSettings.RussianRouletteDepth;
 	pt.bPortalPreFilter = SavedProfilingSettings.bPortalPreFilter;
-	Renderer->Settings.bCollectRayCounters = SavedProfilingSettings.bCollectRayCounters;
+	Renderer->Profile.Frame.bCollectRayCounters = SavedProfilingSettings.bCollectRayCounters;
 }
 
 // UI panel bodies (DrawUI, DrawStatsPanel, DrawRaytracingPanel, DrawSkyPanel,

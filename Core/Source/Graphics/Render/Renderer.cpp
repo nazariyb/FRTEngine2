@@ -203,7 +203,7 @@ CRenderer::CRenderer (CWindow* InWindow)
 	if (caps.RaytracingTier < D3D12_RAYTRACING_TIER_1_1)
 	{
 		std::fprintf(stderr, "[renderer] DXR tier 1.1 is required for the path tracer; raster preview only.\n");
-		RenderMode = ERenderMode::Raster;
+		Profile.RenderMode = ERenderMode::Raster;
 	}
 
 	ShaderCompiler.Init(paths::GetShaderRootDir());
@@ -479,16 +479,18 @@ void CRenderer::FlushCommandQueue ()
 void CRenderer::SetRenderMode (ERenderMode Mode)
 {
 	// Hybrid is not a separate pipeline any more: it maps to the path tracer.
-	RenderMode = Mode == ERenderMode::Hybrid ? ERenderMode::Raytracing : Mode;
-	if (RenderMode == ERenderMode::Raytracing && Rhi.GetCaps().RaytracingTier < D3D12_RAYTRACING_TIER_1_1)
-	{
-		RenderMode = ERenderMode::Raster;
-	}
+	Profile.RenderMode = Mode == ERenderMode::Hybrid ? ERenderMode::Raytracing : Mode;
+}
+
+ERenderMode CRenderer::GetRenderMode () const
+{
+	const bool bCanTrace = Rhi.GetCaps().RaytracingTier >= D3D12_RAYTRACING_TIER_1_1;
+	return Profile.RenderMode == ERenderMode::Raster || !bCanTrace ? ERenderMode::Raster : ERenderMode::Raytracing;
 }
 
 bool CRenderer::IsRaytracingReady () const { return PathTracer && PathTracer->IsReady(); }
-bool CRenderer::ShouldRenderRaster () const { return RenderMode == ERenderMode::Raster || !IsRaytracingReady(); }
-bool CRenderer::ShouldRenderRaytracing () const { return RenderMode == ERenderMode::Raytracing && IsRaytracingReady(); }
+bool CRenderer::ShouldRenderRaster () const { return GetRenderMode() == ERenderMode::Raster || !IsRaytracingReady(); }
+bool CRenderer::ShouldRenderRaytracing () const { return GetRenderMode() == ERenderMode::Raytracing && IsRaytracingReady(); }
 
 bool CRenderer::IsReadyToRender () const
 {
@@ -518,6 +520,7 @@ void CRenderer::SetUpscalerKind (EUpscalerKind Kind)
 	}
 	Upscaler = std::move(next);
 	Upscaler->Initialize(Rhi, Pipelines);
+	Profile.Upscaler = Kind;
 	RenderWidth = 0u; // force resize
 	bForceReset = true;
 }
@@ -552,8 +555,8 @@ void CRenderer::StartFrame ()
 
 void CRenderer::UpdateResolution ()
 {
-	const bool bReference = Settings.Mode == EPathTracingMode::Reference && RenderMode == ERenderMode::Raytracing;
-	const float scale = bReference ? 1.0f : std::clamp(Settings.RenderScale, 0.25f, 1.0f);
+	const bool bReference = Profile.Frame.Mode == EPathTracingMode::Reference && GetRenderMode() == ERenderMode::Raytracing;
+	const float scale = bReference ? 1.0f : std::clamp(Profile.Frame.RenderScale, 0.25f, 1.0f);
 	const uint32 renderW = (std::max)(1u, static_cast<uint32>(std::lround(DisplayWidth * scale)));
 	const uint32 renderH = (std::max)(1u, static_cast<uint32>(std::lround(DisplayHeight * scale)));
 	if (renderW == RenderWidth && renderH == RenderHeight && DisplayColor.IsValid() &&
@@ -597,13 +600,13 @@ void CRenderer::BuildFrameConstants (gpu::SFrameConstants& Out, bool bSceneValid
 	const XMMATRIX view = XMMatrixLookToLH(position, forward, up);
 
 	const float aspect = static_cast<float>(DisplayWidth) / static_cast<float>((std::max)(DisplayHeight, 1u));
-	const float fov = std::clamp(Settings.FieldOfViewY, 0.1f, 3.0f);
-	const float nearZ = (std::max)(Settings.NearZ, 1e-4f);
+	const float fov = std::clamp(Profile.Frame.FieldOfViewY, 0.1f, 3.0f);
+	const float nearZ = (std::max)(Profile.Frame.NearZ, 1e-4f);
 	const XMMATRIX projNoJitter = MakeReversedInfinitePerspective(fov, aspect, nearZ);
 
 	float jitterX = 0.0f;
 	float jitterY = 0.0f;
-	const bool bReference = RenderMode == ERenderMode::Raytracing && Settings.Mode == EPathTracingMode::Reference;
+	const bool bReference = GetRenderMode() == ERenderMode::Raytracing && Profile.Frame.Mode == EPathTracingMode::Reference;
 	if (!bReference && Upscaler && Upscaler->GetKind() != EUpscalerKind::None)
 	{
 		Upscaler->GetJitter(FrameNumber, RenderWidth, DisplayWidth, jitterX, jitterY);
@@ -658,7 +661,7 @@ void CRenderer::BuildFrameConstants (gpu::SFrameConstants& Out, bool bSceneValid
 	Out.Flags = 0u;
 	if (bReference) { Out.Flags |= gpu::FrameFlag_ReferenceMode; }
 	if (bHasPrevFrame) { Out.Flags |= gpu::FrameFlag_HistoryValid; }
-	if (Settings.bCollectRayCounters)
+	if (Profile.Frame.bCollectRayCounters)
 	{
 		Out.Flags |= gpu::FrameFlag_CountersEnabled;
 		Out.RayCounterBuffer = RayCounterUav;
@@ -686,8 +689,17 @@ uint64 CRenderer::ComputeAccumulationHash () const
 	hash = HashBytes(hash, &RenderWidth, sizeof(RenderWidth));
 	hash = HashBytes(hash, &RenderHeight, sizeof(RenderHeight));
 	hash = HashBytes(hash, &PathTracer->Settings, sizeof(SPathTracerSettings));
-	hash = HashBytes(hash, &Settings.Mode, sizeof(Settings.Mode));
+	hash = HashBytes(hash, &Profile.Frame.Mode, sizeof(Profile.Frame.Mode));
 	return hash;
+}
+
+void CRenderer::ApplyProfileToPasses ()
+{
+	PathTracer->Settings = Profile.PathTracer;
+	PathTracer->RadianceCache.Settings = Profile.RadianceCache;
+	Denoiser->Settings = Profile.Denoiser;
+	Upscaler->ApplyProfile(Profile);
+	PostProcess->Settings = Profile.Post;
 }
 
 void CRenderer::PrepareCurrentPass ()
@@ -696,6 +708,7 @@ void CRenderer::PrepareCurrentPass ()
 	{
 		return;
 	}
+	ApplyProfileToPasses();
 	UpdateResolution();
 
 #ifndef RELEASE
@@ -732,7 +745,7 @@ void CRenderer::PrepareCurrentPass ()
 	{
 		BuildFrameConstants(FrameConstants, true);
 		const uint64 hash = ComputeAccumulationHash();
-		const bool bModeChanged = PrevMode != Settings.Mode || PrevRenderMode != RenderMode;
+		const bool bModeChanged = PrevMode != Profile.Frame.Mode || PrevRenderMode != GetRenderMode();
 		if (hash != AccumulationHash || bSceneChanged || bForceReset || bModeChanged)
 		{
 			AccumulationHash = hash;
@@ -749,8 +762,8 @@ void CRenderer::PrepareCurrentPass ()
 	context.SceneTlasVa = Scene->GetTlasAddress();
 	context.BindCompute();
 
-	const bool bResetHistory = bForceReset || !bHasPrevFrame || PrevMode != Settings.Mode || PrevRenderMode != RenderMode;
-	if (RenderMode == ERenderMode::Raytracing)
+	const bool bResetHistory = bForceReset || !bHasPrevFrame || PrevMode != Profile.Frame.Mode || PrevRenderMode != GetRenderMode();
+	if (GetRenderMode() == ERenderMode::Raytracing)
 	{
 		PathTracerPrograms->Update(CommandList.Get());
 	}
@@ -769,17 +782,17 @@ void CRenderer::PrepareCurrentPass ()
 	PrevJitter[1] = FrameConstants.Jitter.y;
 	bHasPrevFrame = true;
 	bForceReset = false;
-	PrevMode = Settings.Mode;
-	PrevRenderMode = RenderMode;
+	PrevMode = Profile.Frame.Mode;
+	PrevRenderMode = GetRenderMode();
 }
 
 void CRenderer::RecordRaytracing (CRenderContext& Context, bool bResetHistory)
 {
-	const bool bReference = Settings.Mode == EPathTracingMode::Reference;
+	const bool bReference = Profile.Frame.Mode == EPathTracingMode::Reference;
 	SPathTracerTargets& targets = PathTracer->GetTargets();
 
-	const bool bTargetReached = bReference && Settings.ReferenceSampleTarget > 0u &&
-		AccumulationFrames > 0u && AccumulatedSamples > Settings.ReferenceSampleTarget;
+	const bool bTargetReached = bReference && Profile.Frame.ReferenceSampleTarget > 0u &&
+		AccumulationFrames > 0u && AccumulatedSamples > Profile.Frame.ReferenceSampleTarget;
 	if (!bTargetReached)
 	{
 		PathTracer->Dispatch(Context, bReference, bReference);
@@ -796,7 +809,7 @@ void CRenderer::RecordRaytracing (CRenderContext& Context, bool bResetHistory)
 	}
 	else
 	{
-		if (Settings.bDenoiser && Denoiser->Settings.bEnabled)
+		if (Profile.Frame.bDenoiser && Denoiser->Settings.bEnabled)
 		{
 			SDenoiserInputs inputs;
 			inputs.Diffuse = &targets.Diffuse;
@@ -972,46 +985,46 @@ void CRenderer::DrawRendererUi ()
 		PathTracer->IsSerActive() ? (caps.bSerActuallyReorders ? "active" : "active (no-op on this GPU)") : "off");
 	ImGui::Text("Render %ux%u -> display %ux%u", RenderWidth, RenderHeight, DisplayWidth, DisplayHeight);
 
-	int mode = static_cast<int>(RenderMode == ERenderMode::Raster ? 0 : 1);
+	int mode = static_cast<int>(GetRenderMode() == ERenderMode::Raster ? 0 : 1);
 	const char* renderModes[] = { "Raster preview", "Path tracing" };
 	if (ImGui::Combo("Renderer", &mode, renderModes, 2))
 	{
 		SetRenderMode(mode == 0 ? ERenderMode::Raster : ERenderMode::Raytracing);
 	}
 
-	int ptMode = static_cast<int>(Settings.Mode);
+	int ptMode = static_cast<int>(Profile.Frame.Mode);
 	const char* ptModes[] = { "Real time (denoised)", "Reference (progressive)" };
 	if (ImGui::Combo("Path tracing mode", &ptMode, ptModes, 2))
 	{
-		Settings.Mode = static_cast<EPathTracingMode>(ptMode);
+		Profile.Frame.Mode = static_cast<EPathTracingMode>(ptMode);
 	}
 
-	if (Settings.Mode == EPathTracingMode::Reference)
+	if (Profile.Frame.Mode == EPathTracingMode::Reference)
 	{
 		ImGui::Text("Accumulated: %u spp", AccumulatedSamples);
-		int target = static_cast<int>(Settings.ReferenceSampleTarget);
+		int target = static_cast<int>(Profile.Frame.ReferenceSampleTarget);
 		if (ImGui::InputInt("Stop at spp (0 = never)", &target))
 		{
-			Settings.ReferenceSampleTarget = static_cast<uint32>((std::max)(target, 0));
+			Profile.Frame.ReferenceSampleTarget = static_cast<uint32>((std::max)(target, 0));
 		}
 	}
 	else
 	{
-		ImGui::SliderFloat("Render scale", &Settings.RenderScale, 0.33f, 1.0f, "%.2f");
+		ImGui::SliderFloat("Render scale", &Profile.Frame.RenderScale, 0.33f, 1.0f, "%.2f");
 		int kind = static_cast<int>(GetUpscalerKind());
 		const char* kinds[] = { "Off", "TAAU (in-house)", "DLSS (n/a)", "FSR (n/a)", "XeSS (n/a)" };
 		if (ImGui::Combo("Upscaler / AA", &kind, kinds, 5))
 		{
 			SetUpscalerKind(static_cast<EUpscalerKind>(kind));
 		}
-		ImGui::Checkbox("Denoiser", &Settings.bDenoiser);
+		ImGui::Checkbox("Denoiser", &Profile.Frame.bDenoiser);
 	}
-	float fovDeg = Settings.FieldOfViewY * 57.29578f;
+	float fovDeg = Profile.Frame.FieldOfViewY * 57.29578f;
 	if (ImGui::SliderFloat("Vertical FOV", &fovDeg, 20.0f, 120.0f, "%.1f deg"))
 	{
-		Settings.FieldOfViewY = fovDeg / 57.29578f;
+		Profile.Frame.FieldOfViewY = fovDeg / 57.29578f;
 	}
-	ImGui::Checkbox("Collect ray counters", &Settings.bCollectRayCounters);
+	ImGui::Checkbox("Collect ray counters", &Profile.Frame.bCollectRayCounters);
 	if (ImGui::Button("Reset accumulation / history"))
 	{
 		ResetAccumulation();
@@ -1024,19 +1037,19 @@ void CRenderer::DrawRendererUi ()
 
 	if (ImGui::CollapsingHeader("Path tracer", ImGuiTreeNodeFlags_DefaultOpen))
 	{
-		PathTracer->DrawSettingsUi();
+		PathTracer->DrawSettingsUi(Profile.PathTracer, Profile.RadianceCache);
 	}
 	if (ImGui::CollapsingHeader("Denoiser"))
 	{
-		Denoiser->DrawSettingsUi();
+		Denoiser->DrawSettingsUi(Profile.Denoiser);
 	}
 	if (ImGui::CollapsingHeader("Upscaler / TAA"))
 	{
-		Upscaler->DrawSettingsUi();
+		Upscaler->DrawSettingsUi(Profile);
 	}
 	if (ImGui::CollapsingHeader("Post processing", ImGuiTreeNodeFlags_DefaultOpen))
 	{
-		PostProcess->DrawSettingsUi();
+		PostProcess->DrawSettingsUi(Profile.Post);
 	}
 	if (ImGui::CollapsingHeader("Scene"))
 	{

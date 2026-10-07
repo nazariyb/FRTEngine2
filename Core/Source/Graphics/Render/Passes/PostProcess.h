@@ -1,27 +1,10 @@
 #pragma once
 
 #include "Graphics/Render/RenderContext.h"
-
+#include "Graphics/Render/RenderSettings.h"
 
 namespace frt::graphics
 {
-enum class EToneMapper : uint8
-{
-	AgX = 0,          // Troy Sobotka's AgX (default; graceful highlight desaturation)
-	AcesFitted,       // Hill ACES RRT+ODT fit
-	KhronosNeutral,   // Khronos PBR Neutral (preserves base colours, product shots)
-	Reinhard,         // luminance Reinhard (reference/debug)
-	Linear,           // clamp only (debug)
-	Count
-};
-
-enum class EAgXLook : uint8
-{
-	Base = 0,
-	Punchy,
-	Golden,
-	Count
-};
 
 /**
  * Display pipeline after the HDR image is final (display resolution):
@@ -44,56 +27,6 @@ enum class EAgXLook : uint8
  * buffer layout in Shaders/Shared/PostProcessData.h. GPU scopes: PostProcess_Exposure,
  * PostProcess_Bloom, PostProcess_Final.
  */
-struct SPostProcessSettings
-{
-	// Exposure
-	bool bAutoExposure = true;
-	float ExposureCompensationEV = 0.0f;
-	float ManualExposureEV = 0.0f;       // used when auto exposure is off (EV100-style: L * 2^-EV)
-	float MinEV = -16.0f;                // engine light units are relative: enclosed interiors meter very low
-	float MaxEV = 20.0f;
-	float AdaptationSpeedUp = 3.0f;      // EV per second toward brighter
-	float AdaptationSpeedDown = 1.5f;    // toward darker
-	// Metered window of the (4x4 block mean) log-luminance histogram. The darkest 30% (deep
-	// shadow, where a path-traced estimate is mostly noise) and the brightest 10% (light
-	// sources, windows, sun patches) do not steer the exposure. 50-95% exposed the Sponza
-	// atrium for its sunlit walls: mean display luma 0.26, 15% of the frame crushed to black;
-	// 30-90%: 0.35, 7% crushed, 3% clipped (the window).
-	float HistogramLowPercentile = 0.30f;
-	float HistogramHighPercentile = 0.90f;
-	float AdaptationTransitionEV = 1.5f; // below this distance the linear adaptation eases out exponentially
-	float MeteringCenterWeight = 0.6f;   // 0 = average metering, 1 = full centre spot
-	float MeteringSpotSize = 0.5f;       // centre spot Gaussian sigma, in half screen heights
-
-	// Bloom: a lens / eye point-spread function. Intensity is the fraction of the light scattered
-	// out of the image point (energy conserving: the image is lerped toward the bloom). The
-	// pyramid levels are blurs of doubling radius; level i gets weight Falloff^i, so the
-	// scattered energy per octave of radius falls by Falloff and the PSF tail goes as
-	// r^(log2(Falloff) - 2): 0.5 -> r^-3, like measured veiling glare (Spencer et al. 1995).
-	// Falloff 1 (the previous behaviour) puts as much energy at 100 px as at 2 px: a window
-	// 11 EV above the interior washed out everything within ~150 px.
-	bool bBloom = true;
-	float BloomIntensity = 0.04f;
-	float BloomFalloff = 0.5f;           // energy ratio between successive pyramid levels (0.1 .. 1)
-	float BloomRadius = 1.0f;            // upsample filter radius scale
-	uint32 BloomMips = 6u;
-
-	// Tone mapping / grading
-	EToneMapper ToneMapper = EToneMapper::AgX;
-	EAgXLook AgXLook = EAgXLook::Base;
-	float Saturation = 1.0f;
-	float Contrast = 1.0f;
-	float WhiteBalanceTemperature = 6500.0f;  // scene illuminant to neutralise (lower = cooler image)
-	float WhiteBalanceTint = 0.0f;            // [-1, 1], + = magenta (removes a green cast)
-	bool bDither = true;
-	float VignetteIntensity = 0.0f;
-	float ReinhardWhitePoint = 0.0f;          // exposed luminance mapped to white; 0 = plain Reinhard
-	float HdrPaperWhiteNits = 200.0f;         // FP16 (scRGB) output only
-	// Linear debug views (SPostProcessInputs::bDebugIsLinear): false = show the values exactly
-	// (sRGB OETF only; albedo / normals / ids), true = apply exposure + the tone mapper (radiance
-	// views such as direct / indirect only). Never bloom or grading.
-	bool bDebugToneMap = false;
-};
 
 struct SPostProcessInputs
 {
@@ -129,7 +62,7 @@ public:
 	// a read state that includes NON_PIXEL_SHADER_RESOURCE. FRT_INVALID_INDEX before Initialize.
 	uint32 GetExposureBufferSrv () const;
 
-	void DrawSettingsUi ();
+	void DrawSettingsUi (SPostProcessSettings& Edit);
 
 	SPostProcessSettings Settings;
 

@@ -1,34 +1,13 @@
 #pragma once
 
 #include "Graphics/Render/RenderContext.h"
+#include "Graphics/Render/RenderSettings.h"
 #include "Graphics/Render/Passes/PathTracerPrograms.h"
 #include "Graphics/Render/Passes/RadianceCache.h"
 #include "Shared/PathTracerData.h"
 
-
 namespace frt::graphics
 {
-struct SPathTracerSettings
-{
-	uint32 SamplesPerPixel = 1u;
-	uint32 MaxBounces = 4u;
-	uint32 RussianRouletteDepth = 3u;
-	uint32 RisCandidates = 4u;
-	uint32 RisCandidatesSecondary = 1u;  // at bounce vertices: indirect noise is dominated by BSDF sampling there
-	float IndirectClamp = 20.0f;         // real time only (reference mode never clamps); 0 = off
-	float MinRoughness = 0.0f;
-	bool bShaderExecutionReordering = false; // measured net-negative here (+1.8 ms on RTX 4080): one uber shading path in raygen leaves little divergence to sort, and the reorder spills the path state
-	bool bInlineRayQueries = true;        // camera/bounce rays via RayQuery: -11% vs TraceRay (no RT-stack spill of the path state)
-	bool bNormalMaps = true;
-	bool bPathRegularization = false;
-	bool bPortalGuiding = true;
-	bool bPortalPreFilter = false;       // legacy thesis estimator (biased if portals are incomplete)
-	bool bPrimarySurfaceReplacement = true; // real time: delta-mirror pixels give the denoiser/TAA the reflected surface's guide
-	bool bDisableNee = false;            // validation: BSDF sampling only
-	bool bDisableBsdfMis = false;        // validation: NEE only for sampleable emitters
-	bool bWhiteFurnace = false;          // validation: albedo 1, environment 1, no lights
-	uint32 DebugMode = gpu::PathDebug_None;
-};
 
 // Render-resolution targets written by the path tracer each frame.
 struct SPathTracerTargets
@@ -77,7 +56,8 @@ public:
 	uint32 GetWidth () const { return Width; }
 	uint32 GetHeight () const { return Height; }
 
-	void DrawSettingsUi ();
+	// Edits the given settings (the renderer's profile); readouts come from this instance.
+	void DrawSettingsUi (SPathTracerSettings& Edit, SRadianceCacheSettings& EditCache);
 
 	SPathTracerSettings Settings;
 	CRadianceCache RadianceCache;        // real-time mode only; updated and resolved inside Dispatch

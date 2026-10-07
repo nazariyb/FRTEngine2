@@ -200,28 +200,28 @@ void CPathTracer::Remodulate (CRenderContext& Context, rhi::SGpuTexture& Diffuse
 	Context.FlushBarriers();
 }
 
-void CPathTracer::DrawSettingsUi ()
+void CPathTracer::DrawSettingsUi (SPathTracerSettings& Edit, SRadianceCacheSettings& EditCache)
 {
-	int spp = static_cast<int>(Settings.SamplesPerPixel);
-	if (ImGui::SliderInt("Samples / pixel", &spp, 1, 64)) { Settings.SamplesPerPixel = static_cast<uint32>(spp); }
-	int bounces = static_cast<int>(Settings.MaxBounces);
-	if (ImGui::SliderInt("Max bounces", &bounces, 0, 32)) { Settings.MaxBounces = static_cast<uint32>(bounces); }
-	int rr = static_cast<int>(Settings.RussianRouletteDepth);
-	if (ImGui::SliderInt("Russian roulette from", &rr, 1, 32)) { Settings.RussianRouletteDepth = static_cast<uint32>(rr); }
-	int ris = static_cast<int>(Settings.RisCandidates);
-	if (ImGui::SliderInt("RIS light candidates", &ris, 1, 32)) { Settings.RisCandidates = static_cast<uint32>(ris); }
-	int ris2 = static_cast<int>(Settings.RisCandidatesSecondary);
-	if (ImGui::SliderInt("RIS candidates (bounces)", &ris2, 1, 32)) { Settings.RisCandidatesSecondary = static_cast<uint32>(ris2); }
-	ImGui::SliderFloat("Indirect clamp (0 = off)", &Settings.IndirectClamp, 0.0f, 100.0f, "%.1f");
-	ImGui::SliderFloat("Min roughness", &Settings.MinRoughness, 0.0f, 0.5f, "%.3f");
-	ImGui::Checkbox("Normal maps", &Settings.bNormalMaps);
-	ImGui::Checkbox("Path regularisation (real time)", &Settings.bPathRegularization);
-	ImGui::Checkbox("Portal-guided sky sampling", &Settings.bPortalGuiding);
-	ImGui::Checkbox("Legacy portal pre-filter", &Settings.bPortalPreFilter);
-	ImGui::Checkbox("Primary surface replacement (mirrors)", &Settings.bPrimarySurfaceReplacement);
+	int spp = static_cast<int>(Edit.SamplesPerPixel);
+	if (ImGui::SliderInt("Samples / pixel", &spp, 1, 64)) { Edit.SamplesPerPixel = static_cast<uint32>(spp); }
+	int bounces = static_cast<int>(Edit.MaxBounces);
+	if (ImGui::SliderInt("Max bounces", &bounces, 0, 32)) { Edit.MaxBounces = static_cast<uint32>(bounces); }
+	int rr = static_cast<int>(Edit.RussianRouletteDepth);
+	if (ImGui::SliderInt("Russian roulette from", &rr, 1, 32)) { Edit.RussianRouletteDepth = static_cast<uint32>(rr); }
+	int ris = static_cast<int>(Edit.RisCandidates);
+	if (ImGui::SliderInt("RIS light candidates", &ris, 1, 32)) { Edit.RisCandidates = static_cast<uint32>(ris); }
+	int ris2 = static_cast<int>(Edit.RisCandidatesSecondary);
+	if (ImGui::SliderInt("RIS candidates (bounces)", &ris2, 1, 32)) { Edit.RisCandidatesSecondary = static_cast<uint32>(ris2); }
+	ImGui::SliderFloat("Indirect clamp (0 = off)", &Edit.IndirectClamp, 0.0f, 100.0f, "%.1f");
+	ImGui::SliderFloat("Min roughness", &Edit.MinRoughness, 0.0f, 0.5f, "%.3f");
+	ImGui::Checkbox("Normal maps", &Edit.bNormalMaps);
+	ImGui::Checkbox("Path regularisation (real time)", &Edit.bPathRegularization);
+	ImGui::Checkbox("Portal-guided sky sampling", &Edit.bPortalGuiding);
+	ImGui::Checkbox("Legacy portal pre-filter", &Edit.bPortalPreFilter);
+	ImGui::Checkbox("Primary surface replacement (mirrors)", &Edit.bPrimarySurfaceReplacement);
 	const bool bSerAvailable = Programs && Programs->IsSerAvailable();
 	ImGui::BeginDisabled(!bSerAvailable);
-	ImGui::Checkbox("Shader execution reordering", &Settings.bShaderExecutionReordering);
+	ImGui::Checkbox("Shader execution reordering", &Edit.bShaderExecutionReordering);
 	ImGui::EndDisabled();
 	if (!bSerAvailable)
 	{
@@ -230,24 +230,24 @@ void CPathTracer::DrawSettingsUi ()
 	}
 	if (ImGui::TreeNode("Validation"))
 	{
-		ImGui::Checkbox("BSDF sampling only (no NEE)", &Settings.bDisableNee);
-		ImGui::Checkbox("NEE only for emitters", &Settings.bDisableBsdfMis);
-		ImGui::Checkbox("White furnace", &Settings.bWhiteFurnace);
+		ImGui::Checkbox("BSDF sampling only (no NEE)", &Edit.bDisableNee);
+		ImGui::Checkbox("NEE only for emitters", &Edit.bDisableBsdfMis);
+		ImGui::Checkbox("White furnace", &Edit.bWhiteFurnace);
 		ImGui::TreePop();
 	}
 	if (ImGui::TreeNode("Radiance cache (real time)"))
 	{
-		RadianceCache.DrawSettingsUi();
+		RadianceCache.DrawSettingsUi(EditCache);
 		ImGui::TreePop();
 	}
 	static const char* kDebugModes[] = {
 		"None", "Base colour", "Shading normal", "Geometric normal", "Roughness", "Metallic", "Emission",
 		"Motion vectors", "View Z", "Path length", "Direct only", "Indirect only", "UV", "Instance / section", "First bounce hit",
 		"Radiance cache", "Radiance cache cells" };
-	int mode = static_cast<int>(Settings.DebugMode);
+	int mode = static_cast<int>(Edit.DebugMode);
 	if (ImGui::Combo("Debug view", &mode, kDebugModes, static_cast<int>(std::size(kDebugModes))))
 	{
-		Settings.DebugMode = static_cast<uint32>(mode);
+		Edit.DebugMode = static_cast<uint32>(mode);
 	}
 }
 }

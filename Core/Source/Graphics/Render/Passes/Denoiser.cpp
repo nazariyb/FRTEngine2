@@ -649,7 +649,7 @@ rhi::SGpuTexture* CDenoiser::GetHistoryLengthTexture ()
 	return (Impl && Impl->HistoryLength.IsValid()) ? &Impl->HistoryLength : nullptr;
 }
 
-void CDenoiser::DrawSettingsUi ()
+void CDenoiser::DrawSettingsUi (SDenoiserSettings& Edit)
 {
 	auto sliderUint = [] (const char* Label, uint32& Value, int Min, int Max)
 	{
@@ -661,11 +661,11 @@ void CDenoiser::DrawSettingsUi ()
 	};
 	constexpr ImGuiSliderFlags kLog = ImGuiSliderFlags_Logarithmic;
 
-	ImGui::Checkbox("Enabled", &Settings.bEnabled);
+	ImGui::Checkbox("Enabled", &Edit.bEnabled);
 	ImGui::SameLine();
-	ImGui::Checkbox("Diffuse", &Settings.bDenoiseDiffuse);
+	ImGui::Checkbox("Diffuse", &Edit.bDenoiseDiffuse);
 	ImGui::SameLine();
-	ImGui::Checkbox("Specular", &Settings.bDenoiseSpecular);
+	ImGui::Checkbox("Specular", &Edit.bDenoiseSpecular);
 	ImGui::SameLine();
 	if (ImGui::Button("Reset history") && Impl)
 	{
@@ -677,68 +677,68 @@ void CDenoiser::DrawSettingsUi ()
 	}
 
 	ImGui::SeparatorText("Temporal accumulation");
-	sliderUint("Max history (frames)", Settings.MaxHistoryLength, 1, 128);
-	sliderUint("Max fast history (frames)", Settings.MaxFastHistoryLength, 1, 16);
-	ImGui::SliderFloat("Disocclusion threshold", &Settings.DisocclusionThreshold, 0.001f, 0.1f, "%.4f", kLog);
-	ImGui::SliderFloat("Reprojection normal angle", &Settings.ReprojectionNormalAngle, 5.0f, 180.0f, "%.0f deg");
-	ImGui::Checkbox("Catmull-Rom history", &Settings.bCatmullRomHistory);
+	sliderUint("Max history (frames)", Edit.MaxHistoryLength, 1, 128);
+	sliderUint("Max fast history (frames)", Edit.MaxFastHistoryLength, 1, 16);
+	ImGui::SliderFloat("Disocclusion threshold", &Edit.DisocclusionThreshold, 0.001f, 0.1f, "%.4f", kLog);
+	ImGui::SliderFloat("Reprojection normal angle", &Edit.ReprojectionNormalAngle, 5.0f, 180.0f, "%.0f deg");
+	ImGui::Checkbox("Catmull-Rom history", &Edit.bCatmullRomHistory);
 	ImGui::SameLine();
-	ImGui::Checkbox("Jitter compensation", &Settings.bJitterCompensation);
-	ImGui::Checkbox("Specular virtual motion", &Settings.bVirtualMotionSpecular);
-	ImGui::SliderFloat("Specular parallax sensitivity", &Settings.SpecularParallaxScale, 0.0f, 4.0f, "%.2f");
-	ImGui::SliderFloat("Moments min alpha (0 = history rate)", &Settings.MomentsMinAlpha, 0.0f, 1.0f, "%.3f");
+	ImGui::Checkbox("Jitter compensation", &Edit.bJitterCompensation);
+	ImGui::Checkbox("Specular virtual motion", &Edit.bVirtualMotionSpecular);
+	ImGui::SliderFloat("Specular parallax sensitivity", &Edit.SpecularParallaxScale, 0.0f, 4.0f, "%.2f");
+	ImGui::SliderFloat("Moments min alpha (0 = history rate)", &Edit.MomentsMinAlpha, 0.0f, 1.0f, "%.3f");
 
 	ImGui::SeparatorText("History fix");
-	ImGui::Checkbox("History fix", &Settings.bHistoryFix);
-	sliderUint("History fix frames", Settings.HistoryFixFrames, 0, 16);
-	ImGui::SliderFloat("History fix radius (px @1080p)", &Settings.HistoryFixRadius, 1.0f, 64.0f, "%.1f");
+	ImGui::Checkbox("History fix", &Edit.bHistoryFix);
+	sliderUint("History fix frames", Edit.HistoryFixFrames, 0, 16);
+	ImGui::SliderFloat("History fix radius (px @1080p)", &Edit.HistoryFixRadius, 1.0f, 64.0f, "%.1f");
 
 	ImGui::SeparatorText("Anti-lag / fireflies");
-	ImGui::Checkbox("Anti-lag (40x40 significance test)", &Settings.bAntiLag);
-	ImGui::SliderFloat("Anti-lag sigma", &Settings.AntilagSigma, 1.0f, 16.0f, "%.1f", kLog);
-	ImGui::SliderFloat("Anti-lag sensitivity", &Settings.AntilagSensitivity, 0.0f, 4.0f, "%.2f");
-	ImGui::Checkbox("Input firefly limit", &Settings.bFireflySuppression);
+	ImGui::Checkbox("Anti-lag (40x40 significance test)", &Edit.bAntiLag);
+	ImGui::SliderFloat("Anti-lag sigma", &Edit.AntilagSigma, 1.0f, 16.0f, "%.1f", kLog);
+	ImGui::SliderFloat("Anti-lag sensitivity", &Edit.AntilagSensitivity, 0.0f, 4.0f, "%.2f");
+	ImGui::Checkbox("Input firefly limit", &Edit.bFireflySuppression);
 	ImGui::SameLine();
 	ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.5f);
-	ImGui::SliderFloat("x mean##firefly", &Settings.FireflyThreshold, 10.0f, 100000.0f, "%.0f", kLog);
+	ImGui::SliderFloat("x mean##firefly", &Edit.FireflyThreshold, 10.0f, 100000.0f, "%.0f", kLog);
 
 	ImGui::SeparatorText("Spatial (a-trous)");
-	sliderUint("Iterations", Settings.AtrousIterations, 0, static_cast<int>(kMaxAtrousIterations));
-	ImGui::Checkbox("Recurrent colour (feed back iteration 0)", &Settings.bFeedbackFirstIteration);
+	sliderUint("Iterations", Edit.AtrousIterations, 0, static_cast<int>(kMaxAtrousIterations));
+	ImGui::Checkbox("Recurrent colour (feed back iteration 0)", &Edit.bFeedbackFirstIteration);
 	ImGui::SameLine();
-	ImGui::Checkbox("Recurrent moments", &Settings.bFeedbackMoments);
-	ImGui::Checkbox("Rotate taps (iterations 1+)", &Settings.bAtrousRotation);
-	ImGui::SliderFloat("Phi normal", &Settings.PhiNormal, 1.0f, 256.0f, "%.1f", kLog);
-	ImGui::SliderFloat("Phi depth (plane / viewZ)", &Settings.PhiDepth, 0.001f, 0.2f, "%.4f", kLog);
-	ImGui::SliderFloat("Phi luminance diffuse", &Settings.PhiLuminanceDiffuse, 0.1f, 32.0f, "%.2f", kLog);
-	ImGui::SliderFloat("Phi luminance specular", &Settings.PhiLuminanceSpecular, 0.1f, 32.0f, "%.2f", kLog);
-	ImGui::SliderFloat("Luminance floor (x local mean)", &Settings.LuminanceFloor, 0.0f, 4.0f, "%.2f");
-	ImGui::SliderFloat("Specular lobe fraction", &Settings.SpecularLobeFraction, 0.05f, 2.0f, "%.2f");
-	ImGui::SliderFloat("Roughness tolerance", &Settings.RoughnessFraction, 0.0f, 1.0f, "%.2f");
-	ImGui::SliderFloat("Specular footprint scale", &Settings.SpecularFootprintScale, 0.25f, 16.0f, "%.2f", kLog);
-	ImGui::SliderFloat("Specular noise target", &Settings.SpecularNoiseTarget, 0.05f, 2.0f, "%.2f", kLog);
-	ImGui::SliderFloat("Specular noise radius (px @1080p)", &Settings.SpecularNoiseRadius, 0.0f, 64.0f, "%.1f");
-	ImGui::SliderFloat("Specular hit-distance tolerance", &Settings.SpecularHitTolerance, 0.02f, 4.0f, "%.2f", kLog);
+	ImGui::Checkbox("Recurrent moments", &Edit.bFeedbackMoments);
+	ImGui::Checkbox("Rotate taps (iterations 1+)", &Edit.bAtrousRotation);
+	ImGui::SliderFloat("Phi normal", &Edit.PhiNormal, 1.0f, 256.0f, "%.1f", kLog);
+	ImGui::SliderFloat("Phi depth (plane / viewZ)", &Edit.PhiDepth, 0.001f, 0.2f, "%.4f", kLog);
+	ImGui::SliderFloat("Phi luminance diffuse", &Edit.PhiLuminanceDiffuse, 0.1f, 32.0f, "%.2f", kLog);
+	ImGui::SliderFloat("Phi luminance specular", &Edit.PhiLuminanceSpecular, 0.1f, 32.0f, "%.2f", kLog);
+	ImGui::SliderFloat("Luminance floor (x local mean)", &Edit.LuminanceFloor, 0.0f, 4.0f, "%.2f");
+	ImGui::SliderFloat("Specular lobe fraction", &Edit.SpecularLobeFraction, 0.05f, 2.0f, "%.2f");
+	ImGui::SliderFloat("Roughness tolerance", &Edit.RoughnessFraction, 0.0f, 1.0f, "%.2f");
+	ImGui::SliderFloat("Specular footprint scale", &Edit.SpecularFootprintScale, 0.25f, 16.0f, "%.2f", kLog);
+	ImGui::SliderFloat("Specular noise target", &Edit.SpecularNoiseTarget, 0.05f, 2.0f, "%.2f", kLog);
+	ImGui::SliderFloat("Specular noise radius (px @1080p)", &Edit.SpecularNoiseRadius, 0.0f, 64.0f, "%.1f");
+	ImGui::SliderFloat("Specular hit-distance tolerance", &Edit.SpecularHitTolerance, 0.02f, 4.0f, "%.2f", kLog);
 
 	ImGui::SeparatorText("Debug");
-	ImGui::Checkbox("Write history-length texture", &Settings.bHistoryLengthDebug);
+	ImGui::Checkbox("Write history-length texture", &Edit.bHistoryLengthDebug);
 	static const char* kSignals[] = { "Diffuse", "Specular" };
-	int signal = Settings.HistoryDebugSignal != 0u ? 1 : 0;
+	int signal = Edit.HistoryDebugSignal != 0u ? 1 : 0;
 	if (ImGui::Combo("History length view", &signal, kSignals, static_cast<int>(std::size(kSignals))))
 	{
-		Settings.HistoryDebugSignal = static_cast<uint32>(signal);
+		Edit.HistoryDebugSignal = static_cast<uint32>(signal);
 	}
 	static const char* kOutputs[] = { "Diffuse + specular", "Diffuse only", "Specular only", "History state" };
-	int output = static_cast<int>((std::min)(Settings.OutputSignal, 3u));
+	int output = static_cast<int>((std::min)(Edit.OutputSignal, 3u));
 	if (ImGui::Combo("Output", &output, kOutputs, static_cast<int>(std::size(kOutputs))))
 	{
-		Settings.OutputSignal = static_cast<uint32>(output);
+		Edit.OutputSignal = static_cast<uint32>(output);
 	}
 }
 
-void CDenoiser::ApplyConfig (const config::CConfig& Config)
+void CDenoiser::ApplyConfig (const config::CConfig& Config, SDenoiserSettings& Out)
 {
-	SDenoiserSettings& s = Settings;
+	SDenoiserSettings& s = Out;
 	const std::pair<const char*, bool*> bools[] = {
 		{ "Enabled", &s.bEnabled }, { "DenoiseDiffuse", &s.bDenoiseDiffuse }, { "DenoiseSpecular", &s.bDenoiseSpecular },
 		{ "HistoryFix", &s.bHistoryFix }, { "AntiLag", &s.bAntiLag }, { "FireflySuppression", &s.bFireflySuppression },

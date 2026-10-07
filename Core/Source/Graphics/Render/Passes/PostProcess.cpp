@@ -978,9 +978,8 @@ void CPostProcess::Execute (CRenderContext& Context, const SPostProcessInputs& I
 	++impl.ExecuteSerial;
 }
 
-void CPostProcess::DrawSettingsUi ()
+void CPostProcess::DrawSettingsUi (SPostProcessSettings& s)
 {
-	SPostProcessSettings& s = Settings;
 	const SPostProcessSettings defaults;
 	ImGui::PushID("PostProcess");
 

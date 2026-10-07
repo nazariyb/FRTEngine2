@@ -580,9 +580,9 @@ float CTemporalUpscaler::GetMipBias (uint32 RenderWidth, uint32 DisplayWidth) co
 	return std::clamp(bias, MinMipBias, MaxMipBias);
 }
 
-void CTemporalUpscaler::DrawSettingsUi ()
+void CTemporalUpscaler::DrawSettingsUi (SRenderProfile& Profile)
 {
-	STemporalUpscalerSettings& s = Settings;
+	STemporalUpscalerSettings& s = Profile.Taa;
 	ImGui::PushID("TemporalUpscaler");
 
 	ImGui::SliderFloat("Current frame weight", &s.HistoryBlend, 0.01f, 1.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
