@@ -15,6 +15,12 @@ workspace "FRTEngine2"
 		'IMGUI_USER_CONFIG="UI/ImGuiConfig.h"'
 	}
 
+	-- MSBuild compiles with the v143 toolset's default MSVC version, which an installed
+	-- side-by-side toolset can pin to an older one than the newest installed.
+	if _OPTIONS["msvc"] then
+		toolsversion (_OPTIONS["msvc"])
+	end
+
 	-- /MP: the files of a project compile in parallel. Without it MSBuild runs one cl.exe per
 	-- file, one after another, and a full build takes several times longer.
 	flags { "MultiProcessorCompile" }

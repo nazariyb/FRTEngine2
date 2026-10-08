@@ -44,10 +44,19 @@ Core.dll                    CEngine (window, renderer, input, UI, config),
 
 ### Build configurations
 
-Each build has two axes:
+Each configuration is a build type and a target, e.g. `Development-Default`:
 
-- **Debug / Release** — standard optimization levels.
+| Build type | Code | Linking | Asserts, developer tools | For |
+|---|---|---|---|---|
+| **Debug** | unoptimized, debug runtime, Edit and Continue | DLLs: Core, the game module and every third-party library | on | stepping through code |
+| **Development** | optimized, full debug information | DLLs, like Debug | on | day-to-day work |
+| **Release** | optimized | one executable: Core, the game and every third-party library statically linked, static runtime | off | shipping and profiling; no Editor |
+
 - **Default / Headless** — `Default` includes the full rendering stack; `Headless` strips the window and renderer (useful for server or unit-test builds).
+- Everything lands in `Binaries/Win64`, named `<Project>-<Configuration>` (plain names for `Release-Default`, the shipping build) and `<Library>-<BuildType>` for third-party libraries, so configurations never overwrite each other.
+- In Debug and Development each module is its own DLL, so changing one rebuilds and relinks only that module. Hosts load the game module from a copy (`Binaries/Win64/HotReload/`), so it can be rebuilt while the editor or launcher runs; `CGameModule::HasNewerBuild()` tells a host when a new build is there. Visual Studio's Hot Reload and Live++ can patch code in place.
+- The D3D12 debug layer is on by default in Debug only; `FRT_D3D_DEBUG=1` (or `0`) in the environment turns it on (or off) in Debug and Development.
+- Code tests the build type through `Core/Source/BuildConfig.h` (`FRT_BUILD_DEBUG`, `FRT_BUILD_DEVELOPMENT`, `FRT_BUILD_RELEASE`, `FRT_MONOLITHIC` and the switches derived from them), never `_DEBUG` or `NDEBUG`.
 
 ---
 
@@ -58,7 +67,7 @@ Each build has two axes:
 - **MSBuild / MSVC**_(if applicable)_**:** Toolset **v143** (ships with VS 2022) or later; the code uses **C++20** features.
 - **Windows SDK:** **10.0.19041.0** or later — the minimum version that defines `D3D12_RESOURCE_FLAG_RAYTRACING_ACCELERATION_STRUCTURE` (Windows 10 SDK 2004, May 2020). This is enforced in the generated project files.
 - **GPU:** Any D3D12-capable adapter; DXR (raytracing) requires a GPU that supports DirectX Raytracing Tier 1.0 or higher (e.g. NVIDIA Turing / AMD RDNA2 and later)
-- **Nothing else.** Every third-party library is vendored in `ThirdParty/` and built from source as part of the solution: no package manager, submodules or install step.
+- **Nothing else.** Every third-party library is vendored in `ThirdParty/` and built from source as part of the solution: no package manager, submodules, network or install step.
 
 ---
 
@@ -77,11 +86,47 @@ PremakeGenerateVisualStudioProject.bat
 ```
 Replace `<target>` with the Premake action for your toolchain (e.g. `vs2019`, `gmake2`, `xcode4`). See the [Premake documentation](https://premake.github.io/docs/using-premake) for the full list.
 
+Options, after the action (`premake5 vs2022 --nopch`):
+
+| Option | Effect |
+|---|---|
+| `--thirdparty=prebuilt` | Link prebuilt third-party libraries instead of building them (see below) |
+| `--nopch` | No precompiled headers: checks that every file includes what it uses |
+| `--fatal-warnings` | Warnings in engine code are errors (`/WX`) |
+| `--msvc=<version>` | Build with that MSVC version, e.g. `14.44.35207` (default: whatever the v143 toolset defaults to, which an installed side-by-side toolset can pin to an older one) |
+| `--precision=double` | 64-bit `frt::Real` for positions and measurements |
+
+### Third-party libraries
+
+Dear ImGui, assimp (glTF importers only), yaml-cpp and GoogleTest are vendored in `ThirdParty/` (each directory's `VERSION.txt` says which version and what was left out) and are projects of the solution, in its `ThirdParty` folder. They build once per build type - Default and Headless share them - in a few seconds, with the same compiler, runtime and settings as the engine.
+
+To skip building them, use prebuilt binaries:
+
+```bat
+.\ThirdParty\premake-5.0.0-beta2-windows\premake5.exe package-thirdparty
+.\ThirdParty\premake-5.0.0-beta2-windows\premake5.exe fetch-thirdparty --thirdparty-archive=<path or URL> --thirdparty-sha256=<hash>
+.\ThirdParty\premake-5.0.0-beta2-windows\premake5.exe vs2022 --thirdparty=prebuilt
+```
+
+`package-thirdparty` builds the libraries in every build type and writes `Binaries/FRTEngine2-ThirdParty-Win64-<stamp>.zip`, printing its SHA-256 and the MSVC version it needs (that version or newer). `fetch-thirdparty` downloads or takes such an archive, verifies it and unpacks it into `ThirdParty/Prebuilt/`. Once an archive is published, set `prebuiltThirdParty.url` and `.sha256` in `Premake/thirdparty.lua` and `fetch-thirdparty` needs no options. An archive only fits the third-party sources it was built from; fetching or generating with a mismatched one fails.
+
+### Updating a checkout from before the vendored libraries
+
+`ThirdParty/Imgui` and `ThirdParty/vcpkg` used to be git submodules. Before pulling or merging, remove them (this also frees about 900 MB of submodule history), then rebuild from clean:
+
+```bat
+git submodule deinit -f ThirdParty/Imgui ThirdParty/vcpkg
+rmdir /s /q ThirdParty\Imgui ThirdParty\vcpkg .git\modules\ThirdParty
+git pull
+PremakeCleanAll.bat
+PremakeGenerateVisualStudioProject.bat
+```
+
 ### 2. Open and build
 
 1. Open the generated solution / project in your IDE or invoke your build system directly.
-2. Select a configuration (e.g. **Debug-Default | x64**).
-3. **Editor** is the startup project: it opens the world of the game module named in the working directory's `Config/Game.ini` (the Demo by default) for editing. **Launcher** runs that game standalone; pressing F5 on the **Demo** project does the same.
+2. Select a configuration (e.g. **Development-Default | x64**).
+3. **Editor** is the startup project: it opens the world of the game module named in the working directory's `Config/Game.ini` (the Demo by default) for editing. **Launcher** runs that game standalone; pressing F5 on the **Demo** project does the same. Release has no Editor: run the Launcher there.
 4. Build and run.
 
 ### Cleaning generated files
@@ -146,15 +191,15 @@ Camera movement is only active while **Right Mouse Button** is held.
 ## Project layout
 
 ```
-Core/             — engine library (DLL)
+Core/             — engine library (DLL; static library in Release)
 Core-Test/        — unit tests (GoogleTest)
 Editor/           — editor host: loads a game module and opens its world for editing
 Launcher/         — runtime host: loads a game module and runs it standalone
-Demo/             — sample game, built as a game module (DLL)
+Demo/             — sample game, built as a game module (DLL; linked into the Launcher in Release)
 Schemas/          — JSON Schemas for YAML asset formats (IDE auto-completion)
 Tools/Analysis/   — Python package + Jupyter notebook for profiling-session analysis
 ThirdParty/       — vendored libraries, built from source (ImGui, assimp, yaml-cpp, GoogleTest) or as shipped (Stb, D3D12 Agility SDK, DXC); see each VERSION.txt
-Premake/          — Premake5 scripts
+Premake/          — Premake5 scripts (configurations: workspace.lua; third-party: thirdparty.lua)
 Binaries/         — output DLLs / EXEs
 Intermediate/     — compiled object files
 Local/Editor/     — the editor's layout (EditorLayout.ini), the user's input overrides (EditorInput.ini) and smoke-test output (gitignored)

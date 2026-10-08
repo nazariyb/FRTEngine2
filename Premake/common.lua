@@ -112,6 +112,13 @@ newoption
 
 newoption
 {
+	trigger     = "msvc",
+	value       = "VERSION",
+	description = "The MSVC version every project builds with, e.g. 14.44.35207 (default: the v143 toolset's)"
+}
+
+newoption
+{
 	trigger     = "fatal-warnings",
 	description = "Treat warnings in engine code as errors (/WX)"
 }
