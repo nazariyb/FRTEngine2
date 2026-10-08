@@ -4,23 +4,15 @@
 project "Core"
 	location (rootpath("%{prj.name}"))
 
-	kind "SharedLib"
-	defines { "FRT_CORE_EXPORTS" }
-
-	-- One directory per platform, configurations separated by the targetname suffix below.
-	-- Deliberate: a single place to find every binary beats a tree of near-empty folders.
-	-- Third-party libraries carry their build type in their names too (Premake/thirdparty.lua),
-	-- so no configuration overwrites another's binaries.
-	targetdir (rootpath("Binaries/%{cfg.platform}"))
-	objdir (rootpath("Intermediate/%{cfg.platform}/%{cfg.buildcfg}/%{prj.name}"))
-
-	filter "configurations:Release-*"
-		targetname "%{prj.name}"
-
-	filter "configurations:not Release-*"
-		targetname "%{prj.name}-%{cfg.buildcfg}"
-
+	-- A DLL every module shares, except in Release: a static library linked into the executable.
+	filter "configurations:Release*"
+		kind "StaticLib"
+	filter "configurations:not Release*"
+		kind "SharedLib"
+		defines { "FRT_CORE_EXPORTS" }
 	filter {}
+
+	flatBinaries()
 
 	-----------------
 	----- Files -----
@@ -104,16 +96,8 @@ project "Core"
 	useAssimp()
 	useYamlCpp()
 
-	filter "platforms:Win64"
-		libdirs
-		{
-			path.join(thirdPartyDir, "Dxc/lib/x64")
-		}
-
-		links
-		{
-			"d3d12", "dxgi", "d3dcompiler", "dxcompiler"
-		}
+	-- Only where Core is a DLL; in Release the executable links them (useCore).
+	coreDependencies({ "kind:SharedLib" })
 
 	-------------------
 	----- Defines -----

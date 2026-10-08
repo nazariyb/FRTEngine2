@@ -13,33 +13,44 @@
 #include "Config/Config.h"
 
 
+#if FRT_MONOLITHIC
+// The game module is a static library linked into the executable (Premake: hostProject). These
+// references are what pull its objects into the link. A link without a game - Core-Test, if it
+// ever reaches this file - binds them to the fallbacks instead of failing, and Load() reports
+// that no game is linked in. x64 names: C symbols carry no leading underscore.
+extern "C" ::frt::GameInstance* FrtCreateGame ();
+extern "C" unsigned int FrtGameModuleAbi ();
+extern "C" ::frt::GameInstance* FrtCreateGameNotLinked () { return nullptr; }
+extern "C" unsigned int FrtGameModuleAbiNotLinked () { return 0u; }
+#pragma comment(linker, "/ALTERNATENAME:FrtCreateGame=FrtCreateGameNotLinked")
+#pragma comment(linker, "/ALTERNATENAME:FrtGameModuleAbi=FrtGameModuleAbiNotLinked")
+#endif
+
+
 namespace frt
 {
 namespace
 {
+#if !FRT_MONOLITHIC && defined(_WINDOWS)
 std::filesystem::path GetExecutableDir ()
 {
-#if defined(_WINDOWS)
 	wchar_t buffer[MAX_PATH] = {};
 	const DWORD length = GetModuleFileNameW(nullptr, buffer, MAX_PATH);
 	if (length > 0u && length < MAX_PATH)
 	{
 		return std::filesystem::path(buffer).parent_path();
 	}
-#endif
 	std::error_code ec;
 	return std::filesystem::current_path(ec);
 }
 
-// The build names binaries <Project>-<Configuration> outside Release (Premake/common.lua).
+// Module DLLs exist only where builds are not monolithic, and those name their binaries
+// <Project>-<Configuration> (Premake/common.lua).
 std::string MakeModuleFileName (const std::string& Name)
 {
-#if FRT_BUILD_RELEASE
-	return Name + ".dll";
-#else
 	return Name + "-" + FRT_CONFIG_NAME + ".dll";
-#endif
 }
+#endif
 }
 
 CGameModule::~CGameModule ()
@@ -50,7 +61,24 @@ CGameModule::~CGameModule ()
 bool CGameModule::Load (const std::string& InName)
 {
 	Unload();
-#if defined(_WINDOWS)
+#if FRT_MONOLITHIC
+	const unsigned int abi = FrtGameModuleAbi();
+	if (abi == 0u)
+	{
+		std::fprintf(stderr, "[game] no game module is linked into this executable\n");
+		return false;
+	}
+	if (abi != FRT_GAME_MODULE_ABI)
+	{
+		std::fprintf(stderr, "[game] the linked game module was built for another engine ABI (0x%08x, expected 0x%08x)\n",
+			abi, FRT_GAME_MODULE_ABI);
+		return false;
+	}
+	CreateFunction = &FrtCreateGame;
+	Name = InName;
+	std::printf("[game] module '%s' linked in\n", Name.c_str());
+	return true;
+#elif defined(_WINDOWS)
 	const std::filesystem::path path = GetExecutableDir() / MakeModuleFileName(InName);
 	HMODULE module = LoadLibraryW(path.c_str());
 	if (!module)
@@ -89,7 +117,7 @@ bool CGameModule::Load (const std::string& InName)
 
 void CGameModule::Unload ()
 {
-#if defined(_WINDOWS)
+#if !FRT_MONOLITHIC && defined(_WINDOWS)
 	if (Handle)
 	{
 		FreeLibrary(static_cast<HMODULE>(Handle));

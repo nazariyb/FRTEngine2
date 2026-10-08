@@ -9,6 +9,9 @@
 -- binaries (configmap), named <Library>-<BuildType> so they never overwrite each other in the
 -- flat Binaries folder. Inside these projects, filters see the mapped names (Debug, Release),
 -- which is why workspace-wide filters match on "Debug*" rather than "Debug-*".
+--
+-- Like the engine's own modules, they are DLLs in Debug and Development and static libraries in
+-- Release, where everything links into one executable.
 
 local thirdPartyConfigMap = {}
 for _, cfg in ipairs(buildConfigs) do
@@ -23,7 +26,12 @@ local function thirdPartyProject(name, dir)
 	location (path.join(thirdPartyDir, dir))
 	configmap (thirdPartyConfigMap)
 
-	kind "SharedLib"
+	filter "configurations:Release*"
+		kind "StaticLib"
+	filter "configurations:not Release*"
+		kind "SharedLib"
+	filter {}
+
 	-- Upstream code: built at its own standard and warning level, not the engine's.
 	cppdialect "C++17"
 	warnings "Default"
@@ -62,8 +70,11 @@ thirdPartyProject("ImGui", "Imgui")
 		rootpath("Core/Source"),
 	}
 
-	defines { "FRT_IMGUI_EXPORTS" }
-	links { "dxgi", "d3dcompiler" }
+	filter "kind:SharedLib"
+		defines { "FRT_IMGUI_EXPORTS" }
+		-- The DX12 backend's; the executable links them where ImGui is static (coreDependencies).
+		links { "dxgi", "d3dcompiler" }
+	filter {}
 
 ------------------------
 -------- assimp --------
@@ -103,7 +114,6 @@ thirdPartyProject("assimp", "assimp")
 	-- What assimp's own CMake build defines.
 	defines
 	{
-		"ASSIMP_BUILD_DLL_EXPORT",
 		"ASSIMP_BUILD_NO_EXPORT",
 		"WIN32_LEAN_AND_MEAN", "UNICODE", "_UNICODE",
 		"_SCL_SECURE_NO_WARNINGS", "_CRT_SECURE_NO_WARNINGS",
@@ -112,6 +122,10 @@ thirdPartyProject("assimp", "assimp")
 	for _, importer in ipairs(assimpDisabledImporters) do
 		defines { "ASSIMP_BUILD_NO_" .. importer .. "_IMPORTER" }
 	end
+
+	filter "kind:SharedLib"
+		defines { "ASSIMP_BUILD_DLL_EXPORT" }
+	filter {}
 
 	buildoptions { "/bigobj", "/source-charset:utf-8" }
 
@@ -137,7 +151,11 @@ thirdPartyProject("yaml-cpp", "yaml-cpp")
 
 	-- Defining YAML_CPP_API directly instead of CMake's yaml_cpp_EXPORTS: same export, without
 	-- dll.h printing a #pragma message in every file.
-	defines { "YAML_CPP_API=__declspec(dllexport)" }
+	filter "kind:SharedLib"
+		defines { "YAML_CPP_API=__declspec(dllexport)" }
+	filter "kind:StaticLib"
+		defines { "YAML_CPP_STATIC_DEFINE" }
+	filter {}
 	-- As upstream: constant conditions and `this` in member initializers are deliberate there.
 	disablewarnings { "4127", "4355" }
 
@@ -161,13 +179,18 @@ thirdPartyProject("gtest", "googletest")
 		googleTestDir,
 	}
 
-	defines { "GTEST_CREATE_SHARED_LIBRARY=1" }
+	filter "kind:SharedLib"
+		defines { "GTEST_CREATE_SHARED_LIBRARY=1" }
+	filter {}
 
 group ""
 
 -----------------------------------------
 ------------  Consumer helpers  ---------
 -----------------------------------------
+-- Headers and the defines that select DLL or static linkage. Linking is separate, because which
+-- binary links a library depends on where Core is static (coreDependencies, Premake/common.lua).
+--
 -- Headers come in as external includes (/external:I, /external:W0): third-party headers never
 -- produce warnings in the engine's own code, whatever its warning level.
 local function useThirdPartyHeaders(dirs)
@@ -175,28 +198,32 @@ local function useThirdPartyHeaders(dirs)
 	externalwarnings "Off"
 end
 
+-- ImGuiConfig.h selects the linkage.
 function useImGui()
 	useThirdPartyHeaders({ imguiDir })
-	-- ImGui is compiled only where there is a window to draw it into.
-	filter "configurations:not *-Headless"
-		links { "ImGui" }
-	filter {}
 end
 
 function useAssimp()
 	useThirdPartyHeaders({ path.join(assimpDir, "include") })
-	links { "assimp" }
-	defines { "ASSIMP_DLL" }
+	filter "configurations:not Release*"
+		defines { "ASSIMP_DLL" }
+	filter {}
 end
 
 function useYamlCpp()
 	useThirdPartyHeaders({ path.join(yamlCppDir, "include") })
-	links { "yaml-cpp" }
-	defines { "YAML_CPP_API=__declspec(dllimport)" }
+	filter "configurations:not Release*"
+		defines { "YAML_CPP_API=__declspec(dllimport)" }
+	filter "configurations:Release*"
+		defines { "YAML_CPP_STATIC_DEFINE" }
+	filter {}
 end
 
+-- Only test executables use it, so it links here too.
 function useGoogleTest()
 	useThirdPartyHeaders({ path.join(googleTestDir, "include") })
 	links { "gtest" }
-	defines { "GTEST_LINKED_AS_SHARED_LIBRARY=1" }
+	filter "configurations:not Release*"
+		defines { "GTEST_LINKED_AS_SHARED_LIBRARY=1" }
+	filter {}
 end

@@ -10,13 +10,18 @@
 // "Context and Memory Allocators" in imgui.cpp). IMGUI_IMPL_API defaults to IMGUI_API, which
 // exports the backends as well.
 //
+// In monolithic builds (Release) ImGui is a static library linked into the executable like
+// everything else, so nothing is exported or imported.
+//
 // Deliberately does not include Core.h: it defines NOMINMAX, which must not leak into
-// ImGui's own translation units.
+// ImGui's own translation units. BuildConfig.h is macro-only.
 //
 // Headless builds compile no ImGui at all, so they leave IMGUI_API empty: an exported
 // declaration would make the compiler emit references (e.g. ImGuiTextFilter's default
 // constructor closure) to definitions that do not exist.
-#if !defined(FRT_HEADLESS)
+#include "BuildConfig.h"
+
+#if !defined(FRT_HEADLESS) && !FRT_MONOLITHIC
 	#if defined(FRT_IMGUI_EXPORTS)
 		#define IMGUI_API __declspec(dllexport)
 	#else

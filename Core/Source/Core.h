@@ -2,7 +2,9 @@
 
 #include "BuildConfig.h"
 
-#ifdef FRT_CORE_EXPORTS
+#if FRT_MONOLITHIC
+#define FRT_CORE_API
+#elif defined(FRT_CORE_EXPORTS)
 #define FRT_CORE_API __declspec(dllexport)
 #else
 #define FRT_CORE_API __declspec(dllimport)

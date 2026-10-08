@@ -24,6 +24,12 @@
 	#error "FRT_REAL_PRECISION must be 32 (float) or 64 (double)"
 #endif
 
+// Within one image - any DLL, and everything in a monolithic build - the linker checks this
+// itself: objects compiled with different precisions fail with LNK2038.
+#define FRT_PRECISION_STRINGIFY_(Value) #Value
+#define FRT_PRECISION_STRINGIFY(Value) FRT_PRECISION_STRINGIFY_(Value)
+#pragma detect_mismatch("FRT_REAL_PRECISION", FRT_PRECISION_STRINGIFY(FRT_REAL_PRECISION))
+
 
 namespace frt
 {

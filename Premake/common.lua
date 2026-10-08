@@ -122,19 +122,36 @@ function usePrecompiledHeader(Header, Source)
 	forceincludes { Header }
 end
 
--- One directory per platform, configurations separated by the target name (see core.lua).
+-- One directory per platform, configurations separated by the target name: a single place to
+-- find every binary beats a tree of near-empty folders. Only the shipping configuration,
+-- Release-Default, has plain names.
 function flatBinaries()
 	targetdir (rootpath("Binaries/%{cfg.platform}"))
 	objdir (rootpath("Intermediate/%{cfg.platform}/%{cfg.buildcfg}/%{prj.name}"))
 
-	filter "configurations:Release-*"
+	filter "configurations:Release-Default"
 		targetname "%{prj.name}"
-	filter "configurations:not Release-*"
+	filter "configurations:not Release-Default"
 		targetname "%{prj.name}-%{cfg.buildcfg}"
 	filter {}
 end
 
--- Everything a project linking Core needs: includes, link, defines, warnings, precision.
+-- Core's link dependencies: system, DXC and third-party libraries. Where Core is a DLL it links
+-- them itself; where it is a static library (Release) every executable linking Core does.
+-- Never on a static library: Premake emits a static library's links as its librarian inputs,
+-- and lib.exe would copy every member of those libraries into it. Scope: filter terms.
+function coreDependencies(scope)
+	filter(scope)
+		libdirs { path.join(thirdPartyDir, "Dxc/lib/x64") }
+		links { "d3d12", "dxgi", "d3dcompiler", "dxcompiler", "assimp", "yaml-cpp" }
+
+	filter(table.join(scope, { "configurations:not *-Headless" }))
+		links { "ImGui" }
+
+	filter {}
+end
+
+-- Everything a project linking Core needs: includes, link, defines, precision.
 function useCore()
 	includedirs
 	{
@@ -145,9 +162,16 @@ function useCore()
 		path.join(thirdPartyDir, "Dxc/inc"),
 	}
 
-	links { "Core" }
-	-- One ImGui for the whole process, in its own DLL (Core/Source/UI/ImGuiConfig.h).
+	-- A static library (a game module in Release) needs only the headers: the executable links
+	-- Core, and everything Core needs, itself.
+	filter "kind:not StaticLib"
+		links { "Core" }
+	filter {}
+
+	-- One ImGui for the whole process (Core/Source/UI/ImGuiConfig.h); modules call it directly.
 	useImGui()
+	filter { "configurations:not Release*", "configurations:not *-Headless" }
+		links { "ImGui" }
 
 	filter "platforms:Win64"
 		defines { "WIN64", "_WINDOWS" }
@@ -157,12 +181,33 @@ function useCore()
 
 	filter {}
 
+	coreDependencies({ "configurations:Release*", "kind:ConsoleApp or WindowedApp" })
+
 	-- Must match Core's precision. See the top of this file.
 	applyPrecision()
+end
+
+-- A game module (Engine/GameModule.h): a DLL the hosts load, or in Release a static library
+-- linked into the launcher (hostProject).
+function gameProject()
+	filter "configurations:Release*"
+		kind "StaticLib"
+	filter "configurations:not Release*"
+		kind "SharedLib"
+	filter {}
+
+	flatBinaries()
+	useCore()
 end
 
 -- A host executable: debugs in the default game's project directory and builds its module.
 function hostProject()
 	debugdir (rootpath(defaultGameProject))
 	dependson { defaultGameProject }
+
+	-- Release is monolithic: the game is a static library linked in (Engine/GameModule.cpp).
+	-- Everywhere else the host must NOT link the game's import library: it loads the DLL itself.
+	filter "configurations:Release*"
+		links { defaultGameProject }
+	filter {}
 end

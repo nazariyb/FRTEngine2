@@ -7,7 +7,8 @@
 //   FRT_BUILD_DEBUG        unoptimized, debug runtime
 //   FRT_BUILD_DEVELOPMENT  optimized with debug information; asserts and developer tools on
 //   FRT_BUILD_RELEASE      optimized; developer tools compiled out
-// Every derived switch below can still be forced from the command line.
+// and FRT_MONOLITHIC=1 where Core and the game module are static libraries linked into the
+// executable. Every derived switch below can still be forced from the command line.
 
 #if !defined(FRT_BUILD_DEBUG) && !defined(FRT_BUILD_DEVELOPMENT) && !defined(FRT_BUILD_RELEASE)
 	// Tooling and IDE parsers that do not see the generated project defines.
@@ -30,6 +31,12 @@
 
 #if (FRT_BUILD_DEBUG + FRT_BUILD_DEVELOPMENT + FRT_BUILD_RELEASE) != 1
 	#error "Exactly one of FRT_BUILD_DEBUG, FRT_BUILD_DEVELOPMENT and FRT_BUILD_RELEASE must be 1"
+#endif
+
+// Core and the game linked into one executable: nothing is exported or imported, and the game
+// module is found by the linker instead of LoadLibrary (Engine/GameModule.h).
+#ifndef FRT_MONOLITHIC
+	#define FRT_MONOLITHIC 0
 #endif
 
 // Reloading materials, input actions and shaders from disk while running.

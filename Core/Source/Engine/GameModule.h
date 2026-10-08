@@ -34,14 +34,22 @@ class CConfig;
 #define FRT_GAME_MODULE_ABI ((FRT_GAME_API_VERSION << 16u) | (FRT_GAME_MODULE_HEADLESS << 8u) | FRT_REAL_PRECISION)
 
 /**
- * Makes a DLL a game module: one line in the game's sources, e.g.
+ * Makes a project a game module: one line in the game's sources, e.g.
  *     FRT_IMPLEMENT_GAME_MODULE(DemoGame)
- * The hosts (Launcher, Editor) find these two exports by name. A constructor that throws
+ * The game is a DLL the hosts (Launcher, Editor) load, finding these two exports by name - or,
+ * in a monolithic build, a static library linked into the launcher, where Core calls them
+ * directly and that reference is what pulls the game into the link. A constructor that throws
  * yields null: no exception may cross the C boundary.
  */
+#if FRT_MONOLITHIC
+#define FRT_GAME_MODULE_EXPORT extern "C"
+#else
+#define FRT_GAME_MODULE_EXPORT extern "C" __declspec(dllexport)
+#endif
+
 #define FRT_IMPLEMENT_GAME_MODULE(TGame)\
-	extern "C" __declspec(dllexport) ::frt::GameInstance* FrtCreateGame () { try { return new TGame(); } catch (...) { return nullptr; } }\
-	extern "C" __declspec(dllexport) unsigned int FrtGameModuleAbi () { return FRT_GAME_MODULE_ABI; }
+	FRT_GAME_MODULE_EXPORT ::frt::GameInstance* FrtCreateGame () { try { return new TGame(); } catch (...) { return nullptr; } }\
+	FRT_GAME_MODULE_EXPORT unsigned int FrtGameModuleAbi () { return FRT_GAME_MODULE_ABI; }
 
 
 namespace frt
@@ -62,12 +70,12 @@ public:
 	CGameModule (const CGameModule&) = delete;
 	CGameModule& operator= (const CGameModule&) = delete;
 
-	// Loads <executable dir>/<Name>.dll - with the build's -<Configuration> suffix outside
-	// Release - and checks it was built against this engine's ABI. Logs and returns false
-	// otherwise.
+	// Loads <executable dir>/<Name>-<Configuration>.dll and checks it was built against this
+	// engine's ABI. Monolithic builds: takes the game linked into the executable, whatever its
+	// name. Logs and returns false otherwise.
 	bool Load (const std::string& Name);
 	void Unload ();
-	bool IsLoaded () const { return Handle != nullptr; }
+	bool IsLoaded () const { return CreateFunction != nullptr; }
 	const std::string& GetName () const { return Name; }
 
 	// A new game instance; null if the game's constructor failed.
