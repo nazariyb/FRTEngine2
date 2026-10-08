@@ -1,6 +1,6 @@
 # FRTEngine2 — Profiling Analysis
 
-Python tooling that parses profiling sessions (`<project>/Saved/Profiling/<session>/`)
+Python tooling that parses profiling sessions (`<project>/Local/Profiling/<session>/`)
 and produces the thesis evaluation: speedup tables, plots, cost-model checks.
 
 ## Setup

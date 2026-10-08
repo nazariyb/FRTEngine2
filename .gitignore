@@ -31,13 +31,15 @@
 **/*.vcxproj.user
 **/*.DotSettings.user
 
-# What the checkout remembers for its user (generation options)
-/Saved/
+# The engine checkout's untracked files: remembered generation options, the editor's own files
+# (Local/Editor: layout, input overrides, project manager), what runs without a project write.
+# A project's captures and profiling sessions are in its own Local/ (see below for templates).
+/Local/
 
 # Templates built in place (FRT.bat generate --project=Templates/<Name>)
 /Templates/*/Binaries/
 /Templates/*/Intermediate/
-/Templates/*/Saved/
+/Templates/*/Local/
 
 # Prebuilt third-party libraries (premake5 fetch-thirdparty)
 /ThirdParty/Prebuilt

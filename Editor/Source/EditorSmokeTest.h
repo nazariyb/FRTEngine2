@@ -30,7 +30,7 @@ class CEditor;
  * the Unreal camera controller against Unreal's numbers, makes the game module's DLL look
  * rebuilt in edit and in play mode to check the editor reloads it,
  * captures the whole window to PNG along the way, and exits with 0 when every check passed (2
- * otherwise). Captures and a log go to [Editor] SmokeTestDir, by default <project>/Saved/SmokeTest.
+ * otherwise). Captures and a log go to [Editor] SmokeTestDir, by default <project>/Local/SmokeTest.
  */
 class CEditorSmokeTest
 {

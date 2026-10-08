@@ -1,7 +1,7 @@
 # Built, generated and per-user files: FRT.bat generate and build make them again.
 /Binaries/
 /Intermediate/
-/Saved/
+/Local/
 *.sln
 .vs/
 .idea/

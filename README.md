@@ -22,7 +22,7 @@ A small experimental 3D engine built on Direct3D 12 and DirectX Raytracing (DXR)
 | **Assets** | Visitor-archive serialization framework (`Archive.h`, `Serializer.h`) with a YAML backend (`YamlArchive`) — current format for materials (`.frtmat.yml`). A JSON Schema under `Schemas/` provides IDE auto-completion for the material format. The legacy text-based `TextAssetIO` and the generic `AssetTool` remain available. `EnginePaths` centralizes well-known directory lookups (content, profiling output, etc.). |
 | **Events** | Lightweight typed event/delegate system used throughout the engine. |
 | **ImGui** | Dear ImGui is integrated for debug UI in non-headless builds. Includes live raytracing sliders, transform editor, stats panel, and frame-stat overlays. Press `I` to toggle the entire UI on/off. |
-| **Profiling** | GPU timestamps via PIX-named scopes (`CGpuProfiler`), wave-coalesced ray counters via a UAV ring (`CRayCounters`), an analytic scene-descriptor snapshot (per-portal world area + screen coverage), and a rolling per-frame metrics aggregator. A profiling-session driver sweeps a cartesian product of render settings (spp × bounces × Russian-roulette depth × portal on/off) and exports one `.txt` (settings + scene snapshot) and one `.csv` (every measured frame) per configuration under `<project>/Saved/Profiling/<session>/`. A Python analysis package (`Tools/Analysis/` — see its own README) parses the output for plots, summary tables, and cost-model validation. |
+| **Profiling** | GPU timestamps via PIX-named scopes (`CGpuProfiler`), wave-coalesced ray counters via a UAV ring (`CRayCounters`), an analytic scene-descriptor snapshot (per-portal world area + screen coverage), and a rolling per-frame metrics aggregator. A profiling-session driver sweeps a cartesian product of render settings (spp × bounces × Russian-roulette depth × portal on/off) and exports one `.txt` (settings + scene snapshot) and one `.csv` (every measured frame) per configuration under `<project>/Local/Profiling/<session>/`. A Python analysis package (`Tools/Analysis/` — see its own README) parses the output for plots, summary tables, and cost-model validation. |
 
 ### Architecture
 
@@ -91,7 +91,7 @@ MyGame/
   Config/Game.ini       its configuration (over the engine's Core/Config/Engine.ini)
   FRT.bat               runs its engine's FRT.bat for it
   GenerateProjectFiles.bat
-  MyGame.sln            generated; with Binaries/, Intermediate/ and Saved/, not committed
+  MyGame.sln            generated; with Binaries/, Intermediate/ and Local/, not committed
 ```
 
 Its engine is one of two, chosen when it is created:
@@ -118,12 +118,12 @@ Code shared between projects is not supported yet; `Core/Source/Project/Project.
 | `FRT.bat generate` | (re)generates the solution - after adding or removing source files |
 | `FRT.bat build` | builds the engine, or in a project the game and the hosts (`--config=Debug`, `Release`, `Development-Headless`...; default `Development-Default`) |
 | `FRT.bat open` | opens the solution |
-| `FRT.bat package` | builds the game in Release and writes it, with everything it runs with, to a directory that runs on any machine - no engine checkout, no sources (`--output=<dir>`; default `<project>\Saved\Packaged\MyGame-Win64`; `--config=Release-Headless` for the console build) |
+| `FRT.bat package` | builds the game in Release and writes it, with everything it runs with, to a directory that runs on any machine - no engine checkout, no sources (`--output=<dir>`; default `<project>\Local\Packaged\MyGame-Win64`; `--config=Release-Headless` for the console build) |
 | `FRT.bat clean-compiled`, `clean-all` | removes the binaries and intermediate files; `clean-all` the generated project files too |
 
 In the engine, a command acts on a project given with `--project=<.frtproject file or its directory>`, e.g. `FRT.bat build --project=Templates\Demo`. A command for a project that uses another engine checkout is handed to that engine's `FRT.bat`.
 
-Per-user state lives in `%LOCALAPPDATA%\FRTEngine` (`FRT_USER_DATA_DIR` overrides it): `Engines.ini` (registered engines), `Projects.ini` (recent projects) and the editor's layout and input overrides.
+What is written while running is never committed and lives in a `Local/` folder: a project's holds its game's settings, captures, profiling sessions and smoke-test output; the engine checkout's holds the remembered generation options, the editor's layout, input overrides and project manager settings, and what runs without a project write. Only what every checkout on the machine shares is outside them, in `%LOCALAPPDATA%\FRTEngine` (`FRT_USER_DATA_DIR` overrides it): `Engines.ini` (registered engines) and `Projects.ini` (recent projects).
 
 A package is the game and what it reads, and nothing else:
 
@@ -136,7 +136,7 @@ MyGame-Win64/
   Engine/Config/Engine.ini                       and configuration
 ```
 
-Packaging again replaces what the packager wrote and keeps anything else in the directory; it refuses a non-empty directory that is not a package. A packaged game never writes to its directory - it may be read-only, and every user shares it: its `Saved\` (settings, captures, profiling) is per user, in `%LOCALAPPDATA%\MyGame` (`FRT_USER_DATA_DIR\MyGame` when that is set).
+Packaging again replaces what the packager wrote and keeps anything else in the directory; it refuses a non-empty directory that is not a package. A packaged game never writes to its directory - it may be read-only, and every user shares it: what a game writes to `Local\` elsewhere (settings, captures, profiling) goes to `%LOCALAPPDATA%\MyGame` instead (`FRT_USER_DATA_DIR\MyGame` when that is set).
 
 ### Generation options
 
@@ -150,7 +150,7 @@ After the command: `FRT.bat generate --nopch`, `FRT.bat vs2022 --project=... --p
 | `--msvc=<version>` | Build with that MSVC version, e.g. `14.44.35207` (default: whatever the v143 toolset defaults to, which an installed side-by-side toolset can pin to an older one) |
 | `--precision=double` | 64-bit `frt::Real` for positions and measurements |
 
-An engine checkout's binaries and project files are shared by its projects, so these options are remembered per checkout (in `Saved/GenerationOptions.ini`): given once to `setup`, `generate`, `new` or `vs2022`, an option holds for every later generation of the engine and its projects until given again. Switches are turned off with `=off` (`--nopch=off`). Generation is Visual Studio 2022 only for now (`FRT.bat vs2022` is the Premake action underneath).
+An engine checkout's binaries and project files are shared by its projects, so these options are remembered per checkout (in `Local/GenerationOptions.ini`): given once to `setup`, `generate`, `new` or `vs2022`, an option holds for every later generation of the engine and its projects until given again. Switches are turned off with `=off` (`--nopch=off`). Generation is Visual Studio 2022 only for now (`FRT.bat vs2022` is the Premake action underneath).
 
 From the command line, build through a solution - `MSBuild FRTEngine2.sln -p:Configuration=Development-Default -p:Platform=Win64 -m`, with `-t:Editor` (or `-t:ThirdParty\assimp` and the like) for a single project; in a project's solution the engine's projects are under `Engine\`. Building a project file directly fails with MSB8013: third-party projects only have one configuration per build type, which the solution maps.
 
@@ -213,7 +213,7 @@ The camera speed is in the Scene view's toolbar (and changed by the wheel during
 | Pause / resume (in edit mode: start the next session paused) | **Ctrl+Shift+P** |
 | Step one game frame | **Ctrl+Alt+P** |
 
-Every key above is a binding in [`Editor/Config/EditorInput.ini`](Editor/Config/EditorInput.ini), along with the camera's settings (speed, sensitivity, inversions). To change one, put the same section and key with your value in `%LOCALAPPDATA%\FRTEngine\Editor\EditorInput.ini`; the editor re-reads both files while it runs and reports anything it cannot read in its toolbar. Mouse navigation itself is fixed, as in Unreal.
+Every key above is a binding in [`Editor/Config/EditorInput.ini`](Editor/Config/EditorInput.ini), along with the camera's settings (speed, sensitivity, inversions). To change one, put the same section and key with your value in `Local/Editor/EditorInput.ini` in the engine checkout (not a project's `Local/`); the editor re-reads both files while it runs and reports anything it cannot read in its toolbar. Mouse navigation itself is fixed, as in Unreal.
 
 **Play mode** runs the game on a copy of the edited world, so nothing a session does survives Stop, and each session starts from the same state with a fresh game instance. Both viewports show the running copy; the editor's chrome turns blue as a reminder. The game receives input only while the Game view has focus (a right-drag there captures the mouse for it); the Scene view stays free to fly around.
 
@@ -251,6 +251,5 @@ ThirdParty/       — vendored libraries, built from source (ImGui, assimp, yaml
 Premake/          — Premake5 scripts (configurations: workspace.lua; projects and the registry: project.lua; commands: tools.lua; third-party: thirdparty.lua)
 Binaries/         — the engine's DLLs / EXEs
 Intermediate/     — compiled object files
+Local/            — what runs write, never committed: the editor's layout and input overrides (Local/Editor/), generation options; a project's own Local/ holds its game's settings, captures, profiling sessions (Local/Profiling/<session>/, one .txt + .csv per configuration) and smoke-test output
 ```
-
-A project's `Saved/` holds what its game writes while running: user settings, captures, profiling sessions (`Saved/Profiling/<session>/`, one `.txt` + `.csv` per configuration) and smoke-test output.

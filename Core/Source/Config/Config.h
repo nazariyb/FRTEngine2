@@ -18,7 +18,7 @@ enum class EConfigLayer : int32
 {
 	Engine = 0, // Core/Config/Engine.ini      - shipped defaults, tracked
 	Project,    // <project>/Config/Game.ini   - per-project overrides, tracked
-	User,       // <project>/Saved/Config/UserSettings.ini - written by the running game, untracked
+	User,       // <project>/Local/UserSettings.ini - written by the running game, untracked
 	CommandLine,// -Section:Key=Value arguments  - never saved
 	Count,
 };

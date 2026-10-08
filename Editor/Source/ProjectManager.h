@@ -41,9 +41,10 @@ struct SProjectManagerRequest
  * it never outlive their project.
  *
  * -Editor:SmokeTest=1 makes it a scripted run, as for the editor: it captures its pages, creates
- * a project through them ([Editor] SmokeTemplate, SmokeLayout) in [Editor] SmokeTestDir - which
- * it empties first, and which holds the run's own registry - and opens the project in an editor
- * running the editor's smoke test, whose result it exits with.
+ * a project through them ([Editor] SmokeTemplate, SmokeLayout) in [Editor] SmokeTestDir - by
+ * default %TEMP%\FRTEngine\SmokeTest\ProjectManager, which it empties first, and which holds
+ * the run's own registry - and opens the project in an editor running the editor's smoke test,
+ * whose result it exits with.
  */
 class CProjectManager
 {

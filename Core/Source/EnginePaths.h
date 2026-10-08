@@ -20,17 +20,19 @@ namespace frt::paths
  *                config and the editor's shipped defaults. Found from where Core is loaded
  *                (<engine>/Binaries/<platform>/Core*.dll), else from the project.
  *   the project  the game being run or edited (<project>/<Name>.frtproject): its content,
- *                config, binaries, and Saved/ for what it writes while running. Set by the host
- *                (SetProject) before the engine starts; none in the editor's project manager.
+ *                config, binaries. Set by the host (SetProject) before the engine starts; none
+ *                in the editor's project manager.
  *
- * Plus the per-user directory (Project/UserRegistry.h) for what belongs to neither: the
- * engine registry, recent projects, the editor's layout and input overrides.
+ * Each has a Local/ for what is written while running and never tracked: the project's for its
+ * game (settings, captures, profiling), the engine's for the editor's own files and for runs
+ * without a project. The machine-wide registry of engines and recent projects is outside both
+ * (Project/UserRegistry.h).
  *
  * A packaged game (Project/Project.h: FindRunningPackage) has both in its package: the project
  * is the package's directory, the engine its Engine/ - which holds Content/ and Config/ where a
- * checkout has Core/Content and Core/Config. Its Saved/ is per user, in
- * GetGameUserDataDir(<Name>). Every other process resolves as above.
- * Every function returns an absolute path.
+ * checkout has Core/Content and Core/Config. What it writes goes to GetGameUserDataDir(<Name>)
+ * rather than a Local/: a package may be read-only, and every user shares it. Every other
+ * process resolves as above. Every function returns an absolute path.
  */
 
 // The engine checkout, resolved on first use: from where Core is loaded, else - a monolithic
@@ -57,20 +59,20 @@ FRT_CORE_API std::filesystem::path GetShaderRootDir ();              // <engine>
 FRT_CORE_API std::filesystem::path GetProjectContentDir ();          // <project>/Content
 // The game module's directory: <project>/Binaries/<platform>; a package's own.
 FRT_CORE_API std::filesystem::path GetProjectBinariesDir ();
-// What a running game or editor writes for the project, untracked: <project>/Saved, or
-// <user data>/Saved without a project; a packaged game's <game user data>/Saved.
-FRT_CORE_API std::filesystem::path GetSavedDir ();
-FRT_CORE_API std::filesystem::path GetCaptureDir ();                 // <saved>/Captures
-FRT_CORE_API std::filesystem::path GetProfilingDir ();               // <saved>/Profiling
+// What a running game or editor writes, untracked: <project>/Local, or <engine>/Local without a
+// project; a packaged game's GetGameUserDataDir(<Name>).
+FRT_CORE_API std::filesystem::path GetLocalDir ();
+FRT_CORE_API std::filesystem::path GetCaptureDir ();                 // <local>/Captures
+FRT_CORE_API std::filesystem::path GetProfilingDir ();               // <local>/Profiling
 
 // ---- config layers, weakest to strongest ----
 // Config is not Content: it is read before any asset system exists and must not depend on it.
 // See Config/IniFile.h for why that separation matters.
 FRT_CORE_API std::filesystem::path GetEngineConfigPath ();           // <engine>/Core/Config/Engine.ini
 FRT_CORE_API std::filesystem::path GetProjectConfigPath ();          // <project>/Config/Game.ini; empty without a project
-FRT_CORE_API std::filesystem::path GetUserConfigPath ();             // <saved>/Config/UserSettings.ini
+FRT_CORE_API std::filesystem::path GetUserConfigPath ();             // <local>/UserSettings.ini
 
-// ---- per user ----
-// The editor's own files (layout, input overrides): <user data>/Editor.
+// ---- the editor's ----
+// Its own files, whatever the project (layout, input overrides, project manager): <engine>/Local/Editor.
 FRT_CORE_API std::filesystem::path GetEditorUserDir ();
 }

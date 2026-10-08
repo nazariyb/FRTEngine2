@@ -4,7 +4,7 @@ rem   FRT.bat generate    (re)generates the solution
 rem   FRT.bat build       builds the game and the editor (--config=Debug|Development|Release[-Headless])
 rem   FRT.bat open        opens the solution
 rem   FRT.bat package     builds the game in Release and writes it, with everything it runs with, to
-rem                       a directory that runs anywhere (--output=<dir>; default Saved\Packaged)
+rem                       a directory that runs anywhere (--output=<dir>; default Local\Packaged)
 rem The engine is found the way the engine finds it (Core/Source/Project/Project.h in the engine):
 rem FRT_ENGINE_DIR when set; else the .frtproject's Engine - a directory relative to this one, else
 rem the name of an engine registered by its FRT.bat setup; else the nearest engine above this

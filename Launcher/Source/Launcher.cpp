@@ -263,7 +263,7 @@ int RunLauncher ()
 
 	SEngineDesc desc;
 	desc.WindowTitle = WidenUtf8(gameProject.Name);
-	desc.UiIniPath = paths::GetSavedDir() / "Launcher" / "imgui.ini";
+	desc.UiIniPath = paths::GetLocalDir() / "Launcher" / "imgui.ini";
 	CEngine engine;
 	if (!engine.StartUp(desc))
 	{

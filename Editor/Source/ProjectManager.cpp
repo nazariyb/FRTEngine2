@@ -164,14 +164,17 @@ CProjectManager::CProjectManager (CEngine& InEngine, SProjectManagerRequest InRe
 	bOfferBuild = Request.bOfferBuild;
 
 	// A scripted run keeps to its own directory, registry included: the processes it starts
-	// inherit FRT_USER_DATA_DIR. Set before anything reads the registry.
+	// inherit FRT_USER_DATA_DIR. Set before anything reads the registry. By default outside any
+	// engine checkout, so the project it creates must find its engine by name, as a user's would,
+	// not as the engine it happens to be inside.
 	const config::CConfig& config = Engine.GetConfig();
 	bSmokeTest = config.Get("Editor", "SmokeTest", false);
 	std::error_code ec;
 	if (bSmokeTest)
 	{
 		const std::string dir = config.Get("Editor", "SmokeTestDir", "");
-		SmokeDir = dir.empty() ? paths::GetSavedDir() / "SmokeTest" / "ProjectManager" : project::PathFromUtf8(dir);
+		SmokeDir = dir.empty() ? std::filesystem::temp_directory_path(ec) / "FRTEngine" / "SmokeTest" / "ProjectManager"
+			: project::PathFromUtf8(dir);
 		std::filesystem::remove_all(SmokeDir, ec);
 		std::filesystem::create_directories(SmokeDir, ec);
 		std::ofstream(SmokeDir / "ProjectManager.log", std::ios::trunc);
@@ -189,8 +192,12 @@ CProjectManager::CProjectManager (CEngine& InEngine, SProjectManagerRequest InRe
 		}
 	}
 
+	// The user's last choices; a scripted run starts from the defaults.
 	config::CIniFile settings;
-	settings.LoadFromFile(SettingsFile());
+	if (!bSmokeTest)
+	{
+		settings.LoadFromFile(SettingsFile());
+	}
 	const std::string* location = settings.Find("NewProject", "Location");
 	CopyToBuffer(location ? *location : project::PathToUtf8(DefaultProjectsDir()), Location, sizeof(Location));
 	const std::string* templateName = settings.Find("NewProject", "Template");

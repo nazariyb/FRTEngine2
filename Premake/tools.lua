@@ -69,7 +69,7 @@ newoption
 {
 	trigger     = "output",
 	value       = "DIR",
-	description = "package: the directory to write the packaged game to (default: <project>/Saved/Packaged/<Name>-Win64)"
+	description = "package: the directory to write the packaged game to (default: <project>/Local/Packaged/<Name>-Win64)"
 }
 
 newoption
@@ -242,7 +242,7 @@ local function isTemplateOnly(relative, templateName)
 	if top == "Template.ini" or top == templateName .. projectFileExtension then
 		return true
 	end
-	if top == "Binaries" or top == "Intermediate" or top == "Saved" or top == ".vs" then
+	if top == "Binaries" or top == "Intermediate" or top == "Local" or top == ".vs" then
 		return true
 	end
 	return relative:match("%.sln$") or relative:match("%.vcxproj") or relative:match("%.user$")
@@ -623,7 +623,7 @@ newaction
 		local engine = loadEngine(ROOT_DIR) or fail("package: " .. rootpath(engineFileName) .. " has no [Engine] Name")
 		local suffix = configuration == "Release-Default" and "" or "-" .. configuration:match("%-(.+)$")
 		local dir = canonicalPath(_OPTIONS["output"] or
-			path.join(project.Dir, "Saved/Packaged/" .. project.Name .. "-Win64" .. suffix))
+			path.join(project.Dir, "Local/Packaged/" .. project.Name .. "-Win64" .. suffix))
 		checkPackageDir(dir, project)
 
 		build(project, configuration)
@@ -652,7 +652,7 @@ newaction
 		print("")
 		print("Packaged " .. project.Name .. ": " .. winpath(path.join(dir, project.Module .. ".exe")))
 		print("  Copy the directory anywhere to run it. While running, the game writes to")
-		print("  %LOCALAPPDATA%\\" .. project.Name .. "\\Saved, never to its own directory.")
+		print("  %LOCALAPPDATA%\\" .. project.Name .. ", never to its own directory.")
 	end
 }
 

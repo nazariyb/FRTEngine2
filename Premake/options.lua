@@ -2,7 +2,7 @@
 ---------  Generation options  ----------
 -----------------------------------------
 -- The options that change the engine's project files - and so every project's solution, which
--- has those same files - are remembered per engine checkout, in Saved/GenerationOptions.ini
+-- has those same files - are remembered per engine checkout, in Local/GenerationOptions.ini
 -- (never committed): given once to anything that generates (setup, generate, new, vs2022), an
 -- option holds for every later generation of the engine and of its projects, until given again.
 -- A switch is turned off with =off: --nopch=off. Otherwise one project's solution, generated
@@ -12,7 +12,7 @@ generationOptionNames = { "precision", "msvc", "thirdparty", "nopch", "fatal-war
 
 local switches = { nopch = true, ["fatal-warnings"] = true }
 local offValues = { off = true, no = true, ["false"] = true, ["0"] = true }
-local optionsFile = path.join(ROOT_DIR, "Saved/GenerationOptions.ini")
+local optionsFile = path.join(ROOT_DIR, "Local/GenerationOptions.ini")
 
 -- The generation options on this command line: name -> value ("" for a switch given bare).
 explicitGenerationOptions = {}

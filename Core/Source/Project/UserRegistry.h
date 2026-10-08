@@ -13,12 +13,12 @@
 namespace frt::project
 {
 /**
- * Per-user data shared by every engine checkout and project on the machine - never inside a
- * repository: %LOCALAPPDATA%\FRTEngine, or FRT_USER_DATA_DIR when set (tests, CI). It holds:
+ * Per-user data shared by every engine checkout and project on the machine, so never inside one:
+ * %LOCALAPPDATA%\FRTEngine, or FRT_USER_DATA_DIR when set (tests, CI). It holds only:
  *   Engines.ini    [Engines] <name>=<directory>   engines registered by FRT.bat setup
  *   Projects.ini   [Recent] <project file>=<time> the project manager's list
- * plus the editor's per-user files (layout, input overrides). Plain INI, also read and written
- * by the build tools (Premake/project.lua), in UTF-8.
+ * Plain INI, also read and written by the build tools (Premake/project.lua), in UTF-8. What
+ * belongs to one checkout is in its Local/ (EnginePaths.h).
  */
 FRT_CORE_API std::filesystem::path GetUserDataDir ();
 

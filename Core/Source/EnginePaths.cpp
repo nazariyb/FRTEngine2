@@ -166,23 +166,24 @@ std::filesystem::path GetProjectBinariesDir ()
 	return bHasProject ? GetProjectDir() / "Binaries" / FRT_PLATFORM_NAME : std::filesystem::path();
 }
 
-std::filesystem::path GetSavedDir ()
+std::filesystem::path GetLocalDir ()
 {
+	// A package may be read-only, and every user shares it: its runs write to the user's.
 	if (IsPackaged())
 	{
-		return project::GetGameUserDataDir(GetPackage().Name) / "Saved";
+		return project::GetGameUserDataDir(GetPackage().Name);
 	}
-	return bHasProject ? GetProjectDir() / "Saved" : project::GetUserDataDir() / "Saved";
+	return (bHasProject ? GetProjectDir() : GetEngineDir()) / "Local";
 }
 
 std::filesystem::path GetCaptureDir ()
 {
-	return GetSavedDir() / "Captures";
+	return GetLocalDir() / "Captures";
 }
 
 std::filesystem::path GetProfilingDir ()
 {
-	return GetSavedDir() / "Profiling";
+	return GetLocalDir() / "Profiling";
 }
 
 std::filesystem::path GetEngineConfigPath ()
@@ -197,12 +198,12 @@ std::filesystem::path GetProjectConfigPath ()
 
 std::filesystem::path GetUserConfigPath ()
 {
-	// Saved/ is never tracked: this is the only config file the running game writes.
-	return GetSavedDir() / "Config" / "UserSettings.ini";
+	// Local/ is never tracked: this is the only config file the running game writes.
+	return GetLocalDir() / "UserSettings.ini";
 }
 
 std::filesystem::path GetEditorUserDir ()
 {
-	return project::GetUserDataDir() / "Editor";
+	return GetEngineDir() / "Local" / "Editor";
 }
 }

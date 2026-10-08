@@ -31,7 +31,7 @@ inline constexpr std::string_view PackageFileExtension = ".frtpackage";
  * on the game. Reserved for code shared between projects (a module directory several projects
  * reference), not read yet: SharedModules=<paths relative to this file>.
  *
- * Layout under <Dir>: Source/, Content/ and Config/ (tracked); Binaries/, Intermediate/, Saved/
+ * Layout under <Dir>: Source/, Content/ and Config/ (tracked); Binaries/, Intermediate/, Local/
  * and the generated solution (not tracked).
  */
 struct FRT_CORE_API SProjectDescriptor

@@ -63,8 +63,9 @@ struct SViewportCameraSettings
  * The editor's input: which key chords run which command, which keys move the viewport camera,
  * and how the camera responds. Plain bindings, read from two files with the same layout:
  *   - Editor/Config/EditorInput.ini       the shipped defaults (tracked), every binding listed;
- *   - <user data>/Editor/EditorInput.ini  the user's overrides (paths::GetEditorUserDir), key by
- *                                         key - a key present there wins, an empty value unbinds.
+ *   - <engine>/Local/Editor/EditorInput.ini  the user's overrides (untracked; the engine
+ *                                         checkout's Local/, never a project's), key by key - a
+ *                                         key present there wins, an empty value unbinds.
  * Both are re-read when either changes on disk, so a binding can be tried while the editor
  * runs. Problems - unknown names, chords that do not parse - are logged and listed, and never
  * stop the editor: a bad entry is simply skipped.
