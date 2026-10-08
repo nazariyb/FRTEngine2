@@ -25,12 +25,20 @@ namespace frt::paths
  *
  * Plus the per-user directory (Project/UserRegistry.h) for what belongs to neither: the
  * engine registry, recent projects, the editor's layout and input overrides.
+ *
+ * A packaged game (Project/Project.h: FindRunningPackage) has both in its package: the project
+ * is the package's directory, the engine its Engine/ - which holds Content/ and Config/ where a
+ * checkout has Core/Content and Core/Config. Its Saved/ is per user, in
+ * GetGameUserDataDir(<Name>). Every other process resolves as above.
  * Every function returns an absolute path.
  */
 
 // The engine checkout, resolved on first use: from where Core is loaded, else - a monolithic
-// executable, built into its project - from the project, which such a host sets first.
+// executable, built into its project - from the project, which such a host sets first. A
+// packaged game's Engine/.
 FRT_CORE_API const std::filesystem::path& GetEngineDir ();
+// This process is a packaged game: a package marker is beside its executable.
+FRT_CORE_API bool IsPackaged ();
 
 // The project this process runs: hosts call it once, before CEngine::StartUp, which reads its
 // config.
@@ -47,10 +55,10 @@ FRT_CORE_API std::filesystem::path GetShaderRootDir ();              // <engine>
 
 // ---- project ----
 FRT_CORE_API std::filesystem::path GetProjectContentDir ();          // <project>/Content
-// The game module's directory: <project>/Binaries/<platform>.
+// The game module's directory: <project>/Binaries/<platform>; a package's own.
 FRT_CORE_API std::filesystem::path GetProjectBinariesDir ();
 // What a running game or editor writes for the project, untracked: <project>/Saved, or
-// <user data>/Saved without a project.
+// <user data>/Saved without a project; a packaged game's <game user data>/Saved.
 FRT_CORE_API std::filesystem::path GetSavedDir ();
 FRT_CORE_API std::filesystem::path GetCaptureDir ();                 // <saved>/Captures
 FRT_CORE_API std::filesystem::path GetProfilingDir ();               // <saved>/Profiling

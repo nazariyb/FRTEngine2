@@ -273,3 +273,41 @@ TEST_F(ProjectTest, RecentProjectsAreOneEntryPerProjectNewestFirst)
 	ASSERT_EQ(project::GetRecentProjects().size(), 1u);
 	EXPECT_TRUE(IsSame(project::GetRecentProjects()[0].File, a));
 }
+
+TEST_F(ProjectTest, PackageMarkerIsTheProjectDescriptorOfItsDirectory)
+{
+	// As FRT.bat package writes it: the project's descriptor, plus what built it.
+	const std::filesystem::path file = Root / "MyGame-Win64" / "MyGame.frtpackage";
+	Write(file, "; a comment\n[Project]\nName=MyGame\nModule=MyGameCode\n\n[Package]\nEngine=FRTEngine2 0.1\nConfiguration=Release-Default\n");
+	Write(Root / "MyGame-Win64" / "MyGame.frtproject", "[Project]\nName=Other\n");
+
+	const std::filesystem::path found = project::FindPackageFile(Root / "MyGame-Win64");
+	EXPECT_TRUE(IsSame(found, file));
+	const project::SProjectDescriptor descriptor = Load(found);
+	EXPECT_EQ(descriptor.Name, "MyGame");
+	EXPECT_EQ(descriptor.Module, "MyGameCode");
+	EXPECT_TRUE(IsSame(descriptor.GetDir(), Root / "MyGame-Win64"));
+
+	// None, or more than one, is no package.
+	EXPECT_TRUE(project::FindPackageFile(Root).empty());
+	Write(Root / "MyGame-Win64" / "Another.frtpackage", "[Project]\nName=Another\n");
+	EXPECT_TRUE(project::FindPackageFile(Root / "MyGame-Win64").empty());
+}
+
+TEST_F(ProjectTest, NothingHereRunsAsAPackage)
+{
+	// The tests' executable is in the engine's Binaries, where nothing is packaged.
+	EXPECT_TRUE(project::FindRunningPackage().empty());
+}
+
+TEST_F(ProjectTest, GameUserDataIsPerUserUnderTheGamesName)
+{
+	EXPECT_EQ(project::GetGameUserDataDir("MyGame"), Root / "User" / "MyGame");
+
+	SetEnvironment(L"FRT_USER_DATA_DIR", {});
+	const std::filesystem::path local = project::GetEnvironmentPath(L"LOCALAPPDATA");
+	if (!local.empty())
+	{
+		EXPECT_EQ(project::GetGameUserDataDir("MyGame"), local / "MyGame");
+	}
+}

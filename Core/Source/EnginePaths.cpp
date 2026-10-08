@@ -54,8 +54,36 @@ std::filesystem::path GetCoreModuleFile ()
 	return {};
 }
 
+// The packaged game this process is (Project.h: FindRunningPackage), read once; File is empty for
+// anything else.
+const project::SProjectDescriptor& GetPackage ()
+{
+	static const project::SProjectDescriptor package = []
+	{
+		project::SProjectDescriptor descriptor;
+		if (const std::filesystem::path file = project::FindRunningPackage(); !file.empty())
+		{
+			project::SProjectDescriptor::Load(file, descriptor);
+		}
+		return descriptor;
+	}();
+	return package;
+}
+
+// The engine's runtime files - content and config: Core/ in a checkout, the engine directory
+// itself in a package.
+std::filesystem::path GetEngineFilesDir ()
+{
+	return IsPackaged() ? GetEngineDir() : GetEngineDir() / "Core";
+}
+
 std::filesystem::path ResolveEngineDir ()
 {
+	// A package has its own copy of what the engine reads, whatever it sits in.
+	if (IsPackaged())
+	{
+		return GetPackage().GetDir() / "Engine";
+	}
 	// Core's own location: the checkout it was built in.
 	if (const std::filesystem::path core = GetCoreModuleFile(); !core.empty())
 	{
@@ -87,6 +115,11 @@ const std::filesystem::path& GetEngineDir ()
 	return dir;
 }
 
+bool IsPackaged ()
+{
+	return !GetPackage().File.empty();
+}
+
 bool SetProject (const project::SProjectDescriptor& InProject)
 {
 	Project = InProject;
@@ -111,7 +144,7 @@ std::filesystem::path GetProjectDir ()
 
 std::filesystem::path GetEngineContentDir ()
 {
-	return GetEngineDir() / "Core" / "Content";
+	return GetEngineFilesDir() / "Content";
 }
 
 std::filesystem::path GetShaderRootDir ()
@@ -126,11 +159,19 @@ std::filesystem::path GetProjectContentDir ()
 
 std::filesystem::path GetProjectBinariesDir ()
 {
+	if (IsPackaged())
+	{
+		return GetPackage().GetDir();
+	}
 	return bHasProject ? GetProjectDir() / "Binaries" / FRT_PLATFORM_NAME : std::filesystem::path();
 }
 
 std::filesystem::path GetSavedDir ()
 {
+	if (IsPackaged())
+	{
+		return project::GetGameUserDataDir(GetPackage().Name) / "Saved";
+	}
 	return bHasProject ? GetProjectDir() / "Saved" : project::GetUserDataDir() / "Saved";
 }
 
@@ -146,7 +187,7 @@ std::filesystem::path GetProfilingDir ()
 
 std::filesystem::path GetEngineConfigPath ()
 {
-	return GetEngineDir() / "Core" / "Config" / "Engine.ini";
+	return GetEngineFilesDir() / "Config" / "Engine.ini";
 }
 
 std::filesystem::path GetProjectConfigPath ()

@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <cwchar>
 #include <system_error>
+#include <vector>
 
 #if defined(_WINDOWS)
 #include <Windows.h>
@@ -44,6 +45,47 @@ std::filesystem::path Canonical (const std::filesystem::path& Path)
 	std::error_code ec;
 	std::filesystem::path result = std::filesystem::weakly_canonical(Path, ec);
 	return ec ? std::filesystem::absolute(Path, ec).lexically_normal() : result;
+}
+
+// The only file directly in Dir with the extension, or empty.
+std::filesystem::path FindOnlyFile (const std::filesystem::path& Dir, std::string_view Extension)
+{
+	std::filesystem::path found;
+	std::error_code ec;
+	for (std::filesystem::directory_iterator it(Dir, ec), end; !ec && it != end; it.increment(ec))
+	{
+		if (it->is_regular_file(ec) && enum_::EqualsIgnoreCase(PathToUtf8(it->path().extension()), Extension))
+		{
+			if (!found.empty())
+			{
+				return {};   // ambiguous
+			}
+			found = it->path();
+		}
+	}
+	return found.empty() ? found : Canonical(found);
+}
+
+// The directory of this process's executable; empty if unknown.
+std::filesystem::path GetExecutableDir ()
+{
+#if defined(_WINDOWS)
+	std::vector<wchar_t> buffer(MAX_PATH);
+	while (true)
+	{
+		const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+		if (length == 0u)
+		{
+			break;
+		}
+		if (length < buffer.size())
+		{
+			return std::filesystem::path(std::wstring(buffer.data(), length)).parent_path();
+		}
+		buffer.resize(buffer.size() * 2u);   // a long path: retry with room for it
+	}
+#endif
+	return {};
 }
 
 template <typename TPredicate>
@@ -187,20 +229,8 @@ bool SEngineDescriptor::Load (const std::filesystem::path& Dir, SEngineDescripto
 
 std::filesystem::path FindProjectFile (const std::filesystem::path& Dir)
 {
-	std::filesystem::path found;
-	std::error_code ec;
-	for (std::filesystem::directory_iterator it(Dir, ec), end; !ec && it != end; it.increment(ec))
-	{
-		if (it->is_regular_file(ec) && HasProjectFileExtension(it->path()))
-		{
-			if (!found.empty())
-			{
-				return {};   // ambiguous: say which with -Project=
-			}
-			found = it->path();
-		}
-	}
-	return found.empty() ? found : Canonical(found);
+	// Ambiguous - more than one - is none: say which with -Project=.
+	return FindOnlyFile(Dir, ProjectFileExtension);
 }
 
 std::filesystem::path FindProjectFileAbove (const std::filesystem::path& Dir)
@@ -262,8 +292,27 @@ std::filesystem::path ResolveEngineDir (const SProjectDescriptor& Project, std::
 	return {};
 }
 
+std::filesystem::path FindPackageFile (const std::filesystem::path& Dir)
+{
+	return FindOnlyFile(Dir, PackageFileExtension);
+}
+
+std::filesystem::path FindRunningPackage ()
+{
+	const std::filesystem::path dir = GetExecutableDir();
+	return dir.empty() ? dir : FindPackageFile(dir);
+}
+
 std::filesystem::path FindProjectToRun (bool bSearchFromExecutable, std::string* OutError)
 {
+	if (bSearchFromExecutable)
+	{
+		if (std::filesystem::path package = FindRunningPackage(); !package.empty())
+		{
+			return package;
+		}
+	}
+
 #if defined(_WINDOWS)
 	int argc = 0;
 	LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
@@ -308,17 +357,13 @@ std::filesystem::path FindProjectToRun (bool bSearchFromExecutable, std::string*
 	{
 		return file;
 	}
-#if defined(_WINDOWS)
 	if (bSearchFromExecutable)
 	{
-		wchar_t buffer[MAX_PATH] = {};
-		const DWORD length = GetModuleFileNameW(nullptr, buffer, MAX_PATH);
-		if (length > 0u && length < MAX_PATH)
+		if (const std::filesystem::path dir = GetExecutableDir(); !dir.empty())
 		{
-			return FindProjectFileAbove(std::filesystem::path(buffer).parent_path());
+			return FindProjectFileAbove(dir);
 		}
 	}
-#endif
 	return {};
 }
 

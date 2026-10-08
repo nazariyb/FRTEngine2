@@ -12,6 +12,8 @@
 --   build      builds the engine, or the project's game and the hosts (generating first if
 --              there is no solution yet)
 --   open       opens the solution in the program .sln files open with (Visual Studio)
+--   package    builds the project's game in Release and writes it, with everything it runs
+--              with, to a directory of its own that runs anywhere (Packaging, below)
 --
 -- A command for a project that uses another engine runs that engine's FRT.bat instead.
 
@@ -60,7 +62,14 @@ newoption
 {
 	trigger     = "config",
 	value       = "CONFIGURATION",
-	description = "build: the configuration, e.g. Development or Release-Headless (default: Development-Default)"
+	description = "build: the configuration, e.g. Development or Release-Headless (default: Development-Default); package: Release or Release-Headless"
+}
+
+newoption
+{
+	trigger     = "output",
+	value       = "DIR",
+	description = "package: the directory to write the packaged game to (default: <project>/Saved/Packaged/<Name>-Win64)"
 }
 
 newoption
@@ -136,14 +145,19 @@ local function generate(project)
 	end
 end
 
-local function build(project)
-	local configuration = _OPTIONS["config"] or "Development-Default"
-	if not configuration:find("-", 1, true) then
-		configuration = configuration .. "-Default"
+-- The configuration --config names, Default when it names only a build type.
+local function buildConfiguration(action, default)
+	local name = _OPTIONS["config"] or default
+	if not name:find("-", 1, true) then
+		name = name .. "-Default"
 	end
-	if not table.contains(configs, configuration) then
-		fail("build: no configuration " .. configuration .. " (" .. table.concat(configs, ", ") .. ")")
+	if not table.contains(configs, name) then
+		fail(action .. ": no configuration " .. name .. " (" .. table.concat(configs, ", ") .. ")")
 	end
+	return name
+end
+
+local function build(project, configuration)
 	local solution = solutionFile(project)
 	if not os.isfile(solution) then
 		generate(project)
@@ -160,12 +174,18 @@ local function build(project)
 end
 
 -- The options on this command line, for the engine it hands the command to - as given, not as
--- this checkout's remembered options filled them in.
+-- this checkout's remembered options filled them in. Paths are made absolute: the other engine
+-- runs in its own directory.
+local pathOptions = { output = true }
+
 local function forwardedArguments()
 	local arguments = {}
 	for _, argument in ipairs(_ARGV or {}) do
 		local name = argument:match("^%-%-([%w%-]+)")
 		if name and name ~= "file" and name ~= "project" then
+			if pathOptions[name] and _OPTIONS[name] then
+				argument = "--" .. name .. "=" .. canonicalPath(_OPTIONS[name])
+			end
 			table.insert(arguments, '"' .. argument .. '"')
 		end
 	end
@@ -281,6 +301,107 @@ local function copyTree(sourceDir, destinationDir, templateName, projectName)
 				fail("new: cannot write " .. destination)
 			end
 		end
+	end
+end
+
+-----------------------------------------
+--------------  Packaging  --------------
+-----------------------------------------
+-- FRT.bat package --project=<file> [--config=Release-Headless] [--output=<dir>]: the project's
+-- game built in Release - one executable - and written with everything it runs with to a
+-- directory that needs neither the engine checkout nor the project's sources: copy it anywhere
+-- and run <Module>.exe. The layout, and how the game finds its files in it, is
+-- Core/Source/Project/Project.h's (FindRunningPackage): keep the two in step.
+
+local packageFileExtension = ".frtpackage"
+
+-- Dir is Root, or inside it.
+local function isInside(dir, root)
+	local a, b = canonicalPath(dir):lower(), canonicalPath(root):lower()
+	return a == b or a:sub(1, #b + 1) == b .. "\\"
+end
+
+local function packageMarkers(dir)
+	return os.matchfiles(path.join(dir, "*" .. packageFileExtension))
+end
+
+-- What the packager writes at the top of a package - its directories, the marker, every
+-- executable and DLL - goes before a package is written again, so nothing of the old one is left
+-- behind (an asset deleted since, say). Anything else someone put in the directory stays.
+local function removeOldPackage(dir)
+	for _, name in ipairs({ "Content", "Config", "Engine", "D3D12" }) do
+		local sub = path.join(dir, name)
+		if os.isdir(sub) then
+			os.rmdir(sub)
+			if os.isdir(sub) then
+				fail("package: cannot remove " .. winpath(sub) .. " - is the packaged game running?")
+			end
+		end
+	end
+	for _, pattern in ipairs({ "*.exe", "*.dll", "*" .. packageFileExtension }) do
+		for _, file in ipairs(os.matchfiles(path.join(dir, pattern))) do
+			if not os.remove(file) then
+				fail("package: cannot remove " .. winpath(file) .. " - is the packaged game running?")
+			end
+		end
+	end
+end
+
+-- The directory a package goes to: new, empty, or an older package, which is never anything the
+-- package is made from. Nothing is written yet.
+local function checkPackageDir(dir, project)
+	if os.isfile(dir) then
+		fail("package: " .. winpath(dir) .. " is a file")
+	end
+	local sources =
+	{
+		path.join(project.Dir, "Content"), path.join(project.Dir, "Config"), path.join(project.Dir, "Source"),
+		rootpath("Core"),
+	}
+	for _, source in ipairs(sources) do
+		if isInside(dir, source) then
+			fail("package: " .. winpath(dir) .. " is inside " .. winpath(source) .. ", which the package is made from")
+		end
+	end
+	local bEmpty = #os.matchfiles(path.join(dir, "*")) == 0 and #os.matchdirs(path.join(dir, "*")) == 0
+	if os.isdir(dir) and not bEmpty and #packageMarkers(dir) == 0 then
+		fail("package: " .. winpath(dir) .. " is not empty and is not a package: choose another --output, or empty it")
+	end
+end
+
+local function copyFile(source, destination)
+	os.mkdir(path.getdirectory(destination))
+	local ok, err = os.copyfile(source, destination)
+	if not ok then
+		fail("package: cannot copy " .. winpath(source) .. " to " .. winpath(destination) .. (err and ": " .. err or ""))
+	end
+end
+
+-- Every file under SourceDir, to the same place under DestinationDir.
+local function copyFiles(sourceDir, destinationDir)
+	for _, file in ipairs(os.matchfiles(path.join(sourceDir, "**"))) do
+		copyFile(file, path.join(destinationDir, path.getrelative(sourceDir, file)))
+	end
+end
+
+-- The package's marker: the project's descriptor, as the game reads it from the package.
+local function writePackageMarker(dir, project, engine, configuration)
+	local lines =
+	{
+		"; A packaged game, written by FRT.bat package: everything it runs with is in this directory,",
+		"; which runs anywhere. Core/Source/Project/Project.h in the engine (FindRunningPackage) says more.",
+		"[Project]",
+		"Name=" .. project.Name,
+		"Module=" .. project.Module,
+		"",
+		"; What built it.",
+		"[Package]",
+		"Engine=" .. engine.Name .. " " .. engine.Version,
+		"Configuration=" .. configuration,
+	}
+	local file = path.join(dir, project.Name .. packageFileExtension)
+	if not writeBinary(file, table.concat(lines, "\r\n") .. "\r\n") then
+		fail("package: cannot write " .. winpath(file))
 	end
 end
 
@@ -443,7 +564,7 @@ newaction
 		else
 			generate(project)
 			if _OPTIONS["build"] then
-				build(project)
+				build(project, buildConfiguration("new", "Development-Default"))
 			end
 		end
 
@@ -477,8 +598,61 @@ newaction
 	execute     = function ()
 		local project, delegated = commandProject("build")
 		if not delegated then
-			build(project)
+			build(project, buildConfiguration("build", "Development-Default"))
 		end
+	end
+}
+
+newaction
+{
+	trigger     = "package",
+	description = "Build --project in Release and write the game, with everything it runs with, to a directory of its own (--output)",
+	execute     = function ()
+		local project, delegated = commandProject("package")
+		if delegated then
+			return
+		end
+		if not project then
+			fail("package: name the project with --project=<.frtproject file or its directory>")
+		end
+		local configuration = buildConfiguration("package", "Release-Default")
+		if not configuration:match("^Release%-") then
+			fail("package: only Release builds are packaged (--config=Release or Release-Headless): " ..
+				"Debug and Development load the game as a DLL from the project")
+		end
+		local engine = loadEngine(ROOT_DIR) or fail("package: " .. rootpath(engineFileName) .. " has no [Engine] Name")
+		local suffix = configuration == "Release-Default" and "" or "-" .. configuration:match("%-(.+)$")
+		local dir = canonicalPath(_OPTIONS["output"] or
+			path.join(project.Dir, "Saved/Packaged/" .. project.Name .. "-Win64" .. suffix))
+		checkPackageDir(dir, project)
+
+		build(project, configuration)
+
+		print("Packaging " .. project.Name .. " (" .. configuration .. ") in " .. winpath(dir) .. "...")
+		removeOldPackage(dir)
+		-- First, so an interrupted package is still one, and is replaced by the next.
+		writePackageMarker(dir, project, engine, configuration)
+
+		-- The game: Release-Default's plain name, else <Module>-<Configuration>.
+		local binaries = path.join(project.Dir, "Binaries/Win64")
+		local exe = configuration == "Release-Default" and project.Module or project.Module .. "-" .. configuration
+		copyFile(path.join(binaries, exe .. ".exe"), path.join(dir, project.Module .. ".exe"))
+		-- What the build put beside it (Premake/common.lua: copyRuntimeFiles).
+		copyFile(path.join(binaries, "dxcompiler.dll"), path.join(dir, "dxcompiler.dll"))
+		copyFile(path.join(binaries, "dxil.dll"), path.join(dir, "dxil.dll"))
+		copyFiles(path.join(binaries, "D3D12"), path.join(dir, "D3D12"))
+
+		copyFiles(path.join(project.Dir, "Content"), path.join(dir, "Content"))
+		copyFiles(path.join(project.Dir, "Config"), path.join(dir, "Config"))
+
+		copyFiles(rootpath("Core/Content/Shaders"), path.join(dir, "Engine/Content/Shaders"))
+		copyFiles(rootpath("Core/Content/Fonts"), path.join(dir, "Engine/Content/Fonts"))
+		copyFile(rootpath("Core/Config/Engine.ini"), path.join(dir, "Engine/Config/Engine.ini"))
+
+		print("")
+		print("Packaged " .. project.Name .. ": " .. winpath(path.join(dir, project.Module .. ".exe")))
+		print("  Copy the directory anywhere to run it. While running, the game writes to")
+		print("  %LOCALAPPDATA%\\" .. project.Name .. "\\Saved, never to its own directory.")
 	end
 }
 

@@ -13,6 +13,8 @@ namespace frt::project
 inline constexpr std::string_view ProjectFileExtension = ".frtproject";
 // At an engine checkout's root; also how an engine directory is recognised.
 inline constexpr std::string_view EngineFileName = "Engine.frtengine";
+// <Name>.frtpackage beside a packaged game's executable (FindRunningPackage).
+inline constexpr std::string_view PackageFileExtension = ".frtpackage";
 
 /**
  * A project: a game in its own directory - its own repository - with the engine elsewhere
@@ -77,7 +79,30 @@ FRT_CORE_API std::filesystem::path FindEngineDirAbove (const std::filesystem::pa
 FRT_CORE_API std::filesystem::path ResolveEngineDir (const SProjectDescriptor& Project, std::string* Error = nullptr);
 
 /**
+ * A packaged game (FRT.bat package): a directory with everything a Release game runs with, which
+ * needs neither the engine checkout nor the project's sources:
+ *
+ *     <Module>.exe, dxcompiler.dll, dxil.dll, D3D12/    the game and its runtime libraries
+ *     <Name>.frtpackage                                 the marker: the project's descriptor
+ *     Content/, Config/                                 the project's
+ *     Engine/Content/Shaders, Engine/Content/Fonts,     the engine's
+ *     Engine/Config/Engine.ini
+ *
+ * The marker holds the project's [Project] Name and Module, so it loads as an
+ * SProjectDescriptor whose directory is the package's; its [Package] section says what built it
+ * and is not read. A process is a packaged game when the marker is beside its executable: the
+ * only *.frtpackage file there. EnginePaths.h then finds the engine's files in the package, and
+ * what the game writes goes to the user's directory instead of the package's, which may be
+ * read-only and is shared by every user. Empty for any other process.
+ */
+FRT_CORE_API std::filesystem::path FindRunningPackage ();
+// The package marker directly in Dir - the only *.frtpackage there - or empty.
+FRT_CORE_API std::filesystem::path FindPackageFile (const std::filesystem::path& Dir);
+
+/**
  * The project a host was started for:
+ *   - with bSearchFromExecutable, the package the executable is in (FindRunningPackage): a
+ *     packaged game runs its own package, whatever it is started with;
  *   - -Project=<file or directory> on the command line, or a bare *.frtproject argument (what
  *     the IDE's debugger and the project manager pass);
  *   - else the working directory's project;

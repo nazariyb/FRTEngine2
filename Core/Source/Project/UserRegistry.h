@@ -22,6 +22,10 @@ namespace frt::project
  */
 FRT_CORE_API std::filesystem::path GetUserDataDir ();
 
+// A packaged game's per-user directory (Project.h: FindRunningPackage), for what it writes while
+// running: %LOCALAPPDATA%\<Name>, or <FRT_USER_DATA_DIR>\<Name> when that is set.
+FRT_CORE_API std::filesystem::path GetGameUserDataDir (std::string_view Name);
+
 // The directory registered under Name (case-insensitive); empty if none.
 FRT_CORE_API std::filesystem::path FindRegisteredEngine (std::string_view Name);
 FRT_CORE_API bool RegisterEngine (std::string_view Name, const std::filesystem::path& Dir);

@@ -118,11 +118,25 @@ Code shared between projects is not supported yet; `Core/Source/Project/Project.
 | `FRT.bat generate` | (re)generates the solution - after adding or removing source files |
 | `FRT.bat build` | builds the engine, or in a project the game and the hosts (`--config=Debug`, `Release`, `Development-Headless`...; default `Development-Default`) |
 | `FRT.bat open` | opens the solution |
+| `FRT.bat package` | builds the game in Release and writes it, with everything it runs with, to a directory that runs on any machine - no engine checkout, no sources (`--output=<dir>`; default `<project>\Saved\Packaged\MyGame-Win64`; `--config=Release-Headless` for the console build) |
 | `FRT.bat clean-compiled`, `clean-all` | removes the binaries and intermediate files; `clean-all` the generated project files too |
 
 In the engine, a command acts on a project given with `--project=<.frtproject file or its directory>`, e.g. `FRT.bat build --project=Templates\Demo`. A command for a project that uses another engine checkout is handed to that engine's `FRT.bat`.
 
 Per-user state lives in `%LOCALAPPDATA%\FRTEngine` (`FRT_USER_DATA_DIR` overrides it): `Engines.ini` (registered engines), `Projects.ini` (recent projects) and the editor's layout and input overrides.
+
+A package is the game and what it reads, and nothing else:
+
+```
+MyGame-Win64/
+  MyGame.exe, dxcompiler.dll, dxil.dll, D3D12/   the Release executable and its runtime libraries
+  MyGame.frtpackage                              marks the package: the game finds everything beside it
+  Content/, Config/                              the project's
+  Engine/Content/Shaders, Fonts                  the engine's: shader sources (compiled at run time), fonts
+  Engine/Config/Engine.ini                       and configuration
+```
+
+Packaging again replaces what the packager wrote and keeps anything else in the directory; it refuses a non-empty directory that is not a package. A packaged game never writes to its directory - it may be read-only, and every user shares it: its `Saved\` (settings, captures, profiling) is per user, in `%LOCALAPPDATA%\MyGame` (`FRT_USER_DATA_DIR\MyGame` when that is set).
 
 ### Generation options
 

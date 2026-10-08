@@ -43,6 +43,17 @@ int64 Now ()
 {
 	return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
 }
+
+// Where per-user application data goes: %LOCALAPPDATA%, else the temporary directory.
+std::filesystem::path GetLocalAppDataDir ()
+{
+	if (std::filesystem::path local = GetEnvironmentPath(L"LOCALAPPDATA"); !local.empty())
+	{
+		return local;
+	}
+	std::error_code ec;
+	return std::filesystem::temp_directory_path(ec);
+}
 }
 
 std::filesystem::path GetUserDataDir ()
@@ -51,12 +62,17 @@ std::filesystem::path GetUserDataDir ()
 	{
 		return dir;
 	}
-	if (const std::filesystem::path local = GetEnvironmentPath(L"LOCALAPPDATA"); !local.empty())
+	return GetLocalAppDataDir() / "FRTEngine";
+}
+
+std::filesystem::path GetGameUserDataDir (std::string_view Name)
+{
+	std::filesystem::path root = GetEnvironmentPath(L"FRT_USER_DATA_DIR");
+	if (root.empty())
 	{
-		return local / "FRTEngine";
+		root = GetLocalAppDataDir();
 	}
-	std::error_code ec;
-	return std::filesystem::temp_directory_path(ec) / "FRTEngine";
+	return root / PathFromUtf8(Name);
 }
 
 std::filesystem::path FindRegisteredEngine (std::string_view Name)
