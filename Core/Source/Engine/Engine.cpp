@@ -130,9 +130,10 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 	Graphics->Renderer = std::make_unique<graphics::CRenderer>(Graphics->Window.get());
 	Graphics->Renderer->Resize(display.FullscreenMode == EFullscreenMode::Fullscreen);
 	DisplayOptions = graphics::GetDisplayOptions(Graphics->Renderer->GetAdapter());
-	display.ResolutionIndex = DisplayOptions.GetResolutionIndex(display.MonitorIndex, display.GetResolution());
-	display.RefreshRateIndex = DisplayOptions.GetRefreshRateIndex(display.MonitorIndex, display.RefreshRateTxt);
+	// Clamp the config's monitor index before anything indexes per-monitor data with it.
 	display.MonitorIndex = DisplayOptions.ClampMonitorIndex(display.MonitorIndex);
+	display.ResolutionIndex = DisplayOptions.GetResolutionIndex(static_cast<uint8>(display.MonitorIndex), display.GetResolution());
+	display.RefreshRateIndex = DisplayOptions.GetRefreshRateIndex(static_cast<uint8>(display.MonitorIndex), display.RefreshRateTxt);
 	Graphics->Renderer->bVSyncEnabled = display.bVSync;
 	if (Desc.bMaximizeWindow)
 	{
@@ -294,14 +295,16 @@ void CEngine::ApplyDisplaySettings ()
 {
 #if !defined(FRT_HEADLESS)
 	SDisplaySettings& display = UserSettings.DisplaySettings;
+	display.MonitorIndex = DisplayOptions.ClampMonitorIndex(display.MonitorIndex);
+	const uint8 monitorIndex = static_cast<uint8>(display.MonitorIndex);
 	if (!Desc.bAllowExclusiveFullscreen && display.FullscreenMode == EFullscreenMode::Fullscreen)
 	{
 		display.FullscreenMode = EFullscreenMode::Borderless;
 	}
 	if (display.IsFullscreen())
 	{
-		const std::span<const graphics::SResolution> resolutions = DisplayOptions.GetResolutions(display.MonitorIndex);
-		const graphics::SResolution fullscreenResolution = DisplayOptions.GetFullscreenResolution(display.MonitorIndex);
+		const std::span<const graphics::SResolution> resolutions = DisplayOptions.GetResolutions(monitorIndex);
+		const graphics::SResolution fullscreenResolution = DisplayOptions.GetFullscreenResolution(monitorIndex);
 		int32 index = 0;
 		for (; index < static_cast<int32>(resolutions.size()); ++index)
 		{
@@ -314,7 +317,7 @@ void CEngine::ApplyDisplaySettings ()
 	}
 
 	Graphics->Renderer->bVSyncEnabled = display.bVSync;
-	const std::span<const uint64> refreshRates = DisplayOptions.GetRefreshRates(display.MonitorIndex, display.ResolutionIndex);
+	const std::span<const uint64> refreshRates = DisplayOptions.GetRefreshRates(monitorIndex, display.ResolutionIndex);
 	if (!refreshRates.empty())
 	{
 		uint32 numerator = 0u;

@@ -75,8 +75,8 @@ public:
 	// Authors the world's content (entities, camera, environment) into an empty world.
 	virtual void BuildWorld (const SGameContext& Context) = 0;
 
-	virtual void BeginPlay (const SGameContext& Context) {}
-	virtual void Tick (const SGameContext& Context, const SGameFrame& Frame) {}
-	virtual void EndPlay (const SGameContext& Context) {}
+	virtual void BeginPlay (const SGameContext& /*Context*/) {}
+	virtual void Tick (const SGameContext& /*Context*/, const SGameFrame& /*Frame*/) {}
+	virtual void EndPlay (const SGameContext& /*Context*/) {}
 };
 }

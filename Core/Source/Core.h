@@ -49,9 +49,9 @@
 #define NOMINMAX
 #endif
 
-#define WINAPI_FAMILY_APP  WINAPI_FAMILY_GAMES
-
+#ifndef NOMINMAX
 #define NOMINMAX
+#endif
 
 #include "Asserts.h"
 

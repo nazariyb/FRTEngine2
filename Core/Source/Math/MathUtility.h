@@ -174,7 +174,7 @@ namespace math
 	}
 
 	template <>
-	constexpr bool SIndexStrategy::IsValid<SIndexStrategy::IS_Circular> (int64 InValue, int64 Count)
+	constexpr bool SIndexStrategy::IsValid<SIndexStrategy::IS_Circular> (int64 /*InValue*/, int64 Count)
 	{
 		return Count > 0;
 	}

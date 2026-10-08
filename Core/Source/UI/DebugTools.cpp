@@ -449,7 +449,8 @@ void CDebugTools::DrawDisplaySettingsPanel (const SContext& Context)
 			(int)monitorNames.size());
 	}
 
-	std::span<const SResolution> resolutions = DisplayOptions.GetResolutions(displaySettings.MonitorIndex);
+	displaySettings.MonitorIndex = DisplayOptions.ClampMonitorIndex(displaySettings.MonitorIndex);
+	std::span<const SResolution> resolutions = DisplayOptions.GetResolutions(static_cast<uint8>(displaySettings.MonitorIndex));
 	displaySettings.ResolutionIndex = math::ClampIndex(displaySettings.ResolutionIndex, resolutions.size());
 
 	{
@@ -470,7 +471,7 @@ void CDebugTools::DrawDisplaySettingsPanel (const SContext& Context)
 	}
 
 	std::span<const uint64> refreshRates = DisplayOptions.GetRefreshRates(
-		displaySettings.MonitorIndex, displaySettings.ResolutionIndex);
+		static_cast<uint8>(displaySettings.MonitorIndex), displaySettings.ResolutionIndex);
 	{
 		displaySettings.RefreshRateIndex = math::ClampIndex(displaySettings.RefreshRateIndex, refreshRates.size());
 

@@ -14,7 +14,8 @@ class FRT_CORE_API Exception : public std::exception
 public:
 	Exception (int line, const char* file) noexcept;
 	Exception (int line, const char* file, HRESULT hr) noexcept;
-	Exception (const Exception&) = delete;
+	Exception (const Exception&) = default;
+	Exception& operator= (const Exception&) = default;
 	virtual ~Exception () override = default;
 
 	const char* What () const noexcept;

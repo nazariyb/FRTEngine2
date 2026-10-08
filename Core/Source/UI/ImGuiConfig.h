@@ -10,8 +10,8 @@
 // "Context and Memory Allocators" in imgui.cpp). IMGUI_IMPL_API defaults to IMGUI_API, which
 // exports the backends as well.
 //
-// Deliberately does not include Core.h: it defines WINAPI_FAMILY_APP and NOMINMAX, which
-// must not leak into ImGui's own translation units.
+// Deliberately does not include Core.h: it defines NOMINMAX, which must not leak into
+// ImGui's own translation units.
 //
 // Headless builds compile no ImGui at all, so they leave IMGUI_API empty: an exported
 // declaration would make the compiler emit references (e.g. ImGuiTextFilter's default

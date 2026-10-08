@@ -1,6 +1,6 @@
 ﻿#include "Camera.h"
 
-void frt::graphics::CCamera::Tick (float DeltaSeconds)
+void frt::graphics::CCamera::Tick (float /*DeltaSeconds*/)
 {}
 
 DirectX::XMMATRIX frt::graphics::CCamera::GetViewMatrix () const

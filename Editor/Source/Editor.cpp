@@ -194,7 +194,7 @@ int CEditor::Run ()
 		{
 			FocusRequest = SceneIndex;   // a fresh layout opens on the Scene view
 		}
-		DrawViewports(FrameMilliseconds);
+		DrawViewports();
 
 		// The tools inspect the viewport last used, and edit the camera it looks through.
 		CViewportPanel& inspected = Viewports[ActiveViewport];
@@ -556,7 +556,7 @@ void CEditor::DrawMainMenu ()
 	ImGui::EndMainMenuBar();
 }
 
-void CEditor::DrawViewports (float FrameMilliseconds)
+void CEditor::DrawViewports ()
 {
 	const int32 shown = FullscreenViewport >= 0 ? FullscreenViewport : MaximizedViewport;
 	// "F11 or Esc  exit fullscreen", from whatever is bound.

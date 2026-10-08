@@ -41,9 +41,9 @@ public:
 
 	virtual SFlags<EUpdatePhase>& GetPhases () = 0;
 
-	virtual void Input (const SUpdateContext& Context) {}
-	virtual void Prepare (const SUpdateContext& Context) {}
-	virtual void Update (const SUpdateContext& Context) {}
-	virtual void Finalize (const SUpdateContext& Context) {}
+	virtual void Input (const SUpdateContext& /*Context*/) {}
+	virtual void Prepare (const SUpdateContext& /*Context*/) {}
+	virtual void Update (const SUpdateContext& /*Context*/) {}
+	virtual void Finalize (const SUpdateContext& /*Context*/) {}
 };
 }

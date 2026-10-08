@@ -79,7 +79,7 @@ std::span<const frt::graphics::SResolution> frt::graphics::SDisplayOptions::GetR
 
 	const uint8 resolutionsNum = ResolutionOptionNums[OutputIndex];
 	const auto prevOutputsResolutions = std::span(ResolutionOptionNums).subspan(0, OutputIndex);
-	const uint16 prevResolutionsNum = std::accumulate(prevOutputsResolutions.begin(), prevOutputsResolutions.end(), 0u);
+	const uint16 prevResolutionsNum = static_cast<uint16>(std::accumulate(prevOutputsResolutions.begin(), prevOutputsResolutions.end(), 0u));
 	return std::span(Resolutions).subspan(prevResolutionsNum, resolutionsNum);
 }
 
@@ -88,10 +88,10 @@ std::span<const uint64> frt::graphics::SDisplayOptions::GetRefreshRates(uint8 Ou
 	frt_assert(OutputIndex < OutputsNum);
 
 	const auto prevOutputsResoultionsNums = std::span(ResolutionOptionNums).subspan(0, OutputIndex);
-	const uint16 prevResolutionsNum = std::accumulate(prevOutputsResoultionsNums.begin(), prevOutputsResoultionsNums.end(), 0u);
+	const uint16 prevResolutionsNum = static_cast<uint16>(std::accumulate(prevOutputsResoultionsNums.begin(), prevOutputsResoultionsNums.end(), 0u));
 
 	uint16 offset = 0u;
-	for (uint16 idx : std::views::iota(0u, prevResolutionsNum))
+	for (uint16 idx : std::views::iota(uint16{0}, prevResolutionsNum))
 	{
 		offset += RefreshRateOptionNums[static_cast<uint8>(idx)];
 	}
@@ -143,7 +143,8 @@ int32 frt::graphics::SDisplayOptions::GetRefreshRateIndex (uint8 OutputIndex, co
 	return GetRefreshRateIndex(OutputIndex, refreshRateInt);
 }
 
-int32 frt::graphics::SDisplayOptions::GetRefreshRateIndex (uint8 OutputIndex, uint32 RefreshRate) const
+// TODO: OutputIndex and RefreshRate are currently ignored; this always returns DefaultIndex.
+int32 frt::graphics::SDisplayOptions::GetRefreshRateIndex ([[maybe_unused]] uint8 OutputIndex, [[maybe_unused]] uint32 RefreshRate) const
 {
 	// for (const auto&& [idx, modeInfo] : std::views::enumerate(OutputsModes[OutputIndex]))
 	// {
@@ -156,7 +157,8 @@ int32 frt::graphics::SDisplayOptions::GetRefreshRateIndex (uint8 OutputIndex, ui
 	return DefaultIndex;
 }
 
-int32 frt::graphics::SDisplayOptions::GetRefreshRateIndex (uint8 OutputIndex, uint32 Numerator, uint32 Denominator) const
+// TODO: the parameters are currently ignored; this always returns DefaultIndex.
+int32 frt::graphics::SDisplayOptions::GetRefreshRateIndex ([[maybe_unused]] uint8 OutputIndex, [[maybe_unused]] uint32 Numerator, [[maybe_unused]] uint32 Denominator) const
 {
 	// for (const auto&& [idx, modeInfo] : std::views::enumerate(OutputsModes[OutputIndex]))
 	// {
@@ -169,9 +171,11 @@ int32 frt::graphics::SDisplayOptions::GetRefreshRateIndex (uint8 OutputIndex, ui
 	return DefaultIndex;
 }
 
-uint8 frt::graphics::SDisplayOptions::ClampMonitorIndex (uint8 InMonitorIndex) const
+uint8 frt::graphics::SDisplayOptions::ClampMonitorIndex (int32 InMonitorIndex) const
 {
-	return math::ClampIndex(InMonitorIndex, OutputsNum);
+	// Clamped as int32: narrowing the config value to uint8 first would wrap -1 or 256 onto
+	// another monitor. With no outputs at all this yields 0.
+	return static_cast<uint8>(math::Clamp(InMonitorIndex, 0, math::Max(OutputsNum - 1, 0)));
 }
 
 FRT_CORE_API bool frt::graphics::SResolution::Parse (std::string_view Str)
@@ -186,7 +190,7 @@ FRT_CORE_API bool frt::graphics::SResolution::Parse (std::string_view Str)
 
 	bValid = false;
 	Width = InvalidComponent;
-	Height = InvalidComponent;
+	Height = InvalidHeight;
 
 	const size_t delimiterPos = Str.find_first_of(Delimiters);
 	if (delimiterPos == std::string_view::npos)
@@ -208,7 +212,7 @@ FRT_CORE_API bool frt::graphics::SResolution::Parse (std::string_view Str)
 	if (errorW != std::errc() || errorH != std::errc() || ptrW != widthEnd || ptrH != heightEnd)
 	{
 		Width = InvalidComponent;
-		Height = InvalidComponent;
+		Height = InvalidHeight;
 		return bValid;
 	}
 

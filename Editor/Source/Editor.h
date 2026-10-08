@@ -91,7 +91,7 @@ private:
 	void ForgetClosedViewports ();
 	void ApplyCommand (const SEditorCommand& Command);
 	void DrawMainMenu ();
-	void DrawViewports (float FrameMilliseconds);
+	void DrawViewports ();
 	void HandleShortcuts ();
 	void UpdateCameraInput (float RealDeltaSeconds);
 	SGameInput RouteGameInput () const;

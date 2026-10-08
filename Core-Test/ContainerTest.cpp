@@ -20,7 +20,7 @@ TEST(TArrayTest, DefaultConstructor)
     PREPARE_ALLOCATOR()
 
     TArray<int> arr;
-    EXPECT_EQ(arr.GetSize(), 0);
+    EXPECT_EQ(arr.GetSize(), 0u);
     EXPECT_TRUE(arr.IsEmpty());
 }
 
@@ -31,12 +31,13 @@ TEST(TArrayTest, AddElements)
     TArray<int> arr;
     int& elem1 = arr.Add();
     elem1 = 10;
-    EXPECT_EQ(arr.GetSize(), 1);
+    EXPECT_EQ(arr.GetSize(), 1u);
     EXPECT_EQ(arr[0], 10);
 
     int& elem2 = arr.Add(20);
-    EXPECT_EQ(arr.GetSize(), 2);
+    EXPECT_EQ(arr.GetSize(), 2u);
     EXPECT_EQ(arr[1], 20);
+    EXPECT_EQ(&elem2, &arr[1]);
 }
 
 TEST(TArrayTest, AddUniqueElements)
@@ -45,11 +46,11 @@ TEST(TArrayTest, AddUniqueElements)
 
     TArray<int> arr;
     arr.AddUnique(5);
-    EXPECT_EQ(arr.GetSize(), 1);
+    EXPECT_EQ(arr.GetSize(), 1u);
     arr.AddUnique(5);
-    EXPECT_EQ(arr.GetSize(), 1);
+    EXPECT_EQ(arr.GetSize(), 1u);
     arr.AddUnique(10);
-    EXPECT_EQ(arr.GetSize(), 2);
+    EXPECT_EQ(arr.GetSize(), 2u);
 }
 
 TEST(TArrayTest, InsertElements)
@@ -60,7 +61,7 @@ TEST(TArrayTest, InsertElements)
     arr.Add(1);
     arr.Add(3);
     arr.Insert(2, 1);
-    EXPECT_EQ(arr.GetSize(), 3);
+    EXPECT_EQ(arr.GetSize(), 3u);
     EXPECT_EQ(arr[0], 1);
     EXPECT_EQ(arr[1], 2);
     EXPECT_EQ(arr[2], 3);
@@ -76,7 +77,7 @@ TEST(TArrayTest, RemoveElement)
     arr.Add(3);
     bool removed = arr.Remove(2);
     EXPECT_TRUE(removed);
-    EXPECT_EQ(arr.GetSize(), 2);
+    EXPECT_EQ(arr.GetSize(), 2u);
     EXPECT_FALSE(arr.Contains(2));
 }
 
@@ -89,8 +90,8 @@ TEST(TArrayTest, RemoveAllElements)
     arr.Add(4);
     arr.Add(4);
     uint32 removedCount = arr.RemoveAll(4);
-    EXPECT_EQ(removedCount, 3);
-    EXPECT_EQ(arr.GetSize(), 0);
+    EXPECT_EQ(removedCount, 3u);
+    EXPECT_EQ(arr.GetSize(), 0u);
 }
 
 TEST(TArrayTest, RemoveAtElement)
@@ -102,7 +103,7 @@ TEST(TArrayTest, RemoveAtElement)
     arr.Add(20);
     arr.Add(30);
     arr.RemoveAt<true>(1);
-    EXPECT_EQ(arr.GetSize(), 2);
+    EXPECT_EQ(arr.GetSize(), 2u);
     EXPECT_EQ(arr[0], 10);
     EXPECT_EQ(arr[1], 30);
 }
@@ -115,7 +116,7 @@ TEST(TArrayTest, ClearArray)
     arr.Add(100);
     arr.Add(200);
     arr.Clear();
-    EXPECT_EQ(arr.GetSize(), 0);
+    EXPECT_EQ(arr.GetSize(), 0u);
     EXPECT_TRUE(arr.IsEmpty());
 }
 
@@ -140,7 +141,7 @@ TEST(TArrayTest, MoveConstructor)
     arr.Add(7);
     arr.Add(14);
     TArray<int> moved(std::move(arr));
-    EXPECT_EQ(moved.GetSize(), 2);
+    EXPECT_EQ(moved.GetSize(), 2u);
     EXPECT_EQ(moved[0], 7);
     EXPECT_EQ(moved[1], 14);
 }
@@ -154,7 +155,7 @@ TEST(TArrayTest, CopyAssignmentOperator)
     arr.Add(20);
     TArray<int> copy;
     copy = arr;
-    EXPECT_EQ(copy.GetSize(), 2);
+    EXPECT_EQ(copy.GetSize(), 2u);
     EXPECT_EQ(copy[0], 10);
     EXPECT_EQ(copy[1], 20);
 }
@@ -168,7 +169,7 @@ TEST(TArrayTest, MoveAssignmentOperator)
     arr.Add(15);
     TArray<int> moved;
     moved = std::move(arr);
-    EXPECT_EQ(moved.GetSize(), 2);
+    EXPECT_EQ(moved.GetSize(), 2u);
     EXPECT_EQ(moved[0], 5);
     EXPECT_EQ(moved[1], 15);
 }
@@ -207,7 +208,7 @@ TEST(TArrayTest, SetSizeWithoutInitializer)
 
     TArray<int> arr;
     arr.SetSize<true>(5);
-    EXPECT_EQ(arr.GetSize(), 5);
+    EXPECT_EQ(arr.GetSize(), 5u);
 }
 
 TEST(TArrayTest, SetSizeWithInitializer)
@@ -216,7 +217,7 @@ TEST(TArrayTest, SetSizeWithInitializer)
 
     TArray<int> arr;
     arr.SetSize<true>(5, 42);
-    EXPECT_EQ(arr.GetSize(), 5);
+    EXPECT_EQ(arr.GetSize(), 5u);
     for (uint32 i = 0; i < arr.GetSize(); i++)
     {
         EXPECT_EQ(arr[i], 42);
@@ -234,7 +235,7 @@ TEST(TArrayTest, AppendArray)
     other.Add(3);
     other.Add(4);
     arr.Append(other);
-    EXPECT_EQ(arr.GetSize(), 4);
+    EXPECT_EQ(arr.GetSize(), 4u);
     EXPECT_EQ(arr[0], 1);
     EXPECT_EQ(arr[1], 2);
     EXPECT_EQ(arr[2], 3);
@@ -250,7 +251,7 @@ TEST(TArrayTest, FindElement)
     arr.Add(200);
     arr.Add(300);
     uint32 index = arr.Find(200);
-    EXPECT_EQ(index, 1);
+    EXPECT_EQ(index, 1u);
     index = arr.Find(400);
     EXPECT_EQ(index, arr.Count());
 }
@@ -315,7 +316,7 @@ TEST(TArrayTest, ReAllocAndFreeTest)
     arr.ReAlloc(10);
     EXPECT_GE(arr.GetCapacity(), 10u);
     arr.Free();
-    EXPECT_EQ(arr.GetSize(), 0);
+    EXPECT_EQ(arr.GetSize(), 0u);
 }
 
 TEST(TArrayTest, SetCapacityAndShrinkToFitTest)
@@ -354,6 +355,6 @@ TEST(TArrayTest, InsertWithMoveTest)
     arr.Add(1);
     int value = 2;
     arr.Insert(std::move(value), 1);
-    EXPECT_EQ(arr.GetSize(), 2);
+    EXPECT_EQ(arr.GetSize(), 2u);
     EXPECT_EQ(arr[1], 2);
 }

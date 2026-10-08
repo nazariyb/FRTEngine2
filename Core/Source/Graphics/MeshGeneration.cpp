@@ -16,7 +16,8 @@ static void FlipTriangleWinding (TArray<uint32>& Indices)
 	}
 }
 
-FRT_CORE_API SMesh GenerateCube(const Vector3f& Extent, uint32 SubdivisionsCount)
+// TODO: SubdivisionsCount is currently ignored; the cube is always generated without subdivisions.
+FRT_CORE_API SMesh GenerateCube(const Vector3f& Extent, [[maybe_unused]] uint32 SubdivisionsCount)
 {
 	SMesh result;
 

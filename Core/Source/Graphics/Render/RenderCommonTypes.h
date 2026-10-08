@@ -39,7 +39,7 @@ public:
 	[[nodiscard]] int32 GetRefreshRateIndex	(uint8 OutputIndex, uint32 RefreshRate) const;
 	[[nodiscard]] int32 GetRefreshRateIndex	(uint8 OutputIndex, uint32 Numerator, uint32 Denominator) const;
 
-	[[nodiscard]] uint8 ClampMonitorIndex (uint8 InMonitorIndex) const;
+	[[nodiscard]] uint8 ClampMonitorIndex (int32 InMonitorIndex) const;
 };
 
 
@@ -54,17 +54,25 @@ struct SRect
 struct SResolution
 {
 	static constexpr uint16 InvalidComponent = (uint16)-1;
+	// InvalidComponent truncated to the 15-bit Height field - what an invalid Height reads back as.
+	static constexpr uint16 InvalidHeight = (InvalidComponent & ~(1 << 15));
 
 private:
 	uint16 Width	= InvalidComponent;
-	uint16 Height	: 15 = (InvalidComponent & ~(1 << 15));
+	uint16 Height	: 15 = InvalidHeight;
 	uint16 bValid	: 1 = false;
 
 public:
 	SResolution () = default;
 
 	template <concepts::Numerical N = uint16>
-	SResolution (N InWidth, N InHeight) : Width(InWidth), Height(InHeight), bValid(true) {}
+	SResolution (N InWidth, N InHeight)
+		: Width(static_cast<uint16>(InWidth)), Height(static_cast<uint16>(InHeight)), bValid(true)
+	{
+		// A size that does not survive the narrowing (or the 15-bit Height field) would
+		// silently wrap.
+		frt_assert(static_cast<N>(Width) == InWidth && static_cast<N>(Height) == InHeight);
+	}
 
 public:
 	// TODO: use vec, but figure out what's wrong with its include
@@ -82,13 +90,13 @@ public:
 		bValid = true;
 	}
 
-	void Invalidate () { bValid = true; }
+	void Invalidate () { bValid = false; }
 
 public:
 	// Accepts "<width><delimiter><height>" where delimiter is one of x X : | -, and rejects
 	// anything else - including partially numeric text. Width/Height are left at
-	// InvalidComponent and bValid false on failure, so a rejected string never leaves a
-	// half-written resolution behind.
+	// InvalidComponent/InvalidHeight and bValid false on failure, so a rejected string never
+	// leaves a half-written resolution behind.
 	FRT_CORE_API bool Parse (std::string_view Str);
 
 	// Round-trips through Parse. Written into config, so the delimiter has to be one Parse

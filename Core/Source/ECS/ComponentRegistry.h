@@ -1,5 +1,6 @@
 #pragma once
 
+#include <limits>
 #include <type_traits>
 
 #include "Core.h"
@@ -10,7 +11,7 @@ namespace frt
 {
 using ComponentId = uint16;
 
-inline constexpr ComponentId InvalidComponentId = ~ComponentId(0);
+inline constexpr ComponentId InvalidComponentId = (std::numeric_limits<ComponentId>::max)();
 
 
 /**

@@ -539,7 +539,7 @@ void* TLSF::Memalign (uint64 Align, uint64 Size)
 
 	SBlockHeader* block = control->LocateBlockFree(alignedSize);
 
-	frt_assert(sizeof(SBlockHeader) == BlockMinSize + Overhead);
+	static_assert(sizeof(SBlockHeader) == BlockMinSize + Overhead);
 
 	if (block)
 	{

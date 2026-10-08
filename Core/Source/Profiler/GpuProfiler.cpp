@@ -16,7 +16,7 @@ CGpuProfiler* CGpuProfiler::GetCurrent () { return gCurrent; }
 
 // ----- CGpuScope ctor/dtor -----
 
-CGpuScope::CGpuScope (ID3D12GraphicsCommandList* CmdList, const char* Name)
+CGpuScope::CGpuScope (ID3D12GraphicsCommandList* CmdList, [[maybe_unused]] const char* Name)
 	: CommandList(CmdList)
 	, ScopeIndex(-1)
 {

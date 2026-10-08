@@ -434,7 +434,7 @@ void CDenoiser::Execute (CRenderContext& Context, const SDenoiserInputs& Inputs)
 		prevForward = XMLoadFloat3(&s.LastForward);
 	}
 	SCameraRays curRays, prevRays;
-	XMFLOAT3 prevProj0, prevProj1, prevProj2;
+	XMFLOAT3 prevProj0 = {}, prevProj1 = {}, prevProj2 = {};
 	const bool bCurRays = ComputeCameraRays(frame.ViewProjNoJitter, frame.CameraPosition, forward, curRays);
 	const bool bPrevRays = ComputeCameraRays(frame.PrevViewProjNoJitter, frame.PrevCameraPosition, prevForward, prevRays) &&
 		InvertRays(prevRays, prevProj0, prevProj1, prevProj2);
@@ -449,7 +449,13 @@ void CDenoiser::Execute (CRenderContext& Context, const SDenoiserInputs& Inputs)
 	if (!bPrevRays)
 	{
 		prevRays = curRays;
-		InvertRays(prevRays, prevProj0, prevProj1, prevProj2);
+		if (!InvertRays(prevRays, prevProj0, prevProj1, prevProj2))
+		{
+			// Not even the current rays invert (and a failed inversion may have written non-finite
+			// rows): zero rows project every point to depth 0, which the temporal pass never
+			// reprojects from - on top of the history reset below.
+			prevProj0 = prevProj1 = prevProj2 = {};
+		}
 		bReset = true;
 	}
 	c.CurRayX = curRays.X;

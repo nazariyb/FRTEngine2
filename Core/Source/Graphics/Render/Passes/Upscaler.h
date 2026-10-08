@@ -53,8 +53,8 @@ public:
 	virtual float GetMipBias (uint32 RenderWidth, uint32 DisplayWidth) const = 0;
 
 	// Each implementation applies / edits its own part of the profile.
-	virtual void ApplyProfile (const SRenderProfile& Profile) {}
-	virtual void DrawSettingsUi (SRenderProfile& Profile) {}
+	virtual void ApplyProfile (const SRenderProfile& /*Profile*/) {}
+	virtual void DrawSettingsUi (SRenderProfile& /*Profile*/) {}
 };
 
 class FRT_CORE_API CTemporalUpscaler final : public IUpscaler
@@ -89,11 +89,11 @@ public:
 	bool IsAvailable () const override { return true; }
 
 	void Initialize (rhi::CDevice& Device, rhi::CPipelineLibrary& Pipelines) override;
-	void Shutdown (rhi::CDevice& Device) override {}
-	void Resize (rhi::CDevice& Device, uint32 RenderWidth, uint32 RenderHeight, uint32 DisplayWidth, uint32 DisplayHeight) override {}
+	void Shutdown (rhi::CDevice& /*Device*/) override {}
+	void Resize (rhi::CDevice& /*Device*/, uint32 /*RenderWidth*/, uint32 /*RenderHeight*/, uint32 /*DisplayWidth*/, uint32 /*DisplayHeight*/) override {}
 	void Execute (CRenderContext& Context, const SUpscalerInputs& Inputs, rhi::SGpuTexture& Output) override;
-	void GetJitter (uint64 FrameIndex, uint32 RenderWidth, uint32 DisplayWidth, float& OutX, float& OutY) const override { OutX = 0.0f; OutY = 0.0f; }
-	float GetMipBias (uint32 RenderWidth, uint32 DisplayWidth) const override { return 0.0f; }
+	void GetJitter (uint64 /*FrameIndex*/, uint32 /*RenderWidth*/, uint32 /*DisplayWidth*/, float& OutX, float& OutY) const override { OutX = 0.0f; OutY = 0.0f; }
+	float GetMipBias (uint32 /*RenderWidth*/, uint32 /*DisplayWidth*/) const override { return 0.0f; }
 
 private:
 	rhi::HPipeline Resample = rhi::InvalidPipelineHandle;
