@@ -77,7 +77,7 @@ Each configuration is a build type and a target, e.g. `Development-Default`:
 
 Once per checkout, run **`Setup.bat`** (double-click is fine), the same as `FRT.bat setup`. It registers the checkout for this user under the name in `Engine.frtengine` (`FRTEngine2`), which is how projects find a shared engine, and generates `FRTEngine2.sln`: the engine's own projects, no game.
 
-Open it, build **Development-Default | Win64** and start the **Editor** (the startup project). Without a project it opens the **project manager**: your recent projects, **Open Other...** for any `.frtproject` file, and **New Project** to create one from a template. Opening a project builds it if it has not been built, starts an editor for it and closes the manager; **File → Switch Project** in the editor comes back to it.
+Open it, build **Development-Default | Win64** and start the **Editor** (the startup project). Without a project it opens the **project manager**: your recent projects, **Open Other...** for any `.frtproject` file, and **New Project** to create one from a template. Opening a project builds it if it has not been built, starts an editor for it - its own engine's, which need not be this one - and closes the manager; **File → Switch Project** in the editor comes back to it. A build that would have to relink the engine the manager itself runs from (after pulling engine changes, say) cannot happen while it runs: the manager then offers to close and finish the build in a console, which opens the project when done.
 
 ### 2. Projects
 

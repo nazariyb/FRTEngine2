@@ -224,20 +224,26 @@ int RunAndWait (const std::filesystem::path& Executable, const std::wstring& Arg
 	return static_cast<int>(code);
 }
 
-bool StartEngineTool (const std::wstring& Arguments)
+bool StartCommand (const std::wstring& CommandLine, const std::filesystem::path& WorkingDir, bool bConsole)
 {
-	std::wstring command = L"cmd.exe /d /s /c \"" + QuoteArgument(paths::GetEngineDir() / "FRT.bat") + L" " + Arguments + L"\"";
+	std::wstring command = L"cmd.exe /d /s /c \"" + CommandLine + L"\"";
 	STARTUPINFOW startup {};
 	startup.cb = sizeof(startup);
 	PROCESS_INFORMATION process {};
-	const std::wstring dir = paths::GetEngineDir().wstring();
-	if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, dir.c_str(), &startup, &process))
+	const std::wstring dir = WorkingDir.wstring();
+	if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, bConsole ? CREATE_NEW_CONSOLE : CREATE_NO_WINDOW,
+		nullptr, dir.empty() ? nullptr : dir.c_str(), &startup, &process))
 	{
 		return false;
 	}
 	CloseHandle(process.hThread);
 	CloseHandle(process.hProcess);
 	return true;
+}
+
+bool StartEngineTool (const std::wstring& Arguments)
+{
+	return StartCommand(QuoteArgument(paths::GetEngineDir() / "FRT.bat") + L" " + Arguments, paths::GetEngineDir(), false);
 }
 
 std::filesystem::path GetExecutablePath ()

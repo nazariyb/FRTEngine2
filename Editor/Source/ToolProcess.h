@@ -52,6 +52,9 @@ private:
 bool StartDetached (const std::filesystem::path& Executable, const std::wstring& Arguments, const std::filesystem::path& WorkingDir);
 // Runs an executable and waits for it to exit: its exit code, or -1 if it could not start.
 int RunAndWait (const std::filesystem::path& Executable, const std::wstring& Arguments, const std::filesystem::path& WorkingDir);
+// Runs a command line through cmd.exe on its own, in a console of its own (bConsole) or with no
+// window at all.
+bool StartCommand (const std::wstring& CommandLine, const std::filesystem::path& WorkingDir, bool bConsole);
 // Runs the engine's FRT.bat with Arguments on its own, without a console window: a command whose
 // result shows elsewhere (FRT.bat open).
 bool StartEngineTool (const std::wstring& Arguments);

@@ -98,6 +98,9 @@ private:
 
 	// Opens a project: builds it first when its editor or its game is not built, or bBuild.
 	void Open (const std::filesystem::path& ProjectFile, bool bBuild);
+	// Builds the project in a console once this process has exited, then opens it: for when the
+	// engine itself needs building, which its running editor prevents.
+	void BuildAfterExit (const std::filesystem::path& ProjectFile);
 	void StartCreate ();
 	void StartTask (ETask Kind, std::string Title, const std::wstring& CommandLine, const std::filesystem::path& ProjectFile);
 	void SetMessage (std::string Text, bool bError);
@@ -127,6 +130,7 @@ private:
 	ETask Task = ETask::None;
 	std::string TaskTitle;
 	std::filesystem::path TaskProject;   // opened when the task succeeds
+	std::filesystem::path FailedProject; // its build failed on a file this process holds
 	CToolProcess Tool;
 	size_t ShownOutputSize = 0u;
 

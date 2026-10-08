@@ -488,7 +488,8 @@ void CProjectManager::DrawNewProject ()
 	ImGui::TextUnformatted("Template");
 	// A row per template: its name, and what it is for under it.
 	const float rowHeight = ImGui::GetTextLineHeightWithSpacing() * 2.0f + ImGui::GetStyle().FramePadding.y;
-	const float listHeight = (rowHeight + ImGui::GetStyle().ItemSpacing.y) * static_cast<float>(Templates.size()) +
+	// Each row: the selectable and the empty item after it, each followed by item spacing.
+	const float listHeight = (rowHeight + ImGui::GetStyle().ItemSpacing.y * 2.0f) * static_cast<float>(Templates.size()) +
 		ImGui::GetStyle().WindowPadding.y * 2.0f;
 	if (ImGui::BeginChild("Templates", ImVec2(0.0f, listHeight), ImGuiChildFlags_Borders))
 	{
@@ -621,11 +622,23 @@ void CProjectManager::DrawTask ()
 		{
 			Tool.Cancel();
 		}
+		return;
 	}
-	else if (ImGui::Button("Close"))
+	if (ImGui::Button("Close"))
 	{
 		Task = ETask::None;
+		FailedProject.clear();
 		Refresh();
+	}
+	if (!FailedProject.empty())
+	{
+		ImGui::SameLine();
+		if (ImGui::Button("Close and Build in a Console"))
+		{
+			BuildAfterExit(FailedProject);
+		}
+		ImGui::SameLine();
+		ImGui::TextColored(DimColor, "The engine needs building, and this editor runs from its binaries.");
 	}
 }
 
@@ -636,6 +649,19 @@ void CProjectManager::UpdateTask ()
 		return;
 	}
 	const std::optional<int> exitCode = Tool.GetExitCode();
+	if (exitCode && *exitCode != 0 && !TaskProject.empty())
+	{
+		// The engine needed relinking, and this process has its binaries loaded (LNK1168: cannot
+		// open the file for writing): that build can only happen once this editor is gone.
+		project::SProjectDescriptor descriptor;
+		const std::string output = Tool.GetOutput();
+		if (output.find("LNK1168") != std::string::npos && project::SProjectDescriptor::Load(TaskProject, descriptor) &&
+			IsSameDir(project::ResolveEngineDir(descriptor), paths::GetEngineDir()))
+		{
+			FailedProject = TaskProject;
+		}
+		TaskProject.clear();
+	}
 	if (!exitCode || *exitCode != 0 || TaskProject.empty())
 	{
 		return;   // failed: the log stays up until closed
@@ -652,6 +678,7 @@ void CProjectManager::StartTask (ETask Kind, std::string Title, const std::wstri
 	Task = Kind;
 	TaskTitle = std::move(Title);
 	TaskProject = ProjectFile;
+	FailedProject.clear();
 	ShownOutputSize = 0u;
 	SetMessage({}, false);
 	Tool.Start(CommandLine, paths::GetEngineDir());
@@ -701,6 +728,37 @@ void CProjectManager::Open (const std::filesystem::path& ProjectFile, bool bBuil
 		SetMessage("Cannot start " + project::PathToUtf8(editor) + " (error " + std::to_string(GetLastError()) + ")", true);
 		return;
 	}
+	Engine.RequestQuit(0);
+}
+
+void CProjectManager::BuildAfterExit (const std::filesystem::path& ProjectFile)
+{
+	project::SProjectDescriptor descriptor;
+	std::string error;
+	if (!project::SProjectDescriptor::Load(ProjectFile, descriptor, &error))
+	{
+		SetMessage(error, true);
+		return;
+	}
+	const std::filesystem::path engineDir = project::ResolveEngineDir(descriptor, &error);
+	if (engineDir.empty())
+	{
+		SetMessage(descriptor.Name + ": " + error, true);
+		return;
+	}
+	// Waits for this process, builds, opens the project; stays open to be read if the build fails.
+	const std::wstring command = L"title Building " + WidenUtf8(descriptor.Name) +
+		L" & powershell -NoProfile -Command \"Wait-Process -Id " + std::to_wstring(GetCurrentProcessId()) + L" -ErrorAction SilentlyContinue\"" +
+		L" & " + QuoteArgument(engineDir / "FRT.bat") + L" build --project=" + QuoteArgument(descriptor.File) +
+		L" --config=" + WidenUtf8(ConfigName) +
+		L" && start \"\" " + QuoteArgument(EditorExecutable(engineDir)) + L" -Project=" + QuoteArgument(descriptor.File) +
+		L" || pause";
+	if (!StartCommand(command, engineDir, true))
+	{
+		SetMessage("Cannot start a console (error " + std::to_string(GetLastError()) + ")", true);
+		return;
+	}
+	project::AddRecentProject(descriptor.File);
 	Engine.RequestQuit(0);
 }
 
