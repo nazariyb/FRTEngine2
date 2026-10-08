@@ -1,7 +1,21 @@
 #pragma once
 
+#include <vector>
+
+#include "Containers/String.h"
 #include "Memory/Memory.h"
 #include "Memory/MemoryPool.h"
+
+
+namespace frt::test
+{
+/**
+ * argv[1..] exactly as main() received it: the CRT's parse of the command line, UTF-8 by the
+ * process code page. Copied before ::testing::InitGoogleTest, which removes GoogleTest's own flags
+ * from argv in place - and so from __argv, the same array, while __argc keeps the old count.
+ */
+const std::vector<FString>& GetMainArguments ();
+}
 
 
 /**

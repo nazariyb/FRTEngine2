@@ -436,8 +436,16 @@ void TArray<ElementType, TAllocator>::Free ()
 		Clear();
 	}
 
-	TAllocator::GetPrimaryInstance()->Free(Data);
-	Data = nullptr;
+	// Nothing allocated, nothing to give back: a default-constructed array destroyed while no pool
+	// exists (statics, code before the engine's pool or after it) must not touch the allocator.
+	if (Data != nullptr)
+	{
+		TAllocator::GetPrimaryInstance()->Free(Data);
+		Data = nullptr;
+	}
+	// The block is gone, so is its room: a stale Capacity made the next Add() write through the
+	// null Data (Size == Capacity was the only thing that triggered an allocation).
+	Capacity = 0u;
 }
 
 template <typename ElementType, typename TAllocator>
@@ -620,12 +628,12 @@ void TArray<ElementType, TAllocator>::Append (TArray&& InArray)
 
 	for (uint32 i = Size; i < NewSize; ++i)
 	{
-		new(Data + i) ElementType(std::move(*(InArray.Data + i)));
+		new(Data + i) ElementType(std::move(*(InArray.Data + (i - Size))));
 	}
 
 	Size = NewSize;
 
-	InArray.Size = 0u;
+	// The moved-from elements are still objects: InArray destroys them as it gives its block back.
 	InArray.Free();
 	(void)std::move(InArray);
 }

@@ -139,8 +139,10 @@ namespace math
 			return IsValid<TFrom>(InValue, Container.Count());
 		}
 
+		// constexpr, like the IsValid specializations below: the string views (Containers/StringView.h)
+		// resolve indices in constant expressions.
 		template <EType TFrom>
-		static uint64 ConvertToDefault (int64 InValue, uint64 Count)
+		static constexpr uint64 ConvertToDefault (int64 InValue, uint64 Count)
 		{
 			if (!IsValid<TFrom>(InValue, Count))
 			{
@@ -150,7 +152,7 @@ namespace math
 		}
 
 		template <EType TFrom>
-		static uint64 ConvertToDefaultPow2 (int64 InValue, uint64 Count)
+		static constexpr uint64 ConvertToDefaultPow2 (int64 InValue, uint64 Count)
 		{
 			if (!IsValid<TFrom>(InValue, Count))
 			{
@@ -160,7 +162,7 @@ namespace math
 		}
 
 		template <EType TFrom, concepts::Indexable TIndexable>
-		static uint64 ConvertToDefault (int64 InValue, const TIndexable& Container)
+		static constexpr uint64 ConvertToDefault (int64 InValue, const TIndexable& Container)
 		{
 			return ConvertToDefault<TFrom>(InValue, Container.Count());
 		}
@@ -168,7 +170,7 @@ namespace math
 
 
 	template <>
-	inline bool SIndexStrategy::IsValid<SIndexStrategy::IS_Default> (int64 InValue, int64 Count)
+	constexpr bool SIndexStrategy::IsValid<SIndexStrategy::IS_Default> (int64 InValue, int64 Count)
 	{
 		return InValue >= 0 && InValue < Count;
 	}
@@ -180,7 +182,7 @@ namespace math
 	}
 
 	template <>
-	inline bool SIndexStrategy::IsValid<SIndexStrategy::IS_CircularClamped> (int64 InValue, int64 Count)
+	constexpr bool SIndexStrategy::IsValid<SIndexStrategy::IS_CircularClamped> (int64 InValue, int64 Count)
 	{
 		return InValue >= -Count && InValue < Count;
 	}

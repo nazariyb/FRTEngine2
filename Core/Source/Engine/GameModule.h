@@ -20,8 +20,11 @@ class CConfig;
 
 
 // The contract between the hosts and a game module: GameInstance's interface and the types it
-// passes. Bump on any change to them.
-#define FRT_GAME_API_VERSION 1u
+// passes, including those whose inline code the module compiles itself - the string types
+// (Containers/String.h) and ImGui's, as UI/ImGuiConfig.h configures them. Bump on any change to them.
+// 2: ImWchar became 32 bits (IMGUI_USE_WCHAR32), which moves members of ImFontConfig, ImFont and
+// ImGuiInputTextCallbackData and renames every ImGui export taking an ImWchar.
+#define FRT_GAME_API_VERSION 2u
 
 #if defined(FRT_HEADLESS)
 #define FRT_GAME_MODULE_HEADLESS 1u

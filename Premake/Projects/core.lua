@@ -23,6 +23,7 @@ project "Core"
 		rootpath("%{prj.name}/Source/**.hxx"), rootpath("%{prj.name}/Source/**.hh"),
 		rootpath("%{prj.name}/Source/**.c"), rootpath("%{prj.name}/Source/**.cpp"),
 		rootpath("%{prj.name}/Source/**.cxx"), rootpath("%{prj.name}/Source/**.cc"),
+		rootpath("%{prj.name}/Source/**.inl"),
 		rootpath("%{prj.name}/Content/**"),
 		-- Repository files worth having at hand in the IDE. Named places only: a root-wide `**`
 		-- glob walks ThirdParty, Binaries and Intermediate too - tens of thousands of files, once
@@ -36,6 +37,8 @@ project "Core"
 		rootpath("Schemas/**"),
 		rootpath("Tools/**.md"),
 		rootpath("Tools/**.txt"),
+		-- Not Tools/**.py: Tools/Analysis keeps a Python virtual environment (.venv) of its own.
+		rootpath("Tools/Unicode/*.py"),
 	}
 
 	filter "configurations:not *-Headless"
@@ -112,6 +115,7 @@ project "Core"
 	filter {}
 
 	engineWarnings()
+	engineSourceCharset()
 	usePrecompiledHeader("CorePch.h", rootpath("%{prj.name}/Source/CorePch.cpp"))
 
 	-- Real-number precision (frt::real). Must match every project linking Core;

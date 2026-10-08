@@ -1,6 +1,7 @@
 ﻿#include <gtest/gtest.h>
 
 #include "Containers/Array.h"
+#include "Containers/String.h"
 
 
 using uint32 = uint32_t;
@@ -242,6 +243,49 @@ TEST(TArrayTest, AppendArray)
     EXPECT_EQ(arr[3], 4);
 }
 
+// The moved-in elements come from the source's own slots, wherever they land in the destination.
+TEST(TArrayTest, AppendMovedArray)
+{
+    PREPARE_ALLOCATOR()
+
+    TArray<int> arr;
+    arr.Add(1);
+    arr.Add(2);
+    TArray<int> other;
+    other.Add(3);
+    other.Add(4);
+    arr.Append(std::move(other));
+    ASSERT_EQ(arr.GetSize(), 4u);
+    EXPECT_EQ(arr[0], 1);
+    EXPECT_EQ(arr[1], 2);
+    EXPECT_EQ(arr[2], 3);
+    EXPECT_EQ(arr[3], 4);
+    EXPECT_EQ(other.GetSize(), 0u);
+}
+
+// Strings own blocks: they change hands (the same pointers), nothing is read past the source's end.
+TEST(TArrayTest, AppendMovedArrayOfStrings)
+{
+    PREPARE_ALLOCATOR()
+
+    TArray<FString> arr;
+    arr.Add(FString("x"));
+    arr.Add(FString("a heap string, longer than the inline buffer"));
+    TArray<FString> other;
+    other.Add(FString("p, another heap string past the inline buffer"));
+    other.Add(FString("q"));
+    const char* block = other[0].GetData();
+
+    arr.Append(std::move(other));
+    ASSERT_EQ(arr.GetSize(), 4u);
+    EXPECT_EQ(arr[0], "x");
+    EXPECT_EQ(arr[1], "a heap string, longer than the inline buffer");
+    EXPECT_EQ(arr[2], "p, another heap string past the inline buffer");
+    EXPECT_EQ(arr[2].GetData(), block);
+    EXPECT_EQ(arr[3], "q");
+    EXPECT_EQ(other.GetSize(), 0u);
+}
+
 TEST(TArrayTest, FindElement)
 {
     PREPARE_ALLOCATOR()
@@ -357,4 +401,51 @@ TEST(TArrayTest, InsertWithMoveTest)
     arr.Insert(std::move(value), 1);
     EXPECT_EQ(arr.GetSize(), 2u);
     EXPECT_EQ(arr[1], 2);
+}
+
+// Index strategies resolve in constant expressions (the string views index with them at compile time).
+static_assert(ArrayIndexStrategy::IsValid<ArrayIndexStrategy::IS_Default>(2, 3));
+static_assert(!ArrayIndexStrategy::IsValid<ArrayIndexStrategy::IS_Default>(-1, 3));
+static_assert(ArrayIndexStrategy::IsValid<ArrayIndexStrategy::IS_CircularClamped>(-3, 3));
+static_assert(!ArrayIndexStrategy::IsValid<ArrayIndexStrategy::IS_CircularClamped>(-4, 3));
+static_assert(ArrayIndexStrategy::ConvertToDefault<ArrayIndexStrategy::IS_Circular>(-1, 3u) == 2u);
+static_assert(ArrayIndexStrategy::ConvertToDefault<ArrayIndexStrategy::IS_CircularClamped>(-3, 3u) == 0u);
+static_assert(ArrayIndexStrategy::ConvertToDefault<ArrayIndexStrategy::IS_Default>(3, 3u) == 3u);   // invalid -> Count
+static_assert(ArrayIndexStrategy::ConvertToDefaultPow2<ArrayIndexStrategy::IS_Circular>(-1, 4u) == 3u);
+
+// An array that never allocated must not need a pool to be destroyed or freed: statics and code
+// running before the engine's pool exists (or after it is gone) own such arrays.
+TEST(TArrayTest, FreeWithoutPool)
+{
+    {
+        PREPARE_ALLOCATOR()
+    }
+    // Destroying the primary pool cleared the primary instance.
+    ASSERT_EQ(CMemoryPool::GetPrimaryInstance(), nullptr);
+
+    {
+        TArray<int> arr;
+    }
+
+    TArray<int> arr;
+    arr.Free();
+    EXPECT_EQ(arr.GetData(), nullptr);
+    EXPECT_EQ(arr.GetCapacity(), 0u);
+}
+
+// Free() gives the block back, so the array must not believe it still has room for elements.
+TEST(TArrayTest, AddAfterFree)
+{
+    PREPARE_ALLOCATOR()
+
+    TArray<int> arr;
+    arr.Add(1);
+    arr.Add(2);
+    arr.Free();
+    EXPECT_EQ(arr.GetSize(), 0u);
+    EXPECT_EQ(arr.GetCapacity(), 0u);
+
+    arr.Add(3);
+    ASSERT_EQ(arr.GetSize(), 1u);
+    EXPECT_EQ(arr[0], 3);
 }

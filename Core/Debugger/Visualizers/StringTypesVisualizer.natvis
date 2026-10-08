@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The string types (Containers/StringView.h, String.h, WideString.h). s8 shows UTF-8 whatever the code page.
+    Member names are part of this file's contract: FString's Storage.Inline/Storage.Heap fields, FStringView's
+    and FStringLiteral's Data/Size, FWideString's Data/Size/Capacity/Inline. FString is inline while bit 7 of
+    its last byte (the tag) is clear; the tag is then the length.
+-->
+<AutoVisualizer xmlns="http://schemas.microsoft.com/vstudio/debugger/natvis/2010">
+    <Type Name="frt::FString">
+        <DisplayString Condition="(Storage.Inline.Tag &amp; 0x80) == 0">{Storage.Inline.Data,[Storage.Inline.Tag]s8}</DisplayString>
+        <DisplayString>{Storage.Heap.Data,[Storage.Heap.Len]s8}</DisplayString>
+        <StringView Condition="(Storage.Inline.Tag &amp; 0x80) == 0">Storage.Inline.Data,[Storage.Inline.Tag]s8</StringView>
+        <StringView>Storage.Heap.Data,[Storage.Heap.Len]s8</StringView>
+        <Expand>
+            <Item Name="[Len]" Condition="(Storage.Inline.Tag &amp; 0x80) == 0">(unsigned int)Storage.Inline.Tag</Item>
+            <Item Name="[Len]" Condition="(Storage.Inline.Tag &amp; 0x80) != 0">Storage.Heap.Len</Item>
+            <Item Name="[Capacity]" Condition="(Storage.Inline.Tag &amp; 0x80) == 0">22</Item>
+            <Item Name="[Capacity]" Condition="(Storage.Inline.Tag &amp; 0x80) != 0">Storage.Heap.Capacity</Item>
+            <Item Name="[Heap]">(Storage.Inline.Tag &amp; 0x80) != 0</Item>
+            <ArrayItems Condition="(Storage.Inline.Tag &amp; 0x80) == 0">
+                <Size>Storage.Inline.Tag</Size>
+                <ValuePointer>(unsigned char*)Storage.Inline.Data</ValuePointer>
+            </ArrayItems>
+            <ArrayItems Condition="(Storage.Inline.Tag &amp; 0x80) != 0">
+                <Size>Storage.Heap.Len</Size>
+                <ValuePointer>(unsigned char*)Storage.Heap.Data</ValuePointer>
+            </ArrayItems>
+        </Expand>
+    </Type>
+    <Type Name="frt::FStringView">
+        <DisplayString Condition="Size == 0">""</DisplayString>
+        <DisplayString>{Data,[Size]s8}</DisplayString>
+        <StringView Condition="Size != 0">Data,[Size]s8</StringView>
+        <Expand>
+            <Item Name="[Len]">Size</Item>
+            <ArrayItems Condition="Size != 0">
+                <Size>Size</Size>
+                <ValuePointer>(unsigned char*)Data</ValuePointer>
+            </ArrayItems>
+        </Expand>
+    </Type>
+    <Type Name="frt::FStringLiteral">
+        <DisplayString Condition="Size == 0">""</DisplayString>
+        <DisplayString>{Data,[Size]s8}</DisplayString>
+        <StringView Condition="Size != 0">Data,[Size]s8</StringView>
+    </Type>
+    <Type Name="frt::FWideString">
+        <DisplayString>{Data,[Size]su}</DisplayString>
+        <StringView>Data,[Size]su</StringView>
+        <Expand>
+            <Item Name="[Len]">Size</Item>
+            <Item Name="[Capacity]">Capacity</Item>
+            <Item Name="[Heap]">Data != Inline</Item>
+        </Expand>
+    </Type>
+</AutoVisualizer>

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- The process ANSI code page is UTF-8 (Windows 10 1903+): narrow CRT/STL/Win32 text left in third-party
+     code (path(const char*), fopen, FormatMessageA, exception::what()) is UTF-8, like FString.
+     Merged into every engine executable's manifest by Premake/common.lua (useCore). -->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+    </windowsSettings>
+  </application>
+</assembly>

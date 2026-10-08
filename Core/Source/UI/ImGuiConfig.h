@@ -28,3 +28,9 @@
 		#define IMGUI_API __declspec(dllimport)
 	#endif
 #endif
+
+// 32-bit ImWchar. Windows delivers a typed supplementary-plane character (emoji, CJK Extension B)
+// as a surrogate pair; with the default 16-bit ImWchar ImGui turns it into U+FFFD before
+// ui::InputText (UI/ImGuiString.h) ever sees it. It changes ImWchar, a type in ImGui's API, so it
+// must hold for the whole process - which this header does.
+#define IMGUI_USE_WCHAR32

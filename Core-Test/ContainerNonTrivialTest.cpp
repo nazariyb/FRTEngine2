@@ -247,6 +247,36 @@ TEST(TArrayNonTrivial, MoveAssignmentDoesNotLeakDestination)
 	EXPECT_EQ(STracked::LiveCount, 0);
 }
 
+TEST(TArrayNonTrivial, AppendMovedArrayDestroysTheMovedFromElements)
+{
+	FRT_TEST_MEMORY_POOL();
+	STracked::Reset();
+
+	{
+		TArray<STracked> destination;
+		destination.Add(STracked("a"));
+		destination.Add(STracked("b"));
+
+		TArray<STracked> source;
+		source.Add(STracked("c"));
+		source.Add(STracked("d"));
+
+		STracked::CopyCount = 0;
+		destination.Append(std::move(source));
+
+		ASSERT_EQ(destination.Count(), 4u);
+		EXPECT_EQ(destination[0].Value, "a");
+		EXPECT_EQ(destination[1].Value, "b");
+		EXPECT_EQ(destination[2].Value, "c");
+		EXPECT_EQ(destination[3].Value, "d");
+		EXPECT_EQ(STracked::CopyCount, 0);
+		EXPECT_EQ(source.Count(), 0u);
+		EXPECT_EQ(STracked::LiveCount, 4) << "the moved-from source elements were not destroyed";
+	}
+
+	EXPECT_EQ(STracked::LiveCount, 0);
+}
+
 TEST(TArrayNonTrivial, SelfMoveAssignmentIsSafe)
 {
 	FRT_TEST_MEMORY_POOL();

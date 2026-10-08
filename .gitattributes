@@ -1,0 +1,4 @@
+# Generated Unicode tables are byte-exact outputs of Tools/Unicode/GenerateUnicodeTables.py,
+# which writes LF; its --check compares them with what it would generate.
+*.generated.h text eol=lf
+*.generated.inl text eol=lf

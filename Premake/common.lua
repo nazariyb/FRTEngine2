@@ -134,6 +134,13 @@ function engineWarnings()
 	end
 end
 
+-- Source and execution character set UTF-8: narrow literals are UTF-8 bytes (Containers/String.h),
+-- whatever the machine's code page. Engine code only: third-party projects keep their own flags
+-- (assimp sets /source-charset:utf-8, which /utf-8 must not be combined with).
+function engineSourceCharset()
+	buildoptions { "/utf-8" }
+end
+
 -- A precompiled header force-included into every file of the project, so no source names it.
 -- Header: the name under which the project's include path finds it; Source: the .cpp that
 -- builds it. Small projects (a launcher, a game module) are better off without one.
@@ -218,6 +225,26 @@ function useCore()
 	coreDependencies({ "configurations:Release*", "kind:ConsoleApp or WindowedApp" })
 
 	engineWarnings()
+	engineSourceCharset()
+
+	-- The process ANSI code page is UTF-8 (the manifest says why). Executables only - Editor,
+	-- Launcher, Core-Test and a Release game (Launcher/Source built into it): a DLL's manifest
+	-- cannot change it. Premake hands a configuration's .manifest files to the manifest tool
+	-- (AdditionalManifestFiles), which merges them into the manifest embedded in the executable.
+	filter "kind:ConsoleApp or WindowedApp"
+		files { rootpath("Core/Resources/Utf8CodePage.manifest") }
+	filter {}
+
+	-- Debugger visualizers. Where Core is a DLL its own link embeds them (core.lua's natvis files);
+	-- in Release it is a static library, which cannot carry them, so the executable's link does.
+	-- Quoted: the engine may live in a directory with spaces.
+	filter { "configurations:Release*", "kind:ConsoleApp or WindowedApp" }
+		linkoptions
+		{
+			'/NATVIS:"' .. rootpath("Core/Debugger/Visualizers/StringTypesVisualizer.natvis") .. '"',
+			'/NATVIS:"' .. rootpath("Core/Debugger/Visualizers/MemoryTypesVisualizer.natvis") .. '"',
+		}
+	filter {}
 
 	-- Must match Core's precision. See the top of this file.
 	applyPrecision()
