@@ -130,3 +130,5 @@ project "Core"
 		"{COPYFILE} %[" .. path.join(thirdPartyDir, "D3D12Agility/bin/x64/D3D12Core.dll") .. "] %[%{cfg.buildtarget.directory}/D3D12]",
 		"{COPYFILE} %[" .. path.join(thirdPartyDir, "D3D12Agility/bin/x64/d3d12SDKLayers.dll") .. "] %[%{cfg.buildtarget.directory}/D3D12]",
 	}
+
+	copyPrebuiltThirdPartyBinaries()

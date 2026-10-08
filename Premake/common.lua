@@ -165,12 +165,11 @@ end
 function coreDependencies(scope)
 	filter(scope)
 		libdirs { path.join(thirdPartyDir, "Dxc/lib/x64") }
-		links { "d3d12", "dxgi", "d3dcompiler", "dxcompiler", "assimp", "yaml-cpp" }
-
-	filter(table.join(scope, { "configurations:not *-Headless" }))
-		links { "ImGui" }
-
+		links { "d3d12", "dxgi", "d3dcompiler", "dxcompiler" }
 	filter {}
+
+	linkThirdParty(scope, { "assimp", "yaml-cpp" })
+	linkThirdParty(table.join(scope, { "configurations:not *-Headless" }), { "ImGui" })
 end
 
 -- Everything a project linking Core needs: includes, link, defines, precision.
@@ -192,8 +191,7 @@ function useCore()
 
 	-- One ImGui for the whole process (Core/Source/UI/ImGuiConfig.h); modules call it directly.
 	useImGui()
-	filter { "configurations:not Release*", "configurations:not *-Headless" }
-		links { "ImGui" }
+	linkThirdParty({ "configurations:not Release*", "configurations:not *-Headless" }, { "ImGui" })
 
 	filter "platforms:Win64"
 		defines { "WIN64", "_WINDOWS" }

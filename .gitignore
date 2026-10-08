@@ -33,3 +33,6 @@
 
 /Local
 /Demo/Local
+
+# Prebuilt third-party libraries (premake5 fetch-thirdparty)
+/ThirdParty/Prebuilt
