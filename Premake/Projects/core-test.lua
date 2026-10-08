@@ -27,3 +27,4 @@ project "Core-Test"
 
 	useCore()
 	useGoogleTest()
+	usePrecompiledHeader("TestPch.h", rootpath("%{prj.name}/TestPch.cpp"))

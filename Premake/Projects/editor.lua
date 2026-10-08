@@ -24,3 +24,4 @@ project "Editor"
 	}
 
 	useCore()
+	usePrecompiledHeader("EditorPch.h", rootpath("%{prj.name}/Source/EditorPch.cpp"))

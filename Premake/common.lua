@@ -103,6 +103,24 @@ end
 -- module they load. Another game: -Game:Module=<Name> with that project as working directory.
 defaultGameProject = "Demo"
 
+newoption
+{
+	trigger     = "nopch",
+	description = "Compile without precompiled headers: checks that every file includes what it uses"
+}
+
+-- A precompiled header force-included into every file of the project, so no source names it.
+-- Header: the name under which the project's include path finds it; Source: the .cpp that
+-- builds it. Small projects (a launcher, a game module) are better off without one.
+function usePrecompiledHeader(Header, Source)
+	if _OPTIONS["nopch"] then
+		return
+	end
+	pchheader (Header)
+	pchsource (Source)
+	forceincludes { Header }
+end
+
 -- One directory per platform, configurations separated by the target name (see core.lua).
 function flatBinaries()
 	targetdir (rootpath("Binaries/%{cfg.platform}"))

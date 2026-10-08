@@ -141,6 +141,8 @@ project "Core"
 
 	filter {}
 
+	usePrecompiledHeader("CorePch.h", rootpath("%{prj.name}/Source/CorePch.cpp"))
+
 	-- Real-number precision (frt::real). Must match every project linking Core;
 	-- a mismatch is a link error, not a silent ABI break. See Premake/common.lua.
 	applyPrecision()
