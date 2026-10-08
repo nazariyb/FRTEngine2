@@ -63,7 +63,7 @@ struct TComponentTraits
  *
  * This exists because Core is a DLL. A counter inside a function template gets one
  * instance per module, so the same component type would be assigned different ids in
- * Core and in Demo - identical pool indices meaning different types, corrupting silently
+ * Core and in a game module - identical pool indices meaning different types, corrupting silently
  * rather than failing. Registration goes through this one exported instance and is
  * idempotent by Name, so whichever module asks first wins and everyone agrees.
  *
@@ -159,7 +159,7 @@ SComponentInfo MakeComponentInfo()
 
 
 /**
- * Resolved once per type per module. The local static differs between Core and Demo,
+ * Resolved once per type per module. The local static differs between Core and a game,
  * but both route through the one registry, so both end up holding the same id.
  */
 template <class T>

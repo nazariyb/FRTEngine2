@@ -1,163 +1,167 @@
 #include "EnginePaths.h"
 
+#include <string>
 #include <system_error>
+#include <vector>
+
+#if defined(_WINDOWS)
+#include <Windows.h>
+#endif
+
+#include "Project/Project.h"
+#include "Project/UserRegistry.h"
 
 
 namespace frt::paths
 {
-// All paths are resolved relative to the working directory, and the leading ".." assumes
-// that directory is ONE level below the repository root - i.e. a project directory such
-// as Demo/, which is what Visual Studio uses by default and what demo.lua now pins via
-// debugdir.
-//
-// It is deliberately NOT the binary output directory: that is Binaries/<platform>/<config>,
-// three levels down, where ".." resolves to the wrong place and content lookup fails with
-// an assert inside ReadFileBytes. Launching a binary by double-clicking it will do exactly
-// that. Resolving against the executable location instead is the obvious fix and belongs
-// with the AssetManager / VFS work these functions are a placeholder for.
-//
-// FRT_PLATFORM_NAME and FRT_CONFIG_NAME come from the Premake workspace defines
-// (see Premake/workspace.lua). They mirror the on-disk Intermediate/ layout.
-
-std::filesystem::path GetContentDir ()
+namespace
 {
-	return std::filesystem::path("..") / "Core" / "Content";
+project::SProjectDescriptor Project;
+bool bHasProject = false;
+
+std::filesystem::path CurrentDir ()
+{
+	std::error_code ec;
+	const std::filesystem::path dir = std::filesystem::current_path(ec);
+	return ec ? std::filesystem::path(".") : dir;
 }
 
-std::filesystem::path GetIntermediateDir ()
+// The file Core's code was loaded from: Core.dll in the engine's Binaries, or - monolithic - the
+// executable itself.
+std::filesystem::path GetCoreModuleFile ()
 {
-	return std::filesystem::path("..") / "Intermediate" / FRT_PLATFORM_NAME / FRT_CONFIG_NAME;
+#if defined(_WINDOWS)
+	HMODULE module = nullptr;
+	if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+		reinterpret_cast<LPCWSTR>(&GetCoreModuleFile), &module))
+	{
+		std::vector<wchar_t> buffer(MAX_PATH);
+		while (true)
+		{
+			const DWORD length = GetModuleFileNameW(module, buffer.data(), static_cast<DWORD>(buffer.size()));
+			if (length == 0u)
+			{
+				break;
+			}
+			if (length < buffer.size())
+			{
+				return std::filesystem::path(std::wstring(buffer.data(), length));
+			}
+			buffer.resize(buffer.size() * 2u);   // a long path: retry with room for it
+		}
+	}
+#endif
+	return {};
 }
 
-std::filesystem::path GetDxrShaderSourceDir ()
+std::filesystem::path ResolveEngineDir ()
 {
-	return GetContentDir() / "Shaders" / "DXR";
+	// Core's own location: the checkout it was built in.
+	if (const std::filesystem::path core = GetCoreModuleFile(); !core.empty())
+	{
+		if (std::filesystem::path dir = project::FindEngineDirAbove(core.parent_path()); !dir.empty())
+		{
+			return dir;
+		}
+	}
+	// A monolithic executable in the project's Binaries: the project's engine.
+	if (bHasProject)
+	{
+		if (std::filesystem::path dir = project::ResolveEngineDir(Project); !dir.empty())
+		{
+			return dir;
+		}
+	}
+	if (std::filesystem::path dir = project::FindEngineDirAbove(CurrentDir()); !dir.empty())
+	{
+		return dir;
+	}
+	// No engine anywhere: lookups fail where they are made, naming the path they tried.
+	return CurrentDir();
+}
+}
+
+const std::filesystem::path& GetEngineDir ()
+{
+	static const std::filesystem::path dir = ResolveEngineDir();
+	return dir;
+}
+
+bool SetProject (const project::SProjectDescriptor& InProject)
+{
+	Project = InProject;
+	bHasProject = !Project.File.empty();
+	return bHasProject;
+}
+
+bool HasProject ()
+{
+	return bHasProject;
+}
+
+const project::SProjectDescriptor& GetProject ()
+{
+	return Project;
+}
+
+std::filesystem::path GetProjectDir ()
+{
+	return bHasProject ? Project.GetDir() : std::filesystem::path();
+}
+
+std::filesystem::path GetEngineContentDir ()
+{
+	return GetEngineDir() / "Core" / "Content";
 }
 
 std::filesystem::path GetShaderRootDir ()
 {
-	return GetRepoRoot() / "Core" / "Content" / "Shaders";
+	return GetEngineContentDir() / "Shaders";
+}
+
+std::filesystem::path GetProjectContentDir ()
+{
+	return bHasProject ? GetProjectDir() / "Content" : std::filesystem::path();
+}
+
+std::filesystem::path GetProjectBinariesDir ()
+{
+	return bHasProject ? GetProjectDir() / "Binaries" / FRT_PLATFORM_NAME : std::filesystem::path();
+}
+
+std::filesystem::path GetSavedDir ()
+{
+	return bHasProject ? GetProjectDir() / "Saved" : project::GetUserDataDir() / "Saved";
 }
 
 std::filesystem::path GetCaptureDir ()
 {
-	return GetRepoRoot() / "Local" / "Captures";
-}
-
-std::filesystem::path GetDxrShaderCacheDir ()
-{
-	return GetIntermediateDir() / "Shaders" / "DXR";
+	return GetSavedDir() / "Captures";
 }
 
 std::filesystem::path GetProfilingDir ()
 {
-	return std::filesystem::path("..") / "Local" / "Profiling";
+	return GetSavedDir() / "Profiling";
 }
-
-
-std::filesystem::path GetRepoRoot ()
-{
-	std::error_code ec;
-	const std::filesystem::path start = std::filesystem::current_path(ec);
-	if (ec)
-	{
-		return ".";
-	}
-
-	std::filesystem::path dir = start;
-	while (true)
-	{
-		if (std::filesystem::exists(dir / "premake5.lua", ec))
-		{
-			return dir;
-		}
-
-		if (!dir.has_parent_path())
-		{
-			break;
-		}
-
-		// A root path is its own parent; without this the loop never terminates.
-		const std::filesystem::path parent = dir.parent_path();
-		if (parent == dir)
-		{
-			break;
-		}
-
-		dir = parent;
-	}
-
-	return start;
-}
-
 
 std::filesystem::path GetEngineConfigPath ()
 {
-	return GetRepoRoot() / "Core" / "Config" / "Engine.ini";
+	return GetEngineDir() / "Core" / "Config" / "Engine.ini";
 }
-
 
 std::filesystem::path GetProjectConfigPath ()
 {
-	// Relative to the working directory rather than the root: the working directory IS the
-	// project directory (Demo/ via debugdir), and which project is running is exactly what
-	// this layer is meant to vary on.
-	std::error_code ec;
-	const std::filesystem::path current = std::filesystem::current_path(ec);
-	if (ec)
-	{
-		return std::filesystem::path("Config") / "Game.ini";
-	}
-
-	return current / "Config" / "Game.ini";
+	return bHasProject ? GetProjectDir() / "Config" / "Game.ini" : std::filesystem::path();
 }
-
 
 std::filesystem::path GetUserConfigPath ()
 {
-	// Local/ is gitignored, which is the point: this is the only config file the running
-	// game writes, and it must never show up in a diff.
-	return GetRepoRoot() / "Local" / "UserSettings.ini";
+	// Saved/ is never tracked: this is the only config file the running game writes.
+	return GetSavedDir() / "Config" / "UserSettings.ini";
 }
 
-
-std::filesystem::path FindContentSubdir (const char* Subdir)
+std::filesystem::path GetEditorUserDir ()
 {
-	std::error_code ec;
-	std::filesystem::path current = std::filesystem::current_path(ec);
-	if (ec)
-	{
-		current = ".";
-	}
-
-	std::filesystem::path dir = current;
-	while (true)
-	{
-		const std::filesystem::path candidate = dir / "Core" / "Content" / Subdir;
-		if (std::filesystem::exists(candidate, ec))
-		{
-			const std::filesystem::path absolute = std::filesystem::absolute(candidate, ec);
-			return ec ? candidate : absolute;
-		}
-		if (!dir.has_parent_path())
-		{
-			break;
-		}
-		const std::filesystem::path parent = dir.parent_path();
-		if (parent == dir)
-		{
-			break;
-		}
-		dir = parent;
-	}
-
-	const std::filesystem::path fallback = current / "Core" / "Content" / Subdir;
-	const std::filesystem::path absolute = std::filesystem::absolute(fallback, ec);
-	return ec ? fallback : absolute;
-}
-
-std::filesystem::path GetLocalDir ()
-{
-	return GetRepoRoot() / "Local";
+	return project::GetUserDataDir() / "Editor";
 }
 }

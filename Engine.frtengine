@@ -1,0 +1,7 @@
+; Marks this directory as a FRTEngine checkout.
+; Name: what projects using a shared engine call it (FRT.bat setup registers it under this name for
+; the user). Two checkouts used side by side - a fork, another branch - need different names.
+; Core/Source/Project/Project.h says more.
+[Engine]
+Name=FRTEngine2
+Version=0.1

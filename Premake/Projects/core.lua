@@ -123,15 +123,6 @@ project "Core"
 	------------------------------
 	-- Runtime files beside the binaries. Copied only when changed, so building while a host runs
 	-- from Binaries (rebuilding its game module) does not fail on files it has loaded.
-	prebuildcommands
-	{
-		copyIfChanged(path.join(thirdPartyDir, "Dxc/bin/x64/dxcompiler.dll"), "%{cfg.buildtarget.directory}"),
-		copyIfChanged(path.join(thirdPartyDir, "Dxc/bin/x64/dxil.dll"), "%{cfg.buildtarget.directory}"),
-		-- Agility SDK runtime: loaded from <exe dir>/D3D12/ (D3D12SDKPath exported by the host
-		-- executable, Engine/HostEntry.h).
-		"{MKDIR} %[%{cfg.buildtarget.directory}/D3D12]",
-		copyIfChanged(path.join(thirdPartyDir, "D3D12Agility/bin/x64/D3D12Core.dll"), "%{cfg.buildtarget.directory}/D3D12"),
-		copyIfChanged(path.join(thirdPartyDir, "D3D12Agility/bin/x64/d3d12SDKLayers.dll"), "%{cfg.buildtarget.directory}/D3D12"),
-	}
+	copyRuntimeFiles()
 
 	copyPrebuiltThirdPartyBinaries()

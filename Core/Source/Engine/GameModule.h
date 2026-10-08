@@ -35,7 +35,7 @@ class CConfig;
 
 /**
  * Makes a project a game module: one line in the game's sources, e.g.
- *     FRT_IMPLEMENT_GAME_MODULE(DemoGame)
+ *     FRT_IMPLEMENT_GAME_MODULE(MyGame)
  * The game is a DLL the hosts (Launcher, Editor) load, finding these two exports by name - or,
  * in a monolithic build, a static library linked into the launcher, where Core calls them
  * directly and that reference is what pulls the game into the link. A constructor that throws
@@ -78,8 +78,8 @@ public:
 	CGameModule (const CGameModule&) = delete;
 	CGameModule& operator= (const CGameModule&) = delete;
 
-	// Loads <executable dir>/<Name>-<Configuration>.dll and checks it was built against this
-	// engine's ABI. With FRT_WITH_GAME_HOT_RELOAD the DLL is loaded from a copy, so the build
+	// Loads <project>/Binaries/<platform>/<Name>-<Configuration>.dll (without a project: from the
+	// executable's directory) and checks it was built against this engine's ABI. With FRT_WITH_GAME_HOT_RELOAD the DLL is loaded from a copy, so the build
 	// can overwrite it while it runs (see HasNewerBuild). Monolithic builds: the game linked
 	// into the executable, whose name GetName() then returns; asking for another one only logs
 	// that it is not there. Logs and returns false otherwise.
@@ -97,7 +97,7 @@ public:
 	std::unique_ptr<GameInstance> CreateGame () const;
 
 	// [Game] Module from the config (-Game:Module=<Name> on the command line); by default the
-	// working directory's name, which is the project directory.
+	// project's module (paths::GetProject).
 	static std::string GetConfiguredName (const config::CConfig& Config);
 
 private:

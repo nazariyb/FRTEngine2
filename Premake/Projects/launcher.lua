@@ -1,9 +1,10 @@
 -----------------------------------------
 --------------  Launcher  ---------------
 -----------------------------------------
--- The runtime host: a generic executable that loads a game module (Engine/GameModule.h) and
--- runs it standalone. Not built per game, except in Release: there it is the shipping
--- executable, with the default game linked in (hostProject).
+-- The runtime host: a generic executable that loads a project's game module
+-- (Engine/GameModule.h) and runs it standalone: Launcher -Project=<project file>. Not built per
+-- game. In Release a game is its own executable, built from this code by its project
+-- (gameProject), so there is nothing to build here.
 project "Launcher"
 	location (rootpath("%{prj.name}"))
 
@@ -11,10 +12,11 @@ project "Launcher"
 		kind "ConsoleApp"
 	filter "configurations:not *-Headless"
 		kind "WindowedApp"
+	filter "configurations:Release*"
+		kind "Utility"
 	filter {}
 
 	flatBinaries()
-	hostProject()
 
 	files
 	{

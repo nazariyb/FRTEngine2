@@ -17,10 +17,12 @@
 #include "Graphics/Render/Renderer.h"
 #include "Graphics/Render/RenderView.h"
 #include "Input/InputSystem.h"
+#include "Project/Project.h"
 #include "UI/ImGuiLayer.h"
 
 #include "EditorSmokeTest.h"
 #include "MainToolbar.h"
+#include "ToolProcess.h"
 
 
 namespace frt::editor
@@ -105,8 +107,8 @@ bool CEditor::StartUp ()
 
 	// Shipped bindings, then the user's overrides - a scripted run's own, so that it neither
 	// depends on nor touches the user's.
-	Input.Load(paths::GetRepoRoot() / "Editor" / "Config" / "EditorInput.ini",
-		SmokeTest ? SmokeTest->GetOutputDir() / "EditorInput.ini" : paths::GetLocalDir() / "Editor" / "EditorInput.ini");
+	Input.Load(paths::GetEngineDir() / "Editor" / "Config" / "EditorInput.ini",
+		SmokeTest ? SmokeTest->GetOutputDir() / "EditorInput.ini" : paths::GetEditorUserDir() / "EditorInput.ini");
 	ApplyInputConfig(true);
 	bStarted = true;
 	return true;
@@ -500,6 +502,28 @@ void CEditor::DrawMainMenu ()
 	const auto shortcut = [this] (EEditorCommand Command) { return Input.GetShortcutText(Command).c_str(); };
 	if (ImGui::BeginMenu("File"))
 	{
+		// FRT.bat open: the project's solution, in whatever opens .sln files - generated first if
+		// there is none yet.
+		if (ImGui::MenuItem("Open Solution", nullptr, false, paths::HasProject()))
+		{
+			if (!StartEngineTool(L"open --project=" + QuoteArgument(paths::GetProject().File)))
+			{
+				PostNotice("Cannot run the engine's FRT.bat", true);
+			}
+		}
+		// The project manager, in a new editor; this one closes.
+		if (ImGui::MenuItem("Switch Project..."))
+		{
+			if (StartDetached(GetExecutablePath(), L"-ProjectManager", paths::GetEngineDir()))
+			{
+				Execute(EEditorCommand::Exit);
+			}
+			else
+			{
+				PostNotice("Cannot start the project manager", true);
+			}
+		}
+		ImGui::Separator();
 		// Alt+F4 is the window's own, whatever is bound.
 		if (ImGui::MenuItem("Exit", *shortcut(EEditorCommand::Exit) ? shortcut(EEditorCommand::Exit) : "Alt+F4"))
 		{

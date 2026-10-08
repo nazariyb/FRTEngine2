@@ -208,28 +208,6 @@ if bPrebuiltThirdParty and _ACTION and _ACTION:match("^vs") then
 	end
 end
 
-local function winpath(p)
-	return path.translate(p, "\\")
-end
-
--- os.execute through cmd.exe, which strips one pair of outer quotes.
-local function run(command)
-	return os.execute('"' .. command .. '"')
-end
-
--- The Visual Studio 2022 installation the vs2022 projects build with: the newest one with
--- MSBuild and the v143 C++ toolset. Both MSBuild and the toolset version come from it.
-local function visualStudio2022()
-	local exe = path.join(os.getenv("ProgramFiles(x86)") or "C:/Program Files (x86)",
-		"Microsoft Visual Studio/Installer/vswhere.exe")
-	if not os.isfile(exe) then
-		return nil
-	end
-	local output, code = os.outputof('"' .. winpath(exe) .. '" -latest -products * -version [17.0,18.0) ' ..
-		'-requires Microsoft.Component.MSBuild Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath')
-	return (code == 0 and output) and output:match("[^\r\n]+") or nil
-end
-
 -- The MSVC version the build uses: --msvc, or the v143 toolset's default.
 local function msvcVersion(installation)
 	if _OPTIONS["msvc"] then
@@ -237,22 +215,6 @@ local function msvcVersion(installation)
 	end
 	local text = io.readfile(path.join(installation, "VC/Auxiliary/Build/Microsoft.VCToolsVersion.v143.default.txt"))
 	return text and text:match("^%s*(.-)%s*$") or "unknown"
-end
-
--- The generation options this action was given, for the solution it regenerates.
-local function forwardedOptions()
-	local arguments = {}
-	for _, name in ipairs({ "msvc", "precision" }) do
-		if _OPTIONS[name] then
-			table.insert(arguments, "--" .. name .. "=" .. _OPTIONS[name])
-		end
-	end
-	for _, name in ipairs({ "nopch", "fatal-warnings" }) do
-		if _OPTIONS[name] then
-			table.insert(arguments, "--" .. name)
-		end
-	end
-	return table.concat(arguments, " ")
 end
 
 local function sha256(file)
@@ -279,9 +241,9 @@ newaction
 
 		-- The projects, built from source: regenerates the solution in source mode, with the
 		-- generation options given here (--msvc picks the compiler the archive is built with).
-		local options = forwardedOptions()
+		local options = generationOptions(false)
 		print("Generating the solution with third-party projects (vs2022 " .. options .. ")...")
-		if not run('"' .. winpath(_PREMAKE_COMMAND) .. '" --file="' .. winpath(rootpath("premake5.lua")) .. '" vs2022 ' .. options) then
+		if not runCommand('"' .. winpath(_PREMAKE_COMMAND) .. '" --file="' .. winpath(rootpath("premake5.lua")) .. '" vs2022 ' .. options) then
 			error("package-thirdparty: generating the solution failed", 0)
 		end
 
@@ -295,7 +257,7 @@ newaction
 			print("Building the third-party libraries (" .. buildType .. ")...")
 			local command = string.format('"%s" "%s" -t:%s -p:Configuration=%s-Default -p:Platform=Win64 -m -nologo -v:minimal',
 				winpath(msbuild), winpath(rootpath("FRTEngine2.sln")), targets, buildType)
-			if not run(command) then
+			if not runCommand(command) then
 				error("package-thirdparty: building " .. buildType .. " failed", 0)
 			end
 		end
@@ -337,7 +299,7 @@ newaction
 		local archive = rootpath("Binaries/FRTEngine2-ThirdParty-Win64-" .. stamp:sub(1, 12) .. ".zip")
 		os.remove(archive)
 		local tar = path.join(os.getenv("SystemRoot") or "C:/Windows", "System32/tar.exe")
-		if not run('"' .. winpath(tar) .. '" -a -c -f "' .. winpath(archive) .. '" -C "' .. winpath(staging) .. '" .') then
+		if not runCommand('"' .. winpath(tar) .. '" -a -c -f "' .. winpath(archive) .. '" -C "' .. winpath(staging) .. '" .') then
 			error("package-thirdparty: creating the archive failed", 0)
 		end
 
@@ -371,7 +333,7 @@ newaction
 			if result ~= "OK" then
 				os.remove(archive)
 				-- curl follows redirects (release assets are served through one) for certain.
-				if not run('curl.exe -L --fail -s -S -o "' .. winpath(archive) .. '" "' .. source .. '"') then
+				if not runCommand('curl.exe -L --fail -s -S -o "' .. winpath(archive) .. '" "' .. source .. '"') then
 					error("fetch-thirdparty: downloading failed: " .. tostring(result) .. " (" .. tostring(code) .. ")", 0)
 				end
 			end

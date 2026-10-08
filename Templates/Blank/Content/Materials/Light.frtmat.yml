@@ -1,0 +1,6 @@
+version: 2
+name: Light
+
+emissive:
+  color: { r: 1.0, g: 0.85, b: 0.6 }
+  intensity: 40

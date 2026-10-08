@@ -11,6 +11,7 @@
 #include <iostream>
 #include <memory>
 
+#include "EnginePaths.h"
 #include "Exception.h"
 #include "GameInstance.h"
 #include "WorldScene.h"
@@ -19,6 +20,7 @@
 #include "Engine/GameModule.h"
 #include "Engine/LaunchConfig.h"
 #include "Input/InputSystem.h"
+#include "Project/Project.h"
 
 #if !defined(FRT_HEADLESS)
 #include "imgui.h"
@@ -176,8 +178,24 @@ int RunGameLoop (CEngine& Engine, const CGameModule& Module)
 
 int RunLauncher ()
 {
+	// The game to run: its project names the module and holds the content and config.
+	std::string error;
+	const std::filesystem::path projectFile = project::FindProjectToRun(true, &error);
+	project::SProjectDescriptor gameProject;
+	if (projectFile.empty() || !project::SProjectDescriptor::Load(projectFile, gameProject, &error))
+	{
+		ReportStartupError(error.empty()
+			? "No project to run. Start the launcher with -Project=<project file>, or from a project's directory."
+			: error);
+		return 1;
+	}
+	paths::SetProject(gameProject);
+
+	SEngineDesc desc;
+	desc.WindowTitle = WidenUtf8(gameProject.Name);
+	desc.UiIniPath = paths::GetSavedDir() / "Launcher" / "imgui.ini";
 	CEngine engine;
-	if (!engine.StartUp({}))
+	if (!engine.StartUp(desc))
 	{
 		return 1;
 	}

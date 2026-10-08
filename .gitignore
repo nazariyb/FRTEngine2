@@ -31,8 +31,10 @@
 **/*.vcxproj.user
 **/*.DotSettings.user
 
-/Local
-/Demo/Local
+# Templates built in place (FRT.bat generate --project=Templates/<Name>)
+/Templates/*/Binaries/
+/Templates/*/Intermediate/
+/Templates/*/Saved/
 
 # Prebuilt third-party libraries (premake5 fetch-thirdparty)
 /ThirdParty/Prebuilt

@@ -99,12 +99,6 @@ end
 -----------------------------------------
 -----------  Project helpers  -----------
 -----------------------------------------
--- The game project the hosts (Launcher, Editor) run by default: their working directory -
--- project config and content resolve from it - and, through its Config/Game.ini, the game
--- module they load. Another game: -Game:Module=<Name> with that project as working directory -
--- except in Release, where the launcher is built with this game linked in.
-defaultGameProject = "Demo"
-
 newoption
 {
 	trigger     = "nopch",
@@ -164,10 +158,11 @@ end
 
 -- One directory per platform, configurations separated by the target name: a single place to
 -- find every binary beats a tree of near-empty folders. Only the shipping configuration,
--- Release-Default, has plain names.
-function flatBinaries()
-	targetdir (rootpath("Binaries/%{cfg.platform}"))
-	objdir (rootpath("Intermediate/%{cfg.platform}/%{cfg.buildcfg}/%{prj.name}"))
+-- Release-Default, has plain names. Under the engine, or a project's directory (RootDir).
+function flatBinaries(RootDir)
+	RootDir = RootDir or ROOT_DIR
+	targetdir (path.join(RootDir, "Binaries/%{cfg.platform}"))
+	objdir (path.join(RootDir, "Intermediate/%{cfg.platform}/%{cfg.buildcfg}/%{prj.name}"))
 
 	filter "configurations:Release-Default"
 		targetname "%{prj.name}"
@@ -228,34 +223,82 @@ function useCore()
 	applyPrecision()
 end
 
--- A game module (Engine/GameModule.h): a DLL the hosts load, or in Release a static library
--- linked into the launcher (hostProject).
-function gameProject()
-	filter "configurations:Release*"
-		kind "StaticLib"
+-- Build-event commands putting the files the engine loads at run time - DXC, the D3D12 Agility
+-- SDK - beside an executable or Core.
+function copyRuntimeFiles()
+	prebuildcommands
+	{
+		copyIfChanged(path.join(thirdPartyDir, "Dxc/bin/x64/dxcompiler.dll"), "%{cfg.buildtarget.directory}"),
+		copyIfChanged(path.join(thirdPartyDir, "Dxc/bin/x64/dxil.dll"), "%{cfg.buildtarget.directory}"),
+		-- Agility SDK runtime: loaded from <exe dir>/D3D12/ (D3D12SDKPath exported by the host
+		-- executable, Engine/HostEntry.h).
+		"{MKDIR} %[%{cfg.buildtarget.directory}/D3D12]",
+		copyIfChanged(path.join(thirdPartyDir, "D3D12Agility/bin/x64/D3D12Core.dll"), "%{cfg.buildtarget.directory}/D3D12"),
+		copyIfChanged(path.join(thirdPartyDir, "D3D12Agility/bin/x64/d3d12SDKLayers.dll"), "%{cfg.buildtarget.directory}/D3D12"),
+	}
+end
+
+-- A project's game (Engine/GameModule.h; Project: Premake/project.lua): Source/ built in the
+-- project's own Binaries and Intermediate. In Debug and Development a DLL the hosts load - the
+-- editor, or the launcher, with -Project=<file>. In Release the game itself: the shipping
+-- executable, <Module>.exe, with the launcher's code, Core and every library linked in.
+function gameProject(Project)
+	project (Project.Module)
+	-- With the generated solution, out of the project's tracked files.
+	location (path.join(Project.Dir, "Intermediate/ProjectFiles"))
+
 	filter "configurations:not Release*"
 		kind "SharedLib"
 		-- Hot reload (Engine/GameModule.cpp loads a copy of the DLL): the DLL names its PDB
 		-- without a directory, so a debugger reads the copy beside the loaded DLL and never locks
 		-- the build's own PDB, which the next link rewrites.
 		linkoptions { "/PDBALTPATH:%{cfg.buildtarget.basename}.pdb" }
+	filter { "configurations:Release*", "configurations:*-Headless" }
+		kind "ConsoleApp"
+	filter { "configurations:Release*", "configurations:not *-Headless" }
+		kind "WindowedApp"
 	filter {}
 
-	-- FRT_IMPLEMENT_GAME_MODULE reports it, so a monolithic launcher can say what it runs.
+	-- FRT_IMPLEMENT_GAME_MODULE reports it, so a monolithic executable can say what it runs.
 	defines { 'FRT_GAME_MODULE_NAME="%{prj.name}"' }
 
-	flatBinaries()
-	useCore()
-end
+	flatBinaries(Project.Dir)
 
--- A host executable: debugs in the default game's project directory and builds its module.
-function hostProject()
-	debugdir (rootpath(defaultGameProject))
-	dependson { defaultGameProject }
+	files
+	{
+		path.join(Project.Dir, "Source/**.h"),
+		path.join(Project.Dir, "Source/**.hpp"),
+		path.join(Project.Dir, "Source/**.cpp"),
+		path.join(Project.Dir, "Config/**.ini"),
+		Project.File,
+	}
 
-	-- Release is monolithic: the game is a static library linked in (Engine/GameModule.cpp).
-	-- Everywhere else the host must NOT link the game's import library: it loads the DLL itself.
+	includedirs
+	{
+		path.join(Project.Dir, "Source"),
+	}
+
+	-- The executable: the launcher's entry point, and the runtime files beside it.
 	filter "configurations:Release*"
-		links { defaultGameProject }
+		files
+		{
+			rootpath("Launcher/Source/**.h"),
+			rootpath("Launcher/Source/**.cpp"),
+		}
+		copyRuntimeFiles()
+	filter {}
+
+	useCore()
+
+	-- Starting the project (the solution's startup project) opens it in the editor, or runs it
+	-- in the launcher where there is no editor (Headless); in Release it runs the game. The
+	-- hosts are built first, so a start never runs stale ones.
+	dependson { "Editor", "Launcher" }
+	debugdir (Project.Dir)
+	debugargs { '-Project="' .. winpath(Project.File) .. '"' }
+	filter { "configurations:not Release*", "configurations:not *-Headless" }
+		debugcommand (rootpath("Binaries/%{cfg.platform}/Editor-%{cfg.buildcfg}.exe"))
+	filter { "configurations:not Release*", "configurations:*-Headless" }
+		debugcommand (rootpath("Binaries/%{cfg.platform}/Launcher-%{cfg.buildcfg}.exe"))
 	filter {}
 end

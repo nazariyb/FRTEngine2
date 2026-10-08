@@ -56,7 +56,7 @@ void CImGuiLayer::StartUp (CWindow& InWindow, graphics::CRenderer& Renderer, con
 	// ApplyStyle() are applied on top of it, and 1.92 re-rasterises per size, so zoomed text
 	// stays sharp. AddFontFromFileTTF() asserts on a missing file, hence the existence check -
 	// a stripped content dir should degrade to the built-in font.
-	const std::filesystem::path fontPath = paths::FindContentSubdir("Fonts") / "Roboto-Medium.ttf";
+	const std::filesystem::path fontPath = paths::GetEngineContentDir() / "Fonts" / "Roboto-Medium.ttf";
 	std::error_code fontEc;
 	if (std::filesystem::exists(fontPath, fontEc))
 	{

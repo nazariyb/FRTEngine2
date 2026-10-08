@@ -1,0 +1,4 @@
+; The Demo template, which is also a project in place: it names no engine, so it uses the one it
+; is in. Projects made from it get their own descriptor (FRT.bat new).
+[Project]
+Name=Demo

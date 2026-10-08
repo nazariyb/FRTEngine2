@@ -18,6 +18,15 @@
 using namespace frt;
 using namespace frt::graphics;
 
+namespace
+{
+// Everything the demo loads is in its project's Content/.
+std::filesystem::path Content (const char* RelativePath)
+{
+	return paths::GetProjectContentDir() / RelativePath;
+}
+}
+
 void DemoGame::BuildWorld (const SGameContext& Context)
 {
 	CWorldScene& World = Context.World;
@@ -26,8 +35,7 @@ void DemoGame::BuildWorld (const SGameContext& Context)
 	World.Camera.Transform.SetTranslation(4.9f, 2.2f, -1.5f);
 	World.Camera.Transform.SetRotation(-0.038f, -1.356f, .0f);
 
-	std::filesystem::path floorMaterialPath =
-		std::filesystem::path("../Core/Content/Models/Floor") / ("floor_mat" + std::to_string(0) + ".frtmat.yml");
+	const std::filesystem::path floorMaterialPath = Content("Models/Floor/floor_mat0.frtmat.yml");
 	// auto floor = World.SpawnEntity("Floor");
 	// floor->RenderModel->Model = memory::NewShared<SRenderModel>(
 	// 	SRenderModel::FromMesh(
@@ -45,8 +53,7 @@ void DemoGame::BuildWorld (const SGameContext& Context)
 			mesh::GenerateGrid(10.f, 10.f, 16u, 16u),
 			materialLibrary.LoadOrCreateMaterial(floorMaterialPath, {}))));
 
-	std::filesystem::path pillarMaterialPath =
-		std::filesystem::path("../Core/Content/Models/Pillar") / ("pillar_mat" + std::to_string(0) + ".frtmat.yml");
+	const std::filesystem::path pillarMaterialPath = Content("Models/Pillar/pillar_mat0.frtmat.yml");
 	auto pillar = World.SpawnEntity("Pillar");
 	pillar->RenderModel->Model = memory::NewShared<SRenderModel>(
 		SRenderModel::FromMesh(
@@ -64,8 +71,7 @@ void DemoGame::BuildWorld (const SGameContext& Context)
 	mirror->Transform.SetTranslation(3.f, 1.f, -.5f);
 	mirror->Transform.SetRotation(0.f, 0.f, math::PI_OVER_TWO);
 
-	std::filesystem::path cubeMaterialPath =
-		std::filesystem::path("../Core/Content/Models/Cube") / ("cube_mat" + std::to_string(0) + ".frtmat.yml");
+	const std::filesystem::path cubeMaterialPath = Content("Models/Cube/cube_mat0.frtmat.yml");
 	auto cube = World.SpawnEntity("Cube");
 	cube->RenderModel->Model = memory::NewShared<SRenderModel>(
 		SRenderModel::FromMesh(
@@ -84,8 +90,8 @@ void DemoGame::BuildWorld (const SGameContext& Context)
 	auto skullEnt = World.SpawnEntity("Skull");
 	skullEnt->RenderModel->Model = memory::NewShared<graphics::SRenderModel>(
 		graphics::SRenderModel::LoadFromFile(
-			R"(..\Core\Content\Models\Skull\scene.gltf)",
-			R"(..\Core\Content\Models\Skull\textures\defaultMat_baseColor.jpeg)", materialLibrary));
+			Content("Models/Skull/scene.gltf").string(),
+			Content("Models/Skull/textures/defaultMat_baseColor.jpeg").string(), materialLibrary));
 	skullEnt->Transform.SetTranslation(-2.5f, 1.5f, 0.f);
 	skullEnt->Transform.SetScale(Vector3f(.45f));
 	skullEnt->RotationSpeed = Vector3f::UpVector * (math::PI_OVER_FOUR * 0.25f);
@@ -93,21 +99,20 @@ void DemoGame::BuildWorld (const SGameContext& Context)
 	auto duckEnt = World.SpawnEntity("Duck");
 	duckEnt->RenderModel->Model = memory::NewShared<graphics::SRenderModel>(
 		graphics::SRenderModel::LoadFromFile(
-			R"(..\Core\Content\Models\Duck\Duck.gltf)",
-			R"(..\Core\Content\Models\Duck\DuckCM.png)", materialLibrary));
+			Content("Models/Duck/Duck.gltf").string(),
+			Content("Models/Duck/DuckCM.png").string(), materialLibrary));
 	duckEnt->Transform.SetTranslation(0.f, 0.f, 0.f);
 
 	// TODO: When Sponza is added, the renderer crashes. Probably multiple sections aren't handled properly
 	auto sponzaEnt = World.SpawnEntity("Sponza");
 	sponzaEnt->RenderModel->Model = memory::NewShared<graphics::SRenderModel>(
 		graphics::SRenderModel::LoadFromFile(
-			R"(..\Core\Content\Models\Sponza\Sponza.gltf)",
+			Content("Models/Sponza/Sponza.gltf").string(),
 			"", materialLibrary));
 	// sponzaEnt->Transform.SetTranslation(1.f, 0.f, 0.f);
 	sponzaEnt->bRayTraced = false;
 
-	std::filesystem::path lightMaterialPath =
-		std::filesystem::path("../Core/Content/Light") / ("light_mat" + std::to_string(0) + ".frtmat.yml");
+	const std::filesystem::path lightMaterialPath = Content("Light/light_mat0.frtmat.yml");
 
 	auto lightSource1 = World.SpawnEntity("Light 1");
 	lightSource1->RenderModel->Model = memory::NewShared<graphics::SRenderModel>(
@@ -115,8 +120,7 @@ void DemoGame::BuildWorld (const SGameContext& Context)
 			materialLibrary.LoadOrCreateMaterial(lightMaterialPath, {})));
 	lightSource1->Transform.SetTranslation(0.f, 2.f, -3.f);
 
-	std::filesystem::path lightMaterialPath2 =
-		std::filesystem::path("../Core/Content/Light") / ("light_mat" + std::to_string(2) + ".frtmat.yml");
+	// const std::filesystem::path lightMaterialPath2 = Content("Light/light_mat2.frtmat.yml");
 
 	// auto lightSource2 = World.SpawnEntity("Light 2");
 	// lightSource2->RenderModel->Model = memory::NewShared<graphics::SRenderModel>(
@@ -160,7 +164,7 @@ void DemoGame::BuildWorld (const SGameContext& Context)
 
 void DemoGame::BeginPlay (const SGameContext& Context)
 {
-	FlyActions = Context.InputActions.LoadOrCreateActionMap(paths::FindContentSubdir("Input") / "IAM_Editor.frtinputmap");
+	FlyActions = Context.InputActions.LoadOrCreateActionMap(Content("Input/IAM_Editor.frtinputmap"));
 }
 
 void DemoGame::Tick (const SGameContext& Context, const SGameFrame& Frame)

@@ -29,7 +29,7 @@ class CEditor;
  * window's own message queue, rewrites its input overrides to check they are re-read, checks
  * the Unreal camera controller against Unreal's numbers,
  * captures the whole window to PNG along the way, and exits with 0 when every check passed (2
- * otherwise). Captures and a log go to [Editor] SmokeTestDir, by default Local/Editor/SmokeTest.
+ * otherwise). Captures and a log go to [Editor] SmokeTestDir, by default <project>/Saved/SmokeTest.
  */
 class CEditorSmokeTest
 {

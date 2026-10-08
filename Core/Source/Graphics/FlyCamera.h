@@ -15,7 +15,7 @@ namespace frt::graphics
 class CCamera;
 
 // One frame of fly-camera control, read from an action map (IA_EnableMove / IA_MoveForward /
-// IA_MoveLeft / IA_MoveUp, as in Core/Content/Input/IAM_Editor.frtinputmap).
+// IA_MoveLeft / IA_MoveUp, as in the Demo template's Content/Input/IAM_Editor.frtinputmap).
 struct SFlyCameraInput
 {
 	bool bActive = false;                       // IA_EnableMove held: look and move

@@ -1,5 +1,7 @@
 #include "Input/InputActionLibrary.h"
 
+#include "EnginePaths.h"
+
 
 namespace frt::input
 {
@@ -7,42 +9,11 @@ namespace
 {
 	const char* InputActionExtension = ".frtinputaction";
 
+	// Action definitions (.frtinputaction) named by a map: the project's Content/Input, or the
+	// engine's without a project.
 	std::filesystem::path ResolveInputContentRoot ()
 	{
-		std::error_code ec;
-		std::filesystem::path current = std::filesystem::current_path(ec);
-		if (ec)
-		{
-			current = ".";
-		}
-
-		std::filesystem::path dir = current;
-		while (true)
-		{
-			std::filesystem::path candidate = dir / "Core" / "Content" / "Input";
-			if (std::filesystem::exists(candidate, ec))
-			{
-				std::filesystem::path absolute = std::filesystem::absolute(candidate, ec);
-				return ec ? candidate : absolute;
-			}
-
-			if (!dir.has_parent_path())
-			{
-				break;
-			}
-
-			const std::filesystem::path parent = dir.parent_path();
-			if (parent == dir)
-			{
-				break;
-			}
-
-			dir = parent;
-		}
-
-		std::filesystem::path fallback = current / "Core" / "Content" / "Input";
-		std::filesystem::path absolute = std::filesystem::absolute(fallback, ec);
-		return ec ? fallback : absolute;
+		return (paths::HasProject() ? paths::GetProjectContentDir() : paths::GetEngineContentDir()) / "Input";
 	}
 
 	std::filesystem::path NormalizePath (const std::filesystem::path& Path)

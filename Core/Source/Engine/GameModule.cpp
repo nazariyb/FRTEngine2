@@ -12,8 +12,10 @@
 #endif
 
 #include "BuildConfig.h"
+#include "EnginePaths.h"
 #include "GameInstance.h"
 #include "Config/Config.h"
+#include "Project/Project.h"
 
 
 #if FRT_MONOLITHIC
@@ -179,7 +181,8 @@ bool CGameModule::Load (const std::string& InName)
 	std::printf("[game] module '%s' linked in\n", Name.c_str());
 	return true;
 #elif defined(_WINDOWS)
-	const std::filesystem::path source = GetExecutableDir() / MakeModuleFileName(requested);
+	// The project's binaries; the host's own directory when it runs without a project.
+	const std::filesystem::path source = (paths::HasProject() ? paths::GetProjectBinariesDir() : GetExecutableDir()) / MakeModuleFileName(requested);
 	std::filesystem::path path = source;
 #if FRT_WITH_GAME_HOT_RELOAD
 	// Taken before the copy, so a build finishing during it still reads as newer.
@@ -193,7 +196,10 @@ bool CGameModule::Load (const std::string& InName)
 		std::fprintf(stderr, "[game] cannot copy '%ls' for hot reload; loading it in place\n", source.c_str());
 	}
 #endif
-	HMODULE module = LoadLibraryW(path.c_str());
+	// The module lives in the project, the engine (Core, third-party DLLs) beside the host: its
+	// imports resolve from its own directory, then the application's.
+	constexpr DWORD searchFlags = LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
+	HMODULE module = LoadLibraryExW(path.c_str(), nullptr, searchFlags);
 #if FRT_WITH_GAME_HOT_RELOAD
 	if (!module && path != source)
 	{
@@ -201,7 +207,7 @@ bool CGameModule::Load (const std::string& InName)
 		std::error_code ec;
 		std::filesystem::remove_all(path.parent_path(), ec);
 		path = source;
-		module = LoadLibraryW(path.c_str());
+		module = LoadLibraryExW(path.c_str(), nullptr, searchFlags);
 	}
 #endif
 	if (!module)
@@ -301,7 +307,6 @@ std::string CGameModule::GetConfiguredName (const config::CConfig& Config)
 	{
 		return configured;
 	}
-	std::error_code ec;
-	return std::filesystem::current_path(ec).filename().string();
+	return paths::HasProject() ? paths::GetProject().Module : std::string();
 }
 }

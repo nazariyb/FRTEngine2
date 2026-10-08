@@ -95,7 +95,7 @@ bool Near (float A, float B, float Tolerance = 1e-4f)
 CEditorSmokeTest::CEditorSmokeTest (const config::CConfig& Config)
 {
 	const std::string dir = Config.Get("Editor", "SmokeTestDir", "");
-	OutputDir = dir.empty() ? paths::GetLocalDir() / "Editor" / "SmokeTest" : std::filesystem::path(dir);
+	OutputDir = dir.empty() ? paths::GetSavedDir() / "SmokeTest" : std::filesystem::path(dir);
 	std::error_code ec;
 	std::filesystem::create_directories(OutputDir, ec);
 	std::ofstream(OutputDir / "SmokeTest.log", std::ios::trunc);

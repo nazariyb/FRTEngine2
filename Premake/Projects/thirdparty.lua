@@ -32,7 +32,7 @@ local function thirdPartyProject(name, dir)
 	targetname "%{prj.name}-%{cfg.buildcfg}"
 end
 
-group "ThirdParty"
+group (engineGroup == "" and "ThirdParty" or engineGroup .. "/ThirdParty")
 
 ------------------------
 ----- Dear ImGui -------
