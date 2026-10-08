@@ -103,7 +103,12 @@ Its engine is one of two, chosen when it is created:
 
 A project kept inside an engine checkout (like the templates in `Templates/`) needs no `Engine=`: it uses the engine it is in. `FRT_ENGINE_DIR` in the environment overrides all of these (CI, scripts).
 
-A project's solution, `MyGame.sln`, has the game as its startup project and the engine's projects in an **Engine** folder: the game, the engine and the editor are debugged as one. Starting the game opens it in the editor (the launcher in Headless configurations, which have no editor); in Release it runs the game itself, `MyGame/Binaries/Win64/MyGame.exe`. The engine's project files stay in the engine and are the same for every solution, so moving between projects never rebuilds the engine.
+A project's solution, `MyGame.sln`, has two run targets next to the engine's projects (in an **Engine** folder), and the game, the engine and the editor are debugged as one:
+
+- **Editor MyGame**, the startup project, builds nothing itself and opens the game in the editor. Headless configurations have no editor, so there it runs the game in the launcher; in Release it runs the game itself, `MyGame/Binaries/Win64/MyGame.exe`.
+- **MyGame**, the game, runs the game: in the launcher, or in Release as its own executable.
+
+Each builds what it runs first. The engine's project files stay in the engine and are the same for every solution, so moving between projects never rebuilds the engine.
 
 Code shared between projects is not supported yet; `Core/Source/Project/Project.h` describes the descriptor key reserved for it.
 

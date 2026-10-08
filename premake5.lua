@@ -34,4 +34,5 @@ group ""
 
 if targetProject then
 	gameProject(targetProject)
+	gameEditorProject(targetProject)
 end

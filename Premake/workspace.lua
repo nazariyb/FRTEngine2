@@ -1,10 +1,11 @@
 -- The engine's solution, FRTEngine2.sln at its root: the engine's projects, no game. Or, with
--- --project, the project's (Premake/project.lua): <Project>/<Name>.sln, the game - the startup
--- project - with the engine's projects in an Engine folder.
+-- --project, the project's (Premake/project.lua): <Project>/<Name>.sln, the game and "Editor
+-- <Game>" - the startup project, which opens the game in the editor - with the engine's
+-- projects in an Engine folder.
 if targetProject then
 	workspace (targetProject.Name)
 		location (targetProject.Dir)
-		startproject (targetProject.Module)
+		startproject ("Editor " .. targetProject.Module)
 	engineGroup = "Engine"
 else
 	workspace "FRTEngine2"

@@ -290,15 +290,37 @@ function gameProject(Project)
 
 	useCore()
 
-	-- Starting the project (the solution's startup project) opens it in the editor, or runs it
-	-- in the launcher where there is no editor (Headless); in Release it runs the game. The
-	-- hosts are built first, so a start never runs stale ones.
-	dependson { "Editor", "Launcher" }
+	-- Starting the game project runs the game: in the launcher, or in Release the game's own
+	-- executable. (Editor <Game>, gameEditorProject, opens it in the editor.) The launcher is
+	-- built first, so a start never runs a stale one.
+	dependson { "Launcher" }
+	debugdir (Project.Dir)
+	debugargs { '-Project="' .. winpath(Project.File) .. '"' }
+	filter "configurations:not Release*"
+		debugcommand (rootpath("Binaries/%{cfg.platform}/Launcher-%{cfg.buildcfg}.exe"))
+	filter {}
+end
+
+-- "Editor <Game>": a project of the project's solution - its startup project - that builds
+-- nothing and starts the editor with the project open. Where there is no editor it starts what
+-- the game project does: the launcher in Headless configurations, the game itself in Release.
+-- The editor, the launcher and the game are built first, so a start never runs stale ones.
+function gameEditorProject(Project)
+	project ("Editor " .. Project.Module)
+	location (path.join(Project.Dir, "Intermediate/ProjectFiles"))
+	kind "Utility"
+	objdir (path.join(Project.Dir, "Intermediate/%{cfg.platform}/%{cfg.buildcfg}/Editor"))
+
+	dependson { "Editor", "Launcher", Project.Module }
 	debugdir (Project.Dir)
 	debugargs { '-Project="' .. winpath(Project.File) .. '"' }
 	filter { "configurations:not Release*", "configurations:not *-Headless" }
 		debugcommand (rootpath("Binaries/%{cfg.platform}/Editor-%{cfg.buildcfg}.exe"))
 	filter { "configurations:not Release*", "configurations:*-Headless" }
 		debugcommand (rootpath("Binaries/%{cfg.platform}/Launcher-%{cfg.buildcfg}.exe"))
+	filter "configurations:Release-Default"
+		debugcommand (path.join(Project.Dir, "Binaries/%{cfg.platform}/" .. Project.Module .. ".exe"))
+	filter { "configurations:Release*", "configurations:not Release-Default" }
+		debugcommand (path.join(Project.Dir, "Binaries/%{cfg.platform}/" .. Project.Module .. "-%{cfg.buildcfg}.exe"))
 	filter {}
 end
