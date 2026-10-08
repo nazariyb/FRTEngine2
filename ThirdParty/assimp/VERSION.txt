@@ -2,7 +2,7 @@ Open Asset Import Library (assimp) 6.0.2, tag v6.0.2 of https://github.com/assim
 Tarball https://github.com/assimp/assimp/archive/refs/tags/v6.0.2.tar.gz, SHA512 dc9637b183a1ab4c...
 (the value vcpkg's assimp port pins).
 
-Only what the glTF importer needs is vendored (Premake/ThirdParty/assimp.lua lists what it builds):
+Only what the glTF importer needs is vendored (Premake/Projects/thirdparty.lua lists what it builds):
 include/, code/Common (without Exporter, Compression, ZipArchiveIOSystem), code/CApi (without
 AssimpCExport), code/Geometry, code/Material, code/PostProcessing, code/AssetLib/{glTFCommon,glTF,
 glTF2} (without the exporters), and the header-only contrib/rapidjson, contrib/utf8cpp and

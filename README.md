@@ -28,7 +28,7 @@ A small experimental 3D engine built on Direct3D 12 and DirectX Raytracing (DXR)
 
 ```
 Editor.exe / Launcher.exe   hosts: own the loop, the worlds, the views
-        │  load by name ([Game] Module in Config/Game.ini)
+        │  load by name ([Game] Module in Config/Game.ini); Release links it in
         ▼
 Demo.dll (game module)      GameInstance: BuildWorld, BeginPlay, Tick, EndPlay
         │  both link
@@ -38,7 +38,7 @@ Core.dll                    CEngine (window, renderer, input, UI, config),
 ```
 
 - **`CEngine`** starts and stops every subsystem explicitly, in dependency order, and provides the frame (`BeginFrame` … `RenderFrame`). It knows nothing about worlds or games: the hosts own those and call the game as a service.
-- **Games are modules.** `FRT_IMPLEMENT_GAME_MODULE(MyGame)` turns a DLL into one; `CGameModule` loads it and checks its ABI. Neither host is built per game.
+- **Games are modules.** `FRT_IMPLEMENT_GAME_MODULE(MyGame)` turns a DLL into one; `CGameModule` loads it and checks its ABI. Neither host is built per game - except the Release launcher, which is one executable with the default game (`defaultGameProject` in `Premake/common.lua`) linked in.
 - **Views.** The renderer draws any number of `CRenderView`s per frame — each with its own histories, size and render mode — from one shared scene. The launcher draws one straight into the swap chain; the editor draws its viewports into textures shown by ImGui.
 - **Editor frame.** Queued commands are applied first; panels then draw and report what happened as plain data, from which the editor routes camera and game input; the world updates; the visible viewports render. Play mode runs the game on a clone of the edited world with a fresh game instance, dropped on Stop.
 
@@ -50,11 +50,11 @@ Each configuration is a build type and a target, e.g. `Development-Default`:
 |---|---|---|---|---|
 | **Debug** | unoptimized, debug runtime, Edit and Continue | DLLs: Core, the game module and every third-party library | on | stepping through code |
 | **Development** | optimized, full debug information | DLLs, like Debug | on | day-to-day work |
-| **Release** | optimized | one executable: Core, the game and every third-party library statically linked, static runtime | off | shipping and profiling; no Editor |
+| **Release** | optimized | one executable: Core, the game and every library built from source statically linked, static runtime. Only DXC and the D3D12 Agility SDK runtime ship beside it | off | shipping and profiling; no Editor |
 
 - **Default / Headless** — `Default` includes the full rendering stack; `Headless` strips the window and renderer (useful for server or unit-test builds).
 - Everything lands in `Binaries/Win64`, named `<Project>-<Configuration>` (plain names for `Release-Default`, the shipping build) and `<Library>-<BuildType>` for third-party libraries, so configurations never overwrite each other.
-- In Debug and Development each module is its own DLL, so changing one rebuilds and relinks only that module. Hosts load the game module from a copy (`Binaries/Win64/HotReload/`), so it can be rebuilt while the editor or launcher runs; `CGameModule::HasNewerBuild()` tells a host when a new build is there. Visual Studio's Hot Reload and Live++ can patch code in place.
+- In Debug and Development each module is its own DLL, so changing one rebuilds and relinks only that module. Hosts load the game module from a copy (`Binaries/Win64/HotReload/`), so it can be rebuilt while the editor or launcher runs; `CGameModule::HasNewerBuild()` tells a host when a new build is there. Code can also be patched in place: Visual Studio's Hot Reload in Debug (it needs Edit and Continue information), Live++ in Debug and Development.
 - The D3D12 debug layer is on by default in Debug only; `FRT_D3D_DEBUG=1` (or `0`) in the environment turns it on (or off) in Debug and Development.
 - Code tests the build type through `Core/Source/BuildConfig.h` (`FRT_BUILD_DEBUG`, `FRT_BUILD_DEVELOPMENT`, `FRT_BUILD_RELEASE`, `FRT_MONOLITHIC` and the switches derived from them), never `_DEBUG` or `NDEBUG`.
 
@@ -67,7 +67,7 @@ Each configuration is a build type and a target, e.g. `Development-Default`:
 - **MSBuild / MSVC**_(if applicable)_**:** Toolset **v143** (ships with VS 2022) or later; the code uses **C++20** features.
 - **Windows SDK:** **10.0.19041.0** or later — the minimum version that defines `D3D12_RESOURCE_FLAG_RAYTRACING_ACCELERATION_STRUCTURE` (Windows 10 SDK 2004, May 2020). This is enforced in the generated project files.
 - **GPU:** Any D3D12-capable adapter; DXR (raytracing) requires a GPU that supports DirectX Raytracing Tier 1.0 or higher (e.g. NVIDIA Turing / AMD RDNA2 and later)
-- **Nothing else.** Every third-party library is vendored in `ThirdParty/` and built from source as part of the solution: no package manager, submodules, network or install step.
+- **Nothing else.** Every dependency is vendored in `ThirdParty/`, and the libraries the engine links are built from source as part of the solution: no package manager, submodules, network or install step.
 
 ---
 
@@ -96,6 +96,15 @@ Options, after the action (`premake5 vs2022 --nopch`):
 | `--msvc=<version>` | Build with that MSVC version, e.g. `14.44.35207` (default: whatever the v143 toolset defaults to, which an installed side-by-side toolset can pin to an older one) |
 | `--precision=double` | 64-bit `frt::Real` for positions and measurements |
 
+### 2. Open and build
+
+1. Open the generated solution / project in your IDE or invoke your build system directly.
+2. Select a configuration (e.g. **Development-Default | Win64**).
+3. **Editor** is the startup project: it opens the world of the game module named in the working directory's `Config/Game.ini` (the Demo by default) for editing. **Launcher** runs that game standalone; in Debug and Development, pressing F5 on the **Demo** project does the same. Release has no Editor: starting the Editor project there runs the Launcher.
+4. Build and run.
+
+From the command line, build through the solution - `MSBuild FRTEngine2.sln -p:Configuration=Development-Default -p:Platform=Win64 -m`, with `-t:Launcher` (or `-t:ThirdParty\assimp` and the like) for a single project. Building a project file directly fails with MSB8013: third-party projects only have one configuration per build type, which the solution maps.
+
 ### Third-party libraries
 
 Dear ImGui, assimp (glTF importers only), yaml-cpp and GoogleTest are vendored in `ThirdParty/` (each directory's `VERSION.txt` says which version and what was left out) and are projects of the solution, in its `ThirdParty` folder. They build once per build type - Default and Headless share them - in a few seconds, with the same compiler, runtime and settings as the engine.
@@ -112,22 +121,17 @@ To skip building them, use prebuilt binaries:
 
 ### Updating a checkout from before the vendored libraries
 
-`ThirdParty/Imgui` and `ThirdParty/vcpkg` used to be git submodules. Before pulling or merging, remove them (this also frees about 900 MB of submodule history), then rebuild from clean:
+`ThirdParty/Imgui` and `ThirdParty/vcpkg` used to be git submodules. Before pulling or merging, remove their working trees - `ThirdParty/Imgui` is now ordinary files at the same path - then rebuild from clean:
 
 ```bat
 git submodule deinit -f ThirdParty/Imgui ThirdParty/vcpkg
-rmdir /s /q ThirdParty\Imgui ThirdParty\vcpkg .git\modules\ThirdParty
+rmdir /s /q ThirdParty\Imgui ThirdParty\vcpkg
 git pull
 PremakeCleanAll.bat
 PremakeGenerateVisualStudioProject.bat
 ```
 
-### 2. Open and build
-
-1. Open the generated solution / project in your IDE or invoke your build system directly.
-2. Select a configuration (e.g. **Development-Default | x64**).
-3. **Editor** is the startup project: it opens the world of the game module named in the working directory's `Config/Game.ini` (the Demo by default) for editing. **Launcher** runs that game standalone; pressing F5 on the **Demo** project does the same. Release has no Editor: run the Launcher there.
-4. Build and run.
+`deinit -f` also deletes `ThirdParty/vcpkg/installed`, which older commits need to build: move it aside first if you still build those. The submodules' history stays in `.git/modules/ThirdParty` (about 900 MB). Delete it only when nothing uses it any more: no worktree or branch you still build from before this change, and no clone that borrows its objects (`git submodule update --reference`).
 
 ### Cleaning generated files
 

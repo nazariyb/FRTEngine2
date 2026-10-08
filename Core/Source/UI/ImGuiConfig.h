@@ -4,7 +4,7 @@
 // IMGUI_USER_CONFIG define (Premake/workspace.lua), so all modules see the same layouts.
 //
 // ImGui and its Win32 / DX12 backends are compiled into their own ImGui DLL only
-// (Premake/thirdparty.lua). Every module - Core, the editor, games - imports them, so the
+// (Premake/Projects/thirdparty.lua). Every module - Core, the editor, games - imports them, so the
 // process has exactly one GImGui context and one allocator - the alternative, a second copy
 // per module, needs SetCurrentContext() and SetAllocatorFunctions() at every DLL boundary (see
 // "Context and Memory Allocators" in imgui.cpp). IMGUI_IMPL_API defaults to IMGUI_API, which

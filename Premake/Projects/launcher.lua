@@ -2,7 +2,8 @@
 --------------  Launcher  ---------------
 -----------------------------------------
 -- The runtime host: a generic executable that loads a game module (Engine/GameModule.h) and
--- runs it standalone. Not built per game.
+-- runs it standalone. Not built per game, except in Release: there it is the shipping
+-- executable, with the default game linked in (hostProject).
 project "Launcher"
 	location (rootpath("%{prj.name}"))
 

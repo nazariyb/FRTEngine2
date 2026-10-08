@@ -101,7 +101,8 @@ end
 -----------------------------------------
 -- The game project the hosts (Launcher, Editor) run by default: their working directory -
 -- project config and content resolve from it - and, through its Config/Game.ini, the game
--- module they load. Another game: -Game:Module=<Name> with that project as working directory.
+-- module they load. Another game: -Game:Module=<Name> with that project as working directory -
+-- except in Release, where the launcher is built with this game linked in.
 defaultGameProject = "Demo"
 
 newoption
