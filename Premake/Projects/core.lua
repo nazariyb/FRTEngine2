@@ -80,7 +80,8 @@ project "Core"
 	--------------------
 	includedirs
 	{
-		-- D3D12 Agility SDK headers must win over the Windows SDK's d3d12.h, so they go first.
+		-- D3D12 Agility SDK headers must win over the Windows SDK's d3d12.h, so they go first. Not
+		-- external includes: those are searched after the Windows SDK's.
 		path.join(thirdPartyDir, "D3D12Agility/include"),
 		rootpath("%{prj.name}/Source"),
 		-- C++/HLSL shared structs live with the shaders (Shared/*.h is compiled by both).
@@ -120,15 +121,17 @@ project "Core"
 	------------------------------
 	----- Custom Build Steps -----
 	------------------------------
+	-- Runtime files beside the binaries. Copied only when changed, so building while a host runs
+	-- from Binaries (rebuilding its game module) does not fail on files it has loaded.
 	prebuildcommands
 	{
-		"{COPYFILE} " .. path.join(thirdPartyDir, "Dxc/bin/x64/dxcompiler.dll") .. " %[%{cfg.buildtarget.directory}]",
-		"{COPYFILE} " .. path.join(thirdPartyDir, "Dxc/bin/x64/dxil.dll") .. " %[%{cfg.buildtarget.directory}]",
+		copyIfChanged(path.join(thirdPartyDir, "Dxc/bin/x64/dxcompiler.dll"), "%{cfg.buildtarget.directory}"),
+		copyIfChanged(path.join(thirdPartyDir, "Dxc/bin/x64/dxil.dll"), "%{cfg.buildtarget.directory}"),
 		-- Agility SDK runtime: loaded from <exe dir>/D3D12/ (D3D12SDKPath exported by the host
 		-- executable, Engine/HostEntry.h).
 		"{MKDIR} %[%{cfg.buildtarget.directory}/D3D12]",
-		"{COPYFILE} %[" .. path.join(thirdPartyDir, "D3D12Agility/bin/x64/D3D12Core.dll") .. "] %[%{cfg.buildtarget.directory}/D3D12]",
-		"{COPYFILE} %[" .. path.join(thirdPartyDir, "D3D12Agility/bin/x64/d3d12SDKLayers.dll") .. "] %[%{cfg.buildtarget.directory}/D3D12]",
+		copyIfChanged(path.join(thirdPartyDir, "D3D12Agility/bin/x64/D3D12Core.dll"), "%{cfg.buildtarget.directory}/D3D12"),
+		copyIfChanged(path.join(thirdPartyDir, "D3D12Agility/bin/x64/d3d12SDKLayers.dll"), "%{cfg.buildtarget.directory}/D3D12"),
 	}
 
 	copyPrebuiltThirdPartyBinaries()

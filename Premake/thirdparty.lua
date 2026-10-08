@@ -139,7 +139,7 @@ function copyPrebuiltThirdPartyBinaries()
 		for _, library in ipairs(thirdPartyLibraries) do
 			for _, extension in ipairs({ ".dll", ".pdb" }) do
 				local file = path.join(prebuiltThirdPartyDir, "bin", library .. "-" .. buildType .. extension)
-				table.insert(commands, "{COPYFILE} %[" .. file .. "] %[%{cfg.buildtarget.directory}]")
+				table.insert(commands, copyIfChanged(file, "%{cfg.buildtarget.directory}"))
 			end
 		end
 		filter { "configurations:" .. buildType .. "*", "configurations:not Release*" }
@@ -217,24 +217,42 @@ local function run(command)
 	return os.execute('"' .. command .. '"')
 end
 
-local function vswhere(arguments)
+-- The Visual Studio 2022 installation the vs2022 projects build with: the newest one with
+-- MSBuild and the v143 C++ toolset. Both MSBuild and the toolset version come from it.
+local function visualStudio2022()
 	local exe = path.join(os.getenv("ProgramFiles(x86)") or "C:/Program Files (x86)",
 		"Microsoft Visual Studio/Installer/vswhere.exe")
 	if not os.isfile(exe) then
 		return nil
 	end
-	local output, code = os.outputof('"' .. winpath(exe) .. '" -latest -products * ' .. arguments)
-	if code ~= 0 or not output then
-		return nil
-	end
-	return output:match("[^\r\n]+")
+	local output, code = os.outputof('"' .. winpath(exe) .. '" -latest -products * -version [17.0,18.0) ' ..
+		'-requires Microsoft.Component.MSBuild Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath')
+	return (code == 0 and output) and output:match("[^\r\n]+") or nil
 end
 
--- The MSVC version MSBuild compiles with (the v143 toolset's default), for the manifest.
-local function msvcVersion()
-	local installation = vswhere("-property installationPath")
-	local text = installation and io.readfile(path.join(installation, "VC/Auxiliary/Build/Microsoft.VCToolsVersion.v143.default.txt"))
+-- The MSVC version the build uses: --msvc, or the v143 toolset's default.
+local function msvcVersion(installation)
+	if _OPTIONS["msvc"] then
+		return _OPTIONS["msvc"]
+	end
+	local text = io.readfile(path.join(installation, "VC/Auxiliary/Build/Microsoft.VCToolsVersion.v143.default.txt"))
 	return text and text:match("^%s*(.-)%s*$") or "unknown"
+end
+
+-- The generation options this action was given, for the solution it regenerates.
+local function forwardedOptions()
+	local arguments = {}
+	for _, name in ipairs({ "msvc", "precision" }) do
+		if _OPTIONS[name] then
+			table.insert(arguments, "--" .. name .. "=" .. _OPTIONS[name])
+		end
+	end
+	for _, name in ipairs({ "nopch", "fatal-warnings" }) do
+		if _OPTIONS[name] then
+			table.insert(arguments, "--" .. name)
+		end
+	end
+	return table.concat(arguments, " ")
 end
 
 local function sha256(file)
@@ -253,14 +271,17 @@ newaction
 	trigger     = "package-thirdparty",
 	description = "Build the third-party libraries in every build type and archive them for --thirdparty=prebuilt",
 	execute     = function ()
-		local msbuild = vswhere("-requires Microsoft.Component.MSBuild -find MSBuild\\**\\Bin\\amd64\\MSBuild.exe")
+		local installation = visualStudio2022()
+		local msbuild = installation and path.join(installation, "MSBuild/Current/Bin/amd64/MSBuild.exe")
 		if not msbuild or not os.isfile(msbuild) then
-			error("package-thirdparty: MSBuild not found (vswhere)", 0)
+			error("package-thirdparty: no Visual Studio 2022 with MSBuild and the v143 C++ toolset found (vswhere)", 0)
 		end
 
-		-- The projects, built from source: regenerates the solution in source mode.
-		print("Generating the solution with third-party projects...")
-		if not run('"' .. winpath(_PREMAKE_COMMAND) .. '" --file="' .. winpath(rootpath("premake5.lua")) .. '" vs2022') then
+		-- The projects, built from source: regenerates the solution in source mode, with the
+		-- generation options given here (--msvc picks the compiler the archive is built with).
+		local options = forwardedOptions()
+		print("Generating the solution with third-party projects (vs2022 " .. options .. ")...")
+		if not run('"' .. winpath(_PREMAKE_COMMAND) .. '" --file="' .. winpath(rootpath("premake5.lua")) .. '" vs2022 ' .. options) then
 			error("package-thirdparty: generating the solution failed", 0)
 		end
 
@@ -307,7 +328,7 @@ newaction
 		{
 			platform  = "Win64",
 			stamp     = stamp,
-			msvc      = msvcVersion(),
+			msvc      = msvcVersion(installation),
 			libraries = thirdPartyLibraries,
 			buildTypes = buildConfigs,
 		}
@@ -325,6 +346,7 @@ newaction
 		print("SHA-256: " .. (sha256(archive) or "?"))
 		print("MSVC:    " .. manifest.msvc .. " (machines linking it need this version or newer)")
 		print("Publish it, then set prebuiltThirdParty.url and .sha256 in Premake/thirdparty.lua.")
+		print("The solution was regenerated in source mode (vs2022 " .. options .. ").")
 	end
 }
 

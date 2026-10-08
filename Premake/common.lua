@@ -151,6 +151,16 @@ function usePrecompiledHeader(Header, Source)
 	forceincludes { Header }
 end
 
+-- A build-event command copying Source into DestinationDir unless the copy there is already
+-- identical. A host running from Binaries has these files loaded, and overwriting a loaded image
+-- fails even with the same bytes, so unchanged files must be left alone. Any real failure fails
+-- the event: MSBuild runs a build event as one batch and only sees its last command's result.
+function copyIfChanged(Source, DestinationDir)
+	local destination = DestinationDir .. "/" .. path.getname(Source)
+	return string.format('fc /B %%[%s] %%[%s] >nul 2>&1 || copy /B /Y %%[%s] %%[%s] >nul || exit /b 1',
+		Source, destination, Source, DestinationDir)
+end
+
 -- One directory per platform, configurations separated by the target name: a single place to
 -- find every binary beats a tree of near-empty folders. Only the shipping configuration,
 -- Release-Default, has plain names.
@@ -183,7 +193,8 @@ end
 function useCore()
 	includedirs
 	{
-		-- D3D12 Agility SDK headers must win over the Windows SDK's d3d12.h, so they go first.
+		-- D3D12 Agility SDK headers must win over the Windows SDK's d3d12.h, so they go first. Not
+		-- external includes: those are searched after the Windows SDK's.
 		path.join(thirdPartyDir, "D3D12Agility/include"),
 		rootpath("Core/Source"),
 		rootpath("Core/Content/Shaders"),
