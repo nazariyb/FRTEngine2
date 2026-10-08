@@ -7,6 +7,7 @@
 
 #include "imgui.h"
 
+#include "BuildConfig.h"
 #include "EnginePaths.h"
 #include "Exception.h"
 #include "Window.h"
@@ -208,7 +209,7 @@ CRenderer::CRenderer (CWindow* InWindow)
 
 	ShaderCompiler.Init(paths::GetShaderRootDir());
 	Pipelines.Init(Rhi, ShaderCompiler);
-#ifdef RELEASE
+#if !FRT_WITH_DEV_TOOLS
 	Pipelines.SetHotReloadEnabled(false);
 #endif
 
@@ -259,7 +260,13 @@ CRenderer::~CRenderer ()
 
 void CRenderer::CreateDevice ()
 {
-#if defined(DEBUG) || defined(_DEBUG)
+#if FRT_WITH_DEV_TOOLS
+	// FRT_D3D_DEBUG=0/1 in the environment overrides the build's default (BuildConfig.h).
+	char gpuDebug[8] = {};
+	const bool bGpuDebug = GetEnvironmentVariableA("FRT_D3D_DEBUG", gpuDebug, sizeof(gpuDebug)) > 0
+		? gpuDebug[0] == '1'
+		: FRT_GPU_DEBUG_BY_DEFAULT != 0;
+	if (bGpuDebug)
 	{
 		ComPtr<ID3D12Debug1> debug;
 		if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))
@@ -278,7 +285,7 @@ void CRenderer::CreateDevice ()
 			dred->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
 		}
 	}
-	const UINT factoryFlags = DXGI_CREATE_FACTORY_DEBUG;
+	const UINT factoryFlags = bGpuDebug ? DXGI_CREATE_FACTORY_DEBUG : 0u;
 #else
 	const UINT factoryFlags = 0u;
 #endif
@@ -806,7 +813,7 @@ void CRenderer::ApplyProfile (CRenderView& View)
 void CRenderer::PrepareScene ()
 {
 	frt_assert(bCommandListRecording);
-#ifndef RELEASE
+#if FRT_WITH_DEV_TOOLS
 	if (MaterialLibrary.ReloadModifiedMaterials())
 	{
 		ResetAccumulation();

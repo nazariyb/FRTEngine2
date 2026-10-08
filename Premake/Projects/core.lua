@@ -4,15 +4,8 @@
 project "Core"
 	location (rootpath("%{prj.name}"))
 
-	filter "configurations:Debug-*"
-		kind "SharedLib"
-
-	filter "configurations:Release-*"
-		kind "SharedLib"
-		-- TODO: should be static
-		-- kind "StaticLib"
-
-	filter {}
+	kind "SharedLib"
+	defines { "FRT_CORE_EXPORTS" }
 
 	-- One directory per platform, configurations separated by the targetname suffix below.
 	-- Deliberate: a single place to find every binary beats a tree of near-empty folders.
@@ -127,14 +120,6 @@ project "Core"
 	-------------------
 	filter "platforms:Win64"
 		defines { "WIN64", "_WINDOWS" }
-
-	filter "configurations:Debug-*"
-		defines { "DEBUG", "FRT_CORE_EXPORTS" }
-		symbols "On"
-
-	filter "configurations:Release-*"
-		defines { "NDEBUG", "RELEASE", "FRT_CORE_EXPORTS" }
-		optimize "On"
 
 	filter "configurations:*-Headless"
 		defines { "FRT_HEADLESS" }

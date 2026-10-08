@@ -8,6 +8,7 @@
 #include <Windows.h>
 #endif
 
+#include "BuildConfig.h"
 #include "GameInstance.h"
 #include "Config/Config.h"
 
@@ -33,7 +34,7 @@ std::filesystem::path GetExecutableDir ()
 // The build names binaries <Project>-<Configuration> outside Release (Premake/common.lua).
 std::string MakeModuleFileName (const std::string& Name)
 {
-#if defined(RELEASE)
+#if FRT_BUILD_RELEASE
 	return Name + ".dll";
 #else
 	return Name + "-" + FRT_CONFIG_NAME + ".dll";

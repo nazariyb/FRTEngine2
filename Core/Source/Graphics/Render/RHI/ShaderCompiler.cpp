@@ -5,6 +5,8 @@
 #include <cstdio>
 #include <set>
 
+#include "BuildConfig.h"
+
 
 namespace frt::graphics::rhi
 {
@@ -182,7 +184,7 @@ SShaderBinary CShaderCompiler::Compile (const SShaderCompileDesc& Desc)
 	args.push_back(ShaderRoot.wstring());
 	args.push_back(L"-I");
 	args.push_back(sourcePath.parent_path().wstring());
-#if defined(DEBUG) || defined(_DEBUG)
+#if FRT_SHADER_DEBUG_INFO
 	args.push_back(L"-Zi");
 	args.push_back(L"-Qembed_debug");
 #else

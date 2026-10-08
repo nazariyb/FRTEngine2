@@ -10,6 +10,7 @@
 #pragma comment(lib, "shell32.lib")
 #endif
 
+#include "BuildConfig.h"
 #include "EnginePaths.h"
 #include "ECS/CoreComponents.h"
 #include "Graphics/GraphicsComponents.h"
@@ -206,7 +207,7 @@ float CEngine::BeginFrame ()
 	const float deltaSeconds = Clock->GetDeltaSeconds();
 
 	Input.Update(deltaSeconds);
-#ifndef RELEASE
+#if FRT_WITH_DEV_TOOLS
 	InputActions.ReloadModifiedActions();
 	InputActions.ReloadModifiedActionMaps();
 #endif

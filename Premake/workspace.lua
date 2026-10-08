@@ -25,14 +25,30 @@ workspace "FRTEngine2"
 	filter "action:vs*"
 		disablewarnings { "4251", "4275" }
 
-	-- Per build type. "Debug*", not "Debug-*": third-party projects have one configuration per
-	-- build type, named without the target suffix (Premake/thirdparty.lua).
+	-- Build types; the code side is Core/Source/BuildConfig.h. Filters match "Debug*", not
+	-- "Debug-*": third-party projects have one configuration per build type, named without the
+	-- target suffix (Premake/thirdparty.lua).
+	--   Debug        unoptimized, debug runtime, Edit and Continue (/ZI)
+	--   Development  optimized with full debug information; asserts and developer tools on.
+	--                The configuration to work in day to day.
+	--   Release      optimized; developer tools compiled out
 	filter "configurations:Debug*"
+		defines { "FRT_BUILD_DEBUG=1" }   -- _DEBUG comes with the debug runtime
+		runtime "Debug"
+		optimize "Off"
+		symbols "On"
+
+	filter "configurations:Development*"
+		defines { "FRT_BUILD_DEVELOPMENT=1", "NDEBUG" }
+		runtime "Release"
+		optimize "Speed"
 		symbols "On"
 
 	filter "configurations:Release*"
-		defines { "NDEBUG" }
-		optimize "On"
+		defines { "FRT_BUILD_RELEASE=1", "NDEBUG" }
+		runtime "Release"
+		optimize "Speed"
+		symbols "On"                      -- PDBs for crash dumps; not shipped
 
 	filter "platforms:Win64"
 		system "Windows"

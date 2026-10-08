@@ -70,7 +70,8 @@ function applyPrecision(which)
 	defines { "FRT_REAL_PRECISION=" .. bits }
 end
 
-buildConfigs = { "Debug", "Release" }
+-- Build types (what each one is: Premake/workspace.lua) and targets.
+buildConfigs = { "Debug", "Development", "Release" }
 buildTargets = { "Default", "Headless" }
 configs = {}
 
@@ -150,14 +151,6 @@ function useCore()
 
 	filter "platforms:Win64"
 		defines { "WIN64", "_WINDOWS" }
-
-	filter "configurations:Debug-*"
-		defines { "_DEBUG" }
-		symbols "On"
-
-	filter "configurations:Release-*"
-		defines { "NDEBUG", "RELEASE" }
-		optimize "On"
 
 	filter "configurations:*-Headless"
 		defines { "FRT_HEADLESS" }

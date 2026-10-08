@@ -1,5 +1,7 @@
 #pragma once
 
+#include "BuildConfig.h"
+
 #ifdef FRT_CORE_EXPORTS
 #define FRT_CORE_API __declspec(dllexport)
 #else

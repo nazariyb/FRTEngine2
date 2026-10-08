@@ -3,9 +3,11 @@
 #include <cassert>
 #include <cstdio>
 
+#include "BuildConfig.h"
+
 
 /**
- * Asserts compile out unless FRT_ASSERTIONS_ENABLED is 1; Debug builds default to on.
+ * Asserts compile out unless FRT_ASSERTIONS_ENABLED is 1; Debug and Development default to on.
  *
  * The previous spelling was `#define ASSERTIONS_ENABLED _DEBUG` guarded by
  * `#if defined(ASSERTIONS_ENABLED)`, which is true regardless of what the macro expands
@@ -14,11 +16,7 @@
  * want them in Release deliberately.
  */
 #ifndef FRT_ASSERTIONS_ENABLED
-	#if defined(_DEBUG)
-		#define FRT_ASSERTIONS_ENABLED 1
-	#else
-		#define FRT_ASSERTIONS_ENABLED 0
-	#endif
+	#define FRT_ASSERTIONS_ENABLED (!FRT_BUILD_RELEASE)
 #endif
 
 // Kept for source compatibility with the old spelling.
