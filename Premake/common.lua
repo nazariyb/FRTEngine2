@@ -194,6 +194,10 @@ function gameProject()
 		kind "StaticLib"
 	filter "configurations:not Release*"
 		kind "SharedLib"
+		-- Hot reload (Engine/GameModule.cpp loads a copy of the DLL): the DLL names its PDB
+		-- without a directory, so a debugger reads the copy beside the loaded DLL and never locks
+		-- the build's own PDB, which the next link rewrites.
+		linkoptions { "/PDBALTPATH:%{cfg.buildtarget.basename}.pdb" }
 	filter {}
 
 	flatBinaries()

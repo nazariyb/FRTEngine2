@@ -71,12 +71,18 @@ public:
 	CGameModule& operator= (const CGameModule&) = delete;
 
 	// Loads <executable dir>/<Name>-<Configuration>.dll and checks it was built against this
-	// engine's ABI. Monolithic builds: takes the game linked into the executable, whatever its
-	// name. Logs and returns false otherwise.
+	// engine's ABI. With FRT_WITH_GAME_HOT_RELOAD the DLL is loaded from a copy, so the build
+	// can overwrite it while it runs (see HasNewerBuild). Monolithic builds: the game linked
+	// into the executable, whatever its name. Logs and returns false otherwise.
 	bool Load (const std::string& Name);
 	void Unload ();
 	bool IsLoaded () const { return CreateFunction != nullptr; }
 	const std::string& GetName () const { return Name; }
+
+	// FRT_WITH_GAME_HOT_RELOAD: the module's DLL was rebuilt since Load and the linker is done
+	// with it. Reloading is Load(GetName()) once everything holding the module's code is gone.
+	// Always false otherwise.
+	bool HasNewerBuild () const;
 
 	// A new game instance; null if the game's constructor failed.
 	std::unique_ptr<GameInstance> CreateGame () const;
@@ -89,5 +95,10 @@ private:
 	void* Handle = nullptr;
 	GameInstance* (*CreateFunction) () = nullptr;
 	std::string Name;
+	// FRT_WITH_GAME_HOT_RELOAD: the build output, the copy actually loaded, and the output's
+	// write time when it was copied. In every build, so the layout does not vary.
+	std::wstring SourcePath;
+	std::wstring LoadedPath;
+	int64 SourceWriteTime = 0;
 };
 }

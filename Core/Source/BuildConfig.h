@@ -44,6 +44,12 @@
 	#define FRT_WITH_DEV_TOOLS (!FRT_BUILD_RELEASE)
 #endif
 
+// The game module DLL loaded from a copy, so the build can overwrite it while it runs
+// (Engine/GameModule.h).
+#ifndef FRT_WITH_GAME_HOT_RELOAD
+	#define FRT_WITH_GAME_HOT_RELOAD (FRT_WITH_DEV_TOOLS && !FRT_MONOLITHIC)
+#endif
+
 // Shaders compiled with -Zi -Qembed_debug, for PIX / RenderDoc source-level debugging.
 #ifndef FRT_SHADER_DEBUG_INFO
 	#define FRT_SHADER_DEBUG_INFO (!FRT_BUILD_RELEASE)

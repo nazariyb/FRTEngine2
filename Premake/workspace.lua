@@ -61,6 +61,14 @@ workspace "FRTEngine2"
 	filter { "configurations:Release*", "kind:StaticLib" }
 		debugformat "c7"
 
+	-- Code patching while running (Visual Studio's Hot Reload in Debug, Live++ in Debug and
+	-- Development): room for a patch at the start of every function, and nothing referenced
+	-- only through a patch discarded or folded. Debug gets the latter from incremental linking.
+	filter { "configurations:not Release*", "kind:SharedLib or ConsoleApp or WindowedApp" }
+		linkoptions { "/FUNCTIONPADMIN" }
+	filter { "configurations:Development*", "kind:SharedLib or ConsoleApp or WindowedApp" }
+		linkoptions { "/OPT:NOREF", "/OPT:NOICF" }
+
 	filter "platforms:Win64"
 		system "Windows"
 		architecture "x86_64"
