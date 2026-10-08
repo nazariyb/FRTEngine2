@@ -236,13 +236,13 @@ local templatedExtensions =
 }
 
 -- What is never copied: the template's own descriptor (the project gets its own), and what
--- building the template in place leaves behind.
+-- building and opening the template in place leaves behind, IDE state included.
 local function isTemplateOnly(relative, templateName)
 	local top = relative:match("^[^/]+")
 	if top == "Template.ini" or top == templateName .. projectFileExtension then
 		return true
 	end
-	if top == "Binaries" or top == "Intermediate" or top == "Local" or top == ".vs" then
+	if top == "Binaries" or top == "Intermediate" or top == "Local" or top == ".vs" or top == ".idea" then
 		return true
 	end
 	return relative:match("%.sln$") or relative:match("%.vcxproj") or relative:match("%.user$")

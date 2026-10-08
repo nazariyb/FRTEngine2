@@ -20,9 +20,10 @@
 *.out
 *.app
 
-# IDE
-.vs/*
-.idea/*
+# IDE state, wherever a solution is generated (the engine's, a template's): per machine and per
+# user, like the solutions themselves. Projects ignore theirs too (Templates/Common/.gitignore).
+.vs/
+.idea/
 
 # Generated project files
 *.sln
