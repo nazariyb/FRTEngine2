@@ -1,5 +1,6 @@
 ROOT_DIR = path.getabsolute(_SCRIPT_DIR or ".")
 
+dofile("Premake/extensions.lua")
 dofile("Premake/common.lua")
 dofile("Premake/actions.lua")
 dofile("Premake/workspace.lua")

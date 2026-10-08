@@ -15,6 +15,16 @@ workspace "FRTEngine2"
 		'IMGUI_USER_CONFIG="UI/ImGuiConfig.h"'
 	}
 
+	-- /MP: the files of a project compile in parallel. Without it MSBuild runs one cl.exe per
+	-- file, one after another, and a full build takes several times longer.
+	flags { "MultiProcessorCompile" }
+
+	-- C4251 / C4275: STL and templated members of classes exported across a DLL boundary. Every
+	-- module is built from source by the same compiler with the same runtime, so the warning has
+	-- nothing to report. Binaries for other compilers would be built per compiler.
+	filter "action:vs*"
+		disablewarnings { "4251", "4275" }
+
 	filter "platforms:Win64"
 		system "Windows"
 		architecture "x86_64"

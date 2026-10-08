@@ -49,13 +49,18 @@ project "Core"
 		rootpath("%{prj.name}/Source/**.c"), rootpath("%{prj.name}/Source/**.cpp"),
 		rootpath("%{prj.name}/Source/**.cxx"), rootpath("%{prj.name}/Source/**.cc"),
 		rootpath("%{prj.name}/Content/**"),
-		rootpath("**.lua"),
-		rootpath("**.txt"),
-		rootpath("**.bat"),
+		-- Repository files worth having at hand in the IDE. Named places only: a root-wide `**`
+		-- glob walks ThirdParty, Binaries and Intermediate too - tens of thousands of files, once
+		-- per configuration, every time the projects are generated.
+		rootpath("premake5.lua"),
+		rootpath("Premake/**.lua"),
+		rootpath("*.bat"),
+		rootpath("*.md"),
+		rootpath(".git*"),
 		rootpath("*/Config/**.ini"),
-		rootpath("**.frt*"),
-		rootpath("**.md"),
-		rootpath("**.gitignore"),
+		rootpath("Schemas/**"),
+		rootpath("Tools/**.md"),
+		rootpath("Tools/**.txt"),
 	}
 
 	filter "configurations:not *-Headless"
@@ -70,12 +75,6 @@ project "Core"
 			path.join(thirdPartyDir, "Imgui/misc/cpp/imgui_stdlib.*"),
 		}
 	filter {}
-
-	removefiles
-	{
-		rootpath("Intermediate/**"),
-		rootpath("**/vcpkg/**"),
-	}
 
 	filter "configurations:*-Headless"
 		removefiles
@@ -169,9 +168,6 @@ project "Core"
 	-------------------
 	filter "platforms:Win64"
 		defines { "WIN64", "_WINDOWS" }
-
-	filter "action:vs*"
-		disablewarnings { "4251", "4275" }
 
 	filter "configurations:Debug-*"
 		defines { "DEBUG", "FRT_CORE_EXPORTS" }
