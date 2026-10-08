@@ -1,12 +1,6 @@
 -----------------------------------------
 ---------------  Core  ------------------
 -----------------------------------------
-local dxcExe = path.join(thirdPartyDir, "Dxc/bin/x64/dxc.exe")
-local vcpkgBinDebug = path.join(vcpkgRoot, "installed", triplet, "debug", "bin", "*.pdb")
-local vcpkgDllDebug = path.join(vcpkgRoot, "installed", triplet, "debug", "bin", "*.dll")
-local vcpkgBinRelease = path.join(vcpkgRoot, "installed", triplet, "bin", "*.pdb")
-local vcpkgDllRelease = path.join(vcpkgRoot, "installed", triplet, "bin", "*.dll")
-
 project "Core"
 	location (rootpath("%{prj.name}"))
 
@@ -22,12 +16,8 @@ project "Core"
 
 	-- One directory per platform, configurations separated by the targetname suffix below.
 	-- Deliberate: a single place to find every binary beats a tree of near-empty folders.
-	--
-	-- KNOWN TRADE-OFF: the third-party DLLs copied in beside them are NOT suffixed -
-	-- gtest, gmock, draco, minizip, poly2tri and pugixml are named identically in debug
-	-- and release - so whichever configuration was built last owns them. Building A then
-	-- running B's binary without rebuilding B loads mismatched DLLs and faults before
-	-- main, with no output. Rebuild the configuration you are about to run.
+	-- Third-party libraries carry their build type in their names too (Premake/thirdparty.lua),
+	-- so no configuration overwrites another's binaries.
 	targetdir (rootpath("Binaries/%{cfg.platform}"))
 	objdir (rootpath("Intermediate/%{cfg.platform}/%{cfg.buildcfg}/%{prj.name}"))
 
@@ -68,11 +58,6 @@ project "Core"
 		{
 			rootpath("%{prj.name}/Content/Shaders/**.hlsl"),
 			rootpath("%{prj.name}/Content/Shaders/**.hlsli"),
-			path.join(thirdPartyDir, "Imgui/*.h"),
-			path.join(thirdPartyDir, "Imgui/*.cpp"),
-			path.join(thirdPartyDir, "Imgui/backends/imgui_impl_dx12.*"),
-			path.join(thirdPartyDir, "Imgui/backends/imgui_impl_win32.*"),
-			path.join(thirdPartyDir, "Imgui/misc/cpp/imgui_stdlib.*"),
 		}
 	filter {}
 
@@ -98,8 +83,6 @@ project "Core"
 		files
 		{
 			rootpath("%{prj.name}/**.natvis"),
-			path.join(thirdPartyDir, "Imgui/misc/debuggers/imgui.natvis"),
-			path.join(thirdPartyDir, "Imgui/misc/debuggers/imgui.natstepfilter"),
 		}
 
 	filter "files:**.hlsl"
@@ -114,43 +97,19 @@ project "Core"
 	{
 		-- D3D12 Agility SDK headers must win over the Windows SDK's d3d12.h, so they go first.
 		path.join(thirdPartyDir, "D3D12Agility/include"),
-		path.join(vcpkgRoot, "installed", triplet, "include"),
 		rootpath("%{prj.name}/Source"),
 		-- C++/HLSL shared structs live with the shaders (Shared/*.h is compiled by both).
 		rootpath("%{prj.name}/Content/Shaders"),
 		path.join(thirdPartyDir, "Stb"),
-		path.join(thirdPartyDir, "Imgui"),
 		path.join(thirdPartyDir, "Dxc/inc"),
 	}
 
 	----------------
 	----- Libs -----
 	----------------
-	filter "configurations:Debug-*"
-		libdirs
-		{
-			path.join(vcpkgRoot, "installed", triplet, "debug/lib"),
-		}
-
-	filter "configurations:Release-*"
-		libdirs
-		{
-			path.join(vcpkgRoot, "installed", triplet, "lib"),
-		}
-
-	filter "configurations:Debug-*"
-		links
-		{
-			"assimp-vc143-mtd",
-			"yaml-cppd"
-		}
-
-	filter "configurations:Release-*"
-		links
-		{
-			"assimp-vc143-mt",
-			"yaml-cpp"
-		}
+	useImGui()
+	useAssimp()
+	useYamlCpp()
 
 	filter "platforms:Win64"
 		libdirs
@@ -191,30 +150,11 @@ project "Core"
 	------------------------------
 	prebuildcommands
 	{
-		-- temporary
--- 		"{MKDIR} %{prj.location}Content/Shaders/Bin",
--- 		"\"" .. dxcExe .. "\" -E main -Fo %{prj.location}Content/Shaders/Bin/VertexShader.shader -T vs_6_0 -Zi -Zpc -Qembed_debug %{prj.location}Content/Shaders/VertexShader.hlsl",
--- 		"\"" .. dxcExe .. "\" -E main -Fo %{prj.location}Content/Shaders/Bin/PixelShader.shader -T ps_6_0 -Zi -Zpc -Qembed_debug %{prj.location}Content/Shaders/PixelShader.hlsl",
 		"{COPYFILE} " .. path.join(thirdPartyDir, "Dxc/bin/x64/dxcompiler.dll") .. " %[%{cfg.buildtarget.directory}]",
 		"{COPYFILE} " .. path.join(thirdPartyDir, "Dxc/bin/x64/dxil.dll") .. " %[%{cfg.buildtarget.directory}]",
-		-- Agility SDK runtime: loaded from <exe dir>/D3D12/ (D3D12SDKPath exported by FRT_RUN_GAME).
+		-- Agility SDK runtime: loaded from <exe dir>/D3D12/ (D3D12SDKPath exported by the host
+		-- executable, Engine/HostEntry.h).
 		"{MKDIR} %[%{cfg.buildtarget.directory}/D3D12]",
 		"{COPYFILE} %[" .. path.join(thirdPartyDir, "D3D12Agility/bin/x64/D3D12Core.dll") .. "] %[%{cfg.buildtarget.directory}/D3D12]",
 		"{COPYFILE} %[" .. path.join(thirdPartyDir, "D3D12Agility/bin/x64/d3d12SDKLayers.dll") .. "] %[%{cfg.buildtarget.directory}/D3D12]",
 	}
-
-	filter "configurations:Release-*"
-		prebuildcommands
-		{
-			"{COPYFILE} %[" .. vcpkgBinRelease .. "] %[%{cfg.buildtarget.directory}]",
-			"{COPYFILE} %[" .. vcpkgDllRelease .. "] %[%{cfg.buildtarget.directory}]",
-		}
-
-	filter "configurations:Debug-*"
-		prebuildcommands
-		{
-			"{COPYFILE} %[" .. vcpkgBinDebug .. "] %[%{cfg.buildtarget.directory}]",
-			"{COPYFILE} %[" .. vcpkgDllDebug .. "] %[%{cfg.buildtarget.directory}]",
-		}
-
-	filter {}

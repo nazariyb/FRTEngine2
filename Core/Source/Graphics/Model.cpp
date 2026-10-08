@@ -118,8 +118,10 @@ SMaterial ImportMaterial (const aiMaterial* Material, const std::string& Fallbac
 		FindTexturePath(Material, { { aiTextureType_BASE_COLOR, 0u }, { aiTextureType_DIFFUSE, 0u } }), MaterialDir);
 	m.NormalTexturePath = MakeMaterialRelative(
 		FindTexturePath(Material, { { aiTextureType_NORMALS, 0u } }), MaterialDir);
+	// glTF's packed metallic-roughness texture: its own type since assimp 6, UNKNOWN before; it is
+	// also reported as METALNESS and DIFFUSE_ROUGHNESS.
 	m.MetallicRoughnessTexturePath = MakeMaterialRelative(
-		FindTexturePath(Material, { { aiTextureType_UNKNOWN, 0u }, { aiTextureType_METALNESS, 0u }, { aiTextureType_DIFFUSE_ROUGHNESS, 0u } }), MaterialDir);
+		FindTexturePath(Material, { { aiTextureType_GLTF_METALLIC_ROUGHNESS, 0u }, { aiTextureType_UNKNOWN, 0u }, { aiTextureType_METALNESS, 0u }, { aiTextureType_DIFFUSE_ROUGHNESS, 0u } }), MaterialDir);
 	m.EmissiveTexturePath = MakeMaterialRelative(
 		FindTexturePath(Material, { { aiTextureType_EMISSIVE, 0u } }), MaterialDir);
 	m.OcclusionTexturePath = MakeMaterialRelative(

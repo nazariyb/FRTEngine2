@@ -1,21 +1,10 @@
-triplet = "x64-windows" -- TODO: support for Linux
-
 ROOT_DIR = ROOT_DIR or path.getabsolute(path.join(_SCRIPT_DIR, ".."))
 
 function rootpath(relativePath)
 	return path.join(ROOT_DIR, relativePath)
 end
 
-neededPackages =
-{
-	"assimp",
-	"gtest",
-	"yaml-cpp"
-}
-
 thirdPartyDir = rootpath("ThirdParty")
-
-vcpkgRoot = path.join(thirdPartyDir, "vcpkg")
 
 function removeDirectory(dir)
 	if not os.isdir(dir) then
@@ -91,8 +80,7 @@ for _, cfg in ipairs(buildConfigs) do
 	end
 end
 
--- Linux is a placeholder for the port (see the triplet TODO at the top of this file);
--- nothing builds for it yet.
+-- Linux is a placeholder for the port; nothing builds for it yet.
 --
 -- It must not reach a Visual Studio action. Premake matches the platform name against its
 -- known systems, so "Linux" silently implies system "linux", and a linux WindowedApp has
@@ -136,11 +124,11 @@ function useCore()
 		rootpath("Core/Source"),
 		rootpath("Core/Content/Shaders"),
 		path.join(thirdPartyDir, "Dxc/inc"),
-		-- Dear ImGui is compiled into and exported from Core (Core/Source/UI/ImGuiConfig.h).
-		path.join(thirdPartyDir, "Imgui"),
 	}
 
 	links { "Core" }
+	-- One ImGui for the whole process, in its own DLL (Core/Source/UI/ImGuiConfig.h).
+	useImGui()
 
 	filter "platforms:Win64"
 		defines { "WIN64", "_WINDOWS" }

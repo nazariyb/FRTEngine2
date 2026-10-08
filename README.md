@@ -58,23 +58,13 @@ Each build has two axes:
 - **MSBuild / MSVC**_(if applicable)_**:** Toolset **v143** (ships with VS 2022) or later; the code uses **C++20** features.
 - **Windows SDK:** **10.0.19041.0** or later — the minimum version that defines `D3D12_RESOURCE_FLAG_RAYTRACING_ACCELERATION_STRUCTURE` (Windows 10 SDK 2004, May 2020). This is enforced in the generated project files.
 - **GPU:** Any D3D12-capable adapter; DXR (raytracing) requires a GPU that supports DirectX Raytracing Tier 1.0 or higher (e.g. NVIDIA Turing / AMD RDNA2 and later)
-- **Git:** Required on `PATH` — `vcpkg` is a git submodule and is initialized automatically by the install-deps step
+- **Nothing else.** Every third-party library is vendored in `ThirdParty/` and built from source as part of the solution: no package manager, submodules or install step.
 
 ---
 
 ## Setup
 
-### 1. Install dependencies
-
-Run the helper script from the repository root. It invokes the bundled Premake5 binary to initialize all submodules, bootstrap `vcpkg`, and install the required packages (`assimp`, `gtest`):
-
-```bat
-PremakeInstallDependencies.bat
-```
-
-This may take a few minutes on the first run as vcpkg downloads and builds packages from source.
-
-### 2. Generate project files
+### 1. Generate project files
 
 **Visual Studio 2022** (convenience script):
 ```bat
@@ -87,7 +77,7 @@ PremakeGenerateVisualStudioProject.bat
 ```
 Replace `<target>` with the Premake action for your toolchain (e.g. `vs2019`, `gmake2`, `xcode4`). See the [Premake documentation](https://premake.github.io/docs/using-premake) for the full list.
 
-### 3. Open and build
+### 2. Open and build
 
 1. Open the generated solution / project in your IDE or invoke your build system directly.
 2. Select a configuration (e.g. **Debug-Default | x64**).
@@ -163,7 +153,7 @@ Launcher/         — runtime host: loads a game module and runs it standalone
 Demo/             — sample game, built as a game module (DLL)
 Schemas/          — JSON Schemas for YAML asset formats (IDE auto-completion)
 Tools/Analysis/   — Python package + Jupyter notebook for profiling-session analysis
-ThirdParty/       — vendored libraries (ImGui, Stb, DXR helpers, DXC, yaml-cpp, vcpkg)
+ThirdParty/       — vendored libraries, built from source (ImGui, assimp, yaml-cpp, GoogleTest) or as shipped (Stb, D3D12 Agility SDK, DXC); see each VERSION.txt
 Premake/          — Premake5 scripts
 Binaries/         — output DLLs / EXEs
 Intermediate/     — compiled object files

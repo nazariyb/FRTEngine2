@@ -11,7 +11,7 @@ workspace "FRTEngine2"
 	{
 		'FRT_PLATFORM_NAME="%{cfg.platform}"',
 		'FRT_CONFIG_NAME="%{cfg.buildcfg}"',
-		-- One ImGui for the whole process, exported from Core.dll (see the header).
+		-- One ImGui configuration for the whole process (see the header).
 		'IMGUI_USER_CONFIG="UI/ImGuiConfig.h"'
 	}
 
@@ -24,6 +24,15 @@ workspace "FRTEngine2"
 	-- nothing to report. Binaries for other compilers would be built per compiler.
 	filter "action:vs*"
 		disablewarnings { "4251", "4275" }
+
+	-- Per build type. "Debug*", not "Debug-*": third-party projects have one configuration per
+	-- build type, named without the target suffix (Premake/thirdparty.lua).
+	filter "configurations:Debug*"
+		symbols "On"
+
+	filter "configurations:Release*"
+		defines { "NDEBUG" }
+		optimize "On"
 
 	filter "platforms:Win64"
 		system "Windows"
