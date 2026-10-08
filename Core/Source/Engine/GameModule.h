@@ -36,9 +36,9 @@ class CConfig;
 /**
  * Makes a project a game module: one line in the game's sources, e.g.
  *     FRT_IMPLEMENT_GAME_MODULE(MyGame)
- * The game is a DLL the hosts (Launcher, Editor) load, finding these two exports by name - or,
- * in a monolithic build, a static library linked into the launcher, where Core calls them
- * directly and that reference is what pulls the game into the link. A constructor that throws
+ * The game is a DLL the hosts (Launcher, Editor) load, finding these exports by name - or, in a
+ * monolithic build, compiled into the game's own executable (with the launcher's code), where
+ * Core calls them directly. A constructor that throws
  * yields null: no exception may cross the C boundary.
  */
 #if FRT_MONOLITHIC
@@ -64,8 +64,8 @@ namespace frt
 /**
  * A game module: a DLL holding a game (Unreal's game modules; Handmade Hero's game DLL). The
  * launcher and the editor are generic executables that load one by name, so neither is built
- * per game, and the game's code stays a unit that can be rebuilt while running. The exception
- * is the monolithic (Release) launcher, built with the default game linked in.
+ * per game, and the game's code stays a unit that can be rebuilt while running. In a monolithic
+ * (Release) build there is no module: the game is its own executable, the engine linked in.
  *
  * Everything whose code lives in the module - game instances, and worlds the game populated
  * (their component pools are instantiated in it) - must be destroyed before Unload().

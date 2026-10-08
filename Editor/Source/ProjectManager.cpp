@@ -163,15 +163,29 @@ CProjectManager::CProjectManager (CEngine& InEngine, SProjectManagerRequest InRe
 	bMessageIsError = !Message.empty();
 	bOfferBuild = Request.bOfferBuild;
 
-	// Templates/<Name>/Template.ini, as FRT.bat new finds them.
+	// A scripted run keeps to its own directory, registry included: the processes it starts
+	// inherit FRT_USER_DATA_DIR. Set before anything reads the registry.
+	const config::CConfig& config = Engine.GetConfig();
+	bSmokeTest = config.Get("Editor", "SmokeTest", false);
 	std::error_code ec;
-	for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(paths::GetEngineDir() / "Templates", ec))
+	if (bSmokeTest)
+	{
+		const std::string dir = config.Get("Editor", "SmokeTestDir", "");
+		SmokeDir = dir.empty() ? paths::GetSavedDir() / "SmokeTest" / "ProjectManager" : project::PathFromUtf8(dir);
+		std::filesystem::remove_all(SmokeDir, ec);
+		std::filesystem::create_directories(SmokeDir, ec);
+		std::ofstream(SmokeDir / "ProjectManager.log", std::ios::trunc);
+		_wputenv_s(L"FRT_USER_DATA_DIR", (SmokeDir / "User").c_str());
+	}
+
+	// Templates/<Name>/Template.ini, as FRT.bat new finds them.
+	for (std::filesystem::directory_iterator it(paths::GetEngineDir() / "Templates", ec), end; !ec && it != end; it.increment(ec))
 	{
 		config::CIniFile info;
-		if (entry.is_directory(ec) && info.LoadFromFile(entry.path() / "Template.ini"))
+		if (it->is_directory(ec) && info.LoadFromFile(it->path() / "Template.ini"))
 		{
 			const std::string* description = info.Find("Template", "Description");
-			Templates.push_back({ project::PathToUtf8(entry.path().filename()), description ? *description : std::string() });
+			Templates.push_back({ project::PathToUtf8(it->path().filename()), description ? *description : std::string() });
 		}
 	}
 
@@ -192,16 +206,6 @@ CProjectManager::CProjectManager (CEngine& InEngine, SProjectManagerRequest InRe
 
 	Refresh();
 	bShowNewProject = Recent.empty();
-
-	const config::CConfig& config = Engine.GetConfig();
-	bSmokeTest = config.Get("Editor", "SmokeTest", false);
-	if (bSmokeTest)
-	{
-		const std::string dir = config.Get("Editor", "SmokeTestDir", "");
-		SmokeDir = dir.empty() ? paths::GetSavedDir() / "SmokeTest" / "ProjectManager" : project::PathFromUtf8(dir);
-		std::filesystem::create_directories(SmokeDir, ec);
-		std::ofstream(SmokeDir / "ProjectManager.log", std::ios::trunc);
-	}
 }
 
 CProjectManager::~CProjectManager ()

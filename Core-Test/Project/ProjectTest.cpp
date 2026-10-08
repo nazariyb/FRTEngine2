@@ -115,6 +115,34 @@ TEST_F(ProjectTest, DescriptorWithoutANameIsRejected)
 	EXPECT_FALSE(project::SProjectDescriptor::Load(Root / "Missing.frtproject", descriptor, &error));
 }
 
+TEST_F(ProjectTest, DescriptorNamingAnEngineProjectIsRejected)
+{
+	// Module=Core would make the generated solution's game project the engine's Core.
+	const std::filesystem::path file = Root / "Game" / "Game.frtproject";
+	Write(file, "[Project]\nName=Game\nModule=Core\n");
+	project::SProjectDescriptor descriptor;
+	std::string error;
+	EXPECT_FALSE(project::SProjectDescriptor::Load(file, descriptor, &error));
+	EXPECT_NE(error.find("engine"), std::string::npos);
+
+	Write(file, "[Project]\nName=My Game\n");
+	EXPECT_FALSE(project::SProjectDescriptor::Load(file, descriptor, &error));
+}
+
+TEST_F(ProjectTest, ProjectFileExtensionInAnyCase)
+{
+	const std::filesystem::path file = Root / "Game" / "Game.FRTPROJECT";
+	Write(file, "[Project]\nName=Game\n");
+	EXPECT_TRUE(IsSame(project::FindProjectFile(Root / "Game"), file));
+}
+
+TEST_F(ProjectTest, TextThatIsNotUtf8IsNoPath)
+{
+	// An ANSI-encoded file with a non-ASCII path: no path, and no exception.
+	EXPECT_TRUE(project::PathFromUtf8("C:\\Users\\J\xF6rg").empty());
+	EXPECT_FALSE(project::PathFromUtf8("C:\\Users\\J\xC3\xB6rg").empty());
+}
+
 TEST_F(ProjectTest, SaveKeepsWhatElseTheFileHolds)
 {
 	const std::filesystem::path file = Root / "Game" / "Game.frtproject";

@@ -69,7 +69,15 @@ std::filesystem::path FindAbove (const std::filesystem::path& Start, TPredicate&
 
 std::filesystem::path PathFromUtf8 (std::string_view Text)
 {
-	return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(Text.data()), Text.size()));
+	// Text from files people edit: not UTF-8 is no path, never an exception.
+	try
+	{
+		return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(Text.data()), Text.size()));
+	}
+	catch (const std::exception&)
+	{
+		return {};
+	}
 }
 
 std::filesystem::path GetEnvironmentPath (const wchar_t* Name)
@@ -87,8 +95,20 @@ std::filesystem::path GetEnvironmentPath (const wchar_t* Name)
 
 std::string PathToUtf8 (const std::filesystem::path& Path)
 {
-	const std::u8string text = std::filesystem::path(Path).make_preferred().u8string();
-	return std::string(reinterpret_cast<const char*>(text.data()), text.size());
+	try
+	{
+		const std::u8string text = std::filesystem::path(Path).make_preferred().u8string();
+		return std::string(reinterpret_cast<const char*>(text.data()), text.size());
+	}
+	catch (const std::exception&)
+	{
+		return {};   // a name Windows allows but Unicode does not (an unpaired surrogate)
+	}
+}
+
+bool HasProjectFileExtension (const std::filesystem::path& Path)
+{
+	return enum_::EqualsIgnoreCase(PathToUtf8(Path.extension()), ProjectFileExtension);
 }
 
 bool SProjectDescriptor::Load (const std::filesystem::path& InFile, SProjectDescriptor& Out, std::string* Error)
@@ -118,6 +138,19 @@ bool SProjectDescriptor::Load (const std::filesystem::path& InFile, SProjectDesc
 	if (project.Module.empty())
 	{
 		project.Module = project.Name;
+	}
+	// Both name generated projects and files: never an engine project's, or a path.
+	for (const std::string* name : { &project.Name, &project.Module })
+	{
+		std::string reason;
+		if (!IsValidProjectName(*name, &reason))
+		{
+			if (Error)
+			{
+				*Error = PathToUtf8(InFile) + ": " + reason;
+			}
+			return false;
+		}
 	}
 	Out = std::move(project);
 	return true;
@@ -156,15 +189,15 @@ std::filesystem::path FindProjectFile (const std::filesystem::path& Dir)
 {
 	std::filesystem::path found;
 	std::error_code ec;
-	for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(Dir, ec))
+	for (std::filesystem::directory_iterator it(Dir, ec), end; !ec && it != end; it.increment(ec))
 	{
-		if (entry.is_regular_file(ec) && entry.path().extension() == ProjectFileExtension)
+		if (it->is_regular_file(ec) && HasProjectFileExtension(it->path()))
 		{
 			if (!found.empty())
 			{
 				return {};   // ambiguous: say which with -Project=
 			}
-			found = entry.path();
+			found = it->path();
 		}
 	}
 	return found.empty() ? found : Canonical(found);
@@ -245,7 +278,7 @@ std::filesystem::path FindProjectToRun (bool bSearchFromExecutable, std::string*
 				named = std::filesystem::path(argument.substr(prefix.size()));
 			}
 		}
-		if (named.empty() && std::filesystem::path(argument).extension() == ProjectFileExtension)
+		if (named.empty() && HasProjectFileExtension(std::filesystem::path(argument)))
 		{
 			named = std::filesystem::path(argument);
 		}

@@ -91,28 +91,12 @@ function visualStudio2022()
 	return (code == 0 and output) and output:match("[^\r\n]+") or nil
 end
 
--- The generation options this command was given, for the solution it (re)generates.
-function generationOptions(bWithThirdParty)
-	local arguments = {}
-	local valued = { "msvc", "precision" }
-	if bWithThirdParty then
-		table.insert(valued, "thirdparty")
-	end
-	for _, name in ipairs(valued) do
-		if _OPTIONS[name] then
-			table.insert(arguments, "--" .. name .. "=" .. _OPTIONS[name])
-		end
-	end
-	for _, name in ipairs({ "nopch", "fatal-warnings" }) do
-		if _OPTIONS[name] then
-			table.insert(arguments, "--" .. name)
-		end
-	end
-	return table.concat(arguments, " ")
-end
-
+-- A path as one command-line argument. Backslashes before the closing quote are doubled, or the
+-- program reading it would take the last one as escaping the quote (a drive root, D:\).
 local function quoted(p)
-	return '"' .. winpath(p) .. '"'
+	local text = winpath(p)
+	local trailing = text:match("\\*$")
+	return '"' .. text .. trailing .. '"'
 end
 
 local function fail(message)
@@ -175,15 +159,16 @@ local function build(project)
 	end
 end
 
--- The options this command was given, for the engine it hands the command to.
+-- The options on this command line, for the engine it hands the command to - as given, not as
+-- this checkout's remembered options filled them in.
 local function forwardedArguments()
 	local arguments = {}
-	for name, value in pairs(_OPTIONS) do
-		if name ~= "file" and name ~= "project" then
-			table.insert(arguments, value == "" and "--" .. name or '"--' .. name .. "=" .. value .. '"')
+	for _, argument in ipairs(_ARGV or {}) do
+		local name = argument:match("^%-%-([%w%-]+)")
+		if name and name ~= "file" and name ~= "project" then
+			table.insert(arguments, '"' .. argument .. '"')
 		end
 	end
-	table.sort(arguments)
 	return table.concat(arguments, " ")
 end
 
@@ -451,7 +436,8 @@ newaction
 			if not runCommand(tool .. " generate" .. arguments) then
 				fail("new: generating " .. name .. "'s solution failed")
 			end
-			if _OPTIONS["build"] and not runCommand(tool .. " build" .. arguments) then
+			local configuration = _OPTIONS["config"] and ' "--config=' .. _OPTIONS["config"] .. '"' or ""
+			if _OPTIONS["build"] and not runCommand(tool .. " build" .. arguments .. configuration) then
 				fail("new: building " .. name .. " failed")
 			end
 		else

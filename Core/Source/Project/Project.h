@@ -89,13 +89,16 @@ FRT_CORE_API std::filesystem::path FindProjectToRun (bool bSearchFromExecutable,
 
 // A project's name is also its module's, its files' and its C++ identifiers' name: a letter,
 // then letters, digits or underscores, at most 64 - and not an engine project's name, which the
-// generated solution already uses.
+// generated solution already uses. Descriptors with another Name or Module do not load.
 FRT_CORE_API bool IsValidProjectName (std::string_view Name, std::string* Error = nullptr);
 
 // UTF-8 text in config files and messages <-> paths, which on Windows would otherwise read narrow
 // strings in the ANSI code page. Written with the platform's separators.
+// Empty when the text is not UTF-8 / the path not Unicode: never an exception.
 FRT_CORE_API std::filesystem::path PathFromUtf8 (std::string_view Text);
 FRT_CORE_API std::string PathToUtf8 (const std::filesystem::path& Path);
+// Ends in .frtproject, in any case.
+FRT_CORE_API bool HasProjectFileExtension (const std::filesystem::path& Path);
 // An environment variable holding a path, read in UTF-16 (any user name, any folder); empty
 // when unset.
 FRT_CORE_API std::filesystem::path GetEnvironmentPath (const wchar_t* Name);

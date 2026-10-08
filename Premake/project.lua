@@ -27,10 +27,16 @@ function winpath(p)
 	return path.translate(p, "\\")
 end
 
+-- A path given on the command line or in the environment: relative to where the command was
+-- run. (While premake5.lua itself runs, the current directory is the engine's.)
+function absolutePath(p)
+	return path.getabsolute(p, _WORKING_DIR or os.getcwd())
+end
+
 -- A path's one spelling, as the engine writes it into the registry: absolute, normalized,
 -- backslashes. Keys compare case-insensitively.
 function canonicalPath(p)
-	return winpath(path.normalize(path.getabsolute(p)))
+	return winpath(path.normalize(absolutePath(p)))
 end
 
 function isSamePath(a, b)
@@ -223,7 +229,7 @@ end
 -- A project's descriptor - { File, Dir, Name, Module, Engine } - from its file or its directory;
 -- nil and why when there is none.
 function loadProject(location)
-	local file = path.getabsolute(location)
+	local file = absolutePath(location)
 	if os.isdir(file) then
 		local err
 		file, err = findProjectFile(file)
@@ -240,12 +246,20 @@ function loadProject(location)
 		return nil, file .. " has no [Project] Name"
 	end
 	local module = ini.find(data, "Project", "Module")
+	module = (module and module ~= "") and module or name
+	-- Both name generated projects and files: never an engine project's, or a path.
+	for _, value in ipairs({ name, module }) do
+		local valid, why = isValidProjectName(value)
+		if not valid then
+			return nil, file .. ": " .. why
+		end
+	end
 	return
 	{
 		File = file,
 		Dir = path.getdirectory(file),
 		Name = name,
-		Module = (module and module ~= "") and module or name,
+		Module = module,
 		Engine = ini.find(data, "Project", "Engine") or "",
 	}
 end
@@ -258,8 +272,8 @@ end
 function resolveEngineDir(project)
 	local override = os.getenv("FRT_ENGINE_DIR")
 	if override and override ~= "" then
-		if isEngineDir(override) then
-			return path.getabsolute(override)
+		if isEngineDir(absolutePath(override)) then
+			return absolutePath(override)
 		end
 		return nil, "FRT_ENGINE_DIR (" .. override .. ") is not an engine directory"
 	end

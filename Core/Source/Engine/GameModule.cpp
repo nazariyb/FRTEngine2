@@ -19,8 +19,8 @@
 
 
 #if FRT_MONOLITHIC
-// The game module is a static library linked into the executable (Premake: hostProject). These
-// references are what pull its objects into the link. A link without a game - Core-Test, if it
+// The game is compiled into the executable, with the launcher's code (Premake: gameProject).
+// These references bind to its exports. A link without a game - Core-Test, if it
 // ever reaches this file - binds them to the fallbacks instead of failing, and Load() reports
 // that no game is linked in. x64 names: C symbols carry no leading underscore.
 extern "C" ::frt::GameInstance* FrtCreateGame ();

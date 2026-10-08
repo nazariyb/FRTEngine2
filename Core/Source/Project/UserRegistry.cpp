@@ -27,18 +27,16 @@ std::filesystem::path ProjectsFile ()
 	return GetUserDataDir() / "Projects.ini";
 }
 
-// One spelling per path, so a project opened through another relative path is one entry: absolute,
-// normalized, with the platform's separators - as the build tools write them (Premake/project.lua),
-// and as a batch file can use them. Compared case-insensitively.
+// One spelling per path, so a project opened through another relative path is one entry: absolute
+// and normalized, with the platform's separators - exactly as the build tools write them
+// (Premake/project.lua: canonicalPath), and as a batch file can use them. Links and substituted
+// drives are left as they are, since the build tools cannot resolve them. Compared
+// case-insensitively.
 std::string Key (const std::filesystem::path& Path)
 {
 	std::error_code ec;
-	std::filesystem::path normal = std::filesystem::weakly_canonical(Path, ec);
-	if (ec)
-	{
-		normal = std::filesystem::absolute(Path, ec).lexically_normal();
-	}
-	return PathToUtf8(normal);
+	const std::filesystem::path absolute = std::filesystem::absolute(Path, ec);
+	return PathToUtf8((ec ? Path : absolute).lexically_normal());
 }
 
 int64 Now ()

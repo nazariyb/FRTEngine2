@@ -1,8 +1,10 @@
 ROOT_DIR = path.getabsolute(_SCRIPT_DIR or ".")
 
 dofile("Premake/extensions.lua")
-dofile("Premake/common.lua")
 dofile("Premake/project.lua")
+-- Before anything reads them: they may come from the checkout's remembered options.
+dofile("Premake/options.lua")
+dofile("Premake/common.lua")
 dofile("Premake/tools.lua")
 dofile("Premake/actions.lua")
 dofile("Premake/thirdparty.lua")
@@ -11,6 +13,8 @@ dofile("Premake/thirdparty.lua")
 if not (_ACTION and _ACTION:match("^vs")) then
 	return
 end
+
+saveGenerationOptions()
 
 -- --project: that project's solution (Premake/project.lua).
 if _OPTIONS["project"] then

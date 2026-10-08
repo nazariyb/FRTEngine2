@@ -241,7 +241,7 @@ newaction
 
 		-- The projects, built from source: regenerates the solution in source mode, with the
 		-- generation options given here (--msvc picks the compiler the archive is built with).
-		local options = generationOptions(false)
+		local options = generationOptions(false) .. " --thirdparty=source"
 		print("Generating the solution with third-party projects (vs2022 " .. options .. ")...")
 		if not runCommand('"' .. winpath(_PREMAKE_COMMAND) .. '" --file="' .. winpath(rootpath("premake5.lua")) .. '" vs2022 ' .. options) then
 			error("package-thirdparty: generating the solution failed", 0)
@@ -308,7 +308,8 @@ newaction
 		print("SHA-256: " .. (sha256(archive) or "?"))
 		print("MSVC:    " .. manifest.msvc .. " (machines linking it need this version or newer)")
 		print("Publish it, then set prebuiltThirdParty.url and .sha256 in Premake/thirdparty.lua.")
-		print("The solution was regenerated in source mode (vs2022 " .. options .. ").")
+		print("The solution was regenerated in source mode (vs2022 " .. options .. "), which it now stays in;")
+		print("generate with --thirdparty=prebuilt to change that.")
 	end
 }
 

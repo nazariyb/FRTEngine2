@@ -31,6 +31,9 @@
 **/*.vcxproj.user
 **/*.DotSettings.user
 
+# What the checkout remembers for its user (generation options)
+/Saved/
+
 # Templates built in place (FRT.bat generate --project=Templates/<Name>)
 /Templates/*/Binaries/
 /Templates/*/Intermediate/

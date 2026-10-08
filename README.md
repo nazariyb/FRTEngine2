@@ -136,7 +136,7 @@ After the command: `FRT.bat generate --nopch`, `FRT.bat vs2022 --project=... --p
 | `--msvc=<version>` | Build with that MSVC version, e.g. `14.44.35207` (default: whatever the v143 toolset defaults to, which an installed side-by-side toolset can pin to an older one) |
 | `--precision=double` | 64-bit `frt::Real` for positions and measurements |
 
-An engine checkout's binaries are shared by its projects, so generate them all with the same options. Generation is Visual Studio 2022 only for now (`FRT.bat vs2022` is the Premake action underneath).
+An engine checkout's binaries and project files are shared by its projects, so these options are remembered per checkout (in `Saved/GenerationOptions.ini`): given once to `setup`, `generate`, `new` or `vs2022`, an option holds for every later generation of the engine and its projects until given again. Switches are turned off with `=off` (`--nopch=off`). Generation is Visual Studio 2022 only for now (`FRT.bat vs2022` is the Premake action underneath).
 
 From the command line, build through a solution - `MSBuild FRTEngine2.sln -p:Configuration=Development-Default -p:Platform=Win64 -m`, with `-t:Editor` (or `-t:ThirdParty\assimp` and the like) for a single project; in a project's solution the engine's projects are under `Engine\`. Building a project file directly fails with MSB8013: third-party projects only have one configuration per build type, which the solution maps.
 
@@ -167,10 +167,6 @@ Setup.bat
 ```
 
 `deinit -f` also deletes `ThirdParty/vcpkg/installed`, which older commits need to build: move it aside first if you still build those. The submodules' history stays in `.git/modules/ThirdParty` (about 900 MB). Delete it only when nothing uses it any more: no worktree or branch you still build from before this change, and no clone that borrows its objects (`git submodule update --reference`).
-
----|---|
-| `PremakeCleanCompiled.bat` | Compiled binaries and intermediate object files |
-| `PremakeCleanAll.bat` | Everything above plus the generated project/solution files |
 
 ---
 

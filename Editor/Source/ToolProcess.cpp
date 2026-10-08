@@ -266,7 +266,10 @@ std::filesystem::path GetExecutablePath ()
 
 std::wstring QuoteArgument (const std::filesystem::path& Path)
 {
-	// A path never ends in a backslash here, nor holds a quote, so plain quotes are enough.
-	return L"\"" + Path.wstring() + L"\"";
+	// Paths hold no quotes. Backslashes before the closing quote are doubled, or the program
+	// reading the argument would take the last one as escaping the quote (a drive root, D:\).
+	const std::wstring text = std::filesystem::path(Path).make_preferred().wstring();
+	const size_t trailing = text.size() - (text.find_last_not_of(L'\\') + 1u);
+	return L"\"" + text + std::wstring(trailing, L'\\') + L"\"";
 }
 }

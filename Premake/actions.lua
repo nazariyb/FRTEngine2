@@ -1,7 +1,14 @@
 -- The engine's, or with --project that project's: a project's project files are in its
 -- Intermediate, its solution at its root.
 local function cleanRoot()
-	return _OPTIONS["project"] and loadProject(_OPTIONS["project"]) or nil
+	if not _OPTIONS["project"] then
+		return nil
+	end
+	local project, err = loadProject(_OPTIONS["project"])
+	if not project then
+		error(err, 0)   -- never the engine's files instead
+	end
+	return project
 end
 
 newaction

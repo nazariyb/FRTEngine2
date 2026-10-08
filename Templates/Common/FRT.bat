@@ -10,8 +10,13 @@ rem directory.
 setlocal EnableExtensions DisableDelayedExpansion
 
 set "PROJECT_FILE="
-for %%f in ("%~dp0*.frtproject") do set "PROJECT_FILE=%%~ff"
+set "PROJECT_COUNT=0"
+for %%f in ("%~dp0*.frtproject") do (
+	set "PROJECT_FILE=%%~ff"
+	set /a PROJECT_COUNT+=1 >nul
+)
 if not defined PROJECT_FILE goto no_project
+if not "%PROJECT_COUNT%"=="1" goto many_projects
 
 rem The files read below are UTF-8: any user name, any folder.
 set "CODE_PAGE="
@@ -21,16 +26,22 @@ chcp 65001 >nul
 set "ENGINE_DIR=%FRT_ENGINE_DIR%"
 if defined ENGINE_DIR goto run
 
+rem Key=Value, spaces around either and quotes around the value ignored, as the engine reads it.
 set "ENGINE="
-for /f "usebackq eol=; tokens=1,* delims==" %%a in ("%PROJECT_FILE%") do if /i "%%a"=="Engine" set "ENGINE=%%b"
+for /f "usebackq eol=; tokens=1,* delims== " %%a in ("%PROJECT_FILE%") do if /i "%%a"=="Engine" set "ENGINE=%%~b"
 if not defined ENGINE goto above
 
-if exist "%~dp0%ENGINE%\Engine.frtengine" for %%d in ("%~dp0%ENGINE%") do set "ENGINE_DIR=%%~fd"
+rem A directory: relative to the project, or absolute.
+set "ENGINE_PATH=%~dp0%ENGINE%"
+if "%ENGINE:~1,1%"==":" set "ENGINE_PATH=%ENGINE%"
+if "%ENGINE:~0,2%"=="\\" set "ENGINE_PATH=%ENGINE%"
+if exist "%ENGINE_PATH%\Engine.frtengine" for %%d in ("%ENGINE_PATH%") do set "ENGINE_DIR=%%~fd"
 if defined ENGINE_DIR goto run
 
+rem Else a registered name.
 set "REGISTRY=%LOCALAPPDATA%\FRTEngine"
 if defined FRT_USER_DATA_DIR set "REGISTRY=%FRT_USER_DATA_DIR%"
-if exist "%REGISTRY%\Engines.ini" for /f "usebackq eol=; tokens=1,* delims==" %%a in ("%REGISTRY%\Engines.ini") do if /i "%%a"=="%ENGINE%" set "ENGINE_DIR=%%b"
+if exist "%REGISTRY%\Engines.ini" for /f "usebackq eol=; tokens=1,* delims== " %%a in ("%REGISTRY%\Engines.ini") do if /i "%%a"=="%ENGINE%" set "ENGINE_DIR=%%~b"
 if defined ENGINE_DIR if exist "%ENGINE_DIR%\Engine.frtengine" goto run
 set "ENGINE_DIR="
 
@@ -58,4 +69,8 @@ exit /b 1
 
 :no_project
 echo No .frtproject file next to this script. 1>&2
+exit /b 1
+
+:many_projects
+echo More than one .frtproject file next to this script: keep one. 1>&2
 exit /b 1
