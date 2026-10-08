@@ -22,15 +22,15 @@ A small experimental 3D engine built on Direct3D 12 and DirectX Raytracing (DXR)
 | **Assets** | Visitor-archive serialization framework (`Archive.h`, `Serializer.h`) with a YAML backend (`YamlArchive`) — current format for materials (`.frtmat.yml`). A JSON Schema under `Schemas/` provides IDE auto-completion for the material format. The legacy text-based `TextAssetIO` and the generic `AssetTool` remain available. `EnginePaths` centralizes well-known directory lookups (content, profiling output, etc.). |
 | **Events** | Lightweight typed event/delegate system used throughout the engine. |
 | **ImGui** | Dear ImGui is integrated for debug UI in non-headless builds. Includes live raytracing sliders, transform editor, stats panel, and frame-stat overlays. Press `I` to toggle the entire UI on/off. |
-| **Profiling** | GPU timestamps via PIX-named scopes (`CGpuProfiler`), wave-coalesced ray counters via a UAV ring (`CRayCounters`), an analytic scene-descriptor snapshot (per-portal world area + screen coverage), and a rolling per-frame metrics aggregator. A profiling-session driver sweeps a cartesian product of render settings (spp × bounces × Russian-roulette depth × portal on/off) and exports one `.txt` (settings + scene snapshot) and one `.csv` (every measured frame) per configuration under `Local/Profiling/<session>/`. A Python analysis package (`Tools/Analysis/` — see its own README) parses the output for plots, summary tables, and cost-model validation. |
+| **Profiling** | GPU timestamps via PIX-named scopes (`CGpuProfiler`), wave-coalesced ray counters via a UAV ring (`CRayCounters`), an analytic scene-descriptor snapshot (per-portal world area + screen coverage), and a rolling per-frame metrics aggregator. A profiling-session driver sweeps a cartesian product of render settings (spp × bounces × Russian-roulette depth × portal on/off) and exports one `.txt` (settings + scene snapshot) and one `.csv` (every measured frame) per configuration under `<project>/Saved/Profiling/<session>/`. A Python analysis package (`Tools/Analysis/` — see its own README) parses the output for plots, summary tables, and cost-model validation. |
 
 ### Architecture
 
 ```
 Editor.exe / Launcher.exe   hosts: own the loop, the worlds, the views
-        │  load by name ([Game] Module in Config/Game.ini); Release links it in
+        │  load a project's game module (-Project=<.frtproject>); Release links it in
         ▼
-Demo.dll (game module)      GameInstance: BuildWorld, BeginPlay, Tick, EndPlay
+MyGame.dll (game module)    GameInstance: BuildWorld, BeginPlay, Tick, EndPlay
         │  both link
         ▼
 Core.dll                    CEngine (window, renderer, input, UI, config),
@@ -38,7 +38,7 @@ Core.dll                    CEngine (window, renderer, input, UI, config),
 ```
 
 - **`CEngine`** starts and stops every subsystem explicitly, in dependency order, and provides the frame (`BeginFrame` … `RenderFrame`). It knows nothing about worlds or games: the hosts own those and call the game as a service.
-- **Games are modules.** `FRT_IMPLEMENT_GAME_MODULE(MyGame)` turns a DLL into one; `CGameModule` loads it and checks its ABI. Neither host is built per game - except the Release launcher, which is one executable with the default game (`defaultGameProject` in `Premake/common.lua`) linked in.
+- **Games are modules, in projects of their own.** A game lives in its own directory and repository, outside the engine (see [Projects](#projects)). `FRT_IMPLEMENT_GAME_MODULE(MyGame)` turns its DLL into a game module; `CGameModule` loads it and checks its ABI. Neither host is built per game: in Release a game is its own executable instead, the launcher's code with the game and the engine linked in.
 - **Views.** The renderer draws any number of `CRenderView`s per frame — each with its own histories, size and render mode — from one shared scene. The launcher draws one straight into the swap chain; the editor draws its viewports into textures shown by ImGui.
 - **Editor frame.** Queued commands are applied first; panels then draw and report what happened as plain data, from which the editor routes camera and game input; the world updates; the visible viewports render. Play mode runs the game on a clone of the edited world with a fresh game instance, dropped on Stop.
 
@@ -53,8 +53,8 @@ Each configuration is a build type and a target, e.g. `Development-Default`:
 | **Release** | optimized | one executable: Core, the game and every library built from source statically linked, static runtime. Only DXC and the D3D12 Agility SDK runtime ship beside it | off | shipping and profiling; no Editor |
 
 - **Default / Headless** — `Default` includes the full rendering stack; `Headless` strips the window and renderer (useful for server or unit-test builds).
-- Everything lands in `Binaries/Win64`, named `<Project>-<Configuration>` (plain names for `Release-Default`, the shipping build) and `<Library>-<BuildType>` for third-party libraries, so configurations never overwrite each other.
-- In Debug and Development each module is its own DLL, so changing one rebuilds and relinks only that module. Hosts load the game module from a copy (`Binaries/Win64/HotReload/`), so it can be rebuilt while the editor or launcher runs; `CGameModule::HasNewerBuild()` tells a host when a new build is there. Code can also be patched in place: Visual Studio's Hot Reload in Debug (it needs Edit and Continue information), Live++ in Debug and Development.
+- The engine's binaries land in the engine's `Binaries/Win64`, a game's in its project's: named `<Project>-<Configuration>` (plain names for `Release-Default`, the shipping build) and `<Library>-<BuildType>` for third-party libraries, so configurations never overwrite each other. Every project using an engine checkout shares its binaries.
+- In Debug and Development each module is its own DLL, so changing one rebuilds and relinks only that module. Hosts load the game module from a copy (`<project>/Binaries/Win64/HotReload/`), so it can be rebuilt while the editor or launcher runs; `CGameModule::HasNewerBuild()` tells a host when a new build is there. Code can also be patched in place: Visual Studio's Hot Reload in Debug (it needs Edit and Continue information), Live++ in Debug and Development.
 - The D3D12 debug layer is on by default in Debug only; `FRT_D3D_DEBUG=1` (or `0`) in the environment turns it on (or off) in Debug and Development.
 - Code tests the build type through `Core/Source/BuildConfig.h` (`FRT_BUILD_DEBUG`, `FRT_BUILD_DEVELOPMENT`, `FRT_BUILD_RELEASE`, `FRT_MONOLITHIC` and the switches derived from them), never `_DEBUG` or `NDEBUG`.
 
@@ -73,20 +73,60 @@ Each configuration is a build type and a target, e.g. `Development-Default`:
 
 ## Setup
 
-### 1. Generate project files
+### 1. Set up the engine
 
-**Visual Studio 2022** (convenience script):
-```bat
-PremakeGenerateVisualStudioProject.bat
+Once per checkout, run **`Setup.bat`** (double-click is fine), the same as `FRT.bat setup`. It registers the checkout for this user under the name in `Engine.frtengine` (`FRTEngine2`), which is how projects find a shared engine, and generates `FRTEngine2.sln`: the engine's own projects, no game.
+
+Open it, build **Development-Default | Win64** and start the **Editor** (the startup project). Without a project it opens the **project manager**: your recent projects, **Open Other...** for any `.frtproject` file, and **New Project** to create one from a template. Opening a project builds it if it has not been built, starts an editor for it and closes the manager; **File → Switch Project** in the editor comes back to it.
+
+### 2. Projects
+
+A project is a game in a directory of its own - its own git repository, never inside the engine's:
+
+```
+MyGame/
+  MyGame.frtproject     [Project] Name=MyGame, Engine=<which engine>: committed, nothing machine-specific in it
+  Source/               the game module's code
+  Content/              its assets
+  Config/Game.ini       its configuration (over the engine's Core/Config/Engine.ini)
+  FRT.bat               runs its engine's FRT.bat for it
+  GenerateProjectFiles.bat
+  MyGame.sln            generated; with Binaries/, Intermediate/ and Saved/, not committed
 ```
 
-**Any other Premake-supported toolchain** — invoke the bundled Premake5 binary directly with the appropriate generator target, for example:
-```bat
-.\ThirdParty\premake-5.0.0-beta2-windows\premake5.exe <target>
-```
-Replace `<target>` with the Premake action for your toolchain (e.g. `vs2019`, `gmake2`, `xcode4`). See the [Premake documentation](https://premake.github.io/docs/using-premake) for the full list.
+Its engine is one of two, chosen when it is created:
 
-Options, after the action (`premake5 vs2022 --nopch`):
+| Layout | `Engine=` | For |
+|---|---|---|
+| **Shared** (default) | the engine's registered name, `FRTEngine2` | one engine checkout for any number of projects; everyone working on the game registers their own checkout under that name (`Setup.bat`) |
+| **Embedded** | `Engine`: a git submodule in `MyGame/Engine/` | a game that pins, or changes, its own engine; clones with `git clone --recursive` |
+
+A project kept inside an engine checkout (like the templates in `Templates/`) needs no `Engine=`: it uses the engine it is in. `FRT_ENGINE_DIR` in the environment overrides all of these (CI, scripts).
+
+A project's solution, `MyGame.sln`, has the game as its startup project and the engine's projects in an **Engine** folder: the game, the engine and the editor are debugged as one. Starting the game opens it in the editor (the launcher in Headless configurations, which have no editor); in Release it runs the game itself, `MyGame/Binaries/Win64/MyGame.exe`. The engine's project files stay in the engine and are the same for every solution, so moving between projects never rebuilds the engine.
+
+Code shared between projects is not supported yet; `Core/Source/Project/Project.h` describes the descriptor key reserved for it.
+
+### 3. The command line
+
+`FRT.bat` in the engine does everything the project manager does; a project's own `FRT.bat` runs its engine's for that project. `FRT.bat --help` lists every command and option.
+
+| Command | Does |
+|---|---|
+| `FRT.bat setup` | registers the engine and generates `FRTEngine2.sln` |
+| `FRT.bat new --name=MyGame` | creates a project in the current directory (`--location=<dir>`) from a template (`--template=Blank` or `Demo`), with a git repository; `--layout=embedded` adds the engine as a submodule (`--engine-url=<repository>` to follow another remote than the engine's `origin`); `--build` builds it as well |
+| `FRT.bat generate` | (re)generates the solution - after adding or removing source files |
+| `FRT.bat build` | builds the engine, or in a project the game and the hosts (`--config=Debug`, `Release`, `Development-Headless`...; default `Development-Default`) |
+| `FRT.bat open` | opens the solution |
+| `FRT.bat clean-compiled`, `clean-all` | removes the binaries and intermediate files; `clean-all` the generated project files too |
+
+In the engine, a command acts on a project given with `--project=<.frtproject file or its directory>`, e.g. `FRT.bat build --project=Templates\Demo`. A command for a project that uses another engine checkout is handed to that engine's `FRT.bat`.
+
+Per-user state lives in `%LOCALAPPDATA%\FRTEngine` (`FRT_USER_DATA_DIR` overrides it): `Engines.ini` (registered engines), `Projects.ini` (recent projects) and the editor's layout and input overrides.
+
+### Generation options
+
+After the command: `FRT.bat generate --nopch`, `FRT.bat vs2022 --project=... --precision=double`.
 
 | Option | Effect |
 |---|---|
@@ -96,14 +136,9 @@ Options, after the action (`premake5 vs2022 --nopch`):
 | `--msvc=<version>` | Build with that MSVC version, e.g. `14.44.35207` (default: whatever the v143 toolset defaults to, which an installed side-by-side toolset can pin to an older one) |
 | `--precision=double` | 64-bit `frt::Real` for positions and measurements |
 
-### 2. Open and build
+An engine checkout's binaries are shared by its projects, so generate them all with the same options. Generation is Visual Studio 2022 only for now (`FRT.bat vs2022` is the Premake action underneath).
 
-1. Open the generated solution / project in your IDE or invoke your build system directly.
-2. Select a configuration (e.g. **Development-Default | Win64**).
-3. **Editor** is the startup project: it opens the world of the game module named in the working directory's `Config/Game.ini` (the Demo by default) for editing. **Launcher** runs that game standalone; in Debug and Development, pressing F5 on the **Demo** project does the same. Release has no Editor: starting the Editor project there runs the Launcher.
-4. Build and run.
-
-From the command line, build through the solution - `MSBuild FRTEngine2.sln -p:Configuration=Development-Default -p:Platform=Win64 -m`, with `-t:Launcher` (or `-t:ThirdParty\assimp` and the like) for a single project. Building a project file directly fails with MSB8013: third-party projects only have one configuration per build type, which the solution maps.
+From the command line, build through a solution - `MSBuild FRTEngine2.sln -p:Configuration=Development-Default -p:Platform=Win64 -m`, with `-t:Editor` (or `-t:ThirdParty\assimp` and the like) for a single project; in a project's solution the engine's projects are under `Engine\`. Building a project file directly fails with MSB8013: third-party projects only have one configuration per build type, which the solution maps.
 
 ### Third-party libraries
 
@@ -112,9 +147,9 @@ Dear ImGui, assimp (glTF importers only), yaml-cpp and GoogleTest are vendored i
 To skip building them, use prebuilt binaries:
 
 ```bat
-.\ThirdParty\premake-5.0.0-beta2-windows\premake5.exe package-thirdparty
-.\ThirdParty\premake-5.0.0-beta2-windows\premake5.exe fetch-thirdparty --thirdparty-archive=<path or URL> --thirdparty-sha256=<hash>
-.\ThirdParty\premake-5.0.0-beta2-windows\premake5.exe vs2022 --thirdparty=prebuilt
+FRT.bat package-thirdparty
+FRT.bat fetch-thirdparty --thirdparty-archive=<path or URL> --thirdparty-sha256=<hash>
+FRT.bat generate --thirdparty=prebuilt
 ```
 
 `package-thirdparty` builds the libraries in every build type and writes `Binaries/FRTEngine2-ThirdParty-Win64-<stamp>.zip`, printing its SHA-256 and the MSVC version it needs (that version or newer). `fetch-thirdparty` downloads or takes such an archive, verifies it and unpacks it into `ThirdParty/Prebuilt/`. Once an archive is published, set `prebuiltThirdParty.url` and `.sha256` in `Premake/thirdparty.lua` and `fetch-thirdparty` needs no options. An archive only fits the third-party sources it was built from; fetching or generating with a mismatched one fails.
@@ -127,16 +162,13 @@ To skip building them, use prebuilt binaries:
 git submodule deinit -f ThirdParty/Imgui ThirdParty/vcpkg
 rmdir /s /q ThirdParty\Imgui ThirdParty\vcpkg
 git pull
-PremakeCleanAll.bat
-PremakeGenerateVisualStudioProject.bat
+FRT.bat clean-all
+Setup.bat
 ```
 
 `deinit -f` also deletes `ThirdParty/vcpkg/installed`, which older commits need to build: move it aside first if you still build those. The submodules' history stays in `.git/modules/ThirdParty` (about 900 MB). Delete it only when nothing uses it any more: no worktree or branch you still build from before this change, and no clone that borrows its objects (`git submodule update --reference`).
 
-### Cleaning generated files
-
-| Script | What it removes |
-|---|---|
+---|---|
 | `PremakeCleanCompiled.bat` | Compiled binaries and intermediate object files |
 | `PremakeCleanAll.bat` | Everything above plus the generated project/solution files |
 
@@ -171,7 +203,7 @@ The camera speed is in the Scene view's toolbar (and changed by the wheel during
 | Pause / resume (in edit mode: start the next session paused) | **Ctrl+Shift+P** |
 | Step one game frame | **Ctrl+Alt+P** |
 
-Every key above is a binding in [`Editor/Config/EditorInput.ini`](Editor/Config/EditorInput.ini), along with the camera's settings (speed, sensitivity, inversions). To change one, put the same section and key with your value in `Local/Editor/EditorInput.ini`; the editor re-reads both files while it runs and reports anything it cannot read in its toolbar. Mouse navigation itself is fixed, as in Unreal.
+Every key above is a binding in [`Editor/Config/EditorInput.ini`](Editor/Config/EditorInput.ini), along with the camera's settings (speed, sensitivity, inversions). To change one, put the same section and key with your value in `%LOCALAPPDATA%\FRTEngine\Editor\EditorInput.ini`; the editor re-reads both files while it runs and reports anything it cannot read in its toolbar. Mouse navigation itself is fixed, as in Unreal.
 
 **Play mode** runs the game on a copy of the edited world, so nothing a session does survives Stop, and each session starts from the same state with a fresh game instance. Both viewports show the running copy; the editor's chrome turns blue as a reminder. The game receives input only while the Game view has focus (a right-drag there captures the mouse for it); the Scene view stays free to fly around.
 
@@ -195,17 +227,20 @@ Camera movement is only active while **Right Mouse Button** is held.
 ## Project layout
 
 ```
+Engine.frtengine  — marks the engine checkout: its name and version
+FRT.bat           — the engine's command line (Premake/tools.lua); Setup.bat runs its setup
 Core/             — engine library (DLL; static library in Release)
 Core-Test/        — unit tests (GoogleTest)
-Editor/           — editor host: loads a game module and opens its world for editing
-Launcher/         — runtime host: loads a game module and runs it standalone
-Demo/             — sample game, built as a game module (DLL; linked into the Launcher in Release)
+Editor/           — editor host: opens a project's world for editing, or the project manager
+Launcher/         — runtime host: runs a project's game standalone
+Templates/        — what new projects start from: Blank, and Demo (the sample game: Sponza and other models);
+                    each is a project in place too. Common/ is what every project gets
 Schemas/          — JSON Schemas for YAML asset formats (IDE auto-completion)
 Tools/Analysis/   — Python package + Jupyter notebook for profiling-session analysis
 ThirdParty/       — vendored libraries, built from source (ImGui, assimp, yaml-cpp, GoogleTest) or as shipped (Stb, D3D12 Agility SDK, DXC); see each VERSION.txt
-Premake/          — Premake5 scripts (configurations: workspace.lua; third-party: thirdparty.lua)
-Binaries/         — output DLLs / EXEs
+Premake/          — Premake5 scripts (configurations: workspace.lua; projects and the registry: project.lua; commands: tools.lua; third-party: thirdparty.lua)
+Binaries/         — the engine's DLLs / EXEs
 Intermediate/     — compiled object files
-Local/Editor/     — the editor's layout (EditorLayout.ini), the user's input overrides (EditorInput.ini) and smoke-test output (gitignored)
-Local/Profiling/  — profiling-session output (gitignored; one folder per session, .txt + .csv per configuration)
 ```
+
+A project's `Saved/` holds what its game writes while running: user settings, captures, profiling sessions (`Saved/Profiling/<session>/`, one `.txt` + `.csv` per configuration) and smoke-test output.
