@@ -15,6 +15,7 @@
 #include "EnginePaths.h"
 #include "GameInstance.h"
 #include "Config/Config.h"
+#include "ECS/ComponentRegistry.h"
 #include "Project/Project.h"
 
 
@@ -184,9 +185,12 @@ bool CGameModule::Load (const std::string& InName)
 	// The project's binaries; the host's own directory when it runs without a project.
 	const std::filesystem::path source = (paths::HasProject() ? paths::GetProjectBinariesDir() : GetExecutableDir()) / MakeModuleFileName(requested);
 	std::filesystem::path path = source;
+	// Kept whether or not the load succeeds: a host retries a failed one with the next build.
+	Name = requested;
 #if FRT_WITH_GAME_HOT_RELOAD
 	// Taken before the copy, so a build finishing during it still reads as newer.
-	const int64 sourceWriteTime = GetWriteTime(source);
+	SourcePath = source.wstring();
+	SourceWriteTime = GetWriteTime(source);
 	if (std::filesystem::path copy = MakeShadowCopy(source); !copy.empty())
 	{
 		path = copy;
@@ -235,11 +239,8 @@ bool CGameModule::Load (const std::string& InName)
 
 	Handle = module;
 	CreateFunction = create;
-	Name = requested;
 #if FRT_WITH_GAME_HOT_RELOAD
-	SourcePath = source.wstring();
 	LoadedPath = path.wstring();
-	SourceWriteTime = sourceWriteTime;
 #endif
 	std::printf("[game] module '%s' loaded\n", Name.c_str());
 	return true;
@@ -253,6 +254,11 @@ void CGameModule::Unload ()
 #if !FRT_MONOLITHIC && defined(_WINDOWS)
 	if (Handle)
 	{
+		// The component types the module registered first refer to its image (their names,
+		// their functions). A module handle is its image's base address.
+		const uint8* image = static_cast<const uint8*>(Handle);
+		const auto* headers = reinterpret_cast<const IMAGE_NT_HEADERS*>(image + reinterpret_cast<const IMAGE_DOS_HEADER*>(image)->e_lfanew);
+		CComponentRegistry::Get().ReleaseModule(image, image + headers->OptionalHeader.SizeOfImage);
 		FreeLibrary(static_cast<HMODULE>(Handle));
 	}
 #endif
@@ -275,7 +281,8 @@ void CGameModule::Unload ()
 bool CGameModule::HasNewerBuild () const
 {
 #if FRT_WITH_GAME_HOT_RELOAD && defined(_WINDOWS)
-	if (!Handle || SourcePath.empty())
+	// Watched from the first Load on, loaded or not.
+	if (SourcePath.empty())
 	{
 		return false;
 	}

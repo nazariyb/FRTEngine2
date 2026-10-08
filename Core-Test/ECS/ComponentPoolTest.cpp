@@ -2,6 +2,7 @@
 
 #include "TestCommon.h"
 
+#include <cstring>
 #include <string>
 #include <type_traits>
 
@@ -145,6 +146,66 @@ TEST(ComponentRegistry, RepeatedRegistrationDoesNotShiftIds)
 	EXPECT_EQ(CComponentRegistry::Get().GetCount(), before);
 	EXPECT_EQ(GetComponentId<Comp_LocalTransform>(), 0u);
 	EXPECT_EQ(GetComponentId<Comp_Children>(), 3u);
+}
+
+TEST(ComponentRegistry, ReleasedModuleKeepsNameAndIdAndRebindsOnRegistration)
+{
+	// A module's image stood in for by a buffer: the name literal and the functions a game
+	// module registers live in its image, which hot reload unloads.
+	char image[64] = "Comp_TestReloaded";
+	const auto destruct = [](void*, uint32) {};
+
+	SComponentInfo info;
+	info.Name = image;
+	info.Size = 8u;
+	info.Destruct = destruct;
+	CComponentRegistry& registry = CComponentRegistry::Get();
+	const ComponentId id = registry.Register(info);
+	ASSERT_NE(id, InvalidComponentId);
+	EXPECT_TRUE(registry.IsBound(id));
+
+	// A module that did not register the type first leaves it alone.
+	char other[8] = {};
+	registry.ReleaseModule(other, other + sizeof(other));
+	EXPECT_TRUE(registry.IsBound(id));
+
+	registry.ReleaseModule(image, image + sizeof(image));
+	std::memset(image, 0xCD, sizeof(image) - 1u);   // the module's memory is gone
+
+	EXPECT_FALSE(registry.IsBound(id));
+	const SComponentInfo* released = registry.FindByName("Comp_TestReloaded");
+	ASSERT_NE(released, nullptr);
+	EXPECT_EQ(released->Id, id);
+	EXPECT_EQ(released->Destruct, nullptr);
+
+	// The reloaded module's build of the type, with a field added: same id, new layout.
+	char reloaded[64] = "Comp_TestReloaded";
+	SComponentInfo grown;
+	grown.Name = reloaded;
+	grown.Size = 16u;
+	const uint32 before = registry.GetCount();
+	EXPECT_EQ(registry.Register(grown), id);
+	EXPECT_EQ(registry.GetCount(), before);
+	EXPECT_TRUE(registry.IsBound(id));
+	EXPECT_EQ(registry.Find(id)->Size, 16u);
+	EXPECT_STREQ(registry.Find(id)->Name, "Comp_TestReloaded");
+
+	registry.ReleaseModule(reloaded, reloaded + sizeof(reloaded));
+}
+
+TEST(ComponentRegistry, CoreComponentsSurviveAGameModuleRelease)
+{
+	// Core registers its own components before any game module loads, so a game module that
+	// uses them never owns them.
+	const ComponentId nameId = GetComponentId<Comp_Name>();
+	char image[64] = "Comp_Name";
+	SComponentInfo fromGame;
+	fromGame.Name = image;
+	fromGame.Size = sizeof(Comp_Name);
+	EXPECT_EQ(CComponentRegistry::Get().Register(fromGame), nameId);
+
+	CComponentRegistry::Get().ReleaseModule(image, image + sizeof(image));
+	EXPECT_TRUE(CComponentRegistry::Get().IsBound(nameId));
 }
 
 TEST(ComponentRegistry, NeedsNoAllocator)

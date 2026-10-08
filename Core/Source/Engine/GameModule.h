@@ -68,7 +68,11 @@ namespace frt
  * (Release) build there is no module: the game is its own executable, the engine linked in.
  *
  * Everything whose code lives in the module - game instances, and worlds the game populated
- * (their component pools are instantiated in it) - must be destroyed before Unload().
+ * (their component pools are instantiated in it) - must be destroyed before Unload(). Unload
+ * itself releases the component types the module registered first (CComponentRegistry).
+ *
+ * Hot reload (FRT_WITH_GAME_HOT_RELOAD): a host polls HasNewerBuild, destroys all of the above
+ * and calls Load(GetName()) again.
  */
 class FRT_CORE_API CGameModule
 {
@@ -82,16 +86,21 @@ public:
 	// executable's directory) and checks it was built against this engine's ABI. With FRT_WITH_GAME_HOT_RELOAD the DLL is loaded from a copy, so the build
 	// can overwrite it while it runs (see HasNewerBuild). Monolithic builds: the game linked
 	// into the executable, whose name GetName() then returns; asking for another one only logs
-	// that it is not there. Logs and returns false otherwise.
+	// that it is not there. Logs and returns false otherwise - keeping the name, and with hot
+	// reload watching the build still, so that a fixed build can be loaded the same way.
 	bool Load (const std::string& Name);
 	void Unload ();
 	bool IsLoaded () const { return CreateFunction != nullptr; }
+	// The module last asked for, loaded or not.
 	const std::string& GetName () const { return Name; }
 
-	// FRT_WITH_GAME_HOT_RELOAD: the module's DLL was rebuilt since Load and the linker is done
-	// with it. Reloading is Load(GetName()) once everything holding the module's code is gone.
-	// Always false otherwise.
+	// FRT_WITH_GAME_HOT_RELOAD: the module's DLL was rebuilt since the last Load - which may
+	// have failed - and the linker is done with it. Reloading is Load(GetName()) once
+	// everything holding the module's code is gone. Always false otherwise.
 	bool HasNewerBuild () const;
+	// FRT_WITH_GAME_HOT_RELOAD: the DLL the build writes, which HasNewerBuild watches. Empty
+	// otherwise.
+	const std::wstring& GetBuildPath () const { return SourcePath; }
 
 	// A new game instance; null if the game's constructor failed.
 	std::unique_ptr<GameInstance> CreateGame () const;

@@ -76,20 +76,43 @@ struct TComponentTraits
  * single owner of all engine memory.
  *
  * The cap is a real limit, not a guess to be quietly raised - exceeding it asserts.
+ *
+ * Modules come and go: a game module is unloaded and loaded again by hot reload. What a
+ * registrant hands over points into its own image - the name literal, the functions - so
+ * the registry copies the name, and ReleaseModule() drops every type a leaving module
+ * registered first. Such a type keeps its id and name, and the next module to register it
+ * binds it again, layout included.
  */
 class FRT_CORE_API CComponentRegistry
 {
 public:
-	/** Ids are uint16, but the practical count is dozens. ~16 KiB of static data. */
+	/** Ids are uint16, but the practical count is dozens. ~32 KiB of static data. */
 	static constexpr uint32 MaxComponentTypes = 256u;
+
+	/** Names are copied into fixed storage; a longer one asserts. */
+	static constexpr uint32 MaxNameLength = 63u;
 
 	static CComponentRegistry& Get();
 
-	/** Returns the existing id if Name is already registered. */
+	/**
+	 * Returns the existing id if Name is already registered. A type released with its
+	 * module takes InInfo's layout and functions: none of its pools outlived the module.
+	 */
 	ComponentId Register(const SComponentInfo& InInfo);
+
+	/**
+	 * A module is about to unload; [InImageBegin, InImageEnd) is its image. Every type it
+	 * registered first is released: its functions are dropped, and the next registration
+	 * binds it again. Every pool of such a type must already be gone - a world the module
+	 * populated is destroyed before the module unloads (CGameModule).
+	 */
+	void ReleaseModule(const void* InImageBegin, const void* InImageEnd);
 
 	const SComponentInfo* Find(ComponentId InId) const;
 	const SComponentInfo* FindByName(const char* InName) const;
+
+	/** False for a type whose registrant was released and that nothing registered since. */
+	bool IsBound(ComponentId InId) const { return InId < Count && Registrants[InId] != nullptr; }
 
 	uint32 GetCount() const { return Count; }
 
@@ -97,6 +120,9 @@ private:
 	CComponentRegistry() = default;
 
 	SComponentInfo Components[MaxComponentTypes] = {};
+	char           Names[MaxComponentTypes][MaxNameLength + 1u] = {};
+	/** The name literal the binding registrant passed: an address in its image. Null once released. */
+	const void*    Registrants[MaxComponentTypes] = {};
 	uint32         Count = 0u;
 };
 
