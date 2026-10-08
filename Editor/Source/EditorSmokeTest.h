@@ -27,7 +27,8 @@ class CEditor;
  * the user issues - maximize, fullscreen, play, pause, step, stop - checks the state after each
  * (Stop must leave the edit world exactly as Play found it), presses bound keys through the
  * window's own message queue, rewrites its input overrides to check they are re-read, checks
- * the Unreal camera controller against Unreal's numbers,
+ * the Unreal camera controller against Unreal's numbers, makes the game module's DLL look
+ * rebuilt in edit and in play mode to check the editor reloads it,
  * captures the whole window to PNG along the way, and exits with 0 when every check passed (2
  * otherwise). Captures and a log go to [Editor] SmokeTestDir, by default <project>/Saved/SmokeTest.
  */
@@ -45,6 +46,7 @@ public:
 private:
 	void Check (bool bPassed, const char* What);
 	void CheckCameraController ();
+	void TouchGameBuild (CEditor& Editor);
 	void WriteInputOverrides (const char* Text);
 	void Capture (CEngine& Engine, const char* Name);
 	void Log (const std::string& Line);
@@ -60,6 +62,9 @@ private:
 	uint32 InputGeneration = 0u;
 	Vector3f CameraStart = Vector3f(0.0f, 0.0f, 0.0f);
 	float ReleaseSpeed = 0.0f;
+	uint32 GameReloads = 0u;
+	uint32 EditEntities = 0u;
+	bool bCanReload = false;
 	bool bFinished = false;
 };
 }

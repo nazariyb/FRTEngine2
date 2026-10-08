@@ -1,9 +1,7 @@
 #include "PlaySession.h"
 
 #include <cstdio>
-#include <exception>
 
-#include "Exception.h"
 #include "GameInstance.h"
 #include "WorldScene.h"
 #include "Engine/Engine.h"
@@ -12,33 +10,6 @@
 
 namespace frt::editor
 {
-namespace
-{
-// Runs a call into game code. Whatever it throws ends up in the log, never in the editor.
-template <typename TCall>
-bool CallGame (const char* What, TCall&& Call)
-{
-	try
-	{
-		Call();
-		return true;
-	}
-	catch (const ::frt::Exception& e)
-	{
-		std::printf("[play] %s failed: %s %d : %s\n", What, e.What(), static_cast<int>(e.GetErrorCode()), e.GetErrorDescription().c_str());
-	}
-	catch (const std::exception& e)
-	{
-		std::printf("[play] %s failed: %s\n", What, e.what());
-	}
-	catch (...)
-	{
-		std::printf("[play] %s failed: unknown exception\n", What);
-	}
-	return false;
-}
-}
-
 CPlaySession::CPlaySession (CEngine& InEngine, const CGameModule& InModule)
 	: Engine(InEngine)
 	, Module(InModule)

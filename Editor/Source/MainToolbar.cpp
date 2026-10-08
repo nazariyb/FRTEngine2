@@ -96,7 +96,7 @@ std::optional<EEditorCommand> DrawMainToolbar (const SToolbarState& State)
 		const float button = ImGui::GetFrameHeight() * 1.6f;
 		const float controls = button * 3.0f + style.ItemSpacing.x * 2.0f;
 		ImGui::SetCursorPosX((ImGui::GetWindowWidth() - controls) * 0.5f);
-		if (IconButton("##Play", EIcon::Play, State.bPlaying, true, Tooltip(State.bPlaying ? "Stop" : "Play", State.PlayShortcut).c_str()))
+		if (IconButton("##Play", EIcon::Play, State.bPlaying, State.bPlaying || State.bCanPlay, Tooltip(State.bPlaying ? "Stop" : "Play", State.PlayShortcut).c_str()))
 		{
 			command = EEditorCommand::TogglePlay;
 		}

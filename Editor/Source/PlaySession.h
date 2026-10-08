@@ -1,8 +1,11 @@
 #pragma once
 
+#include <cstdio>
+#include <exception>
 #include <memory>
 
 #include "CoreTypes.h"
+#include "Exception.h"
 
 
 namespace frt
@@ -18,6 +21,30 @@ struct SGameInput;
 
 namespace frt::editor
 {
+// Runs a call into game code. Whatever it throws ends up in the log, never in the editor.
+template <typename TCall>
+bool CallGame (const char* What, TCall&& Call)
+{
+	try
+	{
+		Call();
+		return true;
+	}
+	catch (const ::frt::Exception& e)
+	{
+		std::printf("[game] %s failed: %s %d : %s\n", What, e.What(), static_cast<int>(e.GetErrorCode()), e.GetErrorDescription().c_str());
+	}
+	catch (const std::exception& e)
+	{
+		std::printf("[game] %s failed: %s\n", What, e.what());
+	}
+	catch (...)
+	{
+		std::printf("[game] %s failed: unknown exception\n", What);
+	}
+	return false;
+}
+
 /**
  * Play mode (Unity's Play button, Unreal's Play In Editor): the game running inside the editor
  * on a copy of the edited world.

@@ -11,6 +11,7 @@
 #include "Window.h"
 #include "Config/Config.h"
 #include "Engine/Engine.h"
+#include "Engine/GameModule.h"
 #include "Entity.h"
 #include "WorldScene.h"
 #include "Graphics/Camera.h"
@@ -106,6 +107,23 @@ CEditorSmokeTest::CEditorSmokeTest (const config::CConfig& Config)
 void CEditorSmokeTest::WriteInputOverrides (const char* Text)
 {
 	std::ofstream(OutputDir / "EditorInput.ini", std::ios::trunc) << Text;
+}
+
+void CEditorSmokeTest::TouchGameBuild (CEditor& Editor)
+{
+	// What a build of the game module looks like to the editor, short of compiling one: a
+	// newer write time on the DLL it watches. The editor looks at it on the next frame.
+	const std::filesystem::path build(Editor.GetGameModule().GetBuildPath());
+	std::error_code ec;
+	bCanReload = !build.empty() && std::filesystem::exists(build, ec);
+	if (!bCanReload)
+	{
+		Log("  skip  hot reload: this build loads no game module DLL it could watch");
+		return;
+	}
+	std::filesystem::last_write_time(build, std::filesystem::file_time_type::clock::now(), ec);
+	Check(!ec, "the game module's DLL takes a newer write time");
+	Editor.PollGameModuleNow();
 }
 
 void CEditorSmokeTest::CheckCameraController ()
@@ -496,6 +514,65 @@ void CEditorSmokeTest::Update (CEditor& Editor, CEngine& Engine)
 		{ 900u, "Up stopped", [] (CEditorSmokeTest& T, CEditor& E, CEngine&)
 		{
 			T.Check(Distance(E.GetSceneCameraController().GetVelocity(), Vector3f(0.0f, 0.0f, 0.0f)) == 0.0f, "... and comes to a stop");
+		} },
+		// ---- game module hot reload: a build stood in for by a newer write time ----
+		{ 910u, "rebuild in edit mode", [] (CEditorSmokeTest& T, CEditor& E, CEngine&)
+		{
+			T.GameReloads = E.GetGameReloads();
+			T.EditEntities = E.GetEditWorld().GetEntities().Count();
+			T.TouchGameBuild(E);
+		} },
+		{ 915u, "reloaded in edit mode", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G)
+		{
+			if (!T.bCanReload)
+			{
+				return;
+			}
+			T.Check(E.GetGameReloads() == T.GameReloads + 1u && E.GetGameModule().IsLoaded(), "a newer build of the game module is loaded");
+			T.Check(E.GetEditWorld().GetEntities().Count() == T.EditEntities, "... and has built the edit world again");
+			T.Capture(G, "15_reloaded");
+			E.Execute(EEditorCommand::Play);
+		} },
+		{ 945u, "rebuild while playing", [] (CEditorSmokeTest& T, CEditor& E, CEngine&)
+		{
+			if (!T.bCanReload)
+			{
+				return;
+			}
+			const CPlaySession& play = E.GetPlaySession();
+			T.Check(play.IsPlaying() && play.GetWorld()->Clock.SimulatedFrames > 0u, "the reloaded game plays");
+			T.GameReloads = E.GetGameReloads();
+			T.TouchGameBuild(E);
+		} },
+		{ 950u, "reloaded while playing", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G)
+		{
+			if (!T.bCanReload)
+			{
+				return;
+			}
+			T.Check(E.GetGameReloads() == T.GameReloads + 1u, "a newer build is loaded during play");
+			T.Check(!E.GetPlaySession().IsPlaying() && &E.GetActiveWorld() == &E.GetEditWorld(), "... which stops play");
+			T.Check(E.GetEditWorld().GetEntities().Count() == T.EditEntities, "... and builds the edit world again");
+			T.Capture(G, "16_reloaded_from_play");
+			E.Execute(EEditorCommand::Play);
+		} },
+		{ 980u, "playing after a reload", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G)
+		{
+			if (!T.bCanReload)
+			{
+				return;
+			}
+			const CPlaySession& play = E.GetPlaySession();
+			T.Check(play.IsPlaying() && play.GetWorld()->Clock.SimulatedFrames > 0u, "play starts again on the new build");
+			T.Capture(G, "17_playing_after_reload");
+			E.Execute(EEditorCommand::Stop);
+		} },
+		{ 1000u, "stopped after a reload", [] (CEditorSmokeTest& T, CEditor& E, CEngine&)
+		{
+			if (T.bCanReload)
+			{
+				T.Check(!E.GetPlaySession().IsPlaying(), "stopped");
+			}
 		} },
 	};
 

@@ -37,9 +37,10 @@ bool HasArgument (const wchar_t* Name)
 	return bFound;
 }
 
-int RunEditorFor (CEngine& Engine, const CGameModule& Module)
+int RunEditorFor (CEngine& Engine, CGameModule& Module)
 {
-	// Destroyed before the module unloads: the edited world holds code from it.
+	// Destroyed before the module unloads: the edited world holds code from it. The editor
+	// reloads the module itself when a newer build appears.
 	CEditor editor(Engine, Module);
 	int exitCode = 1;
 	try

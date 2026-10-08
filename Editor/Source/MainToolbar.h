@@ -13,6 +13,7 @@ namespace frt::editor
 struct SToolbarState
 {
 	bool bPlaying = false;
+	bool bCanPlay = true;          // a game is loaded
 	bool bPaused = false;          // in edit mode: the next session starts paused
 	double PlaySeconds = 0.0;      // the session's game time
 	uint64 PlayFrames = 0u;        // ... and simulated frames

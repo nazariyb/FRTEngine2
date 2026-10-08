@@ -48,6 +48,15 @@ class CEditorSmokeTest;
  * edit world in edit mode, the session's copy while playing. Only the Game view passes input
  * to the game, and only while it has focus.
  *
+ * Hot reload (FRT_WITH_GAME_HOT_RELOAD): the editor watches the game module's build. A newer
+ * one stops play, drops every world and instance holding the old code, loads the module again
+ * and has it build the edit world anew, between frames. Rebuilt rather than kept: a world's
+ * component pools are code of the module that filled it - a copy's too (CWorldScene::Clone) -
+ * and there is no world serialization yet to carry it over. The world is code-authored
+ * content, so the new code's world is the one to see; tweaks made in the tools since are lost.
+ * If the new build does not load, the editor runs on with an empty world, no play mode and the
+ * problem in the toolbar, until a build that does.
+ *
  * The editor's own input is plain key bindings (CEditorInput, Editor/Config/EditorInput.ini):
  * chords that run commands, and keys that move the Scene camera, which navigates the way
  * Unreal's level viewport does (CViewportCameraController).
@@ -55,7 +64,8 @@ class CEditorSmokeTest;
 class CEditor
 {
 public:
-	CEditor (CEngine& Engine, const CGameModule& Module);
+	// Module is loaded; the editor reloads it when a newer build appears.
+	CEditor (CEngine& Engine, CGameModule& Module);
 	~CEditor ();
 	CEditor (const CEditor&) = delete;
 	CEditor& operator= (const CEditor&) = delete;
@@ -85,6 +95,11 @@ public:
 	const CViewportCameraController& GetSceneCameraController () const { return SceneCameraController; }
 	// Gives the viewport keyboard focus on the next frame.
 	void FocusViewport (EViewportTarget Viewport);
+	const CGameModule& GetGameModule () const { return Module; }
+	// Newer builds of the game module loaded so far.
+	uint32 GetGameReloads () const { return GameReloads; }
+	// Looks for a newer build of the game module at the start of the next frame.
+	void PollGameModuleNow () { NextGamePoll = 0.0; }
 
 private:
 	void ApplyCommands ();
@@ -95,6 +110,9 @@ private:
 	void HandleShortcuts ();
 	void UpdateCameraInput (float RealDeltaSeconds);
 	SGameInput RouteGameInput () const;
+	bool BuildEditWorld ();
+	void PollGameModule ();
+	void ReloadGame ();
 	void StartPlay ();
 	void StopPlay ();
 	void ApplyInputConfig (bool bInitial);
@@ -104,7 +122,10 @@ private:
 	int32 ResolveViewport (EViewportTarget Target) const;
 
 	CEngine& Engine;
-	const CGameModule& Module;
+	CGameModule& Module;
+	double NextGamePoll = 0.0;                         // UI time to look for a newer build again
+	uint32 GameReloads = 0u;
+	std::string GameProblem;                           // why there is no game or world; shown until a build fixes it
 
 	std::unique_ptr<CWorldScene> EditWorld;
 	graphics::CCamera SceneCamera;                     // the Scene view's camera: the editor's, not the world's

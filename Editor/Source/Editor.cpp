@@ -1,6 +1,7 @@
 #include "Editor.h"
 
 #include <chrono>
+#include <cstdio>
 #include <format>
 #include <span>
 #include <thread>
@@ -42,6 +43,9 @@ constexpr std::chrono::milliseconds BackgroundFrameSleep(33);
 constexpr float PlayTint[3] = { 0.72f, 0.85f, 1.60f };
 // How long a notice stays in the toolbar.
 constexpr double NoticeSeconds = 8.0;
+// How often the game module's build is looked at: a few times a second is immediate to a
+// person, and a file's time costs next to nothing.
+constexpr double GamePollSeconds = 0.25;
 
 bool HasAnyModifier (SFlags<input::EInputModifier> Modifiers)
 {
@@ -49,7 +53,7 @@ bool HasAnyModifier (SFlags<input::EInputModifier> Modifiers)
 }
 }
 
-CEditor::CEditor (CEngine& InEngine, const CGameModule& InModule)
+CEditor::CEditor (CEngine& InEngine, CGameModule& InModule)
 	: Engine(InEngine)
 	, Module(InModule)
 	, Play(InEngine, InModule)
@@ -68,20 +72,10 @@ bool CEditor::StartUp ()
 	config::CConfig& config = Engine.GetConfig();
 	graphics::CRenderer& renderer = *Engine.GetRenderer();
 
-	// The game authors the world's content. Its instance exists only for that: edit mode runs
-	// no game code.
-	EditWorld = std::make_unique<CWorldScene>();
-	EditWorld->Initialize();
+	if (!BuildEditWorld())
 	{
-		std::unique_ptr<GameInstance> builder = Module.CreateGame();
-		if (!builder)
-		{
-			return false;
-		}
-		const SGameContext context { *EditWorld, Engine.GetMaterials(), Engine.GetInputActions(), config };
-		builder->BuildWorld(context);
+		return false;
 	}
-	ApplySceneLaunchConfig(config, *EditWorld);
 	ApplyRenderLaunchConfig(config, renderer);
 
 	// The Scene view starts where the game's camera is, then goes its own way.
@@ -145,6 +139,10 @@ int CEditor::Run ()
 		{
 			ApplyInputConfig(false);
 		}
+#if FRT_WITH_GAME_HOT_RELOAD
+		// Before the commands: they act on the worlds a reload replaces.
+		PollGameModule();
+#endif
 
 		// ---- commands: queued by last frame's UI, shortcuts and scripts ----
 		ApplyCommands();
@@ -179,10 +177,16 @@ int CEditor::Run ()
 				toolbar.PlaySeconds = playWorld->Clock.TotalSeconds;
 				toolbar.PlayFrames = playWorld->Clock.SimulatedFrames;
 			}
+			toolbar.bCanPlay = Module.IsLoaded();
 			if (!Notice.empty() && ImGui::GetTime() - NoticeTime < NoticeSeconds)
 			{
 				toolbar.Message = Notice.c_str();
 				toolbar.bMessageIsError = bNoticeIsError;
+			}
+			else if (!GameProblem.empty())
+			{
+				toolbar.Message = GameProblem.c_str();
+				toolbar.bMessageIsError = true;
 			}
 			toolbar.PlayShortcut = Input.GetShortcutText(EEditorCommand::TogglePlay).c_str();
 			toolbar.PauseShortcut = Input.GetShortcutText(EEditorCommand::TogglePause).c_str();
@@ -450,10 +454,93 @@ void CEditor::ForgetClosedViewports ()
 	}
 }
 
+bool CEditor::BuildEditWorld ()
+{
+	// The game authors the world's content. Its instance exists only for that: edit mode runs
+	// no game code.
+	EditWorld = std::make_unique<CWorldScene>();
+	EditWorld->Initialize();
+	const std::unique_ptr<GameInstance> builder = Module.IsLoaded() ? Module.CreateGame() : nullptr;
+	if (!builder)
+	{
+		std::printf("[editor] no game to build the world\n");
+		return false;
+	}
+	const SGameContext context { *EditWorld, Engine.GetMaterials(), Engine.GetInputActions(), Engine.GetConfig() };
+	if (!CallGame("BuildWorld", [&] { builder->BuildWorld(context); }))
+	{
+		return false;
+	}
+	ApplySceneLaunchConfig(Engine.GetConfig(), *EditWorld);
+	return true;
+}
+
+void CEditor::PollGameModule ()
+{
+	const double now = ImGui::GetTime();
+	if (now < NextGamePoll)
+	{
+		return;
+	}
+	NextGamePoll = now + GamePollSeconds;
+	if (Module.HasNewerBuild())
+	{
+		ReloadGame();
+	}
+}
+
+void CEditor::ReloadGame ()
+{
+	const std::string name = Module.GetName();
+	std::printf("[editor] new build of game module '%s', reloading\n", name.c_str());
+	const bool bWasPlaying = Play.IsPlaying();
+
+	// Everything holding the module's code goes before it does (CGameModule): the session's
+	// game instance and world, then the edit world, whose component pools the game made. Their
+	// GPU data may still be in flight.
+	StopPlay();
+	Engine.GetRenderer()->FlushCommandQueue();
+	EditWorld.reset();
+
+	GameProblem.clear();
+	if (!Module.Load(name))
+	{
+		GameProblem = std::format("No game: module '{}' did not load (see the log)", name);
+	}
+	else if (!BuildEditWorld())
+	{
+		GameProblem = "The game could not build its world (see the log)";
+	}
+
+	if (GameProblem.empty())
+	{
+		++GameReloads;
+		std::printf("[editor] game module '%s' reloaded%s\n", name.c_str(), bWasPlaying ? ", play stopped" : "");
+		PostNotice(bWasPlaying ? "Game reloaded, play stopped" : "Game reloaded", false);
+	}
+	else
+	{
+		// An empty world of the editor's own: half of a world is no use to edit or play.
+		EditWorld = std::make_unique<CWorldScene>();
+		EditWorld->Initialize();
+		std::printf("[editor] %s; waiting for another build\n", GameProblem.c_str());
+		PostNotice(GameProblem, true);
+	}
+	// Seen as it happens by whoever watches the log of a build.
+	std::fflush(stdout);
+	Tools.SetCameraHome(EditWorld->Camera.Transform);
+	Engine.GetRenderer()->ResetAccumulation();
+}
+
 void CEditor::StartPlay ()
 {
 	if (Play.IsPlaying())
 	{
+		return;
+	}
+	if (!Module.IsLoaded())
+	{
+		PostNotice(GameProblem.empty() ? "No game is loaded" : GameProblem, true);
 		return;
 	}
 	if (!Play.Begin(*EditWorld, bStartPaused))
@@ -563,7 +650,7 @@ void CEditor::DrawMainMenu ()
 	if (ImGui::BeginMenu("Play"))
 	{
 		const bool bPlaying = Play.IsPlaying();
-		if (ImGui::MenuItem(bPlaying ? "Stop" : "Play", shortcut(EEditorCommand::TogglePlay)))
+		if (ImGui::MenuItem(bPlaying ? "Stop" : "Play", shortcut(EEditorCommand::TogglePlay), false, bPlaying || Module.IsLoaded()))
 		{
 			Execute(EEditorCommand::TogglePlay);
 		}
