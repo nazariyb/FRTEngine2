@@ -1,0 +1,8 @@
+Dear ImGui 1.92.9b (docking branch), commit b48d1afbe8ee8b238e2961dc363a949dd7304e23 of
+https://github.com/ocornut/imgui (2026-07-31, "Merge branch 'master' into docking").
+
+Vendored, unmodified: the core sources and headers, LICENSE.txt, backends/imgui_impl_dx12.*,
+backends/imgui_impl_win32.*, misc/cpp/imgui_stdlib.* and misc/debuggers/imgui.natvis|natstepfilter.
+The build configuration lives in Core/Source/UI/ImGuiConfig.h (IMGUI_USER_CONFIG).
+
+Updating: copy the same files from the new commit over these and update this file.

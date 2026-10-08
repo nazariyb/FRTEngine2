@@ -1,0 +1,6 @@
+yaml-cpp 0.8.0, tag 0.8.0 of https://github.com/jbeder/yaml-cpp
+Tarball https://github.com/jbeder/yaml-cpp/archive/refs/tags/0.8.0.tar.gz, SHA512 aae9d618f906117d...
+(the value vcpkg's yaml-cpp port pins).
+
+Vendored: include/, src/ and LICENSE, unmodified. Tests, docs and CMake files are left out;
+src/contrib (the graph builder) is vendored but not built.

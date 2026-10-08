@@ -1,0 +1,6 @@
+GoogleTest 1.17.0, tag v1.17.0 of https://github.com/google/googletest
+Tarball https://github.com/google/googletest/archive/refs/tags/v1.17.0.tar.gz, SHA512 0f57e9ef06925e5b...
+(the value vcpkg's gtest port pins).
+
+Vendored: googletest/include, googletest/src (as include/ and src/) and LICENSE, unmodified.
+GoogleMock is not used and left out. Built from src/gtest-all.cc alone, which includes the rest.

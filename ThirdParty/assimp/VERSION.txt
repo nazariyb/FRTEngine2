@@ -1,0 +1,18 @@
+Open Asset Import Library (assimp) 6.0.2, tag v6.0.2 of https://github.com/assimp/assimp
+Tarball https://github.com/assimp/assimp/archive/refs/tags/v6.0.2.tar.gz, SHA512 dc9637b183a1ab4c...
+(the value vcpkg's assimp port pins).
+
+Only what the glTF importer needs is vendored (Premake/ThirdParty/assimp.lua lists what it builds):
+include/, code/Common (without Exporter, Compression, ZipArchiveIOSystem), code/CApi (without
+AssimpCExport), code/Geometry, code/Material, code/PostProcessing, code/AssetLib/{glTFCommon,glTF,
+glTF2} (without the exporters), and the header-only contrib/rapidjson, contrib/utf8cpp and
+contrib/earcut-hpp with their licences. No zlib, minizip, pugixml, draco, poly2tri or clipper.
+
+Files not in upstream:
+- include/assimp/config.h   - config.h.in with `#cmakedefine ASSIMP_DOUBLE_PRECISION 1` left undefined
+- include/assimp/revision.h - what revision.h.in generates for 6.0.2 without a git hash
+- contrib/utf8cpp/LICENSE   - contrib/utf8cpp/doc/LICENSE, moved next to the code
+
+Updating: extract the new tag, copy the same directories over (drop exporters and the files
+listed above), regenerate config.h and revision.h from their .in templates, and diff
+code/Common/ImporterRegistry.cpp for importers to add to the ASSIMP_BUILD_NO_*_IMPORTER list.
