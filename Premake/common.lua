@@ -240,6 +240,9 @@ function gameProject()
 		linkoptions { "/PDBALTPATH:%{cfg.buildtarget.basename}.pdb" }
 	filter {}
 
+	-- FRT_IMPLEMENT_GAME_MODULE reports it, so a monolithic launcher can say what it runs.
+	defines { 'FRT_GAME_MODULE_NAME="%{prj.name}"' }
+
 	flatBinaries()
 	useCore()
 end

@@ -47,9 +47,16 @@ class CConfig;
 #define FRT_GAME_MODULE_EXPORT extern "C" __declspec(dllexport)
 #endif
 
+// The game project's name (Premake: gameProject), so a monolithic executable can say which game
+// it was built with.
+#ifndef FRT_GAME_MODULE_NAME
+#define FRT_GAME_MODULE_NAME ""
+#endif
+
 #define FRT_IMPLEMENT_GAME_MODULE(TGame)\
 	FRT_GAME_MODULE_EXPORT ::frt::GameInstance* FrtCreateGame () { try { return new TGame(); } catch (...) { return nullptr; } }\
-	FRT_GAME_MODULE_EXPORT unsigned int FrtGameModuleAbi () { return FRT_GAME_MODULE_ABI; }
+	FRT_GAME_MODULE_EXPORT unsigned int FrtGameModuleAbi () { return FRT_GAME_MODULE_ABI; }\
+	FRT_GAME_MODULE_EXPORT const char* FrtGameModuleName () { return FRT_GAME_MODULE_NAME; }
 
 
 namespace frt
@@ -57,7 +64,8 @@ namespace frt
 /**
  * A game module: a DLL holding a game (Unreal's game modules; Handmade Hero's game DLL). The
  * launcher and the editor are generic executables that load one by name, so neither is built
- * per game, and the game's code stays a unit that could later be reloaded while running.
+ * per game, and the game's code stays a unit that can be rebuilt while running. The exception
+ * is the monolithic (Release) launcher, built with the default game linked in.
  *
  * Everything whose code lives in the module - game instances, and worlds the game populated
  * (their component pools are instantiated in it) - must be destroyed before Unload().
@@ -73,7 +81,8 @@ public:
 	// Loads <executable dir>/<Name>-<Configuration>.dll and checks it was built against this
 	// engine's ABI. With FRT_WITH_GAME_HOT_RELOAD the DLL is loaded from a copy, so the build
 	// can overwrite it while it runs (see HasNewerBuild). Monolithic builds: the game linked
-	// into the executable, whatever its name. Logs and returns false otherwise.
+	// into the executable, whose name GetName() then returns; asking for another one only logs
+	// that it is not there. Logs and returns false otherwise.
 	bool Load (const std::string& Name);
 	void Unload ();
 	bool IsLoaded () const { return CreateFunction != nullptr; }

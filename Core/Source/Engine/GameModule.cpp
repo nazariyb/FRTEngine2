@@ -23,10 +23,13 @@
 // that no game is linked in. x64 names: C symbols carry no leading underscore.
 extern "C" ::frt::GameInstance* FrtCreateGame ();
 extern "C" unsigned int FrtGameModuleAbi ();
+extern "C" const char* FrtGameModuleName ();
 extern "C" ::frt::GameInstance* FrtCreateGameNotLinked () { return nullptr; }
 extern "C" unsigned int FrtGameModuleAbiNotLinked () { return 0u; }
+extern "C" const char* FrtGameModuleNameNotLinked () { return ""; }
 #pragma comment(linker, "/ALTERNATENAME:FrtCreateGame=FrtCreateGameNotLinked")
 #pragma comment(linker, "/ALTERNATENAME:FrtGameModuleAbi=FrtGameModuleAbiNotLinked")
+#pragma comment(linker, "/ALTERNATENAME:FrtGameModuleName=FrtGameModuleNameNotLinked")
 #endif
 
 
@@ -164,7 +167,15 @@ bool CGameModule::Load (const std::string& InName)
 		return false;
 	}
 	CreateFunction = &FrtCreateGame;
-	Name = requested;
+	Name = FrtGameModuleName();
+	if (Name.empty())
+	{
+		Name = requested;
+	}
+	else if (!requested.empty() && requested != Name)
+	{
+		std::fprintf(stderr, "[game] module '%s' requested, but this executable is built with '%s'\n", requested.c_str(), Name.c_str());
+	}
 	std::printf("[game] module '%s' linked in\n", Name.c_str());
 	return true;
 #elif defined(_WINDOWS)
@@ -263,7 +274,9 @@ bool CGameModule::HasNewerBuild () const
 		return false;
 	}
 	const std::filesystem::path source(SourcePath);
-	if (GetWriteTime(source) == SourceWriteTime)
+	const int64 writeTime = GetWriteTime(source);
+	// No DLL at all (a clean, or a link that failed and deleted it) is nothing to reload yet.
+	if (writeTime == 0 || writeTime == SourceWriteTime)
 	{
 		return false;
 	}
