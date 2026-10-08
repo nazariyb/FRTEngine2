@@ -198,6 +198,11 @@ local function useThirdPartyHeaders(dirs)
 	externalwarnings "Off"
 end
 
+-- Header-only; Core compiles the implementation (Graphics/Model.cpp).
+function useStb()
+	useThirdPartyHeaders({ path.join(thirdPartyDir, "Stb") })
+end
+
 -- ImGuiConfig.h selects the linkage.
 function useImGui()
 	useThirdPartyHeaders({ imguiDir })

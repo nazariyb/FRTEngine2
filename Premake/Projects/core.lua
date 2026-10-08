@@ -85,13 +85,13 @@ project "Core"
 		rootpath("%{prj.name}/Source"),
 		-- C++/HLSL shared structs live with the shaders (Shared/*.h is compiled by both).
 		rootpath("%{prj.name}/Content/Shaders"),
-		path.join(thirdPartyDir, "Stb"),
 		path.join(thirdPartyDir, "Dxc/inc"),
 	}
 
 	----------------
 	----- Libs -----
 	----------------
+	useStb()
 	useImGui()
 	useAssimp()
 	useYamlCpp()
@@ -110,6 +110,7 @@ project "Core"
 
 	filter {}
 
+	engineWarnings()
 	usePrecompiledHeader("CorePch.h", rootpath("%{prj.name}/Source/CorePch.cpp"))
 
 	-- Real-number precision (frt::real). Must match every project linking Core;

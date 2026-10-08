@@ -110,6 +110,28 @@ newoption
 	description = "Compile without precompiled headers: checks that every file includes what it uses"
 }
 
+newoption
+{
+	trigger     = "fatal-warnings",
+	description = "Treat warnings in engine code as errors (/WX)"
+}
+
+-- Warnings for engine code; third-party code builds at its upstream level (Premake/thirdparty.lua).
+-- Not fatal by default: FRT_WARN_ON_USE (Core.h) relies on a warning staying a warning.
+function engineWarnings()
+	warnings "Extra"   -- /W4
+	-- Off by default in MSVC, real bugs when they fire, and at zero today:
+	--   C4263, C4264  a member function hides a base class virtual instead of overriding it
+	--   C4265         a class with virtual functions has a non-virtual destructor
+	--   C5038         a member initializer list is out of declaration order
+	--   C5262         implicit fall-through between switch cases
+	buildoptions { "/w14263", "/w14264", "/w14265", "/w15038", "/w15262" }
+
+	if _OPTIONS["fatal-warnings"] then
+		flags { "FatalCompileWarnings" }
+	end
+end
+
 -- A precompiled header force-included into every file of the project, so no source names it.
 -- Header: the name under which the project's include path finds it; Source: the .cpp that
 -- builds it. Small projects (a launcher, a game module) are better off without one.
@@ -182,6 +204,8 @@ function useCore()
 	filter {}
 
 	coreDependencies({ "configurations:Release*", "kind:ConsoleApp or WindowedApp" })
+
+	engineWarnings()
 
 	-- Must match Core's precision. See the top of this file.
 	applyPrecision()
