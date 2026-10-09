@@ -243,7 +243,7 @@ newaction
 		-- generation options given here (--msvc picks the compiler the archive is built with).
 		local options = generationOptions(false) .. " --thirdparty=source"
 		print("Generating the solution with third-party projects (vs2022 " .. options .. ")...")
-		if not runCommand('"' .. winpath(_PREMAKE_COMMAND) .. '" --file="' .. winpath(rootpath("premake5.lua")) .. '" vs2022 ' .. options) then
+		if not runCommand('"' .. winpath(premakeExecutable()) .. '" --file="' .. winpath(rootpath("premake5.lua")) .. '" vs2022 ' .. options) then
 			error("package-thirdparty: generating the solution failed", 0)
 		end
 

@@ -14,5 +14,8 @@ manifest tool, in this directory:
 
 The code is untouched (premake5.pdb still matches). Do the same to a newer premake5.exe before vendoring it.
 
+A bug of this version the scripts work around: when premake5.exe's own path is not all ASCII, _PREMAKE_COMMAND is cut
+short (Premake/tools.lua: premakeExecutable).
+
 SHA-256 before: AA37BB2C174CEA51BE381B3378A5B54406FC3339DBFA4AAEF9D50875E76B8C25
 SHA-256 after:  59F2DB8C1BBABCB4A9A6CAEDB97FD5478CE78BF22D19681F4B42EAEF7E127149

@@ -87,6 +87,16 @@ function runCommand(command)
 	return os.execute('"' .. command .. '"')
 end
 
+-- The premake5.exe running this, to run it again. Premake 5.0.0-beta2 cuts _PREMAKE_COMMAND short
+-- when its path is not all ASCII (it ends the UTF-8 text at the UTF-16 length: D:\Ігри\premake5.exe
+-- becomes D:\Ігри\premake5): then it is the engine's own.
+function premakeExecutable()
+	if os.isfile(_PREMAKE_COMMAND) then
+		return _PREMAKE_COMMAND
+	end
+	return rootpath("ThirdParty/premake-5.0.0-beta2-windows/premake5.exe")
+end
+
 -- The Visual Studio 2022 installation the vs2022 projects build with: the newest one with
 -- MSBuild and the v143 C++ toolset. Both MSBuild and the toolset version come from it. (-utf8:
 -- the path in Premake's encoding, not the console's.)
@@ -136,7 +146,7 @@ local function solutionFile(project)
 end
 
 local function generate(project)
-	local command = quoted(_PREMAKE_COMMAND) .. " --file=" .. quoted(rootpath("premake5.lua")) .. " vs2022 " ..
+	local command = quoted(premakeExecutable()) .. " --file=" .. quoted(rootpath("premake5.lua")) .. " vs2022 " ..
 		generationOptions(true)
 	if project then
 		command = command .. " --project=" .. quoted(project.File)
