@@ -1,10 +1,9 @@
 #include "MainToolbar.h"
 
-#include <cstdio>
-#include <string>
-
 #include "imgui.h"
 #include "imgui_internal.h"
+
+#include "Containers/String.h"
 
 
 namespace frt::editor
@@ -55,13 +54,7 @@ void DrawIcon (ImDrawList& DrawList, EIcon Icon, const ImVec2& Min, const ImVec2
 	}
 }
 
-// "Play (Ctrl+P)", or just "Play" when unbound.
-std::string Tooltip (const char* Action, const char* Shortcut)
-{
-	return *Shortcut ? std::string(Action) + " (" + Shortcut + ")" : std::string(Action);
-}
-
-bool IconButton (const char* Id, EIcon Icon, bool bToggled, bool bEnabled, const char* Tooltip)
+bool IconButton (const char* Id, EIcon Icon, bool bToggled, bool bEnabled, const char* Action, FStringView Shortcut)
 {
 	const float height = ImGui::GetFrameHeight();
 	ImGui::BeginDisabled(!bEnabled);
@@ -73,7 +66,15 @@ bool IconButton (const char* Id, EIcon Icon, bool bToggled, bool bEnabled, const
 	ImGui::PopStyleColor();
 	// GetColorU32 applies the disabled alpha.
 	DrawIcon(*ImGui::GetWindowDrawList(), Icon, ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), ImGui::GetColorU32(ImGuiCol_Text));
-	ImGui::SetItemTooltip("%s", Tooltip);
+	// "Play (Ctrl+P)", or just "Play" when unbound; formatted only while the tooltip shows.
+	if (Shortcut.IsEmpty())
+	{
+		ImGui::SetItemTooltip("%s", Action);
+	}
+	else
+	{
+		ImGui::SetItemTooltip("%s (%.*s)", Action, static_cast<int>(Shortcut.Len()), Shortcut.GetData());
+	}
 	ImGui::PopItemFlag();
 	ImGui::EndDisabled();
 	return bPressed;
@@ -96,40 +97,39 @@ std::optional<EEditorCommand> DrawMainToolbar (const SToolbarState& State)
 		const float button = ImGui::GetFrameHeight() * 1.6f;
 		const float controls = button * 3.0f + style.ItemSpacing.x * 2.0f;
 		ImGui::SetCursorPosX((ImGui::GetWindowWidth() - controls) * 0.5f);
-		if (IconButton("##Play", EIcon::Play, State.bPlaying, State.bPlaying || State.bCanPlay, Tooltip(State.bPlaying ? "Stop" : "Play", State.PlayShortcut).c_str()))
+		if (IconButton("##Play", EIcon::Play, State.bPlaying, State.bPlaying || State.bCanPlay, State.bPlaying ? "Stop" : "Play", State.PlayShortcut))
 		{
 			command = EEditorCommand::TogglePlay;
 		}
 		ImGui::SameLine();
-		if (IconButton("##Pause", EIcon::Pause, State.bPaused, true, Tooltip(State.bPlaying ? "Pause" : "Start paused", State.PauseShortcut).c_str()))
+		if (IconButton("##Pause", EIcon::Pause, State.bPaused, true, State.bPlaying ? "Pause" : "Start paused", State.PauseShortcut))
 		{
 			command = EEditorCommand::TogglePause;
 		}
 		ImGui::SameLine();
-		if (IconButton("##Step", EIcon::Step, false, State.bPlaying, Tooltip("Step one frame", State.StepShortcut).c_str()))
+		if (IconButton("##Step", EIcon::Step, false, State.bPlaying, "Step one frame", State.StepShortcut))
 		{
 			command = EEditorCommand::Step;
 		}
 
-		// The play state, right-aligned.
+		// The play state, right-aligned. A notice too long for the buffer is cut, between characters.
 		char status[128];
-		if (State.Message)
+		if (!State.Message.IsEmpty())
 		{
-			std::snprintf(status, sizeof(status), "%s", State.Message);
+			FormatToBuffer(status, "{}", State.Message);
 		}
 		else if (State.bPlaying)
 		{
-			std::snprintf(status, sizeof(status), "%s  %.2f s  frame %llu", State.bPaused ? "Paused" : "Playing",
-				State.PlaySeconds, static_cast<unsigned long long>(State.PlayFrames));
+			FormatToBuffer(status, "{}  {:.2f} s  frame {}", State.bPaused ? "Paused" : "Playing", State.PlaySeconds, State.PlayFrames);
 		}
 		else
 		{
-			std::snprintf(status, sizeof(status), "Edit mode");
+			FormatToBuffer(status, "Edit mode");
 		}
 		const float statusWidth = ImGui::CalcTextSize(status).x;
 		ImGui::SameLine(ImGui::GetWindowWidth() - statusWidth - style.WindowPadding.x * 2.0f);
 		ImGui::AlignTextToFramePadding();
-		if (State.Message)
+		if (!State.Message.IsEmpty())
 		{
 			ImGui::TextColored(State.bMessageIsError ? ImVec4(1.0f, 0.45f, 0.35f, 1.0f) : ImVec4(0.55f, 0.85f, 0.55f, 1.0f), "%s", status);
 		}

@@ -1,11 +1,11 @@
 #pragma once
 
 #include <memory>
-#include <string>
 #include <vector>
 
 #include "CoreTypes.h"
 #include "GameInstance.h"
+#include "Containers/String.h"
 #include "Graphics/Camera.h"
 #include "Graphics/Render/Scene/WorldExtraction.h"
 #include "UI/DebugTools.h"
@@ -116,7 +116,7 @@ private:
 	void StartPlay ();
 	void StopPlay ();
 	void ApplyInputConfig (bool bInitial);
-	void PostNotice (std::string Text, bool bError);
+	void PostNotice (FString Text, bool bError);
 	void RenderFrame ();
 	void ApplyWindowMode ();
 	int32 ResolveViewport (EViewportTarget Target) const;
@@ -125,7 +125,7 @@ private:
 	CGameModule& Module;
 	double NextGamePoll = 0.0;                         // UI time to look for a newer build again
 	uint32 GameReloads = 0u;
-	std::string GameProblem;                           // why there is no game or world; shown until a build fixes it
+	FString GameProblem;                               // why there is no game or world; shown until a build fixes it
 
 	std::unique_ptr<CWorldScene> EditWorld;
 	graphics::CCamera SceneCamera;                     // the Scene view's camera: the editor's, not the world's
@@ -133,13 +133,14 @@ private:
 
 	CEditorInput Input;
 	float ConfiguredCameraSpeed = 0.0f;                // the config's Speed, as last applied
+	FString FullscreenExitHint;                        // the fullscreen viewport's corner text, from the bindings last applied
 
 	CPlaySession Play;
 	bool bStartPaused = false;                         // Pause pressed in edit mode
 	bool bGameLook = false;                            // the game has the mouse captured this frame
 
 	// A line in the toolbar for a few seconds: why play stopped, what the input config said.
-	std::string Notice;
+	FString Notice;
 	double NoticeTime = 0.0;
 	bool bNoticeIsError = false;
 

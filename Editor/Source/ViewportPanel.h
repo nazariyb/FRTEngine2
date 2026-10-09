@@ -3,7 +3,7 @@
 #include "imgui.h"
 
 #include "CoreTypes.h"
-#include "Containers/StringView.h"
+#include "Containers/String.h"
 
 
 namespace frt::graphics
@@ -117,7 +117,7 @@ private:
 
 	EViewportKind Kind;
 	FStringLiteral Name;
-	char OverlayName[48] = {};
+	FString OverlayName;
 	graphics::CRenderView* View = nullptr;
 
 	// Debounced resize: Committed is the view's size, Pending the size the panel last asked for.
@@ -137,5 +137,5 @@ private:
 	SViewportFrame Frame;
 };
 
-const char* GetAspectName (EViewportAspect Aspect);
+FStringLiteral GetAspectName (EViewportAspect Aspect);
 }

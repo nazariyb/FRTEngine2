@@ -2,7 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
+#include <span>
 
 #include "imgui_internal.h"
 
@@ -70,7 +70,7 @@ void DrawLabel (ImDrawList& DrawList, const ImVec2& Pos, const char* Text, ImU32
 }
 }
 
-const char* GetAspectName (EViewportAspect Aspect)
+FStringLiteral GetAspectName (EViewportAspect Aspect)
 {
 	switch (Aspect)
 	{
@@ -85,8 +85,8 @@ const char* GetAspectName (EViewportAspect Aspect)
 CViewportPanel::CViewportPanel (EViewportKind InKind, FStringLiteral InName)
 	: Kind(InKind)
 	, Name(InName)
+	, OverlayName(FString::Format("##{}.Overlay", InName))
 {
-	std::snprintf(OverlayName, sizeof(OverlayName), "##%s.Overlay", Name.CStr());
 }
 
 void CViewportPanel::Create (graphics::CRenderer& Renderer)
@@ -175,7 +175,7 @@ const SViewportFrame& CViewportPanel::Draw (graphics::CRenderer& Renderer, const
 		ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
 		const ImGuiWindowFlags flags = (ViewportWindowFlags & ~(bFullscreen ? ImGuiWindowFlags_MenuBar : 0)) |
 			ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings;
-		ImGui::Begin(OverlayName, nullptr, flags);
+		ImGui::Begin(OverlayName.CStr(), nullptr, flags);
 		ImGui::PopStyleVar(3);
 		DrawContents(Renderer, Args, !bFullscreen);
 		ImGui::End();
@@ -232,8 +232,7 @@ void CViewportPanel::DrawToolbar (graphics::CRenderer& Renderer, const SViewport
 	{
 		// Unreal's camera speed control. The wheel changes it during a drag, too.
 		char label[48];
-		std::snprintf(label, sizeof(label), "Speed %.2f###CameraSpeed", *Args.CameraSpeed);
-		if (ImGui::BeginMenu(label))
+		if (ImGui::BeginMenu(FormatToBuffer(label, "Speed {:.2f}###CameraSpeed", *Args.CameraSpeed).GetData()))
 		{
 			ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
 			ImGui::SliderFloat("##Speed", Args.CameraSpeed, 0.33f, 32.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
@@ -246,12 +245,12 @@ void CViewportPanel::DrawToolbar (graphics::CRenderer& Renderer, const SViewport
 		}
 	}
 
-	if (Kind == EViewportKind::Game && ImGui::BeginMenu(GetAspectName(Aspect)))
+	if (Kind == EViewportKind::Game && ImGui::BeginMenu(GetAspectName(Aspect).CStr()))
 	{
 		for (uint8 i = 0u; i < static_cast<uint8>(EViewportAspect::Count); ++i)
 		{
 			const EViewportAspect aspect = static_cast<EViewportAspect>(i);
-			if (ImGui::MenuItem(GetAspectName(aspect), nullptr, Aspect == aspect))
+			if (ImGui::MenuItem(GetAspectName(aspect).CStr(), nullptr, Aspect == aspect))
 			{
 				Aspect = aspect;
 			}
@@ -437,13 +436,13 @@ void CViewportPanel::DrawOverlays (graphics::CRenderer& Renderer, const SViewpor
 		const bool bTracing = Renderer.IsTracing(*View);
 		// The size asked for this frame: the view itself only takes it when rendered, after the UI.
 		char text[160];
-		int length = std::snprintf(text, sizeof(text), "%u x %u  %s\n%.2f ms",
+		const FStringView stats = FormatToBuffer(text, "{} x {}  {}\n{:.2f} ms",
 			CommittedWidth, CommittedHeight,
 			bTracing ? "path traced" : "raster",
 			Args.FrameMilliseconds);
-		if (bTracing && Renderer.Profile.Frame.Mode == graphics::EPathTracingMode::Reference && length > 0)
+		if (bTracing && Renderer.Profile.Frame.Mode == graphics::EPathTracingMode::Reference)
 		{
-			std::snprintf(text + length, sizeof(text) - length, "  %u spp", View->GetAccumulatedSamples());
+			FormatToBuffer(std::span<char>(text).subspan(stats.Len()), "  {} spp", View->GetAccumulatedSamples());
 		}
 		DrawLabel(drawList, ImVec2(Min.x + unit * 0.5f, Min.y + unit * 0.5f), text, OverlayText);
 	}

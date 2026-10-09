@@ -3,13 +3,15 @@
 #include <optional>
 
 #include "CoreTypes.h"
+#include "Containers/StringView.h"
 
 #include "EditorCommands.h"
 
 
 namespace frt::editor
 {
-// What the toolbar shows this frame.
+// What the toolbar shows this frame. The texts are views of the editor's own strings, which
+// outlive the frame.
 struct SToolbarState
 {
 	bool bPlaying = false;
@@ -17,12 +19,12 @@ struct SToolbarState
 	bool bPaused = false;          // in edit mode: the next session starts paused
 	double PlaySeconds = 0.0;      // the session's game time
 	uint64 PlayFrames = 0u;        // ... and simulated frames
-	const char* Message = nullptr; // a notice to show, or null
+	FStringView Message;           // a notice to show, or empty
 	bool bMessageIsError = false;
-	// Shortcut texts for the tooltips ("" when unbound).
-	const char* PlayShortcut = "";
-	const char* PauseShortcut = "";
-	const char* StepShortcut = "";
+	// Shortcut texts for the tooltips (empty when unbound).
+	FStringView PlayShortcut;
+	FStringView PauseShortcut;
+	FStringView StepShortcut;
 };
 
 /**

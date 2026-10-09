@@ -1,10 +1,8 @@
 #include "EditorInput.h"
 
 #include <algorithm>
-#include <charconv>
 #include <cmath>
 #include <cstdio>
-#include <format>
 #include <system_error>
 
 #include "Input/InputSystem.h"
@@ -14,10 +12,10 @@ namespace frt::editor
 {
 namespace
 {
-constexpr std::string_view CommandsSection = "Commands";
-constexpr std::string_view CameraSection = "ViewportCamera";
-constexpr std::string_view KeySetSections[] = { "FlightKeys", "KeyboardKeys" };
-constexpr std::string_view CameraKeys[] =
+constexpr FStringLiteral CommandsSection = "Commands";
+constexpr FStringLiteral CameraSection = "ViewportCamera";
+constexpr FStringLiteral KeySetSections[] = { "FlightKeys", "KeyboardKeys" };
+constexpr FStringLiteral CameraKeys[] =
 {
 	"Speed", "MouseSensitivity", "WheelDollyDistance",
 	"InvertMouseLookY", "InvertOrbitY", "InvertMiddleMousePan", "InvertRightMouseDollyY",
@@ -25,47 +23,6 @@ constexpr std::string_view CameraKeys[] =
 
 // How often the files' timestamps are checked.
 constexpr std::chrono::milliseconds PollInterval(250);
-
-std::string_view TrimView (std::string_view Text)
-{
-	const size_t first = Text.find_first_not_of(" \t");
-	if (first == std::string_view::npos)
-	{
-		return {};
-	}
-	return Text.substr(first, Text.find_last_not_of(" \t") - first + 1);
-}
-
-bool ParseFloat (std::string_view Text, float& OutValue)
-{
-	Text = TrimView(Text);
-	float value = 0.0f;
-	const auto [end, ec] = std::from_chars(Text.data(), Text.data() + Text.size(), value);
-	// from_chars also reads "nan" and "inf", which no setting can take.
-	if (ec != std::errc() || end != Text.data() + Text.size() || !std::isfinite(value))
-	{
-		return false;
-	}
-	OutValue = value;
-	return true;
-}
-
-bool ParseBool (std::string_view Text, bool& OutValue)
-{
-	Text = TrimView(Text);
-	const auto matches = [Text] (FStringView Spelling) { return FStringView(Text).Equals<ESearchCase::IgnoreCaseAscii>(Spelling); };
-	if (matches("true") || matches("1") || matches("yes") || matches("on"))
-	{
-		OutValue = true;
-		return true;
-	}
-	if (matches("false") || matches("0") || matches("no") || matches("off"))
-	{
-		OutValue = false;
-		return true;
-	}
-	return false;
-}
 
 std::filesystem::file_time_type GetWriteTime (const std::filesystem::path& Path, bool& bOutExists)
 {
@@ -116,7 +73,7 @@ bool CEditorInput::ReloadIfChanged ()
 	return true;
 }
 
-const FString* CEditorInput::Find (std::string_view Section, std::string_view Key) const
+const FString* CEditorInput::Find (FStringView Section, FStringView Key) const
 {
 	if (const FString* value = User.File.Find(Section, Key))
 	{
@@ -125,13 +82,13 @@ const FString* CEditorInput::Find (std::string_view Section, std::string_view Ke
 	return Defaults.File.Find(Section, Key);
 }
 
-void CEditorInput::Report (std::string Problem)
+void CEditorInput::Report (FString Problem)
 {
-	std::printf("[input] %s\n", Problem.c_str());
+	std::printf("[input] %s\n", Problem.CStr());
 	Problems.push_back(std::move(Problem));
 }
 
-std::vector<input::SInputChord> CEditorInput::ReadChords (std::string_view Section, std::string_view Key, bool bKeysOnly)
+std::vector<input::SInputChord> CEditorInput::ReadChords (FStringView Section, FStringView Key, bool bKeysOnly)
 {
 	std::vector<input::SInputChord> chords;
 	const FString* value = Find(Section, Key);
@@ -141,7 +98,7 @@ std::vector<input::SInputChord> CEditorInput::ReadChords (std::string_view Secti
 		// missing one means the file is older than the code.
 		if (bHasDefaults)
 		{
-			Report(std::format("[{}] {} is missing from {}", Section, Key, Defaults.Path.filename().string()));
+			Report(FString::Format("[{}] {} is missing from {}", Section, Key, FString::FromPath(Defaults.Path.filename())));
 		}
 		return chords;
 	}
@@ -149,7 +106,7 @@ std::vector<input::SInputChord> CEditorInput::ReadChords (std::string_view Secti
 	FString error;
 	if (!input::ParseInputChords(*value, chords, &error))
 	{
-		Report(std::format("[{}] {}: cannot read {}", Section, Key, error));
+		Report(FString::Format("[{}] {}: cannot read {}", Section, Key, error));
 	}
 	// A modifier key alone can never match: holding it is what makes it a modifier.
 	const auto isModifier = [] (const input::SInputChord& Chord)
@@ -170,7 +127,7 @@ std::vector<input::SInputChord> CEditorInput::ReadChords (std::string_view Secti
 	{
 		if (isModifier(*it))
 		{
-			Report(std::format("[{}] {}: {} is a modifier and cannot be bound on its own", Section, Key, input::FormatInputChord(*it)));
+			Report(FString::Format("[{}] {}: {} is a modifier and cannot be bound on its own", Section, Key, input::FormatInputChord(*it)));
 			it = chords.erase(it);
 		}
 		else
@@ -184,7 +141,7 @@ std::vector<input::SInputChord> CEditorInput::ReadChords (std::string_view Secti
 		{
 			if (chord.Modifiers.Flags != 0u)
 			{
-				Report(std::format("[{}] {}: {} - navigation keys take no modifiers; using the key alone",
+				Report(FString::Format("[{}] {}: {} - navigation keys take no modifiers; using the key alone",
 					Section, Key, input::FormatInputChord(chord)));
 				chord.Modifiers = input::EInputModifier::None;
 			}
@@ -211,7 +168,7 @@ void CEditorInput::Read ()
 		if (bExists && !bLoaded)
 		{
 			// Locked by its writer, say. Recorded as absent, so the next poll tries again.
-			Report(std::format("cannot open {}; trying again", Layer.Path.string()));
+			Report(FString::Format("cannot open {}; trying again", FString::FromPath(Layer.Path)));
 		}
 		Layer.bExists = bLoaded;
 		return bLoaded;
@@ -221,12 +178,12 @@ void CEditorInput::Read ()
 	load(User);
 	if (!bHasDefaults)
 	{
-		Report(std::format("no editor input defaults at {}: nothing is bound", Defaults.Path.string()));
+		Report(FString::Format("no editor input defaults at {}: nothing is bound", FString::FromPath(Defaults.Path)));
 	}
 
 	for (size_t i = 0u; i < CommandChords.size(); ++i)
 	{
-		const std::string_view name = enum_::ToString(static_cast<EEditorCommand>(i));
+		const FStringLiteral name = enum_::ToString(static_cast<EEditorCommand>(i));
 		CommandChords[i] = ReadChords(CommandsSection, name, false);
 		ShortcutTexts[i] = CommandChords[i].empty() ? FString() : input::FormatInputChord(CommandChords[i].front());
 	}
@@ -245,24 +202,36 @@ void CEditorInput::Read ()
 	}
 
 	Camera = SViewportCameraSettings();
-	const auto readFloat = [this] (std::string_view Key, float& Value, float Min, float Max)
+	// Trimmed as the chords are (any White_Space; the INI trims only ASCII's), so a no-break
+	// space pasted after a value does not turn it into an error.
+	const auto readFloat = [this] (FStringLiteral Key, float& Value, float Min, float Max)
 	{
 		if (const FString* text = Find(CameraSection, Key))
 		{
-			if (!ParseFloat(*text, Value))
+			// ToFloat also reads "nan" and "inf", which no setting can take.
+			const std::optional<float> value = text->View().TrimStartAndEnd().ToFloat();
+			if (value && std::isfinite(*value))
 			{
-				Report(std::format("[{}] {}: \"{}\" is not a number", CameraSection, Key, *text));
+				Value = *value;
+			}
+			else
+			{
+				Report(FString::Format("[{}] {}: \"{}\" is not a number", CameraSection, Key, *text));
 			}
 		}
 		Value = std::clamp(Value, Min, Max);
 	};
-	const auto readBool = [this] (std::string_view Key, bool& Value)
+	const auto readBool = [this] (FStringLiteral Key, bool& Value)
 	{
 		if (const FString* text = Find(CameraSection, Key))
 		{
-			if (!ParseBool(*text, Value))
+			if (const std::optional<bool> value = text->View().TrimStartAndEnd().TryParseBool())
 			{
-				Report(std::format("[{}] {}: \"{}\" is not true or false", CameraSection, Key, *text));
+				Value = *value;
+			}
+			else
+			{
+				Report(FString::Format("[{}] {}: \"{}\" is not true or false", CameraSection, Key, *text));
 			}
 		}
 	};
@@ -277,8 +246,12 @@ void CEditorInput::Read ()
 
 	Validate();
 	++Generation;
-	std::printf("[input] editor input read: %s%s, %zu problem(s)\n", Defaults.Path.string().c_str(),
-		User.bExists ? (" + " + User.Path.string()).c_str() : "", Problems.size());
+	FString files = FString::FromPath(Defaults.Path);
+	if (User.bExists)
+	{
+		files.Append(" + ").AppendPath(User.Path);
+	}
+	std::printf("[input] editor input read: %s, %zu problem(s)\n", files.CStr(), Problems.size());
 }
 
 void CEditorInput::Validate ()
@@ -286,7 +259,7 @@ void CEditorInput::Validate ()
 	// Names nobody reads: most likely a typo, which would otherwise fail silently.
 	for (const SLayer* layer : { &Defaults, &User })
 	{
-		const std::string file = layer->Path.filename().string() + (layer == &User ? " (user)" : "");
+		const FString file = FString::FromPath(layer->Path.filename()) + (layer == &User ? " (user)" : "");
 		for (const config::CIniFile::SSection& section : layer->File.GetSections())
 		{
 			const bool bCommands = section.Name.Equals<ESearchCase::IgnoreCaseAscii>(CommandsSection);
@@ -294,9 +267,9 @@ void CEditorInput::Validate ()
 			const bool bCamera = section.Name.Equals<ESearchCase::IgnoreCaseAscii>(CameraSection);
 			if (!bCommands && !bKeySet && !bCamera)
 			{
-				if (!section.Entries.empty() || !section.Name.empty())
+				if (!section.Entries.empty() || !section.Name.IsEmpty())
 				{
-					Report(std::format("{}: unknown section [{}]", file, section.Name));
+					Report(FString::Format("{}: unknown section [{}]", file, section.Name));
 				}
 				continue;
 			}
@@ -316,11 +289,11 @@ void CEditorInput::Validate ()
 				else
 				{
 					bKnown = std::any_of(std::begin(CameraKeys), std::end(CameraKeys),
-						[&entry] (std::string_view Name) { return entry.Key.Equals<ESearchCase::IgnoreCaseAscii>(Name); });
+						[&entry] (FStringLiteral Name) { return entry.Key.Equals<ESearchCase::IgnoreCaseAscii>(Name); });
 				}
 				if (!bKnown)
 				{
-					Report(std::format("{}: [{}] has no setting called {}", file, section.Name, entry.Key));
+					Report(FString::Format("{}: [{}] has no setting called {}", file, section.Name, entry.Key));
 				}
 			}
 		}
@@ -335,7 +308,7 @@ void CEditorInput::Validate ()
 			{
 				if (std::find(CommandChords[b].begin(), CommandChords[b].end(), chord) != CommandChords[b].end())
 				{
-					Report(std::format("{} is bound to both {} and {}", input::FormatInputChord(chord),
+					Report(FString::Format("{} is bound to both {} and {}", input::FormatInputChord(chord),
 						enum_::ToString(static_cast<EEditorCommand>(a)), enum_::ToString(static_cast<EEditorCommand>(b))));
 				}
 			}
@@ -360,7 +333,7 @@ const std::vector<input::SInputChord>& CEditorInput::GetChords (EEditorCommand C
 	return CommandChords[static_cast<size_t>(Command)];
 }
 
-const std::string& CEditorInput::GetShortcutText (EEditorCommand Command) const
+const FString& CEditorInput::GetShortcutText (EEditorCommand Command) const
 {
 	return ShortcutTexts[static_cast<size_t>(Command)];
 }

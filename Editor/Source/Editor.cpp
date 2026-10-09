@@ -2,7 +2,6 @@
 
 #include <chrono>
 #include <cstdio>
-#include <format>
 #include <span>
 #include <thread>
 
@@ -179,19 +178,19 @@ int CEditor::Run ()
 				toolbar.PlayFrames = playWorld->Clock.SimulatedFrames;
 			}
 			toolbar.bCanPlay = Module.IsLoaded();
-			if (!Notice.empty() && ImGui::GetTime() - NoticeTime < NoticeSeconds)
+			if (!Notice.IsEmpty() && ImGui::GetTime() - NoticeTime < NoticeSeconds)
 			{
-				toolbar.Message = Notice.c_str();
+				toolbar.Message = Notice;
 				toolbar.bMessageIsError = bNoticeIsError;
 			}
-			else if (!GameProblem.empty())
+			else if (!GameProblem.IsEmpty())
 			{
-				toolbar.Message = GameProblem.c_str();
+				toolbar.Message = GameProblem;
 				toolbar.bMessageIsError = true;
 			}
-			toolbar.PlayShortcut = Input.GetShortcutText(EEditorCommand::TogglePlay).c_str();
-			toolbar.PauseShortcut = Input.GetShortcutText(EEditorCommand::TogglePause).c_str();
-			toolbar.StepShortcut = Input.GetShortcutText(EEditorCommand::Step).c_str();
+			toolbar.PlayShortcut = Input.GetShortcutText(EEditorCommand::TogglePlay);
+			toolbar.PauseShortcut = Input.GetShortcutText(EEditorCommand::TogglePause);
+			toolbar.StepShortcut = Input.GetShortcutText(EEditorCommand::Step);
 			if (const std::optional<EEditorCommand> command = DrawMainToolbar(toolbar))
 			{
 				Execute(*command);
@@ -253,7 +252,7 @@ void CEditor::FocusViewport (EViewportTarget Viewport)
 	FocusRequest = ResolveViewport(Viewport);
 }
 
-void CEditor::PostNotice (std::string Text, bool bError)
+void CEditor::PostNotice (FString Text, bool bError)
 {
 	Notice = std::move(Text);
 	NoticeTime = ImGui::GetTime();
@@ -272,11 +271,27 @@ void CEditor::ApplyInputConfig (bool bInitial)
 		ConfiguredCameraSpeed = settings.Speed;
 	}
 
-	const std::vector<std::string>& problems = Input.GetProblems();
+	// "F11 or Escape  exit fullscreen", from whatever is bound. Built here, not each frame: with
+	// the shipped bindings it is too long for an FString to hold without allocating.
+	FullscreenExitHint.Clear();
+	for (const EEditorCommand command : { EEditorCommand::ToggleFullscreen, EEditorCommand::ExitFullscreen })
+	{
+		const FString& text = Input.GetShortcutText(command);
+		if (!text.IsEmpty())
+		{
+			FullscreenExitHint.Append(FullscreenExitHint.IsEmpty() ? "" : " or ").Append(text);
+		}
+	}
+	if (!FullscreenExitHint.IsEmpty())
+	{
+		FullscreenExitHint += "  exit fullscreen";
+	}
+
+	const std::vector<FString>& problems = Input.GetProblems();
 	if (!problems.empty())
 	{
 		PostNotice(problems.size() == 1u ? "Input config: " + problems.front()
-			: std::format("Input config: {} problems, first: {}", problems.size(), problems.front()), true);
+			: FString::Format("Input config: {} problems, first: {}", problems.size(), problems.front()), true);
 	}
 	else if (!bInitial)
 	{
@@ -492,8 +507,8 @@ void CEditor::PollGameModule ()
 
 void CEditor::ReloadGame ()
 {
-	const std::string name = Module.GetName();
-	std::printf("[editor] new build of game module '%s', reloading\n", name.c_str());
+	const FString name = Module.GetName();
+	std::printf("[editor] new build of game module '%s', reloading\n", name.CStr());
 	const bool bWasPlaying = Play.IsPlaying();
 
 	// Everything holding the module's code goes before it does (CGameModule): the session's
@@ -503,20 +518,20 @@ void CEditor::ReloadGame ()
 	Engine.GetRenderer()->FlushCommandQueue();
 	EditWorld.reset();
 
-	GameProblem.clear();
+	GameProblem.Clear();
 	if (!Module.Load(name))
 	{
-		GameProblem = std::format("No game: module '{}' did not load (see the log)", name);
+		GameProblem = FString::Format("No game: module '{}' did not load (see the log)", name);
 	}
 	else if (!BuildEditWorld())
 	{
 		GameProblem = "The game could not build its world (see the log)";
 	}
 
-	if (GameProblem.empty())
+	if (GameProblem.IsEmpty())
 	{
 		++GameReloads;
-		std::printf("[editor] game module '%s' reloaded%s\n", name.c_str(), bWasPlaying ? ", play stopped" : "");
+		std::printf("[editor] game module '%s' reloaded%s\n", name.CStr(), bWasPlaying ? ", play stopped" : "");
 		PostNotice(bWasPlaying ? "Game reloaded, play stopped" : "Game reloaded", false);
 	}
 	else
@@ -524,7 +539,7 @@ void CEditor::ReloadGame ()
 		// An empty world of the editor's own: half of a world is no use to edit or play.
 		EditWorld = std::make_unique<CWorldScene>();
 		EditWorld->Initialize();
-		std::printf("[editor] %s; waiting for another build\n", GameProblem.c_str());
+		std::printf("[editor] %s; waiting for another build\n", GameProblem.CStr());
 		PostNotice(GameProblem, true);
 	}
 	// Seen as it happens by whoever watches the log of a build.
@@ -541,7 +556,7 @@ void CEditor::StartPlay ()
 	}
 	if (!Module.IsLoaded())
 	{
-		PostNotice(GameProblem.empty() ? "No game is loaded" : GameProblem, true);
+		PostNotice(GameProblem.IsEmpty() ? "No game is loaded" : GameProblem, true);
 		return;
 	}
 	if (!Play.Begin(*EditWorld, bStartPaused))
@@ -587,7 +602,7 @@ void CEditor::DrawMainMenu ()
 	{
 		return;
 	}
-	const auto shortcut = [this] (EEditorCommand Command) { return Input.GetShortcutText(Command).c_str(); };
+	const auto shortcut = [this] (EEditorCommand Command) { return Input.GetShortcutText(Command).CStr(); };
 	if (ImGui::BeginMenu("File"))
 	{
 		// FRT.bat open: the project's solution, in whatever opens .sln files - generated first if
@@ -671,21 +686,6 @@ void CEditor::DrawMainMenu ()
 void CEditor::DrawViewports ()
 {
 	const int32 shown = FullscreenViewport >= 0 ? FullscreenViewport : MaximizedViewport;
-	// "F11 or Esc  exit fullscreen", from whatever is bound.
-	std::string exitHint;
-	for (const EEditorCommand command : { EEditorCommand::ToggleFullscreen, EEditorCommand::ExitFullscreen })
-	{
-		const std::string& text = Input.GetShortcutText(command);
-		if (!text.empty())
-		{
-			exitHint += exitHint.empty() ? text : " or " + text;
-		}
-	}
-	if (!exitHint.empty())
-	{
-		exitHint += "  exit fullscreen";
-	}
-
 	for (int32 i = 0; i < ViewportCount; ++i)
 	{
 		SViewportDrawArgs args;
@@ -698,9 +698,9 @@ void CEditor::DrawViewports ()
 		args.bPlaying = Play.IsPlaying();
 		args.bPaused = Play.IsPaused();
 		args.FrameMilliseconds = FrameMilliseconds;
-		args.MaximizeShortcut = Input.GetShortcutText(EEditorCommand::ToggleMaximize).c_str();
-		args.RenderModeShortcut = Input.GetShortcutText(EEditorCommand::ToggleRenderMode).c_str();
-		args.FullscreenExitHint = exitHint.c_str();
+		args.MaximizeShortcut = Input.GetShortcutText(EEditorCommand::ToggleMaximize).CStr();
+		args.RenderModeShortcut = Input.GetShortcutText(EEditorCommand::ToggleRenderMode).CStr();
+		args.FullscreenExitHint = FullscreenExitHint.CStr();
 		if (i == SceneIndex)
 		{
 			args.CameraSpeed = &SceneCameraController.Speed;

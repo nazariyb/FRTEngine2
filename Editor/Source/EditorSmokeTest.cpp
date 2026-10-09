@@ -10,12 +10,14 @@
 #include "Timer.h"
 #include "Window.h"
 #include "Config/Config.h"
+#include "Containers/String.h"
 #include "Engine/Engine.h"
 #include "Engine/GameModule.h"
 #include "Entity.h"
 #include "WorldScene.h"
 #include "Graphics/Camera.h"
 #include "Graphics/Render/Renderer.h"
+#include "Platform/Platform.h"
 
 #include "Editor.h"
 #include "ViewportCamera.h"
@@ -45,7 +47,7 @@ uint64 HashWorld (const CWorldScene& World)
 	for (const memory::TRefShared<CEntity>& entity : World.GetEntities())
 	{
 		mix(&entity->Id, sizeof(entity->Id));
-		mix(entity->Name.data(), entity->Name.size());
+		mix(entity->Name.GetData(), entity->Name.Len());
 		mixTransform(entity->Transform);
 	}
 	mixTransform(World.Camera.Transform);
@@ -95,18 +97,27 @@ bool Near (float A, float B, float Tolerance = 1e-4f)
 
 CEditorSmokeTest::CEditorSmokeTest (const config::CConfig& Config)
 {
-	const std::string dir = Config.Get("Editor", "SmokeTestDir", "");
-	OutputDir = dir.empty() ? paths::GetLocalDir() / "SmokeTest" : std::filesystem::path(dir);
+	const FString dir = Config.Get("Editor", "SmokeTestDir", "");
+	// Text that is not UTF-8 (an INI saved in another code page) names no directory. Such a run
+	// fails in the default one: an empty path would put the log, the captures and the input
+	// overrides in the working directory, and the run would pass.
+	const std::optional<std::filesystem::path> configuredDir = dir.IsEmpty() ? std::nullopt : dir.TryToPath();
+	OutputDir = configuredDir.value_or(paths::GetLocalDir() / "SmokeTest");
 	std::error_code ec;
 	std::filesystem::create_directories(OutputDir, ec);
 	std::ofstream(OutputDir / "SmokeTest.log", std::ios::trunc);
 	// The run's input overrides start empty: it tests the shipped bindings.
 	std::filesystem::remove(OutputDir / "EditorInput.ini", ec);
+	if (!dir.IsEmpty() && !configuredDir)
+	{
+		Check(false, FString::Format("[Editor] SmokeTestDir \"{}\" is not UTF-8; writing to {}",
+			FString::FromUtf8Lossy(dir), FString::FromPath(OutputDir)));
+	}
 }
 
-void CEditorSmokeTest::WriteInputOverrides (const char* Text)
+void CEditorSmokeTest::WriteInputOverrides (FStringView Text)
 {
-	std::ofstream(OutputDir / "EditorInput.ini", std::ios::trunc) << Text;
+	platform::WriteFileText(OutputDir / "EditorInput.ini", Text);
 }
 
 void CEditorSmokeTest::TouchGameBuild (CEditor& Editor)
@@ -306,7 +317,7 @@ void CEditorSmokeTest::Update (CEditor& Editor, CEngine& Engine)
 	struct SStep
 	{
 		uint32 Frame;
-		const char* Name;
+		FStringLiteral Name;
 		void (*Run) (CEditorSmokeTest& Test, CEditor& Editor, CEngine& Engine);
 	};
 	static const SStep steps[] =
@@ -581,10 +592,7 @@ void CEditorSmokeTest::Update (CEditor& Editor, CEngine& Engine)
 	while (NextStep < std::size(steps) && frame >= steps[NextStep].Frame)
 	{
 		const SStep& step = steps[NextStep++];
-		char line[160];
-		std::snprintf(line, sizeof(line), "step: %s (frame %llu, longest frame since the last step %.1f ms)",
-			step.Name, static_cast<unsigned long long>(frame), LongestFrameMs);
-		Log(line);
+		Log(FString::Format("step: {} (frame {}, longest frame since the last step {:.1f} ms)", step.Name, frame, LongestFrameMs));
 		LongestFrameMs = 0.0f;
 		step.Run(*this, Editor, Engine);
 	}
@@ -593,29 +601,29 @@ void CEditorSmokeTest::Update (CEditor& Editor, CEngine& Engine)
 	if (NextStep == std::size(steps) && !bFinished && !Engine.GetRenderer()->HasPendingCaptures())
 	{
 		bFinished = true;
-		Log(Failures == 0u ? "PASSED" : "FAILED: " + std::to_string(Failures) + " check(s)");
+		Log(Failures == 0u ? "PASSED" : FString::Format("FAILED: {} check(s)", Failures));
 		Engine.RequestQuit(Failures == 0u ? 0 : 2);
 	}
 }
 
-void CEditorSmokeTest::Check (bool bPassed, const char* What)
+void CEditorSmokeTest::Check (bool bPassed, FStringView What)
 {
-	Log(std::string(bPassed ? "  ok    " : "  FAIL  ") + What);
+	Log(FString(bPassed ? "  ok    " : "  FAIL  ") + What);
 	if (!bPassed)
 	{
 		++Failures;
 	}
 }
 
-void CEditorSmokeTest::Capture (CEngine& Engine, const char* Name)
+void CEditorSmokeTest::Capture (CEngine& Engine, FStringLiteral Name)
 {
-	Engine.GetRenderer()->RequestBackBufferCapture(OutputDir / Name);
-	Log(std::string("  capture ") + Name);
+	Engine.GetRenderer()->RequestBackBufferCapture(OutputDir / Name.ToPath());
+	Log("  capture " + Name);
 }
 
-void CEditorSmokeTest::Log (const std::string& Line)
+void CEditorSmokeTest::Log (FStringView Line)
 {
-	std::printf("[smoke] %s\n", Line.c_str());
+	std::printf("[smoke] %.*s\n", static_cast<int>(Line.Len()), Line.GetData());
 	std::fflush(stdout);
 	std::ofstream(OutputDir / "SmokeTest.log", std::ios::app) << Line << '\n';
 }

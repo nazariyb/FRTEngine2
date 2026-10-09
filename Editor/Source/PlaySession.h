@@ -6,6 +6,7 @@
 
 #include "CoreTypes.h"
 #include "Exception.h"
+#include "Containers/String.h"
 
 
 namespace frt
@@ -23,7 +24,7 @@ namespace frt::editor
 {
 // Runs a call into game code. Whatever it throws ends up in the log, never in the editor.
 template <typename TCall>
-bool CallGame (const char* What, TCall&& Call)
+bool CallGame (FStringLiteral What, TCall&& Call)
 {
 	try
 	{
@@ -32,15 +33,17 @@ bool CallGame (const char* What, TCall&& Call)
 	}
 	catch (const ::frt::Exception& e)
 	{
-		std::printf("[game] %s failed: %s %d : %s\n", What, e.What(), static_cast<int>(e.GetErrorCode()), e.GetErrorDescription().c_str());
+		std::printf("[game] %s failed: %s %d : %s\n", What.CStr(), e.What(), static_cast<int>(e.GetErrorCode()), e.GetErrorDescription().CStr());
 	}
 	catch (const std::exception& e)
 	{
-		std::printf("[game] %s failed: %s\n", What, e.what());
+		// what() is in whatever encoding the thrower chose (the standard library's is the process
+		// code page, UTF-8 under the engine's manifest): ill-formed bytes print as U+FFFD.
+		std::printf("[game] %s failed: %s\n", What.CStr(), FString::FromUtf8Lossy(e.what()).CStr());
 	}
 	catch (...)
 	{
-		std::printf("[game] %s failed: unknown exception\n", What);
+		std::printf("[game] %s failed: unknown exception\n", What.CStr());
 	}
 	return false;
 }

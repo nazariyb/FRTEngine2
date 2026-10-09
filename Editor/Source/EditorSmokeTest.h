@@ -1,9 +1,9 @@
 #pragma once
 
 #include <filesystem>
-#include <string>
 
 #include "CoreTypes.h"
+#include "Containers/StringView.h"
 #include "Math/Math.h"
 
 
@@ -30,7 +30,8 @@ class CEditor;
  * the Unreal camera controller against Unreal's numbers, makes the game module's DLL look
  * rebuilt in edit and in play mode to check the editor reloads it,
  * captures the whole window to PNG along the way, and exits with 0 when every check passed (2
- * otherwise). Captures and a log go to [Editor] SmokeTestDir, by default <project>/Local/SmokeTest.
+ * otherwise). Captures and a log go to [Editor] SmokeTestDir, by default <project>/Local/SmokeTest
+ * (also where a run whose SmokeTestDir is not UTF-8 fails).
  */
 class CEditorSmokeTest
 {
@@ -44,12 +45,12 @@ public:
 	const std::filesystem::path& GetOutputDir () const { return OutputDir; }
 
 private:
-	void Check (bool bPassed, const char* What);
+	void Check (bool bPassed, FStringView What);
 	void CheckCameraController ();
 	void TouchGameBuild (CEditor& Editor);
-	void WriteInputOverrides (const char* Text);
-	void Capture (CEngine& Engine, const char* Name);
-	void Log (const std::string& Line);
+	void WriteInputOverrides (FStringView Text);
+	void Capture (CEngine& Engine, FStringLiteral Name);
+	void Log (FStringView Line);
 
 	std::filesystem::path OutputDir;
 	uint64 StartFrame = 0u;

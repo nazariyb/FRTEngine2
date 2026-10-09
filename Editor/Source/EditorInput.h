@@ -3,12 +3,12 @@
 #include <array>
 #include <chrono>
 #include <filesystem>
-#include <string>
 #include <vector>
 
 #include "CoreTypes.h"
 #include "Enum.h"
 #include "Config/IniFile.h"
+#include "Containers/String.h"
 #include "Input/InputChord.h"
 
 #include "EditorCommands.h"
@@ -86,7 +86,7 @@ public:
 	bool WasCommandPressed (EEditorCommand Command, const input::CInputSystem& Input) const;
 	const std::vector<input::SInputChord>& GetChords (EEditorCommand Command) const;
 	// The first chord, as menus show it ("Ctrl+P"); empty when the command is unbound.
-	const std::string& GetShortcutText (EEditorCommand Command) const;
+	const FString& GetShortcutText (EEditorCommand Command) const;
 
 	// ---- viewport camera ----
 	// A key bound to Key in Set is held. Modifiers are not part of navigation keys.
@@ -96,7 +96,7 @@ public:
 	// ---- state ----
 	bool HasDefaults () const { return bHasDefaults; }
 	// What was wrong with the files at the last read; empty when all is well.
-	const std::vector<std::string>& GetProblems () const { return Problems; }
+	const std::vector<FString>& GetProblems () const { return Problems; }
 	// Bumped by every read, initial or reload.
 	uint32 GetGeneration () const { return Generation; }
 	const std::filesystem::path& GetUserPath () const { return User.Path; }
@@ -112,21 +112,21 @@ private:
 
 	void Read ();
 	void Validate ();
-	const FString* Find (std::string_view Section, std::string_view Key) const;
-	std::vector<input::SInputChord> ReadChords (std::string_view Section, std::string_view Key, bool bKeysOnly);
-	void Report (std::string Problem);
+	const FString* Find (FStringView Section, FStringView Key) const;
+	std::vector<input::SInputChord> ReadChords (FStringView Section, FStringView Key, bool bKeysOnly);
+	void Report (FString Problem);
 
 	SLayer Defaults;
 	SLayer User;
 	std::chrono::steady_clock::time_point LastPoll = {};
 
 	std::array<std::vector<input::SInputChord>, static_cast<size_t>(EEditorCommand::Count)> CommandChords;
-	std::array<std::string, static_cast<size_t>(EEditorCommand::Count)> ShortcutTexts;
+	std::array<FString, static_cast<size_t>(EEditorCommand::Count)> ShortcutTexts;
 	std::array<std::array<std::vector<input::KeyCode>, static_cast<size_t>(EViewportKey::Count)>, static_cast<size_t>(EViewportKeySet::Count)> ViewportKeys;
 	SViewportCameraSettings Camera;
 
 	bool bHasDefaults = false;
-	std::vector<std::string> Problems;
+	std::vector<FString> Problems;
 	uint32 Generation = 0u;
 };
 }
