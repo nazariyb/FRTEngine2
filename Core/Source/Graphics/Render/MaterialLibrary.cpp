@@ -22,7 +22,7 @@ memory::TRefShared<SMaterial> CMaterialLibrary::LoadOrCreateMaterial (
 	const std::filesystem::path& MaterialPath,
 	const SMaterial& DefaultMaterial)
 {
-	const std::string key = MakeKey(MaterialPath);
+	const FString key = MakeKey(MaterialPath);
 	auto it = Materials.find(key);
 	if (it != Materials.end())
 	{
@@ -100,9 +100,9 @@ memory::TRefShared<SMaterial> CMaterialLibrary::LoadMaterialFromFile (
 		WriteMaterial(MaterialPath, material);
 	}
 
-	if (material.Name.empty())
+	if (material.Name.IsEmpty())
 	{
-		material.Name = MaterialPath.stem().string();
+		material.Name = FString::FromPath(MaterialPath.stem());
 	}
 
 	material.LastWriteTime = std::filesystem::last_write_time(MaterialPath, ec);
@@ -132,29 +132,31 @@ bool CMaterialLibrary::WriteMaterial (const std::filesystem::path& Path, const S
 
 void CMaterialLibrary::UpdateDerivedState (SMaterial& Material) const
 {
-	const bool bWantsBaseColorTexture = !Material.BaseColorTexturePath.empty();
+	const bool bWantsBaseColorTexture = !Material.BaseColorTexturePath.IsEmpty();
 	Material.Flags << (EMaterialFlags::UseBaseColorTexture + bWantsBaseColorTexture);
 	// Raster preview blends what the path tracer treats stochastically.
 	Material.bAlphaBlend = Material.bAlphaBlend || Material.AlphaMode == EAlphaMode::Blend;
 	++Material.Version;
 }
 
-std::string CMaterialLibrary::MakeKey (const std::filesystem::path& MaterialPath)
+FString CMaterialLibrary::MakeKey (const std::filesystem::path& MaterialPath)
 {
-	return MaterialPath.lexically_normal().string();
+	// A TPathMap key: case-insensitive as NTFS is, so "Brick.frtmat.yml" and "brick.frtmat.yml"
+	// share one material.
+	return FString::FromPath(MaterialPath.lexically_normal(), EPathStyle::Generic);
 }
 }
 
 
 namespace frt::graphics
 {
-std::filesystem::path SMaterial::ResolveTexturePath (const std::string& RelativePath) const
+std::filesystem::path SMaterial::ResolveTexturePath (FStringView RelativePath) const
 {
-	if (RelativePath.empty())
+	if (RelativePath.IsEmpty())
 	{
 		return {};
 	}
-	std::filesystem::path path = RelativePath;
+	std::filesystem::path path = RelativePath.ToPath();
 	if (path.is_relative() && !SourcePath.empty())
 	{
 		path = SourcePath.parent_path() / path;

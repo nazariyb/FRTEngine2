@@ -95,3 +95,14 @@ TEST_F(TextAssetFileTest, MalformedVersionIsNone)
 	EXPECT_EQ(VersionOf("version: # none\n"), 0);
 	EXPECT_EQ(VersionOf("version:\n"), 0);
 }
+
+TEST(TextAssetValue, TrailingYamlCommentIsStripped)
+{
+	using assets::text::StripTrailingComment;
+	EXPECT_EQ(StripTrailingComment("0.25  # glossy"), "0.25");
+	EXPECT_EQ(StripTrailingComment("yes\t# after a tab"), "yes");
+	EXPECT_EQ(StripTrailingComment("\"0.5\" # quoted"), "0.5");
+	EXPECT_EQ(StripTrailingComment("back"), "back");
+	EXPECT_EQ(StripTrailingComment("#FF8000  # orange"), "#FF8000") << "a '#' that starts the value is the value's";
+	EXPECT_EQ(StripTrailingComment("3#x"), "3#x") << "no whitespace before '#': part of the value, as in YAML";
+}

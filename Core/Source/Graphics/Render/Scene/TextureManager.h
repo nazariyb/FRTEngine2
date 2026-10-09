@@ -2,13 +2,13 @@
 
 #include <DirectXMath.h>
 
+#include <array>
 #include <filesystem>
 #include <future>
 #include <memory>
-#include <string>
-#include <unordered_map>
 #include <vector>
 
+#include "Containers/StringMap.h"
 #include "Graphics/Render/RHI/Device.h"
 
 
@@ -79,9 +79,11 @@ private:
 
 	static std::shared_ptr<SDecoded> Decode (std::filesystem::path Path, ETextureColorSpace ColorSpace);
 
+	static_assert(static_cast<size_t>(ETextureColorSpace::Normal) == 2u, "Lookup holds one map per colour space");
+
 	rhi::CDevice* Device = nullptr;
 	std::vector<std::unique_ptr<SEntry>> Entries;
-	std::unordered_map<std::string, HTexture> Lookup;
+	std::array<TPathMap<HTexture>, 3> Lookup;   // per ETextureColorSpace: resolved path -> Entries index
 	uint64 ResidentBytes = 0u;
 };
 }

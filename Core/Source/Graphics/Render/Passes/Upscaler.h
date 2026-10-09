@@ -1,8 +1,8 @@
 #pragma once
 
 #include <memory>
-#include <string_view>
 
+#include "Containers/StringView.h"
 #include "Graphics/Render/RenderContext.h"
 #include "Graphics/Render/RenderSettings.h"
 
@@ -36,7 +36,7 @@ public:
 	virtual ~IUpscaler () = default;
 
 	virtual EUpscalerKind GetKind () const = 0;
-	virtual std::string_view GetName () const = 0;
+	virtual FStringLiteral GetName () const = 0;
 	virtual bool IsAvailable () const = 0;
 
 	virtual void Initialize (rhi::CDevice& Device, rhi::CPipelineLibrary& Pipelines) = 0;
@@ -61,7 +61,7 @@ class FRT_CORE_API CTemporalUpscaler final : public IUpscaler
 {
 public:
 	EUpscalerKind GetKind () const override { return EUpscalerKind::Temporal; }
-	std::string_view GetName () const override { return "TAAU (in-house)"; }
+	FStringLiteral GetName () const override { return "TAAU (in-house)"; }
 	bool IsAvailable () const override { return true; }
 
 	void Initialize (rhi::CDevice& Device, rhi::CPipelineLibrary& Pipelines) override;
@@ -85,7 +85,7 @@ class FRT_CORE_API CPassthroughUpscaler final : public IUpscaler
 {
 public:
 	EUpscalerKind GetKind () const override { return EUpscalerKind::None; }
-	std::string_view GetName () const override { return "Off (spatial resample)"; }
+	FStringLiteral GetName () const override { return "Off (spatial resample)"; }
 	bool IsAvailable () const override { return true; }
 
 	void Initialize (rhi::CDevice& Device, rhi::CPipelineLibrary& Pipelines) override;
@@ -101,5 +101,5 @@ private:
 
 // Factory for the kinds above; returns nullptr for kinds without an implementation in this build.
 FRT_CORE_API std::unique_ptr<IUpscaler> CreateUpscaler (EUpscalerKind Kind);
-FRT_CORE_API std::string_view GetUpscalerKindName (EUpscalerKind Kind);
+FRT_CORE_API FStringLiteral GetUpscalerKindName (EUpscalerKind Kind);
 }

@@ -1,12 +1,12 @@
 #pragma once
 
 #include <filesystem>
-#include <string>
-#include <unordered_map>
 
 #include "Core.h"
 #include "Memory/Ref.h"
 #include "Assets/Serializer.h"
+#include "Containers/String.h"
+#include "Containers/StringMap.h"
 // Complete type: the exported library's implicit members destroy TRefShared<SMaterial>.
 #include "Graphics/Render/Material.h"
 
@@ -48,9 +48,9 @@ private:
 	bool WriteMaterial (const std::filesystem::path& Path, const SMaterial& In) const;
 	void UpdateDerivedState (SMaterial& Material) const;
 
-	static std::string MakeKey (const std::filesystem::path& MaterialPath);
+	static FString MakeKey (const std::filesystem::path& MaterialPath);
 
 	assets::CSerializerRegistry<SMaterial> Serializers;
-	std::unordered_map<std::string, SMaterialRecord> Materials;
+	TPathMap<SMaterialRecord> Materials;   // by MakeKey: the same file however it is spelled
 };
 }

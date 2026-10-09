@@ -10,6 +10,8 @@ namespace frt::graphics
 {
 namespace
 {
+// Export and hit-group names stay wide: D3D12 takes them as UTF-16 (D3D12_EXPORT_DESC,
+// D3D12_HIT_GROUP_DESC, GetShaderIdentifier, GetShaderStackSize).
 constexpr wchar_t kRayGen[] = L"RayGen";
 constexpr wchar_t kMiss[] = L"Miss";
 constexpr wchar_t kClosestHit[] = L"ClosestHit";
@@ -36,8 +38,8 @@ void CPathTracerPrograms::Initialize (rhi::CDevice& InDevice, rhi::CPipelineLibr
 		// With payload access qualifiers the lib_6_9 state object never makes closest-hit writes
 		// visible to the caller (plain TraceRay returns the caller's initial payload; observed on
 		// RTX 40 / Agility 1.619). The payload is tiny, so qualifiers buy nothing here anyway.
-		ser.ExtraArguments.push_back(L"-disable-payload-qualifiers");
-		ser.ExtraArguments.push_back(L"-Wno-payload-access-qualifier"); // the [raypayload] annotations are intentionally ignored here
+		ser.ExtraArguments.push_back("-disable-payload-qualifiers");
+		ser.ExtraArguments.push_back("-Wno-payload-access-qualifier"); // the [raypayload] annotations are intentionally ignored here
 		Ser.Library = Pipelines->RegisterLibrary("PathTracer(SER)", ser);
 		Ser.bReorder = true;
 	}
@@ -64,7 +66,7 @@ void CPathTracerPrograms::Shutdown ()
 	Device = nullptr;
 }
 
-bool CPathTracerPrograms::Build (SVariant& Variant, const wchar_t* Name, ID3D12GraphicsCommandList* CommandList)
+bool CPathTracerPrograms::Build (SVariant& Variant, FStringView Name, ID3D12GraphicsCommandList* CommandList)
 {
 	const rhi::SShaderBinary* library = Pipelines->GetLibrary(Variant.Library);
 	if (!library)
@@ -118,7 +120,7 @@ bool CPathTracerPrograms::Build (SVariant& Variant, const wchar_t* Name, ID3D12G
 	const HRESULT hr = device->CreateStateObject(&desc, IID_PPV_ARGS(&stateObject));
 	if (FAILED(hr))
 	{
-		std::fprintf(stderr, "[pathtracer] CreateStateObject failed for %ls (0x%08lx)\n", Name, hr);
+		std::fprintf(stderr, "[pathtracer] CreateStateObject failed for %.*s (0x%08lx)\n", static_cast<int>(Name.Len()), Name.GetData(), hr);
 		return false;
 	}
 	rhi::SetDebugName(stateObject.Get(), Name);
@@ -144,7 +146,7 @@ bool CPathTracerPrograms::Build (SVariant& Variant, const wchar_t* Name, ID3D12G
 
 	rhi::SBufferDesc tableDesc;
 	tableDesc.Size = table.size();
-	tableDesc.Name = L"PathTracerShaderTable";
+	tableDesc.Name = "PathTracerShaderTable";
 	rhi::SGpuBuffer shaderTable = Device->CreateBuffer(tableDesc);
 	Device->UploadBuffer(CommandList, shaderTable, table.data(), table.size(), 0u, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
 
@@ -193,7 +195,7 @@ void CPathTracerPrograms::Update (ID3D12GraphicsCommandList* CommandList)
 		if (version != variant->BuiltVersion && Pipelines->GetLibrary(variant->Library))
 		{
 			variant->BuiltVersion = version;
-			Build(*variant, variant->bReorder ? L"PathTracer(SER)" : L"PathTracer", CommandList);
+			Build(*variant, variant->bReorder ? "PathTracer(SER)" : "PathTracer", CommandList);
 		}
 	}
 }

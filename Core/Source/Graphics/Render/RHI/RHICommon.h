@@ -11,10 +11,8 @@
 #include <dxgi1_6.h>
 #include <wrl/client.h>
 
-#include <string>
-#include <string_view>
-
 #include "Asserts.h"
+#include "Containers/WideString.h"
 #include "Core.h"
 #include "CoreTypes.h"
 #include "Exception.h"
@@ -30,23 +28,13 @@ inline constexpr uint32 InvalidDescriptorIndex = 0xFFFFFFFFu;
 // Frames the CPU may record ahead of the GPU. Every per-frame ring is sized by this.
 inline constexpr uint32 MaxFramesInFlight = 2u;
 
-inline void SetDebugName (ID3D12Object* Object, std::wstring_view Name)
+// The one place debug names become UTF-16 (ID3D12Object::SetName).
+inline void SetDebugName (ID3D12Object* Object, FStringView Name)
 {
-	if (Object && !Name.empty())
+	if (Object && !Name.IsEmpty())
 	{
-		Object->SetName(std::wstring(Name).c_str());
+		Object->SetName(ToWide(Name).CStr());
 	}
-}
-
-inline std::wstring Widen (std::string_view Text)
-{
-	std::wstring out;
-	out.reserve(Text.size());
-	for (const char c : Text)
-	{
-		out.push_back(static_cast<wchar_t>(static_cast<unsigned char>(c)));
-	}
-	return out;
 }
 
 constexpr uint64 AlignUp (uint64 Value, uint64 Alignment)

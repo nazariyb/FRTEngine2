@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <atomic>
 #include <filesystem>
+#include <optional>
 #include <utility>
 #include <assimp/Importer.hpp>
 #include <assimp/postprocess.h>
@@ -13,8 +14,12 @@
 #include <cstdio>
 
 #include "Mesh.h"
+#include "Containers/String.h"
+#include "Graphics/AssimpWideIO.h"
 #include "Memory/Memory.h"
 
+// stb never sees a file name: images are opened by their UTF-16 names (_wfopen_s) and decoded with
+// stbi_load_from_file (TextureManager.cpp), so there is no STBI_WINDOWS_UTF8.
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ASSERT(x) frt_assert(x)
 #include <stb_image.h>
@@ -26,7 +31,25 @@ namespace frt::graphics
 {
 namespace
 {
-std::string FindTexturePath (const aiMaterial* Material, std::initializer_list<std::pair<aiTextureType, unsigned int>> Candidates)
+// Assimp reports a URI as written (glTF), so an escaped name ("Brick%20Wall.png") is decoded when
+// only the decoded form names a file next to the model - as CAssimpWideIOSystem opens the model's
+// buffers. Embedded textures ("*N") have no escapes.
+std::filesystem::path ToTexturePath (FStringView Uri, const std::filesystem::path& ModelDir)
+{
+	std::filesystem::path path = Uri.ToPath();
+	std::error_code ec;
+	if (const std::optional<FString> decoded = DecodeUriEscapes(Uri); decoded && !std::filesystem::exists(ModelDir / path, ec))
+	{
+		std::filesystem::path decodedPath = decoded->ToPath();
+		if (std::filesystem::exists(ModelDir / decodedPath, ec))
+		{
+			return decodedPath;
+		}
+	}
+	return path;
+}
+
+std::filesystem::path FindTexturePath (const aiMaterial* Material, std::initializer_list<std::pair<aiTextureType, unsigned int>> Candidates, const std::filesystem::path& ModelDir)
 {
 	for (const auto& [type, index] : Candidates)
 	{
@@ -37,7 +60,7 @@ std::string FindTexturePath (const aiMaterial* Material, std::initializer_list<s
 		aiString name;
 		if (Material->GetTexture(type, index, &name) == AI_SUCCESS && name.length > 0)
 		{
-			return name.C_Str();
+			return ToTexturePath(FStringView(name.data, name.length), ModelDir);
 		}
 	}
 	return {};
@@ -45,23 +68,23 @@ std::string FindTexturePath (const aiMaterial* Material, std::initializer_list<s
 
 // Assimp reports texture URIs as authored (relative to the model). Materials live next to the
 // model, so a relative URI already resolves against the material file; absolute ones are made
-// relative to keep the asset relocatable.
-std::string MakeMaterialRelative (const std::filesystem::path& TexturePath, const std::filesystem::path& MaterialDir)
+// relative to keep the asset relocatable. Written with '/', as asset files store paths.
+FString MakeMaterialRelative (const std::filesystem::path& TexturePath, const std::filesystem::path& MaterialDir)
 {
 	if (TexturePath.empty() || !TexturePath.is_absolute())
 	{
-		return TexturePath.string();
+		return FString::FromPath(TexturePath, EPathStyle::Generic);
 	}
 	std::error_code ec;
 	const std::filesystem::path rel = std::filesystem::relative(TexturePath, MaterialDir, ec);
-	return ec ? TexturePath.string() : rel.string();
+	return FString::FromPath(ec ? TexturePath : rel, EPathStyle::Generic);
 }
 
-SMaterial ImportMaterial (const aiMaterial* Material, const std::string& FallbackName, const std::filesystem::path& MaterialDir)
+SMaterial ImportMaterial (const aiMaterial* Material, FStringView FallbackName, const std::filesystem::path& MaterialDir)
 {
 	SMaterial m;
 	aiString aiName;
-	m.Name = Material->Get(AI_MATKEY_NAME, aiName) == AI_SUCCESS && aiName.length > 0 ? aiName.C_Str() : FallbackName;
+	m.Name = Material->Get(AI_MATKEY_NAME, aiName) == AI_SUCCESS && aiName.length > 0 ? FStringView(aiName.data, aiName.length) : FallbackName;
 	m.VertexShaderName = "VertexShader";
 	m.PixelShaderName = "PixelShader";
 
@@ -95,7 +118,7 @@ SMaterial ImportMaterial (const aiMaterial* Material, const std::string& Fallbac
 	aiString alphaMode;
 	if (Material->Get(AI_MATKEY_GLTF_ALPHAMODE, alphaMode) == AI_SUCCESS)
 	{
-		const std::string mode = alphaMode.C_Str();
+		const FStringView mode(alphaMode.data, alphaMode.length);
 		m.AlphaMode = mode == "MASK" ? EAlphaMode::Mask : (mode == "BLEND" ? EAlphaMode::Blend : EAlphaMode::Opaque);
 	}
 	Material->Get(AI_MATKEY_GLTF_ALPHACUTOFF, m.AlphaCutoff);
@@ -115,21 +138,21 @@ SMaterial ImportMaterial (const aiMaterial* Material, const std::string& Fallbac
 	Material->Get(AI_MATKEY_TRANSMISSION_FACTOR, m.Transmission);
 
 	m.BaseColorTexturePath = MakeMaterialRelative(
-		FindTexturePath(Material, { { aiTextureType_BASE_COLOR, 0u }, { aiTextureType_DIFFUSE, 0u } }), MaterialDir);
+		FindTexturePath(Material, { { aiTextureType_BASE_COLOR, 0u }, { aiTextureType_DIFFUSE, 0u } }, MaterialDir), MaterialDir);
 	m.NormalTexturePath = MakeMaterialRelative(
-		FindTexturePath(Material, { { aiTextureType_NORMALS, 0u } }), MaterialDir);
+		FindTexturePath(Material, { { aiTextureType_NORMALS, 0u } }, MaterialDir), MaterialDir);
 	// glTF's packed metallic-roughness texture: its own type since assimp 6, UNKNOWN before; it is
 	// also reported as METALNESS and DIFFUSE_ROUGHNESS.
 	m.MetallicRoughnessTexturePath = MakeMaterialRelative(
-		FindTexturePath(Material, { { aiTextureType_GLTF_METALLIC_ROUGHNESS, 0u }, { aiTextureType_UNKNOWN, 0u }, { aiTextureType_METALNESS, 0u }, { aiTextureType_DIFFUSE_ROUGHNESS, 0u } }), MaterialDir);
+		FindTexturePath(Material, { { aiTextureType_GLTF_METALLIC_ROUGHNESS, 0u }, { aiTextureType_UNKNOWN, 0u }, { aiTextureType_METALNESS, 0u }, { aiTextureType_DIFFUSE_ROUGHNESS, 0u } }, MaterialDir), MaterialDir);
 	m.EmissiveTexturePath = MakeMaterialRelative(
-		FindTexturePath(Material, { { aiTextureType_EMISSIVE, 0u } }), MaterialDir);
+		FindTexturePath(Material, { { aiTextureType_EMISSIVE, 0u } }, MaterialDir), MaterialDir);
 	m.OcclusionTexturePath = MakeMaterialRelative(
-		FindTexturePath(Material, { { aiTextureType_LIGHTMAP, 0u }, { aiTextureType_AMBIENT_OCCLUSION, 0u } }), MaterialDir);
+		FindTexturePath(Material, { { aiTextureType_LIGHTMAP, 0u }, { aiTextureType_AMBIENT_OCCLUSION, 0u } }, MaterialDir), MaterialDir);
 
 	// An emissive texture with a zero factor would be invisible; exporters that only set the
 	// texture mean "emit what the texture says".
-	if (!m.EmissiveTexturePath.empty() && m.EmissiveIntensity <= 0.0f)
+	if (!m.EmissiveTexturePath.IsEmpty() && m.EmissiveIntensity <= 0.0f)
 	{
 		m.Emissive = SColor(1.0f, 1.0f, 1.0f, 1.0f);
 		m.EmissiveIntensity = 1.0f;
@@ -138,7 +161,7 @@ SMaterial ImportMaterial (const aiMaterial* Material, const std::string& Fallbac
 }
 }
 
-SRenderModel SRenderModel::LoadFromFile (const std::string& Filename, const std::string& TexturePath, CMaterialLibrary& MaterialLibrary)
+SRenderModel SRenderModel::LoadFromFile (const std::filesystem::path& File, const std::filesystem::path& TextureOverride, CMaterialLibrary& MaterialLibrary)
 {
 	// Coordinate conventions. glTF assets face +Z with +Y up, so in the asset's own frame +X is
 	// its left: that is exactly the engine's LUF frame, and positions, normals and tangents
@@ -148,9 +171,13 @@ SRenderModel SRenderModel::LoadFromFile (const std::string& Filename, const std:
 	// UVs: assimp stores bottom-left-origin UVs; FlipUVs restores glTF's top-left origin, which
 	// is also D3D's, and negates the bitangents to match.
 	Assimp::Importer importer;
+	// Opens the model and its side files (buffers) by their UTF-16 names, which Assimp's own
+	// handler cannot do for every name Windows allows (AssimpWideIO.h). The importer owns it.
+	importer.SetIOHandler(new CAssimpWideIOSystem());
 	importer.SetPropertyInteger(AI_CONFIG_PP_SBP_REMOVE, aiPrimitiveType_POINT | aiPrimitiveType_LINE);
+	const FString fileName = FString::FromPath(File);
 	const aiScene* scene = importer.ReadFile(
-		Filename,
+		fileName.CStr(),
 		aiProcess_Triangulate |
 		aiProcess_SortByPType |
 		aiProcess_OptimizeMeshes |
@@ -160,17 +187,16 @@ SRenderModel SRenderModel::LoadFromFile (const std::string& Filename, const std:
 		aiProcess_CalcTangentSpace);
 	if (!scene || scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE || !scene->mRootNode)
 	{
-		std::fprintf(stderr, "[model] failed to import %s: %s\n", Filename.c_str(), importer.GetErrorString());
+		std::fprintf(stderr, "[model] failed to import %s: %s\n", fileName.CStr(), importer.GetErrorString());
 		frt_assert(false);
 		return {};
 	}
 
 	SRenderModel result;
-	result.SourcePath = Filename;
+	result.SourcePath = File;
 
-	const std::filesystem::path modelPath = Filename;
-	const std::filesystem::path materialDir = modelPath.parent_path();
-	const std::string materialBaseName = modelPath.stem().string();
+	const std::filesystem::path materialDir = File.parent_path();
+	const FString materialBaseName = FString::FromPath(File.stem());
 
 
 	result.Materials = TArray<memory::TRefShared<SMaterial>>(scene->mNumMaterials);
@@ -179,19 +205,18 @@ SRenderModel SRenderModel::LoadFromFile (const std::string& Filename, const std:
 		const aiMaterial* material = scene->mMaterials[materialIndex];
 		frt_assert(material);
 
-		SMaterial defaultMaterial = ImportMaterial(
-			material, materialBaseName + "_mat" + std::to_string(materialIndex), materialDir);
+		const FString materialName = FString::Format("{}_mat{}", materialBaseName, materialIndex);
+		SMaterial defaultMaterial = ImportMaterial(material, materialName, materialDir);
 
 		// Optional override used by the demo for models whose glTF lacks a base colour texture.
-		if (!TexturePath.empty() && defaultMaterial.BaseColorTexturePath.empty())
+		if (!TextureOverride.empty() && defaultMaterial.BaseColorTexturePath.IsEmpty())
 		{
 			std::error_code ec;
-			const std::filesystem::path abs = std::filesystem::absolute(TexturePath, ec);
+			const std::filesystem::path abs = std::filesystem::absolute(TextureOverride, ec);
 			defaultMaterial.BaseColorTexturePath = MakeMaterialRelative(abs, std::filesystem::absolute(materialDir, ec));
 		}
 
-		const std::filesystem::path materialPath =
-			materialDir / (materialBaseName + "_mat" + std::to_string(materialIndex) + ".frtmat.yml");
+		const std::filesystem::path materialPath = materialDir / (materialName + ".frtmat.yml").ToPath();
 		result.Materials.Add(MaterialLibrary.LoadOrCreateMaterial(materialPath, defaultMaterial));
 	}
 

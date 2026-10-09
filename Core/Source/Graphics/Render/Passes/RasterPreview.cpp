@@ -87,7 +87,7 @@ void CRasterPreview::Resize (uint32 InWidth, uint32 InHeight)
 	Width = (std::max)(InWidth, 1u);
 	Height = (std::max)(InHeight, 1u);
 
-	auto makeRt = [&] (DXGI_FORMAT format, const wchar_t* name)
+	auto makeRt = [&] (DXGI_FORMAT format, FStringView name)
 	{
 		D3D12_CLEAR_VALUE clear = {};
 		clear.Format = format;
@@ -102,9 +102,9 @@ void CRasterPreview::Resize (uint32 InWidth, uint32 InHeight)
 		desc.Name = name;
 		return Device->CreateTexture(desc);
 	};
-	Color = makeRt(DXGI_FORMAT_R16G16B16A16_FLOAT, L"Raster_Color");
-	Motion = makeRt(DXGI_FORMAT_R16G16_FLOAT, L"Raster_Motion");
-	ViewZ = makeRt(DXGI_FORMAT_R32_FLOAT, L"Raster_ViewZ");
+	Color = makeRt(DXGI_FORMAT_R16G16B16A16_FLOAT, "Raster_Color");
+	Motion = makeRt(DXGI_FORMAT_R16G16_FLOAT, "Raster_Motion");
+	ViewZ = makeRt(DXGI_FORMAT_R32_FLOAT, "Raster_ViewZ");
 
 	D3D12_CLEAR_VALUE depthClear = {};
 	depthClear.Format = DXGI_FORMAT_D32_FLOAT;
@@ -117,7 +117,7 @@ void CRasterPreview::Resize (uint32 InWidth, uint32 InHeight)
 	depth.bSrv = false;
 	depth.InitialState = D3D12_RESOURCE_STATE_DEPTH_WRITE;
 	depth.ClearValue = &depthClear;
-	depth.Name = L"Raster_Depth";
+	depth.Name = "Raster_Depth";
 	Depth = Device->CreateTexture(depth);
 }
 

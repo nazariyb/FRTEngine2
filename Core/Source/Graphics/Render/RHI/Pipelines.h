@@ -1,10 +1,9 @@
 #pragma once
 
 #include <filesystem>
-#include <string>
-#include <unordered_map>
 #include <vector>
 
+#include "Containers/StringMap.h"
 #include "Graphics/Render/RHI/ShaderCompiler.h"
 
 
@@ -65,13 +64,13 @@ public:
 	// Programs are identified by kind + name. Creating one that already exists returns the
 	// existing handle (debug builds assert the description matches), so every instance of a
 	// pass - one per render view - shares one compiled program and one hot-reload watch.
-	HPipeline CreateCompute (std::string_view Name, const SShaderCompileDesc& Shader);
-	HPipeline CreateGraphics (std::string_view Name, const SGraphicsPipelineDesc& Desc);
+	HPipeline CreateCompute (FStringView Name, const SShaderCompileDesc& Shader);
+	HPipeline CreateGraphics (FStringView Name, const SGraphicsPipelineDesc& Desc);
 	ID3D12PipelineState* Get (HPipeline Handle) const;
 
 	// DXIL libraries for ray tracing state objects. The owner compares GetLibraryVersion against
 	// what it built with and rebuilds its state object when it changes.
-	HShaderLibrary RegisterLibrary (std::string_view Name, const SShaderCompileDesc& Desc);
+	HShaderLibrary RegisterLibrary (FStringView Name, const SShaderCompileDesc& Desc);
 	const SShaderBinary* GetLibrary (HShaderLibrary Handle) const;
 	uint32 GetLibraryVersion (HShaderLibrary Handle) const;
 
@@ -82,12 +81,13 @@ public:
 	void SetHotReloadEnabled (bool bEnabled) { bHotReload = bEnabled; }
 
 	// Every compile error since the last successful reload, for the UI.
-	const std::vector<std::string>& GetErrors () const { return Errors; }
+	const std::vector<FString>& GetErrors () const { return Errors; }
 
 	CShaderCompiler& GetCompiler () { return *Compiler; }
 
 private:
 	enum class EKind : uint8 { Compute, Graphics, Library };
+	static_assert(static_cast<size_t>(EKind::Library) == 2u, "ProgramIndex holds one map per kind");
 
 	struct SWatchedFile
 	{
@@ -97,7 +97,7 @@ private:
 
 	struct SProgram
 	{
-		std::string Name;
+		FString Name;
 		EKind Kind = EKind::Compute;
 		SShaderCompileDesc Shader;           // compute / library
 		SGraphicsPipelineDesc Graphics;       // graphics
@@ -107,7 +107,7 @@ private:
 		std::vector<SWatchedFile> Watched;
 	};
 
-	uint32 FindOrAdd (EKind Kind, std::string_view Name, SProgram&& Program);
+	uint32 FindOrAdd (EKind Kind, FStringView Name, SProgram&& Program);
 	bool Build (SProgram& Program);
 	void Watch (SProgram& Program, const std::vector<std::filesystem::path>& Dependencies);
 	bool IsStale (const SProgram& Program) const;
@@ -117,8 +117,8 @@ private:
 	ComPtr<ID3D12RootSignature> ComputeRootSignature;
 	ComPtr<ID3D12RootSignature> GraphicsRootSignature;
 	std::vector<SProgram> Programs;
-	std::unordered_map<std::string, uint32> ProgramIndex;   // "<kind>:<name>" -> Programs index
-	std::vector<std::string> Errors;
+	TStringMap<uint32> ProgramIndex[3];   // per EKind: name -> Programs index
+	std::vector<FString> Errors;
 	bool bHotReload = true;
 	uint32 PollCounter = 0u;
 };

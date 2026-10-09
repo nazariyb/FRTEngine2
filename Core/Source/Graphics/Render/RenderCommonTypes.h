@@ -1,12 +1,11 @@
 ﻿#pragma once
 
 #include <span>
-#include <string>
 #include <vector>
 
 #include "Core.h"
 #include "CoreTypes.h"
-#include "Containers/StringView.h"
+#include "Containers/String.h"
 // #include "Math/Vector2.h"
 
 
@@ -17,7 +16,7 @@ struct FRT_CORE_API SDisplayOptions
 public:
 	std::vector<uint8> ResolutionOptionNums;
 	std::vector<uint8> RefreshRateOptionNums;
-	std::vector<std::wstring> OutputsNames;
+	std::vector<FString> OutputsNames;
 	std::vector<struct SRect> OutputsRects;
 
 	std::vector<struct SResolution> Resolutions;
@@ -29,7 +28,7 @@ public:
 	static constexpr int32 DefaultIndex = 0;
 
 public:
-	[[nodiscard]] std::vector<std::string> GetNames () const;
+	[[nodiscard]] const std::vector<FString>& GetNames () const { return OutputsNames; }
 	[[nodiscard]] SResolution GetFullscreenResolution (uint8 OutputIndex) const;
 
 	[[nodiscard]] std::span<const SResolution> GetResolutions(uint8 OutputIndex) const;
@@ -102,7 +101,7 @@ public:
 
 	// Round-trips through Parse. Written into config, so the delimiter has to be one Parse
 	// accepts, and the result has to fit SDisplaySettings::ResolutionTextBufferSize.
-	FRT_CORE_API std::string ToString (char Delimiter = 'x') const;
+	FRT_CORE_API FString ToString (char Delimiter = 'x') const;
 
 	operator bool () const
 	{

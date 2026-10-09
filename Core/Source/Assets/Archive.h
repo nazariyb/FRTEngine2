@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cstddef>
-#include <string>
 #include <type_traits>
 
 #include "Core.h"
@@ -27,19 +26,6 @@ public:
 	virtual bool Read (FStringLiteral Name, uint32& V) = 0;
 	virtual bool Read (FStringLiteral Name, float& V) = 0;
 	virtual bool Read (FStringLiteral Name, FString& V) = 0;
-
-	// For callers whose text is still std::string (the material serializers): an out-parameter
-	// has no implicit conversion. V is left alone when the read fails, as for the others.
-	bool Read (FStringLiteral Name, std::string& V)
-	{
-		FString value;
-		if (!Read(Name, value))
-		{
-			return false;
-		}
-		V = value.ToStdString();
-		return true;
-	}
 
 	virtual bool Has (FStringLiteral Name) const = 0;
 

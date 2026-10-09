@@ -148,7 +148,7 @@ private:
 	void UpdateCompaction (CRenderContext& Context);
 	uint32 EnsureMaterial (const SMaterial* Material, bool& bOutChanged);
 	void WriteMaterialData (const SMaterial& Material, SMaterialEntry& Entry);
-	void UploadTable (CRenderContext& Context, rhi::SGpuBuffer& Buffer, const void* Data, uint64 Size, uint32 Stride, const wchar_t* Name);
+	void UploadTable (CRenderContext& Context, rhi::SGpuBuffer& Buffer, const void* Data, uint64 Size, uint32 Stride, FStringView Name);
 	void BuildTlas (CRenderContext& Context);
 	void BakeSky (CRenderContext& Context);
 	void BakeEnergyLut (CRenderContext& Context);

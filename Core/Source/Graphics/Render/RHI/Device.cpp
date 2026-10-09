@@ -132,7 +132,7 @@ void CUploadRing::Init (ID3D12Device* Device, uint64 InBytesPerFrame)
 		THROW_IF_FAILED(Device->CreateCommittedResource(
 			&HeapProps(D3D12_HEAP_TYPE_UPLOAD), D3D12_HEAP_FLAG_NONE, &desc,
 			D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&Buffers[i])));
-		SetDebugName(Buffers[i].Get(), L"UploadRing");
+		SetDebugName(Buffers[i].Get(), "UploadRing");
 		const D3D12_RANGE noRead = { 0, 0 };
 		THROW_IF_FAILED(Buffers[i]->Map(0, &noRead, reinterpret_cast<void**>(&Mapped[i])));
 	}
@@ -441,10 +441,7 @@ SGpuBuffer CDevice::CreateBuffer (const SBufferDesc& Desc)
 		&HeapProps(Desc.HeapType), D3D12_HEAP_FLAG_NONE, &resourceDesc,
 		initialState, nullptr, IID_PPV_ARGS(&buffer.Resource)));
 	buffer.State = initialState;
-	if (Desc.Name)
-	{
-		SetDebugName(buffer.Resource.Get(), Desc.Name);
-	}
+	SetDebugName(buffer.Resource.Get(), Desc.Name);
 
 	if (Desc.HeapType == D3D12_HEAP_TYPE_UPLOAD)
 	{
@@ -598,10 +595,7 @@ SGpuTexture CDevice::CreateTexture (const STextureDesc& Desc)
 		&HeapProps(D3D12_HEAP_TYPE_DEFAULT), D3D12_HEAP_FLAG_NONE, &resourceDesc,
 		Desc.InitialState, Desc.ClearValue, IID_PPV_ARGS(&texture.Resource)));
 	texture.State = Desc.InitialState;
-	if (Desc.Name)
-	{
-		SetDebugName(texture.Resource.Get(), Desc.Name);
-	}
+	SetDebugName(texture.Resource.Get(), Desc.Name);
 
 	const bool bArray = Desc.DepthOrArraySize > 1u && Desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D;
 
@@ -718,7 +712,7 @@ SUploadAllocation CDevice::AllocateStaging (uint64 Size, uint64 Alignment)
 		THROW_IF_FAILED(Device->CreateCommittedResource(
 			&HeapProps(D3D12_HEAP_TYPE_UPLOAD), D3D12_HEAP_FLAG_NONE, &desc,
 			D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&CurrentStaging.Buffer)));
-		SetDebugName(CurrentStaging.Buffer.Get(), L"StagingChunk");
+		SetDebugName(CurrentStaging.Buffer.Get(), "StagingChunk");
 		const D3D12_RANGE noRead = { 0, 0 };
 		THROW_IF_FAILED(CurrentStaging.Buffer->Map(0, &noRead, reinterpret_cast<void**>(&CurrentStaging.Mapped)));
 		offset = 0u;

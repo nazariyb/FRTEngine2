@@ -192,7 +192,7 @@ void CGpuScene::Initialize (rhi::CDevice& InDevice, rhi::CPipelineLibrary& InPip
 	env.Height = SkyEnvironmentSize;
 	env.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
 	env.bUav = true;
-	env.Name = L"SkyEnvironment";
+	env.Name = "SkyEnvironment";
 	SkyEnvironment = Device->CreateTexture(env);
 
 	rhi::STextureDesc pyramid;
@@ -201,7 +201,7 @@ void CGpuScene::Initialize (rhi::CDevice& InDevice, rhi::CPipelineLibrary& InPip
 	pyramid.MipLevels = static_cast<uint16>(rhi::ComputeMipCount(SkyEnvironmentSize, SkyEnvironmentSize));
 	pyramid.Format = DXGI_FORMAT_R32_FLOAT;
 	pyramid.bUav = true;
-	pyramid.Name = L"SkyLuminancePyramid";
+	pyramid.Name = "SkyLuminancePyramid";
 	SkyPyramid = Device->CreateTexture(pyramid);
 
 	rhi::STextureDesc lut;
@@ -209,7 +209,7 @@ void CGpuScene::Initialize (rhi::CDevice& InDevice, rhi::CPipelineLibrary& InPip
 	lut.Height = 32u;
 	lut.Format = DXGI_FORMAT_R16G16_FLOAT;
 	lut.bUav = true;
-	lut.Name = L"GgxEnergyLut";
+	lut.Name = "GgxEnergyLut";
 	EnergyLut = Device->CreateTexture(lut);
 }
 
@@ -277,7 +277,7 @@ void CGpuScene::UploadTable (
 	const void* Data,
 	uint64 Size,
 	uint32 Stride,
-	const wchar_t* Name)
+	FStringView Name)
 {
 	const uint64 required = (std::max<uint64>)(Size, Stride);
 	if (!Buffer.IsValid() || Buffer.Size < required)
@@ -372,13 +372,13 @@ CGpuScene::SModelEntry& CGpuScene::EnsureModel (CRenderContext& Context, const S
 		rhi::SBufferDesc rtDesc;
 		rtDesc.Size = rt.size();
 		rtDesc.SrvKind = rhi::EBufferViewKind::Raw;
-		rtDesc.Name = L"RtVertices";
+		rtDesc.Name = "RtVertices";
 		entry.RtVertices = Device->CreateBuffer(rtDesc);
 		Device->UploadBuffer(Context.CommandList, entry.RtVertices, rt.data(), rt.size(), 0u, readState);
 
 		rhi::SBufferDesc rasterDesc;
 		rasterDesc.Size = static_cast<uint64>(vertexCount) * sizeof(SVertex);
-		rasterDesc.Name = L"RasterVertices";
+		rasterDesc.Name = "RasterVertices";
 		entry.RasterVertices = Device->CreateBuffer(rasterDesc);
 		Device->UploadBuffer(Context.CommandList, entry.RasterVertices, Model.Vertices.GetData(), rasterDesc.Size, 0u,
 			D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER);
@@ -386,7 +386,7 @@ CGpuScene::SModelEntry& CGpuScene::EnsureModel (CRenderContext& Context, const S
 		rhi::SBufferDesc ibDesc;
 		ibDesc.Size = static_cast<uint64>(Model.Indices.Count()) * sizeof(uint32);
 		ibDesc.SrvKind = rhi::EBufferViewKind::Raw;
-		ibDesc.Name = L"Indices";
+		ibDesc.Name = "Indices";
 		entry.Indices = Device->CreateBuffer(ibDesc);
 		Device->UploadBuffer(Context.CommandList, entry.Indices, Model.Indices.GetData(), ibDesc.Size, 0u,
 			readState | D3D12_RESOURCE_STATE_INDEX_BUFFER);
@@ -448,7 +448,7 @@ void CGpuScene::BuildBlas (CRenderContext& Context, const SRenderModel& Model, S
 		scratch.Size = rhi::AlignUp((std::max<uint64>)(prebuild.ScratchDataSizeInBytes, 1ull << 20u), 65536u);
 		scratch.UavKind = rhi::EBufferViewKind::None;
 		scratch.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-		scratch.Name = L"BlasScratch";
+		scratch.Name = "BlasScratch";
 		BlasScratch = Device->CreateBuffer(scratch);
 	}
 
@@ -456,7 +456,7 @@ void CGpuScene::BuildBlas (CRenderContext& Context, const SRenderModel& Model, S
 	rhi::SBufferDesc result;
 	result.Size = rhi::AlignUp(prebuild.ResultDataMaxSizeInBytes, 256u);
 	result.bAccelerationStructure = true;
-	result.Name = L"Blas";
+	result.Name = "Blas";
 	Entry.Blas = Device->CreateBuffer(result);
 	Entry.bCompacted = false;
 	Entry.bCompactionQueried = false;
@@ -476,12 +476,12 @@ void CGpuScene::BuildBlas (CRenderContext& Context, const SRenderModel& Model, S
 		rhi::SBufferDesc query;
 		query.Size = 16u;
 		query.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-		query.Name = L"BlasCompactedSize";
+		query.Name = "BlasCompactedSize";
 		Entry.CompactedSizeQuery = Device->CreateBuffer(query);
 		rhi::SBufferDesc readback;
 		readback.Size = 16u;
 		readback.HeapType = D3D12_HEAP_TYPE_READBACK;
-		readback.Name = L"BlasCompactedSizeReadback";
+		readback.Name = "BlasCompactedSizeReadback";
 		Entry.CompactedSizeReadback = Device->CreateBuffer(readback);
 	}
 	barriers.Transition(Entry.CompactedSizeQuery, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
@@ -529,7 +529,7 @@ void CGpuScene::UpdateCompaction (CRenderContext& Context)
 		rhi::SBufferDesc desc;
 		desc.Size = rhi::AlignUp(compactedSize, 256u);
 		desc.bAccelerationStructure = true;
-		desc.Name = L"BlasCompacted";
+		desc.Name = "BlasCompacted";
 		rhi::SGpuBuffer compacted = Device->CreateBuffer(desc);
 		Context.CommandList->CopyRaytracingAccelerationStructure(
 			compacted.GetGpuAddress(), entry.Blas.GetGpuAddress(),
@@ -739,13 +739,13 @@ bool CGpuScene::Update (CRenderContext& Context)
 			}
 			entry.EmissiveTriangleCount = emissiveLocal;
 		}
-		UploadTable(Context, GeometryBuffer, GeometryTable.data(), GeometryTable.size() * sizeof(gpu::SGeometryData), sizeof(gpu::SGeometryData), L"GeometryTable");
+		UploadTable(Context, GeometryBuffer, GeometryTable.data(), GeometryTable.size() * sizeof(gpu::SGeometryData), sizeof(gpu::SGeometryData), "GeometryTable");
 		bGeometryTableDirty = false;
 		bChanged = true;
 	}
 	if (bMaterialTableDirty)
 	{
-		UploadTable(Context, MaterialBuffer, MaterialTable.data(), MaterialTable.size() * sizeof(gpu::SMaterialData), sizeof(gpu::SMaterialData), L"MaterialTable");
+		UploadTable(Context, MaterialBuffer, MaterialTable.data(), MaterialTable.size() * sizeof(gpu::SMaterialData), sizeof(gpu::SMaterialData), "MaterialTable");
 		bMaterialTableDirty = false;
 		bChanged = true;
 	}
@@ -809,7 +809,7 @@ bool CGpuScene::Update (CRenderContext& Context)
 		InstanceHash = instanceHash;
 		bChanged = true;
 	}
-	UploadTable(Context, InstanceBuffer, InstanceTable.data(), InstanceTable.size() * sizeof(gpu::SInstanceData), sizeof(gpu::SInstanceData), L"InstanceTable");
+	UploadTable(Context, InstanceBuffer, InstanceTable.data(), InstanceTable.size() * sizeof(gpu::SInstanceData), sizeof(gpu::SInstanceData), "InstanceTable");
 
 	// Emissive triangles (rebuilt only when the set of emissive instances changes).
 	emissiveHash = HashValue(emissiveHash, GeometryLayoutHash);
@@ -879,7 +879,7 @@ bool CGpuScene::Update (CRenderContext& Context)
 				}
 			}
 		}
-		UploadTable(Context, EmissiveBuffer, EmissiveTriangles.data(), EmissiveTriangles.size() * sizeof(gpu::SEmissiveTriangle), sizeof(gpu::SEmissiveTriangle), L"EmissiveTriangles");
+		UploadTable(Context, EmissiveBuffer, EmissiveTriangles.data(), EmissiveTriangles.size() * sizeof(gpu::SEmissiveTriangle), sizeof(gpu::SEmissiveTriangle), "EmissiveTriangles");
 		bChanged = true;
 		LightHash = 0u; // force the alias table to be rebuilt
 	}
@@ -889,7 +889,7 @@ bool CGpuScene::Update (CRenderContext& Context)
 		// (hash includes indices, so this branch only keeps the buffer valid).
 		if (!EmissiveBuffer.IsValid())
 		{
-			UploadTable(Context, EmissiveBuffer, nullptr, 0u, sizeof(gpu::SEmissiveTriangle), L"EmissiveTriangles");
+			UploadTable(Context, EmissiveBuffer, nullptr, 0u, sizeof(gpu::SEmissiveTriangle), "EmissiveTriangles");
 		}
 	}
 
@@ -909,7 +909,7 @@ bool CGpuScene::Update (CRenderContext& Context)
 	BuildLightTables(Context);
 
 	// Portals.
-	UploadTable(Context, PortalBuffer, FramePortals.data(), FramePortals.size() * sizeof(gpu::SPortalData), sizeof(gpu::SPortalData), L"Portals");
+	UploadTable(Context, PortalBuffer, FramePortals.data(), FramePortals.size() * sizeof(gpu::SPortalData), sizeof(gpu::SPortalData), "Portals");
 
 	BuildTlas(Context);
 
@@ -1096,9 +1096,9 @@ void CGpuScene::BuildLightTables (CRenderContext& Context)
 			portalArea > 0.0f ? " [portal-weighted distant lights]" : "");
 		std::fflush(stdout);
 		BuildAliasTable(weights, AliasTable);
-		UploadTable(Context, AliasBuffer, AliasTable.data(), AliasTable.size() * sizeof(gpu::SAliasEntry), sizeof(gpu::SAliasEntry), L"LightAliasTable");
+		UploadTable(Context, AliasBuffer, AliasTable.data(), AliasTable.size() * sizeof(gpu::SAliasEntry), sizeof(gpu::SAliasEntry), "LightAliasTable");
 	}
-	UploadTable(Context, LightBuffer, LightTable.data(), LightTable.size() * sizeof(gpu::SLightData), sizeof(gpu::SLightData), L"Lights");
+	UploadTable(Context, LightBuffer, LightTable.data(), LightTable.size() * sizeof(gpu::SLightData), sizeof(gpu::SLightData), "Lights");
 }
 
 void CGpuScene::BuildTlas (CRenderContext& Context)
@@ -1142,7 +1142,7 @@ void CGpuScene::BuildTlas (CRenderContext& Context)
 		rhi::SBufferDesc desc;
 		desc.Size = rhi::AlignUp((std::max<uint64>)(prebuild.ResultDataMaxSizeInBytes * 2u, 65536u), 256u);
 		desc.bAccelerationStructure = true;
-		desc.Name = L"Tlas";
+		desc.Name = "Tlas";
 		tlas = Device->CreateBuffer(desc);
 	}
 	if (!TlasScratch.IsValid() || TlasScratch.Size < prebuild.ScratchDataSizeInBytes)
@@ -1151,7 +1151,7 @@ void CGpuScene::BuildTlas (CRenderContext& Context)
 		rhi::SBufferDesc desc;
 		desc.Size = rhi::AlignUp((std::max<uint64>)(prebuild.ScratchDataSizeInBytes * 2u, 65536u), 256u);
 		desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-		desc.Name = L"TlasScratch";
+		desc.Name = "TlasScratch";
 		TlasScratch = Device->CreateBuffer(desc);
 	}
 

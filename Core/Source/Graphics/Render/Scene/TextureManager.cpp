@@ -8,6 +8,8 @@
 
 #include <stb_image.h>
 
+#include "Containers/String.h"
+
 
 namespace frt::graphics
 {
@@ -146,7 +148,10 @@ void CTextureManager::Shutdown ()
 		}
 	}
 	Entries.clear();
-	Lookup.clear();
+	for (TPathMap<HTexture>& byPath : Lookup)
+	{
+		byPath.clear();
+	}
 	ResidentBytes = 0u;
 }
 
@@ -155,13 +160,22 @@ std::shared_ptr<CTextureManager::SDecoded> CTextureManager::Decode (std::filesys
 	DecodeSlots().acquire();
 	auto result = std::make_shared<SDecoded>();
 
+	// Opened by its UTF-16 name: stbi_load would take narrow text, which cannot name every file.
+	FILE* file = nullptr;
+	if (_wfopen_s(&file, Path.c_str(), L"rb") != 0 || file == nullptr)
+	{
+		std::fprintf(stderr, "[texture] failed to open %s\n", FString::FromPath(Path).CStr());
+		DecodeSlots().release();
+		return result;
+	}
 	int width = 0;
 	int height = 0;
 	int channels = 0;
-	stbi_uc* pixels = stbi_load(Path.string().c_str(), &width, &height, &channels, 4);
+	stbi_uc* pixels = stbi_load_from_file(file, &width, &height, &channels, 4);
+	std::fclose(file);
 	if (!pixels || width <= 0 || height <= 0)
 	{
-		std::fprintf(stderr, "[texture] failed to load %s: %s\n", Path.string().c_str(), stbi_failure_reason());
+		std::fprintf(stderr, "[texture] failed to load %s: %s\n", FString::FromPath(Path).CStr(), stbi_failure_reason());
 		if (pixels)
 		{
 			stbi_image_free(pixels);
@@ -213,19 +227,22 @@ CTextureManager::HTexture CTextureManager::Request (const std::filesystem::path&
 	}
 	std::error_code ec;
 	const std::filesystem::path normal = std::filesystem::weakly_canonical(Path, ec);
-	const std::string key = (ec ? Path : normal).string() + "|" + std::to_string(static_cast<uint32>(ColorSpace));
-	if (const auto it = Lookup.find(key); it != Lookup.end())
+	const std::filesystem::path& resolved = ec ? Path : normal;
+	// A path key: one texture per file however the request spells it (case, separators).
+	FString key = FString::FromPath(resolved, EPathStyle::Generic);
+	TPathMap<HTexture>& byPath = Lookup[static_cast<size_t>(ColorSpace)];
+	if (const auto it = byPath.find(key); it != byPath.end())
 	{
 		return it->second;
 	}
 
 	auto entry = std::make_unique<SEntry>();
-	entry->Path = ec ? Path : normal;
+	entry->Path = resolved;
 	entry->ColorSpace = ColorSpace;
 	entry->Pending = std::async(std::launch::async, &CTextureManager::Decode, entry->Path, ColorSpace);
 	const HTexture handle = static_cast<HTexture>(Entries.size());
 	Entries.push_back(std::move(entry));
-	Lookup.emplace(key, handle);
+	byPath.emplace(std::move(key), handle);
 	return handle;
 }
 
@@ -313,8 +330,8 @@ bool CTextureManager::Update (ID3D12GraphicsCommandList* CommandList, uint64 Upl
 		desc.Format = DXGI_FORMAT_R8G8B8A8_TYPELESS;
 		desc.SrvFormat = entry->ColorSpace == ETextureColorSpace::Srgb ? DXGI_FORMAT_R8G8B8A8_UNORM_SRGB : DXGI_FORMAT_R8G8B8A8_UNORM;
 		desc.InitialState = D3D12_RESOURCE_STATE_COPY_DEST;
-		const std::wstring name = entry->Path.filename().wstring();
-		desc.Name = name.c_str();
+		const FString nameUtf8 = FString::FromPath(entry->Path.filename());
+		desc.Name = nameUtf8;
 		entry->Texture = Device->CreateTexture(desc);
 
 		const void* mipData[rhi::MaxTextureMips] = {};

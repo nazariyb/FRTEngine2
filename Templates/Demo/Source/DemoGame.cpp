@@ -21,9 +21,9 @@ using namespace frt::graphics;
 namespace
 {
 // Everything the demo loads is in its project's Content/.
-std::filesystem::path Content (const char* RelativePath)
+std::filesystem::path Content (FStringView RelativePath)
 {
-	return paths::GetProjectContentDir() / RelativePath;
+	return paths::GetProjectContentDir() / RelativePath.ToPath();
 }
 }
 
@@ -90,8 +90,8 @@ void DemoGame::BuildWorld (const SGameContext& Context)
 	auto skullEnt = World.SpawnEntity("Skull");
 	skullEnt->RenderModel->Model = memory::NewShared<graphics::SRenderModel>(
 		graphics::SRenderModel::LoadFromFile(
-			Content("Models/Skull/scene.gltf").string(),
-			Content("Models/Skull/textures/defaultMat_baseColor.jpeg").string(), materialLibrary));
+			Content("Models/Skull/scene.gltf"),
+			Content("Models/Skull/textures/defaultMat_baseColor.jpeg"), materialLibrary));
 	skullEnt->Transform.SetTranslation(-2.5f, 1.5f, 0.f);
 	skullEnt->Transform.SetScale(Vector3f(.45f));
 	skullEnt->RotationSpeed = Vector3f::UpVector * (math::PI_OVER_FOUR * 0.25f);
@@ -99,16 +99,16 @@ void DemoGame::BuildWorld (const SGameContext& Context)
 	auto duckEnt = World.SpawnEntity("Duck");
 	duckEnt->RenderModel->Model = memory::NewShared<graphics::SRenderModel>(
 		graphics::SRenderModel::LoadFromFile(
-			Content("Models/Duck/Duck.gltf").string(),
-			Content("Models/Duck/DuckCM.png").string(), materialLibrary));
+			Content("Models/Duck/Duck.gltf"),
+			Content("Models/Duck/DuckCM.png"), materialLibrary));
 	duckEnt->Transform.SetTranslation(0.f, 0.f, 0.f);
 
 	// TODO: When Sponza is added, the renderer crashes. Probably multiple sections aren't handled properly
 	auto sponzaEnt = World.SpawnEntity("Sponza");
 	sponzaEnt->RenderModel->Model = memory::NewShared<graphics::SRenderModel>(
 		graphics::SRenderModel::LoadFromFile(
-			Content("Models/Sponza/Sponza.gltf").string(),
-			"", materialLibrary));
+			Content("Models/Sponza/Sponza.gltf"),
+			{}, materialLibrary));
 	// sponzaEnt->Transform.SetTranslation(1.f, 0.f, 0.f);
 	sponzaEnt->bRayTraced = false;
 

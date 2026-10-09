@@ -1,106 +1,40 @@
 ﻿#include "SColor.h"
 
-#include <cctype>
-#include <sstream>
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <optional>
+#include <span>
+
+#include "Unicode/Ascii.h"
 
 
 namespace frt
 {
 namespace
 {
-	int HexValue (char c)
+	bool TryParseHexColor (FStringView Hex, SColor& out)
 	{
-		if (c >= '0' && c <= '9')
+		(void)Hex.ConsumeChar('#');
+
+		std::array<uint8, 4> bytes = { 0, 0, 0, 255 };
+		if (Hex.Len() == 3)
 		{
-			return c - '0';
-		}
-
-		c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-		if (c >= 'A' && c <= 'F')
-		{
-			return 10 + (c - 'A');
-		}
-
-		return -1;
-	}
-
-	bool ParseHexByte (const std::string_view& hex, size_t index, uint8& out)
-	{
-		const int hi = HexValue(hex[index]);
-		const int lo = HexValue(hex[index + 1]);
-		if (hi < 0 || lo < 0)
-		{
-			return false;
-		}
-
-		out = static_cast<uint8>((hi << 4) | lo);
-		return true;
-	}
-
-	bool ParseFloat (std::stringstream& stream, float& out, bool bExpectComma)
-	{
-		stream >> out;
-		if (!stream)
-		{
-			return false;
-		}
-
-		stream >> std::ws;
-		if (bExpectComma)
-		{
-			if (stream.peek() != ',')
+			// #RGB: each digit stands for itself twice (#F80 is #FF8800).
+			for (uint32 i = 0; i < 3; ++i)
 			{
-				return false;
+				const int32 digit = ascii::HexValue(Hex[i]);
+				if (digit < 0)
+				{
+					return false;
+				}
+
+				bytes[i] = static_cast<uint8>(digit * 17);
 			}
-
-			stream.get();
 		}
-
-		return true;
-	}
-
-	bool TryParseHexColor (const std::string_view& Hex, SColor& out)
-	{
-		std::string_view hex = Hex;
-		if (hex.empty())
+		else if (Hex.Len() == 6 || Hex.Len() == 8)
 		{
-			return false;
-		}
-
-		if (hex.front() == '#')
-		{
-			hex.remove_prefix(1);
-		}
-
-		uint8 r = 0;
-		uint8 g = 0;
-		uint8 b = 0;
-		uint8 a = 255;
-
-		if (hex.size() == 3)
-		{
-			const int rh = HexValue(hex[0]);
-			const int gh = HexValue(hex[1]);
-			const int bh = HexValue(hex[2]);
-			if (rh < 0 || gh < 0 || bh < 0)
-			{
-				return false;
-			}
-
-			r = static_cast<uint8>(rh * 17);
-			g = static_cast<uint8>(gh * 17);
-			b = static_cast<uint8>(bh * 17);
-		}
-		else if (hex.size() == 6 || hex.size() == 8)
-		{
-			if (!ParseHexByte(hex, 0, r)
-				|| !ParseHexByte(hex, 2, g)
-				|| !ParseHexByte(hex, 4, b))
-			{
-				return false;
-			}
-
-			if (hex.size() == 8 && !ParseHexByte(hex, 6, a))
+			if (!Hex.DecodeHex(std::span(bytes).first(Hex.Len() / 2)))
 			{
 				return false;
 			}
@@ -112,17 +46,25 @@ namespace
 
 		constexpr float inv = 1.0f / 255.0f;
 		out = {
-			static_cast<float>(r) * inv,
-			static_cast<float>(g) * inv,
-			static_cast<float>(b) * inv,
-			static_cast<float>(a) * inv
+			static_cast<float>(bytes[0]) * inv,
+			static_cast<float>(bytes[1]) * inv,
+			static_cast<float>(bytes[2]) * inv,
+			static_cast<float>(bytes[3]) * inv
 		};
 		return true;
+	}
+
+	// Channel clamped to [0, 1] (NaN to 0) and rounded to the nearest of the 256 values two hex
+	// digits hold, so FromHex reads back what ToHex wrote.
+	uint32 ToHexByte (float Channel)
+	{
+		const float clamped = Channel > 0.0f ? std::min(Channel, 1.0f) : 0.0f;
+		return static_cast<uint32>(clamped * 255.0f + 0.5f);
 	}
 }
 
 
-SColor SColor::FromHex (const std::string_view& Hex)
+SColor SColor::FromHex (FStringView Hex)
 {
 	SColor color;
 	if (!TryParseHexColor(Hex, color))
@@ -133,79 +75,70 @@ SColor SColor::FromHex (const std::string_view& Hex)
 	return color;
 }
 
-SColor SColor::FromString (const std::string_view& String)
+SColor SColor::FromString (FStringView String)
 {
+	// FillFromString leaves the default (White) alone when String is no color.
 	SColor color;
-	if (color.FillFromString(String))
-	{
-		return color;
-	}
-
+	(void)color.FillFromString(String);
 	return color;
 }
 
-bool SColor::FillFromString (const std::string_view& String)
+bool SColor::FillFromString (FStringView String)
 {
-	if (String.starts_with("#"))
+	if (String.StartsWith('#'))
 	{
 		return TryParseHexColor(String, *this);
 	}
 
-	if (String.starts_with("RGBA("))
+	FStringView channels = String;
+	if (!channels.RemoveFromStart("RGBA(") || !channels.RemoveFromEnd(")"))
 	{
-		if (!String.ends_with(")"))
-		{
-			return false;
-		}
-
-		const std::string_view channels = String.substr(5, String.size() - 6);
-		std::stringstream ss{ std::string(channels) };
-
-		float r = 0.0f;
-		float g = 0.0f;
-		float b = 0.0f;
-		float a = 0.0f;
-
-		if (!ParseFloat(ss, r, true)
-			|| !ParseFloat(ss, g, true)
-			|| !ParseFloat(ss, b, true)
-			|| !ParseFloat(ss, a, false))
-		{
-			return false;
-		}
-
-		ss >> std::ws;
-		if (ss.peek() != std::char_traits<char>::eof())
-		{
-			return false;
-		}
-
-		R = r;
-		G = g;
-		B = b;
-		A = a;
-		return true;
+		return false;
 	}
 
-	return false;
+	// Whitespace may surround the numbers and commas; inf and nan are no channel value.
+	float rgba[4] = {};
+	for (uint32 i = 0; i < 4; ++i)
+	{
+		channels.TrimStartInline();
+		const std::optional<float> value = channels.ConsumeNumber<float>();
+		if (!value || !std::isfinite(*value))
+		{
+			return false;
+		}
+
+		rgba[i] = *value;
+		channels.TrimStartInline();
+		if (i < 3 && !channels.ConsumeChar(','))
+		{
+			return false;
+		}
+	}
+
+	if (!channels.IsEmpty())
+	{
+		return false;
+	}
+
+	R = rgba[0];
+	G = rgba[1];
+	B = rgba[2];
+	A = rgba[3];
+	return true;
 }
 
-std::string SColor::ToHex () const
+FString SColor::ToHex () const
 {
-	std::stringstream ss;
-	ss << "#" << std::hex << R << G << B;
-	return ss.str();
+	return FString::Format("#{:02X}{:02X}{:02X}{:02X}", ToHexByte(R), ToHexByte(G), ToHexByte(B), ToHexByte(A));
 }
 
-std::string SColor::ToString (bool bHex) const
+FString SColor::ToString (bool bHex) const
 {
 	if (bHex)
 	{
 		return ToHex();
 	}
 
-	std::stringstream ss;
-	ss << "RGBA(" << R << ", " << G << ", " << B << ", " << A << ")";
-	return ss.str();
+	return FString::Format("RGBA({}, {}, {}, {})", R, G, B, A);
 }
 }

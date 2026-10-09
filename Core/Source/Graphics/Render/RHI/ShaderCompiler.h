@@ -7,9 +7,9 @@
 
 #include <filesystem>
 #include <mutex>
-#include <string>
 #include <vector>
 
+#include "Containers/String.h"
 #include "Graphics/Render/RHI/RHICommon.h"
 
 
@@ -17,24 +17,24 @@ namespace frt::graphics::rhi
 {
 struct SShaderDefine
 {
-	std::string Name;
-	std::string Value = "1";
+	FString Name;
+	FString Value = "1";
 };
 
 struct SShaderCompileDesc
 {
 	std::filesystem::path SourcePath;
-	std::string EntryPoint;            // empty for libraries
-	std::string Profile;               // e.g. cs_6_6, lib_6_9, vs_6_6
+	FString EntryPoint;                // empty for libraries
+	FString Profile;                   // e.g. cs_6_6, lib_6_9, vs_6_6
 	std::vector<SShaderDefine> Defines;
-	std::vector<std::wstring> ExtraArguments;
+	std::vector<FString> ExtraArguments;   // passed to DXC after the fixed arguments
 };
 
 struct SShaderBinary
 {
 	ComPtr<IDxcBlob> Blob;
 	std::vector<std::filesystem::path> Dependencies; // source + every include actually opened
-	std::string Log;
+	FString Log;
 	bool bSuccess = false;
 
 	D3D12_SHADER_BYTECODE GetBytecode () const
@@ -61,13 +61,14 @@ public:
 	const std::filesystem::path& GetShaderRoot () const { return ShaderRoot; }
 
 	// The newest compile error, kept for the UI. Cleared by a successful compile of the same file.
-	std::string GetLastErrorLog () const;
+	// A copy: the log is written under Mutex by whichever thread compiles.
+	FString GetLastErrorLog () const;
 
 private:
 	ComPtr<IDxcUtils> Utils;
 	ComPtr<IDxcCompiler3> Compiler;
 	std::filesystem::path ShaderRoot;
 	mutable std::mutex Mutex;
-	std::string LastErrorLog;
+	FString LastErrorLog;
 };
 }

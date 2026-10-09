@@ -1,6 +1,6 @@
 #pragma once
 
-#include <string>
+#include <filesystem>
 
 #include "Core.h"
 #include "Mesh.h"
@@ -40,7 +40,7 @@ struct FRT_CORE_API SRenderModel
 	TArray<SVertex> Vertices;
 	TArray<uint32> Indices;
 
-	std::string SourcePath;
+	std::filesystem::path SourcePath;
 
 	// Bumped whenever Vertices/Indices/Sections change; the GPU scene rebuilds the model's
 	// buffers and BLAS when it sees a new value. CPU data is the source of truth.
@@ -59,7 +59,8 @@ struct FRT_CORE_API SRenderModel
 	SIdentity Identity;
 
 	// Materials resolve through MaterialLibrary (<model dir>/<model name>_mat<N>.frtmat.yml).
-	static SRenderModel LoadFromFile (const std::string& Filename, const std::string& TexturePath, CMaterialLibrary& MaterialLibrary);
+	// TextureOverride (may be empty): the base colour texture of imported materials that have none.
+	static SRenderModel LoadFromFile (const std::filesystem::path& File, const std::filesystem::path& TextureOverride, CMaterialLibrary& MaterialLibrary);
 	static SRenderModel FromMesh (SMesh&& Mesh, memory::TRefShared<SMaterial> Material = nullptr);
 };
 

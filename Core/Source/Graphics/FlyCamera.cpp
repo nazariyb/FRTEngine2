@@ -2,6 +2,7 @@
 
 #include <DirectXMath.h>
 
+#include "Containers/StringView.h"
 #include "Graphics/Camera.h"
 #include "Input/InputActions.h"
 #include "Input/InputSystem.h"
@@ -12,7 +13,7 @@ namespace frt::graphics
 {
 namespace
 {
-float AxisValue (const input::CInputActionMap& Actions, const char* Name)
+float AxisValue (const input::CInputActionMap& Actions, FStringView Name)
 {
 	const input::SInputActionState* state = Actions.FindActionState(Name);
 	return state ? state->Value : 0.0f;

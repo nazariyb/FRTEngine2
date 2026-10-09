@@ -30,7 +30,12 @@ class CConfig;
 // 4: entity, component and input-action names, render view and GPU scope names and asset archive
 // keys are FString / FStringView / FStringLiteral (CEntity::Name, SpawnEntity, Comp_Name,
 // FRT_DECLARE_COMPONENT, SRenderViewDesc, CGpuScope, IReadArchive / IWriteArchive).
-#define FRT_GAME_API_VERSION 4u
+// 5: GPU resource debug names, shader descriptions and pipeline names are FStringView / FString
+// (STextureDesc, SBufferDesc, SShaderCompileDesc, CPipelineLibrary), upscaler names FStringLiteral;
+// material text, monitor names and color and resolution text are FString / FStringView (SMaterial,
+// CMaterialLibrary, SDisplayOptions, SColor, SResolution); models load from and keep paths, and
+// texture lookups are path maps (SRenderModel, CTextureManager).
+#define FRT_GAME_API_VERSION 5u
 
 #if defined(FRT_HEADLESS)
 #define FRT_GAME_MODULE_HEADLESS 1u

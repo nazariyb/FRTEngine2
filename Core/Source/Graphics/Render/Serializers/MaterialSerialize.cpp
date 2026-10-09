@@ -1,6 +1,7 @@
 #include "Graphics/Render/Serializers/MaterialSerialize.h"
 
-#include "Assets/TextAssetIO.h"
+#include "Enum.h"
+#include "Containers/String.h"
 #include "Graphics/Render/Material.h"
 #include "Graphics/SColor.h"
 
@@ -32,16 +33,16 @@ namespace frt::graphics
 {
 // ---------------- enum ↔ string ----------------
 
-static bool ParseCullMode (const std::string& Input, D3D12_CULL_MODE& Out)
+static bool ParseCullMode (FStringView Input, D3D12_CULL_MODE& Out)
 {
-	const std::string s = assets::text::ToLowerCopy(Input);
-	if (s == "none")  { Out = D3D12_CULL_MODE_NONE;  return true; }
-	if (s == "front") { Out = D3D12_CULL_MODE_FRONT; return true; }
-	if (s == "back")  { Out = D3D12_CULL_MODE_BACK;  return true; }
+	const auto matches = [Input] (FStringView Name) { return Input.Equals<ESearchCase::IgnoreCaseAscii>(Name); };
+	if (matches("none"))  { Out = D3D12_CULL_MODE_NONE;  return true; }
+	if (matches("front")) { Out = D3D12_CULL_MODE_FRONT; return true; }
+	if (matches("back"))  { Out = D3D12_CULL_MODE_BACK;  return true; }
 	return false;
 }
 
-static const char* CullModeToString (D3D12_CULL_MODE Mode)
+static FStringLiteral CullModeToString (D3D12_CULL_MODE Mode)
 {
 	switch (Mode)
 	{
@@ -52,20 +53,20 @@ static const char* CullModeToString (D3D12_CULL_MODE Mode)
 	}
 }
 
-static bool ParseDepthFunc (const std::string& Input, D3D12_COMPARISON_FUNC& Out)
+static bool ParseDepthFunc (FStringView Input, D3D12_COMPARISON_FUNC& Out)
 {
-	const std::string s = assets::text::ToLowerCopy(Input);
-	if (s == "never")         { Out = D3D12_COMPARISON_FUNC_NEVER;         return true; }
-	if (s == "less")          { Out = D3D12_COMPARISON_FUNC_LESS;          return true; }
-	if (s == "equal")         { Out = D3D12_COMPARISON_FUNC_EQUAL;         return true; }
-	if (s == "less_equal")    { Out = D3D12_COMPARISON_FUNC_LESS_EQUAL;    return true; }
-	if (s == "greater")       { Out = D3D12_COMPARISON_FUNC_GREATER;       return true; }
-	if (s == "greater_equal") { Out = D3D12_COMPARISON_FUNC_GREATER_EQUAL; return true; }
-	if (s == "always")        { Out = D3D12_COMPARISON_FUNC_ALWAYS;        return true; }
+	const auto matches = [Input] (FStringView Name) { return Input.Equals<ESearchCase::IgnoreCaseAscii>(Name); };
+	if (matches("never"))         { Out = D3D12_COMPARISON_FUNC_NEVER;         return true; }
+	if (matches("less"))          { Out = D3D12_COMPARISON_FUNC_LESS;          return true; }
+	if (matches("equal"))         { Out = D3D12_COMPARISON_FUNC_EQUAL;         return true; }
+	if (matches("less_equal"))    { Out = D3D12_COMPARISON_FUNC_LESS_EQUAL;    return true; }
+	if (matches("greater"))       { Out = D3D12_COMPARISON_FUNC_GREATER;       return true; }
+	if (matches("greater_equal")) { Out = D3D12_COMPARISON_FUNC_GREATER_EQUAL; return true; }
+	if (matches("always"))        { Out = D3D12_COMPARISON_FUNC_ALWAYS;        return true; }
 	return false;
 }
 
-static const char* DepthFuncToString (D3D12_COMPARISON_FUNC Func)
+static FStringLiteral DepthFuncToString (D3D12_COMPARISON_FUNC Func)
 {
 	switch (Func)
 	{
@@ -81,25 +82,6 @@ static const char* DepthFuncToString (D3D12_COMPARISON_FUNC Func)
 }
 
 // ---------------- SMaterial ----------------
-
-static bool ParseAlphaMode (const std::string& Input, EAlphaMode& Out)
-{
-	const std::string s = assets::text::ToLowerCopy(Input);
-	if (s == "opaque") { Out = EAlphaMode::Opaque; return true; }
-	if (s == "mask")   { Out = EAlphaMode::Mask;   return true; }
-	if (s == "blend")  { Out = EAlphaMode::Blend;  return true; }
-	return false;
-}
-
-static const char* AlphaModeToString (EAlphaMode Mode)
-{
-	switch (Mode)
-	{
-		case EAlphaMode::Mask:  return "mask";
-		case EAlphaMode::Blend: return "blend";
-		default:                return "opaque";
-	}
-}
 
 bool Serialize (assets::IReadArchive& Ar, SMaterial& M)
 {
@@ -157,10 +139,11 @@ bool Serialize (assets::IReadArchive& Ar, SMaterial& M)
 
 	if (Ar.BeginGroup("alpha"))
 	{
-		std::string mode;
+		// EAlphaMode's reflected names are the file's (Material.h); case is ignored, as for the others.
+		FString mode;
 		if (Ar.Read("mode", mode))
 		{
-			(void)ParseAlphaMode(mode, M.AlphaMode);
+			(void)enum_::TryParse(mode, &M.AlphaMode);
 		}
 		Ar.Read("cutoff", M.AlphaCutoff);
 		Ar.EndGroup();
@@ -181,7 +164,7 @@ bool Serialize (assets::IReadArchive& Ar, SMaterial& M)
 		Ar.Read("enable", M.bDepthEnable);
 		Ar.Read("write", M.bDepthWrite);
 
-		std::string func;
+		FString func;
 		if (Ar.Read("func", func))
 		{
 			(void)ParseDepthFunc(func, M.DepthFunc);
@@ -189,7 +172,7 @@ bool Serialize (assets::IReadArchive& Ar, SMaterial& M)
 		Ar.EndGroup();
 	}
 
-	std::string cull;
+	FString cull;
 	if (Ar.Read("cull", cull))
 	{
 		(void)ParseCullMode(cull, M.CullMode);
@@ -241,7 +224,7 @@ void Serialize (assets::IWriteArchive& Ar, const SMaterial& M)
 	Ar.EndGroup();
 
 	Ar.BeginGroup("alpha");
-		Ar.Write("mode", std::string(AlphaModeToString(M.AlphaMode)));
+		Ar.Write("mode", enum_::ToString(M.AlphaMode));
 		Ar.Write("cutoff", M.AlphaCutoff);
 	Ar.EndGroup();
 
@@ -256,10 +239,10 @@ void Serialize (assets::IWriteArchive& Ar, const SMaterial& M)
 	Ar.BeginGroup("depth");
 		Ar.Write("enable", M.bDepthEnable);
 		Ar.Write("write", M.bDepthWrite);
-		Ar.Write("func", std::string(DepthFuncToString(M.DepthFunc)));
+		Ar.Write("func", DepthFuncToString(M.DepthFunc));
 	Ar.EndGroup();
 
-	Ar.Write("cull", std::string(CullModeToString(M.CullMode)));
+	Ar.Write("cull", CullModeToString(M.CullMode));
 
 	Ar.BeginGroup("blend");
 		Ar.Write("enable", M.bAlphaBlend);

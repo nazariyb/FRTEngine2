@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Containers/StringView.h"
 #include "Graphics/Render/RHI/RHICommon.h"
 
 
@@ -24,7 +25,9 @@ struct SBufferDesc
 	D3D12_RESOURCE_FLAGS Flags = D3D12_RESOURCE_FLAG_NONE;
 	D3D12_RESOURCE_STATES InitialState = D3D12_RESOURCE_STATE_COMMON;
 	bool bAccelerationStructure = false;
-	const wchar_t* Name = nullptr;
+	// Debug name, borrowed until CreateBuffer returns: a computed name lives in a local FString
+	// that outlives the call.
+	FStringView Name;
 };
 
 struct FRT_CORE_API SGpuBuffer
@@ -61,7 +64,7 @@ struct STextureDesc
 	bool bDsv = false;
 	bool bCube = false;
 	const D3D12_CLEAR_VALUE* ClearValue = nullptr;
-	const wchar_t* Name = nullptr;
+	FStringView Name;                   // borrowed until CreateTexture returns, as SBufferDesc::Name
 };
 
 inline constexpr uint32 MaxTextureMips = 16u;

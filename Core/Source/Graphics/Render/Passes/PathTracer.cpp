@@ -14,7 +14,7 @@ namespace frt::graphics
 {
 namespace
 {
-rhi::STextureDesc MakeTarget (uint32 Width, uint32 Height, DXGI_FORMAT Format, const wchar_t* Name)
+rhi::STextureDesc MakeTarget (uint32 Width, uint32 Height, DXGI_FORMAT Format, FStringView Name)
 {
 	rhi::STextureDesc desc;
 	desc.Width = Width;
@@ -69,17 +69,17 @@ void CPathTracer::Resize (uint32 InWidth, uint32 InHeight)
 	DestroyTargets();
 	Width = (std::max)(InWidth, 1u);
 	Height = (std::max)(InHeight, 1u);
-	Targets.Diffuse = Device->CreateTexture(MakeTarget(Width, Height, DXGI_FORMAT_R16G16B16A16_FLOAT, L"PT_Diffuse"));
-	Targets.Specular = Device->CreateTexture(MakeTarget(Width, Height, DXGI_FORMAT_R16G16B16A16_FLOAT, L"PT_Specular"));
-	Targets.NormalRoughness = Device->CreateTexture(MakeTarget(Width, Height, DXGI_FORMAT_R16G16B16A16_FLOAT, L"PT_NormalRoughness"));
-	Targets.ViewZ = Device->CreateTexture(MakeTarget(Width, Height, DXGI_FORMAT_R32_FLOAT, L"PT_ViewZ"));
-	Targets.MotionVectors = Device->CreateTexture(MakeTarget(Width, Height, DXGI_FORMAT_R16G16_FLOAT, L"PT_MotionVectors"));
-	Targets.DiffuseAlbedo = Device->CreateTexture(MakeTarget(Width, Height, DXGI_FORMAT_R8G8B8A8_UNORM, L"PT_DiffuseAlbedo"));
-	Targets.SpecularAlbedo = Device->CreateTexture(MakeTarget(Width, Height, DXGI_FORMAT_R16G16B16A16_FLOAT, L"PT_SpecularAlbedo"));
-	Targets.Emission = Device->CreateTexture(MakeTarget(Width, Height, DXGI_FORMAT_R16G16B16A16_FLOAT, L"PT_Emission"));
-	Targets.Composite = Device->CreateTexture(MakeTarget(Width, Height, DXGI_FORMAT_R16G16B16A16_FLOAT, L"PT_Composite"));
-	Targets.Accumulation = Device->CreateTexture(MakeTarget(Width, Height, DXGI_FORMAT_R32G32B32A32_FLOAT, L"PT_Accumulation"));
-	Targets.Debug = Device->CreateTexture(MakeTarget(Width, Height, DXGI_FORMAT_R16G16B16A16_FLOAT, L"PT_Debug"));
+	Targets.Diffuse = Device->CreateTexture(MakeTarget(Width, Height, DXGI_FORMAT_R16G16B16A16_FLOAT, "PT_Diffuse"));
+	Targets.Specular = Device->CreateTexture(MakeTarget(Width, Height, DXGI_FORMAT_R16G16B16A16_FLOAT, "PT_Specular"));
+	Targets.NormalRoughness = Device->CreateTexture(MakeTarget(Width, Height, DXGI_FORMAT_R16G16B16A16_FLOAT, "PT_NormalRoughness"));
+	Targets.ViewZ = Device->CreateTexture(MakeTarget(Width, Height, DXGI_FORMAT_R32_FLOAT, "PT_ViewZ"));
+	Targets.MotionVectors = Device->CreateTexture(MakeTarget(Width, Height, DXGI_FORMAT_R16G16_FLOAT, "PT_MotionVectors"));
+	Targets.DiffuseAlbedo = Device->CreateTexture(MakeTarget(Width, Height, DXGI_FORMAT_R8G8B8A8_UNORM, "PT_DiffuseAlbedo"));
+	Targets.SpecularAlbedo = Device->CreateTexture(MakeTarget(Width, Height, DXGI_FORMAT_R16G16B16A16_FLOAT, "PT_SpecularAlbedo"));
+	Targets.Emission = Device->CreateTexture(MakeTarget(Width, Height, DXGI_FORMAT_R16G16B16A16_FLOAT, "PT_Emission"));
+	Targets.Composite = Device->CreateTexture(MakeTarget(Width, Height, DXGI_FORMAT_R16G16B16A16_FLOAT, "PT_Composite"));
+	Targets.Accumulation = Device->CreateTexture(MakeTarget(Width, Height, DXGI_FORMAT_R32G32B32A32_FLOAT, "PT_Accumulation"));
+	Targets.Debug = Device->CreateTexture(MakeTarget(Width, Height, DXGI_FORMAT_R16G16B16A16_FLOAT, "PT_Debug"));
 }
 
 bool CPathTracer::IsReady () const

@@ -3,7 +3,6 @@
 #if !defined(FRT_HEADLESS)
 
 #include <filesystem>
-#include <string>
 #include <system_error>
 #include <vector>
 
@@ -433,11 +432,8 @@ void CDebugTools::DrawDisplaySettingsPanel (const SContext& Context)
 	const graphics::SDisplayOptions& DisplayOptions = Context.Engine.GetDisplayOptions();
 
 	{
-		// The display options name their monitors in std::string.
-		const std::vector<std::string> names = DisplayOptions.GetNames();
-		const std::vector<FString> monitorNames(names.begin(), names.end());
 		auto labelMonitor = "Monitor";
-		ui::Combo(labelMonitor, &displaySettings.MonitorIndex, monitorNames);
+		ui::Combo(labelMonitor, &displaySettings.MonitorIndex, DisplayOptions.GetNames());
 	}
 
 	displaySettings.MonitorIndex = DisplayOptions.ClampMonitorIndex(displaySettings.MonitorIndex);

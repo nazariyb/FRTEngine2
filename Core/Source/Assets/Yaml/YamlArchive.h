@@ -24,7 +24,6 @@ public:
 	void SetRoot (YAML::Node Root);
 
 	// IReadArchive
-	using IReadArchive::Read;
 	bool Read (FStringLiteral Name, bool& V) override;
 	bool Read (FStringLiteral Name, int32& V) override;
 	bool Read (FStringLiteral Name, uint32& V) override;

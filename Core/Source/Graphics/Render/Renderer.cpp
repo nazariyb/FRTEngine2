@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
-#include <cstring>
+#include <optional>
 
 #include "imgui.h"
 
@@ -11,6 +11,7 @@
 #include "EnginePaths.h"
 #include "Exception.h"
 #include "Window.h"
+#include "Containers/String.h"
 #include "Graphics/Render/Material.h"
 #include "Graphics/Render/Passes/Denoiser.h"
 #include "Graphics/Render/Passes/FrameCapture.h"
@@ -21,6 +22,7 @@
 #include "Graphics/Render/Passes/Upscaler.h"
 #include "Graphics/Render/RenderView.h"
 #include "Graphics/Render/Scene/GpuScene.h"
+#include "Platform/Platform.h"
 #include "Profiler/Profiler.h"
 
 
@@ -146,8 +148,10 @@ void ReportDeviceRemoved (ID3D12Device5* Device)
 				const uint32 completed = node->pLastBreadcrumbValue ? *node->pLastBreadcrumbValue : 0u;
 				if (completed < node->BreadcrumbCount)
 				{
-					std::fprintf(stderr, "  [dred] list '%ls' stopped at op %u / %u\n",
-						node->pCommandListDebugNameW ? node->pCommandListDebugNameW : L"?", completed, node->BreadcrumbCount);
+					// No name pointer at all for a list that was never named.
+					const FString listName = FString::FromWide(node->pCommandListDebugNameW);
+					std::fprintf(stderr, "  [dred] list '%s' stopped at op %u / %u\n",
+						listName.IsEmpty() ? "?" : listName.CStr(), completed, node->BreadcrumbCount);
 				}
 			}
 		}
@@ -194,8 +198,8 @@ CRenderer::CRenderer (CWindow* InWindow)
 	{
 		DXGI_ADAPTER_DESC1 desc = {};
 		Adapter->GetDesc1(&desc);
-		std::fprintf(stdout, "[renderer] %ls | SM %s | DXR tier %d.%d | SER %s%s | bindless tier %d\n",
-			desc.Description, ShaderModelName(caps.HighestShaderModel),
+		std::fprintf(stdout, "[renderer] %s | SM %s | DXR tier %d.%d | SER %s%s | bindless tier %d\n",
+			FString::FromWide(desc.Description).CStr(), ShaderModelName(caps.HighestShaderModel),
 			caps.RaytracingTier / 10, caps.RaytracingTier % 10,
 			caps.bShaderExecutionReordering ? "yes" : "no",
 			caps.bShaderExecutionReordering ? (caps.bSerActuallyReorders ? " (reorders)" : " (no-op)") : "",
@@ -261,10 +265,11 @@ CRenderer::~CRenderer ()
 void CRenderer::CreateDevice ()
 {
 #if FRT_WITH_DEV_TOOLS
-	// FRT_D3D_DEBUG=0/1 in the environment overrides the build's default (BuildConfig.h).
-	char gpuDebug[8] = {};
-	const bool bGpuDebug = GetEnvironmentVariableA("FRT_D3D_DEBUG", gpuDebug, sizeof(gpuDebug)) > 0
-		? gpuDebug[0] == '1'
+	// FRT_D3D_DEBUG=0/1 in the environment overrides the build's default (BuildConfig.h); an empty
+	// value does not.
+	const std::optional<FString> gpuDebug = platform::GetEnvironmentValue("FRT_D3D_DEBUG");
+	const bool bGpuDebug = gpuDebug && !gpuDebug->IsEmpty()
+		? gpuDebug->StartsWith('1')
 		: FRT_GPU_DEBUG_BY_DEFAULT != 0;
 	if (bGpuDebug)
 	{
@@ -272,8 +277,7 @@ void CRenderer::CreateDevice ()
 		if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))
 		{
 			debug->EnableDebugLayer();
-			char gbv[8] = {};
-			if (GetEnvironmentVariableA("FRT_GBV", gbv, sizeof(gbv)) > 0 && gbv[0] == '1')
+			if (const std::optional<FString> gbv = platform::GetEnvironmentValue("FRT_GBV"); gbv && gbv->StartsWith('1'))
 			{
 				debug->SetEnableGPUBasedValidation(TRUE);
 			}
@@ -299,7 +303,7 @@ void CRenderer::CreateDevice ()
 	{
 		THROW_IF_FAILED(D3D12CreateDevice(Adapter.Get(), D3D_FEATURE_LEVEL_12_1, IID_PPV_ARGS(&Device)));
 	}
-	Device->SetName(L"FRT Device");
+	rhi::SetDebugName(Device.Get(), "FRT Device");
 
 	BOOL allowTearing = FALSE;
 	if (SUCCEEDED(Factory->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &allowTearing, sizeof(allowTearing))))
@@ -310,14 +314,14 @@ void CRenderer::CreateDevice ()
 	D3D12_COMMAND_QUEUE_DESC queueDesc = {};
 	queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
 	THROW_IF_FAILED(Device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&CommandQueue)));
-	CommandQueue->SetName(L"FRT Direct Queue");
+	rhi::SetDebugName(CommandQueue.Get(), "FRT Direct Queue");
 
 	for (uint32 i = 0; i < rhi::MaxFramesInFlight; ++i)
 	{
 		THROW_IF_FAILED(Device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&Frames[i].Allocator)));
 	}
 	THROW_IF_FAILED(Device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, Frames[0].Allocator.Get(), nullptr, IID_PPV_ARGS(&CommandList)));
-	CommandList->SetName(L"FRT Frame");
+	rhi::SetDebugName(CommandList.Get(), "FRT Frame");
 	CommandList->Close();
 
 	THROW_IF_FAILED(Device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&Fence)));
@@ -630,7 +634,7 @@ void CRenderer::SetViewSize (CRenderView& View, uint32 Width, uint32 Height)
 	desc.bSrv = true;
 	desc.bRtv = true;
 	desc.InitialState = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
-	desc.Name = L"ViewOutput";
+	desc.Name = "ViewOutput";
 	View.Output = Rhi.CreateTexture(desc);
 	View.TextureId = Rhi.GetBindlessHeap().GetGpuHandle(View.Output.Srv).ptr;
 }
@@ -675,7 +679,7 @@ void CRenderer::UpdateResolution (CRenderView& View)
 	desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
 	desc.bUav = true;
 	desc.InitialState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
-	desc.Name = L"DisplayColor";
+	desc.Name = "DisplayColor";
 	View.DisplayColor = Rhi.CreateTexture(desc);
 	View.bForceReset = true;
 }
@@ -1209,7 +1213,7 @@ void CRenderer::DrawRendererUi (CRenderView& Inspected)
 	ImGui::SameLine();
 	if (ImGui::Button("Capture"))
 	{
-		Inspected.RequestCapture(paths::GetCaptureDir() / ("capture_" + std::to_string(FrameNumber)), true);
+		Inspected.RequestCapture(paths::GetCaptureDir() / FString::Format("capture_{}", FrameNumber).ToPath(), true);
 	}
 
 	if (ImGui::CollapsingHeader("Path tracer", ImGuiTreeNodeFlags_DefaultOpen))
@@ -1237,12 +1241,12 @@ void CRenderer::DrawRendererUi (CRenderView& Inspected)
 		ImGui::Text("Textures %u resident (%.1f MB), %u streaming", s.TexturesResident, s.TextureBytes / (1024.0 * 1024.0), s.TexturesPending);
 		ImGui::Text("Bindless descriptors %u / %u", Rhi.GetBindlessHeap().GetPersistentInUse(), Rhi.GetBindlessHeap().GetPersistentCapacity());
 	}
-	const std::vector<std::string>& errors = Pipelines.GetErrors();
+	const std::vector<FString>& errors = Pipelines.GetErrors();
 	if (!errors.empty() && ImGui::CollapsingHeader("Shader errors", ImGuiTreeNodeFlags_DefaultOpen))
 	{
-		for (const std::string& e : errors)
+		for (const FString& e : errors)
 		{
-			ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", e.c_str());
+			ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.3f, 1.0f), "%s", e.CStr());
 		}
 	}
 }

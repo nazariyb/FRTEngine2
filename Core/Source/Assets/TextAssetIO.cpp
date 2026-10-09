@@ -43,6 +43,11 @@ bool TryParseKeyValue (FStringView Line, FStringView* OutKey, FStringView* OutVa
 	return true;
 }
 
+FStringView StripTrailingComment (FStringView Value)
+{
+	return Value.Left(Value.FindAny({ " #", "\t#" })).TrimEnd().TrimQuotes(Quotes);
+}
+
 int32 GetTextAssetVersion (const std::filesystem::path& Path)
 {
 	// Detect: a UTF-8 BOM would otherwise be part of the first key.
@@ -64,74 +69,11 @@ int32 GetTextAssetVersion (const std::filesystem::path& Path)
 				return 0;
 			}
 
-			// A YAML comment ('#' after whitespace) ends the value: yaml-cpp reads `version: 3  # note`
-			// as 3, and a probe that did not would leave the file to no reader. "3x" and "3#x" stay
-			// malformed.
-			const FStringView number = value.Left(value.FindAny({ " #", "\t#" })).TrimEnd().TrimQuotes(Quotes);
-			return number.ToInt32().value_or(0);
+			// yaml-cpp reads `version: 3  # note` as 3, and a probe that did not would leave the file
+			// to no reader. "3x" and "3#x" stay malformed.
+			return StripTrailingComment(value).ToInt32().value_or(0);
 		}
 	}
 	return 0;
-}
-
-std::string TrimCopy (const std::string& Input)
-{
-	return FStringView(Input).TrimStartAndEnd().ToStdString();
-}
-
-std::string ToLowerCopy (const std::string& Input)
-{
-	std::string result = Input;
-	for (char& ch : result)
-	{
-		ch = ascii::ToLower(ch);
-	}
-	return result;
-}
-
-std::string StripQuotes (const std::string& Input)
-{
-	return FStringView(Input).TrimQuotes(Quotes).ToStdString();
-}
-
-bool ParseFloat (const std::string& Input, float* OutValue)
-{
-	const std::optional<float> value = FStringView(Input).ToFloat();
-	if (!value)
-	{
-		return false;
-	}
-	*OutValue = *value;
-	return true;
-}
-
-bool ParseBool (const std::string& Input, bool* OutValue)
-{
-	const std::optional<bool> value = FStringView(Input).TryParseBool();
-	if (!value)
-	{
-		return false;
-	}
-	*OutValue = *value;
-	return true;
-}
-
-bool TryParseKeyValue (const std::string& Line, std::string* OutKey, std::string* OutValue)
-{
-	FStringView key;
-	FStringView value;
-	if (!TryParseKeyValue(FStringView(Line), &key, &value))
-	{
-		return false;
-	}
-	if (OutKey)
-	{
-		*OutKey = key.ToStdString();
-	}
-	if (OutValue)
-	{
-		*OutValue = value.ToStdString();
-	}
-	return true;
 }
 }

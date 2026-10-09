@@ -40,27 +40,36 @@ bool CMaterialYamlSerializer::Write (const std::filesystem::path& Path, const SM
 
 // ---------------- CMaterialLegacyTextSerializer ----------------
 
-static bool ParseLegacyCullMode (const std::string& Input, D3D12_CULL_MODE& Out)
+static bool ParseLegacyCullMode (FStringView Input, D3D12_CULL_MODE& Out)
 {
-	const std::string s = assets::text::ToLowerCopy(Input);
-	if (s == "none")  { Out = D3D12_CULL_MODE_NONE;  return true; }
-	if (s == "front") { Out = D3D12_CULL_MODE_FRONT; return true; }
-	if (s == "back")  { Out = D3D12_CULL_MODE_BACK;  return true; }
+	const auto matches = [Input] (FStringView Name) { return Input.Equals<ESearchCase::IgnoreCaseAscii>(Name); };
+	if (matches("none"))  { Out = D3D12_CULL_MODE_NONE;  return true; }
+	if (matches("front")) { Out = D3D12_CULL_MODE_FRONT; return true; }
+	if (matches("back"))  { Out = D3D12_CULL_MODE_BACK;  return true; }
 	return false;
 }
 
-static bool ParseLegacyDepthFunc (const std::string& Input, D3D12_COMPARISON_FUNC& Out)
+static bool ParseLegacyDepthFunc (FStringView Input, D3D12_COMPARISON_FUNC& Out)
 {
-	const std::string s = assets::text::ToLowerCopy(Input);
-	if (s == "never")                          { Out = D3D12_COMPARISON_FUNC_NEVER;         return true; }
-	if (s == "less")                           { Out = D3D12_COMPARISON_FUNC_LESS;          return true; }
-	if (s == "equal")                          { Out = D3D12_COMPARISON_FUNC_EQUAL;         return true; }
-	if (s == "less_equal" || s == "lequal")    { Out = D3D12_COMPARISON_FUNC_LESS_EQUAL;    return true; }
-	if (s == "greater")                        { Out = D3D12_COMPARISON_FUNC_GREATER;       return true; }
-	if (s == "not_equal" || s == "notequal")   { Out = D3D12_COMPARISON_FUNC_NOT_EQUAL;     return true; }
-	if (s == "greater_equal" || s == "gequal") { Out = D3D12_COMPARISON_FUNC_GREATER_EQUAL; return true; }
-	if (s == "always")                         { Out = D3D12_COMPARISON_FUNC_ALWAYS;        return true; }
+	const auto matches = [Input] (FStringView Name) { return Input.Equals<ESearchCase::IgnoreCaseAscii>(Name); };
+	if (matches("never"))                              { Out = D3D12_COMPARISON_FUNC_NEVER;         return true; }
+	if (matches("less"))                               { Out = D3D12_COMPARISON_FUNC_LESS;          return true; }
+	if (matches("equal"))                              { Out = D3D12_COMPARISON_FUNC_EQUAL;         return true; }
+	if (matches("less_equal") || matches("lequal"))    { Out = D3D12_COMPARISON_FUNC_LESS_EQUAL;    return true; }
+	if (matches("greater"))                            { Out = D3D12_COMPARISON_FUNC_GREATER;       return true; }
+	if (matches("not_equal") || matches("notequal"))   { Out = D3D12_COMPARISON_FUNC_NOT_EQUAL;     return true; }
+	if (matches("greater_equal") || matches("gequal")) { Out = D3D12_COMPARISON_FUNC_GREATER_EQUAL; return true; }
+	if (matches("always"))                             { Out = D3D12_COMPARISON_FUNC_ALWAYS;        return true; }
 	return false;
+}
+
+// A value that is no number leaves the field as it was (std::stof threw, and nothing caught it).
+static void ParseLegacyFloat (FStringView Input, float& Out)
+{
+	if (const std::optional<float> value = Input.ToFloat())
+	{
+		Out = *value;
+	}
 }
 
 bool CMaterialLegacyTextSerializer::CanRead (const std::filesystem::path& Path) const
@@ -80,29 +89,34 @@ bool CMaterialLegacyTextSerializer::Read (const std::filesystem::path& Path, SMa
 
 	for (const FStringView line : text->Lines())
 	{
-		std::string key;
-		std::string value;
-		if (!assets::text::TryParseKeyValue(line.ToStdString(), &key, &value))
+		FStringView key;
+		FStringView value;
+		if (!assets::text::TryParseKeyValue(line, &key, &value))
 		{
 			continue;
 		}
 
-		if (key == "version" || key.empty()) continue;
+		if (key == "version" || key.IsEmpty()) continue;
+
+		// CanRead's probe skips a comment after the version, so the values skip theirs too: one read as
+		// no number would be lost, since CMaterialLibrary upgrades the file with what was read. Names
+		// and paths are taken as written, as they always were.
+		const FStringView setting = assets::text::StripTrailingComment(value);
 
 		if (key == "name")               Out.Name = value;
 		else if (key == "vertex_shader") Out.VertexShaderName = value;
 		else if (key == "pixel_shader")  Out.PixelShaderName = value;
-		else if (key == "color")         Out.DiffuseAlbedo.FillFromString(value);
-		else if (key == "metallic")      Out.Metallic = std::stof(value);
-		else if (key == "roughness")     Out.Roughness = std::stof(value);
-		else if (key == "emissive")      Out.Emissive.FillFromString(value);
-		else if (key == "emissive_intensity") Out.EmissiveIntensity = std::stof(value);
+		else if (key == "color")         Out.DiffuseAlbedo.FillFromString(setting);
+		else if (key == "metallic")      ParseLegacyFloat(setting, Out.Metallic);
+		else if (key == "roughness")     ParseLegacyFloat(setting, Out.Roughness);
+		else if (key == "emissive")      Out.Emissive.FillFromString(setting);
+		else if (key == "emissive_intensity") ParseLegacyFloat(setting, Out.EmissiveIntensity);
 		else if (key == "base_color_texture") Out.BaseColorTexturePath = value;
-		else if (key == "cull")          (void)ParseLegacyCullMode(value, Out.CullMode);
-		else if (key == "depth_enable")  (void)assets::text::ParseBool(value, &Out.bDepthEnable);
-		else if (key == "depth_write")   (void)assets::text::ParseBool(value, &Out.bDepthWrite);
-		else if (key == "depth_func")    (void)ParseLegacyDepthFunc(value, Out.DepthFunc);
-		else if (key == "alpha_blend")   (void)assets::text::ParseBool(value, &Out.bAlphaBlend);
+		else if (key == "cull")          (void)ParseLegacyCullMode(setting, Out.CullMode);
+		else if (key == "depth_enable")  Out.bDepthEnable = setting.ToBool(Out.bDepthEnable);
+		else if (key == "depth_write")   Out.bDepthWrite = setting.ToBool(Out.bDepthWrite);
+		else if (key == "depth_func")    (void)ParseLegacyDepthFunc(setting, Out.DepthFunc);
+		else if (key == "alpha_blend")   Out.bAlphaBlend = setting.ToBool(Out.bAlphaBlend);
 	}
 
 	return true;

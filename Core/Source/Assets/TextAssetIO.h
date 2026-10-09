@@ -1,7 +1,6 @@
 #pragma once
 
 #include <filesystem>
-#include <string>
 
 #include "Core.h"
 #include "CoreTypes.h"
@@ -15,17 +14,14 @@ namespace frt::assets::text
 // comments (# or //) and lines without a separator. The views point into Line.
 FRT_CORE_API bool TryParseKeyValue (FStringView Line, FStringView* OutKey, FStringView* OutValue);
 
-// The value of `version`, when that is the file's first key (a trailing YAML comment ignored); 0
+// Value (from TryParseKeyValue) without a trailing YAML comment - from a '#' after a space or a tab -
+// trimmed, and one pair of quotes around what is left removed: yaml-cpp reads `0.25  # glossy` as
+// 0.25. A '#' with no whitespace before it is the value's ("3#x", "#FF8000"). For values that are
+// not free text (numbers, flags, keywords, colours): a name or a path may hold " #".
+FRT_CORE_API FStringView StripTrailingComment (FStringView Value);
+
+// The value of `version`, when that is the file's first key (StripTrailingComment applied); 0
 // otherwise, or when the file cannot be read or the version is not an integer. The file is decoded
 // as platform::ReadFileText's Detect decodes it: a reader it is the check for must decode it so too.
 FRT_CORE_API int32 GetTextAssetVersion (const std::filesystem::path& Path);
-
-// std::string forms for callers whose text is not FString yet (the material serializers): thin
-// wrappers over the view functions. Case and quotes as before: ASCII lowering, " or '.
-FRT_CORE_API std::string TrimCopy (const std::string& Input);
-FRT_CORE_API std::string ToLowerCopy (const std::string& Input);
-FRT_CORE_API std::string StripQuotes (const std::string& Input);
-FRT_CORE_API bool ParseFloat (const std::string& Input, float* OutValue);
-FRT_CORE_API bool ParseBool (const std::string& Input, bool* OutValue);
-FRT_CORE_API bool TryParseKeyValue (const std::string& Line, std::string* OutKey, std::string* OutValue);
 }

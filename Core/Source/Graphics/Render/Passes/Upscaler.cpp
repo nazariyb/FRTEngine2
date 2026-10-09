@@ -141,7 +141,7 @@ void RecordResample (CRenderContext& Context, rhi::HPipeline Pipeline, const rhi
 	Context.Dispatch2D(Pipeline, Output.Width, Output.Height);
 }
 
-rhi::SGpuTexture CreateHistoryTexture (rhi::CDevice& Device, uint32 Width, uint32 Height, const wchar_t* Name)
+rhi::SGpuTexture CreateHistoryTexture (rhi::CDevice& Device, uint32 Width, uint32 Height, FStringView Name)
 {
 	rhi::STextureDesc desc;
 	desc.Width = Width;
@@ -269,10 +269,10 @@ void CTemporalUpscaler::Resize (rhi::CDevice& Device, uint32 RenderWidth, uint32
 		{
 			Device.Destroy(moments);
 		}
-		impl.History[0] = CreateHistoryTexture(Device, DisplayWidth, DisplayHeight, L"Upscaler.History0");
-		impl.History[1] = CreateHistoryTexture(Device, DisplayWidth, DisplayHeight, L"Upscaler.History1");
-		impl.HistoryMoments[0] = CreateHistoryTexture(Device, DisplayWidth, DisplayHeight, L"Upscaler.HistoryMoments0");
-		impl.HistoryMoments[1] = CreateHistoryTexture(Device, DisplayWidth, DisplayHeight, L"Upscaler.HistoryMoments1");
+		impl.History[0] = CreateHistoryTexture(Device, DisplayWidth, DisplayHeight, "Upscaler.History0");
+		impl.History[1] = CreateHistoryTexture(Device, DisplayWidth, DisplayHeight, "Upscaler.History1");
+		impl.HistoryMoments[0] = CreateHistoryTexture(Device, DisplayWidth, DisplayHeight, "Upscaler.HistoryMoments0");
+		impl.HistoryMoments[1] = CreateHistoryTexture(Device, DisplayWidth, DisplayHeight, "Upscaler.HistoryMoments1");
 		impl.Latest = 0u;
 		impl.bHistoryValid = false;
 	}
@@ -355,7 +355,7 @@ void CTemporalUpscaler::Execute (CRenderContext& Context, const SUpscalerInputs&
 		desc.Format = Inputs.ViewZ->Format;
 		desc.SrvFormat = Inputs.ViewZ->Format == DXGI_FORMAT_R32_TYPELESS ? DXGI_FORMAT_R32_FLOAT : DXGI_FORMAT_UNKNOWN;
 		desc.bSrv = true;
-		desc.Name = L"Upscaler.PrevViewZ";
+		desc.Name = "Upscaler.PrevViewZ";
 		impl.PrevViewZ = device.CreateTexture(desc);
 		impl.bPrevViewZValid = false;
 	}
@@ -697,7 +697,7 @@ std::unique_ptr<IUpscaler> CreateUpscaler (EUpscalerKind Kind)
 	}
 }
 
-std::string_view GetUpscalerKindName (EUpscalerKind Kind)
+FStringLiteral GetUpscalerKindName (EUpscalerKind Kind)
 {
 	switch (Kind)
 	{

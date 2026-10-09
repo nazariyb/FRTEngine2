@@ -45,7 +45,7 @@ public:
 	rhi::HPipeline GetRemodulatePipeline () const { return Remodulate; }
 
 private:
-	bool Build (SVariant& Variant, const wchar_t* Name, ID3D12GraphicsCommandList* CommandList);
+	bool Build (SVariant& Variant, FStringView Name, ID3D12GraphicsCommandList* CommandList);
 
 	rhi::CDevice* Device = nullptr;
 	rhi::CPipelineLibrary* Pipelines = nullptr;

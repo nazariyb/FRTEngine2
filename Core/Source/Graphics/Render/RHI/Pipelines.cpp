@@ -1,7 +1,6 @@
 #include "Graphics/Render/RHI/Pipelines.h"
 
 #include <cstdio>
-#include <cstring>
 
 #include "Graphics/Render/RHI/Device.h"
 
@@ -86,14 +85,17 @@ ComPtr<ID3D12RootSignature> CreateGlobalRootSignature (ID3D12Device* Device, boo
 	{
 		if (error)
 		{
-			std::fprintf(stderr, "[rhi] root signature: %s\n", static_cast<const char*>(error->GetBufferPointer()));
+			// Bytes, not a C string: the blob may or may not end in a NUL.
+			FString text(FStringView(static_cast<const char*>(error->GetBufferPointer()), error->GetBufferSize()));
+			text.TrimToNullTerminator();
+			std::fprintf(stderr, "[rhi] root signature: %s\n", text.CStr());
 		}
 		THROW_IF_FAILED(hr);
 	}
 
 	ComPtr<ID3D12RootSignature> rootSignature;
 	THROW_IF_FAILED(Device->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&rootSignature)));
-	SetDebugName(rootSignature.Get(), bInputAssembler ? L"GlobalRootSignature(Graphics)" : L"GlobalRootSignature(Compute)");
+	SetDebugName(rootSignature.Get(), bInputAssembler ? "GlobalRootSignature(Graphics)" : "GlobalRootSignature(Compute)");
 	return rootSignature;
 }
 }
@@ -110,7 +112,10 @@ void CPipelineLibrary::Init (CDevice& InDevice, CShaderCompiler& InCompiler)
 void CPipelineLibrary::Shutdown ()
 {
 	Programs.clear();
-	ProgramIndex.clear();
+	for (TStringMap<uint32>& byName : ProgramIndex)
+	{
+		byName.clear();
+	}
 	ComputeRootSignature.Reset();
 	GraphicsRootSignature.Reset();
 }
@@ -155,7 +160,7 @@ namespace
 	{
 		const D3D12_INPUT_ELEMENT_DESC& a = A.InputLayout[i];
 		const D3D12_INPUT_ELEMENT_DESC& b = B.InputLayout[i];
-		if (std::strcmp(a.SemanticName, b.SemanticName) != 0 || a.SemanticIndex != b.SemanticIndex ||
+		if (FStringView(a.SemanticName) != FStringView(b.SemanticName) || a.SemanticIndex != b.SemanticIndex ||
 			a.Format != b.Format || a.InputSlot != b.InputSlot || a.AlignedByteOffset != b.AlignedByteOffset ||
 			a.InputSlotClass != b.InputSlotClass || a.InstanceDataStepRate != b.InstanceDataStepRate)
 		{
@@ -166,15 +171,10 @@ namespace
 }
 }
 
-uint32 CPipelineLibrary::FindOrAdd (EKind Kind, std::string_view Name, SProgram&& Program)
+uint32 CPipelineLibrary::FindOrAdd (EKind Kind, FStringView Name, SProgram&& Program)
 {
-	std::string key;
-	key.reserve(Name.size() + 2u);
-	key.push_back(static_cast<char>('0' + static_cast<uint8>(Kind)));
-	key.push_back(':');
-	key.append(Name);
-
-	if (const auto it = ProgramIndex.find(key); it != ProgramIndex.end())
+	TStringMap<uint32>& byName = ProgramIndex[static_cast<size_t>(Kind)];
+	if (const auto it = byName.find(Name); it != byName.end())
 	{
 		// Same name, different program: two passes picked one name for different shaders.
 		[[maybe_unused]] const SProgram& existing = Programs[it->second];
@@ -182,30 +182,30 @@ uint32 CPipelineLibrary::FindOrAdd (EKind Kind, std::string_view Name, SProgram&
 		return it->second;
 	}
 
-	Program.Name = std::string(Name);
+	Program.Name = Name;
 	Program.Kind = Kind;
 	Build(Program);
 	Programs.push_back(std::move(Program));
 	const uint32 index = static_cast<uint32>(Programs.size() - 1u);
-	ProgramIndex.emplace(std::move(key), index);
+	byName.try_emplace(FString(Name), index);
 	return index;
 }
 
-HPipeline CPipelineLibrary::CreateCompute (std::string_view Name, const SShaderCompileDesc& Shader)
+HPipeline CPipelineLibrary::CreateCompute (FStringView Name, const SShaderCompileDesc& Shader)
 {
 	SProgram program;
 	program.Shader = Shader;
 	return static_cast<HPipeline>(FindOrAdd(EKind::Compute, Name, std::move(program)));
 }
 
-HPipeline CPipelineLibrary::CreateGraphics (std::string_view Name, const SGraphicsPipelineDesc& Desc)
+HPipeline CPipelineLibrary::CreateGraphics (FStringView Name, const SGraphicsPipelineDesc& Desc)
 {
 	SProgram program;
 	program.Graphics = Desc;
 	return static_cast<HPipeline>(FindOrAdd(EKind::Graphics, Name, std::move(program)));
 }
 
-HShaderLibrary CPipelineLibrary::RegisterLibrary (std::string_view Name, const SShaderCompileDesc& Desc)
+HShaderLibrary CPipelineLibrary::RegisterLibrary (FStringView Name, const SShaderCompileDesc& Desc)
 {
 	SProgram program;
 	program.Shader = Desc;
@@ -310,10 +310,10 @@ bool CPipelineLibrary::Build (SProgram& Program)
 		if (FAILED(hr))
 		{
 			Errors.push_back(Program.Name + ": CreateComputePipelineState failed");
-			std::fprintf(stderr, "[rhi] CreateComputePipelineState failed for %s (0x%08lx)\n", Program.Name.c_str(), hr);
+			std::fprintf(stderr, "[rhi] CreateComputePipelineState failed for %s (0x%08lx)\n", Program.Name.CStr(), hr);
 			return false;
 		}
-		SetDebugName(pso.Get(), Widen(Program.Name));
+		SetDebugName(pso.Get(), Program.Name);
 		if (Program.Pso)
 		{
 			Device->DeferRelease(ComPtr<IUnknown>(Program.Pso));
@@ -377,10 +377,10 @@ bool CPipelineLibrary::Build (SProgram& Program)
 	if (FAILED(hr))
 	{
 		Errors.push_back(Program.Name + ": CreateGraphicsPipelineState failed");
-		std::fprintf(stderr, "[rhi] CreateGraphicsPipelineState failed for %s (0x%08lx)\n", Program.Name.c_str(), hr);
+		std::fprintf(stderr, "[rhi] CreateGraphicsPipelineState failed for %s (0x%08lx)\n", Program.Name.CStr(), hr);
 		return false;
 	}
-	SetDebugName(pso.Get(), Widen(Program.Name));
+	SetDebugName(pso.Get(), Program.Name);
 	if (Program.Pso)
 	{
 		Device->DeferRelease(ComPtr<IUnknown>(Program.Pso));
@@ -409,7 +409,7 @@ bool CPipelineLibrary::PollHotReload ()
 		{
 			continue;
 		}
-		std::fprintf(stdout, "[shader] hot reload: %s\n", program.Name.c_str());
+		std::fprintf(stdout, "[shader] hot reload: %s\n", program.Name.CStr());
 		if (Build(program))
 		{
 			bAnyRebuilt = true;

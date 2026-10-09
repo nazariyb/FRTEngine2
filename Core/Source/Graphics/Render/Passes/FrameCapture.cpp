@@ -7,6 +7,8 @@
 #include <fstream>
 #include <utility>
 
+#include "Containers/String.h"
+
 #pragma comment(lib, "windowscodecs.lib")
 
 
@@ -26,7 +28,7 @@ bool WritePng (const std::filesystem::path& Path, uint32 Width, uint32 Height, c
 		rhi::ComPtr<IWICBitmapEncoder> encoder;
 		rhi::ComPtr<IWICBitmapFrameEncode> frame;
 		if (SUCCEEDED(factory->CreateStream(&stream)) &&
-			SUCCEEDED(stream->InitializeFromFilename(Path.wstring().c_str(), GENERIC_WRITE)) &&
+			SUCCEEDED(stream->InitializeFromFilename(Path.c_str(), GENERIC_WRITE)) &&
 			SUCCEEDED(factory->CreateEncoder(GUID_ContainerFormatPng, nullptr, &encoder)) &&
 			SUCCEEDED(encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache)) &&
 			SUCCEEDED(encoder->CreateNewFrame(&frame, nullptr)) &&
@@ -95,7 +97,7 @@ void CFrameCapture::Record (
 	rhi::SBufferDesc readback;
 	readback.Size = totalBytes;
 	readback.HeapType = D3D12_HEAP_TYPE_READBACK;
-	readback.Name = L"FrameCaptureReadback";
+	readback.Name = "FrameCaptureReadback";
 	capture.Readback = Device->CreateBuffer(readback);
 
 	D3D12_RESOURCE_BARRIER barrier = {};
@@ -168,9 +170,8 @@ bool CFrameCapture::WriteFile (const SPending& Capture) const
 			{
 				return false;
 			}
-			char header[64];
-			const int len = std::snprintf(header, sizeof(header), "PF\n%u %u\n-1.0\n", w, h);
-			file.write(header, len);
+			const FString header = FString::Format("PF\n{} {}\n-1.0\n", w, h);
+			file.write(header.GetData(), header.Len());
 			std::vector<float> rgb(static_cast<size_t>(w) * 3u);
 			for (uint32 yy = 0; yy < h; ++yy)
 			{
@@ -196,7 +197,7 @@ bool CFrameCapture::WriteFile (const SPending& Capture) const
 			return true;
 		}
 		default:
-			std::fprintf(stderr, "[capture] unsupported format %u for %s\n", static_cast<uint32>(Capture.Format), Capture.Path.string().c_str());
+			std::fprintf(stderr, "[capture] unsupported format %u for %s\n", static_cast<uint32>(Capture.Format), FString::FromPath(Capture.Path).CStr());
 			return false;
 	}
 }
@@ -213,13 +214,13 @@ uint32 CFrameCapture::Poll (uint64 CompletedFenceValue)
 		}
 		if (WriteFile(*it))
 		{
-			std::fprintf(stdout, "[capture] wrote %s\n", it->Path.string().c_str());
+			std::fprintf(stdout, "[capture] wrote %s\n", FString::FromPath(it->Path).CStr());
 			std::fflush(stdout);
 			++written;
 		}
 		else
 		{
-			std::fprintf(stderr, "[capture] FAILED %s\n", it->Path.string().c_str());
+			std::fprintf(stderr, "[capture] FAILED %s\n", FString::FromPath(it->Path).CStr());
 		}
 		Device->Destroy(it->Readback);
 		it = Pending.erase(it);

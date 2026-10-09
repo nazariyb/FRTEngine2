@@ -30,7 +30,7 @@ void DispatchPerEntry (CRenderContext& Context, rhi::HPipeline Pipeline, uint32 
 	Context.Dispatch(Pipeline, kResolveGroupsPerRow, rhi::DivideRoundUp(groups, kResolveGroupsPerRow), 1u);
 }
 
-rhi::SGpuBuffer MakeRawUavBuffer (rhi::CDevice& Device, uint64 Size, const wchar_t* Name)
+rhi::SGpuBuffer MakeRawUavBuffer (rhi::CDevice& Device, uint64 Size, FStringView Name)
 {
 	rhi::SBufferDesc desc;
 	desc.Size = Size;
@@ -87,9 +87,9 @@ void CRadianceCache::Allocate (uint32 CapacityLog2)
 {
 	Release();
 	const uint64 capacity = 1ull << CapacityLog2;
-	Keys = MakeRawUavBuffer(*Device, capacity * kKeyBytes, L"RadianceCache.Keys");
-	Accumulation = MakeRawUavBuffer(*Device, capacity * kAccumulationBytes, L"RadianceCache.Accumulation");
-	Resolved = MakeRawUavBuffer(*Device, capacity * kResolvedBytes, L"RadianceCache.Resolved");
+	Keys = MakeRawUavBuffer(*Device, capacity * kKeyBytes, "RadianceCache.Keys");
+	Accumulation = MakeRawUavBuffer(*Device, capacity * kAccumulationBytes, "RadianceCache.Accumulation");
+	Resolved = MakeRawUavBuffer(*Device, capacity * kResolvedBytes, "RadianceCache.Resolved");
 	AllocatedCapacityLog2 = CapacityLog2;
 	bNeedsClear = true;
 }

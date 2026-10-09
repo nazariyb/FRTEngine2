@@ -3,26 +3,19 @@
 #include <Windows.h>
 
 #include <cstdio>
+#include <optional>
 #include <set>
+#include <string_view>
 
 #include "BuildConfig.h"
+#include "Containers/WideString.h"
+#include "Platform/Platform.h"
 
 
 namespace frt::graphics::rhi
 {
 namespace
 {
-std::string Narrow (const std::wstring& Text)
-{
-	std::string out;
-	out.reserve(Text.size());
-	for (const wchar_t c : Text)
-	{
-		out.push_back(c < 0x80 ? static_cast<char>(c) : '?');
-	}
-	return out;
-}
-
 // Records every file the compiler opens. Resolution order: the path as DXC computed it (it
 // already joins the including file's directory), then the shader root.
 class CRecordingIncludeHandler final : public IDxcIncludeHandler
@@ -70,7 +63,8 @@ public:
 
 		resolved = std::filesystem::weakly_canonical(resolved, ec);
 		ComPtr<IDxcBlobEncoding> blob;
-		const HRESULT hr = Utils->LoadFile(resolved.wstring().c_str(), nullptr, &blob);
+		UINT32 codePage = DXC_CP_UTF8;
+		const HRESULT hr = Utils->LoadFile(resolved.c_str(), &codePage, &blob);
 		if (FAILED(hr))
 		{
 			return hr;
@@ -103,17 +97,18 @@ private:
 	ULONG RefCount = 1;
 };
 
-bool ProfileSupports16Bit (const std::string& Profile)
+bool ProfileSupports16Bit (FStringView Profile)
 {
-	// _6_2 and newer accept -enable-16bit-types.
-	const size_t underscore = Profile.find('_');
-	if (underscore == std::string::npos || Profile.size() < underscore + 4)
+	// <stage>_<major>_<minor>: _6_2 and newer accept -enable-16bit-types.
+	const SStringSplit stage = Profile.SplitFirst('_');
+	const SStringSplit version = stage.Right.SplitFirst('_');
+	const std::optional<int32> major = version.Left.ToInt32();
+	const std::optional<int32> minor = version.Right.ToInt32();
+	if (!version || !major || !minor)
 	{
 		return false;
 	}
-	const int major = Profile[underscore + 1] - '0';
-	const int minor = std::atoi(Profile.c_str() + underscore + 3);
-	return major > 6 || (major == 6 && minor >= 2);
+	return *major > 6 || (*major == 6 && *minor >= 2);
 }
 }
 
@@ -133,7 +128,7 @@ bool CShaderCompiler::Init (const std::filesystem::path& InShaderRoot)
 	return true;
 }
 
-std::string CShaderCompiler::GetLastErrorLog () const
+FString CShaderCompiler::GetLastErrorLog () const
 {
 	std::lock_guard lock(Mutex);
 	return LastErrorLog;
@@ -154,64 +149,69 @@ SShaderBinary CShaderCompiler::Compile (const SShaderCompileDesc& Desc)
 	const std::filesystem::path sourcePath = std::filesystem::weakly_canonical(Desc.SourcePath, ec);
 
 	ComPtr<IDxcBlobEncoding> source;
-	if (FAILED(Utils->LoadFile(sourcePath.wstring().c_str(), nullptr, &source)))
+	UINT32 codePage = DXC_CP_UTF8;
+	if (FAILED(Utils->LoadFile(sourcePath.c_str(), &codePage, &source)))
 	{
-		result.Log = "Cannot open shader source: " + sourcePath.string();
+		result.Log = "Cannot open shader source: " + FString::FromPath(sourcePath);
 		result.Dependencies.push_back(sourcePath);
 		LastErrorLog = result.Log;
-		std::fprintf(stderr, "[shader] %s\n", result.Log.c_str());
+		std::fprintf(stderr, "[shader] %s\n", result.Log.CStr());
 		return result;
 	}
 
-	std::vector<std::wstring> args;
-	args.push_back(sourcePath.filename().wstring());
-	if (!Desc.EntryPoint.empty())
+	// DXC takes UTF-16 arguments: flags are UTF-8 literals like every other engine text, widened here
+	// (FWideString(FStringView)). The pointers are taken once every argument is in place: a short
+	// FWideString keeps its text inline, so the vector growing would move it.
+	std::vector<FWideString> args;
+	args.reserve(20u + 2u * Desc.Defines.size() + Desc.ExtraArguments.size());
+	args.emplace_back(sourcePath.filename().native());
+	if (!Desc.EntryPoint.IsEmpty())
 	{
-		args.push_back(L"-E");
-		args.push_back(Widen(Desc.EntryPoint));
+		args.emplace_back("-E");
+		args.emplace_back(Desc.EntryPoint);
 	}
-	args.push_back(L"-T");
-	args.push_back(Widen(Desc.Profile));
-	args.push_back(L"-HV");
-	args.push_back(L"2021");
-	args.push_back(L"-Zpc");
-	args.push_back(L"-O3");
+	args.emplace_back("-T");
+	args.emplace_back(Desc.Profile);
+	args.emplace_back("-HV");
+	args.emplace_back("2021");
+	args.emplace_back("-Zpc");
+	args.emplace_back("-O3");
 	if (ProfileSupports16Bit(Desc.Profile))
 	{
-		args.push_back(L"-enable-16bit-types");
+		args.emplace_back("-enable-16bit-types");
 	}
-	args.push_back(L"-I");
-	args.push_back(ShaderRoot.wstring());
-	args.push_back(L"-I");
-	args.push_back(sourcePath.parent_path().wstring());
+	args.emplace_back("-I");
+	args.emplace_back(ShaderRoot.native());
+	args.emplace_back("-I");
+	args.emplace_back(sourcePath.parent_path().native());
 #if FRT_SHADER_DEBUG_INFO
-	args.push_back(L"-Zi");
-	args.push_back(L"-Qembed_debug");
+	args.emplace_back("-Zi");
+	args.emplace_back("-Qembed_debug");
 #else
-	args.push_back(L"-Qstrip_debug");
-	args.push_back(L"-Qstrip_reflect");
+	args.emplace_back("-Qstrip_debug");
+	args.emplace_back("-Qstrip_reflect");
 #endif
 	for (const SShaderDefine& define : Desc.Defines)
 	{
-		args.push_back(L"-D");
-		args.push_back(Widen(define.Name + "=" + define.Value));
+		args.emplace_back("-D");
+		args.emplace_back(FString::Format("{}={}", define.Name, define.Value));
 	}
-	for (const std::wstring& extra : Desc.ExtraArguments)
+	for (const FString& extra : Desc.ExtraArguments)
 	{
-		args.push_back(extra);
+		args.emplace_back(extra);
 	}
 
 	std::vector<LPCWSTR> argPtrs;
 	argPtrs.reserve(args.size());
-	for (const std::wstring& arg : args)
+	for (const FWideString& arg : args)
 	{
-		argPtrs.push_back(arg.c_str());
+		argPtrs.push_back(arg.CStr());
 	}
 
 	DxcBuffer sourceBuffer = {};
 	sourceBuffer.Ptr = source->GetBufferPointer();
 	sourceBuffer.Size = source->GetBufferSize();
-	sourceBuffer.Encoding = DXC_CP_ACP;
+	sourceBuffer.Encoding = DXC_CP_UTF8;
 
 	CRecordingIncludeHandler includeHandler(Utils.Get(), ShaderRoot);
 
@@ -235,7 +235,7 @@ SShaderBinary CShaderCompiler::Compile (const SShaderCompileDesc& Desc)
 		if (SUCCEEDED(compileResult->GetOutput(DXC_OUT_ERRORS, IID_PPV_ARGS(&errors), nullptr)) && errors &&
 			errors->GetStringLength() > 0)
 		{
-			result.Log = errors->GetStringPointer();
+			result.Log = FStringView(errors->GetStringPointer(), errors->GetStringLength());
 		}
 	}
 
@@ -247,19 +247,23 @@ SShaderBinary CShaderCompiler::Compile (const SShaderCompileDesc& Desc)
 
 	if (FAILED(status))
 	{
-		const std::string header = "[shader] FAILED " + sourcePath.filename().string() +
-			(Desc.EntryPoint.empty() ? "" : (":" + Desc.EntryPoint)) + " (" + Desc.Profile + ")\n";
+		FString header = "[shader] FAILED " + FString::FromPath(sourcePath.filename());
+		if (!Desc.EntryPoint.IsEmpty())
+		{
+			header << ':' << Desc.EntryPoint;
+		}
+		header << " (" << Desc.Profile << ")\n";
 		LastErrorLog = header + result.Log;
-		std::fprintf(stderr, "%s%s\n", header.c_str(), result.Log.c_str());
+		std::fprintf(stderr, "%s%s\n", header.CStr(), result.Log.CStr());
 		std::fflush(stderr);
-		OutputDebugStringA((header + result.Log).c_str());
+		platform::OutputDebugText(LastErrorLog);
 		return result;
 	}
 
-	if (!result.Log.empty())
+	if (!result.Log.IsEmpty())
 	{
 		// Warnings: surface them but do not fail.
-		std::fprintf(stdout, "[shader] warnings in %s:\n%s\n", sourcePath.filename().string().c_str(), result.Log.c_str());
+		std::fprintf(stdout, "[shader] warnings in %s:\n%s\n", FString::FromPath(sourcePath.filename()).CStr(), result.Log.CStr());
 	}
 
 	compileResult->GetOutput(DXC_OUT_OBJECT, IID_PPV_ARGS(&result.Blob), nullptr);

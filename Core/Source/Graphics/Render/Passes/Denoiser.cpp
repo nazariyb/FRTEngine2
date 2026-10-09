@@ -31,7 +31,7 @@ constexpr FStringLiteral kAtrousScopes[kMaxAtrousIterations] = {
 	"Denoiser_Atrous0", "Denoiser_Atrous1", "Denoiser_Atrous2", "Denoiser_Atrous3",
 	"Denoiser_Atrous4", "Denoiser_Atrous5", "Denoiser_Atrous6", "Denoiser_Atrous7" };
 
-rhi::STextureDesc MakeTarget (uint32 Width, uint32 Height, DXGI_FORMAT Format, const wchar_t* Name)
+rhi::STextureDesc MakeTarget (uint32 Width, uint32 Height, DXGI_FORMAT Format, FStringView Name)
 {
 	rhi::STextureDesc desc;
 	desc.Width = Width;
@@ -259,12 +259,12 @@ void CDenoiser::Resize (rhi::CDevice& Device, uint32 Width, uint32 Height)
 	s.Height = Height;
 
 	const DXGI_FORMAT rgba16 = DXGI_FORMAT_R16G16B16A16_FLOAT;
-	const wchar_t* const guideNames[2] = { L"Denoiser_Guide0", L"Denoiser_Guide1" };
-	const wchar_t* const diffHistoryNames[2] = { L"Denoiser_DiffHistory0", L"Denoiser_DiffHistory1" };
-	const wchar_t* const specHistoryNames[2] = { L"Denoiser_SpecHistory0", L"Denoiser_SpecHistory1" };
-	const wchar_t* const fastNames[2] = { L"Denoiser_Fast0", L"Denoiser_Fast1" };
-	const wchar_t* const diffTempNames[3] = { L"Denoiser_DiffTemp0", L"Denoiser_DiffTemp1", L"Denoiser_DiffTemp2" };
-	const wchar_t* const specTempNames[3] = { L"Denoiser_SpecTemp0", L"Denoiser_SpecTemp1", L"Denoiser_SpecTemp2" };
+	constexpr FStringLiteral guideNames[2] = { "Denoiser_Guide0", "Denoiser_Guide1" };
+	constexpr FStringLiteral diffHistoryNames[2] = { "Denoiser_DiffHistory0", "Denoiser_DiffHistory1" };
+	constexpr FStringLiteral specHistoryNames[2] = { "Denoiser_SpecHistory0", "Denoiser_SpecHistory1" };
+	constexpr FStringLiteral fastNames[2] = { "Denoiser_Fast0", "Denoiser_Fast1" };
+	constexpr FStringLiteral diffTempNames[3] = { "Denoiser_DiffTemp0", "Denoiser_DiffTemp1", "Denoiser_DiffTemp2" };
+	constexpr FStringLiteral specTempNames[3] = { "Denoiser_SpecTemp0", "Denoiser_SpecTemp1", "Denoiser_SpecTemp2" };
 	for (uint32 i = 0u; i < 2u; ++i)
 	{
 		s.Guide[i] = Device.CreateTexture(MakeTarget(Width, Height, DXGI_FORMAT_R32G32_UINT, guideNames[i]));
@@ -277,18 +277,18 @@ void CDenoiser::Resize (rhi::CDevice& Device, uint32 Width, uint32 Height)
 		s.DiffTemp[i] = Device.CreateTexture(MakeTarget(Width, Height, rgba16, diffTempNames[i]));
 		s.SpecTemp[i] = Device.CreateTexture(MakeTarget(Width, Height, rgba16, specTempNames[i]));
 	}
-	s.MomentsHistory = Device.CreateTexture(MakeTarget(Width, Height, rgba16, L"Denoiser_MomentsHistory"));
-	s.MomentsAccum = Device.CreateTexture(MakeTarget(Width, Height, rgba16, L"Denoiser_MomentsAccum"));
-	s.Variance = Device.CreateTexture(MakeTarget(Width, Height, rgba16, L"Denoiser_Variance"));
-	s.AtrousAux = Device.CreateTexture(MakeTarget(Width, Height, DXGI_FORMAT_R11G11B10_FLOAT, L"Denoiser_AtrousAux"));
-	s.HistoryLength = Device.CreateTexture(MakeTarget(Width, Height, DXGI_FORMAT_R16_FLOAT, L"Denoiser_HistoryLength"));
+	s.MomentsHistory = Device.CreateTexture(MakeTarget(Width, Height, rgba16, "Denoiser_MomentsHistory"));
+	s.MomentsAccum = Device.CreateTexture(MakeTarget(Width, Height, rgba16, "Denoiser_MomentsAccum"));
+	s.Variance = Device.CreateTexture(MakeTarget(Width, Height, rgba16, "Denoiser_Variance"));
+	s.AtrousAux = Device.CreateTexture(MakeTarget(Width, Height, DXGI_FORMAT_R11G11B10_FLOAT, "Denoiser_AtrousAux"));
+	s.HistoryLength = Device.CreateTexture(MakeTarget(Width, Height, DXGI_FORMAT_R16_FLOAT, "Denoiser_HistoryLength"));
 	const uint32 tilesX = (Width + 7u) / 8u;
 	const uint32 tilesY = (Height + 7u) / 8u;
-	s.YoungTiles = Device.CreateTexture(MakeTarget(tilesX, tilesY, DXGI_FORMAT_R8_UINT, L"Denoiser_YoungTiles"));
-	s.AntilagTiles[0] = Device.CreateTexture(MakeTarget(tilesX, tilesY, DXGI_FORMAT_R32G32B32A32_FLOAT, L"Denoiser_AntilagTilesD"));
-	s.AntilagTiles[1] = Device.CreateTexture(MakeTarget(tilesX, tilesY, DXGI_FORMAT_R32G32B32A32_FLOAT, L"Denoiser_AntilagTilesS"));
-	s.DiffOutput = Device.CreateTexture(MakeTarget(Width, Height, rgba16, L"Denoiser_DiffuseOutput"));
-	s.SpecOutput = Device.CreateTexture(MakeTarget(Width, Height, rgba16, L"Denoiser_SpecularOutput"));
+	s.YoungTiles = Device.CreateTexture(MakeTarget(tilesX, tilesY, DXGI_FORMAT_R8_UINT, "Denoiser_YoungTiles"));
+	s.AntilagTiles[0] = Device.CreateTexture(MakeTarget(tilesX, tilesY, DXGI_FORMAT_R32G32B32A32_FLOAT, "Denoiser_AntilagTilesD"));
+	s.AntilagTiles[1] = Device.CreateTexture(MakeTarget(tilesX, tilesY, DXGI_FORMAT_R32G32B32A32_FLOAT, "Denoiser_AntilagTilesS"));
+	s.DiffOutput = Device.CreateTexture(MakeTarget(Width, Height, rgba16, "Denoiser_DiffuseOutput"));
+	s.SpecOutput = Device.CreateTexture(MakeTarget(Width, Height, rgba16, "Denoiser_SpecularOutput"));
 
 	uint64 bytes = 0u;
 	s.ForEachTexture([&bytes] (rhi::SGpuTexture& Texture)

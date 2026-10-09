@@ -92,8 +92,8 @@ public:
 
 // Shader source path helper: "PathTracing/PathTracer.hlsl" -> <repo>/Core/Content/Shaders/...
 FRT_CORE_API rhi::SShaderCompileDesc MakeShaderDesc (
-	std::string_view RelativePath,
-	std::string_view EntryPoint,
-	std::string_view Profile,
+	FStringView RelativePath,
+	FStringView EntryPoint,
+	FStringView Profile,
 	std::initializer_list<rhi::SShaderDefine> Defines = {});
 }

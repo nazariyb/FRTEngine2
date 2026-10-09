@@ -3,13 +3,12 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <cstdio>
 #include <cstring>
-#include <string>
 #include <vector>
 
 #include "imgui.h"
 
+#include "Containers/String.h"
 #include "Profiler/Profiler.h"
 #include "Shared/PostProcessData.h"
 
@@ -378,7 +377,7 @@ SResolvedSettings Resolve (const SPostProcessSettings& In)
 	return out;
 }
 
-rhi::STextureDesc MakeBloomDesc (uint32 Width, uint32 Height, const wchar_t* Name)
+rhi::STextureDesc MakeBloomDesc (uint32 Width, uint32 Height, FStringView Name)
 {
 	rhi::STextureDesc desc;
 	desc.Width = Width;
@@ -483,15 +482,15 @@ struct CPostProcess::SImpl
 			{
 				break;
 			}
-			const std::wstring name = L"PostProcess.BloomDown" + std::to_wstring(i);
-			BloomDown[i] = Device.CreateTexture(MakeBloomDesc(w, h, name.c_str()));
+			const FString name = FString::Format("PostProcess.BloomDown{}", i);
+			BloomDown[i] = Device.CreateTexture(MakeBloomDesc(w, h, name));
 			BloomLevelCount = i + 1u;
 		}
 		// Up[i] = Down[i] + upsampled coarser levels; the coarsest level is its own Up.
 		for (uint32 i = 0; i + 1u < BloomLevelCount; ++i)
 		{
-			const std::wstring name = L"PostProcess.BloomUp" + std::to_wstring(i);
-			BloomUp[i] = Device.CreateTexture(MakeBloomDesc(BloomDown[i].Width, BloomDown[i].Height, name.c_str()));
+			const FString name = FString::Format("PostProcess.BloomUp{}", i);
+			BloomUp[i] = Device.CreateTexture(MakeBloomDesc(BloomDown[i].Width, BloomDown[i].Height, name));
 		}
 		ChainWidth = Width;
 		ChainHeight = Height;
@@ -512,8 +511,7 @@ struct CPostProcess::SImpl
 		desc.RenderTargetFormats[0] = Format;
 		desc.RenderTargetCount = 1u;
 		desc.CullMode = D3D12_CULL_MODE_NONE;
-		char name[64];
-		std::snprintf(name, sizeof(name), "PostProcess_Final_fmt%u", static_cast<uint32>(Format));
+		const FString name = FString::Format("PostProcess_Final_fmt{}", static_cast<uint32>(Format));
 		SFinalPipeline entry;
 		entry.Format = Format;
 		entry.Pipeline = Pipelines->CreateGraphics(name, desc);
@@ -604,14 +602,14 @@ void CPostProcess::Initialize (rhi::CDevice& Device, rhi::CPipelineLibrary& Pipe
 	rhi::SBufferDesc histogramDesc;
 	histogramDesc.Size = gpu::ExposureHistogramBins * sizeof(uint32);
 	histogramDesc.UavKind = rhi::EBufferViewKind::Raw;
-	histogramDesc.Name = L"PostProcess.ExposureHistogram";
+	histogramDesc.Name = "PostProcess.ExposureHistogram";
 	impl.HistogramBuffer = Device.CreateBuffer(histogramDesc);
 
 	rhi::SBufferDesc exposureDesc;
 	exposureDesc.Size = gpu::ExposureBufferBytes;
 	exposureDesc.SrvKind = rhi::EBufferViewKind::Raw;
 	exposureDesc.UavKind = rhi::EBufferViewKind::Raw;
-	exposureDesc.Name = L"PostProcess.Exposure";
+	exposureDesc.Name = "PostProcess.Exposure";
 	impl.ExposureBuffer = Device.CreateBuffer(exposureDesc);
 
 	for (uint32 i = 0; i < kReadbackSlots; ++i)
@@ -619,7 +617,7 @@ void CPostProcess::Initialize (rhi::CDevice& Device, rhi::CPipelineLibrary& Pipe
 		rhi::SBufferDesc readbackDesc;
 		readbackDesc.Size = gpu::ExposureBufferBytes;
 		readbackDesc.HeapType = D3D12_HEAP_TYPE_READBACK;
-		readbackDesc.Name = L"PostProcess.ExposureReadback";
+		readbackDesc.Name = "PostProcess.ExposureReadback";
 		impl.Readback[i].Buffer = Device.CreateBuffer(readbackDesc);
 	}
 	impl.bHistogramNeedsClear = true;
@@ -1023,7 +1021,7 @@ void CPostProcess::DrawSettingsUi (SPostProcessSettings& s)
 			}
 			const SResolvedSettings resolved = Resolve(s);
 			char overlay[64];
-			std::snprintf(overlay, sizeof(overlay), "EV100 %.1f .. %.1f",
+			FormatToBuffer(overlay, "EV100 {:.1f} .. {:.1f}",
 				resolved.HistogramMinLog2 + gpu::ExposureLog2CalibrationOffset,
 				resolved.HistogramMinLog2 + resolved.HistogramRange + gpu::ExposureLog2CalibrationOffset);
 			ImGui::PlotHistogram("##ExposureHistogram", Impl->UiHistogram, static_cast<int>(gpu::ExposureHistogramBins), 0,

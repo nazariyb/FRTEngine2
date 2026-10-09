@@ -1,10 +1,8 @@
 ﻿#pragma once
 
-#include <string>
-#include <string_view>
-
 #include "Core.h"
 #include "CoreTypes.h"
+#include "Containers/String.h"
 
 
 namespace frt
@@ -27,13 +25,18 @@ struct SColor
 		, B(InColor)
 		, A(Alpha) {}
 
-	static SColor FromHex (const std::string_view& Hex);
-	static SColor FromString (const std::string_view& String);
+	// "#RGB", "#RRGGBB" or "#RRGGBBAA" (the '#' optional, either case); White for anything else.
+	FRT_CORE_API static SColor FromHex (FStringView Hex);
+	// What ToString writes; White for anything else.
+	FRT_CORE_API static SColor FromString (FStringView String);
 
-	bool FillFromString (const std::string_view& String);
+	// "#..." as FromHex, or "RGBA(r, g, b, a)". False, and the color unchanged, for anything else.
+	FRT_CORE_API bool FillFromString (FStringView String);
 
-	std::string ToHex () const;
-	std::string ToString (bool bHex = false) const;
+	// "#RRGGBBAA": each channel clamped to [0, 1] and rounded to the nearest of 256 steps.
+	FRT_CORE_API FString ToHex () const;
+	// "RGBA(r, g, b, a)" with the shortest numbers that read back to the same floats, or ToHex().
+	FRT_CORE_API FString ToString (bool bHex = false) const;
 
 	static const SColor White;
 	static const SColor Black;

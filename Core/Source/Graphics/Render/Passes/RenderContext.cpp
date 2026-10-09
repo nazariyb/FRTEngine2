@@ -6,15 +6,15 @@
 namespace frt::graphics
 {
 rhi::SShaderCompileDesc MakeShaderDesc (
-	std::string_view RelativePath,
-	std::string_view EntryPoint,
-	std::string_view Profile,
+	FStringView RelativePath,
+	FStringView EntryPoint,
+	FStringView Profile,
 	std::initializer_list<rhi::SShaderDefine> Defines)
 {
 	rhi::SShaderCompileDesc desc;
-	desc.SourcePath = paths::GetShaderRootDir() / std::filesystem::path(RelativePath);
-	desc.EntryPoint = std::string(EntryPoint);
-	desc.Profile = std::string(Profile);
+	desc.SourcePath = paths::GetShaderRootDir() / RelativePath.ToPath();
+	desc.EntryPoint = EntryPoint;
+	desc.Profile = Profile;
 	desc.Defines.assign(Defines.begin(), Defines.end());
 	return desc;
 }

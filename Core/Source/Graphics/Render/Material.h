@@ -1,13 +1,13 @@
 #pragma once
 
 #include <filesystem>
-#include <string>
 
 #include <d3d12.h>
 
 #include "Core.h"
 #include "CoreTypes.h"
 #include "Enum.h"
+#include "Containers/String.h"
 #include "Graphics/SColor.h"
 
 
@@ -39,33 +39,33 @@ struct FRT_CORE_API SMaterial
 {
 	static constexpr uint32 InvalidTextureIndex = 0xFFFFFFFFu;
 
-	std::string Name;
-	std::string VertexShaderName;
-	std::string PixelShaderName;
+	FString Name;
+	FString VertexShaderName;
+	FString PixelShaderName;
 	std::filesystem::path SourcePath;
 	std::filesystem::file_time_type LastWriteTime;
 
 	// Base colour (linear factor; the texture is sRGB-encoded).
 	SColor DiffuseAlbedo = SColor::White;
-	std::string BaseColorTexturePath;
+	FString BaseColorTexturePath;
 
 	// Metallic-roughness (texture: G = roughness, B = metallic, multiplied by the factors).
 	float Metallic = 0.0f;
 	float Roughness = 1.0f;
-	std::string MetallicRoughnessTexturePath;
+	FString MetallicRoughnessTexturePath;
 
 	// Tangent-space normal map.
-	std::string NormalTexturePath;
+	FString NormalTexturePath;
 	float NormalScale = 1.0f;
 
 	// Ambient occlusion (used by the raster preview only; the path tracer computes visibility).
-	std::string OcclusionTexturePath;
+	FString OcclusionTexturePath;
 	float OcclusionStrength = 1.0f;
 
 	// Emission: radiance = Emissive.rgb * EmissiveIntensity * texture (sRGB).
 	SColor Emissive = SColor::Black;
 	float EmissiveIntensity = 0.0f;
-	std::string EmissiveTexturePath;
+	FString EmissiveTexturePath;
 
 	// Transparency.
 	EAlphaMode AlphaMode = EAlphaMode::Opaque;
@@ -89,14 +89,15 @@ struct FRT_CORE_API SMaterial
 	bool bDepthWrite = true;
 	bool bAlphaBlend = false;
 
-	std::filesystem::path ResolveTexturePath (const std::string& RelativePath) const;
+	std::filesystem::path ResolveTexturePath (FStringView RelativePath) const;
 	bool IsEmissive () const;
 };
 }
 
 
+// Names as material files store them (the `mode` of the `alpha` group).
 FRT_DECLARE_ENUM_REFLECTION(
 	frt::graphics::EAlphaMode,
-	FRT_ENUM_ENTRY(frt::graphics::EAlphaMode, Opaque),
-	FRT_ENUM_ENTRY(frt::graphics::EAlphaMode, Mask),
-	FRT_ENUM_ENTRY(frt::graphics::EAlphaMode, Blend));
+	FRT_ENUM_ENTRY_NAME(frt::graphics::EAlphaMode, Opaque, "opaque"),
+	FRT_ENUM_ENTRY_NAME(frt::graphics::EAlphaMode, Mask, "mask"),
+	FRT_ENUM_ENTRY_NAME(frt::graphics::EAlphaMode, Blend, "blend"));

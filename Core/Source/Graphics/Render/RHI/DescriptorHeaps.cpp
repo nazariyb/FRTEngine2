@@ -15,7 +15,7 @@ void CBindlessHeap::Init (ID3D12Device* InDevice, uint32 InPersistentCapacity, u
 	desc.NumDescriptors = PersistentCapacity + TransientPerFrame * MaxFramesInFlight;
 	desc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 	THROW_IF_FAILED(Device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&Heap)));
-	SetDebugName(Heap.Get(), L"BindlessHeap");
+	SetDebugName(Heap.Get(), "BindlessHeap");
 
 	CpuStart = Heap->GetCPUDescriptorHandleForHeapStart();
 	GpuStart = Heap->GetGPUDescriptorHandleForHeapStart();
