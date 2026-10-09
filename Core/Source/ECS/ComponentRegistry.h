@@ -5,6 +5,7 @@
 
 #include "Core.h"
 #include "CoreTypes.h"
+#include "Containers/StringView.h"
 
 
 namespace frt
@@ -26,8 +27,11 @@ struct SComponentInfo
 	/** Compact, runtime-assigned. Storage and queries only - never serialized. */
 	ComponentId  Id = InvalidComponentId;
 
-	/** Stable across builds and runs. This is what a saved scene references. */
-	const char*  Name = nullptr;
+	/**
+	 * Stable across builds and runs. This is what a saved scene references. Once registered, it
+	 * views the registry's own NUL-terminated copy, which outlives the module that registered it.
+	 */
+	FStringView  Name;
 
 	uint32       Size = 0u;
 	uint32       Alignment = 0u;
@@ -109,7 +113,7 @@ public:
 	void ReleaseModule(const void* InImageBegin, const void* InImageEnd);
 
 	const SComponentInfo* Find(ComponentId InId) const;
-	const SComponentInfo* FindByName(const char* InName) const;
+	const SComponentInfo* FindByName(FStringView InName) const;
 
 	/** False for a type whose registrant was released and that nothing registered since. */
 	bool IsBound(ComponentId InId) const { return InId < Count && Registrants[InId] != nullptr; }
@@ -202,7 +206,7 @@ ComponentId GetComponentId()
 	struct frt::TComponentTraits<ComponentType>\
 	{\
 		static constexpr bool bDefined = true;\
-		static constexpr const char* Name = #ComponentType;\
+		static constexpr ::frt::FStringLiteral Name = ::frt::FStringLiteral(#ComponentType);\
 	}
 
 #define FRT_DECLARE_COMPONENT_NAMED(ComponentType, StableName)\
@@ -210,5 +214,5 @@ ComponentId GetComponentId()
 	struct frt::TComponentTraits<ComponentType>\
 	{\
 		static constexpr bool bDefined = true;\
-		static constexpr const char* Name = StableName;\
+		static constexpr ::frt::FStringLiteral Name = ::frt::FStringLiteral(StableName);\
 	}

@@ -4,6 +4,7 @@
 
 #include "Core.h"
 #include "CoreTypes.h"
+#include "Containers/StringView.h"
 #include "Profiler/MetricsAggregator.h"
 
 
@@ -54,7 +55,7 @@ public:
 
 	uint32 ProfileIndex () const { return Index; }
 	uint32 ProfileCount () const { return static_cast<uint32>(Queue.size()); }
-	const char* PhaseName () const;
+	FStringLiteral PhaseName () const;
 	uint32 WarmupRemaining () const { return WarmupLeft; }
 
 	const std::vector<SProfileResult>& History () const { return Results; }

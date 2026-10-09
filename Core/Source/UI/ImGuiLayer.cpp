@@ -3,7 +3,7 @@
 #if !defined(FRT_HEADLESS)
 
 #include <cmath>
-#include <system_error>
+#include <optional>
 
 #include "imgui.h"
 #include "backends/imgui_impl_dx12.h"
@@ -11,9 +11,11 @@
 
 #include "EnginePaths.h"
 #include "Window.h"
+#include "Containers/String.h"
 #include "Graphics/Render/Renderer.h"
 #include "Input/InputSystem.h"
 #include "Math/MathUtility.h"
+#include "Platform/Platform.h"
 
 
 namespace frt
@@ -44,23 +46,27 @@ void CImGuiLayer::StartUp (CWindow& InWindow, graphics::CRenderer& Renderer, con
 	io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 	io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
 	io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-	if (!InIniPath.empty())
+	IniPath = InIniPath;
+	bIniLoaded = false;
+	if (!IniPath.empty())
 	{
-		std::error_code ec;
-		std::filesystem::create_directories(InIniPath.parent_path(), ec);
-		IniPath = InIniPath.string();
-		io.IniFilename = IniPath.c_str();
+		// Read and written by this layer (BeginFrame, SaveIniFile).
+		io.IniFilename = nullptr;
 	}
 
 	// UI font. The size given here becomes style.FontSizeBase; the scale factors set by
 	// ApplyStyle() are applied on top of it, and 1.92 re-rasterises per size, so zoomed text
-	// stays sharp. AddFontFromFileTTF() asserts on a missing file, hence the existence check -
-	// a stripped content dir should degrade to the built-in font.
+	// stays sharp. Read through the UTF-16 path; a stripped content dir degrades to the
+	// built-in font.
 	const std::filesystem::path fontPath = paths::GetEngineContentDir() / "Fonts" / "Roboto-Medium.ttf";
-	std::error_code fontEc;
-	if (std::filesystem::exists(fontPath, fontEc))
+	if (std::optional<std::vector<uint8>> fontBytes = platform::ReadFileBytes(fontPath))
 	{
-		io.Fonts->AddFontFromFileTTF(fontPath.string().c_str(), 16.0f);
+		FontData = std::move(*fontBytes);
+		ImFontConfig config;
+		config.FontDataOwnedByAtlas = false;
+		// What AddFontFromFileTTF would name it (debug windows show it).
+		FString::FromPath(fontPath.filename()).CopyTo(config.Name, static_cast<uint32>(sizeof(config.Name)));
+		io.Fonts->AddFontFromMemoryTTF(FontData.data(), static_cast<int>(FontData.size()), 16.0f, &config);
 	}
 	else
 	{
@@ -100,14 +106,39 @@ void CImGuiLayer::ShutDown ()
 	{
 		return;
 	}
+	// The layout as it is now, as DestroyContext writes it when ImGui owns the file: a change
+	// made in the last seconds has not been saved yet.
+	if (bIniLoaded)
+	{
+		SaveIniFile();
+	}
 	// The GPU must be idle (the engine flushes first): the backend releases its textures, whose
-	// descriptors go back to the renderer's bindless allocator. DestroyContext writes the layout.
+	// descriptors go back to the renderer's bindless allocator.
 	ImGui_ImplDX12_Shutdown();
 	ImGui_ImplWin32_Shutdown();
 	ImGui::DestroyContext();
+	FontData = std::vector<uint8>();
 	delete Impl;
 	Impl = nullptr;
 	bStarted = false;
+}
+
+void CImGuiLayer::DisableIniFile ()
+{
+	IniPath.clear();
+	ImGui::GetIO().IniFilename = nullptr;
+}
+
+void CImGuiLayer::SaveIniFile ()
+{
+	ImGui::GetIO().WantSaveIniSettings = false;
+	if (IniPath.empty())
+	{
+		return;
+	}
+	size_t size = 0u;
+	const char* text = ImGui::SaveIniSettingsToMemory(&size);
+	platform::WriteFileText(IniPath, FStringView(text, size));
 }
 
 void CImGuiLayer::ApplyStyle (float DpiScale)
@@ -160,9 +191,29 @@ void CImGuiLayer::BeginFrame (const input::CInputSystem& Input)
 	// monitor needs no extra plumbing. Before NewFrame, which resolves font size and metrics.
 	ApplyStyle(ImGui_ImplWin32_GetDpiScaleForHwnd(Window->GetHandle()));
 
+	// The layout is read before the first frame, as ImGui reads its own file: until then the
+	// file can still be turned off (DisableIniFile).
+	if (!bIniLoaded)
+	{
+		if (!IniPath.empty())
+		{
+			if (const std::optional<FString> text = platform::ReadFileText(IniPath))
+			{
+				ImGui::LoadIniSettingsFromMemory(text->GetData(), text->Len());
+			}
+		}
+		bIniLoaded = true;
+	}
+
 	ImGui_ImplDX12_NewFrame();
 	ImGui_ImplWin32_NewFrame();
 	ImGui::NewFrame();
+
+	// NewFrame asks for a save a few seconds after the layout last changed (io.IniSavingRate).
+	if (ImGui::GetIO().WantSaveIniSettings)
+	{
+		SaveIniFile();
+	}
 }
 
 void CImGuiLayer::Render (graphics::CRenderer& Renderer)

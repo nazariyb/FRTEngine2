@@ -82,11 +82,11 @@ const char* GetAspectName (EViewportAspect Aspect)
 	}
 }
 
-CViewportPanel::CViewportPanel (EViewportKind InKind, const char* InName)
+CViewportPanel::CViewportPanel (EViewportKind InKind, FStringLiteral InName)
 	: Kind(InKind)
 	, Name(InName)
 {
-	std::snprintf(OverlayName, sizeof(OverlayName), "##%s.Overlay", Name);
+	std::snprintf(OverlayName, sizeof(OverlayName), "##%s.Overlay", Name.CStr());
 }
 
 void CViewportPanel::Create (graphics::CRenderer& Renderer)
@@ -138,7 +138,7 @@ const SViewportFrame& CViewportPanel::Draw (graphics::CRenderer& Renderer, const
 		ImGui::SetNextWindowFocus();
 	}
 	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-	const bool bShown = ImGui::Begin(Name, &bOpen, ViewportWindowFlags);
+	const bool bShown = ImGui::Begin(Name.CStr(), &bOpen, ViewportWindowFlags);
 	ImGui::PopStyleVar();
 	// Right after Begin the last item is the window's tab (docked) or title bar (floating).
 	if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
@@ -210,7 +210,7 @@ void CViewportPanel::DrawToolbar (graphics::CRenderer& Renderer, const SViewport
 	const bool bMaximized = Args.Presentation == EViewportPresentation::Maximized;
 	if (bMaximized)
 	{
-		ImGui::TextUnformatted(Name);
+		ImGui::TextUnformatted(Name.CStr());
 		ImGui::Separator();
 	}
 

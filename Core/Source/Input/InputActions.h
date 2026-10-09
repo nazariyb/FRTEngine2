@@ -2,12 +2,11 @@
 
 #include <filesystem>
 #include <iosfwd>
-#include <string>
-#include <string_view>
-#include <unordered_map>
 
 #include "Core.h"
 #include "Containers/Array.h"
+#include "Containers/String.h"
+#include "Containers/StringMap.h"
 #include "Input/InputTypes.h"
 
 
@@ -54,14 +53,14 @@ struct SInputBinding
 
 struct SInputAction
 {
-	std::string Name;
+	FString Name;
 	EInputActionKind Kind = EInputActionKind::Button;
 	TArray<SInputBinding> Bindings;
 };
 
 struct SInputActionEventData
 {
-	std::string_view Name;
+	FStringView Name;   // the action's own name: valid while the event is handled
 	EInputActionKind Kind = EInputActionKind::Button;
 	EInputActionEventType Type = EInputActionEventType::Pressed;
 	float Value = 0.0f;
@@ -72,7 +71,7 @@ using InputEventAction = CEvent<SInputActionEventData>;
 
 struct SInputActionDefinition
 {
-	std::string Name;
+	FString Name;
 	EInputActionKind Kind = EInputActionKind::Button;
 };
 
@@ -109,13 +108,13 @@ public:
 	const TArray<SInputAction>& GetActions () const { return Actions; }
 	const TArray<SInputActionState>& GetActionStates () const { return States; }
 
-	const SInputAction* FindAction (const std::string& Name) const;
-	SInputAction* FindAction (const std::string& Name);
+	const SInputAction* FindAction (FStringView Name) const;
+	SInputAction* FindAction (FStringView Name);
 
-	const SInputActionState* FindActionState (const std::string& Name) const;
-	SInputActionState* FindActionState (const std::string& Name);
+	const SInputActionState* FindActionState (FStringView Name) const;
+	SInputActionState* FindActionState (FStringView Name);
 
-	void ApplyActionKind (const std::string& Name, EInputActionKind Kind);
+	void ApplyActionKind (FStringView Name, EInputActionKind Kind);
 
 	InputEventAction OnActionEvent;
 
@@ -127,6 +126,6 @@ private:
 private:
 	TArray<SInputAction> Actions;
 	TArray<SInputActionState> States;
-	std::unordered_map<std::string, uint32> ActionIndex;
+	TStringMap<uint32> ActionIndex;   // name -> index into Actions
 };
 }

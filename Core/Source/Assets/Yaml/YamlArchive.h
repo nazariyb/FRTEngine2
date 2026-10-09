@@ -6,6 +6,7 @@
 
 #include "Core.h"
 #include "Containers/Array.h"
+#include "Containers/String.h"
 #include "Assets/Archive.h"
 
 
@@ -23,13 +24,14 @@ public:
 	void SetRoot (YAML::Node Root);
 
 	// IReadArchive
-	bool Read (const char* Name, bool& V) override;
-	bool Read (const char* Name, int32& V) override;
-	bool Read (const char* Name, uint32& V) override;
-	bool Read (const char* Name, float& V) override;
-	bool Read (const char* Name, std::string& V) override;
-	bool Has (const char* Name) const override;
-	bool BeginGroup (const char* Name) override;
+	using IReadArchive::Read;
+	bool Read (FStringLiteral Name, bool& V) override;
+	bool Read (FStringLiteral Name, int32& V) override;
+	bool Read (FStringLiteral Name, uint32& V) override;
+	bool Read (FStringLiteral Name, float& V) override;
+	bool Read (FStringLiteral Name, FString& V) override;
+	bool Has (FStringLiteral Name) const override;
+	bool BeginGroup (FStringLiteral Name) override;
 	void EndGroup () override;
 
 private:
@@ -41,6 +43,11 @@ private:
 
 
 // Write archive that builds a yaml-cpp Node tree, then dumps it to file.
+//
+// Text yaml-cpp would alter is refused, not written: it replaces invalid UTF-8, the surrogates of
+// WTF-8 path names and the noncharacters with U+FFFD in any value it decides to quote
+// (assets::IsYamlStorable). The first refusal is kept in GetError(), and SaveToFile fails while
+// there is one, so a file is never written with a value missing or changed.
 class FRT_CORE_API CYamlWriteArchive : public IWriteArchive
 {
 public:
@@ -48,15 +55,18 @@ public:
 
 	bool SaveToFile (const std::filesystem::path& Path) const;
 	const YAML::Node& GetRoot () const { return RootNode; }
+	// Empty unless a value was refused.
+	const FString& GetError () const { return Error; }
 
 	// IWriteArchive
-	void Write (const char* Name, bool V) override;
-	void Write (const char* Name, int32 V) override;
-	void Write (const char* Name, uint32 V) override;
-	void Write (const char* Name, float V) override;
-	void Write (const char* Name, const std::string& V) override;
-	void BeginGroup (const char* Name) override;
-	void BeginGroupFlow (const char* Name) override;
+	using IWriteArchive::Write;
+	void Write (FStringLiteral Name, bool V) override;
+	void Write (FStringLiteral Name, int32 V) override;
+	void Write (FStringLiteral Name, uint32 V) override;
+	void Write (FStringLiteral Name, float V) override;
+	void Write (FStringLiteral Name, FStringView V) override;
+	void BeginGroup (FStringLiteral Name) override;
+	void BeginGroupFlow (FStringLiteral Name) override;
 	void EndGroup () override;
 
 private:
@@ -64,5 +74,6 @@ private:
 
 	YAML::Node RootNode;
 	TArray<YAML::Node> Stack;
+	FString Error;
 };
 }

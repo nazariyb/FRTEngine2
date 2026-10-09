@@ -4,6 +4,7 @@
 
 #include "Core.h"
 #include "CoreTypes.h"
+#include "Containers/String.h"
 #include "Math/Transform.h"
 #include "Profiler/MetricsAggregator.h"
 #include "Profiler/ProfilingSession.h"
@@ -91,7 +92,14 @@ private:
 	};
 	SProfilingSnapshot SavedProfilingSettings;
 	profiler::SSceneDescriptor SessionSceneDesc;   // static scene snapshot at session start
-	std::filesystem::path SessionDir;               // GetProfilingDir()/<SessionNameBuf>
-	char SessionNameBuf[64] = "session";
+	std::filesystem::path SessionDir;               // GetProfilingDir()/<SessionName>
+	static constexpr uint32 MaxSessionNameBytes = 63u;
+	FString SessionName = "session";
+
+	// The Editor panel's name field edits a copy, so a selected entity's name is cut to the
+	// field's limit only when someone edits it. A member: reused from frame to frame. The limit is
+	// the old char[64] field's: CEntity::Name itself has none.
+	static constexpr uint32 MaxEntityNameBytes = 63u;
+	FString EntityNameEdit;
 };
 }

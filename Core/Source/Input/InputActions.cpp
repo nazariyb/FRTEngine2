@@ -2,11 +2,13 @@
 
 #include <cmath>
 #include <fstream>
-#include <sstream>
+#include <optional>
 
 #include "Assets/TextAssetIO.h"
+#include "Containers/String.h"
 #include "Input/InputSystem.h"
 #include "Math/MathUtility.h"
+#include "Platform/Platform.h"
 
 
 FRT_DECLARE_ENUM_REFLECTION(
@@ -60,126 +62,122 @@ namespace
 	static constexpr int32 InputActionsFileVersion = 1;
 	static constexpr int32 InputActionDefinitionVersion = 1;
 
-	std::string NormalizeEnumToken (std::string_view Value)
+	// Enum names as people write them: "Left_Shift", "left-shift" and "Left Shift" are LeftShift.
+	FString NormalizeEnumToken (FStringView Value)
 	{
-		std::string normalized;
-		normalized.reserve(Value.size());
-		for (char c : Value)
-		{
-			if (c == '_' || c == '-' || c == ' ')
-			{
-				continue;
-			}
-			normalized.push_back(c);
-		}
+		FString normalized(Value);
+		normalized.RemoveAll('_');
+		normalized.RemoveAll('-');
+		normalized.RemoveAll(' ');
 		return normalized;
 	}
 
-	bool TryParseKey (const std::string& Value, KeyCode* OutCode)
+	bool TryParseKey (FStringView Value, KeyCode* OutCode)
 	{
-		std::string normalized = NormalizeEnumToken(Value);
-		if (normalized.size() == 1 && normalized[0] >= '0' && normalized[0] <= '9')
+		FString normalized = NormalizeEnumToken(Value);
+		if (normalized.Len() == 1u && ascii::IsDigit(normalized[0]))
 		{
-			normalized = "Digit" + normalized;
+			normalized.InsertAt(0, "Digit");
 		}
 		return enum_::TryParse(normalized, OutCode, true);
 	}
 
-	bool TryParseMouseButton (const std::string& Value, EMouseButton* OutButton)
+	bool TryParseMouseButton (FStringView Value, EMouseButton* OutButton)
 	{
-		const std::string normalized = NormalizeEnumToken(Value);
+		const FString normalized = NormalizeEnumToken(Value);
 		return enum_::TryParse(normalized, OutButton, true);
 	}
 
-	bool TryParseGamepadButton (const std::string& Value, EGamepadButton* OutButton)
+	bool TryParseGamepadButton (FStringView Value, EGamepadButton* OutButton)
 	{
-		const std::string normalized = NormalizeEnumToken(Value);
+		const FString normalized = NormalizeEnumToken(Value);
 		return enum_::TryParse(normalized, OutButton, true);
 	}
 
-	bool TryParseGamepadAxis (const std::string& Value, EGamepadAxis* OutAxis)
+	bool TryParseGamepadAxis (FStringView Value, EGamepadAxis* OutAxis)
 	{
-		const std::string normalized = NormalizeEnumToken(Value);
+		const FString normalized = NormalizeEnumToken(Value);
 		return enum_::TryParse(normalized, OutAxis, true);
 	}
 
-	std::string KeyToString (KeyCode Code)
+	// A reflected enum's name, or Fallback for a value outside the reflected set.
+	template <enum_::ReflectedEnum E>
+	FStringLiteral ToStringOr (E Value, FStringLiteral Fallback)
 	{
-		const std::string_view name = enum_::ToString(Code);
-		return name.empty() ? "unknown" : std::string(name);
+		const FStringLiteral name = enum_::ToString(Value);
+		return name.IsEmpty() ? Fallback : name;
 	}
 
-	std::string MouseButtonToString (EMouseButton Button)
+	FStringLiteral KeyToString (KeyCode Code)
 	{
-		const std::string_view name = enum_::ToString(Button);
-		return name.empty() ? "left" : std::string(name);
+		return ToStringOr(Code, "unknown");
 	}
 
-	std::string GamepadButtonToString (EGamepadButton Button)
+	FStringLiteral MouseButtonToString (EMouseButton Button)
 	{
-		const std::string_view name = enum_::ToString(Button);
-		return name.empty() ? "a" : std::string(name);
+		return ToStringOr(Button, "left");
 	}
 
-	std::string GamepadAxisToString (EGamepadAxis Axis)
+	FStringLiteral GamepadButtonToString (EGamepadButton Button)
 	{
-		const std::string_view name = enum_::ToString(Axis);
-		return name.empty() ? "leftx" : std::string(name);
+		return ToStringOr(Button, "a");
 	}
 
-	bool TryParseActionKind (const std::string& Value, EInputActionKind* OutKind)
+	FStringLiteral GamepadAxisToString (EGamepadAxis Axis)
 	{
-		const std::string normalized = NormalizeEnumToken(Value);
+		return ToStringOr(Axis, "leftx");
+	}
+
+	bool TryParseActionKind (FStringView Value, EInputActionKind* OutKind)
+	{
+		const FString normalized = NormalizeEnumToken(Value);
 		return enum_::TryParse(normalized, OutKind, true);
 	}
 
-	std::string_view ActionKindToString (EInputActionKind Kind)
+	FStringLiteral ActionKindToString (EInputActionKind Kind)
 	{
-		const std::string_view name = enum_::ToString(Kind);
-		return name.empty() ? std::string_view("button") : name;
+		return ToStringOr(Kind, "button");
 	}
 
-	bool TryParseBindingType (const std::string& Value, EInputBindingType* OutType)
+	bool TryParseBindingType (FStringView Value, EInputBindingType* OutType)
 	{
-		const std::string normalized = NormalizeEnumToken(Value);
+		const FString normalized = NormalizeEnumToken(Value);
 		return enum_::TryParse(normalized, OutType, true);
 	}
 
-	std::string_view BindingTypeToString (EInputBindingType Type)
+	FStringLiteral BindingTypeToString (EInputBindingType Type)
 	{
-		const std::string_view name = enum_::ToString(Type);
-		return name.empty() ? std::string_view("key") : name;
+		return ToStringOr(Type, "key");
 	}
 
-	SFlags<EInputModifier> ParseModifiers (const std::string& Value)
+	// "Shift|Ctrl": names ignore A-Z case, as enum names do; unknown ones are skipped.
+	SFlags<EInputModifier> ParseModifiers (FStringView Value)
 	{
 		SFlags<EInputModifier> result = EInputModifier::None;
-		std::string token;
-		std::istringstream stream(Value);
-		while (std::getline(stream, token, '|'))
+		for (const FStringView token : Value.Split('|', EStringSplit::Trim))
 		{
-			const std::string normalized = assets::text::ToLowerCopy(assets::text::TrimCopy(token));
-			if (normalized == "shift")
+			const auto matches = [token] (FStringView Name) { return token.Equals<ESearchCase::IgnoreCaseAscii>(Name); };
+			if (matches("shift"))
 			{
 				result += EInputModifier::Shift;
 			}
-			else if (normalized == "ctrl" || normalized == "control")
+			else if (matches("ctrl") || matches("control"))
 			{
 				result += EInputModifier::Ctrl;
 			}
-			else if (normalized == "alt")
+			else if (matches("alt"))
 			{
 				result += EInputModifier::Alt;
 			}
-			else if (normalized == "super" || normalized == "win")
+			else if (matches("super") || matches("win"))
 			{
 				result += EInputModifier::Super;
 			}
-			else if (normalized == "capslock")
+			else if (matches("capslock"))
 			{
 				result += EInputModifier::CapsLock;
 			}
-			else if (normalized == "numlock")
+			else if (matches("numlock"))
 			{
 				result += EInputModifier::NumLock;
 			}
@@ -188,17 +186,13 @@ namespace
 		return result;
 	}
 
-	bool TryParseBinding (const std::string& Value, SInputBinding* OutBinding)
+	// "<type> <key, button or axis> [option=value ...]", separated by whitespace.
+	bool TryParseBinding (FStringView Value, SInputBinding* OutBinding)
 	{
-		std::istringstream stream(Value);
-		std::string token;
-		if (!(stream >> token))
-		{
-			return false;
-		}
-
+		const FStringSplitRange tokens = Value.SplitWhitespace();
+		auto token = tokens.begin();
 		EInputBindingType type = EInputBindingType::Key;
-		if (!TryParseBindingType(token, &type))
+		if (token == tokens.end() || !TryParseBindingType(*token, &type))
 		{
 			return false;
 		}
@@ -206,7 +200,7 @@ namespace
 		SInputBinding binding = {};
 		binding.Type = type;
 
-		if (!(stream >> token))
+		if (++token == tokens.end())
 		{
 			return false;
 		}
@@ -214,13 +208,13 @@ namespace
 		bool parsedPrimary = false;
 		switch (type)
 		{
-			case EInputBindingType::Key: parsedPrimary = TryParseKey(token, &binding.Key);
+			case EInputBindingType::Key: parsedPrimary = TryParseKey(*token, &binding.Key);
 				break;
-			case EInputBindingType::MouseButton: parsedPrimary = TryParseMouseButton(token, &binding.MouseButton);
+			case EInputBindingType::MouseButton: parsedPrimary = TryParseMouseButton(*token, &binding.MouseButton);
 				break;
-			case EInputBindingType::GamepadButton: parsedPrimary = TryParseGamepadButton(token, &binding.GamepadButton);
+			case EInputBindingType::GamepadButton: parsedPrimary = TryParseGamepadButton(*token, &binding.GamepadButton);
 				break;
-			case EInputBindingType::GamepadAxis: parsedPrimary = TryParseGamepadAxis(token, &binding.GamepadAxis);
+			case EInputBindingType::GamepadAxis: parsedPrimary = TryParseGamepadAxis(*token, &binding.GamepadAxis);
 				break;
 			default: break;
 		}
@@ -230,37 +224,34 @@ namespace
 			return false;
 		}
 
-		while (stream >> token)
+		// Options: a token without '=', or with a value that does not parse, is skipped.
+		while (++token != tokens.end())
 		{
-			const size_t split = token.find('=');
-			if (split == std::string::npos)
+			const FStringView option = *token;
+			const SStringSplit keyValue = option.SplitFirst('=');
+			if (!keyValue)
 			{
 				continue;
 			}
 
-			std::string key = assets::text::ToLowerCopy(token.substr(0, split));
-			std::string value = assets::text::TrimCopy(token.substr(split + 1));
-			value = assets::text::StripQuotes(value);
+			const auto matches = [&keyValue] (FStringView Name) { return keyValue.Left.Equals<ESearchCase::IgnoreCaseAscii>(Name); };
+			const FStringView value = keyValue.Right.TrimQuotes("\"'");
 
-			if (key == "scale")
+			if (matches("scale"))
 			{
-				(void)assets::text::ParseFloat(value, &binding.Scale);
+				binding.Scale = value.ToFloat().value_or(binding.Scale);
 			}
-			else if (key == "deadzone")
+			else if (matches("deadzone"))
 			{
-				(void)assets::text::ParseFloat(value, &binding.Deadzone);
+				binding.Deadzone = value.ToFloat().value_or(binding.Deadzone);
 			}
-			else if (key == "mods" || key == "modifiers")
+			else if (matches("mods") || matches("modifiers"))
 			{
 				binding.Modifiers = ParseModifiers(value);
 			}
-			else if (key == "gamepad")
+			else if (matches("gamepad"))
 			{
-				uint32 idx = 0;
-				if (assets::text::ParseUInt32(value, &idx))
-				{
-					binding.GamepadIndex = static_cast<uint8>(idx);
-				}
+				binding.GamepadIndex = value.TryParse<uint8>().value_or(binding.GamepadIndex);
 			}
 		}
 
@@ -268,35 +259,36 @@ namespace
 		return true;
 	}
 
-	std::string BindingToString (const SInputBinding& Binding)
+	// Floats are written shortest-round-trip, so they read back exactly.
+	FString BindingToString (const SInputBinding& Binding)
 	{
-		std::ostringstream stream;
-		stream << BindingTypeToString(Binding.Type) << " ";
+		FString text;
+		text << BindingTypeToString(Binding.Type) << ' ';
 
 		switch (Binding.Type)
 		{
-			case EInputBindingType::Key: stream << KeyToString(Binding.Key);
+			case EInputBindingType::Key: text << KeyToString(Binding.Key);
 				break;
-			case EInputBindingType::MouseButton: stream << MouseButtonToString(Binding.MouseButton);
+			case EInputBindingType::MouseButton: text << MouseButtonToString(Binding.MouseButton);
 				break;
-			case EInputBindingType::GamepadButton: stream << GamepadButtonToString(Binding.GamepadButton);
+			case EInputBindingType::GamepadButton: text << GamepadButtonToString(Binding.GamepadButton);
 				break;
-			case EInputBindingType::GamepadAxis: stream << GamepadAxisToString(Binding.GamepadAxis);
+			case EInputBindingType::GamepadAxis: text << GamepadAxisToString(Binding.GamepadAxis);
 				break;
 			default: break;
 		}
 
 		if (Binding.Scale != 1.0f)
 		{
-			stream << " scale=" << Binding.Scale;
+			text << " scale=" << Binding.Scale;
 		}
 		if (Binding.Deadzone > 0.0f)
 		{
-			stream << " deadzone=" << Binding.Deadzone;
+			text << " deadzone=" << Binding.Deadzone;
 		}
 		if (Binding.GamepadIndex != 0u)
 		{
-			stream << " gamepad=" << static_cast<uint32>(Binding.GamepadIndex);
+			text << " gamepad=" << static_cast<uint32>(Binding.GamepadIndex);
 		}
 		if (Binding.Modifiers.HasFlag(EInputModifier::Shift)
 			|| Binding.Modifiers.HasFlag(EInputModifier::Ctrl)
@@ -305,16 +297,16 @@ namespace
 			|| Binding.Modifiers.HasFlag(EInputModifier::CapsLock)
 			|| Binding.Modifiers.HasFlag(EInputModifier::NumLock))
 		{
-			stream << " mods=";
+			text << " mods=";
 			bool first = true;
-			auto append = [&stream, &first] (const char* name)
+			auto append = [&text, &first] (const char* name)
 			{
 				if (!first)
 				{
-					stream << "|";
+					text << '|';
 				}
 				first = false;
-				stream << name;
+				text << name;
 			};
 
 			if (Binding.Modifiers.HasFlag(EInputModifier::Shift))
@@ -343,7 +335,7 @@ namespace
 			}
 		}
 
-		return stream.str();
+		return text;
 	}
 }
 
@@ -352,19 +344,18 @@ bool CInputActionMap::LoadFromFile (const std::filesystem::path& Path)
 {
 	Clear();
 
-	std::ifstream stream(Path);
-	if (!stream.is_open())
+	const std::optional<FString> text = platform::ReadFileText(Path);
+	if (!text)
 	{
 		return false;
 	}
 
-	std::string line;
 	SInputAction* currentAction = nullptr;
 
-	while (std::getline(stream, line))
+	for (const FStringView line : text->Lines())
 	{
-		std::string key;
-		std::string value;
+		FStringView key;
+		FStringView value;
 		if (!assets::text::TryParseKeyValue(line, &key, &value))
 		{
 			continue;
@@ -454,20 +445,19 @@ bool LoadInputActionDefinition (const std::filesystem::path& Path, SInputActionD
 		return false;
 	}
 
-	std::ifstream stream(Path);
-	if (!stream.is_open())
+	const std::optional<FString> text = platform::ReadFileText(Path);
+	if (!text)
 	{
 		return false;
 	}
 
 	SInputActionDefinition action;
-	action.Name = Path.stem().string();
+	action.Name = FString::FromPath(Path.stem());
 
-	std::string line;
-	while (std::getline(stream, line))
+	for (const FStringView line : text->Lines())
 	{
-		std::string key;
-		std::string value;
+		FStringView key;
+		FStringView value;
 		if (!assets::text::TryParseKeyValue(line, &key, &value))
 		{
 			continue;
@@ -518,7 +508,7 @@ bool SaveInputActionDefinition (const std::filesystem::path& Path, const SInputA
 
 bool SaveInputActionDefinitionToStream (std::ostream& Stream, const SInputActionDefinition& Action)
 {
-	const std::string name = Action.Name.empty() ? "Unnamed" : Action.Name;
+	const FStringView name = Action.Name.IsEmpty() ? "Unnamed" : Action.Name.View();
 	Stream << "version: " << InputActionDefinitionVersion << "\n";
 	Stream << "# FRT input action\n\n";
 	Stream << "action: " << name << "\n";
@@ -626,7 +616,7 @@ void CInputActionMap::Evaluate (const CInputSystem& Input, WindowId Window)
 	}
 }
 
-const SInputAction* CInputActionMap::FindAction (const std::string& Name) const
+const SInputAction* CInputActionMap::FindAction (FStringView Name) const
 {
 	auto it = ActionIndex.find(Name);
 	if (it == ActionIndex.end())
@@ -637,12 +627,12 @@ const SInputAction* CInputActionMap::FindAction (const std::string& Name) const
 	return &Actions[it->second];
 }
 
-SInputAction* CInputActionMap::FindAction (const std::string& Name)
+SInputAction* CInputActionMap::FindAction (FStringView Name)
 {
 	return const_cast<SInputAction*>(static_cast<const CInputActionMap&>(*this).FindAction(Name));
 }
 
-const SInputActionState* CInputActionMap::FindActionState (const std::string& Name) const
+const SInputActionState* CInputActionMap::FindActionState (FStringView Name) const
 {
 	auto it = ActionIndex.find(Name);
 	if (it == ActionIndex.end())
@@ -653,12 +643,12 @@ const SInputActionState* CInputActionMap::FindActionState (const std::string& Na
 	return &States[it->second];
 }
 
-SInputActionState* CInputActionMap::FindActionState (const std::string& Name)
+SInputActionState* CInputActionMap::FindActionState (FStringView Name)
 {
 	return const_cast<SInputActionState*>(static_cast<const CInputActionMap&>(*this).FindActionState(Name));
 }
 
-void CInputActionMap::ApplyActionKind (const std::string& Name, EInputActionKind Kind)
+void CInputActionMap::ApplyActionKind (FStringView Name, EInputActionKind Kind)
 {
 	SInputAction* action = FindAction(Name);
 	if (!action)

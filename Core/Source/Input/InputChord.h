@@ -1,10 +1,9 @@
 #pragma once
 
-#include <string>
-#include <string_view>
 #include <vector>
 
 #include "Core.h"
+#include "Containers/String.h"
 #include "Input/InputTypes.h"
 
 
@@ -32,19 +31,19 @@ struct SInputChord
 };
 
 // One chord. False (and OutChord untouched) for anything but exactly one key with modifiers.
-FRT_CORE_API bool ParseInputChord (std::string_view Text, SInputChord& OutChord);
+FRT_CORE_API bool ParseInputChord (FStringView Text, SInputChord& OutChord);
 
 // A comma-separated list: "W, Up, Numpad8". Empty text or "None" is the empty list. Entries that
-// do not parse are skipped, reported in OutError, and make the result false.
-FRT_CORE_API bool ParseInputChords (std::string_view Text, std::vector<SInputChord>& OutChords, std::string* OutError = nullptr);
+// do not parse are skipped, appended to OutError (quoted, comma-separated), and make the result false.
+FRT_CORE_API bool ParseInputChords (FStringView Text, std::vector<SInputChord>& OutChords, FString* OutError = nullptr);
 
 // A key alone: its KeyCode name or one of the aliases above.
-FRT_CORE_API bool ParseKeyName (std::string_view Text, KeyCode& OutKey);
+FRT_CORE_API bool ParseKeyName (FStringView Text, KeyCode& OutKey);
 
 // Text ParseInputChord reads back: modifiers in Unreal's order (Ctrl, Alt, Shift, Super), the
 // key by its short alias where it has one ("Ctrl+Shift+P", "Up", "1"). Empty for no chord.
-FRT_CORE_API std::string FormatInputChord (const SInputChord& Chord);
-FRT_CORE_API std::string_view GetKeyDisplayName (KeyCode Key);
+FRT_CORE_API FString FormatInputChord (const SInputChord& Chord);
+FRT_CORE_API FStringLiteral GetKeyDisplayName (KeyCode Key);
 
 // The chord's key was pressed this frame with exactly its modifiers held - no fewer, no more
 // (Ctrl+P does not fire on Ctrl+Shift+P). Auto-repeat does not count.

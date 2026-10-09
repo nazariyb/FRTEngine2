@@ -928,7 +928,7 @@ void CRenderer::RenderView (CRenderView& View, const SCameraView& Camera)
 	View.PrevRenderMode = View.GetRenderMode();
 	View.LastRenderedFrame = FrameNumber;
 
-	GpuProfiler.SetView(nullptr);
+	GpuProfiler.SetView({});
 }
 
 void CRenderer::RecordRaytracing (CRenderView& View, CRenderContext& Context, bool bResetHistory)
@@ -1165,7 +1165,7 @@ void CRenderer::DrawRendererUi (CRenderView& Inspected)
 	ImGui::Text("SM %s  DXR %d.%d  SER %s", ShaderModelName(caps.HighestShaderModel),
 		caps.RaytracingTier / 10, caps.RaytracingTier % 10,
 		Inspected.PathTracer->IsSerActive() ? (caps.bSerActuallyReorders ? "active" : "active (no-op on this GPU)") : "off");
-	ImGui::Text("%s: render %ux%u -> display %ux%u", Inspected.GetName(), Inspected.RenderWidth, Inspected.RenderHeight, Inspected.DisplayWidth, Inspected.DisplayHeight);
+	ImGui::Text("%s: render %ux%u -> display %ux%u", Inspected.GetName().CStr(), Inspected.RenderWidth, Inspected.RenderHeight, Inspected.DisplayWidth, Inspected.DisplayHeight);
 
 	int mode = static_cast<int>(Inspected.GetRenderMode() == ERenderMode::Raster ? 0 : 1);
 	const char* renderModes[] = { "Raster preview", "Path tracing" };

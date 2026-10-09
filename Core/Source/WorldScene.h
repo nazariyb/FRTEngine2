@@ -4,6 +4,7 @@
 
 #include "System.h"
 #include "Containers/Array.h"
+#include "Containers/StringView.h"
 #include "Graphics/Camera.h"
 #include "Graphics/Render/GraphicsCoreTypes.h"
 
@@ -75,7 +76,8 @@ public:
 	 */
 	std::unique_ptr<CWorldScene> Clone () const;
 
-	memory::TRefShared<CEntity> SpawnEntity (const std::string& Name = "");
+	// An empty Name gets "Entity #<n>".
+	memory::TRefShared<CEntity> SpawnEntity (FStringView Name = {});
 
 	/**
 	 * One frame. Simulation - the Prepare and Update phases, the legacy entity tick - runs only

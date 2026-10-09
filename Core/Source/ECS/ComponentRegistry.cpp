@@ -1,8 +1,6 @@
 #include "ECS/ComponentRegistry.h"
 
-#include <algorithm>
 #include <cstdint>
-#include <cstring>
 
 
 namespace frt
@@ -20,7 +18,7 @@ CComponentRegistry& CComponentRegistry::Get()
 
 ComponentId CComponentRegistry::Register(const SComponentInfo& InInfo)
 {
-	frt_assert(InInfo.Name != nullptr);
+	frt_assert(!InInfo.Name.IsEmpty());
 
 	// Idempotent by name. Two modules registering the same type must agree on the id,
 	// and a module loaded later must not append a duplicate.
@@ -34,8 +32,8 @@ ComponentId CComponentRegistry::Register(const SComponentInfo& InInfo)
 			SComponentInfo& stored = Components[id];
 			stored = InInfo;
 			stored.Id = id;
-			stored.Name = Names[id];
-			Registrants[id] = InInfo.Name;
+			stored.Name = FStringView(Names[id]);
+			Registrants[id] = InInfo.Name.GetData();
 			return id;
 		}
 
@@ -50,20 +48,18 @@ ComponentId CComponentRegistry::Register(const SComponentInfo& InInfo)
 
 	// Raise MaxComponentTypes if this ever fires; it is a real cap, not a soft one.
 	frt_assert(Count < MaxComponentTypes);
-	frt_assert(std::strlen(InInfo.Name) <= MaxNameLength);
+	frt_assert(InInfo.Name.Len() <= MaxNameLength);
 
 	// The name is copied: InInfo.Name is a literal in the registrant's image, which may be
 	// unloaded long before the registry is done with the name.
 	const ComponentId id = static_cast<ComponentId>(Count);
-	const size_t nameLength = (std::min)(std::strlen(InInfo.Name), static_cast<size_t>(MaxNameLength));
-	std::memcpy(Names[id], InInfo.Name, nameLength);
-	Names[id][nameLength] = '\0';
+	const uint32 nameLength = InInfo.Name.CopyTo(Names[id], MaxNameLength + 1u);
 
 	SComponentInfo& stored = Components[id];
 	stored = InInfo;
 	stored.Id = id;
-	stored.Name = Names[id];
-	Registrants[id] = InInfo.Name;
+	stored.Name = FStringView(Names[id], nameLength);
+	Registrants[id] = InInfo.Name.GetData();
 
 	++Count;
 
@@ -104,16 +100,11 @@ const SComponentInfo* CComponentRegistry::Find(ComponentId InId) const
 	return &Components[InId];
 }
 
-const SComponentInfo* CComponentRegistry::FindByName(const char* InName) const
+const SComponentInfo* CComponentRegistry::FindByName(FStringView InName) const
 {
-	if (InName == nullptr)
-	{
-		return nullptr;
-	}
-
 	for (uint32 i = 0u; i < Count; ++i)
 	{
-		if (std::strcmp(Components[i].Name, InName) == 0)
+		if (Components[i].Name == InName)
 		{
 			return &Components[i];
 		}

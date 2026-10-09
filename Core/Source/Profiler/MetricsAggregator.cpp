@@ -1,7 +1,5 @@
 #include "Profiler/MetricsAggregator.h"
 
-#include <cstring>
-
 #include "Profiler/GpuProfiler.h"
 
 
@@ -61,7 +59,7 @@ void CMetricsAggregator::Sample (
 	{
 		const SGpuScopeResult& r = GpuResults[i];
 		m.GpuTotalMs += r.DurationMs;
-		if (r.Name && std::strcmp(r.Name, "RT_Dispatch") == 0)
+		if (r.Name == "RT_Dispatch")
 		{
 			m.RtDispatchMs = r.DurationMs;
 		}

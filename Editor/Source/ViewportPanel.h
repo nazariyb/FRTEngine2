@@ -3,6 +3,7 @@
 #include "imgui.h"
 
 #include "CoreTypes.h"
+#include "Containers/StringView.h"
 
 
 namespace frt::graphics
@@ -89,7 +90,7 @@ struct SViewportFrame
 class CViewportPanel
 {
 public:
-	CViewportPanel (EViewportKind Kind, const char* Name);
+	CViewportPanel (EViewportKind Kind, FStringLiteral Name);
 
 	void Create (graphics::CRenderer& Renderer);
 	void Destroy (graphics::CRenderer& Renderer);
@@ -99,7 +100,7 @@ public:
 
 	graphics::CRenderView& GetView () const { return *View; }
 	EViewportKind GetKind () const { return Kind; }
-	const char* GetName () const { return Name; }
+	FStringLiteral GetName () const { return Name; }
 	// Width over height of the view (1 before it has a size).
 	float GetAspect () const;
 
@@ -115,7 +116,7 @@ private:
 	void UpdateSize (graphics::CRenderer& Renderer, uint32 Width, uint32 Height);
 
 	EViewportKind Kind;
-	const char* Name;
+	FStringLiteral Name;
 	char OverlayName[48] = {};
 	graphics::CRenderView* View = nullptr;
 

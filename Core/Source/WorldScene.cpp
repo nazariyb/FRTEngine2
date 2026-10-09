@@ -86,12 +86,12 @@ void frt::CWorldScene::RunSystemsPhase (EUpdatePhase Phase, const SUpdateContext
 	}
 }
 
-frt::memory::TRefShared<frt::CEntity> frt::CWorldScene::SpawnEntity (const std::string& Name)
+frt::memory::TRefShared<frt::CEntity> frt::CWorldScene::SpawnEntity (FStringView Name)
 {
 	auto newEntity = memory::NewShared<CEntity>();
-	if (Name.empty())
+	if (Name.IsEmpty())
 	{
-		newEntity->Name = "Entity #" + std::to_string(Entities.Count());
+		newEntity->Name = FString::Format("Entity #{}", Entities.Count());
 	}
 	else
 	{

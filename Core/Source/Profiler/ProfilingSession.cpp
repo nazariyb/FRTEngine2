@@ -63,7 +63,7 @@ void CProfilingSession::Stop ()
 	WarmupLeft = 0u;
 }
 
-const char* CProfilingSession::PhaseName () const
+FStringLiteral CProfilingSession::PhaseName () const
 {
 	switch (State)
 	{

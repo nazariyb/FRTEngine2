@@ -95,9 +95,9 @@ bool CEditor::StartUp ()
 	if (config.Get("Editor", "SmokeTest", false))
 	{
 		SmokeTest = std::make_unique<CEditorSmokeTest>(config);
-		// Scripted runs start from the default layout and leave the user's alone. ImGui reads
-		// the file on its first frame, which has not happened yet.
-		ImGui::GetIO().IniFilename = nullptr;
+		// Scripted runs start from the default layout and leave the user's alone. The layout is
+		// read on the first frame, which has not happened yet.
+		Engine.GetUi()->DisableIniFile();
 	}
 
 	// Shipped bindings, then the user's overrides - a scripted run's own, so that it neither
@@ -163,7 +163,7 @@ int CEditor::Run ()
 		// a viewport restored from maximized shows its own tab on the very first frame.
 		if (FocusRequest >= 0)
 		{
-			ImGui::SetWindowFocus(Viewports[FocusRequest].GetName());
+			ImGui::SetWindowFocus(Viewports[FocusRequest].GetName().CStr());
 		}
 		// The bars first: they take their space from the work area the dock space then fills.
 		// Submitted under a fullscreen viewport too - ImGui applies a bar's inset a frame late,
@@ -623,7 +623,7 @@ void CEditor::DrawMainMenu ()
 	{
 		for (int32 i = 0; i < ViewportCount; ++i)
 		{
-			if (ImGui::MenuItem(Viewports[i].GetName(), nullptr, &Viewports[i].bOpen) && Viewports[i].bOpen)
+			if (ImGui::MenuItem(Viewports[i].GetName().CStr(), nullptr, &Viewports[i].bOpen) && Viewports[i].bOpen)
 			{
 				FocusRequest = i;
 			}

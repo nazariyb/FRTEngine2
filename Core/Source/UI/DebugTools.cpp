@@ -2,10 +2,7 @@
 
 #if !defined(FRT_HEADLESS)
 
-#include <cstring>
 #include <filesystem>
-#include <format>
-#include <ranges>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -21,6 +18,7 @@
 #include "Graphics/Render/Renderer.h"
 #include "Graphics/Render/Scene/WorldExtraction.h"
 #include "Profiler/ProfilingExport.h"
+#include "UI/ImGuiString.h"
 
 
 namespace frt
@@ -48,7 +46,7 @@ void CDebugTools::Update (const SContext& Context, float RealDeltaSeconds)
 	for (uint32 i = 0; i < results.Count(); ++i)
 	{
 		const profiler::SGpuScopeResult& r = results[i];
-		if (!r.View || std::strcmp(r.View, Context.View.GetName()) == 0)
+		if (r.View.IsEmpty() || r.View == Context.View.GetName())
 		{
 			viewResults.Add(r);
 		}
@@ -138,7 +136,7 @@ void CDebugTools::DrawStatsPanel (const SContext& Context)
 		ImGui::TextColored(ImVec4(1, 0.8f, 0.2f, 1),
 			"PROFILING %u/%u  [%s]",
 			ProfilingSession.ProfileIndex() + 1u, ProfilingSession.ProfileCount(),
-			ProfilingSession.PhaseName());
+			ProfilingSession.PhaseName().CStr());
 		if (ProfilingSession.WarmupRemaining() > 0u)
 		{
 			ImGui::Text("  warmup  %u frames left", ProfilingSession.WarmupRemaining());
@@ -155,26 +153,26 @@ void CDebugTools::DrawStatsPanel (const SContext& Context)
 			Context.World.bAccumulationDirty = true;
 		}
 		ImGui::SameLine();
-		ImGui::TextDisabled("-> %s", SessionNameBuf);
+		ImGui::TextDisabled("-> %s", SessionName.CStr());
 		ImGui::Separator();
 	}
 	else
 	{
 		ImGui::SetNextItemWidth(160.0f);
-		ImGui::InputText("##sessionName", SessionNameBuf, sizeof(SessionNameBuf));
+		ui::InputText("##sessionName", SessionName, 0, nullptr, nullptr, MaxSessionNameBytes);
 		ImGui::SameLine();
 		const bool bStart = ImGui::Button("Start profiling session");
 
-		const std::filesystem::path dir = paths::GetProfilingDir() / SessionNameBuf;
+		const std::filesystem::path dir = paths::GetProfilingDir() / SessionName.ToPath();
 		std::error_code ec;
 		const bool bExists = std::filesystem::exists(dir, ec);
 		if (bExists)
 		{
 			ImGui::TextColored(ImVec4(1, 0.5f, 0.2f, 1),
-				"folder '%s' exists - Start will DELETE it", SessionNameBuf);
+				"folder '%s' exists - Start will DELETE it", SessionName.CStr());
 		}
 
-		if (bStart && SessionNameBuf[0] != '\0')
+		if (bStart && !SessionName.IsEmpty())
 		{
 			BeginProfilingOverride(Context);
 			SessionSceneDesc = profiler::CaptureSceneDescriptor(
@@ -201,13 +199,14 @@ void CDebugTools::DrawStatsPanel (const SContext& Context)
 	for (uint32 i = 0; i < gpuResults.Count(); ++i)
 	{
 		const auto& r = gpuResults[i];
-		if (r.View)
+		const char* name = r.Name.IsEmpty() ? "?" : r.Name.CStr();
+		if (!r.View.IsEmpty())
 		{
-			ImGui::Text("  %-22s %7.3f ms  [%s]", r.Name ? r.Name : "?", r.DurationMs, r.View);
+			ImGui::Text("  %-22s %7.3f ms  [%s]", name, r.DurationMs, r.View.CStr());
 		}
 		else
 		{
-			ImGui::Text("  %-22s %7.3f ms", r.Name ? r.Name : "?", r.DurationMs);
+			ImGui::Text("  %-22s %7.3f ms", name, r.DurationMs);
 		}
 		gpuTotalMs += r.DurationMs;
 	}
@@ -371,7 +370,7 @@ void CDebugTools::DrawEditorPanel (const SContext& Context)
 	if (SelectedEntityIndex >= 0 && SelectedEntityIndex < entityCount)
 	{
 		CEntity* sel = entities[SelectedEntityIndex].GetRawIgnoringLifetime();
-		preview = (sel && !sel->Name.empty()) ? sel->Name.c_str() : "(unnamed)";
+		preview = (sel && !sel->Name.IsEmpty()) ? sel->Name.CStr() : "(unnamed)";
 	}
 	if (ImGui::BeginCombo("Selected", preview))
 	{
@@ -382,7 +381,7 @@ void CDebugTools::DrawEditorPanel (const SContext& Context)
 		for (int32 i = 0; i < entityCount; ++i)
 		{
 			CEntity* e = entities[i].GetRawIgnoringLifetime();
-			const char* label = (e && !e->Name.empty()) ? e->Name.c_str() : "(unnamed)";
+			const char* label = (e && !e->Name.IsEmpty()) ? e->Name.CStr() : "(unnamed)";
 			const bool selected = (SelectedEntityIndex == i);
 			ImGui::PushID(i);
 			if (ImGui::Selectable(label, selected))
@@ -400,13 +399,10 @@ void CDebugTools::DrawEditorPanel (const SContext& Context)
 		CEntity* ent = entities[SelectedEntityIndex].GetRawIgnoringLifetime();
 		if (ent)
 		{
-			char nameBuf[64];
-			const size_t nameLen = ent->Name.size() < sizeof(nameBuf) - 1 ? ent->Name.size() : sizeof(nameBuf) - 1;
-			std::memcpy(nameBuf, ent->Name.data(), nameLen);
-			nameBuf[nameLen] = '\0';
-			if (ImGui::InputText("Name", nameBuf, sizeof(nameBuf)))
+			EntityNameEdit = ent->Name;
+			if (ui::InputText("Name", EntityNameEdit, 0, nullptr, nullptr, MaxEntityNameBytes))
 			{
-				ent->Name = nameBuf;
+				ent->Name = EntityNameEdit;
 			}
 
 			Vector3f pos = ent->Transform.GetTranslation();
@@ -433,20 +429,15 @@ void CDebugTools::DrawDisplaySettingsPanel (const SContext& Context)
 	// TODO: revisit to remove per-frame reallocations.
 	ImGui::Begin("DisplaySettings");
 
-	const auto strToChar = [] (void* UserData, int Idx) -> const char*
-	{
-		return static_cast<std::string*>(UserData)[Idx].c_str();
-	};
-
 	SDisplaySettings& displaySettings = Context.Engine.GetUserSettings().DisplaySettings;
 	const graphics::SDisplayOptions& DisplayOptions = Context.Engine.GetDisplayOptions();
 
 	{
-		const auto monitorNames = DisplayOptions.GetNames();
+		// The display options name their monitors in std::string.
+		const std::vector<std::string> names = DisplayOptions.GetNames();
+		const std::vector<FString> monitorNames(names.begin(), names.end());
 		auto labelMonitor = "Monitor";
-		ImGui::Combo(
-			labelMonitor, &displaySettings.MonitorIndex, strToChar, (void*)monitorNames.data(),
-			(int)monitorNames.size());
+		ui::Combo(labelMonitor, &displaySettings.MonitorIndex, monitorNames);
 	}
 
 	displaySettings.MonitorIndex = DisplayOptions.ClampMonitorIndex(displaySettings.MonitorIndex);
@@ -455,7 +446,7 @@ void CDebugTools::DrawDisplaySettingsPanel (const SContext& Context)
 
 	{
 		// TODO: strs should be pre-made or at least pre-allocated
-		std::vector<std::string> resolutionStrs;
+		std::vector<FString> resolutionStrs;
 		resolutionStrs.reserve(resolutions.size());
 		for (const auto& res : resolutions)
 		{
@@ -464,9 +455,7 @@ void CDebugTools::DrawDisplaySettingsPanel (const SContext& Context)
 
 		auto labelResolution = "Resolution";
 		ImGui::BeginDisabled(displaySettings.IsFullscreen());
-		ImGui::Combo(
-			labelResolution, &displaySettings.ResolutionIndex, strToChar, resolutionStrs.data(),
-			(int)resolutionStrs.size());
+		ui::Combo(labelResolution, &displaySettings.ResolutionIndex, resolutionStrs);
 		ImGui::EndDisabled();
 	}
 
@@ -475,18 +464,18 @@ void CDebugTools::DrawDisplaySettingsPanel (const SContext& Context)
 	{
 		displaySettings.RefreshRateIndex = math::ClampIndex(displaySettings.RefreshRateIndex, refreshRates.size());
 
-		std::vector<std::string> rRStrs;
+		std::vector<FString> rRStrs;
 		rRStrs.reserve(refreshRates.size());
 		for (const auto& rr : refreshRates)
 		{
 			uint32 numerator, denominator;
 			math::DecodeTwoFromOne(rr, numerator, denominator);
-			rRStrs.emplace_back(std::format("{:.2f}", (float)numerator / (float)denominator));
+			rRStrs.emplace_back(FString::Format("{:.2f}", (float)numerator / (float)denominator));
 		}
 
 		auto labelRR = "RefreshRate";
 		ImGui::BeginDisabled(!displaySettings.IsFullscreen());
-		ImGui::Combo(labelRR, &displaySettings.RefreshRateIndex, strToChar, rRStrs.data(), (int)rRStrs.size());
+		ui::Combo(labelRR, &displaySettings.RefreshRateIndex, rRStrs);
 		ImGui::EndDisabled();
 	}
 
@@ -497,7 +486,7 @@ void CDebugTools::DrawDisplaySettingsPanel (const SContext& Context)
 			labelFullscreen,
 			(int*)&displaySettings.FullscreenMode,
 			1, (int32)EFullscreenMode::Borderless,
-			modeNames[(int32)displaySettings.FullscreenMode].data(),
+			modeNames[(int32)displaySettings.FullscreenMode].CStr(),
 			ImGuiSliderFlags_AlwaysClamp);
 	}
 
@@ -508,7 +497,7 @@ void CDebugTools::DrawDisplaySettingsPanel (const SContext& Context)
 			labelRenderMode,
 			(int*)&displaySettings.RenderMode,
 			0, (int32)ERenderMode::Count - 1,
-			renderModeNames[(int32)displaySettings.RenderMode].data(),
+			renderModeNames[(int32)displaySettings.RenderMode].CStr(),
 			ImGuiSliderFlags_AlwaysClamp);
 	}
 

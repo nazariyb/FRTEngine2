@@ -27,7 +27,7 @@ constexpr D3D12_RESOURCE_STATES kShaderReadState =
 	D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 
 // Indexed by a-trous iteration.
-const char* const kAtrousScopes[kMaxAtrousIterations] = {
+constexpr FStringLiteral kAtrousScopes[kMaxAtrousIterations] = {
 	"Denoiser_Atrous0", "Denoiser_Atrous1", "Denoiser_Atrous2", "Denoiser_Atrous3",
 	"Denoiser_Atrous4", "Denoiser_Atrous5", "Denoiser_Atrous6", "Denoiser_Atrous7" };
 

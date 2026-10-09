@@ -21,6 +21,7 @@
 #include "Graphics/Render/Renderer.h"
 #include "Platform/Platform.h"
 #include "Project/UserRegistry.h"
+#include "UI/ImGuiLayer.h"
 #include "UI/ImGuiString.h"
 
 
@@ -225,7 +226,7 @@ CProjectManager::~CProjectManager ()
 int CProjectManager::Run ()
 {
 	// Nothing here to lay out: no layout file read or written.
-	ImGui::GetIO().IniFilename = nullptr;
+	Engine.GetUi()->DisableIniFile();
 	CWindow& window = *Engine.GetWindow();
 	while (Engine.PumpMessages())
 	{

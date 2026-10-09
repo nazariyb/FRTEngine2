@@ -1,10 +1,12 @@
 #include "Graphics/Render/Serializers/MaterialSerializers.h"
 
-#include <fstream>
+#include <optional>
 
 #include "Assets/TextAssetIO.h"
 #include "Assets/Yaml/YamlArchive.h"
+#include "Containers/String.h"
 #include "Graphics/Render/Serializers/MaterialSerialize.h"
+#include "Platform/Platform.h"
 
 
 namespace frt::graphics
@@ -68,18 +70,19 @@ bool CMaterialLegacyTextSerializer::CanRead (const std::filesystem::path& Path) 
 
 bool CMaterialLegacyTextSerializer::Read (const std::filesystem::path& Path, SMaterial& Out) const
 {
-	std::ifstream stream(Path);
-	if (!stream.is_open())
+	// Decoded as CanRead's GetTextAssetVersion decodes it. Read as bytes, a UTF-16 file that passed
+	// that check would match no key, and CMaterialLibrary's upgrade would write the defaults over it.
+	const std::optional<FString> text = platform::ReadFileText(Path);
+	if (!text)
 	{
 		return false;
 	}
 
-	std::string line;
-	while (std::getline(stream, line))
+	for (const FStringView line : text->Lines())
 	{
 		std::string key;
 		std::string value;
-		if (!assets::text::TryParseKeyValue(line, &key, &value))
+		if (!assets::text::TryParseKeyValue(line.ToStdString(), &key, &value))
 		{
 			continue;
 		}

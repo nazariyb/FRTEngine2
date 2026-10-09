@@ -4,6 +4,7 @@
 
 #include "Core.h"
 #include "CoreTypes.h"
+#include "Containers/StringView.h"
 
 
 // Compile-time backend toggles. Override per-config in build system if needed.
@@ -35,10 +36,11 @@ class CGpuProfiler;
 // RAII scope that brackets a region of GPU work with both a PIX event (if enabled)
 // and a pair of timestamp queries (if enabled). Construct on the command list;
 // destructor closes both. Compiles to nothing when both backends are off.
+// Name is a literal: the profiler reads it frames later. PIX shows it as ANSI, so keep it ASCII.
 class FRT_CORE_API CGpuScope
 {
 public:
-	CGpuScope (ID3D12GraphicsCommandList* CmdList, const char* Name);
+	CGpuScope (ID3D12GraphicsCommandList* CmdList, FStringLiteral Name);
 	~CGpuScope ();
 
 	CGpuScope (const CGpuScope&) = delete;

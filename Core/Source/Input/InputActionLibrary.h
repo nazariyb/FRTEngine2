@@ -1,10 +1,10 @@
 #pragma once
 
 #include <filesystem>
-#include <string>
-#include <unordered_map>
 
 #include "Core.h"
+#include "Containers/String.h"
+#include "Containers/StringMap.h"
 #include "Input/InputActions.h"
 
 
@@ -19,7 +19,7 @@ struct SInputActionDefinitionAsset
 
 struct SInputActionMapAsset
 {
-	std::string Name;
+	FString Name;
 	std::filesystem::path SourcePath;
 	std::filesystem::file_time_type LastWriteTime;
 	CInputActionMap ActionMap;
@@ -29,7 +29,7 @@ struct SInputActionMapAsset
 class FRT_CORE_API CInputActionLibrary
 {
 public:
-	SInputActionDefinitionAsset* LoadOrCreateAction (const std::string& Name);
+	SInputActionDefinitionAsset* LoadOrCreateAction (FStringView Name);
 	SInputActionMapAsset* LoadOrCreateActionMap (const std::filesystem::path& Path);
 	bool ReloadModifiedActions ();
 	bool ReloadModifiedActionMaps ();
@@ -39,21 +39,21 @@ public:
 	// viewport, a game with input - is decided by whoever routes input, not by re-evaluating.
 	void EvaluateActionMaps (const CInputSystem& Input);
 
-	const SInputActionDefinitionAsset* FindAction (const std::string& Name) const;
-	SInputActionDefinitionAsset* FindAction (const std::string& Name);
+	const SInputActionDefinitionAsset* FindAction (FStringView Name) const;
+	SInputActionDefinitionAsset* FindAction (FStringView Name);
 
 	SInputActionMapAsset* FindActionMap (const std::filesystem::path& Path);
 	const SInputActionMapAsset* FindActionMap (const std::filesystem::path& Path) const;
 
 private:
-	SInputActionDefinitionAsset* LoadActionIfExists (const std::string& Name);
+	SInputActionDefinitionAsset* LoadActionIfExists (FStringView Name);
 
-	static std::filesystem::path MakeActionPath (const std::string& Name);
-	static std::string MakeKey (const std::filesystem::path& Path);
-	static std::string MakeActionKey (const std::string& Name);
+	static std::filesystem::path MakeActionPath (FStringView Name);
+	static FString MakeKey (const std::filesystem::path& Path);
+	static FStringView MakeActionKey (FStringView Name);
 
 private:
-	std::unordered_map<std::string, SInputActionDefinitionAsset> ActionDefinitions;
-	std::unordered_map<std::string, SInputActionMapAsset> ActionMaps;
+	TStringMap<SInputActionDefinitionAsset> ActionDefinitions;   // by name, case-sensitive
+	TPathMap<SInputActionMapAsset> ActionMaps;                   // by MakeKey: the same file however it is spelled
 };
 }

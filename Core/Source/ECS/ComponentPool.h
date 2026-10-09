@@ -68,9 +68,10 @@ public:
 	// relocating raw bytes whenever the element type is not trivially copyable, chosen at
 	// compile time so POD components pay nothing for it.
 	//
-	// Supported is not the same as advisable. A component holding a std::string costs an
-	// allocation per entity and cannot be memcpy'd to the GPU or over a socket. Keep hot
-	// components trivially copyable; reserve the rest for cold metadata like Comp_Name.
+	// Supported is not the same as advisable. A component holding an FString costs an
+	// allocation per entity once the text outgrows its 22 inline bytes, and cannot be memcpy'd
+	// to the GPU or over a socket - which is why Comp_Name is a fixed buffer. Keep hot
+	// components trivially copyable; reserve the rest for cold metadata.
 	static_assert(std::is_move_constructible_v<T> && std::is_move_assignable_v<T>,
 		"Component must be move-constructible and move-assignable: pool growth relocates by "
 		"moving, and swap-and-pop removal move-assigns the tail element into the hole.");

@@ -1,12 +1,12 @@
 #pragma once
 
 #include <cmath>
-#include <sstream>
-#include <string>
+#include <ostream>
 
 #include "Core.h"
 #include "CoreTypes.h"
 #include "MathUtility.h"
+#include "Containers/String.h"
 
 
 namespace frt::math
@@ -91,7 +91,7 @@ public:
 	static Real Dist (const TVector2<Real>& Lhs, const TVector2<Real>& Rhs);
 	static Real DistSquared (const TVector2<Real>& Lhs, const TVector2<Real>& Rhs);
 
-	std::string ToString () const;
+	FString ToString () const;
 	template<concepts::Numerical N> friend std::ostream& operator << (std::ostream& Stream, const TVector2<N>& Vector);
 
 	FRT_CORE_API static const TVector2<Real> ZeroVector;
@@ -354,15 +354,9 @@ Real TVector2<Real>::DistSquared (const TVector2<Real>& Lhs, const TVector2<Real
 }
 
 template <concepts::Numerical T> 
-std::string TVector2<T>::ToString () const
+FString TVector2<T>::ToString () const
 {
-	std::stringstream ss;
-	ss << "(";
-	ss << x;
-	ss << ", ";
-	ss << y;
-	ss << ")";
-	return ss.str();
+	return FString::Format("({}, {})", x, y);
 }
 
 template <concepts::Numerical N>

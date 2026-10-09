@@ -2,7 +2,8 @@
 
 #include <cstdio>
 #include <fstream>
-#include <string>
+
+#include "Containers/String.h"
 
 
 namespace frt::profiler
@@ -13,11 +14,11 @@ bool WriteConfigTxt (
 	const SProfileConfig& Config,
 	const SSceneDescriptor& Scene)
 {
-	const std::filesystem::path path = Dir / (std::to_string(Index) + ".txt");
+	const std::filesystem::path path = Dir / FString::Format("{}.txt", Index).ToPath();
 	std::ofstream f(path);
 	if (!f)
 	{
-		std::printf("[profiler] cannot open %s\n", path.string().c_str());
+		std::printf("[profiler] cannot open %s\n", FString::FromPath(path).CStr());
 		std::fflush(stdout);
 		return false;
 	}
@@ -55,7 +56,7 @@ bool WriteConfigTxt (
 		f << "portal[" << i << "].screen_coverage: " << p.ScreenCoverage << "\n";
 	}
 
-	std::printf("[profiler] wrote %s\n", path.string().c_str());
+	std::printf("[profiler] wrote %s\n", FString::FromPath(path).CStr());
 	std::fflush(stdout);
 	return true;
 }
@@ -66,11 +67,11 @@ bool WriteConfigFramesCsv (
 	uint32 Index,
 	const SProfileResult& Result)
 {
-	const std::filesystem::path path = Dir / (std::to_string(Index) + ".csv");
+	const std::filesystem::path path = Dir / FString::Format("{}.csv", Index).ToPath();
 	std::ofstream f(path);
 	if (!f)
 	{
-		std::printf("[profiler] cannot open %s\n", path.string().c_str());
+		std::printf("[profiler] cannot open %s\n", FString::FromPath(path).CStr());
 		std::fflush(stdout);
 		return false;
 	}
@@ -108,7 +109,7 @@ bool WriteConfigFramesCsv (
 		  << m.Counters.Values[RC_InvalidSample] << '\n';
 	}
 
-	std::printf("[profiler] wrote %s (%zu frames)\n", path.string().c_str(), Result.Frames.size());
+	std::printf("[profiler] wrote %s (%zu frames)\n", FString::FromPath(path).CStr(), Result.Frames.size());
 	std::fflush(stdout);
 	return true;
 }

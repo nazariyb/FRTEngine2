@@ -6,14 +6,16 @@
 #include "Core.h"
 #include "CoreTypes.h"
 #include "Containers/Array.h"
+#include "Containers/StringView.h"
 
 
 namespace frt::profiler
 {
+// Names are literals (FStringLiteral): they are read frames after the scope was recorded.
 struct SGpuScopeResult
 {
-	const char* Name = nullptr;
-	const char* View = nullptr;   // render view the scope was recorded for; null = frame-wide
+	FStringLiteral Name;
+	FStringLiteral View;   // render view the scope was recorded for; empty = frame-wide
 	double DurationMs = 0.0;
 };
 
@@ -43,12 +45,12 @@ public:
 	void BeginFrame ();
 
 	// Returns scope index used to pair with EndScope. -1 if profiler is full this frame.
-	int32 BeginScope (ID3D12GraphicsCommandList* CmdList, const char* Name);
+	int32 BeginScope (ID3D12GraphicsCommandList* CmdList, FStringLiteral Name);
 	void EndScope (ID3D12GraphicsCommandList* CmdList, int32 ScopeIndex);
 
-	// Tags the scopes that follow with a render view (static storage: read frames later), so
-	// the same pass recorded for two views stays two results. Null = frame-wide scopes.
-	void SetView (const char* View) { CurrentView = View; }
+	// Tags the scopes that follow with a render view, so the same pass recorded for two views
+	// stays two results. Empty = frame-wide scopes.
+	void SetView (FStringLiteral View) { CurrentView = View; }
 
 	// Emits ResolveQueryData. Call once per frame after all scopes are recorded.
 	void ResolveFrame (ID3D12GraphicsCommandList* CmdList);
@@ -60,8 +62,8 @@ private:
 
 	struct SFrameData
 	{
-		TArray<const char*> ScopeNames;
-		TArray<const char*> ScopeViews;
+		TArray<FStringLiteral> ScopeNames;
+		TArray<FStringLiteral> ScopeViews;
 		uint32 ScopeCount = 0u;
 		bool bRecorded = false;
 	};
@@ -77,6 +79,6 @@ private:
 	uint32 FrameCount = 0u;
 	uint32 CurrentFrame = 0u;
 	bool bWarmedUp = false;
-	const char* CurrentView = nullptr;
+	FStringLiteral CurrentView;
 };
 }

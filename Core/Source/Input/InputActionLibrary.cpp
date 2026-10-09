@@ -7,7 +7,7 @@ namespace frt::input
 {
 namespace
 {
-	const char* InputActionExtension = ".frtinputaction";
+	constexpr FStringLiteral InputActionExtension = ".frtinputaction";
 
 	// Action definitions (.frtinputaction) named by a map: the project's Content/Input, or the
 	// engine's without a project.
@@ -28,9 +28,9 @@ namespace
 	}
 }
 
-SInputActionDefinitionAsset* CInputActionLibrary::LoadOrCreateAction (const std::string& Name)
+SInputActionDefinitionAsset* CInputActionLibrary::LoadOrCreateAction (FStringView Name)
 {
-	const std::string key = MakeActionKey(Name);
+	const FStringView key = MakeActionKey(Name);
 	auto it = ActionDefinitions.find(key);
 	if (it != ActionDefinitions.end())
 	{
@@ -54,14 +54,14 @@ SInputActionDefinitionAsset* CInputActionLibrary::LoadOrCreateAction (const std:
 
 	asset.LastWriteTime = std::filesystem::last_write_time(asset.SourcePath, ec);
 
-	auto [insertedIt, inserted] = ActionDefinitions.emplace(key, std::move(asset));
+	auto [insertedIt, inserted] = ActionDefinitions.emplace(FString(key), std::move(asset));
 	return &insertedIt->second;
 }
 
 SInputActionMapAsset* CInputActionLibrary::LoadOrCreateActionMap (const std::filesystem::path& Path)
 {
 	const std::filesystem::path resolvedPath = NormalizePath(Path);
-	const std::string key = MakeKey(resolvedPath);
+	const FString key = MakeKey(resolvedPath);
 	auto it = ActionMaps.find(key);
 	if (it != ActionMaps.end())
 	{
@@ -70,7 +70,7 @@ SInputActionMapAsset* CInputActionLibrary::LoadOrCreateActionMap (const std::fil
 
 	SInputActionMapAsset asset;
 	asset.SourcePath = resolvedPath;
-	asset.Name = resolvedPath.stem().string();
+	asset.Name = FString::FromPath(resolvedPath.stem());
 
 	std::error_code ec;
 	const bool exists = std::filesystem::exists(resolvedPath, ec);
@@ -157,10 +157,9 @@ bool CInputActionLibrary::ReloadModifiedActionMaps ()
 	return anyReloaded;
 }
 
-const SInputActionDefinitionAsset* CInputActionLibrary::FindAction (const std::string& Name) const
+const SInputActionDefinitionAsset* CInputActionLibrary::FindAction (FStringView Name) const
 {
-	const std::string key = MakeActionKey(Name);
-	auto it = ActionDefinitions.find(key);
+	auto it = ActionDefinitions.find(MakeActionKey(Name));
 	if (it == ActionDefinitions.end())
 	{
 		return nullptr;
@@ -169,7 +168,7 @@ const SInputActionDefinitionAsset* CInputActionLibrary::FindAction (const std::s
 	return &it->second;
 }
 
-SInputActionDefinitionAsset* CInputActionLibrary::FindAction (const std::string& Name)
+SInputActionDefinitionAsset* CInputActionLibrary::FindAction (FStringView Name)
 {
 	return const_cast<SInputActionDefinitionAsset*>(
 		static_cast<const CInputActionLibrary&>(*this).FindAction(Name));
@@ -183,8 +182,7 @@ SInputActionMapAsset* CInputActionLibrary::FindActionMap (const std::filesystem:
 
 const SInputActionMapAsset* CInputActionLibrary::FindActionMap (const std::filesystem::path& Path) const
 {
-	const std::string key = MakeKey(Path);
-	auto it = ActionMaps.find(key);
+	auto it = ActionMaps.find(MakeKey(Path));
 	if (it == ActionMaps.end())
 	{
 		return nullptr;
@@ -193,7 +191,7 @@ const SInputActionMapAsset* CInputActionLibrary::FindActionMap (const std::files
 	return &it->second;
 }
 
-SInputActionDefinitionAsset* CInputActionLibrary::LoadActionIfExists (const std::string& Name)
+SInputActionDefinitionAsset* CInputActionLibrary::LoadActionIfExists (FStringView Name)
 {
 	const std::filesystem::path path = MakeActionPath(Name);
 	std::error_code ec;
@@ -210,28 +208,29 @@ SInputActionDefinitionAsset* CInputActionLibrary::LoadActionIfExists (const std:
 	}
 
 	asset.LastWriteTime = std::filesystem::last_write_time(asset.SourcePath, ec);
-	const std::string key = MakeActionKey(asset.Action.Name.empty() ? Name : asset.Action.Name);
+	FString key(MakeActionKey(asset.Action.Name.IsEmpty() ? Name : asset.Action.Name.View()));
 
-	auto [insertedIt, inserted] = ActionDefinitions.emplace(key, std::move(asset));
+	auto [insertedIt, inserted] = ActionDefinitions.emplace(std::move(key), std::move(asset));
 	return &insertedIt->second;
 }
 
-std::filesystem::path CInputActionLibrary::MakeActionPath (const std::string& Name)
+std::filesystem::path CInputActionLibrary::MakeActionPath (FStringView Name)
 {
-	std::filesystem::path path = ResolveInputContentRoot() / Name;
+	std::filesystem::path path = ResolveInputContentRoot() / Name.ToPath();
 	if (!path.has_extension())
 	{
-		path.replace_extension(InputActionExtension);
+		path.replace_extension(InputActionExtension.ToPath());
 	}
 	return path;
 }
 
-std::string CInputActionLibrary::MakeKey (const std::filesystem::path& Path)
+FString CInputActionLibrary::MakeKey (const std::filesystem::path& Path)
 {
-	return NormalizePath(Path).string();
+	// A TPathMap key: case-insensitive as NTFS is, so "IAM_Editor" and "iam_editor" load once.
+	return FString::FromPath(NormalizePath(Path), EPathStyle::Generic);
 }
 
-std::string CInputActionLibrary::MakeActionKey (const std::string& Name)
+FStringView CInputActionLibrary::MakeActionKey (FStringView Name)
 {
 	return Name;
 }

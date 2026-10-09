@@ -27,7 +27,10 @@ class CConfig;
 // ImGuiInputTextCallbackData and renames every ImGui export taking an ImWchar.
 // 3: the config the game reads (CConfig, CIniFile) and the project and host types take and hold
 // FString, and reflected enum names are FStringLiteral (FRT_DECLARE_ENUM_REFLECTION).
-#define FRT_GAME_API_VERSION 3u
+// 4: entity, component and input-action names, render view and GPU scope names and asset archive
+// keys are FString / FStringView / FStringLiteral (CEntity::Name, SpawnEntity, Comp_Name,
+// FRT_DECLARE_COMPONENT, SRenderViewDesc, CGpuScope, IReadArchive / IWriteArchive).
+#define FRT_GAME_API_VERSION 4u
 
 #if defined(FRT_HEADLESS)
 #define FRT_GAME_MODULE_HEADLESS 1u

@@ -14,14 +14,14 @@ SAssetValidationResult ValidateInputActionMap (const std::filesystem::path& Path
 	std::error_code ec;
 	if (!std::filesystem::exists(Path, ec))
 	{
-		result.Message = "Input action map not found: " + Path.string();
+		result.Message = "Input action map not found: " + FString::FromPath(Path);
 		return result;
 	}
 
 	input::CInputActionMap map;
 	if (!map.LoadFromFile(Path))
 	{
-		result.Message = "Failed to parse input action map: " + Path.string();
+		result.Message = "Failed to parse input action map: " + FString::FromPath(Path);
 		return result;
 	}
 
@@ -36,14 +36,14 @@ SAssetValidationResult ValidateInputAction (const std::filesystem::path& Path)
 	std::error_code ec;
 	if (!std::filesystem::exists(Path, ec))
 	{
-		result.Message = "Input action not found: " + Path.string();
+		result.Message = "Input action not found: " + FString::FromPath(Path);
 		return result;
 	}
 
 	input::SInputActionDefinition action;
 	if (!input::LoadInputActionDefinition(Path, &action))
 	{
-		result.Message = "Failed to parse input action: " + Path.string();
+		result.Message = "Failed to parse input action: " + FString::FromPath(Path);
 		return result;
 	}
 
@@ -54,7 +54,7 @@ SAssetValidationResult ValidateInputAction (const std::filesystem::path& Path)
 bool CreateInputAction (
 	const std::filesystem::path& Path,
 	input::EInputActionKind Kind,
-	std::string* OutError,
+	FString* OutError,
 	bool bOverwrite)
 {
 	std::error_code ec;
@@ -64,7 +64,7 @@ bool CreateInputAction (
 		{
 			if (OutError)
 			{
-				*OutError = "Input action already exists: " + Path.string();
+				*OutError = "Input action already exists: " + FString::FromPath(Path);
 			}
 			return false;
 		}
@@ -76,14 +76,14 @@ bool CreateInputAction (
 	}
 
 	input::SInputActionDefinition action;
-	action.Name = Path.stem().string();
+	action.Name = FString::FromPath(Path.stem());
 	action.Kind = Kind;
 
 	if (!input::SaveInputActionDefinition(Path, action))
 	{
 		if (OutError)
 		{
-			*OutError = "Failed to write input action: " + Path.string();
+			*OutError = "Failed to write input action: " + FString::FromPath(Path);
 		}
 		return false;
 	}
@@ -93,7 +93,7 @@ bool CreateInputAction (
 
 bool CreateInputActionMap (
 	const std::filesystem::path& Path,
-	std::string* OutError,
+	FString* OutError,
 	bool bOverwrite)
 {
 	std::error_code ec;
@@ -103,7 +103,7 @@ bool CreateInputActionMap (
 		{
 			if (OutError)
 			{
-				*OutError = "Input action map already exists: " + Path.string();
+				*OutError = "Input action map already exists: " + FString::FromPath(Path);
 			}
 			return false;
 		}
@@ -119,7 +119,7 @@ bool CreateInputActionMap (
 	{
 		if (OutError)
 		{
-			*OutError = "Failed to write input action map: " + Path.string();
+			*OutError = "Failed to write input action map: " + FString::FromPath(Path);
 		}
 		return false;
 	}
@@ -130,7 +130,7 @@ bool CreateInputActionMap (
 bool DumpInputAction (
 	const std::filesystem::path& Path,
 	std::ostream& OutStream,
-	std::string* OutError)
+	FString* OutError)
 {
 	if (!OutStream.good())
 	{
@@ -146,7 +146,7 @@ bool DumpInputAction (
 	{
 		if (OutError)
 		{
-			*OutError = "Failed to parse input action: " + Path.string();
+			*OutError = "Failed to parse input action: " + FString::FromPath(Path);
 		}
 		return false;
 	}
@@ -166,7 +166,7 @@ bool DumpInputAction (
 bool DumpInputActionMap (
 	const std::filesystem::path& Path,
 	std::ostream& OutStream,
-	std::string* OutError)
+	FString* OutError)
 {
 	if (!OutStream.good())
 	{
@@ -182,7 +182,7 @@ bool DumpInputActionMap (
 	{
 		if (OutError)
 		{
-			*OutError = "Failed to parse input action map: " + Path.string();
+			*OutError = "Failed to parse input action map: " + FString::FromPath(Path);
 		}
 		return false;
 	}

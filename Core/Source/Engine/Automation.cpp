@@ -73,7 +73,7 @@ void CAutomation::Update (CEngine& Engine, CWorldScene& World, graphics::CRender
 		for (const profiler::SGpuScopeResult& r : renderer->GetGpuProfiler().GetLastResults())
 		{
 			// This view's passes and the frame-wide scopes only.
-			if (!r.Name || (r.View && FStringView(r.View) != View->GetName()))
+			if (r.Name.IsEmpty() || (!r.View.IsEmpty() && r.View != View->GetName()))
 			{
 				continue;
 			}

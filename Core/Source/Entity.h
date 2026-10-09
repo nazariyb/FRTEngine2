@@ -1,7 +1,6 @@
 ﻿#pragma once
 
-#include <string>
-
+#include "Containers/String.h"
 #include "Graphics/Comp_Light.h"
 #include "Graphics/Comp_Portal.h"
 #include "Graphics/Model.h"
@@ -18,7 +17,7 @@ public:
 
 	// Display name. Auto-assigned by CWorldScene::SpawnEntity (e.g. "Entity #3").
 	// Editor uses it in combo + label fields. Free-form, no uniqueness guarantee.
-	std::string Name;
+	FString Name;
 
 	// Stable for the entity's life and kept by world copies: the renderer keys instances on it
 	// (motion vectors), and the editor will select by it.

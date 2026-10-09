@@ -1,8 +1,10 @@
 #include "Assets/Yaml/YamlArchive.h"
 
-#include <fstream>
+#include <optional>
 
 #include "Asserts.h"
+#include "Assets/Yaml/YamlString.h"
+#include "Platform/Platform.h"
 
 
 namespace frt::assets::yaml
@@ -11,18 +13,27 @@ namespace frt::assets::yaml
 
 bool CYamlReadArchive::LoadFromFile (const std::filesystem::path& Path)
 {
+	RootNode = YAML::Node();
+	Stack.Clear();
+
+	// Read through the UTF-16 path, then parsed as text: YAML::LoadFile takes the file name as
+	// narrow text, which the CRT decodes with the process code page.
+	const std::optional<FString> text = platform::ReadFileText(Path);
+	if (!text)
+	{
+		return false;
+	}
+
 	try
 	{
-		RootNode = YAML::LoadFile(Path.string());
+		RootNode = YAML::Load(text->ToStdString());
 	}
 	catch (const YAML::Exception&)
 	{
 		RootNode = YAML::Node();
-		Stack.Clear();
 		return false;
 	}
 
-	Stack.Clear();
 	Stack.Add(RootNode);
 	return RootNode.IsDefined() && !RootNode.IsNull();
 }
@@ -41,14 +52,14 @@ const YAML::Node& CYamlReadArchive::Top () const
 }
 
 template <typename T>
-static bool ReadAs (const YAML::Node& Node, const char* Name, T& OutValue)
+static bool ReadAs (const YAML::Node& Node, FStringLiteral Name, T& OutValue)
 {
 	if (!Node.IsDefined() || !Node.IsMap())
 	{
 		return false;
 	}
 
-	const YAML::Node child = Node[Name];
+	const YAML::Node child = Node[Name.CStr()];
 	if (!child.IsDefined() || child.IsNull())
 	{
 		return false;
@@ -65,24 +76,24 @@ static bool ReadAs (const YAML::Node& Node, const char* Name, T& OutValue)
 	}
 }
 
-bool CYamlReadArchive::Read (const char* Name, bool& V)        { return ReadAs(Top(), Name, V); }
-bool CYamlReadArchive::Read (const char* Name, int32& V)       { return ReadAs(Top(), Name, V); }
-bool CYamlReadArchive::Read (const char* Name, uint32& V)      { return ReadAs(Top(), Name, V); }
-bool CYamlReadArchive::Read (const char* Name, float& V)       { return ReadAs(Top(), Name, V); }
-bool CYamlReadArchive::Read (const char* Name, std::string& V) { return ReadAs(Top(), Name, V); }
+bool CYamlReadArchive::Read (FStringLiteral Name, bool& V)    { return ReadAs(Top(), Name, V); }
+bool CYamlReadArchive::Read (FStringLiteral Name, int32& V)   { return ReadAs(Top(), Name, V); }
+bool CYamlReadArchive::Read (FStringLiteral Name, uint32& V)  { return ReadAs(Top(), Name, V); }
+bool CYamlReadArchive::Read (FStringLiteral Name, float& V)   { return ReadAs(Top(), Name, V); }
+bool CYamlReadArchive::Read (FStringLiteral Name, FString& V) { return ReadAs(Top(), Name, V); }
 
-bool CYamlReadArchive::Has (const char* Name) const
+bool CYamlReadArchive::Has (FStringLiteral Name) const
 {
 	const YAML::Node& top = Top();
 	if (!top.IsDefined() || !top.IsMap())
 	{
 		return false;
 	}
-	const YAML::Node child = top[Name];
+	const YAML::Node child = top[Name.CStr()];
 	return child.IsDefined() && !child.IsNull();
 }
 
-bool CYamlReadArchive::BeginGroup (const char* Name)
+bool CYamlReadArchive::BeginGroup (FStringLiteral Name)
 {
 	const YAML::Node& top = Top();
 	if (!top.IsDefined() || !top.IsMap())
@@ -90,7 +101,7 @@ bool CYamlReadArchive::BeginGroup (const char* Name)
 		return false;
 	}
 
-	YAML::Node child = top[Name];
+	YAML::Node child = top[Name.CStr()];
 	if (!child.IsDefined() || child.IsNull() || !child.IsMap())
 	{
 		return false;
@@ -123,41 +134,49 @@ YAML::Node& CYamlWriteArchive::Top ()
 
 bool CYamlWriteArchive::SaveToFile (const std::filesystem::path& Path) const
 {
-	std::error_code ec;
-	std::filesystem::create_directories(Path.parent_path(), ec);
-
-	std::ofstream stream(Path);
-	if (!stream.is_open())
+	if (!Error.IsEmpty())
 	{
 		return false;
 	}
 
 	YAML::Emitter emitter;
 	emitter << RootNode;
-	stream << emitter.c_str() << "\n";
-	return true;
+	// The emitter leaves the last line unterminated.
+	return platform::WriteFileText(Path, FStringView(emitter.c_str(), emitter.size()) + "\n");
 }
 
-void CYamlWriteArchive::Write (const char* Name, bool V)        { Top()[Name] = V; }
-void CYamlWriteArchive::Write (const char* Name, int32 V)       { Top()[Name] = V; }
-void CYamlWriteArchive::Write (const char* Name, uint32 V)      { Top()[Name] = V; }
-void CYamlWriteArchive::Write (const char* Name, float V)       { Top()[Name] = V; }
-void CYamlWriteArchive::Write (const char* Name, const std::string& V) { Top()[Name] = V; }
+void CYamlWriteArchive::Write (FStringLiteral Name, bool V)   { Top()[Name.CStr()] = V; }
+void CYamlWriteArchive::Write (FStringLiteral Name, int32 V)  { Top()[Name.CStr()] = V; }
+void CYamlWriteArchive::Write (FStringLiteral Name, uint32 V) { Top()[Name.CStr()] = V; }
+void CYamlWriteArchive::Write (FStringLiteral Name, float V)  { Top()[Name.CStr()] = V; }
 
-void CYamlWriteArchive::BeginGroup (const char* Name)
+void CYamlWriteArchive::Write (FStringLiteral Name, FStringView V)
+{
+	if (!IsYamlStorable(V))
+	{
+		if (Error.IsEmpty())
+		{
+			Error = FString::Format("{}: text cannot be stored in YAML (invalid UTF-8 or a noncharacter)", Name);
+		}
+		return;
+	}
+	Top()[Name.CStr()] = V.ToStdString();
+}
+
+void CYamlWriteArchive::BeginGroup (FStringLiteral Name)
 {
 	YAML::Node child(YAML::NodeType::Map);
-	Top()[Name] = child;
+	Top()[Name.CStr()] = child;
 	// Re-fetch through the parent so the stored node is the actual subtree, not a detached copy.
-	Stack.Add(Top()[Name]);
+	Stack.Add(Top()[Name.CStr()]);
 }
 
-void CYamlWriteArchive::BeginGroupFlow (const char* Name)
+void CYamlWriteArchive::BeginGroupFlow (FStringLiteral Name)
 {
 	YAML::Node child(YAML::NodeType::Map);
 	child.SetStyle(YAML::EmitterStyle::Flow);
-	Top()[Name] = child;
-	Stack.Add(Top()[Name]);
+	Top()[Name.CStr()] = child;
+	Stack.Add(Top()[Name.CStr()]);
 }
 
 void CYamlWriteArchive::EndGroup ()

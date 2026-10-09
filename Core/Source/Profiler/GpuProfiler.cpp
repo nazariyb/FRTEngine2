@@ -1,8 +1,6 @@
 #include "Profiler/GpuProfiler.h"
 #include "Profiler/Profiler.h"
 
-#include <cstring>
-
 
 namespace frt::profiler
 {
@@ -16,7 +14,7 @@ CGpuProfiler* CGpuProfiler::GetCurrent () { return gCurrent; }
 
 // ----- CGpuScope ctor/dtor -----
 
-CGpuScope::CGpuScope (ID3D12GraphicsCommandList* CmdList, [[maybe_unused]] const char* Name)
+CGpuScope::CGpuScope (ID3D12GraphicsCommandList* CmdList, [[maybe_unused]] FStringLiteral Name)
 	: CommandList(CmdList)
 	, ScopeIndex(-1)
 {
@@ -24,8 +22,7 @@ CGpuScope::CGpuScope (ID3D12GraphicsCommandList* CmdList, [[maybe_unused]] const
 	// Minimal PIX-compatible ANSI event format. Visible in PIX captures
 	// without requiring WinPixEventRuntime as a build dependency.
 	static constexpr UINT PIX_EVENT_ANSI_VERSION = 1;
-	const UINT byteCount = static_cast<UINT>(std::strlen(Name)) + 1u;
-	CommandList->BeginEvent(PIX_EVENT_ANSI_VERSION, Name, byteCount);
+	CommandList->BeginEvent(PIX_EVENT_ANSI_VERSION, Name.CStr(), Name.Len() + 1u);
 #endif
 
 #if FRT_PROFILE_TIMESTAMPS
@@ -160,7 +157,7 @@ void CGpuProfiler::BeginFrame ()
 	frame.ScopeViews.Clear();
 }
 
-int32 CGpuProfiler::BeginScope (ID3D12GraphicsCommandList* CmdList, const char* Name)
+int32 CGpuProfiler::BeginScope (ID3D12GraphicsCommandList* CmdList, FStringLiteral Name)
 {
 	if (!CmdList || !QueryHeap)
 	{

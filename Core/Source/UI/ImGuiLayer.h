@@ -1,7 +1,7 @@
 #pragma once
 
 #include <filesystem>
-#include <string>
+#include <vector>
 
 #include "Core.h"
 #include "CoreTypes.h"
@@ -46,6 +46,11 @@ public:
 	void StartUp (CWindow& Window, graphics::CRenderer& Renderer, const std::filesystem::path& IniPath);
 	void ShutDown ();
 
+	// No layout file from now on: none is written, and none is read if the first frame has not
+	// begun yet (the file is read then, as ImGui does). For scripted runs and screens without a
+	// layout: they start from the default and leave the user's alone.
+	void DisableIniFile ();
+
 	// Ctrl+Wheel zoom from this frame's input, then NewFrame.
 	void BeginFrame (const input::CInputSystem& Input);
 	// Draws the frame's UI into the bound back buffer.
@@ -61,9 +66,15 @@ public:
 
 private:
 	void ApplyStyle (float DpiScale);
+	void SaveIniFile ();
 
 	CWindow* Window = nullptr;
-	std::string IniPath;                      // ImGui keeps the pointer
+	// The layout goes through memory (LoadIniSettingsFromMemory / SaveIniSettingsToMemory), not
+	// ImGui's own file functions: they take the path as UTF-8 text, which cannot spell every name
+	// Windows allows (an unpaired surrogate becomes U+FFFD).
+	std::filesystem::path IniPath;
+	bool bIniLoaded = false;                   // the first frame has read the layout (or there was none)
+	std::vector<uint8> FontData;               // the atlas reads the font from here until ShutDown
 	float Zoom = 1.0f;
 	float ScaleApplied = 0.0f;
 	float Tint[3] = { 1.0f, 1.0f, 1.0f };

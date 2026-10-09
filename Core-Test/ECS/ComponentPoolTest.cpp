@@ -6,6 +6,7 @@
 #include <string>
 #include <type_traits>
 
+#include "Containers/String.h"
 #include "ECS/ComponentPool.h"
 #include "ECS/CoreComponents.h"
 
@@ -94,7 +95,7 @@ TEST(ComponentRegistry, RecordsTypeInfo)
 	ASSERT_NE(info, nullptr);
 	EXPECT_EQ(info->Size, sizeof(Comp_Parent));
 	EXPECT_TRUE(info->bTriviallyRelocatable);
-	EXPECT_STREQ(info->Name, "Comp_Parent");
+	EXPECT_EQ(info->Name, "Comp_Parent");
 }
 
 TEST(ComponentRegistry, FindsByStableName)
@@ -104,7 +105,8 @@ TEST(ComponentRegistry, FindsByStableName)
 	EXPECT_NE(CComponentRegistry::Get().FindByName("Comp_Parent"), nullptr);
 	EXPECT_NE(CComponentRegistry::Get().FindByName("Comp_LocalTransform"), nullptr);
 	EXPECT_EQ(CComponentRegistry::Get().FindByName("frt::Comp_Parent"), nullptr);
-	EXPECT_EQ(CComponentRegistry::Get().FindByName(nullptr), nullptr);
+	EXPECT_EQ(CComponentRegistry::Get().FindByName("comp_parent"), nullptr) << "names are case-sensitive";
+	EXPECT_EQ(CComponentRegistry::Get().FindByName({}), nullptr);
 }
 
 TEST(ComponentRegistry, RegistrationIsIdempotentByName)
@@ -188,7 +190,7 @@ TEST(ComponentRegistry, ReleasedModuleKeepsNameAndIdAndRebindsOnRegistration)
 	EXPECT_EQ(registry.GetCount(), before);
 	EXPECT_TRUE(registry.IsBound(id));
 	EXPECT_EQ(registry.Find(id)->Size, 16u);
-	EXPECT_STREQ(registry.Find(id)->Name, "Comp_TestReloaded");
+	EXPECT_EQ(registry.Find(id)->Name, "Comp_TestReloaded");
 
 	registry.ReleaseModule(reloaded, reloaded + sizeof(reloaded));
 }
@@ -458,24 +460,37 @@ TEST(CompName, RoundTripsAName)
 
 TEST(CompName, TruncatesRatherThanOverflowing)
 {
-	const std::string tooLong(Comp_Name::Capacity * 2u, 'x');
+	const FString tooLong = FString::Repeat("x", Comp_Name::Capacity * 2u);
 
 	Comp_Name name;
 	name.Set(tooLong);
 
 	// Truncation is deliberate: a name is a label, and failing over a long one would be
 	// worse than showing a shortened one.
-	EXPECT_EQ(name.AsView().size(), Comp_Name::Capacity - 1u);
+	EXPECT_EQ(name.AsView().Len(), Comp_Name::Capacity - 1u);
 	EXPECT_EQ(name.Get()[Comp_Name::Capacity - 1u], '\0') << "must stay null-terminated";
+}
+
+TEST(CompName, TruncatesOnACharacterBoundary)
+{
+	// Cyrillic letters are two bytes each: the 31-byte budget ends inside the "о" of
+	// "Ковальчук", which goes whole (30 bytes kept).
+	const Comp_Name cyrillic("Ольга Петренко-Ковальчук");
+	EXPECT_EQ(cyrillic.AsView(), "Ольга Петренко-К");
+	EXPECT_TRUE(cyrillic.AsView().IsValidUtf8());
+
+	// A ZWJ emoji sequence that does not fit goes whole: a cut would show a different emoji.
+	const Comp_Name family("Родина 👨\u200D👩\u200D👧\u200D👦");
+	EXPECT_EQ(family.AsView(), "Родина ");
 }
 
 TEST(CompName, ExactlyFittingNameIsNotTruncated)
 {
-	const std::string exact(Comp_Name::Capacity - 1u, 'y');
+	const FString exact = FString::Repeat("y", Comp_Name::Capacity - 1u);
 
 	Comp_Name name(exact);
 
-	EXPECT_EQ(name.AsView().size(), Comp_Name::Capacity - 1u);
+	EXPECT_EQ(name.AsView().Len(), Comp_Name::Capacity - 1u);
 	EXPECT_TRUE(name == exact);
 }
 
@@ -494,7 +509,7 @@ TEST(CompName, SurvivesPoolGrowthAndRemoval)
 
 	for (uint32 i = 0u; i < 300u; ++i)
 	{
-		pool.Add(E(i), std::string("entity-") + std::to_string(i));
+		pool.Add(E(i), FString::Format("entity-{}", i));
 	}
 
 	const TComponentPool<Comp_Name>& constPool = pool;

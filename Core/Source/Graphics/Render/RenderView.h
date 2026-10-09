@@ -6,6 +6,7 @@
 #include <memory>
 #include <vector>
 
+#include "Containers/StringView.h"
 #include "Graphics/Render/RenderSettings.h"
 #include "Graphics/Render/RHI/GpuResources.h"
 #include "Shared/FrameData.h"
@@ -38,9 +39,17 @@ enum class EViewTarget : uint8
 
 struct SRenderViewDesc
 {
-	// Static storage only: the GPU profiler reads scope tags frames after they were recorded.
-	const char* Name = "View";
-	EViewTarget Target = EViewTarget::Texture;
+	// A constructor rather than an aggregate: MSVC 14.38 rejects (C7595) a string literal
+	// initializing an FStringLiteral member of a braced aggregate built at run time, and views are
+	// made as CreateView({ "Main", EViewTarget::BackBuffer }).
+	constexpr SRenderViewDesc (FStringLiteral InName = "View", EViewTarget InTarget = EViewTarget::Texture) noexcept
+		: Name(InName)
+		, Target(InTarget)
+	{}
+
+	// A literal: the GPU profiler reads scope tags frames after they were recorded.
+	FStringLiteral Name;
+	EViewTarget Target;
 };
 
 /**
@@ -63,7 +72,7 @@ public:
 	CRenderView (const CRenderView&) = delete;
 	CRenderView& operator= (const CRenderView&) = delete;
 
-	const char* GetName () const { return Desc.Name; }
+	FStringLiteral GetName () const { return Desc.Name; }
 	EViewTarget GetTarget () const { return Desc.Target; }
 
 	// Path tracing or raster preview. Requested only: a device without DXR 1.1, or a path tracer

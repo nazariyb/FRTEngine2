@@ -1,6 +1,5 @@
 #include "Input/InputChord.h"
 
-#include "Containers/StringView.h"
 #include "Input/InputSystem.h"
 
 
@@ -8,22 +7,9 @@ namespace frt::input
 {
 namespace
 {
-constexpr std::string_view Whitespace = " \t\r\n";
-
-std::string_view Trim (std::string_view Text)
-{
-	const size_t first = Text.find_first_not_of(Whitespace);
-	if (first == std::string_view::npos)
-	{
-		return {};
-	}
-	const size_t last = Text.find_last_not_of(Whitespace);
-	return Text.substr(first, last - first + 1);
-}
-
 struct SKeyAlias
 {
-	std::string_view Name;
+	FStringLiteral Name;
 	KeyCode Key;
 };
 
@@ -52,9 +38,9 @@ constexpr KeyCode DisplayAliased[] =
 	KeyCode::ArrowUp, KeyCode::ArrowDown, KeyCode::ArrowLeft, KeyCode::ArrowRight,
 };
 
-bool ParseModifier (std::string_view Text, EInputModifier& OutModifier)
+bool ParseModifier (FStringView Text, EInputModifier& OutModifier)
 {
-	const auto matches = [Text] (FStringView Name) { return FStringView(Text).Equals<ESearchCase::IgnoreCaseAscii>(Name); };
+	const auto matches = [Text] (FStringView Name) { return Text.Equals<ESearchCase::IgnoreCaseAscii>(Name); };
 	if (matches("Ctrl") || matches("Control"))
 	{
 		OutModifier = EInputModifier::Ctrl;
@@ -83,12 +69,12 @@ constexpr uint8 ChordModifierMask =
 	static_cast<uint8>(EInputModifier::Alt) | static_cast<uint8>(EInputModifier::Super);
 }
 
-bool ParseKeyName (std::string_view Text, KeyCode& OutKey)
+bool ParseKeyName (FStringView Text, KeyCode& OutKey)
 {
-	Text = Trim(Text);
+	Text.TrimStartAndEndInline();
 	for (const SKeyAlias& alias : KeyAliases)
 	{
-		if (FStringView(Text).Equals<ESearchCase::IgnoreCaseAscii>(alias.Name))
+		if (Text.Equals<ESearchCase::IgnoreCaseAscii>(alias.Name))
 		{
 			OutKey = alias.Key;
 			return true;
@@ -97,57 +83,50 @@ bool ParseKeyName (std::string_view Text, KeyCode& OutKey)
 	return enum_::TryParse(Text, &OutKey, true);
 }
 
-bool ParseInputChord (std::string_view Text, SInputChord& OutChord)
+bool ParseInputChord (FStringView Text, SInputChord& OutChord)
 {
 	SInputChord chord;
-	Text = Trim(Text);
-	if (Text.empty())
+	Text.TrimStartAndEndInline();
+	if (Text.IsEmpty())
 	{
 		return false;
 	}
 
-	size_t start = 0u;
-	while (true)
+	// The last token is the key, every one before it a modifier.
+	const SStringSplit keySplit = Text.SplitLast('+');
+	if (keySplit)
 	{
-		const size_t plus = Text.find('+', start);
-		const std::string_view token = Trim(Text.substr(start, plus == std::string_view::npos ? std::string_view::npos : plus - start));
-		if (plus == std::string_view::npos)
+		for (const FStringView token : keySplit.Left.Split('+', EStringSplit::Trim))
 		{
-			// The last token is the key.
-			if (!ParseKeyName(token, chord.Key))
+			EInputModifier modifier = EInputModifier::None;
+			if (!ParseModifier(token, modifier))
 			{
 				return false;
 			}
-			break;
+			chord.Modifiers += modifier;
 		}
-		EInputModifier modifier = EInputModifier::None;
-		if (!ParseModifier(token, modifier))
-		{
-			return false;
-		}
-		chord.Modifiers += modifier;
-		start = plus + 1u;
+	}
+	if (!ParseKeyName(keySplit ? keySplit.Right : keySplit.Left, chord.Key))
+	{
+		return false;
 	}
 
 	OutChord = chord;
 	return true;
 }
 
-bool ParseInputChords (std::string_view Text, std::vector<SInputChord>& OutChords, std::string* OutError)
+bool ParseInputChords (FStringView Text, std::vector<SInputChord>& OutChords, FString* OutError)
 {
 	OutChords.clear();
-	Text = Trim(Text);
-	if (Text.empty() || FStringView(Text).Equals<ESearchCase::IgnoreCaseAscii>("None"))
+	Text.TrimStartAndEndInline();
+	if (Text.IsEmpty() || Text.Equals<ESearchCase::IgnoreCaseAscii>("None"))
 	{
 		return true;
 	}
 
 	bool bAllValid = true;
-	size_t start = 0u;
-	while (start <= Text.size())
+	for (const FStringView entry : Text.Split(',', EStringSplit::Trim))
 	{
-		const size_t comma = Text.find(',', start);
-		const std::string_view entry = Trim(Text.substr(start, comma == std::string_view::npos ? std::string_view::npos : comma - start));
 		SInputChord chord;
 		if (ParseInputChord(entry, chord))
 		{
@@ -158,25 +137,18 @@ bool ParseInputChords (std::string_view Text, std::vector<SInputChord>& OutChord
 			bAllValid = false;
 			if (OutError)
 			{
-				if (!OutError->empty())
+				if (!OutError->IsEmpty())
 				{
-					*OutError += ", ";
+					*OutError << ", ";
 				}
-				*OutError += '"';
-				*OutError += entry;
-				*OutError += '"';
+				*OutError << '"' << entry << '"';
 			}
 		}
-		if (comma == std::string_view::npos)
-		{
-			break;
-		}
-		start = comma + 1u;
 	}
 	return bAllValid;
 }
 
-std::string_view GetKeyDisplayName (KeyCode Key)
+FStringLiteral GetKeyDisplayName (KeyCode Key)
 {
 	for (const KeyCode aliased : DisplayAliased)
 	{
@@ -194,13 +166,13 @@ std::string_view GetKeyDisplayName (KeyCode Key)
 	return enum_::ToString(Key);
 }
 
-std::string FormatInputChord (const SInputChord& Chord)
+FString FormatInputChord (const SInputChord& Chord)
 {
 	if (!Chord.IsValid())
 	{
 		return {};
 	}
-	std::string text;
+	FString text;
 	if (Chord.Modifiers.HasFlag(EInputModifier::Ctrl))
 	{
 		text += "Ctrl+";

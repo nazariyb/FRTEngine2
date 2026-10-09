@@ -37,8 +37,14 @@ concept FlagEnum = frt::concepts::Enum<T> && IsFlagEnum<T>;
 }
 
 
+// In the enum's namespace. It also brings the global flag operators below (+Flag, -Flag,
+// Flag + bState) into that namespace, where argument-dependent lookup finds them: from code inside
+// namespace frt, ordinary lookup stops at frt's own operator+ (the string types') and never
+// reaches the global ones.
 #define FRT_DECLARE_FLAG_ENUM(EnumType)\
-	constexpr void frt_flag_enum_marker(::frt::flags::FlagEnumTag<EnumType>) {}
+	constexpr void frt_flag_enum_marker(::frt::flags::FlagEnumTag<EnumType>) {}\
+	using ::operator+;\
+	using ::operator-;
 
 
 template <frt::flags::FlagEnum E>

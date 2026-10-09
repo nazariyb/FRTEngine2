@@ -146,7 +146,7 @@ std::vector<input::SInputChord> CEditorInput::ReadChords (std::string_view Secti
 		return chords;
 	}
 
-	std::string error;
+	FString error;
 	if (!input::ParseInputChords(*value, chords, &error))
 	{
 		Report(std::format("[{}] {}: cannot read {}", Section, Key, error));
@@ -228,7 +228,7 @@ void CEditorInput::Read ()
 	{
 		const std::string_view name = enum_::ToString(static_cast<EEditorCommand>(i));
 		CommandChords[i] = ReadChords(CommandsSection, name, false);
-		ShortcutTexts[i] = CommandChords[i].empty() ? std::string() : input::FormatInputChord(CommandChords[i].front());
+		ShortcutTexts[i] = CommandChords[i].empty() ? FString() : input::FormatInputChord(CommandChords[i].front());
 	}
 
 	for (size_t set = 0u; set < ViewportKeys.size(); ++set)
