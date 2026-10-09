@@ -5,7 +5,6 @@
 #include <cstdio>
 #include <optional>
 #include <set>
-#include <string_view>
 
 #include "BuildConfig.h"
 #include "Containers/WideString.h"

@@ -285,7 +285,7 @@ int RunLauncher ()
 			}
 			catch (const std::exception& e)
 			{
-				std::cout << e.what() << std::endl;
+				std::cout << FString::FromUtf8Lossy(e.what()) << std::endl;
 			}
 			catch (...)
 			{
