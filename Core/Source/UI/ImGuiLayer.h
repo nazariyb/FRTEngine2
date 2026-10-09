@@ -1,10 +1,10 @@
 #pragma once
 
 #include <filesystem>
-#include <vector>
 
 #include "Core.h"
 #include "CoreTypes.h"
+#include "UI/ImGuiFonts.h"
 
 
 namespace frt
@@ -74,7 +74,7 @@ private:
 	// Windows allows (an unpaired surrogate becomes U+FFFD).
 	std::filesystem::path IniPath;
 	bool bIniLoaded = false;                   // the first frame has read the layout (or there was none)
-	std::vector<uint8> FontData;               // the atlas reads the font from here until ShutDown
+	ui::CFontSet Fonts;                        // the atlas reads the font files from here until ShutDown
 	float Zoom = 1.0f;
 	float ScaleApplied = 0.0f;
 	float Tint[3] = { 1.0f, 1.0f, 1.0f };

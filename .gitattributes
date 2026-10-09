@@ -2,3 +2,7 @@
 # which writes LF; its --check compares them with what it would generate.
 *.generated.h text eol=lf
 *.generated.inl text eol=lf
+
+# Fonts are binary whatever their bytes look like.
+*.ttf binary
+*.otf binary

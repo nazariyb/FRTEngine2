@@ -54,24 +54,10 @@ void CImGuiLayer::StartUp (CWindow& InWindow, graphics::CRenderer& Renderer, con
 		io.IniFilename = nullptr;
 	}
 
-	// UI font. The size given here becomes style.FontSizeBase; the scale factors set by
-	// ApplyStyle() are applied on top of it, and 1.92 re-rasterises per size, so zoomed text
-	// stays sharp. Read through the UTF-16 path; a stripped content dir degrades to the
-	// built-in font.
-	const std::filesystem::path fontPath = paths::GetEngineContentDir() / "Fonts" / "Roboto-Medium.ttf";
-	if (std::optional<std::vector<uint8>> fontBytes = platform::ReadFileBytes(fontPath))
-	{
-		FontData = std::move(*fontBytes);
-		ImFontConfig config;
-		config.FontDataOwnedByAtlas = false;
-		// What AddFontFromFileTTF would name it (debug windows show it).
-		FString::FromPath(fontPath.filename()).CopyTo(config.Name, static_cast<uint32>(sizeof(config.Name)));
-		io.Fonts->AddFontFromMemoryTTF(FontData.data(), static_cast<int>(FontData.size()), 16.0f, &config);
-	}
-	else
-	{
-		io.Fonts->AddFontDefault();
-	}
+	// UI font, CJK, emoji and symbols included (ui::CFontSet). The size given here becomes
+	// style.FontSizeBase; the scale factors set by ApplyStyle() are applied on top of it, and 1.92
+	// re-rasterises per size, so zoomed text stays sharp.
+	Fonts.AddTo(*io.Fonts, paths::GetEngineContentDir() / "Fonts", 16.0f);
 
 	Impl->UnscaledStyle = ImGui::GetStyle();
 
@@ -117,7 +103,7 @@ void CImGuiLayer::ShutDown ()
 	ImGui_ImplDX12_Shutdown();
 	ImGui_ImplWin32_Shutdown();
 	ImGui::DestroyContext();
-	FontData = std::vector<uint8>();
+	Fonts.Release();
 	delete Impl;
 	Impl = nullptr;
 	bStarted = false;

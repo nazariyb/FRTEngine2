@@ -53,6 +53,10 @@ public:
 	void Update (const SContext& Context, float RealDeltaSeconds);
 	void Draw (const SContext& Context);
 
+	// The entity the Editor panel shows and edits: an index into CWorldScene::GetEntities(), -1 for
+	// none. One past the end reads as none on the next Draw.
+	void SelectEntity (int32 Index) { SelectedEntityIndex = Index; }
+
 	bool IsProfiling () const { return ProfilingSession.IsActive(); }
 	float GetFps () const { return StatFps; }
 	float GetMsPerFrame () const { return StatMsPerFrame; }

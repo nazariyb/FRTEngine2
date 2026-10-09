@@ -96,6 +96,7 @@ public:
 	// Gives the viewport keyboard focus on the next frame.
 	void FocusViewport (EViewportTarget Viewport);
 	const CGameModule& GetGameModule () const { return Module; }
+	CDebugTools& GetTools () { return Tools; }
 	// Newer builds of the game module loaded so far.
 	uint32 GetGameReloads () const { return GameReloads; }
 	// Looks for a newer build of the game module at the start of the next frame.

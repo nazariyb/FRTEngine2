@@ -18,6 +18,9 @@
 #include "Graphics/Camera.h"
 #include "Graphics/Render/Renderer.h"
 #include "Platform/Platform.h"
+#include "UI/DebugTools.h"
+
+#include "imgui.h"
 
 #include "Editor.h"
 #include "ViewportCamera.h"
@@ -585,6 +588,16 @@ void CEditorSmokeTest::Update (CEditor& Editor, CEngine& Engine)
 				T.Check(!E.GetPlaySession().IsPlaying(), "stopped");
 			}
 		} },
+		// Text beyond ASCII in the editor's own widgets: the Editor panel's entity combo and name
+		// field show the selected entity's name. A project whose names are all ASCII skips this.
+		// A capture is of the frame it is asked in: the next selection waits a frame.
+		{ 1010u, "entity names beyond ASCII", [] (CEditorSmokeTest& T, CEditor& E, CEngine&) { T.SelectNamedEntity(E, 0u); } },
+		{ 1020u, "first such name", [] (CEditorSmokeTest& T, CEditor&, CEngine& G) { T.CaptureNamedEntity(G, 0u, "18_entity_name_1"); } },
+		{ 1021u, "second such name", [] (CEditorSmokeTest& T, CEditor& E, CEngine&) { T.SelectNamedEntity(E, 1u); } },
+		{ 1030u, "second such name, shown", [] (CEditorSmokeTest& T, CEditor&, CEngine& G) { T.CaptureNamedEntity(G, 1u, "19_entity_name_2"); } },
+		{ 1031u, "third such name", [] (CEditorSmokeTest& T, CEditor& E, CEngine&) { T.SelectNamedEntity(E, 2u); } },
+		{ 1040u, "third such name, shown", [] (CEditorSmokeTest& T, CEditor&, CEngine& G) { T.CaptureNamedEntity(G, 2u, "20_entity_name_3"); } },
+		{ 1041u, "names done", [] (CEditorSmokeTest&, CEditor& E, CEngine&) { E.GetTools().SelectEntity(-1); } },
 	};
 
 	// Hitches: the longest frame between two steps goes into the log with the next step.
@@ -601,8 +614,61 @@ void CEditorSmokeTest::Update (CEditor& Editor, CEngine& Engine)
 	if (NextStep == std::size(steps) && !bFinished && !Engine.GetRenderer()->HasPendingCaptures())
 	{
 		bFinished = true;
+		// Glyphs are rasterised as text first needs them: the atlas grows with what the run drew.
+		const ImTextureData* atlas = ImGui::GetIO().Fonts->TexData;
+		Log(FString::Format("UI font atlas: {}x{}", atlas->Width, atlas->Height));
 		Log(Failures == 0u ? "PASSED" : FString::Format("FAILED: {} check(s)", Failures));
 		Engine.RequestQuit(Failures == 0u ? 0 : 2);
+	}
+}
+
+void CEditorSmokeTest::SelectNamedEntity (CEditor& Editor, uint32 Which)
+{
+	if (Which == 0u)
+	{
+		NamedEntities.clear();
+		const auto& entities = Editor.GetEditWorld().GetEntities();
+		for (uint32 i = 0u; i < entities.Count() && NamedEntities.size() < 3u; ++i)
+		{
+			const CEntity* entity = entities[i].GetRawIgnoringLifetime();
+			if (entity && !entity->Name.IsAscii())
+			{
+				NamedEntities.push_back(static_cast<int32>(i));
+			}
+		}
+		if (NamedEntities.empty())
+		{
+			Log("  skip  every entity name is ASCII");
+		}
+	}
+	if (Which >= NamedEntities.size())
+	{
+		return;
+	}
+
+	// Drawn with the UI font, so every character needs a glyph in it - a fallback's included.
+	const CEntity& entity = *Editor.GetEditWorld().GetEntities()[NamedEntities[Which]].GetRawIgnoringLifetime();
+	ImFont* font = ImGui::GetFont();
+	uint32 missing = 0u;
+	for (const char32_t codePoint : entity.Name.CodePoints())
+	{
+		if (!font->IsGlyphInFont(static_cast<ImWchar>(codePoint)))
+		{
+			Log(FString::Format("  no glyph for U+{:04X}", static_cast<uint32>(codePoint)));
+			++missing;
+		}
+	}
+	Check(missing == 0u, "the UI font has a glyph for every character of \"" + entity.Name + "\"");
+	Editor.GetTools().SelectEntity(NamedEntities[Which]);
+	// The panel's tab to the front: the dock node it shares may show another one by now.
+	ImGui::SetWindowFocus("Editor");
+}
+
+void CEditorSmokeTest::CaptureNamedEntity (CEngine& Engine, uint32 Which, FStringLiteral Name)
+{
+	if (Which < NamedEntities.size())
+	{
+		Capture(Engine, Name);
 	}
 }
 
