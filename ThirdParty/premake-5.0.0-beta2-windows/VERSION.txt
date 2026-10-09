@@ -1,0 +1,18 @@
+Premake 5.0.0-beta2 for Windows x64 (premake5 --version: "premake5 (Premake Build Script Generator) 5.0.0-beta2"),
+https://github.com/premake/premake-core/releases/tag/v5.0.0-beta2: premake5.exe, with its symbols and the luasocket
+and example modules it was built with. FRT.bat runs it; nothing builds it.
+
+One change: premake5.exe's embedded manifest also gives the process the UTF-8 code page (activeCodePage, Windows 10
+1903 and later), as every engine executable has (Core/Resources/Utf8CodePage.manifest). Premake's own file functions
+take UTF-8, but as released its command line - and whatever Lua's io and os libraries hand the C runtime - is in the
+system's ANSI code page, so a path with any character outside it (D:\Ігри 游戏 on an English system) arrived as '?'
+and FRT.bat failed. With it, every path Premake reads, writes, runs or prints is UTF-8, and so are the files it writes
+(vcxproj, the registry INI files). It was merged into the manifest the release has (asInvoker) with the Windows SDK's
+manifest tool, in this directory:
+
+  mt.exe -nologo -manifest ..\..\Core\Resources\Utf8CodePage.manifest -inputresource:premake5.exe;#1 -outputresource:premake5.exe;#1
+
+The code is untouched (premake5.pdb still matches). Do the same to a newer premake5.exe before vendoring it.
+
+SHA-256 before: AA37BB2C174CEA51BE381B3378A5B54406FC3339DBFA4AAEF9D50875E76B8C25
+SHA-256 after:  59F2DB8C1BBABCB4A9A6CAEDB97FD5478CE78BF22D19681F4B42EAEF7E127149

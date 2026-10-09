@@ -88,14 +88,15 @@ function runCommand(command)
 end
 
 -- The Visual Studio 2022 installation the vs2022 projects build with: the newest one with
--- MSBuild and the v143 C++ toolset. Both MSBuild and the toolset version come from it.
+-- MSBuild and the v143 C++ toolset. Both MSBuild and the toolset version come from it. (-utf8:
+-- the path in Premake's encoding, not the console's.)
 function visualStudio2022()
 	local exe = path.join(os.getenv("ProgramFiles(x86)") or "C:/Program Files (x86)",
 		"Microsoft Visual Studio/Installer/vswhere.exe")
 	if not os.isfile(exe) then
 		return nil
 	end
-	local output, code = os.outputof('"' .. winpath(exe) .. '" -latest -products * -version [17.0,18.0) ' ..
+	local output, code = os.outputof('"' .. winpath(exe) .. '" -utf8 -latest -products * -version [17.0,18.0) ' ..
 		'-requires Microsoft.Component.MSBuild Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath')
 	return (code == 0 and output) and output:match("[^\r\n]+") or nil
 end
@@ -531,7 +532,7 @@ newaction
 				runCommand(submodule .. " -c advice.detachedHead=false checkout --quiet " .. head)
 			end
 			if url and source ~= url then
-				runCommand(git .. " config -f .gitmodules submodule.Engine.url " .. url)
+				runCommand(git .. ' config -f .gitmodules submodule.Engine.url "' .. url .. '"')
 				runCommand(git .. " submodule --quiet sync")
 			end
 			if head then
