@@ -16,11 +16,6 @@ class CEngine;
 class CWorldScene;
 }
 
-namespace frt::config
-{
-class CConfig;
-}
-
 namespace frt::graphics
 {
 class CRenderView;
@@ -34,17 +29,32 @@ namespace frt
  * (usually -Automation:Key=Value on the command line):
  *   CaptureFrame / CapturePath / CaptureHdr  PNG (+ linear PFM) of the view at a frame; the log
  *                                            line prints the camera pose for reference renders
+ *   CaptureTimeoutFrames                     how long past CaptureFrame a capture may wait for
+ *                                            texture streaming (default 600; then the run fails)
  *   ExitFrame                                quit once that frame is reached and captures are written
  *   ProfileFrames                            average GPU scope times over the frames before exit
  *   CameraMove / CameraTurn / Motion*Frame   deterministic camera motion (ghosting tests)
  *   TimeOfDayFrame / TimeOfDayValue          a lighting change mid-run (lag tests)
+ *   DeterministicStreaming                   default true; false streams textures as interactive
+ *                                            runs do (captures are then not repeatable)
  * Update runs once per frame after the frame's camera was taken, so motion lands a frame later -
  * captures depend on that timing.
+ *
+ * Scripted runs repeat: the world steps by a fixed time per frame (the host sets that up), and
+ * textures become resident on frames that depend only on when they were requested
+ * (CTextureManager's deterministic mode), not on decode-thread timing. That matters long after
+ * loading: temporal histories (TAA, denoiser) keep a trace of every earlier frame, so a texture
+ * arriving one frame later changes a capture taken hundreds of frames after. Raster captures of
+ * identical binaries are bit-identical; path-traced ones still vary very slightly, as the
+ * radiance cache inserts with GPU atomics. A capture waits for streaming to finish: it is taken
+ * on the first frame from CaptureFrame on with no texture still loading.
  */
 class FRT_CORE_API CAutomation
 {
 public:
-	void Configure (const config::CConfig& Config, const CWorldScene& World);
+	// Reads the [Automation] keys; a scripted run also switches the renderer to deterministic
+	// texture streaming.
+	void Configure (CEngine& Engine, const CWorldScene& World);
 
 	// True when any [Automation] key is set: the run is scripted.
 	bool IsActive () const { return bActive; }
@@ -55,6 +65,7 @@ public:
 private:
 	bool bActive = false;
 	int64 CaptureFrame = -1;
+	int64 CaptureTimeoutFrames = 600;
 	int64 ExitFrame = -1;
 	bool bCaptureHdr = true;
 	bool bCaptureRequested = false;

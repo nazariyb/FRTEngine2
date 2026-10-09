@@ -280,8 +280,9 @@ bool CTextureManager::Update (ID3D12GraphicsCommandList* CommandList, uint64 Upl
 		}
 		if (!entry->Ready)
 		{
+			// Deterministic: get() below waits for the decode.
 			if (!entry->Pending.valid() ||
-				entry->Pending.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+				(!bDeterministic && entry->Pending.wait_for(std::chrono::seconds(0)) != std::future_status::ready))
 			{
 				continue;
 			}
