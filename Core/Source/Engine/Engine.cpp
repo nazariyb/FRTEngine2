@@ -1,13 +1,9 @@
 #include "Engine/Engine.h"
 
 #include <cstdio>
-#include <string>
-#include <vector>
 
 #if defined(_WINDOWS)
 #include <Windows.h>
-#include <shellapi.h>
-#pragma comment(lib, "shell32.lib")
 #endif
 
 #include "BuildConfig.h"
@@ -16,6 +12,7 @@
 #include "Graphics/GraphicsComponents.h"
 #include "Graphics/Render/MaterialLibrary.h"
 #include "Memory/Memory.h"
+#include "Platform/Platform.h"
 
 #if !defined(FRT_HEADLESS)
 #include "backends/imgui_impl_win32.h"
@@ -63,31 +60,10 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 	//    library, and everything below may read settings. Layers, weakest first: engine,
 	//    project, user, then -Section:Key=Value launch arguments (never saved).
 	Config.LoadDefaultLayers();
-#if defined(_WINDOWS)
+	if (const uint32 applied = Config.ApplyCommandLineArguments(platform::GetCommandLineArguments()); applied > 0u)
 	{
-		int argc = 0;
-		LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-		std::vector<std::string> arguments;
-		for (int i = 1; argv && i < argc; ++i)
-		{
-			std::string narrow;
-			for (const wchar_t* c = argv[i]; *c; ++c)
-			{
-				narrow.push_back(*c < 0x80 ? static_cast<char>(*c) : '?');
-			}
-			arguments.push_back(std::move(narrow));
-		}
-		if (argv)
-		{
-			LocalFree(argv);
-		}
-		const uint32 applied = Config.ApplyCommandLineArguments(arguments);
-		if (applied > 0u)
-		{
-			std::printf("[config] %u command-line override(s)\n", applied);
-		}
+		std::printf("[config] %u command-line override(s)\n", applied);
 	}
-#endif
 	LoadUserSettings(Config, UserSettings);
 
 	// 3. Memory: the primary pool every TArray, component pool and managed object allocates from.
@@ -114,7 +90,7 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 		params.StartY = 1000;
 		params.Width = resolution.IsValid() ? width : 1260;
 		params.Height = resolution.IsValid() ? height : 720;
-		params.ClassName = L"FrtWindowClass";
+		params.ClassName = "FrtWindowClass";
 		params.Title = Desc.WindowTitle;
 		params.hInst = GetModuleHandle(nullptr);
 		ImGui_ImplWin32_EnableDpiAwareness();

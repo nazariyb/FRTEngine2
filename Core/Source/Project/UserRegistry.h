@@ -1,13 +1,12 @@
 #pragma once
 
 #include <filesystem>
-#include <string>
-#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "Core.h"
 #include "CoreTypes.h"
+#include "Containers/String.h"
 
 
 namespace frt::project
@@ -24,12 +23,12 @@ FRT_CORE_API std::filesystem::path GetUserDataDir ();
 
 // A packaged game's per-user directory (Project.h: FindRunningPackage), for what it writes while
 // running: %LOCALAPPDATA%\<Name>, or <FRT_USER_DATA_DIR>\<Name> when that is set.
-FRT_CORE_API std::filesystem::path GetGameUserDataDir (std::string_view Name);
+FRT_CORE_API std::filesystem::path GetGameUserDataDir (FStringView Name);
 
-// The directory registered under Name (case-insensitive); empty if none.
-FRT_CORE_API std::filesystem::path FindRegisteredEngine (std::string_view Name);
-FRT_CORE_API bool RegisterEngine (std::string_view Name, const std::filesystem::path& Dir);
-FRT_CORE_API std::vector<std::pair<std::string, std::filesystem::path>> GetRegisteredEngines ();
+// The directory registered under Name (A-Z in any case, as for every INI key); empty if none.
+FRT_CORE_API std::filesystem::path FindRegisteredEngine (FStringView Name);
+FRT_CORE_API bool RegisterEngine (FStringView Name, const std::filesystem::path& Dir);
+FRT_CORE_API std::vector<std::pair<FString, std::filesystem::path>> GetRegisteredEngines ();
 
 struct SRecentProject
 {

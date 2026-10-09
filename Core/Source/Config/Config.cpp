@@ -1,9 +1,5 @@
 #include "Config/Config.h"
 
-#include <charconv>
-#include <format>
-#include <initializer_list>
-
 #include "EnginePaths.h"
 
 
@@ -14,25 +10,15 @@ namespace
 // Parses the whole token or nothing. A partial parse is rejected on purpose: "1920x1080"
 // must not quietly read back as 1920, and "12abc" must not read back as 12. Both would
 // otherwise look like a working setting while meaning something else.
-template <typename T>
-T ParseNumber (const std::string* Raw, T Default)
+template <concepts::StringNumber T>
+T ParseNumber (const FString* Raw, T Default)
 {
 	if (Raw == nullptr)
 	{
 		return Default;
 	}
 
-	const char* begin = Raw->data();
-	const char* end = begin + Raw->size();
-
-	T value{};
-	const std::from_chars_result result = std::from_chars(begin, end, value);
-	if (result.ec != std::errc{} || result.ptr != end)
-	{
-		return Default;
-	}
-
-	return value;
+	return Raw->TryParse<T>().value_or(Default);
 }
 }
 
@@ -71,7 +57,7 @@ bool CConfig::Save () const
 }
 
 
-bool CConfig::Has (std::string_view Section, std::string_view Key) const
+bool CConfig::Has (FStringView Section, FStringView Key) const
 {
 	return FindValue(Section, Key) != nullptr;
 }
@@ -83,40 +69,38 @@ void CConfig::ResetUserLayer ()
 }
 
 
-void CConfig::SetOverride (std::string_view Section, std::string_view Key, std::string_view Value)
+void CConfig::SetOverride (FStringView Section, FStringView Key, FStringView Value)
 {
 	Layers[static_cast<size_t>(EConfigLayer::CommandLine)].Set(Section, Key, Value);
 }
 
 
-uint32 CConfig::ApplyCommandLineArguments (const std::vector<std::string>& Arguments)
+uint32 CConfig::ApplyCommandLineArguments (std::span<const FString> Arguments)
 {
 	uint32 applied = 0u;
-	for (std::string_view arg : Arguments)
+	for (const FString& argument : Arguments)
 	{
-		while (!arg.empty() && arg.front() == '-')
-		{
-			arg.remove_prefix(1);
-		}
-		const size_t colon = arg.find(':');
-		const size_t equals = arg.find('=');
-		if (colon == std::string_view::npos || equals == std::string_view::npos || colon > equals || colon == 0u)
+		// The first '=' ends the name, and the first ':' in the name ends the section: a value
+		// may hold both (-Automation:CapturePath=C:/Captures).
+		const SStringSplit nameAndValue = argument.View().TrimStart("-").SplitFirst('=');
+		const SStringSplit sectionAndKey = nameAndValue.Left.SplitFirst(':');
+		if (!nameAndValue || !sectionAndKey || sectionAndKey.Left.IsEmpty())
 		{
 			continue;
 		}
-		SetOverride(arg.substr(0, colon), arg.substr(colon + 1u, equals - colon - 1u), arg.substr(equals + 1u));
+		SetOverride(sectionAndKey.Left, sectionAndKey.Right, nameAndValue.Right);
 		++applied;
 	}
 	return applied;
 }
 
 
-const std::string* CConfig::FindValue (std::string_view Section, std::string_view Key) const
+const FString* CConfig::FindValue (FStringView Section, FStringView Key) const
 {
 	// Strongest layer first; the first hit wins.
 	for (int32 i = static_cast<int32>(EConfigLayer::Count) - 1; i >= 0; --i)
 	{
-		if (const std::string* found = Layers[i].Find(Section, Key))
+		if (const FString* found = Layers[i].Find(Section, Key))
 		{
 			return found;
 		}
@@ -125,131 +109,61 @@ const std::string* CConfig::FindValue (std::string_view Section, std::string_vie
 }
 
 
-void CConfig::SetValue (std::string_view Section, std::string_view Key, std::string_view Value)
+void CConfig::SetValue (FStringView Section, FStringView Key, FStringView Value)
 {
 	Layers[static_cast<size_t>(EConfigLayer::User)].Set(Section, Key, Value);
 }
 
 
-bool CConfig::Get (std::string_view Section, std::string_view Key, bool Default) const
-{
-	const std::string* raw = FindValue(Section, Key);
-	if (raw == nullptr)
-	{
-		return Default;
-	}
-
-	// The spellings people actually type. Anything else is treated as absent rather than
-	// as false, so a typo keeps the default instead of silently disabling a feature.
-	for (const std::string_view text : { "true", "1", "yes", "on" })
-	{
-		if (enum_::EqualsIgnoreCase(*raw, text))
-		{
-			return true;
-		}
-	}
-
-	for (const std::string_view text : { "false", "0", "no", "off" })
-	{
-		if (enum_::EqualsIgnoreCase(*raw, text))
-		{
-			return false;
-		}
-	}
-
-	return Default;
-}
-
-
-int32 CConfig::Get (std::string_view Section, std::string_view Key, int32 Default) const
+int32 CConfig::Get (FStringView Section, FStringView Key, int32 Default) const
 {
 	return ParseNumber(FindValue(Section, Key), Default);
 }
 
 
-uint32 CConfig::Get (std::string_view Section, std::string_view Key, uint32 Default) const
+uint32 CConfig::Get (FStringView Section, FStringView Key, uint32 Default) const
 {
-	// from_chars rejects a leading '-' for an unsigned type, so a negative in the file
-	// falls back to the default rather than wrapping to a huge value.
+	// An unsigned parse rejects a leading '-', so a negative in the file falls back to the
+	// default rather than wrapping to a huge value.
 	return ParseNumber(FindValue(Section, Key), Default);
 }
 
 
-float CConfig::Get (std::string_view Section, std::string_view Key, float Default) const
+float CConfig::Get (FStringView Section, FStringView Key, float Default) const
 {
 	return ParseNumber(FindValue(Section, Key), Default);
 }
 
 
-std::string CConfig::Get (std::string_view Section, std::string_view Key, std::string_view Default) const
+FString CConfig::Get (FStringView Section, FStringView Key, FStringView Default) const
 {
-	const std::string* raw = FindValue(Section, Key);
-	return raw != nullptr ? *raw : std::string(Default);
+	const FString* raw = FindValue(Section, Key);
+	return raw != nullptr ? *raw : FString(Default);
 }
 
 
-std::string CConfig::Get (std::string_view Section, std::string_view Key, const char* Default) const
+void CConfig::Set (FStringView Section, FStringView Key, int32 Value)
 {
-	return Get(Section, Key, std::string_view(Default != nullptr ? Default : ""));
-}
-
-void CConfig::Get (
-	char* OutBuffer,
-	uint8 BufferSize,
-	std::string_view Section,
-	std::string_view Key,
-	const char* Default) const
-{
-	frt_assert(BufferSize > 0);
-
-	const std::string* raw = FindValue(Section, Key);
-	std::string_view value = raw != nullptr ? *raw : std::string_view(Default != nullptr ? Default : "");
-
-	if (value.size() >= BufferSize)
-	{
-		// TODO: warning
-	}
-
-	const size_t copySize = std::min(static_cast<size_t>(BufferSize), value.size());
-	memcpy(OutBuffer, value.data(), copySize);
-	OutBuffer[copySize] = '\0';
+	SetValue(Section, Key, FString::FromNumber(Value));
 }
 
 
-void CConfig::Set (std::string_view Section, std::string_view Key, bool Value)
+void CConfig::Set (FStringView Section, FStringView Key, uint32 Value)
 {
-	SetValue(Section, Key, Value ? "true" : "false");
+	SetValue(Section, Key, FString::FromNumber(Value));
 }
 
 
-void CConfig::Set (std::string_view Section, std::string_view Key, int32 Value)
+void CConfig::Set (FStringView Section, FStringView Key, float Value)
 {
-	SetValue(Section, Key, std::to_string(Value));
+	// The shortest representation that reads back as the same float, which is what makes
+	// Set -> Save -> Load -> Get an identity rather than a slow drift.
+	SetValue(Section, Key, FString::FromNumber(Value));
 }
 
 
-void CConfig::Set (std::string_view Section, std::string_view Key, uint32 Value)
-{
-	SetValue(Section, Key, std::to_string(Value));
-}
-
-
-void CConfig::Set (std::string_view Section, std::string_view Key, float Value)
-{
-	// std::format gives the shortest representation that reads back as the same float,
-	// which is what makes Set -> Save -> Load -> Get an identity rather than a slow drift.
-	SetValue(Section, Key, std::format("{}", Value));
-}
-
-
-void CConfig::Set (std::string_view Section, std::string_view Key, std::string_view Value)
+void CConfig::Set (FStringView Section, FStringView Key, FStringView Value)
 {
 	SetValue(Section, Key, Value);
-}
-
-
-void CConfig::Set (std::string_view Section, std::string_view Key, const char* Value)
-{
-	SetValue(Section, Key, std::string_view(Value != nullptr ? Value : ""));
 }
 }

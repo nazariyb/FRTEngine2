@@ -53,13 +53,13 @@ bool ParseFloat (std::string_view Text, float& OutValue)
 bool ParseBool (std::string_view Text, bool& OutValue)
 {
 	Text = TrimView(Text);
-	using enum_::EqualsIgnoreCase;
-	if (EqualsIgnoreCase(Text, "true") || EqualsIgnoreCase(Text, "1") || EqualsIgnoreCase(Text, "yes") || EqualsIgnoreCase(Text, "on"))
+	const auto matches = [Text] (FStringView Spelling) { return FStringView(Text).Equals<ESearchCase::IgnoreCaseAscii>(Spelling); };
+	if (matches("true") || matches("1") || matches("yes") || matches("on"))
 	{
 		OutValue = true;
 		return true;
 	}
-	if (EqualsIgnoreCase(Text, "false") || EqualsIgnoreCase(Text, "0") || EqualsIgnoreCase(Text, "no") || EqualsIgnoreCase(Text, "off"))
+	if (matches("false") || matches("0") || matches("no") || matches("off"))
 	{
 		OutValue = false;
 		return true;
@@ -116,9 +116,9 @@ bool CEditorInput::ReloadIfChanged ()
 	return true;
 }
 
-const std::string* CEditorInput::Find (std::string_view Section, std::string_view Key) const
+const FString* CEditorInput::Find (std::string_view Section, std::string_view Key) const
 {
-	if (const std::string* value = User.File.Find(Section, Key))
+	if (const FString* value = User.File.Find(Section, Key))
 	{
 		return value;
 	}
@@ -134,7 +134,7 @@ void CEditorInput::Report (std::string Problem)
 std::vector<input::SInputChord> CEditorInput::ReadChords (std::string_view Section, std::string_view Key, bool bKeysOnly)
 {
 	std::vector<input::SInputChord> chords;
-	const std::string* value = Find(Section, Key);
+	const FString* value = Find(Section, Key);
 	if (!value)
 	{
 		// Every binding is listed in the shipped file, unbound ones with an empty value: a
@@ -247,7 +247,7 @@ void CEditorInput::Read ()
 	Camera = SViewportCameraSettings();
 	const auto readFloat = [this] (std::string_view Key, float& Value, float Min, float Max)
 	{
-		if (const std::string* text = Find(CameraSection, Key))
+		if (const FString* text = Find(CameraSection, Key))
 		{
 			if (!ParseFloat(*text, Value))
 			{
@@ -258,7 +258,7 @@ void CEditorInput::Read ()
 	};
 	const auto readBool = [this] (std::string_view Key, bool& Value)
 	{
-		if (const std::string* text = Find(CameraSection, Key))
+		if (const FString* text = Find(CameraSection, Key))
 		{
 			if (!ParseBool(*text, Value))
 			{
@@ -289,9 +289,9 @@ void CEditorInput::Validate ()
 		const std::string file = layer->Path.filename().string() + (layer == &User ? " (user)" : "");
 		for (const config::CIniFile::SSection& section : layer->File.GetSections())
 		{
-			const bool bCommands = enum_::EqualsIgnoreCase(section.Name, CommandsSection);
-			const bool bKeySet = enum_::EqualsIgnoreCase(section.Name, KeySetSections[0]) || enum_::EqualsIgnoreCase(section.Name, KeySetSections[1]);
-			const bool bCamera = enum_::EqualsIgnoreCase(section.Name, CameraSection);
+			const bool bCommands = section.Name.Equals<ESearchCase::IgnoreCaseAscii>(CommandsSection);
+			const bool bKeySet = section.Name.Equals<ESearchCase::IgnoreCaseAscii>(KeySetSections[0]) || section.Name.Equals<ESearchCase::IgnoreCaseAscii>(KeySetSections[1]);
+			const bool bCamera = section.Name.Equals<ESearchCase::IgnoreCaseAscii>(CameraSection);
 			if (!bCommands && !bKeySet && !bCamera)
 			{
 				if (!section.Entries.empty() || !section.Name.empty())
@@ -316,7 +316,7 @@ void CEditorInput::Validate ()
 				else
 				{
 					bKnown = std::any_of(std::begin(CameraKeys), std::end(CameraKeys),
-						[&entry] (std::string_view Name) { return enum_::EqualsIgnoreCase(entry.Key, Name); });
+						[&entry] (std::string_view Name) { return entry.Key.Equals<ESearchCase::IgnoreCaseAscii>(Name); });
 				}
 				if (!bKnown)
 				{

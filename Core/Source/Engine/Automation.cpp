@@ -4,12 +4,12 @@
 
 #include <algorithm>
 #include <cstdio>
-#include <cstring>
 
 #include "EnginePaths.h"
 #include "WorldScene.h"
 #include "Config/Config.h"
 #include "Engine/Engine.h"
+#include "Engine/LaunchConfig.h"
 
 #if !defined(FRT_HEADLESS)
 #include "Graphics/Render/Renderer.h"
@@ -18,20 +18,6 @@
 
 namespace frt
 {
-namespace
-{
-bool ParseVector3 (const std::string& Text, Vector3f& Out)
-{
-	float x = 0.0f, y = 0.0f, z = 0.0f;
-	if (sscanf_s(Text.c_str(), "%f,%f,%f", &x, &y, &z) == 3)
-	{
-		Out = Vector3f(x, y, z);
-		return true;
-	}
-	return false;
-}
-}
-
 void CAutomation::Configure (const config::CConfig& Config, const CWorldScene& World)
 {
 	CaptureFrame = Config.Get("Automation", "CaptureFrame", -1);
@@ -44,8 +30,8 @@ void CAutomation::Configure (const config::CConfig& Config, const CWorldScene& W
 	TimeOfDayFrame = Config.Get("Automation", "TimeOfDayFrame", -1);
 	TimeOfDayValue = Config.Get("Automation", "TimeOfDayValue", World.Environment.TimeOfDay);
 	bCaptureHdr = Config.Get("Automation", "CaptureHdr", true);
-	const std::string capturePath = Config.Get("Automation", "CapturePath", "");
-	CapturePath = capturePath.empty() ? (paths::GetCaptureDir() / "automation") : std::filesystem::path(capturePath);
+	const FString capturePath = Config.Get("Automation", "CapturePath", "");
+	CapturePath = capturePath.IsEmpty() ? (paths::GetCaptureDir() / "automation") : capturePath.ToPath();
 	bActive = CaptureFrame >= 0 || ExitFrame >= 0 || bMotion || TimeOfDayFrame >= 0;
 }
 
@@ -87,14 +73,14 @@ void CAutomation::Update (CEngine& Engine, CWorldScene& World, graphics::CRender
 		for (const profiler::SGpuScopeResult& r : renderer->GetGpuProfiler().GetLastResults())
 		{
 			// This view's passes and the frame-wide scopes only.
-			if (!r.Name || (r.View && std::strcmp(r.View, View->GetName()) != 0))
+			if (!r.Name || (r.View && FStringView(r.View) != View->GetName()))
 			{
 				continue;
 			}
 			auto it = std::find_if(Profile.begin(), Profile.end(), [&] (const auto& e) { return e.first == r.Name; });
 			if (it == Profile.end())
 			{
-				Profile.push_back({ std::string(r.Name), { 0.0, 0u } });
+				Profile.push_back({ FString(r.Name), { 0.0, 0u } });
 				it = Profile.end() - 1;
 			}
 			it->second.first += r.DurationMs;
@@ -114,7 +100,7 @@ void CAutomation::Update (CEngine& Engine, CWorldScene& World, graphics::CRender
 	{
 		for (const auto& e : Profile)
 		{
-			std::printf("[profile] %-28s %8.3f ms\n", e.first.c_str(), e.second.second ? e.second.first / e.second.second : 0.0);
+			std::printf("[profile] %-28s %8.3f ms\n", e.first.CStr(), e.second.second ? e.second.first / e.second.second : 0.0);
 		}
 		if (CpuFrames > 0u)
 		{

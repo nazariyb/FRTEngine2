@@ -1,13 +1,12 @@
 #include "EnginePaths.h"
 
-#include <string>
 #include <system_error>
-#include <vector>
 
 #if defined(_WINDOWS)
 #include <Windows.h>
 #endif
 
+#include "Platform/Platform.h"
 #include "Project/Project.h"
 #include "Project/UserRegistry.h"
 
@@ -35,20 +34,7 @@ std::filesystem::path GetCoreModuleFile ()
 	if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
 		reinterpret_cast<LPCWSTR>(&GetCoreModuleFile), &module))
 	{
-		std::vector<wchar_t> buffer(MAX_PATH);
-		while (true)
-		{
-			const DWORD length = GetModuleFileNameW(module, buffer.data(), static_cast<DWORD>(buffer.size()));
-			if (length == 0u)
-			{
-				break;
-			}
-			if (length < buffer.size())
-			{
-				return std::filesystem::path(std::wstring(buffer.data(), length));
-			}
-			buffer.resize(buffer.size() * 2u);   // a long path: retry with room for it
-		}
+		return platform::GetModulePath(module);
 	}
 #endif
 	return {};

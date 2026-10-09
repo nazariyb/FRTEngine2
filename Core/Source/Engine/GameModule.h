@@ -1,11 +1,12 @@
 #pragma once
 
+#include <filesystem>
 #include <memory>
-#include <string>
 
 #include "Core.h"
 #include "CoreTypes.h"
 #include "Precision.h"
+#include "Containers/String.h"
 
 
 namespace frt
@@ -24,7 +25,9 @@ class CConfig;
 // (Containers/String.h) and ImGui's, as UI/ImGuiConfig.h configures them. Bump on any change to them.
 // 2: ImWchar became 32 bits (IMGUI_USE_WCHAR32), which moves members of ImFontConfig, ImFont and
 // ImGuiInputTextCallbackData and renames every ImGui export taking an ImWchar.
-#define FRT_GAME_API_VERSION 2u
+// 3: the config the game reads (CConfig, CIniFile) and the project and host types take and hold
+// FString, and reflected enum names are FStringLiteral (FRT_DECLARE_ENUM_REFLECTION).
+#define FRT_GAME_API_VERSION 3u
 
 #if defined(FRT_HEADLESS)
 #define FRT_GAME_MODULE_HEADLESS 1u
@@ -91,11 +94,11 @@ public:
 	// into the executable, whose name GetName() then returns; asking for another one only logs
 	// that it is not there. Logs and returns false otherwise - keeping the name, and with hot
 	// reload watching the build still, so that a fixed build can be loaded the same way.
-	bool Load (const std::string& Name);
+	bool Load (FStringView Name);
 	void Unload ();
 	bool IsLoaded () const { return CreateFunction != nullptr; }
 	// The module last asked for, loaded or not.
-	const std::string& GetName () const { return Name; }
+	const FString& GetName () const { return Name; }
 
 	// FRT_WITH_GAME_HOT_RELOAD: the module's DLL was rebuilt since the last Load - which may
 	// have failed - and the linker is done with it. Reloading is Load(GetName()) once
@@ -103,23 +106,23 @@ public:
 	bool HasNewerBuild () const;
 	// FRT_WITH_GAME_HOT_RELOAD: the DLL the build writes, which HasNewerBuild watches. Empty
 	// otherwise.
-	const std::wstring& GetBuildPath () const { return SourcePath; }
+	const std::filesystem::path& GetBuildPath () const { return SourcePath; }
 
 	// A new game instance; null if the game's constructor failed.
 	std::unique_ptr<GameInstance> CreateGame () const;
 
 	// [Game] Module from the config (-Game:Module=<Name> on the command line); by default the
 	// project's module (paths::GetProject).
-	static std::string GetConfiguredName (const config::CConfig& Config);
+	static FString GetConfiguredName (const config::CConfig& Config);
 
 private:
 	void* Handle = nullptr;
 	GameInstance* (*CreateFunction) () = nullptr;
-	std::string Name;
+	FString Name;
 	// FRT_WITH_GAME_HOT_RELOAD: the build output, the copy actually loaded, and the output's
 	// write time when it was copied. In every build, so the layout does not vary.
-	std::wstring SourcePath;
-	std::wstring LoadedPath;
+	std::filesystem::path SourcePath;
+	std::filesystem::path LoadedPath;
 	int64 SourceWriteTime = 0;
 };
 }

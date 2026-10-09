@@ -1,23 +1,20 @@
 #include "Exception.h"
-#include <sstream>
 
-
-using std::ostringstream;
-using std::endl;
+#include "Platform/Platform.h"
 
 
 namespace frt
 {
-Exception::Exception (int line, const char* file) noexcept
-	: hr(-1)
-	, line(line)
-	, file(file)
+Exception::Exception (int InLine, const char* InFile) noexcept
+	: ErrorCode(-1)
+	, Line(InLine)
+	, File(InFile)
 {}
 
-Exception::Exception (int line, const char* file, HRESULT hr) noexcept
-	: hr(hr)
-	, line(line)
-	, file(file)
+Exception::Exception (int InLine, const char* InFile, HRESULT InErrorCode) noexcept
+	: ErrorCode(InErrorCode)
+	, Line(InLine)
+	, File(InFile)
 {}
 
 const char* Exception::What () const noexcept
@@ -32,64 +29,50 @@ const char* Exception::GetType () const noexcept
 
 HRESULT Exception::GetErrorCode () const noexcept
 {
-	return hr;
+	return ErrorCode;
 }
 
-std::string Exception::GetErrorDescription () const noexcept
+FString Exception::GetErrorDescription () const noexcept
 {
-	return Exception::TranslateErrorCode(hr);
+	return Exception::TranslateErrorCode(ErrorCode);
 }
 
-std::string Exception::TranslateErrorCode () noexcept
+FString Exception::TranslateErrorCode () noexcept
 {
-	return TranslateErrorCode(hr);
+	return TranslateErrorCode(ErrorCode);
 }
 
-std::string Exception::TranslateErrorCode (HRESULT hr) noexcept
+FString Exception::TranslateErrorCode (HRESULT Result) noexcept
 {
-	char* pMsgBuf = nullptr;
-	const DWORD nMsgLen = FormatMessage(
-		FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-		nullptr, hr, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-		reinterpret_cast<LPWSTR>(&pMsgBuf), 0, nullptr
-		);
-
-	if (nMsgLen == 0)
+	FString message = platform::GetSystemErrorMessage(static_cast<uint32>(Result));
+	if (message.IsEmpty())
 	{
-		return "Unidentified error code";
+		message = "Unidentified error code";
 	}
-	std::string errorString = pMsgBuf;
-	LocalFree(pMsgBuf);
-	return errorString;
+	return message;
 }
 
 int Exception::GetLine () const noexcept
 {
-	return line;
+	return Line;
 }
 
-const std::string& Exception::GetFile () const noexcept
+FStringView Exception::GetFile () const noexcept
 {
-	return file;
+	return File;
 }
 
-std::string Exception::GetOriginString () const noexcept
+FString Exception::GetOriginString () const noexcept
 {
-	ostringstream oss;
-	oss << "[File]: " << file << endl
-		<< "[Line]: " << line;
-	return oss.str();
+	return FString::Format("[File]: {}\n[Line]: {}", File, Line);
 }
 
 const char* Exception::what () const noexcept
 {
-	std::ostringstream oss;
-	oss << GetType() << std::endl
-		<< "[Error Code] 0x" << std::hex << std::uppercase << GetErrorCode()
-		<< std::dec << " (" << (unsigned long)GetErrorCode() << ")" << std::endl
-		<< "[Description] " << GetErrorDescription() << std::endl
-		<< GetOriginString();
-	whatBuffer = oss.str();
-	return whatBuffer.c_str();
+	// An HRESULT reads as its bits: 0x887A0005, not a negative number.
+	const uint32 code = static_cast<uint32>(GetErrorCode());
+	WhatBuffer = FString::Format("{}\n[Error Code] 0x{:X} ({})\n[Description] {}\n{}",
+		GetType(), code, code, GetErrorDescription(), GetOriginString());
+	return WhatBuffer.CStr();
 }
 }

@@ -45,7 +45,7 @@ int RunGameLoop (CEngine& Engine, CGameModule& Module)
 {
 	config::CConfig& config = Engine.GetConfig();
 	const input::CInputSystem& device = Engine.GetInput();
-	std::cout << "Working path: " << std::filesystem::current_path() << std::endl;
+	std::cout << "Working path: " << FString::FromPath(std::filesystem::current_path()) << std::endl;
 
 	// Replaced together on a hot reload: the world's component pools are the game module's
 	// code as much as the game is.
@@ -117,7 +117,7 @@ int RunGameLoop (CEngine& Engine, CGameModule& Module)
 			nextGamePoll = std::chrono::steady_clock::now() + GamePollInterval;
 			if (Module.HasNewerBuild())
 			{
-				const std::string name = Module.GetName();
+				const FString name = Module.GetName();
 				std::cout << "[launcher] new build of game module '" << name << "', reloading" << std::endl;
 				if (game)
 				{
@@ -249,12 +249,12 @@ int RunGameLoop (CEngine& Engine, CGameModule& Module)
 int RunLauncher ()
 {
 	// The game to run: its project names the module and holds the content and config.
-	std::string error;
+	FString error;
 	const std::filesystem::path projectFile = project::FindProjectToRun(true, &error);
 	project::SProjectDescriptor gameProject;
 	if (projectFile.empty() || !project::SProjectDescriptor::Load(projectFile, gameProject, &error))
 	{
-		ReportStartupError(error.empty()
+		ReportStartupError(error.IsEmpty()
 			? "No project to run. Start the launcher with -Project=<project file>, or from a project's directory."
 			: error);
 		return 1;
@@ -262,7 +262,7 @@ int RunLauncher ()
 	paths::SetProject(gameProject);
 
 	SEngineDesc desc;
-	desc.WindowTitle = WidenUtf8(gameProject.Name);
+	desc.WindowTitle = gameProject.Name;
 	desc.UiIniPath = paths::GetLocalDir() / "Launcher" / "imgui.ini";
 	CEngine engine;
 	if (!engine.StartUp(desc))
@@ -308,6 +308,7 @@ int APIENTRY wWinMain (_In_ HINSTANCE, _In_opt_ HINSTANCE, _In_ LPWSTR, _In_ int
 int main ()
 #endif
 {
+	frt::platform::InitConsoleUtf8();
 	FRT_VERIFY_REAL_PRECISION_ABI();
 	return frt::RunLauncher();
 }

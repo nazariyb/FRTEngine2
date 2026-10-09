@@ -4,8 +4,10 @@
 #include <vector>
 
 #include "CoreUtils.h"
+#include "Containers/WideString.h"
 #include "Input/PlatformInputWin32.h"
 #include "Math/Math.h"
+#include "Platform/Platform.h"
 
 #include "imgui.h"
 #include "Graphics/Render/RenderCommonTypes.h"
@@ -25,8 +27,8 @@ CWindow::CWindow (const SWindowParams& Params)
 	AdjustWindowRect(&wr, WS_OVERLAPPEDWINDOW, false);
 
 	Title = Params.Title;
-	hWindow = CreateWindow(
-		Params.ClassName.c_str(), Title.c_str(),
+	hWindow = CreateWindowExW(
+		0 /*dwExStyle*/, ToWide(Params.ClassName).CStr(), ToWide(Title).CStr(),
 		WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT,
 		Params.Width, Params.Height,
 		nullptr /*hWndParent*/, nullptr /*hMenu*/, Params.hInst,
@@ -34,7 +36,7 @@ CWindow::CWindow (const SWindowParams& Params)
 
 	if (!hWindow) // TODO: move this if outside
 	{
-		MessageBox(0, L"CreateWindow Failed.", 0, 0);
+		platform::ShowErrorMessage("FRTEngine", "CreateWindow failed.");
 	}
 
 	ShowWindow(hWindow, SW_SHOWDEFAULT);
@@ -240,17 +242,18 @@ CWindow::SPosSize CWindow::CalcPositionAndSize (const graphics::SRect& MonitorRe
 	};
 }
 
-void CWindow::UpdateTitle (const std::wstring& NewTitleDetails) const
+void CWindow::UpdateTitle (FStringView NewTitleDetails) const
 {
-	std::wstring newTitle = Title + NewTitleDetails;
-	SetWindowText(hWindow, newTitle.c_str());
+	SetWindowTextW(hWindow, ToWide(Title + NewTitleDetails).CStr());
 }
 
 void CWindow::RegisterWinAPIClass ()
 {
-	WNDCLASSEX wcex;
+	// RegisterClassExW copies the class name: it only has to outlive the call.
+	const FWideString className = ToWide(Params.ClassName);
+	WNDCLASSEXW wcex;
 
-	wcex.cbSize = sizeof(WNDCLASSEX);
+	wcex.cbSize = sizeof(WNDCLASSEXW);
 
 	wcex.style = CS_HREDRAW | CS_VREDRAW | CS_OWNDC;
 	wcex.lpfnWndProc = SetupMessageProcessing;
@@ -261,10 +264,10 @@ void CWindow::RegisterWinAPIClass ()
 	wcex.hCursor = nullptr;       //LoadCursor(nullptr, IDC_ARROW);
 	wcex.hbrBackground = nullptr; //(HBRUSH)(COLOR_WINDOW+1);
 	wcex.lpszMenuName = nullptr;  //MAKEINTRESOURCEW(IDC_DEMO);
-	wcex.lpszClassName = Params.ClassName.c_str();
+	wcex.lpszClassName = className.CStr();
 	wcex.hIconSm = nullptr; //LoadIcon(wcex.hInstance, MAKEINTRESOURCE(IDI_SMALL));
 
-	RegisterClassEx(&wcex);
+	RegisterClassExW(&wcex);
 }
 
 LRESULT CWindow::SetupMessageProcessing (HWND hWindow, UINT message, WPARAM wParam, LPARAM lParam)

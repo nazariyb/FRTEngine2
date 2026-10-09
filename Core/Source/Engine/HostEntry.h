@@ -9,7 +9,9 @@
 #include <Windows.h>
 
 #include <cstdio>
-#include <string>
+
+#include "Containers/String.h"
+#include "Platform/Platform.h"
 
 // D3D12 Agility SDK opt-in. The loader only honours these exports when they come from the
 // executable, never from a DLL, so every host expands this once at file scope. D3D12Core.dll
@@ -22,26 +24,19 @@ namespace frt
 {
 // A host that cannot start says why: on the console it was started from (scripts, CI), else in a
 // message box - a windowed program started from Explorer or the IDE has nowhere else to say it.
-inline void ReportStartupError (const std::string& Utf8Message)
+// The host exits next, so the console - often the cmd.exe or FRT.bat window that started it - gets
+// its own code pages back (platform::InitConsoleUtf8) right away, not only at the very end.
+inline void ReportStartupError (FStringView Message)
 {
-	std::fprintf(stderr, "%s\n", Utf8Message.c_str());
+	std::fwrite(Message.GetData(), 1u, Message.Len(), stderr);
+	std::fputc('\n', stderr);
 	std::fflush(stderr);
+	platform::RestoreConsoleCodePages();
 	const HANDLE console = GetStdHandle(STD_ERROR_HANDLE);
 	if (console == nullptr || console == INVALID_HANDLE_VALUE || GetFileType(console) == FILE_TYPE_UNKNOWN)
 	{
-		const int length = MultiByteToWideChar(CP_UTF8, 0, Utf8Message.c_str(), -1, nullptr, 0);
-		std::wstring wide(static_cast<size_t>(length > 0 ? length : 1), L'\0');
-		MultiByteToWideChar(CP_UTF8, 0, Utf8Message.c_str(), -1, wide.data(), length);
-		MessageBoxW(nullptr, wide.c_str(), L"FRTEngine", MB_OK | MB_ICONERROR);
+		platform::ShowErrorMessage("FRTEngine", Message);
 	}
-}
-
-inline std::wstring WidenUtf8 (const std::string& Utf8)
-{
-	const int length = MultiByteToWideChar(CP_UTF8, 0, Utf8.c_str(), static_cast<int>(Utf8.size()), nullptr, 0);
-	std::wstring wide(static_cast<size_t>(length > 0 ? length : 0), L'\0');
-	MultiByteToWideChar(CP_UTF8, 0, Utf8.c_str(), static_cast<int>(Utf8.size()), wide.data(), length);
-	return wide;
 }
 }
 

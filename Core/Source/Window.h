@@ -1,10 +1,10 @@
 ﻿#pragma once
 
-#include <string>
 #include <Windows.h>
 
 #include "Core.h"
 #include "Event.h"
+#include "Containers/String.h"
 #include "Graphics/Render/RenderCommonTypes.h"
 #include "Math/Math.h"
 #include "User/UserSettings.h"
@@ -25,11 +25,8 @@ struct FRT_CORE_API SWindowParams
 	int Width = 0;
 	int Height = 0;
 
-#pragma warning(push)
-#pragma warning(disable: 4251)
-	std::wstring ClassName;
-	std::wstring Title = L"FRTEngine";
-#pragma warning(pop)
+	FString ClassName;
+	FString Title = "FRTEngine";
 };
 
 
@@ -51,7 +48,7 @@ public:
 
 	// TODO: probably options should be saved in Window?
 	void SetDisplaySettings (const SDisplaySettings& NewSettings, const graphics::SDisplayOptions& Options);
-	void UpdateTitle (const std::wstring& NewTitleDetails) const;
+	void UpdateTitle (FStringView NewTitleDetails) const;
 
 	// The window is the foreground (active) window: input reaches it.
 	bool IsForeground () const;
@@ -109,10 +106,7 @@ protected:
 	WINDOWPLACEMENT PlacementBeforeImmersive = { sizeof(WINDOWPLACEMENT) };
 	LONG_PTR StyleBeforeImmersive = 0;
 
-#pragma warning(push)
-#pragma warning(disable: 4251)
-	std::wstring Title;
-#pragma warning(pop)
+	FString Title;
 };
 
 

@@ -2,11 +2,11 @@
 
 #include <atomic>
 #include <filesystem>
-#include <string>
 #include <thread>
 #include <vector>
 
 #include "CoreTypes.h"
+#include "Containers/String.h"
 #include "Project/Project.h"
 
 #include "ToolProcess.h"
@@ -23,7 +23,7 @@ namespace frt::editor
 struct SProjectManagerRequest
 {
 	std::filesystem::path Project;   // the project this is about: selected in the list
-	std::string Message;             // shown at the top
+	FString Message;                 // shown at the top
 	bool bOpenNow = false;           // open it right away: it belongs to another engine's editor
 	bool bOfferBuild = false;        // its game would not load: offer to build it and try again
 };
@@ -61,18 +61,18 @@ private:
 	struct SRecentProject
 	{
 		std::filesystem::path File;
-		std::string Name;
-		std::string Location;
-		std::string EngineText;          // which engine it uses, or why none was found
-		std::string LastOpened;
+		FString Name;
+		FString Location;
+		FString EngineText;              // which engine it uses, or why none was found
+		FString LastOpened;
 		bool bMissing = false;           // the project file is gone
 		bool bEngineMissing = false;
 	};
 
 	struct STemplate
 	{
-		std::string Name;
-		std::string Description;
+		FString Name;
+		FString Description;
 	};
 
 	enum class ETask : uint8
@@ -104,18 +104,18 @@ private:
 	// engine itself needs building, which its running editor prevents.
 	void BuildAfterExit (const std::filesystem::path& ProjectFile);
 	void StartCreate ();
-	void StartTask (ETask Kind, std::string Title, const std::wstring& CommandLine, const std::filesystem::path& ProjectFile);
-	void SetMessage (std::string Text, bool bError);
+	void StartTask (ETask Kind, FString Title, FStringView CommandLine, const std::filesystem::path& ProjectFile);
+	void SetMessage (FString Text, bool bError);
 	void SaveSettings () const;
 	void UpdateSmokeTest ();
-	void SmokeLog (const std::string& Line) const;
+	void SmokeLog (FStringView Line) const;
 
 	CEngine& Engine;
 	SProjectManagerRequest Request;
 	project::SEngineDescriptor ThisEngine;
 	bool bFirstFrame = true;
 
-	std::string Message;
+	FString Message;
 	bool bMessageIsError = false;
 	bool bOfferBuild = false;
 
@@ -125,12 +125,12 @@ private:
 
 	std::vector<STemplate> Templates;
 	int32 SelectedTemplate = 0;
-	char Name[65] = {};
-	char Location[1024] = {};
+	FString Name;
+	FString Location;
 	bool bEmbeddedEngine = false;
 
 	ETask Task = ETask::None;
-	std::string TaskTitle;
+	FString TaskTitle;
 	std::filesystem::path TaskProject;   // opened when the task succeeds
 	std::filesystem::path FailedProject; // its build failed on a file this process holds
 	CToolProcess Tool;

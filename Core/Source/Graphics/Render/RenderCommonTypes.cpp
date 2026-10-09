@@ -115,7 +115,7 @@ int32 frt::graphics::SDisplayOptions::GetResolutionIndex (uint8 OutputIndex, uin
 	return GetResolutionIndex(OutputIndex, { Width, Height });
 }
 
-int32 frt::graphics::SDisplayOptions::GetRefreshRateIndex (uint8 OutputIndex, const std::string_view& RefreshRateTxt) const
+int32 frt::graphics::SDisplayOptions::GetRefreshRateIndex (uint8 OutputIndex, FStringView RefreshRateTxt) const
 {
 	const char* begin = RefreshRateTxt.data();
 	const char* end = begin + RefreshRateTxt.size();
@@ -178,8 +178,10 @@ uint8 frt::graphics::SDisplayOptions::ClampMonitorIndex (int32 InMonitorIndex) c
 	return static_cast<uint8>(math::Clamp(InMonitorIndex, 0, math::Max(OutputsNum - 1, 0)));
 }
 
-FRT_CORE_API bool frt::graphics::SResolution::Parse (std::string_view Str)
+FRT_CORE_API bool frt::graphics::SResolution::Parse (FStringView Text)
 {
+	const std::string_view Str(Text);
+
 	// find_first_of, not a loop over the delimiters: the earliest delimiter in the STRING is
 	// the separator, not the earliest one in this list. The hand-rolled walk this replaces
 	// advanced a raw pointer guarded by `&& currentDelimeter`, which is never null once it

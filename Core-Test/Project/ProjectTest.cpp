@@ -1,74 +1,80 @@
-#include <cstdlib>
 #include <filesystem>
-#include <fstream>
-#include <string>
+#include <optional>
+#include <vector>
 
 #include <gtest/gtest.h>
 
+#include "Containers/String.h"
+#include "Platform/Platform.h"
 #include "Project/Project.h"
 #include "Project/UserRegistry.h"
 
+using frt::EPathStyle;
+using frt::FString;
+using frt::FStringView;
+namespace platform = frt::platform;
 namespace project = frt::project;
 
 
 namespace
 {
 // Every test gets its own directory tree and its own per-user registry (FRT_USER_DATA_DIR), and
-// no engine override: what the user has registered, or set, never leaks in.
+// no engine override: what the user has registered, or set, never leaks in. The tree is under a
+// directory with a non-ASCII name, so every path below goes through UTF-16 all the way.
 class ProjectTest : public ::testing::Test
 {
 protected:
 	void SetUp () override
 	{
 		const ::testing::TestInfo* test = ::testing::UnitTest::GetInstance()->current_test_info();
-		Root = std::filesystem::temp_directory_path() / "FrtProjectTest" / test->name();
+		Root = std::filesystem::temp_directory_path() / FStringView("FrtProjectTest Тест 漢字 😀").ToPath()
+			/ FStringView(test->name()).ToPath();
 		std::error_code ec;
 		std::filesystem::remove_all(Root, ec);
 		std::filesystem::create_directories(Root);
-		SavedUserDataDir = project::GetEnvironmentPath(L"FRT_USER_DATA_DIR");
-		SavedEngineDir = project::GetEnvironmentPath(L"FRT_ENGINE_DIR");
-		SetEnvironment(L"FRT_USER_DATA_DIR", Root / "User");
-		SetEnvironment(L"FRT_ENGINE_DIR", {});
+		SavedUserDataDir = platform::GetEnvironmentPath("FRT_USER_DATA_DIR");
+		SavedEngineDir = platform::GetEnvironmentPath("FRT_ENGINE_DIR");
+		platform::SetEnvironmentPath("FRT_USER_DATA_DIR", Root / "User");
+		platform::SetEnvironmentPath("FRT_ENGINE_DIR", {});
 	}
 
 	void TearDown () override
 	{
-		SetEnvironment(L"FRT_USER_DATA_DIR", SavedUserDataDir);
-		SetEnvironment(L"FRT_ENGINE_DIR", SavedEngineDir);
+		platform::SetEnvironmentPath("FRT_USER_DATA_DIR", SavedUserDataDir);
+		platform::SetEnvironmentPath("FRT_ENGINE_DIR", SavedEngineDir);
 		std::error_code ec;
 		std::filesystem::remove_all(Root, ec);
 	}
 
-	static void SetEnvironment (const wchar_t* Name, const std::filesystem::path& Value)
+	static void Write (const std::filesystem::path& File, FStringView Text)
 	{
-		_wputenv_s(Name, Value.c_str());
+		EXPECT_TRUE(platform::WriteFileText(File, Text));   // creates the directories
 	}
 
-	static void Write (const std::filesystem::path& File, const std::string& Text)
+	std::filesystem::path MakeEngine (FStringView Dir, FStringView Name)
 	{
-		std::filesystem::create_directories(File.parent_path());
-		std::ofstream(File, std::ios::binary | std::ios::trunc) << Text;
-	}
-
-	std::filesystem::path MakeEngine (const char* Dir, const char* Name)
-	{
-		const std::filesystem::path dir = Root / Dir;
-		Write(dir / project::EngineFileName, std::string("[Engine]\nName=") + Name + "\nVersion=1.2\n");
+		const std::filesystem::path dir = Root / Dir.ToPath();
+		Write(dir / project::EngineFileName.ToPath(), FString::Format("[Engine]\nName={}\nVersion=1.2\n", Name));
 		return std::filesystem::canonical(dir);
 	}
 
-	std::filesystem::path MakeProject (const char* Dir, const char* Name, const std::string& Engine)
+	std::filesystem::path MakeProject (FStringView Dir, FStringView Name, FStringView Engine)
 	{
-		const std::filesystem::path file = Root / Dir / (std::string(Name) + std::string(project::ProjectFileExtension));
-		Write(file, std::string("; a comment\n[Project]\nName=") + Name + (Engine.empty() ? "" : "\nEngine=" + Engine) + "\n");
+		const std::filesystem::path file = Root / Dir.ToPath() / (Name + project::ProjectFileExtension).ToPath();
+		FString text = FString::Format("; a comment\n[Project]\nName={}\n", Name);
+		if (!Engine.IsEmpty())
+		{
+			text.AppendFormat("Engine={}\n", Engine);
+		}
+		Write(file, text);
 		return file;
 	}
 
 	static project::SProjectDescriptor Load (const std::filesystem::path& File)
 	{
 		project::SProjectDescriptor descriptor;
-		std::string error;
-		EXPECT_TRUE(project::SProjectDescriptor::Load(File, descriptor, &error)) << error;
+		FString error;
+		EXPECT_TRUE(project::SProjectDescriptor::Load(File, descriptor, &error)) << error.CStr();
 		return descriptor;
 	}
 
@@ -109,9 +115,9 @@ TEST_F(ProjectTest, DescriptorWithoutANameIsRejected)
 	Write(file, "[Project]\nEngine=Engine\n");
 
 	project::SProjectDescriptor descriptor;
-	std::string error;
+	FString error;
 	EXPECT_FALSE(project::SProjectDescriptor::Load(file, descriptor, &error));
-	EXPECT_NE(error.find("Name"), std::string::npos);
+	EXPECT_TRUE(error.Contains("Name"));
 	EXPECT_FALSE(project::SProjectDescriptor::Load(Root / "Missing.frtproject", descriptor, &error));
 }
 
@@ -121,9 +127,9 @@ TEST_F(ProjectTest, DescriptorNamingAnEngineProjectIsRejected)
 	const std::filesystem::path file = Root / "Game" / "Game.frtproject";
 	Write(file, "[Project]\nName=Game\nModule=Core\n");
 	project::SProjectDescriptor descriptor;
-	std::string error;
+	FString error;
 	EXPECT_FALSE(project::SProjectDescriptor::Load(file, descriptor, &error));
-	EXPECT_NE(error.find("engine"), std::string::npos);
+	EXPECT_TRUE(error.Contains("engine"));
 
 	Write(file, "[Project]\nName=My Game\n");
 	EXPECT_FALSE(project::SProjectDescriptor::Load(file, descriptor, &error));
@@ -139,8 +145,12 @@ TEST_F(ProjectTest, ProjectFileExtensionInAnyCase)
 TEST_F(ProjectTest, TextThatIsNotUtf8IsNoPath)
 {
 	// An ANSI-encoded file with a non-ASCII path: no path, and no exception.
-	EXPECT_TRUE(project::PathFromUtf8("C:\\Users\\J\xF6rg").empty());
-	EXPECT_FALSE(project::PathFromUtf8("C:\\Users\\J\xC3\xB6rg").empty());
+	EXPECT_FALSE(FStringView("C:\\Users\\J\xF6rg").TryToPath().has_value());
+	EXPECT_TRUE(FStringView("C:\\Users\\J\xC3\xB6rg").TryToPath().has_value());
+
+	// Such a registry entry finds no engine, rather than one at a mangled path.
+	Write(project::GetUserDataDir() / "Engines.ini", "[Engines]\nAnsi=C:\\Users\\J\xF6rg\\Engine\n");
+	EXPECT_TRUE(project::FindRegisteredEngine("Ansi").empty());
 }
 
 TEST_F(ProjectTest, SaveKeepsWhatElseTheFileHolds)
@@ -154,9 +164,9 @@ TEST_F(ProjectTest, SaveKeepsWhatElseTheFileHolds)
 
 	const project::SProjectDescriptor saved = Load(file);
 	EXPECT_EQ(saved.Engine, "Engine");
-	std::ifstream in(file);
-	const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-	EXPECT_NE(text.find("SharedModules=../Shared"), std::string::npos);
+	const std::optional<FString> text = platform::ReadFileText(file);
+	ASSERT_TRUE(text.has_value());
+	EXPECT_TRUE(text->Contains("SharedModules=../Shared"));
 }
 
 TEST_F(ProjectTest, ProjectFileIsTheOnlyOneInItsDirectory)
@@ -211,25 +221,25 @@ TEST_F(ProjectTest, EnvironmentOverrideWinsOverEverything)
 {
 	MakeEngine("Game/Engine", "Embedded");
 	const std::filesystem::path other = MakeEngine("Other", "Other");
-	SetEnvironment(L"FRT_ENGINE_DIR", other);
+	platform::SetEnvironmentPath("FRT_ENGINE_DIR", other);
 
 	const project::SProjectDescriptor game = Load(MakeProject("Game", "Game", "Engine"));
 	EXPECT_TRUE(IsSame(project::ResolveEngineDir(game), other));
 
 	// An override that is no engine is an error, not a fallback.
-	SetEnvironment(L"FRT_ENGINE_DIR", Root / "Nowhere");
-	std::string error;
+	platform::SetEnvironmentPath("FRT_ENGINE_DIR", Root / "Nowhere");
+	FString error;
 	EXPECT_TRUE(project::ResolveEngineDir(game, &error).empty());
-	EXPECT_NE(error.find("FRT_ENGINE_DIR"), std::string::npos);
+	EXPECT_TRUE(error.Contains("FRT_ENGINE_DIR"));
 }
 
 TEST_F(ProjectTest, UnknownEngineSaysWhichAndHow)
 {
 	const project::SProjectDescriptor game = Load(MakeProject("Game", "Game", "Unregistered"));
-	std::string error;
+	FString error;
 	EXPECT_TRUE(project::ResolveEngineDir(game, &error).empty());
-	EXPECT_NE(error.find("Unregistered"), std::string::npos);
-	EXPECT_NE(error.find("setup"), std::string::npos);
+	EXPECT_TRUE(error.Contains("Unregistered"));
+	EXPECT_TRUE(error.Contains("setup"));
 }
 
 TEST_F(ProjectTest, ProjectNamesAreIdentifiersButNotEngineParts)
@@ -241,12 +251,13 @@ TEST_F(ProjectTest, ProjectNamesAreIdentifiersButNotEngineParts)
 	EXPECT_FALSE(project::IsValidProjectName("_Game"));
 	EXPECT_FALSE(project::IsValidProjectName("My Game"));
 	EXPECT_FALSE(project::IsValidProjectName("My-Game"));
-	EXPECT_FALSE(project::IsValidProjectName(std::string(65, 'a')));
-	EXPECT_TRUE(project::IsValidProjectName(std::string(64, 'a')));
+	EXPECT_FALSE(project::IsValidProjectName("Гра"));
+	EXPECT_FALSE(project::IsValidProjectName(FString::Repeat("a", 65)));
+	EXPECT_TRUE(project::IsValidProjectName(FString::Repeat("a", 64)));
 
-	std::string error;
+	FString error;
 	EXPECT_FALSE(project::IsValidProjectName("editor", &error));
-	EXPECT_NE(error.find("engine"), std::string::npos);
+	EXPECT_TRUE(error.Contains("engine"));
 	EXPECT_FALSE(project::IsValidProjectName("Core"));
 	EXPECT_FALSE(project::IsValidProjectName("ImGui"));
 }
@@ -262,8 +273,8 @@ TEST_F(ProjectTest, RecentProjectsAreOneEntryPerProjectNewestFirst)
 	EXPECT_EQ(project::GetRecentProjects().size(), 2u);
 
 	// Newest first, by the recorded time.
-	Write(project::GetUserDataDir() / "Projects.ini",
-		"[Recent]\n" + project::PathToUtf8(a) + "=100\n" + project::PathToUtf8(b) + "=200\n");
+	Write(project::GetUserDataDir() / "Projects.ini", FString::Format("[Recent]\n{}=100\n{}=200\n",
+		FString::FromPath(a, EPathStyle::Preferred), FString::FromPath(b, EPathStyle::Preferred)));
 	const std::vector<project::SRecentProject> recent = project::GetRecentProjects();
 	ASSERT_EQ(recent.size(), 2u);
 	EXPECT_TRUE(IsSame(recent[0].File, b));
@@ -272,6 +283,40 @@ TEST_F(ProjectTest, RecentProjectsAreOneEntryPerProjectNewestFirst)
 	project::RemoveRecentProject(b);
 	ASSERT_EQ(project::GetRecentProjects().size(), 1u);
 	EXPECT_TRUE(IsSame(project::GetRecentProjects()[0].File, a));
+}
+
+TEST_F(ProjectTest, NonAsciiDirectoriesAndEngineNames)
+{
+	// A project and its engine in directories named in Cyrillic, CJK and emoji; the engine
+	// registered under a non-ASCII name, as the registry files store it (UTF-8).
+	const std::filesystem::path engine = MakeEngine("Рушії 引擎/Спільний 😀", "Рушій");
+	ASSERT_TRUE(project::RegisterEngine("Рушій", engine));
+	EXPECT_TRUE(IsSame(project::FindRegisteredEngine("Рушій"), engine));
+	ASSERT_EQ(project::GetRegisteredEngines().size(), 1u);
+	EXPECT_EQ(project::GetRegisteredEngines()[0].first, "Рушій");
+	EXPECT_TRUE(IsSame(project::GetRegisteredEngines()[0].second, engine));
+
+	const std::filesystem::path file = MakeProject("Ігри 游戏/Гра 😀", "Game", "Рушій");
+	const project::SProjectDescriptor game = Load(file);
+	EXPECT_EQ(game.Engine, "Рушій");
+	EXPECT_TRUE(IsSame(game.GetDir(), Root / FStringView("Ігри 游戏").ToPath() / FStringView("Гра 😀").ToPath()));
+	EXPECT_TRUE(IsSame(project::ResolveEngineDir(game), engine));
+	EXPECT_TRUE(IsSame(project::FindProjectFileAbove(game.GetDir() / "Source"), file));
+
+	// An engine named by a path relative to the project, through non-ASCII directories.
+	Write(file, "[Project]\nName=Game\nEngine=../../Рушії 引擎/Спільний 😀\n");
+	EXPECT_TRUE(IsSame(project::ResolveEngineDir(Load(file)), engine));
+
+	project::AddRecentProject(file);
+	const std::vector<project::SRecentProject> recent = project::GetRecentProjects();
+	ASSERT_EQ(recent.size(), 1u);
+	EXPECT_TRUE(IsSame(recent[0].File, file));
+
+	// A message naming the file names it in UTF-8.
+	project::SProjectDescriptor descriptor;
+	FString error;
+	EXPECT_FALSE(project::SProjectDescriptor::Load(file.parent_path() / FStringView("Відсутній.frtproject").ToPath(), descriptor, &error));
+	EXPECT_TRUE(error.Contains("Відсутній.frtproject"));
 }
 
 TEST_F(ProjectTest, PackageMarkerIsTheProjectDescriptorOfItsDirectory)
@@ -303,9 +348,10 @@ TEST_F(ProjectTest, NothingHereRunsAsAPackage)
 TEST_F(ProjectTest, GameUserDataIsPerUserUnderTheGamesName)
 {
 	EXPECT_EQ(project::GetGameUserDataDir("MyGame"), Root / "User" / "MyGame");
+	EXPECT_EQ(project::GetGameUserDataDir("Гра 😀"), Root / "User" / FStringView("Гра 😀").ToPath());
 
-	SetEnvironment(L"FRT_USER_DATA_DIR", {});
-	const std::filesystem::path local = project::GetEnvironmentPath(L"LOCALAPPDATA");
+	platform::SetEnvironmentPath("FRT_USER_DATA_DIR", {});
+	const std::filesystem::path local = platform::GetEnvironmentPath("LOCALAPPDATA");
 	if (!local.empty())
 	{
 		EXPECT_EQ(project::GetGameUserDataDir("MyGame"), local / "MyGame");

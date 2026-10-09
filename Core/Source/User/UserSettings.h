@@ -3,6 +3,7 @@
 #include "Core.h"
 #include "CoreTypes.h"
 #include "Enum.h"
+#include "Containers/String.h"
 #include "Graphics/Render/GraphicsCoreTypes.h"
 #include "Graphics/Render/RenderCommonTypes.h"
 
@@ -15,8 +16,8 @@ class CConfig;
 
 namespace frt::names
 {
-inline constexpr const char* DisplaySection = "Settings.Display";
-inline constexpr const char* VideoSection = "Settings.Video";
+inline constexpr FStringLiteral DisplaySection = "Settings.Display";
+inline constexpr FStringLiteral VideoSection = "Settings.Video";
 }
 
 
@@ -37,10 +38,12 @@ struct SDisplaySettings
 	int32 ResolutionIndex = 0;
 	int32 RefreshRateIndex = 0;
 
+	// Load keeps at most this many bytes of each text: the longest values the settings panel
+	// writes ("3840x2160", "143.86") fit.
 	static constexpr uint8 ResolutionTextBufferSize		= 9u;
 	static constexpr uint8 RefreshRateTextBufferSize	= 6u;
-	char ResolutionTxt[ResolutionTextBufferSize + 1u]	= {};
-	char RefreshRateTxt[RefreshRateTextBufferSize + 1u]	= {};
+	FString ResolutionTxt;
+	FString RefreshRateTxt;
 
 	bool bVSync = true;
 	EFullscreenMode FullscreenMode = EFullscreenMode::Windowed;
@@ -83,10 +86,11 @@ FRT_CORE_API void SaveUserSettings (
 	config::CConfig& Config,
 	const SUserSettings& Settings,
 	const graphics::SDisplayOptions& Options);
+
+// In the type's namespace, where argument-dependent lookup finds it: inside namespace frt, the
+// string types' operator== would hide a global one.
+bool operator== (const SDisplaySettings& Lhs, const SDisplaySettings& Rhs);
 }
-
-
-bool operator== (const frt::SDisplaySettings& Lhs, const frt::SDisplaySettings& Rhs);
 
 
 // Needed by the config round-trip, which writes enums by name rather than by integer

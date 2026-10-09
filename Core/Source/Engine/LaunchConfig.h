@@ -1,6 +1,8 @@
 #pragma once
 
 #include "Core.h"
+#include "Containers/StringView.h"
+#include "Math/Math.h"
 
 
 namespace frt
@@ -37,4 +39,8 @@ FRT_CORE_API void ApplyViewLaunchConfig (const config::CConfig& Config, graphics
 // [Scene] TimeOfDay / CameraPosition / CameraRotation and -Render:FieldOfViewY into a world.
 // [Scene] PauseWorld is the host's (it pauses the simulation, not a world property).
 FRT_CORE_API void ApplySceneLaunchConfig (const config::CConfig& Config, CWorldScene& World);
+
+// "x,y,z", spaces around the numbers allowed ("1, 2, 3"): the vectors of the [Scene] and
+// [Automation] keys. False, with Out unchanged, for anything else. Core's own (not exported).
+bool ParseVector3 (FStringView Text, Vector3f& Out);
 }

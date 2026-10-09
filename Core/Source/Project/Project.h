@@ -1,20 +1,19 @@
 #pragma once
 
 #include <filesystem>
-#include <string>
-#include <string_view>
 
 #include "Core.h"
+#include "Containers/String.h"
 
 
 namespace frt::project
 {
 // <Name>.frtproject at a project's root.
-inline constexpr std::string_view ProjectFileExtension = ".frtproject";
+inline constexpr FStringLiteral ProjectFileExtension = ".frtproject";
 // At an engine checkout's root; also how an engine directory is recognised.
-inline constexpr std::string_view EngineFileName = "Engine.frtengine";
+inline constexpr FStringLiteral EngineFileName = "Engine.frtengine";
 // <Name>.frtpackage beside a packaged game's executable (FindRunningPackage).
-inline constexpr std::string_view PackageFileExtension = ".frtpackage";
+inline constexpr FStringLiteral PackageFileExtension = ".frtpackage";
 
 /**
  * A project: a game in its own directory - its own repository - with the engine elsewhere
@@ -37,14 +36,14 @@ inline constexpr std::string_view PackageFileExtension = ".frtpackage";
 struct FRT_CORE_API SProjectDescriptor
 {
 	std::filesystem::path File;          // absolute
-	std::string Name;
-	std::string Module;                  // defaults to Name
-	std::string Engine;
+	FString Name;
+	FString Module;                      // defaults to Name
+	FString Engine;
 
 	std::filesystem::path GetDir () const { return File.parent_path(); }
 
 	// False, with a reason, when the file cannot be read or names no project.
-	static bool Load (const std::filesystem::path& File, SProjectDescriptor& Out, std::string* Error = nullptr);
+	static bool Load (const std::filesystem::path& File, SProjectDescriptor& Out, FString* Error = nullptr);
 	bool Save () const;
 };
 
@@ -54,8 +53,8 @@ struct FRT_CORE_API SProjectDescriptor
 struct FRT_CORE_API SEngineDescriptor
 {
 	std::filesystem::path Dir;
-	std::string Name;
-	std::string Version;
+	FString Name;
+	FString Version;
 
 	static bool Load (const std::filesystem::path& Dir, SEngineDescriptor& Out);
 	static bool IsEngineDir (const std::filesystem::path& Dir);
@@ -76,7 +75,7 @@ FRT_CORE_API std::filesystem::path FindEngineDirAbove (const std::filesystem::pa
  *   3. the nearest engine above the project: a project kept inside an engine checkout.
  * Empty, with the reason, when none applies.
  */
-FRT_CORE_API std::filesystem::path ResolveEngineDir (const SProjectDescriptor& Project, std::string* Error = nullptr);
+FRT_CORE_API std::filesystem::path ResolveEngineDir (const SProjectDescriptor& Project, FString* Error = nullptr);
 
 /**
  * A packaged game (FRT.bat package): a directory with everything a Release game runs with, which
@@ -110,21 +109,13 @@ FRT_CORE_API std::filesystem::path FindPackageFile (const std::filesystem::path&
  *     into its project's Binaries and started from there.
  * Empty if none; OutError says why when a project was named but is not there.
  */
-FRT_CORE_API std::filesystem::path FindProjectToRun (bool bSearchFromExecutable, std::string* OutError = nullptr);
+FRT_CORE_API std::filesystem::path FindProjectToRun (bool bSearchFromExecutable, FString* OutError = nullptr);
 
 // A project's name is also its module's, its files' and its C++ identifiers' name: a letter,
 // then letters, digits or underscores, at most 64 - and not an engine project's name, which the
 // generated solution already uses. Descriptors with another Name or Module do not load.
-FRT_CORE_API bool IsValidProjectName (std::string_view Name, std::string* Error = nullptr);
+FRT_CORE_API bool IsValidProjectName (FStringView Name, FString* Error = nullptr);
 
-// UTF-8 text in config files and messages <-> paths, which on Windows would otherwise read narrow
-// strings in the ANSI code page. Written with the platform's separators.
-// Empty when the text is not UTF-8 / the path not Unicode: never an exception.
-FRT_CORE_API std::filesystem::path PathFromUtf8 (std::string_view Text);
-FRT_CORE_API std::string PathToUtf8 (const std::filesystem::path& Path);
 // Ends in .frtproject, in any case.
 FRT_CORE_API bool HasProjectFileExtension (const std::filesystem::path& Path);
-// An environment variable holding a path, read in UTF-16 (any user name, any folder); empty
-// when unset.
-FRT_CORE_API std::filesystem::path GetEnvironmentPath (const wchar_t* Name);
 }

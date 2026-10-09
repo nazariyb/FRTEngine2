@@ -3,12 +3,12 @@
 #include <filesystem>
 #include <memory>
 #include <span>
-#include <string>
 
 #include "Core.h"
 #include "CoreTypes.h"
 #include "Timer.h"
 #include "Config/Config.h"
+#include "Containers/String.h"
 #include "Graphics/Render/RenderCommonTypes.h"
 #include "Graphics/Render/RenderView.h"
 #include "Input/InputActionLibrary.h"
@@ -34,7 +34,7 @@ namespace frt
 {
 struct SEngineDesc
 {
-	std::wstring WindowTitle = L"FRTEngine";
+	FString WindowTitle = "FRTEngine";
 	// ImGui layout file. Empty: imgui.ini in the working directory (the project directory).
 	std::filesystem::path UiIniPath;
 	// Start with the window maximized instead of at the configured resolution.

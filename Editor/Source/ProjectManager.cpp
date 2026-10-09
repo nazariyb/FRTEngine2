@@ -16,10 +16,12 @@
 #include "EnginePaths.h"
 #include "Window.h"
 #include "Config/IniFile.h"
+#include "Containers/WideString.h"
 #include "Engine/Engine.h"
-#include "Engine/HostEntry.h"
 #include "Graphics/Render/Renderer.h"
+#include "Platform/Platform.h"
 #include "Project/UserRegistry.h"
+#include "UI/ImGuiString.h"
 
 
 namespace frt::editor
@@ -30,8 +32,13 @@ constexpr std::chrono::milliseconds BackgroundFrameSleep(33);
 constexpr ImVec4 ErrorColor(1.0f, 0.45f, 0.4f, 1.0f);
 constexpr ImVec4 DimColor(0.6f, 0.6f, 0.6f, 1.0f);
 
+// What the fields take: a project name has at most 64 characters (project::IsValidProjectName),
+// and no location anyone types is longer.
+constexpr uint32 MaxNameBytes = 64u;
+constexpr uint32 MaxLocationBytes = 1023u;
+
 // The configuration this editor was built in: an editor opens projects in its own.
-constexpr const char* ConfigName = FRT_CONFIG_NAME;
+constexpr FStringLiteral ConfigName = FRT_CONFIG_NAME;
 
 std::filesystem::path SettingsFile ()
 {
@@ -40,12 +47,12 @@ std::filesystem::path SettingsFile ()
 
 std::filesystem::path EditorExecutable (const std::filesystem::path& EngineDir)
 {
-	return EngineDir / "Binaries" / FRT_PLATFORM_NAME / (std::string("Editor-") + ConfigName + ".exe");
+	return EngineDir / "Binaries" / FRT_PLATFORM_NAME / ("Editor-" FRT_CONFIG_NAME ".exe");
 }
 
 std::filesystem::path ModuleFile (const project::SProjectDescriptor& Project)
 {
-	return Project.GetDir() / "Binaries" / FRT_PLATFORM_NAME / (Project.Module + "-" + ConfigName + ".dll");
+	return Project.GetDir() / "Binaries" / FRT_PLATFORM_NAME / FString::Format("{}-{}.dll", Project.Module, ConfigName).ToPath();
 }
 
 bool Exists (const std::filesystem::path& Path)
@@ -60,18 +67,17 @@ bool IsSameDir (const std::filesystem::path& A, const std::filesystem::path& B)
 	return std::filesystem::equivalent(A, B, ec);
 }
 
-std::string FormatTime (int64 Seconds)
+FString FormatTime (int64 Seconds)
 {
 	if (Seconds <= 0)
 	{
-		return {};
+		return FString();
 	}
 	const std::time_t time = static_cast<std::time_t>(Seconds);
 	std::tm local {};
 	localtime_s(&local, &time);
-	char text[32] = {};
-	std::strftime(text, sizeof(text), "%Y-%m-%d %H:%M", &local);
-	return text;
+	return FString::Format("{:04}-{:02}-{:02} {:02}:{:02}", local.tm_year + 1900, local.tm_mon + 1, local.tm_mday,
+		local.tm_hour, local.tm_min);
 }
 
 std::filesystem::path DefaultProjectsDir ()
@@ -84,13 +90,6 @@ std::filesystem::path DefaultProjectsDir ()
 	}
 	CoTaskMemFree(documents);
 	return dir;
-}
-
-void CopyToBuffer (const std::string& Text, char* Buffer, size_t Size)
-{
-	const size_t count = Text.size() < Size - 1u ? Text.size() : Size - 1u;
-	Text.copy(Buffer, count);
-	Buffer[count] = '\0';
 }
 
 // A project's name is a C++ identifier: nothing else gets typed into the field.
@@ -155,12 +154,12 @@ CProjectManager::CProjectManager (CEngine& InEngine, SProjectManagerRequest InRe
 	, Request(std::move(InRequest))
 {
 	project::SEngineDescriptor::Load(paths::GetEngineDir(), ThisEngine);
-	if (ThisEngine.Name.empty())
+	if (ThisEngine.Name.IsEmpty())
 	{
 		ThisEngine.Name = "FRTEngine";
 	}
 	Message = Request.Message;
-	bMessageIsError = !Message.empty();
+	bMessageIsError = !Message.IsEmpty();
 	bOfferBuild = Request.bOfferBuild;
 
 	// A scripted run keeps to its own directory, registry included: the processes it starts
@@ -172,13 +171,13 @@ CProjectManager::CProjectManager (CEngine& InEngine, SProjectManagerRequest InRe
 	std::error_code ec;
 	if (bSmokeTest)
 	{
-		const std::string dir = config.Get("Editor", "SmokeTestDir", "");
-		SmokeDir = dir.empty() ? std::filesystem::temp_directory_path(ec) / "FRTEngine" / "SmokeTest" / "ProjectManager"
-			: project::PathFromUtf8(dir);
+		const FString dir = config.Get("Editor", "SmokeTestDir", "");
+		SmokeDir = dir.IsEmpty() ? std::filesystem::temp_directory_path(ec) / "FRTEngine" / "SmokeTest" / "ProjectManager"
+			: dir.TryToPath().value_or(std::filesystem::path());
 		std::filesystem::remove_all(SmokeDir, ec);
 		std::filesystem::create_directories(SmokeDir, ec);
 		std::ofstream(SmokeDir / "ProjectManager.log", std::ios::trunc);
-		_wputenv_s(L"FRT_USER_DATA_DIR", (SmokeDir / "User").c_str());
+		platform::SetEnvironmentPath("FRT_USER_DATA_DIR", SmokeDir / "User");
 	}
 
 	// Templates/<Name>/Template.ini, as FRT.bat new finds them.
@@ -187,8 +186,8 @@ CProjectManager::CProjectManager (CEngine& InEngine, SProjectManagerRequest InRe
 		config::CIniFile info;
 		if (it->is_directory(ec) && info.LoadFromFile(it->path() / "Template.ini"))
 		{
-			const std::string* description = info.Find("Template", "Description");
-			Templates.push_back({ project::PathToUtf8(it->path().filename()), description ? *description : std::string() });
+			const FString* description = info.Find("Template", "Description");
+			Templates.push_back({ FString::FromPath(it->path().filename()), description ? *description : FString() });
 		}
 	}
 
@@ -198,9 +197,9 @@ CProjectManager::CProjectManager (CEngine& InEngine, SProjectManagerRequest InRe
 	{
 		settings.LoadFromFile(SettingsFile());
 	}
-	const std::string* location = settings.Find("NewProject", "Location");
-	CopyToBuffer(location ? *location : project::PathToUtf8(DefaultProjectsDir()), Location, sizeof(Location));
-	const std::string* templateName = settings.Find("NewProject", "Template");
+	const FString* location = settings.Find("NewProject", "Location");
+	Location = location ? *location : FString::FromPath(DefaultProjectsDir(), EPathStyle::Preferred);
+	const FString* templateName = settings.Find("NewProject", "Template");
 	for (size_t i = 0u; i < Templates.size(); ++i)
 	{
 		if (templateName ? *templateName == Templates[i].Name : Templates[i].Name == "Blank")
@@ -208,7 +207,7 @@ CProjectManager::CProjectManager (CEngine& InEngine, SProjectManagerRequest InRe
 			SelectedTemplate = static_cast<int32>(i);
 		}
 	}
-	const std::string* layout = settings.Find("NewProject", "Layout");
+	const FString* layout = settings.Find("NewProject", "Layout");
 	bEmbeddedEngine = layout && *layout == "embedded";
 
 	Refresh();
@@ -257,13 +256,13 @@ void CProjectManager::Refresh ()
 	{
 		SRecentProject entry;
 		entry.File = recent.File;
-		entry.Location = project::PathToUtf8(recent.File.parent_path());
+		entry.Location = FString::FromPath(recent.File.parent_path(), EPathStyle::Preferred);
 		entry.LastOpened = FormatTime(recent.LastOpened);
 		project::SProjectDescriptor descriptor;
-		std::string error;
+		FString error;
 		if (!project::SProjectDescriptor::Load(recent.File, descriptor, &error))
 		{
-			entry.Name = project::PathToUtf8(recent.File.stem());
+			entry.Name = FString::FromPath(recent.File.stem());
 			entry.bMissing = true;
 			entry.EngineText = Exists(recent.File) ? error : "The project is not there any more";
 		}
@@ -288,7 +287,7 @@ void CProjectManager::Refresh ()
 			else
 			{
 				project::SEngineDescriptor::Load(engineDir, engine);
-				entry.EngineText = engine.Name + " in " + project::PathToUtf8(engineDir);
+				entry.EngineText = engine.Name + " in " + FString::FromPath(engineDir, EPathStyle::Preferred);
 			}
 		}
 		if (!Request.Project.empty() && IsSameDir(recent.File, Request.Project))
@@ -299,7 +298,7 @@ void CProjectManager::Refresh ()
 	}
 }
 
-void CProjectManager::SetMessage (std::string Text, bool bError)
+void CProjectManager::SetMessage (FString Text, bool bError)
 {
 	Message = std::move(Text);
 	bMessageIsError = bError;
@@ -335,22 +334,22 @@ void CProjectManager::Draw ()
 	ImGui::PopStyleVar();
 
 	ImGui::PushFont(nullptr, ImGui::GetStyle().FontSizeBase * 1.5f);
-	ImGui::TextUnformatted(ThisEngine.Name.c_str());
+	ImGui::TextUnformatted(ThisEngine.Name.CStr());
 	ImGui::PopFont();
 	ImGui::SameLine();
-	ImGui::TextColored(DimColor, "%s   %s", ThisEngine.Version.c_str(), project::PathToUtf8(paths::GetEngineDir()).c_str());
+	ImGui::TextColored(DimColor, "%s   %s", ThisEngine.Version.CStr(), FString::FromPath(paths::GetEngineDir(), EPathStyle::Preferred).CStr());
 
-	if (!Message.empty())
+	if (!Message.IsEmpty())
 	{
 		ImGui::Spacing();
 		ImGui::PushTextWrapPos(0.0f);
 		if (bMessageIsError)
 		{
-			ImGui::TextColored(ErrorColor, "%s", Message.c_str());
+			ImGui::TextColored(ErrorColor, "%s", Message.CStr());
 		}
 		else
 		{
-			ImGui::TextUnformatted(Message.c_str());
+			ImGui::TextUnformatted(Message.CStr());
 		}
 		ImGui::PopTextWrapPos();
 		if (bOfferBuild && Task == ETask::None && !Request.Project.empty())
@@ -416,8 +415,8 @@ void CProjectManager::DrawRecent ()
 	ImGui::BeginDisabled(!selected || selected->bMissing);
 	if (ImGui::Button("Show in Explorer"))
 	{
-		const std::wstring arguments = L"/select," + QuoteArgument(selected->File);
-		ShellExecuteW(nullptr, L"open", L"explorer.exe", arguments.c_str(), nullptr, SW_SHOWNORMAL);
+		const FString arguments = "/select," + QuoteArgument(selected->File);
+		ShellExecuteW(nullptr, L"open", L"explorer.exe", ToWide(arguments).CStr(), nullptr, SW_SHOWNORMAL);
 	}
 	ImGui::EndDisabled();
 	ImGui::SameLine();
@@ -463,7 +462,7 @@ void CProjectManager::DrawRecent ()
 		{
 			ImGui::PushStyleColor(ImGuiCol_Text, DimColor);
 		}
-		if (ImGui::Selectable(entry.Name.c_str(), Selected == i, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick))
+		if (ImGui::Selectable(entry.Name.CStr(), Selected == i, ImGuiSelectableFlags_SpanAllColumns | ImGuiSelectableFlags_AllowDoubleClick))
 		{
 			Selected = i;
 			if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && !entry.bMissing && !entry.bEngineMissing)
@@ -478,16 +477,16 @@ void CProjectManager::DrawRecent ()
 		ImGui::TableNextColumn();
 		if (entry.bMissing || entry.bEngineMissing)
 		{
-			ImGui::TextColored(ErrorColor, "%s", entry.EngineText.c_str());
+			ImGui::TextColored(ErrorColor, "%s", entry.EngineText.CStr());
 		}
 		else
 		{
-			ImGui::TextUnformatted(entry.EngineText.c_str());
+			ImGui::TextUnformatted(entry.EngineText.CStr());
 		}
 		ImGui::TableNextColumn();
-		ImGui::TextUnformatted(entry.LastOpened.c_str());
+		ImGui::TextUnformatted(entry.LastOpened.CStr());
 		ImGui::TableNextColumn();
-		ImGui::TextColored(DimColor, "%s", entry.Location.c_str());
+		ImGui::TextColored(DimColor, "%s", entry.Location.CStr());
 		ImGui::PopID();
 	}
 	ImGui::EndTable();
@@ -514,9 +513,9 @@ void CProjectManager::DrawNewProject ()
 			}
 			const ImVec2 next = ImGui::GetCursorPos();
 			ImGui::SetCursorPos(ImVec2(start.x + 8.0f, start.y));
-			ImGui::TextUnformatted(Templates[i].Name.c_str());
+			ImGui::TextUnformatted(Templates[i].Name.CStr());
 			ImGui::SetCursorPosX(start.x + 8.0f);
-			ImGui::TextColored(DimColor, "%s", Templates[i].Description.c_str());
+			ImGui::TextColored(DimColor, "%s", Templates[i].Description.CStr());
 			// Back below the row; an empty item makes that the end of the list's content.
 			ImGui::SetCursorPos(next);
 			ImGui::Dummy(ImVec2(0.0f, 0.0f));
@@ -532,13 +531,13 @@ void CProjectManager::DrawNewProject ()
 	ImGui::TextUnformatted("Name");
 	ImGui::SameLine(labelWidth);
 	ImGui::SetNextItemWidth(320.0f);
-	ImGui::InputTextWithHint("##name", "MyGame", Name, sizeof(Name), ImGuiInputTextFlags_CallbackCharFilter, FilterNameCharacter);
+	ui::InputTextWithHint("##name", "MyGame", Name, ImGuiInputTextFlags_CallbackCharFilter, FilterNameCharacter, nullptr, MaxNameBytes);
 
 	ImGui::AlignTextToFramePadding();
 	ImGui::TextUnformatted("Location");
 	ImGui::SameLine(labelWidth);
 	ImGui::SetNextItemWidth(-ImGui::CalcTextSize("Browse...").x - ImGui::GetStyle().FramePadding.x * 2.0f - ImGui::GetStyle().ItemSpacing.x);
-	ImGui::InputText("##location", Location, sizeof(Location));
+	ui::InputText("##location", Location, ImGuiInputTextFlags_None, nullptr, nullptr, MaxLocationBytes);
 	ImGui::SameLine();
 	if (ImGui::Button("Browse..."))
 	{
@@ -553,7 +552,7 @@ void CProjectManager::DrawNewProject ()
 		bEmbeddedEngine = false;
 	}
 	ImGui::SameLine();
-	ImGui::TextColored(DimColor, "this engine, found by its name (%s): one engine for any number of projects", ThisEngine.Name.c_str());
+	ImGui::TextColored(DimColor, "this engine, found by its name (%s): one engine for any number of projects", ThisEngine.Name.CStr());
 	ImGui::SetCursorPosX(labelWidth);
 	if (ImGui::RadioButton("Embedded", bEmbeddedEngine))
 	{
@@ -563,33 +562,35 @@ void CProjectManager::DrawNewProject ()
 	ImGui::TextColored(DimColor, "a copy of this engine in the project, as a git submodule (Engine/): pinned and changed per project");
 
 	// Says what will happen, or why it cannot.
-	std::string problem;
-	const std::filesystem::path location = project::PathFromUtf8(Location);
+	FString problem;
+	const std::filesystem::path location = Location.TryToPath().value_or(std::filesystem::path());
+	const std::filesystem::path projectDir = location / Name.ToPath();
 	std::error_code ec;
 	const bool bValidName = project::IsValidProjectName(Name, &problem);
 	if (bValidName && (location.empty() || !location.is_absolute()))
 	{
 		problem = "the location is a full path, e.g. C:\\Projects";
 	}
-	else if (bValidName && Exists(location / Name) && !std::filesystem::is_empty(location / Name, ec))
+	else if (bValidName && Exists(projectDir) && !std::filesystem::is_empty(projectDir, ec))
 	{
-		problem = project::PathToUtf8(location / Name) + " already exists";
+		problem = FString::FromPath(projectDir, EPathStyle::Preferred) + " already exists";
 	}
 	else if (Templates.empty())
 	{
 		problem = "the engine has no templates (Templates/)";
 	}
 	ImGui::Spacing();
-	if (!problem.empty())
+	if (!problem.IsEmpty())
 	{
-		ImGui::TextColored(*Name ? ErrorColor : DimColor, "%s%s", *Name ? "Cannot create: " : "Name the project: ", problem.c_str());
+		const bool bNamed = !Name.IsEmpty();
+		ImGui::TextColored(bNamed ? ErrorColor : DimColor, "%s%s", bNamed ? "Cannot create: " : "Name the project: ", problem.CStr());
 	}
 	else
 	{
 		ImGui::TextColored(DimColor, "Creates %s, then builds it (minutes the first time) and opens it.",
-			project::PathToUtf8(location / Name).c_str());
+			FString::FromPath(projectDir, EPathStyle::Preferred).CStr());
 	}
-	ImGui::BeginDisabled(!problem.empty());
+	ImGui::BeginDisabled(!problem.IsEmpty());
 	if (ImGui::Button("Create"))
 	{
 		StartCreate();
@@ -601,7 +602,7 @@ void CProjectManager::DrawTask ()
 {
 	const bool bRunning = Tool.IsRunning();
 	const std::optional<int> exitCode = Tool.GetExitCode();
-	ImGui::TextUnformatted(TaskTitle.c_str());
+	ImGui::TextUnformatted(TaskTitle.CStr());
 	ImGui::SameLine();
 	if (bRunning)
 	{
@@ -613,17 +614,17 @@ void CProjectManager::DrawTask ()
 		ImGui::TextColored(ErrorColor, "failed (exit code %d)", *exitCode);
 	}
 
-	const std::string output = Tool.GetOutput();
+	const FString output = Tool.GetOutput();
 	const float buttonsHeight = ImGui::GetFrameHeightWithSpacing() + ImGui::GetStyle().ItemSpacing.y;
 	if (ImGui::BeginChild("Log", ImVec2(0.0f, -buttonsHeight), ImGuiChildFlags_Borders, ImGuiWindowFlags_HorizontalScrollbar))
 	{
-		ImGui::TextUnformatted(output.c_str(), output.c_str() + output.size());
+		ui::TextUnformatted(output);
 		// Follows new output, unless scrolled up to read.
-		if (output.size() != ShownOutputSize && ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - ImGui::GetTextLineHeight() * 4.0f)
+		if (output.Len() != ShownOutputSize && ImGui::GetScrollY() >= ImGui::GetScrollMaxY() - ImGui::GetTextLineHeight() * 4.0f)
 		{
 			ImGui::SetScrollHereY(1.0f);
 		}
-		ShownOutputSize = output.size();
+		ShownOutputSize = output.Len();
 	}
 	ImGui::EndChild();
 
@@ -665,8 +666,7 @@ void CProjectManager::UpdateTask ()
 		// The engine needed relinking, and this process has its binaries loaded (LNK1168: cannot
 		// open the file for writing): that build can only happen once this editor is gone.
 		project::SProjectDescriptor descriptor;
-		const std::string output = Tool.GetOutput();
-		if (output.find("LNK1168") != std::string::npos && project::SProjectDescriptor::Load(TaskProject, descriptor) &&
+		if (Tool.GetOutput().Contains("LNK1168") && project::SProjectDescriptor::Load(TaskProject, descriptor) &&
 			IsSameDir(project::ResolveEngineDir(descriptor), paths::GetEngineDir()))
 		{
 			FailedProject = TaskProject;
@@ -684,7 +684,7 @@ void CProjectManager::UpdateTask ()
 	Open(project, false);
 }
 
-void CProjectManager::StartTask (ETask Kind, std::string Title, const std::wstring& CommandLine, const std::filesystem::path& ProjectFile)
+void CProjectManager::StartTask (ETask Kind, FString Title, FStringView CommandLine, const std::filesystem::path& ProjectFile)
 {
 	Task = Kind;
 	TaskTitle = std::move(Title);
@@ -698,7 +698,7 @@ void CProjectManager::StartTask (ETask Kind, std::string Title, const std::wstri
 void CProjectManager::Open (const std::filesystem::path& ProjectFile, bool bBuild)
 {
 	project::SProjectDescriptor descriptor;
-	std::string error;
+	FString error;
 	if (!project::SProjectDescriptor::Load(ProjectFile, descriptor, &error))
 	{
 		SetMessage(error, true);
@@ -715,28 +715,30 @@ void CProjectManager::Open (const std::filesystem::path& ProjectFile, bool bBuil
 	const std::filesystem::path editor = EditorExecutable(engineDir);
 	if (bBuild || !Exists(editor) || !Exists(ModuleFile(descriptor)))
 	{
-		const std::wstring command = QuoteArgument(engineDir / "FRT.bat") + L" build --project=" +
-			QuoteArgument(descriptor.File) + L" --config=" + WidenUtf8(ConfigName);
+		const FString command = QuoteArgument(engineDir / "FRT.bat") + " build --project=" +
+			QuoteArgument(descriptor.File) + " --config=" + ConfigName;
 		StartTask(ETask::Build, "Building " + descriptor.Name + " (" + ConfigName + ")", command, descriptor.File);
 		return;
 	}
 
 	project::AddRecentProject(descriptor.File);
-	const std::wstring arguments = L"-Project=" + QuoteArgument(descriptor.File);
+	const FString arguments = "-Project=" + QuoteArgument(descriptor.File);
 	if (bSmokeTest)
 	{
 		// The project's editor runs the editor's smoke test; this run's result is its result.
-		SmokeLog("opening " + project::PathToUtf8(descriptor.File) + " in " + project::PathToUtf8(editor));
-		const int exitCode = RunAndWait(editor, arguments + L" -Editor:SmokeTest=1 -Editor:SmokeTestDir=" +
+		SmokeLog("opening " + FString::FromPath(descriptor.File, EPathStyle::Preferred) + " in " +
+			FString::FromPath(editor, EPathStyle::Preferred));
+		const int exitCode = RunAndWait(editor, arguments + " -Editor:SmokeTest=1 -Editor:SmokeTestDir=" +
 			QuoteArgument(SmokeDir / "Editor"), descriptor.GetDir());
-		SmokeLog("its editor's smoke test exited with " + std::to_string(exitCode));
+		SmokeLog(FString::Format("its editor's smoke test exited with {}", exitCode));
 		SmokeLog(exitCode == 0 ? "PASSED" : "FAILED");
 		Engine.RequestQuit(exitCode == 0 ? 0 : 2);
 		return;
 	}
 	if (!StartDetached(editor, arguments, descriptor.GetDir()))
 	{
-		SetMessage("Cannot start " + project::PathToUtf8(editor) + " (error " + std::to_string(GetLastError()) + ")", true);
+		const DWORD lastError = GetLastError();
+		SetMessage(FString::Format("Cannot start {} (error {})", FString::FromPath(editor, EPathStyle::Preferred), lastError), true);
 		return;
 	}
 	Engine.RequestQuit(0);
@@ -745,7 +747,7 @@ void CProjectManager::Open (const std::filesystem::path& ProjectFile, bool bBuil
 void CProjectManager::BuildAfterExit (const std::filesystem::path& ProjectFile)
 {
 	project::SProjectDescriptor descriptor;
-	std::string error;
+	FString error;
 	if (!project::SProjectDescriptor::Load(ProjectFile, descriptor, &error))
 	{
 		SetMessage(error, true);
@@ -758,15 +760,16 @@ void CProjectManager::BuildAfterExit (const std::filesystem::path& ProjectFile)
 		return;
 	}
 	// Waits for this process, builds, opens the project; stays open to be read if the build fails.
-	const std::wstring command = L"title Building " + WidenUtf8(descriptor.Name) +
-		L" & powershell -NoProfile -Command \"Wait-Process -Id " + std::to_wstring(GetCurrentProcessId()) + L" -ErrorAction SilentlyContinue\"" +
-		L" & " + QuoteArgument(engineDir / "FRT.bat") + L" build --project=" + QuoteArgument(descriptor.File) +
-		L" --config=" + WidenUtf8(ConfigName) +
-		L" && start \"\" " + QuoteArgument(EditorExecutable(engineDir)) + L" -Project=" + QuoteArgument(descriptor.File) +
-		L" || pause";
+	FString command;
+	command << "title Building " << descriptor.Name
+		<< " & powershell -NoProfile -Command \"Wait-Process -Id " << GetCurrentProcessId() << " -ErrorAction SilentlyContinue\""
+		<< " & " << QuoteArgument(engineDir / "FRT.bat") << " build --project=" << QuoteArgument(descriptor.File)
+		<< " --config=" << ConfigName
+		<< " && start \"\" " << QuoteArgument(EditorExecutable(engineDir)) << " -Project=" << QuoteArgument(descriptor.File)
+		<< " || pause";
 	if (!StartCommand(command, engineDir, true))
 	{
-		SetMessage("Cannot start a console (error " + std::to_string(GetLastError()) + ")", true);
+		SetMessage(FString::Format("Cannot start a console (error {})", GetLastError()), true);
 		return;
 	}
 	project::AddRecentProject(descriptor.File);
@@ -776,13 +779,14 @@ void CProjectManager::BuildAfterExit (const std::filesystem::path& ProjectFile)
 void CProjectManager::StartCreate ()
 {
 	SaveSettings();
-	const std::filesystem::path location = project::PathFromUtf8(Location);
-	const std::string& templateName = Templates[SelectedTemplate].Name;
-	const std::wstring command = QuoteArgument(paths::GetEngineDir() / "FRT.bat") + L" new --name=" + WidenUtf8(Name) +
-		L" --location=" + QuoteArgument(location) + L" --template=" + WidenUtf8(templateName) +
-		L" --layout=" + (bEmbeddedEngine ? L"embedded" : L"shared") + L" --build --config=" + WidenUtf8(ConfigName);
-	const std::string name = Name;
-	StartTask(ETask::Create, "Creating " + name + " from " + templateName, command, location / name / (name + std::string(project::ProjectFileExtension)));
+	const std::filesystem::path location = Location.TryToPath().value_or(std::filesystem::path());
+	const FString& templateName = Templates[SelectedTemplate].Name;
+	FString command;
+	command << QuoteArgument(paths::GetEngineDir() / "FRT.bat") << " new --name=" << Name
+		<< " --location=" << QuoteArgument(location) << " --template=" << templateName
+		<< " --layout=" << (bEmbeddedEngine ? "embedded" : "shared") << " --build --config=" << ConfigName;
+	StartTask(ETask::Create, "Creating " + Name + " from " + templateName, command,
+		location / Name.ToPath() / (Name + project::ProjectFileExtension).ToPath());
 }
 
 void CProjectManager::StartBrowse (EBrowse Kind)
@@ -799,7 +803,7 @@ void CProjectManager::StartBrowse (EBrowse Kind)
 	bBrowseDone = false;
 	BrowseResult.clear();
 	const HWND owner = Engine.GetWindow()->GetHandle();
-	std::filesystem::path start = Kind == EBrowse::Location ? project::PathFromUtf8(Location) : std::filesystem::path();
+	std::filesystem::path start = Kind == EBrowse::Location ? Location.TryToPath().value_or(std::filesystem::path()) : std::filesystem::path();
 	if (!start.empty() && !Exists(start))
 	{
 		start = start.parent_path();
@@ -826,7 +830,7 @@ void CProjectManager::UpdateBrowse ()
 	}
 	if (kind == EBrowse::Location)
 	{
-		CopyToBuffer(project::PathToUtf8(BrowseResult), Location, sizeof(Location));
+		Location = FString::FromPath(BrowseResult, EPathStyle::Preferred);
 	}
 	else
 	{
@@ -834,9 +838,9 @@ void CProjectManager::UpdateBrowse ()
 	}
 }
 
-void CProjectManager::SmokeLog (const std::string& Line) const
+void CProjectManager::SmokeLog (FStringView Line) const
 {
-	std::printf("[smoke] %s\n", Line.c_str());
+	std::printf("[smoke] %.*s\n", static_cast<int>(Line.Len()), Line.GetData());
 	std::fflush(stdout);
 	std::ofstream(SmokeDir / "ProjectManager.log", std::ios::app) << Line << '\n';
 }
@@ -860,11 +864,11 @@ void CProjectManager::UpdateSmokeTest ()
 				return;
 			}
 			renderer.RequestBackBufferCapture(SmokeDir / "01_projects.png");
-			SmokeLog("capture 01_projects.png: " + std::to_string(Recent.size()) + " recent projects");
+			SmokeLog(FString::Format("capture 01_projects.png: {} recent projects", Recent.size()));
 			bShowNewProject = true;
-			CopyToBuffer("SmokeGame", Name, sizeof(Name));
-			CopyToBuffer(project::PathToUtf8(SmokeDir), Location, sizeof(Location));
-			const std::string templateName = config.Get("Editor", "SmokeTemplate", "Blank");
+			Name = "SmokeGame";
+			Location = FString::FromPath(SmokeDir, EPathStyle::Preferred);
+			const FString templateName = config.Get("Editor", "SmokeTemplate", "Blank");
 			for (size_t i = 0u; i < Templates.size(); ++i)
 			{
 				if (Templates[i].Name == templateName)
@@ -912,7 +916,7 @@ void CProjectManager::UpdateSmokeTest ()
 				return;
 			}
 			renderer.RequestBackBufferCapture(SmokeDir / "04_failed.png");
-			SmokeLog("the tool failed with " + std::to_string(*exitCode) + ":\n" + Tool.GetOutput());
+			SmokeLog(FString::Format("the tool failed with {}:\n{}", *exitCode, Tool.GetOutput()));
 			SmokeLog("FAILED");
 			Engine.RequestQuit(2);
 			bSmokeTest = false;

@@ -1,5 +1,6 @@
 #include "Input/InputChord.h"
 
+#include "Containers/StringView.h"
 #include "Input/InputSystem.h"
 
 
@@ -53,20 +54,20 @@ constexpr KeyCode DisplayAliased[] =
 
 bool ParseModifier (std::string_view Text, EInputModifier& OutModifier)
 {
-	using enum_::EqualsIgnoreCase;
-	if (EqualsIgnoreCase(Text, "Ctrl") || EqualsIgnoreCase(Text, "Control"))
+	const auto matches = [Text] (FStringView Name) { return FStringView(Text).Equals<ESearchCase::IgnoreCaseAscii>(Name); };
+	if (matches("Ctrl") || matches("Control"))
 	{
 		OutModifier = EInputModifier::Ctrl;
 	}
-	else if (EqualsIgnoreCase(Text, "Alt"))
+	else if (matches("Alt"))
 	{
 		OutModifier = EInputModifier::Alt;
 	}
-	else if (EqualsIgnoreCase(Text, "Shift"))
+	else if (matches("Shift"))
 	{
 		OutModifier = EInputModifier::Shift;
 	}
-	else if (EqualsIgnoreCase(Text, "Super") || EqualsIgnoreCase(Text, "Win") || EqualsIgnoreCase(Text, "Cmd"))
+	else if (matches("Super") || matches("Win") || matches("Cmd"))
 	{
 		OutModifier = EInputModifier::Super;
 	}
@@ -87,7 +88,7 @@ bool ParseKeyName (std::string_view Text, KeyCode& OutKey)
 	Text = Trim(Text);
 	for (const SKeyAlias& alias : KeyAliases)
 	{
-		if (enum_::EqualsIgnoreCase(Text, alias.Name))
+		if (FStringView(Text).Equals<ESearchCase::IgnoreCaseAscii>(alias.Name))
 		{
 			OutKey = alias.Key;
 			return true;
@@ -136,7 +137,7 @@ bool ParseInputChords (std::string_view Text, std::vector<SInputChord>& OutChord
 {
 	OutChords.clear();
 	Text = Trim(Text);
-	if (Text.empty() || enum_::EqualsIgnoreCase(Text, "None"))
+	if (Text.empty() || FStringView(Text).Equals<ESearchCase::IgnoreCaseAscii>("None"))
 	{
 		return true;
 	}

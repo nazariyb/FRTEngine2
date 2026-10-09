@@ -1,10 +1,10 @@
 #include "ToolProcess.h"
 
-#include <vector>
-
 #include <Windows.h>
 
 #include "EnginePaths.h"
+#include "Containers/WideString.h"
+#include "Platform/Platform.h"
 
 
 namespace frt::editor
@@ -15,7 +15,7 @@ CToolProcess::~CToolProcess ()
 	Close();
 }
 
-bool CToolProcess::Start (const std::wstring& CommandLine, const std::filesystem::path& WorkingDir)
+bool CToolProcess::Start (FStringView CommandLine, const std::filesystem::path& WorkingDir)
 {
 	if (IsRunning())
 	{
@@ -24,15 +24,15 @@ bool CToolProcess::Start (const std::wstring& CommandLine, const std::filesystem
 	Close();
 	{
 		std::lock_guard lock(OutputMutex);
-		Output.clear();
+		Output.Clear();
 		ExitCode.reset();
 	}
 
 	const auto fail = [this] (const char* What)
 	{
+		const DWORD error = GetLastError();
 		std::lock_guard lock(OutputMutex);
-		Output += What;
-		Output += " (error " + std::to_string(GetLastError()) + ")\n";
+		Output.Append(What).Append(" (error ").AppendNumber(error).Append(")\n");
 		ExitCode = -1;
 		return false;
 	};
@@ -58,12 +58,13 @@ bool CToolProcess::Start (const std::wstring& CommandLine, const std::filesystem
 	// MSBuild's worker nodes would otherwise stay behind after a build, holding the pipe.
 	SetEnvironmentVariableW(L"MSBUILDDISABLENODEREUSE", L"1");
 
-	// cmd.exe /s /c "<command line>": runs batch files, and keeps the command's own quotes.
-	std::wstring command = L"cmd.exe /d /s /c \"" + CommandLine + L"\"";
+	// cmd.exe /s /c "<command line>": runs batch files, and keeps the command's own quotes. Its
+	// console is switched to UTF-8 first, so the tools that write in the console's code page
+	// (MSBuild, the compiler) write UTF-8; a line in anything else is decoded by GetOutput.
+	FWideString command = ToWide(FString::Format("cmd.exe /d /s /c \"chcp 65001>nul & {}\"", CommandLine));
 	PROCESS_INFORMATION process {};
-	const std::wstring dir = WorkingDir.wstring();
-	const BOOL started = CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE,
-		CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr, dir.empty() ? nullptr : dir.c_str(), &startup, &process);
+	const BOOL started = CreateProcessW(nullptr, command.GetData(), nullptr, nullptr, TRUE,
+		CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr, WorkingDir.empty() ? nullptr : WorkingDir.c_str(), &startup, &process);
 	CloseHandle(write);
 	if (input != INVALID_HANDLE_VALUE)
 	{
@@ -105,12 +106,13 @@ void CToolProcess::ReadOutput ()
 		{
 			return false;
 		}
+		// Bytes, whatever they encode: a chunk may end inside a character.
 		std::lock_guard lock(OutputMutex);
 		for (DWORD i = 0u; i < count; ++i)
 		{
 			if (buffer[i] != '\r')
 			{
-				Output += buffer[i];
+				Output.AppendChar(buffer[i]);
 			}
 		}
 		return true;
@@ -177,25 +179,27 @@ std::optional<int> CToolProcess::GetExitCode () const
 	return ExitCode;
 }
 
-std::string CToolProcess::GetOutput () const
+FString CToolProcess::GetOutput () const
 {
 	std::lock_guard lock(OutputMutex);
-	return Output;
+	// All of it at once, never per read: a character split between two reads would otherwise
+	// come out as two replacement characters.
+	return platform::DecodeToolOutput(Output);
 }
 
-bool StartDetached (const std::filesystem::path& Executable, const std::wstring& Arguments, const std::filesystem::path& WorkingDir)
+bool StartDetached (const std::filesystem::path& Executable, FStringView Arguments, const std::filesystem::path& WorkingDir)
 {
-	std::wstring command = QuoteArgument(Executable);
-	if (!Arguments.empty())
+	FString commandLine = QuoteArgument(Executable);
+	if (!Arguments.IsEmpty())
 	{
-		command += L" " + Arguments;
+		commandLine << ' ' << Arguments;
 	}
+	FWideString command = ToWide(commandLine);
 	STARTUPINFOW startup {};
 	startup.cb = sizeof(startup);
 	PROCESS_INFORMATION process {};
-	const std::wstring dir = WorkingDir.wstring();
-	if (!CreateProcessW(Executable.c_str(), command.data(), nullptr, nullptr, FALSE, 0u, nullptr,
-		dir.empty() ? nullptr : dir.c_str(), &startup, &process))
+	if (!CreateProcessW(Executable.c_str(), command.GetData(), nullptr, nullptr, FALSE, 0u, nullptr,
+		WorkingDir.empty() ? nullptr : WorkingDir.c_str(), &startup, &process))
 	{
 		return false;
 	}
@@ -204,15 +208,14 @@ bool StartDetached (const std::filesystem::path& Executable, const std::wstring&
 	return true;
 }
 
-int RunAndWait (const std::filesystem::path& Executable, const std::wstring& Arguments, const std::filesystem::path& WorkingDir)
+int RunAndWait (const std::filesystem::path& Executable, FStringView Arguments, const std::filesystem::path& WorkingDir)
 {
-	std::wstring command = QuoteArgument(Executable) + L" " + Arguments;
+	FWideString command = ToWide(QuoteArgument(Executable) + " " + Arguments);
 	STARTUPINFOW startup {};
 	startup.cb = sizeof(startup);
 	PROCESS_INFORMATION process {};
-	const std::wstring dir = WorkingDir.wstring();
-	if (!CreateProcessW(Executable.c_str(), command.data(), nullptr, nullptr, FALSE, 0u, nullptr,
-		dir.empty() ? nullptr : dir.c_str(), &startup, &process))
+	if (!CreateProcessW(Executable.c_str(), command.GetData(), nullptr, nullptr, FALSE, 0u, nullptr,
+		WorkingDir.empty() ? nullptr : WorkingDir.c_str(), &startup, &process))
 	{
 		return -1;
 	}
@@ -224,15 +227,14 @@ int RunAndWait (const std::filesystem::path& Executable, const std::wstring& Arg
 	return static_cast<int>(code);
 }
 
-bool StartCommand (const std::wstring& CommandLine, const std::filesystem::path& WorkingDir, bool bConsole)
+bool StartCommand (FStringView CommandLine, const std::filesystem::path& WorkingDir, bool bConsole)
 {
-	std::wstring command = L"cmd.exe /d /s /c \"" + CommandLine + L"\"";
+	FWideString command = ToWide(FString::Format("cmd.exe /d /s /c \"{}\"", CommandLine));
 	STARTUPINFOW startup {};
 	startup.cb = sizeof(startup);
 	PROCESS_INFORMATION process {};
-	const std::wstring dir = WorkingDir.wstring();
-	if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, bConsole ? CREATE_NEW_CONSOLE : CREATE_NO_WINDOW,
-		nullptr, dir.empty() ? nullptr : dir.c_str(), &startup, &process))
+	if (!CreateProcessW(nullptr, command.GetData(), nullptr, nullptr, FALSE, bConsole ? CREATE_NEW_CONSOLE : CREATE_NO_WINDOW,
+		nullptr, WorkingDir.empty() ? nullptr : WorkingDir.c_str(), &startup, &process))
 	{
 		return false;
 	}
@@ -241,35 +243,22 @@ bool StartCommand (const std::wstring& CommandLine, const std::filesystem::path&
 	return true;
 }
 
-bool StartEngineTool (const std::wstring& Arguments)
+bool StartEngineTool (FStringView Arguments)
 {
-	return StartCommand(QuoteArgument(paths::GetEngineDir() / "FRT.bat") + L" " + Arguments, paths::GetEngineDir(), false);
+	return StartCommand(QuoteArgument(paths::GetEngineDir() / "FRT.bat") + " " + Arguments, paths::GetEngineDir(), false);
 }
 
-std::filesystem::path GetExecutablePath ()
-{
-	std::vector<wchar_t> buffer(MAX_PATH);
-	while (true)
-	{
-		const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
-		if (length == 0u)
-		{
-			return {};
-		}
-		if (length < buffer.size())
-		{
-			return std::filesystem::path(std::wstring(buffer.data(), length));
-		}
-		buffer.resize(buffer.size() * 2u);
-	}
-}
-
-std::wstring QuoteArgument (const std::filesystem::path& Path)
+FString QuoteArgument (const std::filesystem::path& Path)
 {
 	// Paths hold no quotes. Backslashes before the closing quote are doubled, or the program
 	// reading the argument would take the last one as escaping the quote (a drive root, D:\).
-	const std::wstring text = std::filesystem::path(Path).make_preferred().wstring();
-	const size_t trailing = text.size() - (text.find_last_not_of(L'\\') + 1u);
-	return L"\"" + text + std::wstring(trailing, L'\\') + L"\"";
+	const FString text = FString::FromPath(Path, EPathStyle::Preferred);
+	const uint32 trailing = text.Len() - text.View().TrimEnd("\\").Len();
+	FString quoted;
+	quoted.Reserve(text.Len() + trailing + 2u);
+	quoted << '"' << text;
+	quoted.AppendChars('\\', trailing);
+	quoted << '"';
+	return quoted;
 }
 }

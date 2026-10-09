@@ -112,7 +112,7 @@ private:
 
 	void Read ();
 	void Validate ();
-	const std::string* Find (std::string_view Section, std::string_view Key) const;
+	const FString* Find (std::string_view Section, std::string_view Key) const;
 	std::vector<input::SInputChord> ReadChords (std::string_view Section, std::string_view Key, bool bKeysOnly);
 	void Report (std::string Problem);
 

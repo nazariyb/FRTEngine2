@@ -1,11 +1,11 @@
 ﻿#pragma once
 
 #include <array>
-#include <string_view>
 #include <type_traits>
 #include <utility>
 
 #include "CoreTypes.h"
+#include "Containers/StringView.h"
 
 
 ///
@@ -243,30 +243,9 @@ struct TEnumTraits
 template <typename E>
 concept ReflectedEnum = frt::concepts::Enum<E> && TEnumTraits<E>::bIsDefined;
 
-inline constexpr char ToLowerAscii (char c)
-{
-	return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
-}
-
-inline bool EqualsIgnoreCase (std::string_view A, std::string_view B)
-{
-	if (A.size() != B.size())
-	{
-		return false;
-	}
-
-	for (size_t i = 0; i < A.size(); ++i)
-	{
-		if (ToLowerAscii(A[i]) != ToLowerAscii(B[i]))
-		{
-			return false;
-		}
-	}
-	return true;
-}
-
+// Empty for a value outside the reflected set.
 template <ReflectedEnum E>
-constexpr std::string_view ToString (E Value)
+constexpr FStringLiteral ToString (E Value)
 {
 	for (const auto& entry : TEnumTraits<E>::Entries)
 	{
@@ -278,12 +257,13 @@ constexpr std::string_view ToString (E Value)
 	return {};
 }
 
+// Names are C++ identifiers: ignoring case is A-Z == a-z, as for INI keys and the command line.
 template <ReflectedEnum E>
-bool TryParse (std::string_view Text, E* OutValue, bool bIgnoreCase = true)
+bool TryParse (FStringView Text, E* OutValue, bool bIgnoreCase = true)
 {
 	for (const auto& entry : TEnumTraits<E>::Entries)
 	{
-		if (bIgnoreCase ? EqualsIgnoreCase(Text, entry.second) : (Text == entry.second))
+		if (bIgnoreCase ? Text.Equals<ESearchCase::IgnoreCaseAscii>(entry.second) : Text == entry.second)
 		{
 			*OutValue = entry.first;
 			return true;
@@ -308,14 +288,14 @@ constexpr bool IsValid (E Value)
 template <ReflectedEnum E, size_t... I>
 constexpr auto GetValueNamesImpl (
 	std::index_sequence<I...>)
-	-> std::array<std::string_view, sizeof...(I)>
+	-> std::array<FStringLiteral, sizeof...(I)>
 {
 	return { TEnumTraits<E>::Entries[I].second... };
 }
 
 template <ReflectedEnum E>
 constexpr auto GetValueNames ()
-	-> std::array<std::string_view, TEnumTraits<E>::Entries.size()>
+	-> std::array<FStringLiteral, TEnumTraits<E>::Entries.size()>
 {
 	return GetValueNamesImpl<E>(std::make_index_sequence<TEnumTraits<E>::Entries.size()>{});
 }
@@ -335,17 +315,19 @@ constexpr E NextValue (E Value)
 }
 
 
+// The literal becomes an FStringLiteral here, not inside std::pair's constructor: MSVC does not
+// take a forwarded parameter as the constant its consteval constructor needs.
 #define FRT_ENUM_ENTRY(EnumType, Value)\
-std::pair<EnumType, std::string_view>{ EnumType::Value, #Value }
+std::pair<EnumType, ::frt::FStringLiteral>{ EnumType::Value, ::frt::FStringLiteral(#Value) }
 
 #define FRT_ENUM_ENTRY_NAME(EnumType, Value, Name)\
-std::pair<EnumType, std::string_view>{ EnumType::Value, Name }
+std::pair<EnumType, ::frt::FStringLiteral>{ EnumType::Value, ::frt::FStringLiteral(Name) }
 
 #define FRT_DECLARE_ENUM_REFLECTION(EnumType, ...)\
 namespace frt::enum_ {\
 template <> struct TEnumTraits<EnumType>\
 {\
-	static constexpr auto Entries = std::to_array<std::pair<EnumType, std::string_view>>({ __VA_ARGS__ });\
+	static constexpr auto Entries = std::to_array<std::pair<EnumType, ::frt::FStringLiteral>>({ __VA_ARGS__ });\
 	static constexpr bool bIsDefined = true;\
 };\
 }

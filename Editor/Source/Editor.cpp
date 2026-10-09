@@ -18,6 +18,7 @@
 #include "Graphics/Render/Renderer.h"
 #include "Graphics/Render/RenderView.h"
 #include "Input/InputSystem.h"
+#include "Platform/Platform.h"
 #include "Project/Project.h"
 #include "UI/ImGuiLayer.h"
 
@@ -593,7 +594,7 @@ void CEditor::DrawMainMenu ()
 		// there is none yet.
 		if (ImGui::MenuItem("Open Solution", nullptr, false, paths::HasProject()))
 		{
-			if (!StartEngineTool(L"open --project=" + QuoteArgument(paths::GetProject().File)))
+			if (!StartEngineTool("open --project=" + QuoteArgument(paths::GetProject().File)))
 			{
 				PostNotice("Cannot run the engine's FRT.bat", true);
 			}
@@ -601,7 +602,7 @@ void CEditor::DrawMainMenu ()
 		// The project manager, in a new editor; this one closes.
 		if (ImGui::MenuItem("Switch Project..."))
 		{
-			if (StartDetached(GetExecutablePath(), L"-ProjectManager", paths::GetEngineDir()))
+			if (StartDetached(platform::GetExecutablePath(), "-ProjectManager", paths::GetEngineDir()))
 			{
 				Execute(EEditorCommand::Exit);
 			}

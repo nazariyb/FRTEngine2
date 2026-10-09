@@ -1,17 +1,11 @@
 #include "Project/Project.h"
 
-#include <cstdlib>
-#include <cwchar>
+#include <optional>
 #include <system_error>
 #include <vector>
 
-#if defined(_WINDOWS)
-#include <Windows.h>
-#include <shellapi.h>
-#endif
-
-#include "Enum.h"
 #include "Config/IniFile.h"
+#include "Platform/Platform.h"
 #include "Project/UserRegistry.h"
 
 
@@ -19,19 +13,19 @@ namespace frt::project
 {
 namespace
 {
-constexpr std::string_view ProjectSection = "Project";
-constexpr std::string_view EngineSection = "Engine";
+constexpr FStringLiteral ProjectSection = "Project";
+constexpr FStringLiteral EngineSection = "Engine";
 
 // Projects the generated solution already has, and names that would read as engine parts.
-constexpr std::string_view ReservedNames[] =
+constexpr FStringLiteral ReservedNames[] =
 {
 	"Core", "Editor", "Launcher", "Engine", "ImGui", "assimp", "gtest", "googletest", "ThirdParty",
 };
 
-std::string Get (const config::CIniFile& File, std::string_view Section, std::string_view Key)
+FString Get (const config::CIniFile& File, FStringView Section, FStringView Key)
 {
-	const std::string* value = File.Find(Section, Key);
-	return value ? *value : std::string();
+	const FString* value = File.Find(Section, Key);
+	return value ? *value : FString();
 }
 
 bool IsDir (const std::filesystem::path& Path)
@@ -47,14 +41,20 @@ std::filesystem::path Canonical (const std::filesystem::path& Path)
 	return ec ? std::filesystem::absolute(Path, ec).lexically_normal() : result;
 }
 
+// The extensions are ASCII, so ignoring A-Z case is all of what Windows' own rule does for them.
+bool HasExtension (const std::filesystem::path& Path, FStringView Extension)
+{
+	return FString::FromPath(Path.extension()).Equals<ESearchCase::IgnoreCaseAscii>(Extension);
+}
+
 // The only file directly in Dir with the extension, or empty.
-std::filesystem::path FindOnlyFile (const std::filesystem::path& Dir, std::string_view Extension)
+std::filesystem::path FindOnlyFile (const std::filesystem::path& Dir, FStringView Extension)
 {
 	std::filesystem::path found;
 	std::error_code ec;
 	for (std::filesystem::directory_iterator it(Dir, ec), end; !ec && it != end; it.increment(ec))
 	{
-		if (it->is_regular_file(ec) && enum_::EqualsIgnoreCase(PathToUtf8(it->path().extension()), Extension))
+		if (it->is_regular_file(ec) && HasExtension(it->path(), Extension))
 		{
 			if (!found.empty())
 			{
@@ -64,28 +64,6 @@ std::filesystem::path FindOnlyFile (const std::filesystem::path& Dir, std::strin
 		}
 	}
 	return found.empty() ? found : Canonical(found);
-}
-
-// The directory of this process's executable; empty if unknown.
-std::filesystem::path GetExecutableDir ()
-{
-#if defined(_WINDOWS)
-	std::vector<wchar_t> buffer(MAX_PATH);
-	while (true)
-	{
-		const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
-		if (length == 0u)
-		{
-			break;
-		}
-		if (length < buffer.size())
-		{
-			return std::filesystem::path(std::wstring(buffer.data(), length)).parent_path();
-		}
-		buffer.resize(buffer.size() * 2u);   // a long path: retry with room for it
-	}
-#endif
-	return {};
 }
 
 template <typename TPredicate>
@@ -109,58 +87,19 @@ std::filesystem::path FindAbove (const std::filesystem::path& Start, TPredicate&
 }
 }
 
-std::filesystem::path PathFromUtf8 (std::string_view Text)
-{
-	// Text from files people edit: not UTF-8 is no path, never an exception.
-	try
-	{
-		return std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(Text.data()), Text.size()));
-	}
-	catch (const std::exception&)
-	{
-		return {};
-	}
-}
-
-std::filesystem::path GetEnvironmentPath (const wchar_t* Name)
-{
-	wchar_t* value = nullptr;
-	size_t length = 0u;
-	std::filesystem::path result;
-	if (_wdupenv_s(&value, &length, Name) == 0 && value)
-	{
-		result = value;
-	}
-	std::free(value);
-	return result;
-}
-
-std::string PathToUtf8 (const std::filesystem::path& Path)
-{
-	try
-	{
-		const std::u8string text = std::filesystem::path(Path).make_preferred().u8string();
-		return std::string(reinterpret_cast<const char*>(text.data()), text.size());
-	}
-	catch (const std::exception&)
-	{
-		return {};   // a name Windows allows but Unicode does not (an unpaired surrogate)
-	}
-}
-
 bool HasProjectFileExtension (const std::filesystem::path& Path)
 {
-	return enum_::EqualsIgnoreCase(PathToUtf8(Path.extension()), ProjectFileExtension);
+	return HasExtension(Path, ProjectFileExtension);
 }
 
-bool SProjectDescriptor::Load (const std::filesystem::path& InFile, SProjectDescriptor& Out, std::string* Error)
+bool SProjectDescriptor::Load (const std::filesystem::path& InFile, SProjectDescriptor& Out, FString* Error)
 {
 	config::CIniFile file;
 	if (!file.LoadFromFile(InFile))
 	{
 		if (Error)
 		{
-			*Error = "cannot read " + PathToUtf8(InFile);
+			*Error = "cannot read " + FString::FromPath(InFile, EPathStyle::Preferred);
 		}
 		return false;
 	}
@@ -169,27 +108,27 @@ bool SProjectDescriptor::Load (const std::filesystem::path& InFile, SProjectDesc
 	project.Name = Get(file, ProjectSection, "Name");
 	project.Module = Get(file, ProjectSection, "Module");
 	project.Engine = Get(file, ProjectSection, "Engine");
-	if (project.Name.empty())
+	if (project.Name.IsEmpty())
 	{
 		if (Error)
 		{
-			*Error = PathToUtf8(InFile) + " has no [Project] Name";
+			*Error = FString::FromPath(InFile, EPathStyle::Preferred) + " has no [Project] Name";
 		}
 		return false;
 	}
-	if (project.Module.empty())
+	if (project.Module.IsEmpty())
 	{
 		project.Module = project.Name;
 	}
 	// Both name generated projects and files: never an engine project's, or a path.
-	for (const std::string* name : { &project.Name, &project.Module })
+	for (const FString* name : { &project.Name, &project.Module })
 	{
-		std::string reason;
+		FString reason;
 		if (!IsValidProjectName(*name, &reason))
 		{
 			if (Error)
 			{
-				*Error = PathToUtf8(InFile) + ": " + reason;
+				*Error = FString::FromPath(InFile, EPathStyle::Preferred) + ": " + reason;
 			}
 			return false;
 		}
@@ -211,20 +150,20 @@ bool SProjectDescriptor::Save () const
 bool SEngineDescriptor::IsEngineDir (const std::filesystem::path& Dir)
 {
 	std::error_code ec;
-	return !Dir.empty() && std::filesystem::is_regular_file(Dir / EngineFileName, ec);
+	return !Dir.empty() && std::filesystem::is_regular_file(Dir / EngineFileName.ToPath(), ec);
 }
 
 bool SEngineDescriptor::Load (const std::filesystem::path& Dir, SEngineDescriptor& Out)
 {
 	config::CIniFile file;
-	if (!file.LoadFromFile(Dir / EngineFileName))
+	if (!file.LoadFromFile(Dir / EngineFileName.ToPath()))
 	{
 		return false;
 	}
 	Out.Dir = Canonical(Dir);
 	Out.Name = Get(file, EngineSection, "Name");
 	Out.Version = Get(file, EngineSection, "Version");
-	return !Out.Name.empty();
+	return !Out.Name.IsEmpty();
 }
 
 std::filesystem::path FindProjectFile (const std::filesystem::path& Dir)
@@ -244,11 +183,11 @@ std::filesystem::path FindEngineDirAbove (const std::filesystem::path& Dir)
 	return FindAbove(Dir, [] (const std::filesystem::path& Candidate) { return SEngineDescriptor::IsEngineDir(Candidate); });
 }
 
-std::filesystem::path ResolveEngineDir (const SProjectDescriptor& Project, std::string* Error)
+std::filesystem::path ResolveEngineDir (const SProjectDescriptor& Project, FString* Error)
 {
 	const std::filesystem::path projectDir = Project.GetDir();
 
-	if (const std::filesystem::path overrideDir = GetEnvironmentPath(L"FRT_ENGINE_DIR"); !overrideDir.empty())
+	if (const std::filesystem::path overrideDir = platform::GetEnvironmentPath("FRT_ENGINE_DIR"); !overrideDir.empty())
 	{
 		const std::filesystem::path dir = Canonical(overrideDir);
 		if (SEngineDescriptor::IsEngineDir(dir))
@@ -257,14 +196,15 @@ std::filesystem::path ResolveEngineDir (const SProjectDescriptor& Project, std::
 		}
 		if (Error)
 		{
-			*Error = "FRT_ENGINE_DIR (" + PathToUtf8(dir) + ") is not an engine directory";
+			*Error = "FRT_ENGINE_DIR (" + FString::FromPath(dir, EPathStyle::Preferred) + ") is not an engine directory";
 		}
 		return {};
 	}
 
-	if (!Project.Engine.empty())
+	if (!Project.Engine.IsEmpty())
 	{
-		const std::filesystem::path asPath = PathFromUtf8(Project.Engine);
+		// Text from a file people edit: what is not UTF-8 is no path.
+		const std::filesystem::path asPath = Project.Engine.TryToPath().value_or(std::filesystem::path());
 		const std::filesystem::path dir = Canonical(asPath.is_absolute() ? asPath : projectDir / asPath);
 		if (SEngineDescriptor::IsEngineDir(dir))
 		{
@@ -284,10 +224,10 @@ std::filesystem::path ResolveEngineDir (const SProjectDescriptor& Project, std::
 
 	if (Error)
 	{
-		*Error = Project.Engine.empty()
+		*Error = Project.Engine.IsEmpty()
 			? "the project names no engine and is not inside one"
-			: "no engine '" + Project.Engine + "': not a directory with " + std::string(EngineFileName) +
-			  " next to the project, and no engine registered under that name (run FRT.bat setup in the engine)";
+			: FString::Format("no engine '{}': not a directory with {} next to the project, and no engine registered "
+				"under that name (run FRT.bat setup in the engine)", Project.Engine, EngineFileName);
 	}
 	return {};
 }
@@ -299,11 +239,11 @@ std::filesystem::path FindPackageFile (const std::filesystem::path& Dir)
 
 std::filesystem::path FindRunningPackage ()
 {
-	const std::filesystem::path dir = GetExecutableDir();
+	const std::filesystem::path dir = platform::GetExecutablePath().parent_path();
 	return dir.empty() ? dir : FindPackageFile(dir);
 }
 
-std::filesystem::path FindProjectToRun (bool bSearchFromExecutable, std::string* OutError)
+std::filesystem::path FindProjectToRun (bool bSearchFromExecutable, FString* OutError)
 {
 	if (bSearchFromExecutable)
 	{
@@ -313,28 +253,23 @@ std::filesystem::path FindProjectToRun (bool bSearchFromExecutable, std::string*
 		}
 	}
 
-#if defined(_WINDOWS)
-	int argc = 0;
-	LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+	// -Project=<file or directory>, else the first bare argument naming a project file.
+	const std::vector<FString> arguments = platform::GetCommandLineArguments();
 	std::filesystem::path named;
-	for (int i = 1; argv && i < argc; ++i)
+	if (const std::optional<FString> value = platform::FindCommandLineValue(arguments, "Project"); value && !value->IsEmpty())
 	{
-		const std::wstring_view argument = argv[i];
-		for (const std::wstring_view prefix : { std::wstring_view(L"-Project="), std::wstring_view(L"--Project="), std::wstring_view(L"/Project=") })
+		named = value->ToPath();
+	}
+	else
+	{
+		for (const FString& argument : arguments)
 		{
-			if (argument.size() > prefix.size() && _wcsnicmp(argument.data(), prefix.data(), prefix.size()) == 0)
+			if (std::filesystem::path file = argument.ToPath(); HasProjectFileExtension(file))
 			{
-				named = std::filesystem::path(argument.substr(prefix.size()));
+				named = std::move(file);
+				break;
 			}
 		}
-		if (named.empty() && HasProjectFileExtension(std::filesystem::path(argument)))
-		{
-			named = std::filesystem::path(argument);
-		}
-	}
-	if (argv)
-	{
-		LocalFree(argv);
 	}
 	if (!named.empty())
 	{
@@ -346,11 +281,10 @@ std::filesystem::path FindProjectToRun (bool bSearchFromExecutable, std::string*
 		}
 		if (OutError)
 		{
-			*OutError = "no project at " + PathToUtf8(named);
+			*OutError = "no project at " + FString::FromPath(named, EPathStyle::Preferred);
 		}
 		return {};
 	}
-#endif
 
 	std::error_code ec;
 	if (std::filesystem::path file = FindProjectFile(std::filesystem::current_path(ec)); !file.empty())
@@ -359,7 +293,7 @@ std::filesystem::path FindProjectToRun (bool bSearchFromExecutable, std::string*
 	}
 	if (bSearchFromExecutable)
 	{
-		if (const std::filesystem::path dir = GetExecutableDir(); !dir.empty())
+		if (const std::filesystem::path dir = platform::GetExecutablePath().parent_path(); !dir.empty())
 		{
 			return FindProjectFileAbove(dir);
 		}
@@ -367,9 +301,9 @@ std::filesystem::path FindProjectToRun (bool bSearchFromExecutable, std::string*
 	return {};
 }
 
-bool IsValidProjectName (std::string_view Name, std::string* Error)
+bool IsValidProjectName (FStringView Name, FString* Error)
 {
-	const auto fail = [Error] (std::string Reason)
+	const auto fail = [Error] (FString Reason)
 	{
 		if (Error)
 		{
@@ -377,27 +311,26 @@ bool IsValidProjectName (std::string_view Name, std::string* Error)
 		}
 		return false;
 	};
-	if (Name.empty() || Name.size() > 64u)
+	if (Name.IsEmpty() || Name.Len() > 64u)
 	{
 		return fail("a project name has 1 to 64 characters");
 	}
-	const auto isLetter = [] (char c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z'); };
-	if (!isLetter(Name.front()))
+	if (!ascii::IsAlpha(Name.First()))
 	{
 		return fail("a project name starts with a letter");
 	}
 	for (const char c : Name)
 	{
-		if (!isLetter(c) && !(c >= '0' && c <= '9') && c != '_')
+		if (!ascii::IsIdentifierChar(c))
 		{
 			return fail("a project name has only letters, digits and underscores");
 		}
 	}
-	for (const std::string_view reserved : ReservedNames)
+	for (const FStringLiteral reserved : ReservedNames)
 	{
-		if (enum_::EqualsIgnoreCase(Name, reserved))
+		if (Name.Equals<ESearchCase::IgnoreCaseAscii>(reserved))
 		{
-			return fail("'" + std::string(Name) + "' is the name of a part of the engine");
+			return fail(FString::Format("'{}' is the name of a part of the engine", Name));
 		}
 	}
 	return true;

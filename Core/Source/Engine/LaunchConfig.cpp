@@ -1,10 +1,10 @@
 #include "Engine/LaunchConfig.h"
 
-#include <cstdio>
-#include <string>
+#include <optional>
 
 #include "WorldScene.h"
 #include "Config/Config.h"
+#include "Containers/String.h"
 
 #if !defined(FRT_HEADLESS)
 #include "Graphics/Render/Renderer.h"
@@ -15,18 +15,25 @@
 
 namespace frt
 {
-namespace
+bool ParseVector3 (FStringView Text, Vector3f& Out)
 {
-bool ParseVector3 (const std::string& Text, Vector3f& Out)
-{
-	float x = 0.0f, y = 0.0f, z = 0.0f;
-	if (sscanf_s(Text.c_str(), "%f,%f,%f", &x, &y, &z) == 3)
+	float components[3] = {};
+	uint32 count = 0u;
+	for (const FStringView token : Text.Split(',', EStringSplit::Trim))
 	{
-		Out = Vector3f(x, y, z);
-		return true;
+		const std::optional<float> value = token.ToFloat();
+		if (count == 3u || !value)
+		{
+			return false;
+		}
+		components[count++] = *value;
 	}
-	return false;
-}
+	if (count != 3u)
+	{
+		return false;
+	}
+	Out = Vector3f(components[0], components[1], components[2]);
+	return true;
 }
 
 #if !defined(FRT_HEADLESS)
@@ -36,13 +43,13 @@ void ApplyRenderLaunchConfig (const config::CConfig& Config, graphics::CRenderer
 	SRenderSettings& render = Renderer.Profile.Frame;
 	SPathTracerSettings& pt = Renderer.Profile.PathTracer;
 
-	const std::string mode = Config.Get("Render", "Mode", "RealTime");
+	const FString mode = Config.Get("Render", "Mode", "RealTime");
 	render.Mode = (mode == "Reference" || mode == "reference") ? EPathTracingMode::Reference : EPathTracingMode::RealTime;
 	render.RenderScale = Config.Get("Render", "RenderScale", render.RenderScale);
 	render.bDenoiser = Config.Get("Render", "Denoiser", render.bDenoiser);
 	render.ReferenceSampleTarget = Config.Get("Render", "SampleTarget", render.ReferenceSampleTarget);
 	render.bCollectRayCounters = Config.Get("Render", "CollectRayCounters", render.bCollectRayCounters);
-	const std::string upscaler = Config.Get("Render", "Upscaler", "Temporal");
+	const FString upscaler = Config.Get("Render", "Upscaler", "Temporal");
 	if (upscaler == "None" || upscaler == "Off")
 	{
 		Renderer.SetUpscalerKind(EUpscalerKind::None);
@@ -124,7 +131,7 @@ void ApplyRenderLaunchConfig (const config::CConfig& Config, graphics::CRenderer
 void ApplyViewLaunchConfig (const config::CConfig& Config, graphics::CRenderView& View)
 {
 	// Session-only override of the persisted [Settings.Display] RenderMode (not written back).
-	const std::string renderMode = Config.Get("Render", "RenderMode", "");
+	const FString renderMode = Config.Get("Render", "RenderMode", "");
 	if (renderMode == "Raytracing" || renderMode == "raytracing")
 	{
 		View.SetRenderMode(graphics::ERenderMode::Raytracing);

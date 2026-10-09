@@ -1,21 +1,19 @@
 #include "Project/UserRegistry.h"
 
 #include <algorithm>
-#include <charconv>
 #include <chrono>
 #include <system_error>
 
-#include "Enum.h"
 #include "Config/IniFile.h"
-#include "Project/Project.h"
+#include "Platform/Platform.h"
 
 
 namespace frt::project
 {
 namespace
 {
-constexpr std::string_view EnginesSection = "Engines";
-constexpr std::string_view RecentSection = "Recent";
+constexpr FStringLiteral EnginesSection = "Engines";
+constexpr FStringLiteral RecentSection = "Recent";
 
 std::filesystem::path EnginesFile ()
 {
@@ -30,13 +28,19 @@ std::filesystem::path ProjectsFile ()
 // One spelling per path, so a project opened through another relative path is one entry: absolute
 // and normalized, with the platform's separators - exactly as the build tools write them
 // (Premake/project.lua: canonicalPath), and as a batch file can use them. Links and substituted
-// drives are left as they are, since the build tools cannot resolve them. Compared
-// case-insensitively.
-std::string Key (const std::filesystem::path& Path)
+// drives are left as they are, since the build tools cannot resolve them. Compared as every INI
+// key is: A-Z in any case.
+FString Key (const std::filesystem::path& Path)
 {
 	std::error_code ec;
 	const std::filesystem::path absolute = std::filesystem::absolute(Path, ec);
-	return PathToUtf8((ec ? Path : absolute).lexically_normal());
+	return FString::FromPath((ec ? Path : absolute).lexically_normal(), EPathStyle::Preferred);
+}
+
+// A path the registry holds. The files are edited by hand too: text that is not UTF-8 is no path.
+std::filesystem::path ToRegisteredPath (FStringView Text)
+{
+	return Text.TryToPath().value_or(std::filesystem::path());
 }
 
 int64 Now ()
@@ -47,7 +51,7 @@ int64 Now ()
 // Where per-user application data goes: %LOCALAPPDATA%, else the temporary directory.
 std::filesystem::path GetLocalAppDataDir ()
 {
-	if (std::filesystem::path local = GetEnvironmentPath(L"LOCALAPPDATA"); !local.empty())
+	if (std::filesystem::path local = platform::GetEnvironmentPath("LOCALAPPDATA"); !local.empty())
 	{
 		return local;
 	}
@@ -58,32 +62,32 @@ std::filesystem::path GetLocalAppDataDir ()
 
 std::filesystem::path GetUserDataDir ()
 {
-	if (std::filesystem::path dir = GetEnvironmentPath(L"FRT_USER_DATA_DIR"); !dir.empty())
+	if (std::filesystem::path dir = platform::GetEnvironmentPath("FRT_USER_DATA_DIR"); !dir.empty())
 	{
 		return dir;
 	}
 	return GetLocalAppDataDir() / "FRTEngine";
 }
 
-std::filesystem::path GetGameUserDataDir (std::string_view Name)
+std::filesystem::path GetGameUserDataDir (FStringView Name)
 {
-	std::filesystem::path root = GetEnvironmentPath(L"FRT_USER_DATA_DIR");
+	std::filesystem::path root = platform::GetEnvironmentPath("FRT_USER_DATA_DIR");
 	if (root.empty())
 	{
 		root = GetLocalAppDataDir();
 	}
-	return root / PathFromUtf8(Name);
+	return root / Name.ToPath();
 }
 
-std::filesystem::path FindRegisteredEngine (std::string_view Name)
+std::filesystem::path FindRegisteredEngine (FStringView Name)
 {
 	config::CIniFile file;
 	file.LoadFromFile(EnginesFile());
-	const std::string* dir = file.Find(EnginesSection, Name);
-	return dir && !dir->empty() ? PathFromUtf8(*dir) : std::filesystem::path();
+	const FString* dir = file.Find(EnginesSection, Name);
+	return dir ? ToRegisteredPath(*dir) : std::filesystem::path();
 }
 
-bool RegisterEngine (std::string_view Name, const std::filesystem::path& Dir)
+bool RegisterEngine (FStringView Name, const std::filesystem::path& Dir)
 {
 	config::CIniFile file;
 	file.LoadFromFile(EnginesFile());
@@ -91,18 +95,18 @@ bool RegisterEngine (std::string_view Name, const std::filesystem::path& Dir)
 	return file.SaveToFile(EnginesFile());
 }
 
-std::vector<std::pair<std::string, std::filesystem::path>> GetRegisteredEngines ()
+std::vector<std::pair<FString, std::filesystem::path>> GetRegisteredEngines ()
 {
-	std::vector<std::pair<std::string, std::filesystem::path>> engines;
+	std::vector<std::pair<FString, std::filesystem::path>> engines;
 	config::CIniFile file;
 	file.LoadFromFile(EnginesFile());
 	for (const config::CIniFile::SSection& section : file.GetSections())
 	{
-		if (enum_::EqualsIgnoreCase(section.Name, EnginesSection))
+		if (section.Name.Equals<ESearchCase::IgnoreCaseAscii>(EnginesSection))
 		{
 			for (const config::CIniFile::SEntry& entry : section.Entries)
 			{
-				engines.emplace_back(entry.Key, PathFromUtf8(entry.Value));
+				engines.emplace_back(entry.Key, ToRegisteredPath(entry.Value));
 			}
 		}
 	}
@@ -116,15 +120,15 @@ std::vector<SRecentProject> GetRecentProjects ()
 	file.LoadFromFile(ProjectsFile());
 	for (const config::CIniFile::SSection& section : file.GetSections())
 	{
-		if (!enum_::EqualsIgnoreCase(section.Name, RecentSection))
+		if (!section.Name.Equals<ESearchCase::IgnoreCaseAscii>(RecentSection))
 		{
 			continue;
 		}
 		for (const config::CIniFile::SEntry& entry : section.Entries)
 		{
 			SRecentProject project;
-			project.File = PathFromUtf8(entry.Key);
-			std::from_chars(entry.Value.data(), entry.Value.data() + entry.Value.size(), project.LastOpened);
+			project.File = ToRegisteredPath(entry.Key);
+			project.LastOpened = entry.Value.ToInt64().value_or(0);
 			projects.push_back(std::move(project));
 		}
 	}
@@ -137,7 +141,7 @@ void AddRecentProject (const std::filesystem::path& File)
 {
 	config::CIniFile file;
 	file.LoadFromFile(ProjectsFile());
-	file.Set(RecentSection, Key(File), std::to_string(Now()));
+	file.Set(RecentSection, Key(File), FString::FromNumber(Now()));
 	file.SaveToFile(ProjectsFile());
 }
 

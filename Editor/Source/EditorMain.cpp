@@ -7,12 +7,12 @@
 
 #include <exception>
 #include <iostream>
-#include <shellapi.h>
 
 #include "EnginePaths.h"
 #include "Exception.h"
 #include "Engine/Engine.h"
 #include "Engine/GameModule.h"
+#include "Platform/Platform.h"
 #include "Project/Project.h"
 #include "Project/UserRegistry.h"
 
@@ -24,19 +24,6 @@ namespace frt::editor
 {
 namespace
 {
-bool HasArgument (const wchar_t* Name)
-{
-	int argc = 0;
-	LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-	bool bFound = false;
-	for (int i = 1; argv && i < argc; ++i)
-	{
-		bFound = bFound || _wcsicmp(argv[i], Name) == 0;
-	}
-	LocalFree(argv);
-	return bFound;
-}
-
 int RunEditorFor (CEngine& Engine, CGameModule& Module)
 {
 	// Destroyed before the module unloads: the edited world holds code from it. The editor
@@ -74,9 +61,9 @@ int RunEditor ()
 	SProjectManagerRequest manager;
 	project::SProjectDescriptor gameProject;
 	bool bOpenProject = false;
-	if (!HasArgument(L"-ProjectManager"))
+	if (!platform::HasCommandLineSwitch("ProjectManager"))
 	{
-		std::string error;
+		FString error;
 		const std::filesystem::path file = project::FindProjectToRun(false, &error);
 		if (!file.empty() && project::SProjectDescriptor::Load(file, gameProject, &error))
 		{
@@ -97,7 +84,7 @@ int RunEditor ()
 			}
 			manager.Project = gameProject.File;
 		}
-		else if (!error.empty())
+		else if (!error.IsEmpty())
 		{
 			manager.Message = error;
 		}
@@ -109,7 +96,7 @@ int RunEditor ()
 	}
 
 	SEngineDesc desc;
-	desc.WindowTitle = bOpenProject ? WidenUtf8(gameProject.Name) + L" - FRTEngine Editor" : L"FRTEngine Project Manager";
+	desc.WindowTitle = bOpenProject ? gameProject.Name + " - FRTEngine Editor" : "FRTEngine Project Manager";
 	// The editor's layout is the user's, not the project's: kept apart from the game's imgui.ini.
 	desc.UiIniPath = paths::GetEditorUserDir() / "EditorLayout.ini";
 	desc.bMaximizeWindow = bOpenProject;
@@ -155,6 +142,7 @@ FRT_D3D12_AGILITY_EXPORTS
 
 int APIENTRY wWinMain (_In_ HINSTANCE, _In_opt_ HINSTANCE, _In_ LPWSTR, _In_ int)
 {
+	frt::platform::InitConsoleUtf8();
 	FRT_VERIFY_REAL_PRECISION_ABI();
 	return frt::editor::RunEditor();
 }

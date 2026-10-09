@@ -1,7 +1,6 @@
 #include "UserSettings.h"
 
 #include <cmath>
-#include <format>
 #include <optional>
 #include <span>
 
@@ -42,7 +41,7 @@ SResolution ResolveResolution (const SDisplayOptions& Options, const SDisplaySet
 // NOTE: SDisplayOptions::GetRefreshRates still indexes RefreshRateOptionNums with an
 // output-local resolution index against a globally-flattened array. Until that is fixed this
 // value is only as right as the list the panel showed.
-std::optional<std::string> ResolveRefreshRate (
+std::optional<FString> ResolveRefreshRate (
 	const frt::graphics::SDisplayOptions& Options,
 	const frt::SDisplaySettings& Settings)
 {
@@ -74,10 +73,10 @@ std::optional<std::string> ResolveRefreshRate (
 	const float hz = static_cast<float>(numerator) / static_cast<float>(denominator);
 	if (std::round(hz) == hz)
 	{
-		return std::format("{}", static_cast<uint32>(hz));
+		return FString::FromNumber(static_cast<uint32>(hz));
 	}
 
-	return std::format("{:.2f}", hz);
+	return FString::Format("{:.2f}", hz);
 }
 }
 
@@ -98,10 +97,8 @@ void LoadDisplaySettings (const config::CConfig& Config, SDisplaySettings& OutSe
 {
 	OutSettings.MonitorIndex = Config.Get(DisplaySection, "MonitorIndex", OutSettings.MonitorIndex);
 
-	Config.Get(OutSettings.ResolutionTxt, SDisplaySettings::ResolutionTextBufferSize, 
-		DisplaySection, "Resolution", "");
-	Config.Get(OutSettings.RefreshRateTxt, SDisplaySettings::RefreshRateTextBufferSize,
-		DisplaySection, "RefreshRate", "");
+	OutSettings.ResolutionTxt = Config.Get(DisplaySection, "Resolution", "").Truncate(SDisplaySettings::ResolutionTextBufferSize);
+	OutSettings.RefreshRateTxt = Config.Get(DisplaySection, "RefreshRate", "").Truncate(SDisplaySettings::RefreshRateTextBufferSize);
 
 	OutSettings.FullscreenMode = Config.Get(DisplaySection, "FullscreenMode", OutSettings.FullscreenMode);
 	OutSettings.RenderMode = Config.Get(DisplaySection, "RenderMode", OutSettings.RenderMode);
@@ -156,14 +153,14 @@ void SaveUserSettings (
 {
 	SaveDisplaySettings(Config, Settings.DisplaySettings, Options);
 }
-}
 
 
-bool operator== (const frt::SDisplaySettings& Lhs, const frt::SDisplaySettings& Rhs)
+bool operator== (const SDisplaySettings& Lhs, const SDisplaySettings& Rhs)
 {
 	return Lhs.MonitorIndex == Rhs.MonitorIndex
 			&& Lhs.ResolutionIndex == Rhs.ResolutionIndex
 			&& Lhs.RefreshRateIndex == Rhs.RefreshRateIndex
 			&& Lhs.FullscreenMode == Rhs.FullscreenMode
 			&& Lhs.bVSync == Rhs.bVSync;
+}
 }

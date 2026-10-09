@@ -1,14 +1,20 @@
 #include <filesystem>
-#include <fstream>
-#include <string>
+#include <optional>
+#include <type_traits>
+#include <vector>
 
 #include <gtest/gtest.h>
 
 #include "Enum.h"
 #include "Config/Config.h"
+#include "Containers/String.h"
+#include "Platform/Platform.h"
 
+using frt::FString;
+using frt::FStringView;
 using frt::config::CConfig;
 using frt::config::EConfigLayer;
+namespace platform = frt::platform;
 
 
 // A reflected enum owned by the test, so the layering and round-trip behaviour is checked
@@ -29,22 +35,24 @@ FRT_DECLARE_ENUM_REFLECTION(
 
 namespace
 {
-std::filesystem::path MakeTempPath (const char* Name)
+std::filesystem::path MakeTempPath (FStringView Name)
 {
-	return std::filesystem::temp_directory_path() / "FrtConfigTest" / Name;
+	return std::filesystem::temp_directory_path() / "FrtConfigTest" / Name.ToPath();
 }
 
 
-std::filesystem::path WriteLayerFile (const char* Name, const std::string& Contents)
+std::filesystem::path WriteLayerFile (FStringView Name, FStringView Contents)
 {
 	const std::filesystem::path path = MakeTempPath(Name);
-	std::filesystem::create_directories(path.parent_path());
-
-	std::ofstream out(path, std::ios::binary | std::ios::trunc);
-	out << Contents;
-	out.close();
-
+	EXPECT_TRUE(platform::WriteFileText(path, Contents));
 	return path;
+}
+
+
+// The file's bytes as stored; empty when it cannot be read.
+FString ReadFile (const std::filesystem::path& Path)
+{
+	return platform::ReadFileText(Path, frt::ETextFileEncoding::Raw).value_or(FString());
 }
 }
 
@@ -260,13 +268,7 @@ TEST(ConfigTest, SaveOnlyWritesTheUserLayer)
 	config.Set("Display", "MonitorIndex", 1);
 	ASSERT_TRUE(config.Save());
 
-	std::string engineContents;
-	{
-		std::ifstream in(enginePath, std::ios::binary);
-		engineContents.assign(
-			(std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-	}
-	EXPECT_EQ(engineContents, "[Display]\nMonitorIndex=0\n");
+	EXPECT_EQ(ReadFile(enginePath), "[Display]\nMonitorIndex=0\n");
 
 	std::filesystem::remove_all(enginePath.parent_path());
 }
@@ -302,11 +304,66 @@ TEST(ConfigTest, SaveWithoutAPathFails)
 
 TEST(ConfigTest, StringLiteralDefaultsDoNotResolveToTheBoolOverload)
 {
-	// Guards the const char* overloads: without them `Get(S, K, "text")` picks bool,
-	// because const char* to bool is a standard conversion and beats string_view.
+	// Guards the bool overloads taking exactly bool: as plain overloads, `Get(S, K, "text")`
+	// would pick them, because const char* to bool is a standard conversion and beats
+	// const char* to FStringView.
 	CConfig config;
 	config.Set("T", "Text", "written");
 
 	EXPECT_EQ(config.Get("T", "Text", "fallback"), "written");
 	EXPECT_EQ(config.Get("T", "Absent", "fallback"), "fallback");
+
+	static_assert(std::is_same_v<decltype(config.Get("T", "Text", "fallback")), FString>);
+	static_assert(std::is_same_v<decltype(config.Get("T", "Flag", true)), bool>);
+	static_assert(std::is_same_v<decltype(config.Get("T", "Count", 1)), int32>);
+}
+
+
+TEST(ConfigTest, CommandLineOverridesAreTheStrongestLayer)
+{
+	CConfig config;
+	config.LoadLayer(EConfigLayer::Engine, WriteLayerFile("commandline.ini", "[Render]\nMode=RealTime\n"));
+
+	const std::vector<FString> arguments =
+	{
+		"-Render:Mode=Reference",
+		"--Scene:CameraPosition=1, 2, 3",
+		"-Automation:CapturePath=C:/Captures/a=b",   // the first '=' ends the name
+		"-Project=C:/Games/Game.frtproject",         // no section: not an override
+		"-:Key=Value",
+		"Render:Mode",
+		"-Сцена:Час=0.25",
+	};
+	EXPECT_EQ(config.ApplyCommandLineArguments(arguments), 4u);
+
+	EXPECT_EQ(config.Get("Render", "Mode", ""), "Reference");
+	EXPECT_EQ(config.Get("Scene", "CameraPosition", ""), "1, 2, 3");
+	EXPECT_EQ(config.Get("Automation", "CapturePath", ""), "C:/Captures/a=b");
+	EXPECT_EQ(config.Get("Сцена", "Час", 0.0f), 0.25f);
+	EXPECT_FALSE(config.Has("", "Key"));
+
+	// Never saved: the overrides are not the user's settings.
+	const std::filesystem::path userPath = MakeTempPath("commandline-user.ini");
+	config.SetUserLayerPath(userPath);
+	ASSERT_TRUE(config.Save());
+	EXPECT_TRUE(std::filesystem::exists(userPath));
+	EXPECT_EQ(ReadFile(userPath), "");
+
+	std::filesystem::remove_all(userPath.parent_path());
+}
+
+
+TEST(ConfigTest, NonAsciiTextAndAsciiCaseRules)
+{
+	CConfig config;
+	config.LoadLayer(EConfigLayer::Engine, WriteLayerFile("unicode.ini",
+		"[Налаштування]\nНазва=Гра 漢字 😀\nKey=ascii\n"));
+
+	EXPECT_EQ(config.Get("Налаштування", "Назва", ""), "Гра 漢字 😀");
+	EXPECT_EQ(config.Get("Налаштування", "KEY", ""), "ascii");
+	// Case is ignored for A-Z only, the rule Premake/project.lua shares: these are other names.
+	EXPECT_FALSE(config.Has("НАЛАШТУВАННЯ", "Назва"));
+	EXPECT_FALSE(config.Has("Налаштування", "НАЗВА"));
+
+	std::filesystem::remove_all(MakeTempPath("unicode.ini").parent_path());
 }

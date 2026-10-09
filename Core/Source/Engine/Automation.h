@@ -1,12 +1,12 @@
 #pragma once
 
 #include <filesystem>
-#include <string>
 #include <utility>
 #include <vector>
 
 #include "Core.h"
 #include "CoreTypes.h"
+#include "Containers/String.h"
 #include "Math/Math.h"
 
 
@@ -67,7 +67,7 @@ private:
 	bool bMotion = false;
 	int64 TimeOfDayFrame = -1;
 	float TimeOfDayValue = 0.5f;
-	std::vector<std::pair<std::string, std::pair<double, uint32>>> Profile;
+	std::vector<std::pair<FString, std::pair<double, uint32>>> Profile;
 	double CpuFrameMs = 0.0;
 	uint32 CpuFrames = 0u;
 };

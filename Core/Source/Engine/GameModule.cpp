@@ -2,9 +2,6 @@
 
 #include <atomic>
 #include <cstdio>
-#include <cstdlib>
-#include <filesystem>
-#include <string>
 #include <system_error>
 
 #if defined(_WINDOWS)
@@ -16,6 +13,7 @@
 #include "GameInstance.h"
 #include "Config/Config.h"
 #include "ECS/ComponentRegistry.h"
+#include "Platform/Platform.h"
 #include "Project/Project.h"
 
 
@@ -43,11 +41,9 @@ namespace
 #if !FRT_MONOLITHIC && defined(_WINDOWS)
 std::filesystem::path GetExecutableDir ()
 {
-	wchar_t buffer[MAX_PATH] = {};
-	const DWORD length = GetModuleFileNameW(nullptr, buffer, MAX_PATH);
-	if (length > 0u && length < MAX_PATH)
+	if (const std::filesystem::path executable = platform::GetExecutablePath(); !executable.empty())
 	{
-		return std::filesystem::path(buffer).parent_path();
+		return executable.parent_path();
 	}
 	std::error_code ec;
 	return std::filesystem::current_path(ec);
@@ -55,9 +51,9 @@ std::filesystem::path GetExecutableDir ()
 
 // Outside Release the build names binaries <Project>-<Configuration> (Premake/common.lua), and
 // only non-monolithic builds have a module file at all.
-std::string MakeModuleFileName (const std::string& Name)
+std::filesystem::path MakeModuleFileName (FStringView Name)
 {
-	return Name + "-" + FRT_CONFIG_NAME + ".dll";
+	return FString::Format("{}-{}.dll", Name, FRT_CONFIG_NAME).ToPath();
 }
 #endif
 
@@ -108,8 +104,9 @@ void RemoveStaleCopies (const std::filesystem::path& Root)
 	std::error_code ec;
 	for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(Root, ec))
 	{
-		const std::wstring name = entry.path().filename().wstring();
-		const DWORD pid = static_cast<DWORD>(std::wcstoul(name.c_str(), nullptr, 10));
+		// <pid>-<n>: the process that made the copy. Anything else is no one's (pid 0).
+		const FString name = FString::FromPath(entry.path().filename());
+		const DWORD pid = name.View().SplitFirst('-').Left.ToUInt32().value_or(0u);
 		if (pid == GetCurrentProcessId() || !IsProcessAlive(pid))
 		{
 			std::error_code removeEc;
@@ -127,7 +124,7 @@ std::filesystem::path MakeShadowCopy (const std::filesystem::path& Source)
 	RemoveStaleCopies(root);
 
 	std::error_code ec;
-	const std::filesystem::path dir = root / (std::to_string(GetCurrentProcessId()) + "-" + std::to_string(++generation));
+	const std::filesystem::path dir = root / FString::Format("{}-{}", GetCurrentProcessId(), ++generation).ToPath();
 	std::filesystem::create_directories(dir, ec);
 	const std::filesystem::path copy = dir / Source.filename();
 	if (ec || !std::filesystem::copy_file(Source, copy, std::filesystem::copy_options::overwrite_existing, ec))
@@ -151,10 +148,10 @@ CGameModule::~CGameModule ()
 	Unload();
 }
 
-bool CGameModule::Load (const std::string& InName)
+bool CGameModule::Load (FStringView InName)
 {
 	// A copy first: InName may be Name itself (a reload), which Unload clears.
-	const std::string requested = InName;
+	const FString requested(InName);
 	Unload();
 #if FRT_MONOLITHIC
 	const unsigned int abi = FrtGameModuleAbi();
@@ -171,15 +168,15 @@ bool CGameModule::Load (const std::string& InName)
 	}
 	CreateFunction = &FrtCreateGame;
 	Name = FrtGameModuleName();
-	if (Name.empty())
+	if (Name.IsEmpty())
 	{
 		Name = requested;
 	}
-	else if (!requested.empty() && requested != Name)
+	else if (!requested.IsEmpty() && requested != Name)
 	{
-		std::fprintf(stderr, "[game] module '%s' requested, but this executable is built with '%s'\n", requested.c_str(), Name.c_str());
+		std::fprintf(stderr, "[game] module '%s' requested, but this executable is built with '%s'\n", requested.CStr(), Name.CStr());
 	}
-	std::printf("[game] module '%s' linked in\n", Name.c_str());
+	std::printf("[game] module '%s' linked in\n", Name.CStr());
 	return true;
 #elif defined(_WINDOWS)
 	// The project's binaries; the host's own directory when it runs without a project.
@@ -189,7 +186,7 @@ bool CGameModule::Load (const std::string& InName)
 	Name = requested;
 #if FRT_WITH_GAME_HOT_RELOAD
 	// Taken before the copy, so a build finishing during it still reads as newer.
-	SourcePath = source.wstring();
+	SourcePath = source;
 	SourceWriteTime = GetWriteTime(source);
 	if (std::filesystem::path copy = MakeShadowCopy(source); !copy.empty())
 	{
@@ -197,7 +194,7 @@ bool CGameModule::Load (const std::string& InName)
 	}
 	else
 	{
-		std::fprintf(stderr, "[game] cannot copy '%ls' for hot reload; loading it in place\n", source.c_str());
+		std::fprintf(stderr, "[game] cannot copy '%s' for hot reload; loading it in place\n", FString::FromPath(source).CStr());
 	}
 #endif
 	// The module lives in the project, the engine (Core, third-party DLLs) beside the host: its
@@ -207,7 +204,8 @@ bool CGameModule::Load (const std::string& InName)
 #if FRT_WITH_GAME_HOT_RELOAD
 	if (!module && path != source)
 	{
-		std::fprintf(stderr, "[game] cannot load the copy '%ls' (error %lu); loading the module in place\n", path.c_str(), GetLastError());
+		const DWORD error = GetLastError();
+		std::fprintf(stderr, "[game] cannot load the copy '%s' (error %lu); loading the module in place\n", FString::FromPath(path).CStr(), error);
 		std::error_code ec;
 		std::filesystem::remove_all(path.parent_path(), ec);
 		path = source;
@@ -216,7 +214,8 @@ bool CGameModule::Load (const std::string& InName)
 #endif
 	if (!module)
 	{
-		std::fprintf(stderr, "[game] cannot load game module '%s' (%ls), error %lu\n", requested.c_str(), path.c_str(), GetLastError());
+		const DWORD error = GetLastError();
+		std::fprintf(stderr, "[game] cannot load game module '%s' (%s), error %lu\n", requested.CStr(), FString::FromPath(path).CStr(), error);
 		return false;
 	}
 
@@ -225,14 +224,14 @@ bool CGameModule::Load (const std::string& InName)
 	const auto create = reinterpret_cast<GameInstance* (*) ()>(GetProcAddress(module, "FrtCreateGame"));
 	if (!abi || !create)
 	{
-		std::fprintf(stderr, "[game] '%ls' is not a game module (no FRT_IMPLEMENT_GAME_MODULE)\n", source.c_str());
+		std::fprintf(stderr, "[game] '%s' is not a game module (no FRT_IMPLEMENT_GAME_MODULE)\n", FString::FromPath(source).CStr());
 		FreeLibrary(module);
 		return false;
 	}
 	if (abi() != FRT_GAME_MODULE_ABI)
 	{
-		std::fprintf(stderr, "[game] '%ls' was built for another engine ABI (0x%08x, expected 0x%08x): rebuild it\n",
-			source.c_str(), abi(), FRT_GAME_MODULE_ABI);
+		std::fprintf(stderr, "[game] '%s' was built for another engine ABI (0x%08x, expected 0x%08x): rebuild it\n",
+			FString::FromPath(source).CStr(), abi(), FRT_GAME_MODULE_ABI);
 		FreeLibrary(module);
 		return false;
 	}
@@ -240,9 +239,9 @@ bool CGameModule::Load (const std::string& InName)
 	Handle = module;
 	CreateFunction = create;
 #if FRT_WITH_GAME_HOT_RELOAD
-	LoadedPath = path.wstring();
+	LoadedPath = path;
 #endif
-	std::printf("[game] module '%s' loaded\n", Name.c_str());
+	std::printf("[game] module '%s' loaded\n", Name.CStr());
 	return true;
 #else
 	return false;
@@ -267,12 +266,12 @@ void CGameModule::Unload ()
 	{
 		// May fail while a debugger still holds the PDB; the next Load removes it.
 		std::error_code ec;
-		std::filesystem::remove_all(std::filesystem::path(LoadedPath).parent_path(), ec);
+		std::filesystem::remove_all(LoadedPath.parent_path(), ec);
 	}
 #endif
 	Handle = nullptr;
 	CreateFunction = nullptr;
-	Name.clear();
+	Name.Clear();
 	SourcePath.clear();
 	LoadedPath.clear();
 	SourceWriteTime = 0;
@@ -286,16 +285,15 @@ bool CGameModule::HasNewerBuild () const
 	{
 		return false;
 	}
-	const std::filesystem::path source(SourcePath);
-	const int64 writeTime = GetWriteTime(source);
+	const int64 writeTime = GetWriteTime(SourcePath);
 	// No DLL at all (a clean, or a link that failed and deleted it) is nothing to reload yet.
 	if (writeTime == 0 || writeTime == SourceWriteTime)
 	{
 		return false;
 	}
-	std::filesystem::path pdb = source;
+	std::filesystem::path pdb = SourcePath;
 	pdb.replace_extension(".pdb");
-	return IsWriteFinished(source) && IsWriteFinished(pdb);
+	return IsWriteFinished(SourcePath) && IsWriteFinished(pdb);
 #else
 	return false;
 #endif
@@ -307,13 +305,13 @@ std::unique_ptr<GameInstance> CGameModule::CreateGame () const
 	return std::unique_ptr<GameInstance>(CreateFunction ? CreateFunction() : nullptr);
 }
 
-std::string CGameModule::GetConfiguredName (const config::CConfig& Config)
+FString CGameModule::GetConfiguredName (const config::CConfig& Config)
 {
-	const std::string configured = Config.Get("Game", "Module", "");
-	if (!configured.empty())
+	FString configured = Config.Get("Game", "Module", "");
+	if (!configured.IsEmpty())
 	{
 		return configured;
 	}
-	return paths::HasProject() ? paths::GetProject().Module : std::string();
+	return paths::HasProject() ? paths::GetProject().Module : FString();
 }
 }
