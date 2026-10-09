@@ -21,19 +21,36 @@
  */
 namespace frt::ui
 {
+// A byte limit for the InputText functions, in the place of ImGui's buffer size. A type of its own:
+// ImGuiInputTextFlags is an int, so a plain number there could bind to the flags instead.
+struct SMaxBytes
+{
+	constexpr explicit SMaxBytes (uint32 InValue) noexcept
+		: Value(InValue)
+	{}
+
+	uint32 Value;   // > 0 (asserted)
+};
+
 // Edits an FString in place, imgui_stdlib-style: ImGuiInputTextFlags_CallbackResize grows Value as
 // the text grows, and every other callback event (CharFilter, Completion, History, ...) goes to
 // Callback with UserData. The resize callback is this wrapper's: Flags must not ask for it.
-//
-// MaxBytes > 0 limits the text to that many bytes: Value is first TruncateInline(MaxBytes)'d, then
-// edited in a fixed buffer of MaxBytes + 1 bytes, where ImGui never inserts a partial UTF-8 sequence.
-// MaxBytes is last so an ImGuiInputTextFlags argument can never bind to it.
 FRT_CORE_API bool InputText (const char* Label, FString& Value, ImGuiInputTextFlags Flags = 0,
-	ImGuiInputTextCallback Callback = nullptr, void* UserData = nullptr, uint32 MaxBytes = 0);
+	ImGuiInputTextCallback Callback = nullptr, void* UserData = nullptr);
 FRT_CORE_API bool InputTextWithHint (const char* Label, const char* Hint, FString& Value, ImGuiInputTextFlags Flags = 0,
-	ImGuiInputTextCallback Callback = nullptr, void* UserData = nullptr, uint32 MaxBytes = 0);
+	ImGuiInputTextCallback Callback = nullptr, void* UserData = nullptr);
 FRT_CORE_API bool InputTextMultiline (const char* Label, FString& Value, const ImVec2& Size = ImVec2(0.0f, 0.0f),
-	ImGuiInputTextFlags Flags = 0, ImGuiInputTextCallback Callback = nullptr, void* UserData = nullptr, uint32 MaxBytes = 0);
+	ImGuiInputTextFlags Flags = 0, ImGuiInputTextCallback Callback = nullptr, void* UserData = nullptr);
+
+// The same with the text limited to MaxBytes bytes: ui::InputText("##name", Name, ui::SMaxBytes(63)).
+// Value is first TruncateInline(MaxBytes)'d, then edited in a fixed buffer of MaxBytes + 1 bytes,
+// where ImGui never inserts a partial UTF-8 sequence.
+FRT_CORE_API bool InputText (const char* Label, FString& Value, SMaxBytes MaxBytes, ImGuiInputTextFlags Flags = 0,
+	ImGuiInputTextCallback Callback = nullptr, void* UserData = nullptr);
+FRT_CORE_API bool InputTextWithHint (const char* Label, const char* Hint, FString& Value, SMaxBytes MaxBytes,
+	ImGuiInputTextFlags Flags = 0, ImGuiInputTextCallback Callback = nullptr, void* UserData = nullptr);
+FRT_CORE_API bool InputTextMultiline (const char* Label, FString& Value, SMaxBytes MaxBytes, const ImVec2& Size = ImVec2(0.0f, 0.0f),
+	ImGuiInputTextFlags Flags = 0, ImGuiInputTextCallback Callback = nullptr, void* UserData = nullptr);
 
 // The view's bytes exactly: no format string, no NUL needed.
 inline void TextUnformatted (FStringView Text)

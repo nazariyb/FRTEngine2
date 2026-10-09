@@ -47,8 +47,8 @@ public:
 	virtual void Write (FStringLiteral Name, FStringView V) = 0;
 
 	// A C string is text. Without these overloads, pointer -> bool (a standard conversion) would beat
-	// every route to FStringView: Write("cull", CullModeToString(Mode)) would write `cull: true`, and
-	// Write("name", u8"...") `name: true`.
+	// every route to FStringView: Write("name", Text.CStr()), or any function returning const char*,
+	// would write `name: true`, and so would Write("name", u8"...").
 	void Write (FStringLiteral Name, const char* V) { Write(Name, FStringView(V)); }
 	void Write (FStringLiteral Name, const char8_t* V) { Write(Name, FStringView(V)); }
 	void Write (FStringLiteral, std::nullptr_t) = delete;

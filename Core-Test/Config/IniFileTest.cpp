@@ -1,11 +1,15 @@
 #include <filesystem>
+#include <initializer_list>
 #include <optional>
+#include <system_error>
 
 #include <gtest/gtest.h>
 
 #include "Config/IniFile.h"
 #include "Containers/String.h"
 #include "Platform/Platform.h"
+
+#include <Windows.h>
 
 // No FRT_TEST_MEMORY_POOL here, and that is the point rather than an omission: CIniFile
 // allocates from the CRT heap (std::vector, FString), never through the engine arena, because
@@ -19,10 +23,27 @@ namespace platform = frt::platform;
 
 namespace
 {
-// Under a directory with a non-ASCII name: the files go through UTF-16 paths all the way.
+// Under a directory with a non-ASCII name (the files go through UTF-16 paths all the way), of this
+// process's own: test runs of several configurations may share the temp directory (PlatformTest.cpp).
+std::filesystem::path GetTempDir ()
+{
+	return std::filesystem::temp_directory_path() / FString::Format("FrtIniFileTest Тест 😀 {}", GetCurrentProcessId()).ToPath();
+}
+
 std::filesystem::path MakeTempPath (FStringView Name)
 {
-	return std::filesystem::temp_directory_path() / FStringView("FrtIniFileTest Тест 😀").ToPath() / Name.ToPath();
+	return GetTempDir() / Name.ToPath();
+}
+
+// A test's files, then the directory, once no test has a file left in it.
+void RemoveTempFiles (std::initializer_list<std::filesystem::path> Paths)
+{
+	std::error_code ec;
+	for (const std::filesystem::path& path : Paths)
+	{
+		std::filesystem::remove(path, ec);
+	}
+	std::filesystem::remove(GetTempDir(), ec);
 }
 
 
@@ -183,7 +204,7 @@ TEST(IniFileTest, RoundTripsThroughAFile)
 	EXPECT_EQ(*read.Find("Display", "FullscreenMode"), "Borderless");
 	EXPECT_EQ(*read.Find("Audio", "Volume"), "0.5");
 
-	std::filesystem::remove(path);
+	RemoveTempFiles({ path });
 }
 
 
@@ -203,7 +224,7 @@ TEST(IniFileTest, RoundTripPreservesSignificantSpacesAndQuotes)
 	EXPECT_EQ(*read.Find("Text", "Quoted"), "\"quoted\"");
 	EXPECT_EQ(*read.Find("Text", "Plain"), "plain");
 
-	std::filesystem::remove(path);
+	RemoveTempFiles({ path });
 }
 
 
@@ -218,6 +239,7 @@ TEST(IniFileTest, SaveCreatesMissingDirectories)
 	EXPECT_TRUE(std::filesystem::exists(path));
 
 	std::filesystem::remove_all(path.parent_path().parent_path());
+	RemoveTempFiles({});
 }
 
 
@@ -231,7 +253,7 @@ TEST(IniFileTest, SaveWritesLfOnly)
 
 	EXPECT_FALSE(ReadFile(path).Contains('\r'));
 
-	std::filesystem::remove(path);
+	RemoveTempFiles({ path });
 }
 
 
@@ -328,7 +350,7 @@ TEST(IniFileTest, NonAsciiNamesAndValuesRoundTripAsUtf8)
 	ASSERT_NE(read.Find("Гра", "Шлях"), nullptr);
 	EXPECT_EQ(*read.Find("Гра", "Шлях"), "C:\\Ігри\\Тест");
 
-	std::filesystem::remove(path);
+	RemoveTempFiles({ path });
 }
 
 
@@ -374,7 +396,7 @@ TEST(IniFileTest, TrimsAsciiWhitespaceOnly)
 	ASSERT_NE(read.Find("Text", "Ideographic"), nullptr);
 	EXPECT_EQ(*read.Find("Text", "Ideographic"), "\xE3\x80\x80value");
 
-	std::filesystem::remove(path);
+	RemoveTempFiles({ path });
 }
 
 
@@ -406,8 +428,7 @@ TEST(IniFileTest, FilesAreReadAsStoredLikeTheBuildTools)
 	ASSERT_TRUE(utf16.LoadFromFile(utf16Path));
 	EXPECT_EQ(utf16.Find("Гра", "Назва"), nullptr);
 
-	std::filesystem::remove(withBom);
-	std::filesystem::remove(utf16Path);
+	RemoveTempFiles({ withBom, utf16Path });
 }
 
 

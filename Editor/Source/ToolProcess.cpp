@@ -25,6 +25,7 @@ bool CToolProcess::Start (FStringView CommandLine, const std::filesystem::path& 
 	{
 		std::lock_guard lock(OutputMutex);
 		Output.Clear();
+		PendingLine.Clear();
 		ExitCode.reset();
 	}
 
@@ -60,7 +61,7 @@ bool CToolProcess::Start (FStringView CommandLine, const std::filesystem::path& 
 
 	// cmd.exe /s /c "<command line>": runs batch files, and keeps the command's own quotes. Its
 	// console is switched to UTF-8 first, so the tools that write in the console's code page
-	// (MSBuild, the compiler) write UTF-8; a line in anything else is decoded by GetOutput.
+	// (MSBuild, the compiler) write UTF-8; a line in anything else is decoded as it arrives (ReadOutput).
 	FWideString command = ToWide(FString::Format("cmd.exe /d /s /c \"chcp 65001>nul & {}\"", CommandLine));
 	PROCESS_INFORMATION process {};
 	const BOOL started = CreateProcessW(nullptr, command.GetData(), nullptr, nullptr, TRUE,
@@ -106,14 +107,21 @@ void CToolProcess::ReadOutput ()
 		{
 			return false;
 		}
-		// Bytes, whatever they encode: a chunk may end inside a character.
+		// Bytes, whatever they encode: a chunk may end inside a character, so only complete lines are
+		// decoded (each once), and the rest waits for its '\n'.
 		std::lock_guard lock(OutputMutex);
 		for (DWORD i = 0u; i < count; ++i)
 		{
 			if (buffer[i] != '\r')
 			{
-				Output.AppendChar(buffer[i]);
+				PendingLine.AppendChar(buffer[i]);
 			}
+		}
+		const uint32 lineEnd = PendingLine.FindLast('\n');
+		if (lineEnd != FString::NotFound)
+		{
+			Output.Append(platform::DecodeToolOutput(PendingLine.View().Left(lineEnd + 1u)));
+			PendingLine.RemoveAt(0, lineEnd + 1u);
 		}
 		return true;
 	};
@@ -136,6 +144,9 @@ void CToolProcess::ReadOutput ()
 	DWORD code = 1u;
 	GetExitCodeProcess(Process, &code);
 	std::lock_guard lock(OutputMutex);
+	// The last line, which may have no '\n'.
+	Output.Append(platform::DecodeToolOutput(PendingLine));
+	PendingLine.Clear();
 	ExitCode = static_cast<int>(code);
 }
 
@@ -182,9 +193,13 @@ std::optional<int> CToolProcess::GetExitCode () const
 FString CToolProcess::GetOutput () const
 {
 	std::lock_guard lock(OutputMutex);
-	// All of it at once, never per read: a character split between two reads would otherwise
-	// come out as two replacement characters.
-	return platform::DecodeToolOutput(Output);
+	// The line still being written shows once it is valid UTF-8 so far; one in another code page, or
+	// one whose last character has not fully arrived, waits for its '\n' (or the end).
+	if (PendingLine.IsEmpty() || !PendingLine.IsValidUtf8())
+	{
+		return Output;
+	}
+	return Output + PendingLine.View();
 }
 
 bool StartDetached (const std::filesystem::path& Executable, FStringView Arguments, const std::filesystem::path& WorkingDir)

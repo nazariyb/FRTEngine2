@@ -1,9 +1,12 @@
 #pragma once
 
 // Precompiled header of Core and of the projects built on it (Premake: usePrecompiledHeader),
-// force-included into every file. Only system and third-party headers: they are most of what
-// every file parses (the standard library alone is about two thirds), and they never change.
-// Engine headers stay out, so editing one does not rebuild the whole project.
+// force-included into every file. System and third-party headers: they are most of what every
+// file parses (the standard library alone is about two thirds), and they never change. Engine
+// headers stay out, so editing one does not rebuild the whole project - with one exception, the
+// string layer at the end: nearly every engine header includes it (names, paths, enum reflection,
+// the profiler, GPU resource names), so editing it rebuilds nearly everything anyway, and parsing
+// its templates in every file instead cost Core about 40% more compiler front-end time.
 //
 // Files must still include what they use: the precompiled header only makes it cheap. Generate
 // the projects with --nopch to check (Launcher and game modules never use one).
@@ -58,3 +61,8 @@
 #include <utility>
 #include <variant>
 #include <vector>
+
+// The one engine part (see above): the string types, their maps, and the few headers they include
+// (Core.h, CoreTypes.h, Math/MathUtility.h, Unicode/).
+#include "Containers/String.h"
+#include "Containers/StringMap.h"

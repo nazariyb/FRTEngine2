@@ -36,8 +36,9 @@
  * Bytes are UTF-8 by contract, not by invariant: nothing validates on construction, every decoder is
  * total (an ill-formed sequence is one U+FFFD per maximal subpart). Lengths and positions are bytes;
  * positions that would split a code point assert in Debug/Development (FRT_STRING_ASSERT_BOUNDARY).
- * Every case-dependent function takes ESearchCase as a template parameter; CaseSensitive paths are
- * inline, the folded ones are exported from Core (string_impl).
+ * Every function that looks for or compares a text or a character takes ESearchCase as a template
+ * parameter (the list, and the exact-by-design exceptions, are at ESearchCase in StringFwd.h);
+ * CaseSensitive paths are inline, the folded ones are exported from Core (string_impl).
  */
 
 // Every substring/insert/remove position (Debug and Development): a position inside a UTF-8 sequence
@@ -137,7 +138,6 @@ public:
 	using IndexStrategy = math::SIndexStrategy;
 
 	static constexpr uint32 NotFound = 0xFFFFFFFFu;
-	static constexpr uint32 npos = NotFound;
 	static constexpr uint32 MaxLength = 0x7FFFFFFFu;
 	// Default End of Slice.
 	static constexpr int64 SliceEnd = (std::numeric_limits<int64>::max)();
@@ -243,11 +243,11 @@ public:
 	template <ESearchCase TCase = ESearchCase::CaseSensitive>
 	[[nodiscard]] constexpr bool StartsWith (char Ch) const noexcept;
 
-	// A code point would reach the char overload as its low byte (U'ї' as 'W', which the ASCII assert
-	// cannot tell from a real 'W'): pass its text, StartsWith("ї"). The same for every ASCII-character
-	// overload without a char32_t one.
-	template <ESearchCase TCase = ESearchCase::CaseSensitive, typename T> requires std::same_as<T, char32_t>
-	bool StartsWith (T) const = delete;
+	// A scalar value (asserted). Every ASCII-character overload has a char32_t one, so a code point never
+	// reaches a char parameter as its low byte (U'ї' as 'W', which the ASCII assert cannot tell from a real
+	// 'W'); the lazy Split's and FString::ReplaceCharInline's are deleted instead.
+	template <ESearchCase TCase = ESearchCase::CaseSensitive>
+	[[nodiscard]] bool StartsWith (char32_t CodePoint) const noexcept;
 
 	template <ESearchCase TCase = ESearchCase::CaseSensitive>
 	[[nodiscard]] constexpr bool EndsWith (FStringView Suffix) const noexcept;
@@ -256,8 +256,9 @@ public:
 	template <ESearchCase TCase = ESearchCase::CaseSensitive>
 	[[nodiscard]] constexpr bool EndsWith (char Ch) const noexcept;
 
-	template <ESearchCase TCase = ESearchCase::CaseSensitive, typename T> requires std::same_as<T, char32_t>
-	bool EndsWith (T) const = delete;
+	// A scalar value (asserted).
+	template <ESearchCase TCase = ESearchCase::CaseSensitive>
+	[[nodiscard]] bool EndsWith (char32_t CodePoint) const noexcept;
 
 	// Non-overlapping, left to right; empty Needle -> 0.
 	template <ESearchCase TCase = ESearchCase::CaseSensitive>
@@ -288,34 +289,39 @@ public:
 
 	// ---- Split (results view this text) ----
 	// Not found: {Left = whole, Right = empty at end, bFound = false}. Separator chars: ASCII (asserted);
-	// separator views: non-empty (asserted).
+	// code points: scalar values (asserted); separator views: non-empty (asserted; Release treats an empty
+	// one as not found). The matched length is cut out (IgnoreCase: 'k' also splits at U+212A KELVIN SIGN).
+	template <ESearchCase TCase = ESearchCase::CaseSensitive>
 	[[nodiscard]] constexpr SStringSplit SplitFirst (char Separator) const noexcept FRT_LIFETIMEBOUND;
+
+	template <ESearchCase TCase = ESearchCase::CaseSensitive>
+	[[nodiscard]] SStringSplit SplitFirst (char32_t Separator) const noexcept FRT_LIFETIMEBOUND;
 
 	template <ESearchCase TCase = ESearchCase::CaseSensitive>
 	[[nodiscard]] constexpr SStringSplit SplitFirst (FStringView Separator) const noexcept FRT_LIFETIMEBOUND;
 
-	// A code point: its text instead (StartsWith).
-	template <ESearchCase TCase = ESearchCase::CaseSensitive, typename T> requires std::same_as<T, char32_t>
-	SStringSplit SplitFirst (T) const = delete;
-
+	template <ESearchCase TCase = ESearchCase::CaseSensitive>
 	[[nodiscard]] constexpr SStringSplit SplitLast (char Separator) const noexcept FRT_LIFETIMEBOUND;
+
+	template <ESearchCase TCase = ESearchCase::CaseSensitive>
+	[[nodiscard]] SStringSplit SplitLast (char32_t Separator) const noexcept FRT_LIFETIMEBOUND;
 
 	template <ESearchCase TCase = ESearchCase::CaseSensitive>
 	[[nodiscard]] constexpr SStringSplit SplitLast (FStringView Separator) const noexcept FRT_LIFETIMEBOUND;
 
-	template <ESearchCase TCase = ESearchCase::CaseSensitive, typename T> requires std::same_as<T, char32_t>
-	SStringSplit SplitLast (T) const = delete;
-
 	// Lazy token ranges; tokens = delimiters + 1 (empty text -> one empty token unless SkipEmpty).
 	// The range stores the delimiter view: it must outlive the iteration too.
 	// Delimiter: an ASCII character (asserted).
+	template <ESearchCase TCase = ESearchCase::CaseSensitive>
 	[[nodiscard]] constexpr FStringSplitRange Split (char Delimiter, EStringSplit Options = EStringSplit::None) const noexcept FRT_LIFETIMEBOUND;
-	// A code point: its text instead (StartsWith).
-	template <typename T> requires std::same_as<T, char32_t>
+	// A code point: Split("ї"). The range keeps a view of its delimiter, and a code point argument has no
+	// text that outlives the call.
+	template <ESearchCase TCase = ESearchCase::CaseSensitive, typename T> requires std::same_as<T, char32_t>
 	FStringSplitRange Split (T, EStringSplit = EStringSplit::None) const = delete;
-	// Delimiter: non-empty (asserted).
+	// Delimiter: non-empty (asserted; Release treats an empty one as never found: one token).
+	template <ESearchCase TCase = ESearchCase::CaseSensitive>
 	[[nodiscard]] constexpr FStringSplitRange Split (FStringView Delimiter FRT_LIFETIMEBOUND, EStringSplit Options = EStringSplit::None) const noexcept FRT_LIFETIMEBOUND;
-	// Any unit of DelimiterSet separates (set rules of FindFirstOf).
+	// Any unit of DelimiterSet separates (set rules of FindFirstOf: exact units, no case).
 	[[nodiscard]] FStringSplitRange SplitAny (FStringView DelimiterSet FRT_LIFETIMEBOUND, EStringSplit Options = EStringSplit::None) const noexcept FRT_LIFETIMEBOUND;
 	// Runs of White_Space; never yields empty tokens.
 	[[nodiscard]] FStringSplitRange SplitWhitespace () const noexcept FRT_LIFETIMEBOUND;
@@ -336,11 +342,11 @@ public:
 	[[nodiscard]] std::optional<float> ToFloat () const noexcept;
 	[[nodiscard]] std::optional<double> ToDouble () const noexcept;
 
-	// true/1/yes/on, false/0/no/off, IgnoreCaseAscii. Named Try...: `if (S.ToBool())` on an optional
-	// would be true for the text "false".
+	// true/1/yes/on, false/0/no/off, IgnoreCaseAscii. With a default, like every parse here:
+	// TryParseBool().value_or(Default). Not named ToBool: `if (S.ToBool())` would read as "the text says
+	// true", yet be true for "false" as well. The numeric To* are optionals too, and `if (S.ToInt32())`
+	// asks whether the text is a number, not whether the number is non-zero.
 	[[nodiscard]] std::optional<bool> TryParseBool () const noexcept;
-	// TryParseBool().value_or(Default)
-	[[nodiscard]] bool ToBool (bool Default) const noexcept;
 	// Len() == 2 * Out.size(), ASCII hex digits of either case.
 	[[nodiscard]] bool DecodeHex (std::span<uint8> Out) const noexcept;
 
@@ -627,10 +633,6 @@ public:
 	FStringView& TrimEndInline (FStringView CharSet) noexcept { return *this = TrimEnd(CharSet); }
 	FStringView& TrimStartAndEndInline (FStringView CharSet) noexcept { return *this = TrimStartAndEnd(CharSet); }
 
-	// Clamped, boundary-asserted.
-	constexpr FStringView& RemovePrefix (uint32 Count) noexcept { return RightChopInline(Count); }
-	constexpr FStringView& RemoveSuffix (uint32 Count) noexcept { return LeftChopInline(Count); }
-
 	// Removes the affix when the view has it (the matched bytes: they can differ from its length under
 	// IgnoreCase).
 	template <ESearchCase TCase = ESearchCase::CaseSensitive>
@@ -658,40 +660,64 @@ public:
 	}
 
 	// ---- Cursor helpers for hand-written parsers ----
-	// Text before the first Delimiter; the view advances past the delimiter (or becomes empty when there is
-	// none). Delimiter: an ASCII character (asserted).
+	// Text before the first Delimiter; the view advances past the matched delimiter (or becomes empty when
+	// there is none). Delimiter: an ASCII character (asserted).
+	template <ESearchCase TCase = ESearchCase::CaseSensitive>
 	constexpr FStringView ConsumeToken (char Delimiter) noexcept
 	{
-		const uint32 position = Find(Delimiter);
-		return ConsumeTokenAt(position, 1u);
+		frt_assert(ascii::IsAscii(Delimiter))
+		if constexpr (TCase == ESearchCase::IgnoreCase)
+		{
+			// The one-unit view: 'k' also matches U+212A KELVIN SIGN, which is longer than one byte.
+			return ConsumeToken<TCase>(FStringView(&Delimiter, 1u));
+		}
+		else
+		{
+			return ConsumeTokenAt(Find<TCase>(Delimiter), 1u);
+		}
 	}
 
-	// Delimiter: non-empty (asserted).
+	// A scalar value (asserted).
+	template <ESearchCase TCase = ESearchCase::CaseSensitive>
+	FStringView ConsumeToken (char32_t Delimiter) noexcept
+	{
+		frt_assert(unicode::IsScalarValue(Delimiter))
+		char buffer[4] = {};
+		const uint32 count = unicode::EncodeUtf8(Delimiter, buffer);
+		return ConsumeToken<TCase>(FStringView(buffer, count));
+	}
+
+	// Delimiter: non-empty (asserted). Release treats an empty one as not found: the rest is the token, so
+	// a `while (!Cursor.IsEmpty())` loop over a delimiter from a config value still ends.
+	template <ESearchCase TCase = ESearchCase::CaseSensitive>
 	constexpr FStringView ConsumeToken (FStringView Delimiter) noexcept
 	{
 		frt_assert(!Delimiter.IsEmpty())
-		const uint32 position = Find(Delimiter);
-		return ConsumeTokenAt(position, Delimiter.Len());
+		if (Delimiter.IsEmpty())
+		{
+			return ConsumeTokenAt(NotFound, 0u);
+		}
+		const auto match = FindMatch<TCase>(Delimiter);   // SStringMatch: complete only further down
+		return ConsumeTokenAt(match.Index, match.Len);
 	}
 
-	// A code point: its text instead (StartsWith).
-	template <typename T> requires std::same_as<T, char32_t>
-	FStringView ConsumeToken (T) = delete;
-
-	// An ASCII character (asserted). StartsWith(Ch) -> removed, true.
+	// An ASCII character (asserted). StartsWith(Ch) -> removed (the matched bytes), true.
+	template <ESearchCase TCase = ESearchCase::CaseSensitive>
 	constexpr bool ConsumeChar (char Ch) noexcept
 	{
-		if (!StartsWith(Ch))
-		{
-			return false;
-		}
-		*this = FStringView(Data + 1, Size - 1u);
-		return true;
+		frt_assert(ascii::IsAscii(Ch))
+		return RemoveFromStart<TCase>(FStringView(&Ch, 1u));
 	}
 
-	// A code point: RemoveFromStart("ї").
-	template <typename T> requires std::same_as<T, char32_t>
-	bool ConsumeChar (T) = delete;
+	// A scalar value (asserted).
+	template <ESearchCase TCase = ESearchCase::CaseSensitive>
+	bool ConsumeChar (char32_t CodePoint) noexcept
+	{
+		frt_assert(unicode::IsScalarValue(CodePoint))
+		char buffer[4] = {};
+		const uint32 count = unicode::EncodeUtf8(CodePoint, buffer);
+		return RemoveFromStart<TCase>(FStringView(buffer, count));
+	}
 
 	// Longest numeric prefix (from_chars rules + optional '+', ASCII digits); advances on success; unchanged
 	// + nullopt otherwise.
@@ -738,6 +764,9 @@ private:
 static_assert(sizeof(FStringView) == 16);
 }
 
+// A view, as std::string_view: ranges may keep iterators into it after it is gone. MSVC's <string_view>
+// and <iterator> bring these traits and the borrowed_range concept above (its <xutility> defines them),
+// so the string headers do without <ranges>, a far larger header that game modules (no PCH) would parse.
 template <>
 inline constexpr bool std::ranges::enable_borrowed_range<frt::FStringView> = true;
 template <>
@@ -1000,12 +1029,13 @@ struct SStringTokenizer
 	constexpr SStringTokenizer () noexcept = default;
 
 	constexpr SStringTokenizer (FStringView InSource, FStringView InDelimiter, char InDelimiterChar,
-		EStringTokenMode InMode, EStringSplit InOptions) noexcept
+		EStringTokenMode InMode, EStringSplit InOptions, ESearchCase InCase) noexcept
 		: Source(InSource)
 		, Delimiter(InDelimiter)
 		, DelimiterChar(InDelimiterChar)
 		, Mode(InMode)
 		, Options(InOptions)
+		, Case(InCase)
 	{}
 
 	[[nodiscard]] constexpr FStringView GetToken () const noexcept
@@ -1101,6 +1131,7 @@ struct SStringTokenizer
 	char DelimiterChar = '\0';  // Char mode
 	EStringTokenMode Mode = EStringTokenMode::Char;
 	EStringSplit Options = EStringSplit::None;
+	ESearchCase Case = ESearchCase::CaseSensitive;   // Char and View modes
 	bool bLast = false;         // the current token is the last one (split modes)
 	bool bDone = false;         // past the last token
 
@@ -1111,11 +1142,21 @@ private:
 		switch (Mode)
 		{
 		case EStringTokenMode::Char:
+			// IgnoreCase: as the one-unit view ('k' also finds U+212A KELVIN SIGN, three bytes long).
+			if (Case == ESearchCase::IgnoreCase)
+			{
+				return FindNeedle(FStringView(&DelimiterChar, 1u), From, OutLen);
+			}
 			OutLen = 1u;
-			return Source.Find(DelimiterChar, From);
+			return Case == ESearchCase::IgnoreCaseAscii ? Source.Find<ESearchCase::IgnoreCaseAscii>(DelimiterChar, From)
+				: Source.Find(DelimiterChar, From);
 		case EStringTokenMode::View:
-			OutLen = Delimiter.Len();
-			return Source.Find(Delimiter, From);
+			// An empty delimiter (asserted by Split) is never found: one token, never an endless run of empty ones.
+			if (Delimiter.IsEmpty())
+			{
+				return FStringView::NotFound;
+			}
+			return FindNeedle(Delimiter, From, OutLen);
 		default:
 		{
 			const uint32 position = string_impl::FindInSet(Source, Delimiter, From, false);
@@ -1126,6 +1167,27 @@ private:
 			return position;
 		}
 		}
+	}
+
+	// Needle at or after From under Case, with the haystack bytes it matched (IgnoreCase: they can differ
+	// from Needle.Len()), or NotFound.
+	constexpr uint32 FindNeedle (FStringView Needle, uint32 From, uint32& OutLen) const noexcept
+	{
+		SStringMatch match;
+		switch (Case)
+		{
+		case ESearchCase::IgnoreCase:
+			match = Source.FindMatch<ESearchCase::IgnoreCase>(Needle, From);
+			break;
+		case ESearchCase::IgnoreCaseAscii:
+			match = Source.FindMatch<ESearchCase::IgnoreCaseAscii>(Needle, From);
+			break;
+		default:
+			match = Source.FindMatch(Needle, From);
+			break;
+		}
+		OutLen = match.Len;
+		return match.Index;
 	}
 
 	constexpr uint32 FindLineTerminator (uint32 From) const noexcept
@@ -1891,6 +1953,16 @@ constexpr bool TStringReadOps<TDerived>::StartsWith (char Ch) const noexcept
 
 template <typename TDerived>
 template <ESearchCase TCase>
+bool TStringReadOps<TDerived>::StartsWith (char32_t CodePoint) const noexcept
+{
+	frt_assert(unicode::IsScalarValue(CodePoint))
+	char buffer[4] = {};
+	const uint32 count = unicode::EncodeUtf8(CodePoint, buffer);
+	return MatchPrefix<TCase>(FStringView(buffer, count)) != NotFound;
+}
+
+template <typename TDerived>
+template <ESearchCase TCase>
 constexpr bool TStringReadOps<TDerived>::EndsWith (FStringView Suffix) const noexcept
 {
 	return MatchSuffix<TCase>(Suffix) != NotFound;
@@ -1913,6 +1985,16 @@ constexpr bool TStringReadOps<TDerived>::EndsWith (char Ch) const noexcept
 	{
 		return Derived().Len() != 0u && Derived().GetData()[Derived().Len() - 1u] == Ch;
 	}
+}
+
+template <typename TDerived>
+template <ESearchCase TCase>
+bool TStringReadOps<TDerived>::EndsWith (char32_t CodePoint) const noexcept
+{
+	frt_assert(unicode::IsScalarValue(CodePoint))
+	char buffer[4] = {};
+	const uint32 count = unicode::EncodeUtf8(CodePoint, buffer);
+	return MatchSuffix<TCase>(FStringView(buffer, count)) != NotFound;
 }
 
 template <typename TDerived>
@@ -2045,16 +2127,36 @@ constexpr bool TStringReadOps<TDerived>::IsIdentifier () const noexcept
 }
 
 template <typename TDerived>
+template <ESearchCase TCase>
 constexpr SStringSplit TStringReadOps<TDerived>::SplitFirst (char Separator) const noexcept
 {
-	const char* data = Derived().GetData();
-	const uint32 length = Derived().Len();
-	const uint32 position = Find(Separator);
-	if (position == NotFound)
+	frt_assert(ascii::IsAscii(Separator))
+	if constexpr (TCase == ESearchCase::IgnoreCase)
 	{
-		return SStringSplit{ FStringView(data, length), FStringView(), false };
+		// The one-unit view: 'k' also matches U+212A KELVIN SIGN, which is longer than one byte.
+		return SplitFirst<TCase>(FStringView(&Separator, 1u));
 	}
-	return SStringSplit{ FStringView(data, position), FStringView(data + position + 1, length - position - 1u), true };
+	else
+	{
+		const char* data = Derived().GetData();
+		const uint32 length = Derived().Len();
+		const uint32 position = Find<TCase>(Separator);
+		if (position == NotFound)
+		{
+			return SStringSplit{ FStringView(data, length), FStringView(), false };
+		}
+		return SStringSplit{ FStringView(data, position), FStringView(data + position + 1, length - position - 1u), true };
+	}
+}
+
+template <typename TDerived>
+template <ESearchCase TCase>
+SStringSplit TStringReadOps<TDerived>::SplitFirst (char32_t Separator) const noexcept
+{
+	frt_assert(unicode::IsScalarValue(Separator))
+	char buffer[4] = {};
+	const uint32 count = unicode::EncodeUtf8(Separator, buffer);
+	return SplitFirst<TCase>(FStringView(buffer, count));
 }
 
 template <typename TDerived>
@@ -2064,7 +2166,8 @@ constexpr SStringSplit TStringReadOps<TDerived>::SplitFirst (FStringView Separat
 	frt_assert(!Separator.IsEmpty())
 	const char* data = Derived().GetData();
 	const uint32 length = Derived().Len();
-	const SStringMatch match = FindMatch<TCase>(Separator);
+	// An empty separator (asserted) is never found, as for Split.
+	const SStringMatch match = Separator.IsEmpty() ? SStringMatch() : FindMatch<TCase>(Separator);
 	if (!match)
 	{
 		return SStringSplit{ FStringView(data, length), FStringView(), false };
@@ -2074,16 +2177,35 @@ constexpr SStringSplit TStringReadOps<TDerived>::SplitFirst (FStringView Separat
 }
 
 template <typename TDerived>
+template <ESearchCase TCase>
 constexpr SStringSplit TStringReadOps<TDerived>::SplitLast (char Separator) const noexcept
 {
-	const char* data = Derived().GetData();
-	const uint32 length = Derived().Len();
-	const uint32 position = FindLast(Separator);
-	if (position == NotFound)
+	frt_assert(ascii::IsAscii(Separator))
+	if constexpr (TCase == ESearchCase::IgnoreCase)
 	{
-		return SStringSplit{ FStringView(data, length), FStringView(), false };
+		return SplitLast<TCase>(FStringView(&Separator, 1u));
 	}
-	return SStringSplit{ FStringView(data, position), FStringView(data + position + 1, length - position - 1u), true };
+	else
+	{
+		const char* data = Derived().GetData();
+		const uint32 length = Derived().Len();
+		const uint32 position = FindLast<TCase>(Separator);
+		if (position == NotFound)
+		{
+			return SStringSplit{ FStringView(data, length), FStringView(), false };
+		}
+		return SStringSplit{ FStringView(data, position), FStringView(data + position + 1, length - position - 1u), true };
+	}
+}
+
+template <typename TDerived>
+template <ESearchCase TCase>
+SStringSplit TStringReadOps<TDerived>::SplitLast (char32_t Separator) const noexcept
+{
+	frt_assert(unicode::IsScalarValue(Separator))
+	char buffer[4] = {};
+	const uint32 count = unicode::EncodeUtf8(Separator, buffer);
+	return SplitLast<TCase>(FStringView(buffer, count));
 }
 
 template <typename TDerived>
@@ -2093,7 +2215,7 @@ constexpr SStringSplit TStringReadOps<TDerived>::SplitLast (FStringView Separato
 	frt_assert(!Separator.IsEmpty())
 	const char* data = Derived().GetData();
 	const uint32 length = Derived().Len();
-	const SStringMatch match = FindLastMatch<TCase>(Separator);
+	const SStringMatch match = Separator.IsEmpty() ? SStringMatch() : FindLastMatch<TCase>(Separator);
 	if (!match)
 	{
 		return SStringSplit{ FStringView(data, length), FStringView(), false };
@@ -2103,35 +2225,38 @@ constexpr SStringSplit TStringReadOps<TDerived>::SplitLast (FStringView Separato
 }
 
 template <typename TDerived>
+template <ESearchCase TCase>
 constexpr FStringSplitRange TStringReadOps<TDerived>::Split (char Delimiter, EStringSplit Options) const noexcept
 {
 	frt_assert(ascii::IsAscii(Delimiter))
-	return FStringSplitRange(SStringTokenizer(View(), FStringView(), Delimiter, EStringTokenMode::Char, Options));
+	return FStringSplitRange(SStringTokenizer(View(), FStringView(), Delimiter, EStringTokenMode::Char, Options, TCase));
 }
 
 template <typename TDerived>
+template <ESearchCase TCase>
 constexpr FStringSplitRange TStringReadOps<TDerived>::Split (FStringView Delimiter, EStringSplit Options) const noexcept
 {
 	frt_assert(!Delimiter.IsEmpty())
-	return FStringSplitRange(SStringTokenizer(View(), Delimiter, '\0', EStringTokenMode::View, Options));
+	return FStringSplitRange(SStringTokenizer(View(), Delimiter, '\0', EStringTokenMode::View, Options, TCase));
 }
 
 template <typename TDerived>
 FStringSplitRange TStringReadOps<TDerived>::SplitAny (FStringView DelimiterSet, EStringSplit Options) const noexcept
 {
-	return FStringSplitRange(SStringTokenizer(View(), DelimiterSet, '\0', EStringTokenMode::AnySet, Options));
+	return FStringSplitRange(SStringTokenizer(View(), DelimiterSet, '\0', EStringTokenMode::AnySet, Options, ESearchCase::CaseSensitive));
 }
 
 template <typename TDerived>
 FStringSplitRange TStringReadOps<TDerived>::SplitWhitespace () const noexcept
 {
-	return FStringSplitRange(SStringTokenizer(View(), FStringView(), '\0', EStringTokenMode::Whitespace, EStringSplit::None));
+	return FStringSplitRange(SStringTokenizer(View(), FStringView(), '\0', EStringTokenMode::Whitespace, EStringSplit::None,
+		ESearchCase::CaseSensitive));
 }
 
 template <typename TDerived>
 constexpr FStringLineRange TStringReadOps<TDerived>::Lines (EStringSplit Options) const noexcept
 {
-	return FStringLineRange(SStringTokenizer(View(), FStringView(), '\0', EStringTokenMode::Lines, Options));
+	return FStringLineRange(SStringTokenizer(View(), FStringView(), '\0', EStringTokenMode::Lines, Options, ESearchCase::CaseSensitive));
 }
 
 template <typename TDerived>
@@ -2196,12 +2321,6 @@ std::optional<bool> TStringReadOps<TDerived>::TryParseBool () const noexcept
 		return false;
 	}
 	return std::nullopt;
-}
-
-template <typename TDerived>
-bool TStringReadOps<TDerived>::ToBool (bool Default) const noexcept
-{
-	return TryParseBool().value_or(Default);
 }
 
 template <typename TDerived>

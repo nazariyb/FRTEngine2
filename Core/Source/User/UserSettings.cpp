@@ -69,7 +69,7 @@ std::optional<FString> ResolveRefreshRate (
 
 	// Whole rates stay whole ("60", not "60.00") so the common case matches what is already
 	// hand-written in Engine.ini and the file does not churn on every save. Two decimals
-	// otherwise, which is what the panel displays and what fits RefreshRateTextBufferSize.
+	// otherwise, which is what the panel displays.
 	const float hz = static_cast<float>(numerator) / static_cast<float>(denominator);
 	if (std::round(hz) == hz)
 	{
@@ -97,8 +97,10 @@ void LoadDisplaySettings (const config::CConfig& Config, SDisplaySettings& OutSe
 {
 	OutSettings.MonitorIndex = Config.Get(DisplaySection, "MonitorIndex", OutSettings.MonitorIndex);
 
-	OutSettings.ResolutionTxt = Config.Get(DisplaySection, "Resolution", "").Truncate(SDisplaySettings::ResolutionTextBufferSize);
-	OutSettings.RefreshRateTxt = Config.Get(DisplaySection, "RefreshRate", "").Truncate(SDisplaySettings::RefreshRateTextBufferSize);
+	// Whole, never cut to a length: SResolution::Parse and GetRefreshRateIndex reject text that is no
+	// value, where a prefix could read as another one ("1920x10800" as "1920x1080").
+	OutSettings.ResolutionTxt = Config.Get(DisplaySection, "Resolution", "");
+	OutSettings.RefreshRateTxt = Config.Get(DisplaySection, "RefreshRate", "");
 
 	OutSettings.FullscreenMode = Config.Get(DisplaySection, "FullscreenMode", OutSettings.FullscreenMode);
 	OutSettings.RenderMode = Config.Get(DisplaySection, "RenderMode", OutSettings.RenderMode);

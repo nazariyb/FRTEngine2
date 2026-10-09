@@ -74,17 +74,36 @@ TEST(StringFormat, AppendFormatChainsAndReusesScratch)
 	text.AppendFormat(", y={:.1f}", 2.5).AppendFormat("; {}", "ї");
 	EXPECT_EQ(text, "x=5, y=2.5; ї");
 
-	// The per-frame idiom: one scratch string, Clear() keeps its block.
+	// The per-frame idiom: one scratch string, Clear() keeps its block, and output that fits a stack buffer
+	// (256 bytes) is formatted without allocating, so a frame allocates nothing.
 	FString scratch;
 	scratch.Reserve(64);
 	const char* block = scratch.GetData();
+	const uint64 before = string_detail::GetThreadHeapAllocationCount();
 	for (int32 frame = 0; frame < 3; ++frame)
 	{
 		scratch.Clear();
 		scratch.AppendFormat("Frame {} of a reused scratch string", frame);
+		scratch.Appendf(", and %d more %s", frame, "bytes");
 	}
-	EXPECT_EQ(scratch, "Frame 2 of a reused scratch string");
+	EXPECT_EQ(string_detail::GetThreadHeapAllocationCount(), before);
+	EXPECT_EQ(scratch, "Frame 2 of a reused scratch string, and 2 more bytes");
 	EXPECT_EQ(scratch.GetData(), block);
+
+	// Longer output moves to the heap as it is written, still in one pass.
+	const FString longText = FString::Repeat("ї", 300);
+	FString prefixed = "<";
+	prefixed.AppendFormat("{}|{}", longText, 5);
+	EXPECT_EQ(prefixed, "<" + longText + "|5");
+	EXPECT_EQ(FString::Format("{}", longText), longText);
+
+	// An argument may view the string being appended to, short or long.
+	FString self = "abc";
+	self.AppendFormat("[{}]", self.View());
+	EXPECT_EQ(self, "abc[abc]");
+	FString longSelf = longText;
+	longSelf.AppendFormat("{}", longSelf.View());
+	EXPECT_EQ(longSelf, longText + longText);
 }
 
 
@@ -118,6 +137,13 @@ TEST(StringFormat, PrintfBeyondOneKilobyte)
 
 	const FString longText = FString::Repeat("ї", 700);
 	EXPECT_EQ(FString::Printf("[%s]", longText.CStr()), "[" + longText + "]");
+
+	// Just past the stack buffer (256 bytes), and an argument pointing into the string itself.
+	EXPECT_EQ(FString::Printf("%0*d", 256, 1).Len(), 256u);
+	EXPECT_EQ(FString::Printf("%0*d", 255, 1).Len(), 255u);
+	FString self = longText;
+	self.Appendf("%s", self.CStr());
+	EXPECT_EQ(self, longText + longText);
 }
 
 TEST(StringFormat, Appendf)

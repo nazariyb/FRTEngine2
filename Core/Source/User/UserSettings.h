@@ -38,10 +38,7 @@ struct SDisplaySettings
 	int32 ResolutionIndex = 0;
 	int32 RefreshRateIndex = 0;
 
-	// Load keeps at most this many bytes of each text: the longest values the settings panel
-	// writes ("3840x2160", "143.86") fit.
-	static constexpr uint8 ResolutionTextBufferSize		= 9u;
-	static constexpr uint8 RefreshRateTextBufferSize	= 6u;
+	// As the config holds them ("3840x2160", "143.86"), resolved once the adapter is known.
 	FString ResolutionTxt;
 	FString RefreshRateTxt;
 

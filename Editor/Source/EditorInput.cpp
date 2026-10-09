@@ -263,7 +263,8 @@ void CEditorInput::Validate ()
 		for (const config::CIniFile::SSection& section : layer->File.GetSections())
 		{
 			const bool bCommands = section.Name.Equals<ESearchCase::IgnoreCaseAscii>(CommandsSection);
-			const bool bKeySet = section.Name.Equals<ESearchCase::IgnoreCaseAscii>(KeySetSections[0]) || section.Name.Equals<ESearchCase::IgnoreCaseAscii>(KeySetSections[1]);
+			const bool bKeySet = section.Name.Equals<ESearchCase::IgnoreCaseAscii>(KeySetSections[0])
+				|| section.Name.Equals<ESearchCase::IgnoreCaseAscii>(KeySetSections[1]);
 			const bool bCamera = section.Name.Equals<ESearchCase::IgnoreCaseAscii>(CameraSection);
 			if (!bCommands && !bKeySet && !bCamera)
 			{

@@ -37,7 +37,7 @@ public:
 
 	// WTF-8 decoding: ill-formed -> U+FFFD, WTF-8 surrogates -> lone surrogates (paths round-trip).
 	FRT_CORE_API explicit FWideString (FStringView Utf8) noexcept;
-	// A copy (wide literals: FWideString(std::wstring_view(...))).
+	// A copy: FWideString(L"...") or a std::wstring_view.
 	FRT_CORE_API explicit FWideString (std::wstring_view Utf16) noexcept;
 
 	FWideString (const FWideString& Other) noexcept

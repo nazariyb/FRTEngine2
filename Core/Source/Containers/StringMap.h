@@ -14,10 +14,13 @@
 namespace frt
 {
 // Path keys: NTFS compares names by upper-casing each UTF-16 code unit through its $UpCase table (BMP only),
-// not by Unicode case folding: U+212A KELVIN vs 'k', U+2126 OHM vs 'ω', U+212B ANGSTROM vs 'å' and every
-// supplementary-plane cased letter (Deseret, Osage, Adlam, ...) are distinct names there. Key per decoded
-// unit: well-formed cp <= FFFF -> unicode::ToUpper(cp); cp > FFFF -> cp; ill-formed bytes as is (WTF-8
-// surrogates included).
+// which Windows fills from its own casing table. Neither Unicode case folding nor Unicode's uppercase:
+// U+212A KELVIN vs 'k', U+2126 OHM vs 'ω', U+0131 'ı' vs 'I', U+03C2 'ς' vs 'Σ', U+017F 'ſ' vs 'S',
+// Georgian Mkhedruli vs Mtavruli and every supplementary-plane cased letter (Deseret, Osage, Adlam, ...)
+// are distinct names there. Key per decoded unit: well-formed cp <= FFFF -> the OS table's upper case
+// (as CompareStringOrdinal(..., TRUE)); cp > FFFF -> cp; ill-formed bytes as is (WTF-8 surrogates
+// included). A volume keeps the table of the Windows that formatted it: letters an older one did not
+// case yet can still differ.
 struct SPathHash
 {
 	using is_transparent = void;

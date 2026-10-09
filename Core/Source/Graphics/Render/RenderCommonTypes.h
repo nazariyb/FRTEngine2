@@ -100,7 +100,7 @@ public:
 	FRT_CORE_API bool Parse (FStringView Text);
 
 	// Round-trips through Parse. Written into config, so the delimiter has to be one Parse
-	// accepts, and the result has to fit SDisplaySettings::ResolutionTextBufferSize.
+	// accepts.
 	FRT_CORE_API FString ToString (char Delimiter = 'x') const;
 
 	operator bool () const

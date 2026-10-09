@@ -444,7 +444,6 @@ FString DecodeToolOutput (FStringView Bytes)
 	FString result;
 	result.Reserve(Bytes.Len());
 
-	UINT codePage = 0u;   // looked up at the first line that needs it
 	std::vector<wchar_t> units;
 	FStringView rest = Bytes;
 	while (!rest.IsEmpty())
@@ -452,7 +451,7 @@ FString DecodeToolOutput (FStringView Bytes)
 		const uint32 newLine = rest.Find('\n');
 		const uint32 lineLength = newLine == FStringView::NotFound ? rest.Len() : newLine + 1u;
 		const FStringView line = rest.Left(lineLength);
-		rest.RemovePrefix(lineLength);
+		rest.RightChopInline(lineLength);
 
 		if (line.IsValidUtf8())
 		{
@@ -460,10 +459,8 @@ FString DecodeToolOutput (FStringView Bytes)
 			continue;
 		}
 
-		if (codePage == 0u)
-		{
-			codePage = GetSystemOemCodePage();
-		}
+		// Looked up once, at the first line that needs it: the system locale changes only with a restart.
+		static const UINT codePage = GetSystemOemCodePage();
 		const int length = MultiByteToWideChar(codePage, 0u, line.GetData(), static_cast<int>(line.Len()), nullptr, 0);
 		if (length <= 0)
 		{

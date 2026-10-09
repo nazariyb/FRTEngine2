@@ -2,7 +2,6 @@
 
 #include <concepts>
 #include <cstddef>
-#include <ranges>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -36,7 +35,12 @@ class FStringView;
 class FStringLiteral;
 class FWideString;
 
-// Every function that compares text takes this as a template parameter defaulting to CaseSensitive.
+// Every function that looks for or compares a text or a character takes this as a template parameter
+// defaulting to CaseSensitive: Equals, Compare, the Find / Contains / StartsWith / EndsWith families,
+// Split, SplitFirst / SplitLast, ConsumeToken / ConsumeChar, RemoveFromStart / RemoveFromEnd, RemoveAll,
+// Replace, CountOccurrences, MatchesWildcard, GetHash. Exact by design: the code-point set functions
+// (FindFirstOf and its family, SplitAny, Trim(CharSet), TrimQuotes), FString::ReplaceCharInline (bytes),
+// the == / <=> operators and SStringHash / SStringEqual (caseless maps: StringMap.h).
 enum class ESearchCase : uint8
 {
 	CaseSensitive,     // byte-exact

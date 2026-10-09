@@ -1,6 +1,5 @@
 #include "Containers/String.h"
 
-#include <atomic>
 #include <cmath>
 #include <cstdarg>
 #include <cstddef>
@@ -20,8 +19,9 @@ namespace
 {
 using namespace frt;
 
-constinit std::atomic<uint64> GHeapAllocations{ 0u };
-// constinit: Allocate is safe from any dynamic initializer, whatever the initialization order.
+// Per thread only: a process-wide counter would put one contended cache line under every string
+// allocation of every job worker. constinit: Allocate is safe from any dynamic initializer, whatever
+// the initialization order.
 constinit thread_local uint64 GThreadHeapAllocations = 0u;
 
 // Reports and ends the process. The string types cannot throw (every function but Format is noexcept)
@@ -101,6 +101,57 @@ bool EndsWithLeadSurrogate (FStringView Text) noexcept
 }
 
 constexpr char ReplacementCharacterUtf8[] = "\xEF\xBF\xBD";
+
+// Output that fits here is formatted without allocating: the per-frame Clear() + AppendFormat idiom on a
+// reserved scratch string.
+constexpr uint32 FormatStackBytes = 256u;
+
+// Where VAppendFormat formats: a stack buffer, and a heap string the output moves to once it outgrows the
+// buffer (one pass either way). Never the string itself: an argument may view it, and vformat_to reads
+// the arguments while it writes.
+struct SFormatScratch
+{
+	char Stack[FormatStackBytes];
+	uint32 Count = 0u;      // bytes in Stack
+	FString Heap;           // all of the output, once bSpilled
+	bool bSpilled = false;
+};
+
+class FFormatScratchIterator
+{
+public:
+	using difference_type = std::ptrdiff_t;
+
+	FFormatScratchIterator () noexcept = default;
+
+	explicit FFormatScratchIterator (SFormatScratch& InScratch) noexcept
+		: Scratch(&InScratch)
+	{}
+
+	FFormatScratchIterator& operator* () noexcept { return *this; }
+	FFormatScratchIterator& operator++ () noexcept { return *this; }
+	FFormatScratchIterator operator++ (int) noexcept { return *this; }
+
+	FFormatScratchIterator& operator= (char Ch) noexcept
+	{
+		if (!Scratch->bSpilled)
+		{
+			if (Scratch->Count < FormatStackBytes)
+			{
+				Scratch->Stack[Scratch->Count++] = Ch;
+				return *this;
+			}
+			Scratch->Heap.Reserve(2u * FormatStackBytes);
+			Scratch->Heap.Append(FStringView(Scratch->Stack, Scratch->Count));
+			Scratch->bSpilled = true;
+		}
+		Scratch->Heap.AppendChar(Ch);
+		return *this;
+	}
+
+private:
+	SFormatScratch* Scratch = nullptr;
+};
 }
 
 
@@ -113,7 +164,6 @@ void* Allocate (size_t Bytes) noexcept
 	{
 		FatalAllocationError(Bytes);
 	}
-	GHeapAllocations.fetch_add(1u, std::memory_order_relaxed);
 	++GThreadHeapAllocations;
 	return block;
 }
@@ -125,7 +175,6 @@ void* Reallocate (void* Block, size_t Bytes) noexcept
 	{
 		FatalAllocationError(Bytes);
 	}
-	GHeapAllocations.fetch_add(1u, std::memory_order_relaxed);
 	++GThreadHeapAllocations;
 	return block;
 }
@@ -152,11 +201,6 @@ void FatalAllocationError (size_t Bytes) noexcept
 uint64 GetThreadHeapAllocationCount () noexcept
 {
 	return GThreadHeapAllocations;
-}
-
-uint64 GetHeapAllocationCount () noexcept
-{
-	return GHeapAllocations.load(std::memory_order_relaxed);
 }
 }
 
@@ -507,15 +551,17 @@ FString& FString::AppendFixed (double Value, uint32 MinFractionalDigits, bool bS
 
 FString& FString::VAppendFormat (std::string_view Fmt, std::format_args Args)
 {
-	// Into a local first: an argument may view this string, and vformat_to reads the arguments while it
-	// writes.
-	FString formatted;
-	std::vformat_to(std::back_inserter(formatted), Fmt, Args);
+	SFormatScratch scratch;
+	std::vformat_to(FFormatScratchIterator(scratch), Fmt, Args);
+	if (!scratch.bSpilled)
+	{
+		return Append(FStringView(scratch.Stack, scratch.Count));
+	}
 	if (IsEmpty() && !IsHeapAllocated())
 	{
-		return *this = std::move(formatted);
+		return *this = std::move(scratch.Heap);
 	}
-	return Append(formatted.View());
+	return Append(scratch.Heap.View());
 }
 
 FString& FString::AppendfImpl (const char* Fmt, ...) noexcept
@@ -523,10 +569,13 @@ FString& FString::AppendfImpl (const char* Fmt, ...) noexcept
 	va_list args;
 	va_start(args, Fmt);
 
-	va_list measure;
-	va_copy(measure, args);
-	const int length = std::vsnprintf(nullptr, 0u, Fmt, measure);
-	va_end(measure);
+	// Never straight into this string: a %s argument may point into it. A stack buffer takes most output
+	// (no allocation, as for AppendFormat); the length vsnprintf returns says whether it all fitted.
+	char stack[FormatStackBytes];
+	va_list attempt;
+	va_copy(attempt, args);
+	const int length = std::vsnprintf(stack, sizeof(stack), Fmt, attempt);
+	va_end(attempt);
 
 	frt_assert(length >= 0)
 	if (length < 0)
@@ -534,8 +583,12 @@ FString& FString::AppendfImpl (const char* Fmt, ...) noexcept
 		va_end(args);
 		return *this;
 	}
+	if (static_cast<uint32>(length) < FormatStackBytes)
+	{
+		va_end(args);
+		return Append(FStringView(stack, static_cast<uint32>(length)));
+	}
 
-	// Into a local: a %s argument may point into this string.
 	FString formatted;
 	formatted.ResizeUninitialized(string_detail::CheckLength(static_cast<uint64>(length)));
 	std::vsnprintf(formatted.GetData(), static_cast<size_t>(length) + 1u, Fmt, args);

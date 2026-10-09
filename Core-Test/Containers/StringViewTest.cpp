@@ -29,7 +29,7 @@ namespace
 {
 using IndexStrategy = math::SIndexStrategy;
 
-// Section 9 fixture texts: 2-byte (with every Ukrainian-specific letter), 3-byte, 4-byte plus a skin-tone
+// Fixture texts: 2-byte (with every Ukrainian-specific letter), 3-byte, 4-byte plus a skin-tone
 // modifier, and all of them in a row (78 bytes, 38 code points).
 constexpr FStringLiteral Uk = "Привіт, світе! Ґанок, їжак, є";
 constexpr FStringLiteral Cjk = "漢字テスト";
@@ -70,7 +70,7 @@ std::string MakeRandomBytes (std::mt19937& Random)
 	return bytes;
 }
 
-// Byte offsets CodePoints() reports, plus Len(): by 4.1 exactly the code-point boundaries.
+// Byte offsets CodePoints() reports, plus Len(): exactly the code-point boundaries (no unit spans one).
 std::vector<bool> GetIteratorBoundaries (FStringView Text)
 {
 	std::vector<bool> bIsBoundary(Text.Len() + 1, false);
@@ -110,6 +110,9 @@ template <typename TText, typename TValue>
 concept CanSplit = requires (const TText& Text, TValue Value) { Text.Split(Value); };
 
 template <typename TText, typename TValue>
+concept CanSplitIgnoreCase = requires (const TText& Text, TValue Value) { Text.template Split<ESearchCase::IgnoreCase>(Value); };
+
+template <typename TText, typename TValue>
 concept CanFind = requires (const TText& Text, TValue Value) { Text.Find(Value); };
 
 template <typename TValue>
@@ -117,6 +120,9 @@ concept CanConsumeChar = requires (FStringView& Cursor, TValue Value) { Cursor.C
 
 template <typename TValue>
 concept CanConsumeToken = requires (FStringView& Cursor, TValue Value) { Cursor.ConsumeToken(Value); };
+
+template <typename TText>
+concept CanToBool = requires (const TText& Text) { Text.ToBool(); } || requires (const TText& Text) { Text.ToBool(false); };
 }
 
 
@@ -192,24 +198,29 @@ static_assert(std::forward_iterator<FStringLineRange::FIterator>);
 static_assert(std::sentinel_for<std::default_sentinel_t, FStringLineRange::FIterator>);
 
 static_assert(FStringView::NotFound == 0xFFFFFFFFu);
-static_assert(FStringView::npos == FStringView::NotFound);
 static_assert(FStringView::MaxLength == 0x7FFFFFFFu);
 
-// ASCII characters and text work; a code point only where a char32_t overload encodes it (Find, FindLast,
-// Contains), never truncated to a byte ('W' for U'ї').
+// ASCII characters, code points and text all work; a code point is encoded, never truncated to a byte ('W'
+// for U'ї'). The lazy Split alone takes no code point: its range keeps a view of the delimiter.
 static_assert(CanStartsWith<FStringView, char> && CanStartsWith<FStringView, const char*>);
-static_assert(!CanStartsWith<FStringView, char32_t>);
-static_assert(!CanStartsWith<FString, char32_t>);
-static_assert(!CanStartsWith<FStringLiteral, char32_t>);
-static_assert(CanStartsWithIgnoreCase<FStringView, char> && !CanStartsWithIgnoreCase<FStringView, char32_t>);
-static_assert(CanEndsWith<FStringView, char> && !CanEndsWith<FStringView, char32_t>);
-static_assert(CanSplitFirst<FStringView, char> && !CanSplitFirst<FStringView, char32_t>);
-static_assert(CanSplitLast<FStringView, char> && !CanSplitLast<FStringView, char32_t>);
+static_assert(CanStartsWith<FStringView, char32_t>);
+static_assert(CanStartsWith<FString, char32_t>);
+static_assert(CanStartsWith<FStringLiteral, char32_t>);
+static_assert(CanStartsWithIgnoreCase<FStringView, char> && CanStartsWithIgnoreCase<FStringView, char32_t>);
+static_assert(CanEndsWith<FStringView, char> && CanEndsWith<FStringView, char32_t>);
+static_assert(CanSplitFirst<FStringView, char> && CanSplitFirst<FStringView, char32_t>);
+static_assert(CanSplitLast<FStringView, char> && CanSplitLast<FStringView, char32_t>);
 static_assert(CanSplit<FStringView, char> && !CanSplit<FStringView, char32_t>);
 static_assert(CanSplit<FString, char> && !CanSplit<FString, char32_t>);
+static_assert(CanSplitIgnoreCase<FStringView, char> && !CanSplitIgnoreCase<FStringView, char32_t>);
 static_assert(CanFind<FStringView, char> && CanFind<FStringView, char32_t>);
-static_assert(CanConsumeChar<char> && !CanConsumeChar<char32_t>);
-static_assert(CanConsumeToken<char> && !CanConsumeToken<char32_t>);
+static_assert(CanConsumeChar<char> && CanConsumeChar<char32_t>);
+static_assert(CanConsumeToken<char> && CanConsumeToken<char32_t>);
+// Other integers have no single meaning (a byte or a code point): ambiguous, so they do not compile.
+static_assert(!CanStartsWith<FStringView, int> && !CanEndsWith<FStringView, wchar_t>);
+
+// Booleans parse to an optional, like numbers: no ToBool, whose `if (S.ToBool())` would hold for "false".
+static_assert(!CanToBool<FStringView> && !CanToBool<FString>);
 
 
 // ---------------------------------------------------------------------------------
@@ -273,7 +284,7 @@ TEST(StringView, RawByteContainersConvertExplicitly)
 
 TEST(StringView, EmptyViewsStoreNullButNeverReturnIt)
 {
-	// 4.4: an empty view keeps no pointer (so one made in a game module never points into its image), and
+	// An empty view keeps no pointer (so one made in a game module never points into its image), and
 	// GetData()/data() still return a valid, empty C string.
 	const char text[] = "abc";
 	const FStringView pointerAndZero(text, 0);
@@ -431,13 +442,13 @@ TEST(StringView, InPlaceSubstrings)
 
 	// Chains, like TArray-style mutators returning *this.
 	FStringView chained = "[value]";
-	chained.RemovePrefix(1).RemoveSuffix(1);
+	chained.RightChopInline(1).LeftChopInline(1);
 	EXPECT_EQ(chained, "value");
 
 	FStringView clamped = "ab";
-	EXPECT_TRUE(clamped.RemovePrefix(10).IsEmpty());
+	EXPECT_TRUE(clamped.RightChopInline(10).IsEmpty());
 	clamped = "ab";
-	EXPECT_TRUE(clamped.RemoveSuffix(10).IsEmpty());
+	EXPECT_TRUE(clamped.LeftChopInline(10).IsEmpty());
 
 	FStringView truncated = "ґґґ";
 	EXPECT_EQ(truncated.TruncateInline(5), "ґґ");
@@ -949,6 +960,17 @@ TEST(StringView, TruncateBacksOffOverVisibleSequences)
 	EXPECT_EQ(flags.Truncate(8), "\U0001F1FA\U0001F1E6");
 	EXPECT_TRUE(flags.Truncate(4).IsEmpty());
 
+	// A lone indicator at the end of its run is no half of anything: it stays, at the end of the text and
+	// before other text alike.
+	const FStringView lone = "Ab\U0001F1FAc";
+	EXPECT_EQ(lone.Truncate(6), "Ab\U0001F1FA");
+	EXPECT_EQ(lone.Truncate(5), "Ab");
+	const FStringView flagAndLone = "\U0001F1FA\U0001F1E6\U0001F1FAx";
+	EXPECT_EQ(flagAndLone.Truncate(12), "\U0001F1FA\U0001F1E6\U0001F1FA");
+	char label[8];
+	EXPECT_EQ(lone.CopyTo(label, 7), 6u);
+	EXPECT_STREQ(label, "Ab\U0001F1FA");
+
 	// A Cyrillic name over the 31-byte Comp_Name budget.
 	const FStringView name = "Олександр Петренко-Ковальчук";
 	EXPECT_EQ(name.Truncate(31), "Олександр Петрен");
@@ -1343,6 +1365,118 @@ TEST(StringViewCursor, ConsumeTokensAndCharacters)
 	EXPECT_EQ(call, "x)");
 }
 
+// Every function that looks for a text or a character takes a case: the delimiters of splits and cursors
+// too, and the matched length (not the delimiter's) is what they cut out.
+TEST(StringViewSplit, DelimitersTakeACase)
+{
+	const FStringView query = "a AND b and c";
+	EXPECT_EQ(query.Split(" and ").Collect(), (std::vector<FStringView>{ "a AND b", "c" }));
+	EXPECT_EQ(query.Split<ESearchCase::IgnoreCaseAscii>(" and ").Collect(), (std::vector<FStringView>{ "a", "b", "c" }));
+	EXPECT_EQ(query.Split<ESearchCase::IgnoreCase>(" AND ").Collect(), (std::vector<FStringView>{ "a", "b", "c" }));
+
+	const FStringView letters = "1x2X3";
+	EXPECT_EQ(letters.Split('x').Collect(), (std::vector<FStringView>{ "1", "2X3" }));
+	EXPECT_EQ(letters.Split<ESearchCase::IgnoreCaseAscii>('x').Collect(), (std::vector<FStringView>{ "1", "2", "3" }));
+	EXPECT_EQ(letters.SplitFirst<ESearchCase::IgnoreCaseAscii>('X').Left, "1");
+	EXPECT_EQ(letters.SplitLast<ESearchCase::IgnoreCaseAscii>('x').Right, "3");
+
+	// U+212A KELVIN SIGN (3 bytes) folds to 'k': the whole sign is the delimiter.
+	const FStringView kelvin = "1\u212A2k3";
+	EXPECT_EQ(kelvin.Split<ESearchCase::IgnoreCase>('k').Collect(), (std::vector<FStringView>{ "1", "2", "3" }));
+	EXPECT_EQ(kelvin.Split<ESearchCase::IgnoreCase>("K").Collect(), (std::vector<FStringView>{ "1", "2", "3" }));
+	EXPECT_EQ(kelvin.SplitFirst<ESearchCase::IgnoreCase>('k').Right, "2k3");
+	EXPECT_EQ(kelvin.SplitLast<ESearchCase::IgnoreCase>('K').Left, "1\u212A2");
+	EXPECT_EQ(kelvin.Split<ESearchCase::IgnoreCaseAscii>('k').Collect(), (std::vector<FStringView>{ "1\u212A2", "3" }));
+
+	FStringView cursor = "Ключ=ЗНАЧЕННЯ=end";
+	EXPECT_EQ(cursor.ConsumeToken<ESearchCase::IgnoreCase>("=значення="), "Ключ");
+	EXPECT_EQ(cursor, "end");
+	FStringView keyword = "Select * FROM t";
+	EXPECT_EQ(keyword.ConsumeToken<ESearchCase::IgnoreCaseAscii>(" from "), "Select *");
+	EXPECT_EQ(keyword, "t");
+	FStringView flags = "ABC";
+	EXPECT_TRUE(flags.ConsumeChar<ESearchCase::IgnoreCaseAscii>('a'));
+	EXPECT_FALSE(flags.ConsumeChar('b'));
+	EXPECT_TRUE(flags.ConsumeChar<ESearchCase::IgnoreCase>('b'));
+	EXPECT_EQ(flags, "C");
+	FStringView units = "\u212Am";
+	EXPECT_TRUE(units.ConsumeChar<ESearchCase::IgnoreCase>('k'));
+	EXPECT_EQ(units, "m");
+	FStringView cells = "aXbxc";
+	EXPECT_EQ(cells.ConsumeToken<ESearchCase::IgnoreCaseAscii>('x'), "a");
+	EXPECT_EQ(cells.ConsumeToken<ESearchCase::IgnoreCaseAscii>('x'), "b");
+	EXPECT_EQ(cells, "c");
+}
+
+// A code point works wherever an ASCII character does, encoded, never as its low byte (U'ї' is 0x457: 'W').
+TEST(StringViewSplit, CodePointsWhereverCharactersWork)
+{
+	const FStringView word = "їжак Ї";
+	EXPECT_TRUE(word.StartsWith(U'ї'));
+	EXPECT_FALSE(word.StartsWith(U'W'));
+	EXPECT_FALSE(FStringView("Wx").StartsWith(U'ї'));
+	EXPECT_TRUE(word.EndsWith(U'Ї'));
+	EXPECT_TRUE(word.StartsWith<ESearchCase::IgnoreCase>(U'Ї'));
+	EXPECT_TRUE(word.EndsWith<ESearchCase::IgnoreCase>(U'ї'));
+	EXPECT_FALSE(word.EndsWith(U'ї'));
+	EXPECT_TRUE(FString("😀!").StartsWith(U'😀'));
+	EXPECT_TRUE(FStringLiteral("a😀").EndsWith(U'😀'));
+
+	const FStringView pair = "ключ→значення→ще";
+	EXPECT_EQ(pair.SplitFirst(U'→').Left, "ключ");
+	EXPECT_EQ(pair.SplitFirst(U'→').Right, "значення→ще");
+	EXPECT_EQ(pair.SplitLast(U'→').Left, "ключ→значення");
+	EXPECT_EQ(pair.SplitLast(U'→').Right, "ще");
+	EXPECT_FALSE(pair.SplitFirst(U'←').bFound);
+	EXPECT_EQ(FStringView("АбВ").SplitFirst<ESearchCase::IgnoreCase>(U'б').Right, "В");
+
+	FStringView cursor = "a→b→c";
+	EXPECT_EQ(cursor.ConsumeToken(U'→'), "a");
+	EXPECT_EQ(cursor, "b→c");
+	FStringView bullet = "•item";
+	EXPECT_TRUE(bullet.ConsumeChar(U'•'));
+	EXPECT_EQ(bullet, "item");
+	EXPECT_FALSE(bullet.ConsumeChar(U'•'));
+}
+
+// An empty delimiter is a caller's bug (asserted); without asserts it is never found, so splits and cursor
+// loops still end instead of yielding empty tokens forever.
+#if FRT_ASSERTIONS_ENABLED
+TEST(StringViewDeathTest, EmptyDelimitersAssert)
+{
+	const FStringView text = "a,b";
+	const FString empty;
+	EXPECT_DEATH((void)text.Split(empty.View()), "ASSERT FAILED");
+	EXPECT_DEATH((void)text.SplitFirst(empty.View()), "ASSERT FAILED");
+	EXPECT_DEATH(
+		{
+			FStringView cursor = text;
+			(void)cursor.ConsumeToken(empty.View());
+		},
+		"ASSERT FAILED");
+}
+#else
+TEST(StringViewSplit, EmptyDelimitersAreNeverFound)
+{
+	const FStringView text = "a,b";
+	const FString empty;
+	EXPECT_EQ(text.Split(empty.View()).Collect(), (std::vector<FStringView>{ "a,b" }));
+	EXPECT_EQ(text.Split(empty.View(), EStringSplit::SkipEmpty).Count(), 1u);
+	EXPECT_FALSE(text.SplitFirst(empty.View()).bFound);
+	EXPECT_EQ(text.SplitFirst(empty.View()).Left, "a,b");
+	EXPECT_FALSE(text.SplitLast(empty.View()).bFound);
+
+	FStringView cursor = text;
+	uint32 tokens = 0;
+	while (!cursor.IsEmpty() && tokens < 10u)
+	{
+		EXPECT_EQ(cursor.ConsumeToken(empty.View()), "a,b");
+		++tokens;
+	}
+	EXPECT_EQ(tokens, 1u);
+}
+#endif
+
 TEST(StringViewCursor, ConsumeNumbers)
 {
 	FStringView cursor = "1.5, -2, 3e2)";
@@ -1481,10 +1615,10 @@ TEST(StringViewParse, Booleans)
 		EXPECT_FALSE(neither.TryParseBool().has_value()) << ::testing::PrintToString(neither);
 	}
 
-	EXPECT_TRUE(FStringView("maybe").ToBool(true));
-	EXPECT_FALSE(FStringView("maybe").ToBool(false));
-	EXPECT_FALSE(FStringView("off").ToBool(true));
-	EXPECT_TRUE(FStringView("on").ToBool(false));
+	// A default, as for the numbers.
+	EXPECT_TRUE(FStringView("maybe").TryParseBool().value_or(true));
+	EXPECT_FALSE(FStringView("off").TryParseBool().value_or(true));
+	EXPECT_TRUE(FStringView("on").TryParseBool().value_or(false));
 }
 
 TEST(StringViewParse, NumericIdentifierHex)

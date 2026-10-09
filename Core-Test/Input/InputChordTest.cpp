@@ -11,6 +11,8 @@
 #include "Input/PlatformInput.h"
 #include "Platform/Platform.h"
 
+#include <Windows.h>
+
 using namespace frt;
 using namespace frt::input;
 
@@ -54,10 +56,12 @@ void Wheel (float Delta, bool bHorizontal)
 	CPlatformInputQueue::Enqueue(data);
 }
 
-// Under a directory with a non-ASCII name: the files go through UTF-16 paths all the way.
+// Under a directory with a non-ASCII name (the files go through UTF-16 paths all the way), of this
+// process's own: test runs of several configurations may share the temp directory (PlatformTest.cpp).
 std::filesystem::path MakeTempPath (FStringView Name)
 {
-	return std::filesystem::temp_directory_path() / FStringView("FrtInputActionsTest Тест").ToPath() / Name.ToPath();
+	return std::filesystem::temp_directory_path() / FString::Format("FrtInputActionsTest Тест {}", GetCurrentProcessId()).ToPath()
+		/ Name.ToPath();
 }
 }
 

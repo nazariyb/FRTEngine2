@@ -63,7 +63,7 @@ static bool ParseLegacyDepthFunc (FStringView Input, D3D12_COMPARISON_FUNC& Out)
 	return false;
 }
 
-// A value that is no number leaves the field as it was (std::stof threw, and nothing caught it).
+// A value that is no number (strict: "0.5x" is none) leaves the field as it was.
 static void ParseLegacyFloat (FStringView Input, float& Out)
 {
 	if (const std::optional<float> value = Input.ToFloat())
@@ -113,10 +113,10 @@ bool CMaterialLegacyTextSerializer::Read (const std::filesystem::path& Path, SMa
 		else if (key == "emissive_intensity") ParseLegacyFloat(setting, Out.EmissiveIntensity);
 		else if (key == "base_color_texture") Out.BaseColorTexturePath = value;
 		else if (key == "cull")          (void)ParseLegacyCullMode(setting, Out.CullMode);
-		else if (key == "depth_enable")  Out.bDepthEnable = setting.ToBool(Out.bDepthEnable);
-		else if (key == "depth_write")   Out.bDepthWrite = setting.ToBool(Out.bDepthWrite);
+		else if (key == "depth_enable")  Out.bDepthEnable = setting.TryParseBool().value_or(Out.bDepthEnable);
+		else if (key == "depth_write")   Out.bDepthWrite = setting.TryParseBool().value_or(Out.bDepthWrite);
 		else if (key == "depth_func")    (void)ParseLegacyDepthFunc(setting, Out.DepthFunc);
-		else if (key == "alpha_blend")   Out.bAlphaBlend = setting.ToBool(Out.bAlphaBlend);
+		else if (key == "alpha_blend")   Out.bAlphaBlend = setting.TryParseBool().value_or(Out.bAlphaBlend);
 	}
 
 	return true;

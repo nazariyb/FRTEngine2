@@ -9,6 +9,8 @@
 #include "Project/Project.h"
 #include "Project/UserRegistry.h"
 
+#include <Windows.h>
+
 using frt::EPathStyle;
 using frt::FString;
 using frt::FStringView;
@@ -27,7 +29,9 @@ protected:
 	void SetUp () override
 	{
 		const ::testing::TestInfo* test = ::testing::UnitTest::GetInstance()->current_test_info();
-		Root = std::filesystem::temp_directory_path() / FStringView("FrtProjectTest Тест 漢字 😀").ToPath()
+		// Of this process's own: test runs of several configurations may share the temp directory
+		// (PlatformTest.cpp), and each points FRT_USER_DATA_DIR into its tree.
+		Root = std::filesystem::temp_directory_path() / FString::Format("FrtProjectTest Тест 漢字 😀 {}", GetCurrentProcessId()).ToPath()
 			/ FStringView(test->name()).ToPath();
 		std::error_code ec;
 		std::filesystem::remove_all(Root, ec);
@@ -44,6 +48,7 @@ protected:
 		platform::SetEnvironmentPath("FRT_ENGINE_DIR", SavedEngineDir);
 		std::error_code ec;
 		std::filesystem::remove_all(Root, ec);
+		std::filesystem::remove(Root.parent_path(), ec);   // once the last test's tree is gone
 	}
 
 	static void Write (const std::filesystem::path& File, FStringView Text)

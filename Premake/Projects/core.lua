@@ -38,6 +38,7 @@ project "Core"
 		rootpath("Tools/**.md"),
 		rootpath("Tools/**.txt"),
 		-- Not Tools/**.py: Tools/Analysis keeps a Python virtual environment (.venv) of its own.
+		rootpath("Tools/Lint/*.py"),
 		rootpath("Tools/Unicode/*.py"),
 	}
 

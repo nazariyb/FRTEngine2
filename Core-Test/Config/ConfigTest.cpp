@@ -10,6 +10,8 @@
 #include "Containers/String.h"
 #include "Platform/Platform.h"
 
+#include <Windows.h>
+
 using frt::FString;
 using frt::FStringView;
 using frt::config::CConfig;
@@ -35,9 +37,11 @@ FRT_DECLARE_ENUM_REFLECTION(
 
 namespace
 {
+// Of this process's own: test runs of several configurations may share the temp directory, and each
+// test removes the whole directory when it is done (PlatformTest.cpp).
 std::filesystem::path MakeTempPath (FStringView Name)
 {
-	return std::filesystem::temp_directory_path() / "FrtConfigTest" / Name.ToPath();
+	return std::filesystem::temp_directory_path() / FString::Format("FrtConfigTest {}", GetCurrentProcessId()).ToPath() / Name.ToPath();
 }
 
 

@@ -98,7 +98,7 @@ private:
 
 	// The Editor panel's name field edits a copy, so a selected entity's name is cut to the
 	// field's limit only when someone edits it. A member: reused from frame to frame. The limit is
-	// the old char[64] field's: CEntity::Name itself has none.
+	// the panel's (63 bytes, what its field shows): CEntity::Name itself has none.
 	static constexpr uint32 MaxEntityNameBytes = 63u;
 	FString EntityNameEdit;
 };

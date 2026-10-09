@@ -15,6 +15,21 @@ namespace frt::graphics::rhi
 {
 namespace
 {
+// A shader source or include file as a UTF-8 blob DXC owns (CreateBlob copies). Read like every other
+// text file the engine reads: a UTF-8 BOM is stripped and UTF-16 is transcoded, so a file an editor
+// saved "with signature" or as "Unicode" compiles. Not IDxcUtils::LoadFile: given a code page, DXC 1.9
+// drops a BOM by offsetting the blob's pointer and later frees the offset pointer (heap corruption),
+// and given none it leaves BOM-less text to the ANSI code page.
+HRESULT LoadSourceBlob (IDxcUtils* Utils, const std::filesystem::path& Path, IDxcBlobEncoding** OutBlob)
+{
+	const std::optional<FString> text = platform::ReadFileText(Path);
+	if (!text)
+	{
+		return HRESULT_FROM_WIN32(ERROR_OPEN_FAILED);
+	}
+	return Utils->CreateBlob(text->GetData(), text->Len(), DXC_CP_UTF8, OutBlob);
+}
+
 // Records every file the compiler opens. Resolution order: the path as DXC computed it (it
 // already joins the including file's directory), then the shader root.
 class CRecordingIncludeHandler final : public IDxcIncludeHandler
@@ -62,8 +77,7 @@ public:
 
 		resolved = std::filesystem::weakly_canonical(resolved, ec);
 		ComPtr<IDxcBlobEncoding> blob;
-		UINT32 codePage = DXC_CP_UTF8;
-		const HRESULT hr = Utils->LoadFile(resolved.c_str(), &codePage, &blob);
+		const HRESULT hr = LoadSourceBlob(Utils, resolved, &blob);
 		if (FAILED(hr))
 		{
 			return hr;
@@ -148,8 +162,7 @@ SShaderBinary CShaderCompiler::Compile (const SShaderCompileDesc& Desc)
 	const std::filesystem::path sourcePath = std::filesystem::weakly_canonical(Desc.SourcePath, ec);
 
 	ComPtr<IDxcBlobEncoding> source;
-	UINT32 codePage = DXC_CP_UTF8;
-	if (FAILED(Utils->LoadFile(sourcePath.c_str(), &codePage, &source)))
+	if (FAILED(LoadSourceBlob(Utils.Get(), sourcePath, &source)))
 	{
 		result.Log = "Cannot open shader source: " + FString::FromPath(sourcePath);
 		result.Dependencies.push_back(sourcePath);

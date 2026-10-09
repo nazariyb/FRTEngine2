@@ -5,8 +5,10 @@
 
 #include "TestCommon.h"
 
+#include "Config/Config.h"
 #include "Containers/String.h"
 #include "Graphics/Render/RenderCommonTypes.h"
+#include "User/UserSettings.h"
 
 using namespace frt;
 using namespace frt::graphics;
@@ -44,6 +46,45 @@ TEST(Resolution, ParseRejectsAnythingElseWhole)
 		EXPECT_EQ(resolution.GetHeight(), SResolution::InvalidHeight) << text.CStr();
 		EXPECT_TRUE(resolution.ToString().IsEmpty()) << text.CStr();
 	}
+}
+
+// The display settings read the config's text whole: a value longer than any the panel writes is still
+// that value, and a typo stays the typo (no monitor offers it, so the default mode is used), never cut
+// down to a prefix that happens to be another mode.
+TEST(DisplaySettings, LoadKeepsTheTextWhole)
+{
+	const auto load = [] (FStringView Resolution, FStringView RefreshRate)
+	{
+		config::CConfig config;
+		config.SetOverride(names::DisplaySection, "Resolution", Resolution);
+		config.SetOverride(names::DisplaySection, "RefreshRate", RefreshRate);
+		SDisplaySettings settings;
+		LoadDisplaySettings(config, settings);
+		return settings;
+	};
+	// What SDisplaySettings::GetResolution makes of the text (it is Core's own, not exported).
+	const auto parse = [] (FStringView Text)
+	{
+		SResolution resolution;
+		resolution.Parse(Text);
+		return resolution;
+	};
+
+	const SDisplaySettings wide = load("10240x4320", "143.856");
+	EXPECT_EQ(wide.ResolutionTxt, "10240x4320");
+	EXPECT_EQ(wide.RefreshRateTxt, "143.856");
+	EXPECT_EQ(parse(wide.ResolutionTxt), SResolution(10240, 4320));
+
+	// "1920x10800" is no monitor's mode; its first nine bytes would be one.
+	const SDisplaySettings typo = load("1920x10800", "60");
+	EXPECT_EQ(typo.ResolutionTxt, "1920x10800");
+	EXPECT_EQ(parse(typo.ResolutionTxt), SResolution(1920, 10800));
+	// And text after a resolution makes it no resolution at all, rather than being cut off.
+	EXPECT_FALSE(parse(load("1920x1080@60", "60").ResolutionTxt).IsValid());
+
+	const SDisplaySettings common = load("3840x2160", "60");
+	EXPECT_EQ(parse(common.ResolutionTxt), SResolution(3840, 2160));
+	EXPECT_EQ(common.RefreshRateTxt, "60");
 }
 
 // The rate overloads it ends in are still stubs answering DefaultIndex; the text overload's own job is

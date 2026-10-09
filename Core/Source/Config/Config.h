@@ -89,7 +89,7 @@ public:
 	bool Get (FStringView Section, FStringView Key, T Default) const
 	{
 		const FString* raw = FindValue(Section, Key);
-		return raw != nullptr ? raw->ToBool(Default) : Default;
+		return raw != nullptr ? raw->TryParseBool().value_or(Default) : Default;
 	}
 	int32 Get (FStringView Section, FStringView Key, int32 Default) const;
 	uint32 Get (FStringView Section, FStringView Key, uint32 Default) const;

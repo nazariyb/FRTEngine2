@@ -46,11 +46,9 @@ namespace frt::string_detail
 FRT_CORE_API void Free (void* Block) noexcept;                                      // null-safe
 [[noreturn]] FRT_CORE_API void FatalLengthError () noexcept;
 [[noreturn]] FRT_CORE_API void FatalAllocationError (size_t Bytes) noexcept;
-// Allocate/Reallocate calls made by the calling thread since it started. Tests use this one: other
-// threads (job workers, async texture decode) cannot disturb it.
+// Allocate/Reallocate calls made by the calling thread since it started, for tests: other threads
+// (job workers, async texture decode) cannot disturb it.
 [[nodiscard]] FRT_CORE_API uint64 GetThreadHeapAllocationCount () noexcept;
-// Process-wide total (diagnostics only).
-[[nodiscard]] FRT_CORE_API uint64 GetHeapAllocationCount () noexcept;
 
 inline constexpr uint64 MaxLength = 0x7FFFFFFFu;
 
@@ -108,9 +106,11 @@ namespace frt
  * inline with the length in the last byte, or a heap block pointer, length and capacity with bit 7 of
  * the last byte set. Lengths and positions are bytes; positions that split a code point assert.
  *
- * TArray vocabulary for capacity (Reserve is grow-only), UE names for substrings (Left, Mid, RightChop;
- * byte counts) with three forms each: X() const& copies, X() && reuses this buffer, XInline() mutates and
- * returns *this.
+ * Names: TArray's where TArray has the operation (Clear, Reset, Free, ShrinkToFit, GetCapacity, IsIndexValid,
+ * Get, RemoveAt), UE FString's otherwise (Reserve, which only grows; InsertAt(Index, Text), index first,
+ * unlike TArray::Insert; Left, Mid, RightChop), and Resize / ResizeUninitialized for std::string's resize.
+ * Counts and positions are bytes. Substrings, trims and case conversions have three forms each: X() const&
+ * copies, X() && reuses this buffer, XInline() mutates and returns *this.
  */
 class FString : public detail::TStringReadOps<FString>
 {
@@ -385,7 +385,7 @@ public:
 		return GetData()[Index];
 	}
 
-	// ---- Capacity (TArray vocabulary) ----
+	// ---- Capacity (Clear, Reset, Free, ShrinkToFit as in TArray; Reserve as in UE's FString) ----
 	// Grow-only, exactly RoundCapacity(MinCapacity); MinCapacity > MaxLength is fatal.
 	FRT_CORE_API void Reserve (uint32 MinCapacity) noexcept;
 	// Len() <= 22 moves the text inline and frees the block.
@@ -520,6 +520,9 @@ public:
 
 	FString& AppendBool (bool Value) noexcept { return Append(Value ? "true" : "false"); }
 
+	// Formats into a 256-byte stack buffer first (an argument may view this string), so output that fits
+	// allocates nothing beyond this string's own growth: Clear() + AppendFormat on a reserved string is
+	// allocation-free per frame. Appendf alike. Into a char buffer instead: FormatToBuffer.
 	template <typename... TArgs>
 	FString& AppendFormat (std::format_string<TArgs...> Fmt, TArgs&&... Args)
 	{
@@ -585,9 +588,19 @@ public:
 		return *this;
 	}
 
-	// Numbers and enums would insert one truncated byte, and so would a code point (unlike += and <<,
-	// which append it): InsertAt(0, "ї").
-	template <IndexStrategy::EType TIndex = IndexStrategy::IS_Default, typename T> requires concepts::NonTextScalar<T> || std::same_as<T, char32_t>
+	// A code point, as AppendCodePoint encodes it (non-scalar -> U+FFFD).
+	template <IndexStrategy::EType TIndex = IndexStrategy::IS_Default>
+	FString& InsertAt (int64 Index, char32_t CodePoint) noexcept
+	{
+		char buffer[4] = {};
+		const uint32 count = unicode::EncodeUtf8(CodePoint, buffer);
+		const uint32 index = ResolveInsertIndex<TIndex>(Index);
+		InsertBytes(index, buffer, count);
+		return *this;
+	}
+
+	// Numbers and enums would insert one truncated byte.
+	template <IndexStrategy::EType TIndex = IndexStrategy::IS_Default, typename T> requires concepts::NonTextScalar<T>
 	FString& InsertAt (int64 Index, T) = delete;
 
 	// Asserts a valid index; Count clamped to the end.
@@ -641,26 +654,41 @@ public:
 	}
 
 	// An ASCII character (asserted).
+	template <ESearchCase TCase = ESearchCase::CaseSensitive>
 	uint32 RemoveAll (char Ch) noexcept
 	{
 		frt_assert(ascii::IsAscii(Ch))
-		char* data = GetData();
-		const uint32 length = Len();
-		uint32 written = 0u;
-		for (uint32 read = 0u; read < length; ++read)
+		if constexpr (TCase != ESearchCase::CaseSensitive)
 		{
-			if (data[read] != Ch)
-			{
-				data[written++] = data[read];
-			}
+			// The one-unit view: under IgnoreCase 'k' also removes U+212A KELVIN SIGN, three bytes long.
+			return RemoveAllImpl(FStringView(&Ch, 1u), TCase);
 		}
-		SetLength(written);
-		return length - written;
+		else
+		{
+			char* data = GetData();
+			const uint32 length = Len();
+			uint32 written = 0u;
+			for (uint32 read = 0u; read < length; ++read)
+			{
+				if (data[read] != Ch)
+				{
+					data[written++] = data[read];
+				}
+			}
+			SetLength(written);
+			return length - written;
+		}
 	}
 
-	// A code point would arrive as its low byte: RemoveAll("ї").
-	template <ESearchCase TCase = ESearchCase::CaseSensitive, typename T> requires std::same_as<T, char32_t>
-	uint32 RemoveAll (T) = delete;
+	// A scalar value (asserted).
+	template <ESearchCase TCase = ESearchCase::CaseSensitive>
+	uint32 RemoveAll (char32_t CodePoint) noexcept
+	{
+		frt_assert(unicode::IsScalarValue(CodePoint))
+		char buffer[4] = {};
+		const uint32 count = unicode::EncodeUtf8(CodePoint, buffer);
+		return RemoveAllImpl(FStringView(buffer, count), TCase);
+	}
 
 	// ---- Replace (non-overlapping, left to right; From non-empty, asserted; alias-safe) ----
 	template <ESearchCase TCase = ESearchCase::CaseSensitive>
@@ -703,7 +731,7 @@ public:
 		return count;
 	}
 
-	// Code points: ReplaceInline("ї", "і").
+	// Byte for byte, so not for code points, whose replacement may be longer or shorter: ReplaceInline("ї", "і").
 	template <typename TFrom, typename TTo> requires std::same_as<TFrom, char32_t> || std::same_as<TTo, char32_t>
 	uint32 ReplaceCharInline (TFrom, TTo) = delete;
 
@@ -1122,8 +1150,9 @@ FString FString::Printf (_Printf_format_string_ const char* Fmt, TArgs... Args) 
 // const char* and FStringLiteral, so a plain `FString&&` parameter would also accept a temporary built
 // from a literal, and `"x" + Name` / `Name + "x"` would become ambiguous with the (FStringView,
 // FStringView) overload. Deduction never applies conversions, so `TString&&` with
-// `std::same_as<TString, FString>` matches only a real FString rvalue. Do not add other overloads.
-// (`"lit" + 'c'` stays built-in pointer arithmetic, as with std::string: never write it.)
+// `std::same_as<TString, FString>` matches only a real FString rvalue. Never add a plain FString&& or
+// const FString& overload.
+// (`"lit" + 'c'` and `"lit" + U'ї'` stay built-in pointer arithmetic, as with std::string: never write them.)
 
 [[nodiscard]] inline FString operator+ (FStringView A, FStringView B) noexcept
 {
@@ -1204,11 +1233,40 @@ template <typename TString> requires std::same_as<TString, FString>
 	return std::move(B);
 }
 
-// `Name + 5`, `Name + 1.5`, `Name + UnscopedEnum`, `Name + U'ї'` would otherwise append one (truncated) byte.
-template <typename T> requires concepts::NonTextScalar<T> || std::same_as<T, char32_t>
+// B: a code point, as AppendCodePoint encodes it (non-scalar -> U+FFFD).
+[[nodiscard]] inline FString operator+ (FStringView A, char32_t B) noexcept
+{
+	char buffer[4] = {};
+	const uint32 count = unicode::EncodeUtf8(B, buffer);
+	return A + FStringView(buffer, count);
+}
+
+[[nodiscard]] inline FString operator+ (char32_t A, FStringView B) noexcept
+{
+	char buffer[4] = {};
+	const uint32 count = unicode::EncodeUtf8(A, buffer);
+	return FStringView(buffer, count) + B;
+}
+
+template <typename TString> requires std::same_as<TString, FString>
+[[nodiscard]] FString operator+ (TString&& A, char32_t B) noexcept
+{
+	A.AppendCodePoint(B);
+	return std::move(A);
+}
+
+template <typename TString> requires std::same_as<TString, FString>
+[[nodiscard]] FString operator+ (char32_t A, TString&& B) noexcept
+{
+	B.InsertAt(0, A);
+	return std::move(B);
+}
+
+// `Name + 5`, `Name + 1.5`, `Name + UnscopedEnum` would otherwise append one (truncated) byte.
+template <typename T> requires concepts::NonTextScalar<T>
 FString operator+ (FStringView A, T B) = delete;
 
-template <typename T> requires concepts::NonTextScalar<T> || std::same_as<T, char32_t>
+template <typename T> requires concepts::NonTextScalar<T>
 FString operator+ (T A, FStringView B) = delete;
 
 

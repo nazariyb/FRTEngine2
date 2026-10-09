@@ -22,19 +22,10 @@ class CConfig;
 
 // The contract between the hosts and a game module: GameInstance's interface and the types it
 // passes, including those whose inline code the module compiles itself - the string types
-// (Containers/String.h) and ImGui's, as UI/ImGuiConfig.h configures them. Bump on any change to them.
-// 2: ImWchar became 32 bits (IMGUI_USE_WCHAR32), which moves members of ImFontConfig, ImFont and
-// ImGuiInputTextCallbackData and renames every ImGui export taking an ImWchar.
-// 3: the config the game reads (CConfig, CIniFile) and the project and host types take and hold
-// FString, and reflected enum names are FStringLiteral (FRT_DECLARE_ENUM_REFLECTION).
-// 4: entity, component and input-action names, render view and GPU scope names and asset archive
-// keys are FString / FStringView / FStringLiteral (CEntity::Name, SpawnEntity, Comp_Name,
-// FRT_DECLARE_COMPONENT, SRenderViewDesc, CGpuScope, IReadArchive / IWriteArchive).
-// 5: GPU resource debug names, shader descriptions and pipeline names are FStringView / FString
-// (STextureDesc, SBufferDesc, SShaderCompileDesc, CPipelineLibrary), upscaler names FStringLiteral;
-// material text, monitor names and color and resolution text are FString / FStringView (SMaterial,
-// CMaterialLibrary, SDisplayOptions, SColor, SResolution); models load from and keep paths, and
-// texture lookups are path maps (SRenderModel, CTextureManager).
+// (Containers/String.h) and ImGui's, as UI/ImGuiConfig.h configures them (32-bit ImWchar,
+// IMGUI_USE_WCHAR32). Every name, text and path the game-facing types take or hold is an engine
+// string type (FString / FStringView / FStringLiteral) or a std::filesystem::path. Bump on any
+// change to them.
 #define FRT_GAME_API_VERSION 5u
 
 #if defined(FRT_HEADLESS)

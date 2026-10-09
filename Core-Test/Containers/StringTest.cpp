@@ -21,6 +21,8 @@
 #include "Containers/StringMap.h"
 #include "Platform/Platform.h"
 
+#include <Windows.h>
+
 using namespace frt;
 
 
@@ -43,7 +45,8 @@ uint64 GetAllocations ()
 	return string_detail::GetThreadHeapAllocationCount();
 }
 
-// 5.2: blocks are multiples of 16 bytes, one of which holds the terminator.
+// FString's growth policy (string_detail::RoundCapacity): blocks are multiples of 16 bytes, one of which
+// holds the terminator.
 uint32 RoundCapacity (uint32 Len)
 {
 	return (Len + 1u + 15u) / 16u * 16u - 1u;
@@ -196,7 +199,8 @@ static_assert(std::is_assignable_v<FString&, FStringLiteral>);
 static_assert(std::is_assignable_v<FString&, FStringView>);
 static_assert(!std::is_assignable_v<FString&, std::nullptr_t>);
 
-// The 6.8 resolution table: every row compiles and yields an FString (buffer reuse is checked at runtime).
+// Every combination of operands that concatenates (the overloads after FString in String.h) compiles and
+// yields an FString (buffer reuse is checked at runtime).
 static_assert(CanConcatenate<FString&, FString&>);
 static_assert(CanConcatenate<const FString&, const FString&>);
 static_assert(CanConcatenate<FString&, LiteralRef>);
@@ -218,18 +222,23 @@ static_assert(CanConcatenate<FString&, char>);
 static_assert(CanConcatenate<FString, char>);
 static_assert(CanConcatenate<char, FString&>);
 static_assert(CanConcatenate<char, FString>);
+static_assert(CanConcatenate<FString&, char32_t>);
+static_assert(CanConcatenate<FString, char32_t>);
+static_assert(CanConcatenate<char32_t, FString&>);
+static_assert(CanConcatenate<char32_t, FString>);
+static_assert(CanConcatenate<FStringView, char32_t>);
 static_assert(CanConcatenate<FStringView, FStringView>);
 static_assert(CanConcatenate<FString&, const char*&>);
 static_assert(CanConcatenate<const char*&, FString&>);
 static_assert(CanConcatenate<FString&, std::string&>);
 static_assert(CanConcatenate<std::string&, FString&>);
 static_assert(CanConcatenate<FString, std::string&>);
-// Numbers, enums and code points would otherwise append one truncated byte.
+// Numbers and enums would otherwise append one truncated byte.
 static_assert(!CanConcatenate<FString&, int>);
 static_assert(!CanConcatenate<FString&, double>);
 static_assert(!CanConcatenate<FString&, bool>);
 static_assert(!CanConcatenate<FString&, EUnscopedTestEnum>);
-static_assert(!CanConcatenate<FString&, char32_t>);
+static_assert(!CanConcatenate<FString&, wchar_t>);
 static_assert(!CanConcatenate<int, FString&>);
 static_assert(!CanConcatenate<FString, int>);
 static_assert(!CanConcatenate<FStringView, int>);
@@ -271,12 +280,14 @@ static_assert(CanInsertAt<FString, const char*>);
 static_assert(CanInsertAt<FString, FStringView>);
 static_assert(!CanInsertAt<FString, int>);
 static_assert(!CanInsertAt<FString, double>);
-// A code point would insert its low byte ('W' for U'ї'), although += and << append it whole.
-static_assert(!CanInsertAt<FString, char32_t>);
+// A code point is inserted whole, as += and << append it, never as its low byte ('W' for U'ї').
+static_assert(CanInsertAt<FString, char32_t>);
 
 static_assert(CanRemoveAll<FString, char>);
 static_assert(CanRemoveAll<FString, const char*>);
-static_assert(!CanRemoveAll<FString, char32_t>);
+static_assert(CanRemoveAll<FString, char32_t>);
+static_assert(!CanRemoveAll<FString, int>);
+// Byte for byte: a code point's replacement may be longer or shorter (ReplaceInline).
 static_assert(CanReplaceChar<FString, char, char>);
 static_assert(!CanReplaceChar<FString, char32_t, char>);
 static_assert(!CanReplaceChar<FString, char, char32_t>);
@@ -404,7 +415,6 @@ TEST(String, AllocatorCountsThisThreadOnly)
 	string_detail::Free(block);
 	string_detail::Free(nullptr);
 	EXPECT_EQ(GetAllocations(), before + 2u);
-	EXPECT_GE(string_detail::GetHeapAllocationCount(), GetAllocations());
 
 	// Strings built on another thread (job workers, async texture decode) do not disturb this thread's count.
 	const uint64 beforeThread = GetAllocations();
@@ -906,6 +916,14 @@ TEST(String, InsertAtWithIndexStrategies)
 	EXPECT_EQ(cyrillic, "їXж");
 	cyrillic.InsertAt<IndexStrategy::IS_Circular>(-2, "Ґ");
 	EXPECT_EQ(cyrillic, "їXҐж");
+
+	// A code point goes in whole (U'ї' is 0x457, whose low byte is 'W'); a non-scalar value as U+FFFD.
+	FString points = "ab";
+	points.InsertAt(1, U'ї');
+	points.InsertAt(points.Len(), U'😀');
+	EXPECT_EQ(points, "aїb😀");
+	points.InsertAt(0, static_cast<char32_t>(0xD800u));
+	EXPECT_EQ(points, "\uFFFDaїb😀");
 }
 
 TEST(String, RemoveAtWithIndexStrategies)
@@ -956,6 +974,22 @@ TEST(String, RemoveFromStartEndAndAll)
 	FString kelvins = "a\u212AbK";
 	EXPECT_EQ(kelvins.RemoveAll<ESearchCase::IgnoreCase>("k"), 2u);
 	EXPECT_EQ(kelvins, "ab");
+
+	// Characters and code points take a case too; IgnoreCase removes the whole KELVIN SIGN for 'k'.
+	FString letters = "xXax";
+	EXPECT_EQ(letters.RemoveAll<ESearchCase::IgnoreCaseAscii>('x'), 3u);
+	EXPECT_EQ(letters, "a");
+	FString units = "1k2\u212A3K";
+	EXPECT_EQ(units.RemoveAll<ESearchCase::IgnoreCase>('k'), 3u);
+	EXPECT_EQ(units, "123");
+	FString accents = "їЇxї";
+	EXPECT_EQ(accents.RemoveAll(U'ї'), 2u);
+	EXPECT_EQ(accents, "Їx");
+	EXPECT_EQ(accents.RemoveAll<ESearchCase::IgnoreCase>(U'ї'), 1u);
+	EXPECT_EQ(accents, "x");
+	FString notW = "Wї";
+	EXPECT_EQ(notW.RemoveAll(U'ї'), 1u);
+	EXPECT_EQ(notW, "W");
 }
 
 TEST(String, Replace)
@@ -1218,6 +1252,14 @@ TEST(StringConcatenation, Values)
 	EXPECT_EQ(FString("ґ") + "ї" + 'x' + FString("є"), "ґїxє");
 	EXPECT_EQ(a, "abc");
 	EXPECT_EQ(b, "def");
+
+	// A code point is appended or prepended whole, as by += and <<.
+	EXPECT_EQ(a + U'ї', "abcї");
+	EXPECT_EQ(U'ї' + a, "їabc");
+	EXPECT_EQ(FString("x") + U'😀', "x😀");
+	EXPECT_EQ(U'😀' + FString("x"), "😀x");
+	EXPECT_EQ(literal + U'є', "litє");
+	EXPECT_EQ(FStringView("v") + U'W', "vW");
 }
 
 TEST(StringConcatenation, RvaluesKeepTheirBuffer)
@@ -1429,6 +1471,75 @@ TEST(StringMap, PathMapComparesTheNtfsWay)
 	EXPECT_TRUE(SPathEqual{}("C:/Dir/A.png", "c:/dir/a.PNG"));
 	EXPECT_FALSE(SPathEqual{}("\u212A", "k"));
 	EXPECT_FALSE(SPathEqual{}("\U00010400", "\U00010428"));
+
+	// Letters Unicode upper-cases and NTFS does not: two files can have these names side by side, so they
+	// are two keys. Final sigma against capital sigma (the medial one matches), dotless i, long s, micro.
+	EXPECT_FALSE(SPathEqual{}("λογος.png", "ΛΟΓΟΣ.png"));
+	EXPECT_TRUE(SPathEqual{}("λογοσ.png", "ΛΟΓΟΣ.png"));
+	EXPECT_FALSE(SPathEqual{}("kapı.png", "KAPI.png"));
+	EXPECT_TRUE(SPathEqual{}("kapi.png", "KAPI.png"));
+	EXPECT_FALSE(SPathEqual{}("\u017F", "S"));
+	EXPECT_FALSE(SPathEqual{}("\u00B5", "\u039C"));
+	TPathMap<int32> greek;
+	EXPECT_TRUE(greek.try_emplace("λογος.png", 1).second);
+	EXPECT_TRUE(greek.try_emplace("ΛΟΓΟΣ.png", 2).second);
+	EXPECT_EQ(greek.find("λογος.png")->second, 1);
+}
+
+// Path keys against the OS itself, for every BMP unit and every case partner either side knows (Unicode's
+// upper, lower and folded forms, the OS's upper case): one key exactly when CompareStringOrdinal(..., TRUE),
+// the comparison NTFS makes, calls the two one-unit names equal. Unicode's simple uppercase alone would
+// merge 225 units that NTFS keeps apart.
+TEST(StringMap, PathKeysAgreeWithTheOsOnEveryBmpUnit)
+{
+	using RtlUpcaseFunction = WCHAR (NTAPI*) (WCHAR);
+	const auto rtlUpcase = reinterpret_cast<RtlUpcaseFunction>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlUpcaseUnicodeChar"));
+
+	const auto oneUnit = [] (char32_t Unit)
+	{
+		FString text;
+		text.AppendCodePoint(Unit);
+		return text;
+	};
+
+	uint32 compared = 0;
+	uint32 mismatches = 0;
+	for (char32_t unit = 1; unit <= 0xFFFF; ++unit)
+	{
+		if (unicode::IsSurrogate(unit))
+		{
+			continue;
+		}
+		const char32_t partners[] = { unicode::ToUpper(unit), unicode::ToLower(unit), unicode::FoldCase(unit),
+			rtlUpcase != nullptr ? static_cast<char32_t>(rtlUpcase(static_cast<WCHAR>(unit))) : unit };
+		for (const char32_t partner : partners)
+		{
+			if (partner == unit || partner > 0xFFFF || unicode::IsSurrogate(partner))
+			{
+				continue;
+			}
+			++compared;
+
+			const wchar_t a = static_cast<wchar_t>(unit);
+			const wchar_t b = static_cast<wchar_t>(partner);
+			const bool bOsEqual = CompareStringOrdinal(&a, 1, &b, 1, TRUE) == CSTR_EQUAL;
+			const FString textA = oneUnit(unit);
+			const FString textB = oneUnit(partner);
+			const bool bKeysEqual = SPathEqual{}(textA, textB);
+			if (bKeysEqual != bOsEqual && mismatches++ < 16u)
+			{
+				ADD_FAILURE() << std::hex << std::uppercase << "U+" << static_cast<uint32>(unit) << " and U+" << static_cast<uint32>(partner)
+					<< ": path keys " << (bKeysEqual ? "equal" : "differ") << ", the OS says " << (bOsEqual ? "equal" : "different");
+			}
+			if (bKeysEqual)
+			{
+				EXPECT_EQ(SPathHash{}(textA), SPathHash{}(textB));
+			}
+		}
+	}
+	EXPECT_EQ(mismatches, 0u);
+	// About 2800 cased BMP letters have a partner; far fewer means the loop skipped them.
+	EXPECT_GT(compared, 2500u);
 }
 
 TEST(StringMap, StringsInTArray)
@@ -1497,6 +1608,14 @@ TEST(StringFormatToBuffer, TruncatesLabelSafely)
 	const FStringView nothing = FormatToBuffer(one, "{}", "abc");
 	EXPECT_TRUE(nothing.IsEmpty());
 	EXPECT_EQ(one[0], '\0');
+
+	// A lone regional indicator before the cut is kept: only the text after it decides, and that is no
+	// second indicator.
+	char seven[7];
+	const FStringView loneIndicator = FormatToBuffer(seven, "Ab{}c", "\U0001F1FA");
+	EXPECT_EQ(loneIndicator, "Ab\U0001F1FA");
+	char nine[9];
+	EXPECT_EQ(FormatToBuffer(nine, "Ab{}", "\U0001F1FA\U0001F1E6"), "Ab");   // a flag, cut inside its second half
 
 	EXPECT_EQ(GetAllocations(), before);
 

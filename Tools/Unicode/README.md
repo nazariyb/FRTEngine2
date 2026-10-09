@@ -84,11 +84,15 @@ The lookup is O(1): three dependent loads. Core's own per-code-point loops inclu
 4. Build and run Core-Test (`--gtest_filter=Unicode*:Ascii*`), in particular:
    - `UnicodeTablesTest.PublicApiReproducesGeneratedChecksum`: the C++ lookup reproduces the data;
    - `UnicodeOracleTest`: the parsing agrees with Windows' own ICU (`icu.dll`) on every code point both
-     have assigned. Case pairs and case folding are stable across versions, so a failure there is a
-     parsing bug, not a version difference. (It skips where `icu.dll` is missing.)
+     have assigned: case mappings and folding, White_Space, the general category and the Alphabetic,
+     Uppercase and Lowercase flags. Case pairs and case folding are stable across versions, so a
+     failure there is a parsing bug, not a version difference. The other properties may change on
+     purpose: the test lists the few code points Unicode changed since `icu.dll`'s version
+     (`KnownChanges`), and a new version that changes more gets them added there, each checked against
+     UAX #44's change history first. (It skips where `icu.dll` is missing.)
 5. Nothing in the tests hard-codes the version (it comes from the generated files); adjust only a spot
    check in `UnicodeTest.cpp` that the new version deliberately changes (general categories do move
-   occasionally, e.g. U+0295 went from Ll to Lo in Unicode 17).
+   occasionally, e.g. U+0295 went from Ll to Lo in Unicode 17), and `KnownChanges` as above.
 
 ## License
 

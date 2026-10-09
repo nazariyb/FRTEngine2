@@ -13,6 +13,8 @@
 #include "Containers/String.h"
 #include "Unicode/UnicodeTablesInternal.h"
 
+#include <Windows.h>
+
 
 namespace
 {
@@ -113,8 +115,58 @@ uint32 NextFoldedKey (FStringView Text, uint32& Position) noexcept
 	return unicode::tables::LookupFoldCase(unit.CodePoint);
 }
 
-// The key of a path unit (SPathHash): NTFS upper-cases each UTF-16 unit with its $UpCase table, BMP only,
-// so supplementary code points stay as they are. Ill-formed bytes (WTF-8 surrogates included) as is.
+// NTFS compares names by upper-casing each UTF-16 unit with the volume's $UpCase table, which Windows
+// fills from its own casing table when it formats the volume: the table of RtlUpcaseUnicodeChar and
+// CompareStringOrdinal(..., TRUE). It is not Unicode's simple uppercase mapping, which also merges
+// letters NTFS keeps apart - U+00B5, U+0131, U+017F, U+03C2, the Greek symbol variants, the titlecase
+// digraphs, Georgian Mkhedruli and Mtavruli (225 BMP code points in all) - so path keys read the OS
+// table instead: LCMapStringEx with file-system casing (LCMAP_UPPERCASE without LCMAP_LINGUISTIC_CASING),
+// once, for every BMP unit (well under a millisecond).
+struct SPathUpcaseTable
+{
+	SPathUpcaseTable () noexcept
+	{
+		constexpr uint32 ChunkUnits = 4096u;
+		wchar_t chunk[ChunkUnits];
+		for (uint32 first = 0u; first <= 0xFFFFu; first += ChunkUnits)
+		{
+			// Surrogate units are no characters (the decoder never yields one): a space stands in, and they
+			// keep their own value below.
+			for (uint32 i = 0u; i < ChunkUnits; ++i)
+			{
+				const char32_t unit = static_cast<char32_t>(first + i);
+				chunk[i] = static_cast<wchar_t>(unicode::IsSurrogate(unit) ? U' ' : unit);
+			}
+			const int written = LCMapStringEx(LOCALE_NAME_INVARIANT, LCMAP_UPPERCASE, chunk, static_cast<int>(ChunkUnits),
+				Upper + first, static_cast<int>(ChunkUnits), nullptr, nullptr, 0);
+			for (uint32 i = 0u; i < ChunkUnits; ++i)
+			{
+				const char32_t unit = static_cast<char32_t>(first + i);
+				if (unicode::IsSurrogate(unit))
+				{
+					Upper[first + i] = static_cast<wchar_t>(unit);
+				}
+				else if (written != static_cast<int>(ChunkUnits))
+				{
+					// Never seen: the OS refused the call. Unicode's mapping is the nearest there is.
+					Upper[first + i] = static_cast<wchar_t>(unicode::tables::LookupMapCase(unit, unicode::ECaseMapping::Upper));
+				}
+			}
+		}
+	}
+
+	wchar_t Upper[0x10000];   // UTF-16 unit -> its upper case
+};
+
+const SPathUpcaseTable& GetPathUpcaseTable () noexcept
+{
+	static const SPathUpcaseTable table;
+	return table;
+}
+
+// The key of a path unit (SPathHash): the OS table's upper case of each BMP unit (SPathUpcaseTable);
+// supplementary code points stay as they are, as NTFS leaves their surrogate units. Ill-formed bytes
+// (WTF-8 surrogates included) as is.
 uint32 NextPathKey (FStringView Text, uint32& Position) noexcept
 {
 	const char byte = Text.GetData()[Position];
@@ -131,7 +183,7 @@ uint32 NextPathKey (FStringView Text, uint32& Position) noexcept
 		return IllFormedKeyBase + static_cast<unsigned char>(byte);
 	}
 	Position += unit.Length;
-	return unit.CodePoint <= 0xFFFFu ? unicode::tables::LookupMapCase(unit.CodePoint, unicode::ECaseMapping::Upper) : unit.CodePoint;
+	return unit.CodePoint <= 0xFFFFu ? GetPathUpcaseTable().Upper[unit.CodePoint] : unit.CodePoint;
 }
 
 // Hashes a byte stream produced piece by piece, without allocating: 256-byte chunks, each hashed with the
@@ -194,7 +246,7 @@ bool CanFoldAsBytes (FStringView Needle, ESearchCase Case) noexcept
 	return true;
 }
 
-// Whether the unit at Unit (decoded as Decoded) is one of Set's units (6.4 set rules).
+// Whether the unit at Unit (decoded as Decoded) is one of Set's units (the set rules of FindFirstOf).
 bool SetContainsUnit (FStringView Set, const char* Unit, const unicode::SDecodedCodePoint& Decoded) noexcept
 {
 	if (Decoded.bWellFormed && Decoded.CodePoint < 0x80u)
@@ -281,7 +333,8 @@ struct SSeamText
 	}
 };
 
-// 6.5: the longest prefix of at most MaxBytes that ends on a boundary and does not cut a visible sequence.
+// FStringView::Truncate's contract: the longest prefix of at most MaxBytes that ends on a boundary and does not
+// cut a visible sequence.
 uint32 TruncateSeamText (const SSeamText& Text, uint32 MaxBytes) noexcept
 {
 	if (MaxBytes >= Text.Len())
@@ -311,7 +364,17 @@ uint32 TruncateSeamText (const SSeamText& Text, uint32 MaxBytes) noexcept
 	}
 
 	// Regional indicators pair up into flags from the start of their run: an odd count before the cut
-	// means the cut halves a flag.
+	// halves a flag when another indicator follows it. A lone indicator at the end of its run is a unit of
+	// its own, and stays.
+	if (cut == 0u || cut >= Text.Len())
+	{
+		return cut;
+	}
+	const unicode::SDecodedCodePoint next = Text.DecodeAt(cut);
+	if (!next.bWellFormed || !unicode::IsRegionalIndicator(next.CodePoint))
+	{
+		return cut;
+	}
 	uint32 indicators = 0u;
 	for (uint32 end = cut; end > 0u;)
 	{

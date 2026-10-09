@@ -29,7 +29,8 @@ namespace frt::platform
 // SetConsoleOutputCP/SetConsoleCP(CP_UTF8), so UTF-8 printed with printf/fputs shows as such. The
 // console may be the parent cmd.exe or FRT.bat window, which outlives this process: the first call
 // saves the code pages it found and registers an std::atexit handler restoring them. Idempotent;
-// a no-op without a console. Hosts (Engine/HostEntry.h) and Core-Test's main call it.
+// a no-op without a console. Every host's main calls it first thing (Launcher.cpp, EditorMain.cpp,
+// Core-Test's TestMain.cpp); a new host must too.
 FRT_CORE_API void InitConsoleUtf8 () noexcept;
 // What the atexit handler calls; also for paths that end the process without running it. Puts back
 // the pages the first InitConsoleUtf8 saved (a later InitConsoleUtf8 saves them anew).
@@ -77,8 +78,8 @@ FRT_CORE_API void ShowErrorMessage (FStringView Title, FStringView Text) noexcep
 // that is valid UTF-8 is kept as is; any other line is decoded with the system's OEM code page,
 // which is what console tools write by default (GetLocaleInfoEx(LOCALE_NAME_SYSTEM_DEFAULT,
 // LOCALE_IDEFAULTCODEPAGE): GetOEMCP() may report the UTF-8 the process manifest asks for). Call it
-// on the whole accumulated output, never per ReadFile chunk: a sequence split across two reads
-// would become two U+FFFD.
+// on whole lines (each up to and including its '\n') or on the whole output, never per ReadFile
+// chunk: a sequence split across two reads would become two U+FFFD.
 [[nodiscard]] FRT_CORE_API FString DecodeToolOutput (FStringView Bytes);
 
 // A whole file as text. Detect: a UTF-8 BOM (EF BB BF) is stripped; FF FE / FE FF mark UTF-16LE /

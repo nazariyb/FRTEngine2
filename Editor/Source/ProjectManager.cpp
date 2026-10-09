@@ -532,13 +532,13 @@ void CProjectManager::DrawNewProject ()
 	ImGui::TextUnformatted("Name");
 	ImGui::SameLine(labelWidth);
 	ImGui::SetNextItemWidth(320.0f);
-	ui::InputTextWithHint("##name", "MyGame", Name, ImGuiInputTextFlags_CallbackCharFilter, FilterNameCharacter, nullptr, MaxNameBytes);
+	ui::InputTextWithHint("##name", "MyGame", Name, ui::SMaxBytes(MaxNameBytes), ImGuiInputTextFlags_CallbackCharFilter, FilterNameCharacter);
 
 	ImGui::AlignTextToFramePadding();
 	ImGui::TextUnformatted("Location");
 	ImGui::SameLine(labelWidth);
 	ImGui::SetNextItemWidth(-ImGui::CalcTextSize("Browse...").x - ImGui::GetStyle().FramePadding.x * 2.0f - ImGui::GetStyle().ItemSpacing.x);
-	ui::InputText("##location", Location, ImGuiInputTextFlags_None, nullptr, nullptr, MaxLocationBytes);
+	ui::InputText("##location", Location, ui::SMaxBytes(MaxLocationBytes));
 	ImGui::SameLine();
 	if (ImGui::Button("Browse..."))
 	{

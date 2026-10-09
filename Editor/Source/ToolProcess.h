@@ -32,7 +32,8 @@ public:
 	bool IsRunning () const;
 	// Once it has finished (and all its output is in).
 	std::optional<int> GetExitCode () const;
-	// Everything it printed so far, as UTF-8 whatever code page each tool wrote in.
+	// Everything it printed so far, as UTF-8 whatever code page each tool wrote in. A copy of what is
+	// already decoded: cheap enough to ask every frame.
 	FString GetOutput () const;
 
 private:
@@ -44,7 +45,8 @@ private:
 	void* OutputRead = nullptr;
 	std::thread Reader;
 	mutable std::mutex OutputMutex;
-	FString Output;                      // the bytes as read: decoded only by GetOutput
+	FString Output;                      // every complete line, decoded once as it arrived (UTF-8)
+	FString PendingLine;                 // the bytes after the last '\n', decoded once their line is complete
 	std::optional<int> ExitCode;
 };
 

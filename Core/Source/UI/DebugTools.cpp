@@ -158,7 +158,7 @@ void CDebugTools::DrawStatsPanel (const SContext& Context)
 	else
 	{
 		ImGui::SetNextItemWidth(160.0f);
-		ui::InputText("##sessionName", SessionName, 0, nullptr, nullptr, MaxSessionNameBytes);
+		ui::InputText("##sessionName", SessionName, ui::SMaxBytes(MaxSessionNameBytes));
 		ImGui::SameLine();
 		const bool bStart = ImGui::Button("Start profiling session");
 
@@ -399,7 +399,7 @@ void CDebugTools::DrawEditorPanel (const SContext& Context)
 		if (ent)
 		{
 			EntityNameEdit = ent->Name;
-			if (ui::InputText("Name", EntityNameEdit, 0, nullptr, nullptr, MaxEntityNameBytes))
+			if (ui::InputText("Name", EntityNameEdit, ui::SMaxBytes(MaxEntityNameBytes)))
 			{
 				ent->Name = EntityNameEdit;
 			}

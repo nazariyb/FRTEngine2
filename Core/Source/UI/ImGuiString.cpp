@@ -40,8 +40,8 @@ int ResizeCallback (ImGuiInputTextCallbackData* Data)
 	return resize.Callback(Data);
 }
 
-// One implementation for the three InputText variants. Input calls the ImGui function with
-// (buffer, buffer size, flags, callback, user data).
+// One implementation for the six InputText functions. Input calls the ImGui function with
+// (buffer, buffer size, flags, callback, user data). MaxBytes == 0: no limit, the string grows.
 template <typename TInput>
 bool EditString (FString& Value, ImGuiInputTextFlags Flags, ImGuiInputTextCallback Callback, void* UserData, uint32 MaxBytes,
 	TInput&& Input)
@@ -66,6 +66,32 @@ bool EditString (FString& Value, ImGuiInputTextFlags Flags, ImGuiInputTextCallba
 		&ResizeCallback, &resize);
 }
 
+// The ImGui calls behind EditString's Input, one per variant.
+auto MakeInputText (const char* Label)
+{
+	return [Label] (char* Buffer, size_t BufferSize, ImGuiInputTextFlags Flags, ImGuiInputTextCallback Callback, void* UserData)
+	{
+		return ImGui::InputText(Label, Buffer, BufferSize, Flags, Callback, UserData);
+	};
+}
+
+auto MakeInputTextWithHint (const char* Label, const char* Hint)
+{
+	return [Label, Hint] (char* Buffer, size_t BufferSize, ImGuiInputTextFlags Flags, ImGuiInputTextCallback Callback, void* UserData)
+	{
+		return ImGui::InputTextWithHint(Label, Hint, Buffer, BufferSize, Flags, Callback, UserData);
+	};
+}
+
+// Size by reference: EditString calls the lambda before the InputTextMultiline that made it returns.
+auto MakeInputTextMultiline (const char* Label, const ImVec2& Size)
+{
+	return [Label, &Size] (char* Buffer, size_t BufferSize, ImGuiInputTextFlags Flags, ImGuiInputTextCallback Callback, void* UserData)
+	{
+		return ImGui::InputTextMultiline(Label, Buffer, BufferSize, Size, Flags, Callback, UserData);
+	};
+}
+
 const char* GetStringItem (void* Items, int Index)
 {
 	return static_cast<const FString*>(Items)[Index].CStr();
@@ -84,33 +110,42 @@ int GetItemCount (size_t Count)
 }
 
 bool InputText (const char* Label, FString& Value, ImGuiInputTextFlags Flags, ImGuiInputTextCallback Callback,
-	void* UserData, uint32 MaxBytes)
+	void* UserData)
 {
-	return EditString(Value, Flags, Callback, UserData, MaxBytes,
-		[Label] (char* Buffer, size_t BufferSize, ImGuiInputTextFlags InFlags, ImGuiInputTextCallback InCallback, void* InUserData)
-		{
-			return ImGui::InputText(Label, Buffer, BufferSize, InFlags, InCallback, InUserData);
-		});
+	return EditString(Value, Flags, Callback, UserData, 0u, MakeInputText(Label));
 }
 
 bool InputTextWithHint (const char* Label, const char* Hint, FString& Value, ImGuiInputTextFlags Flags,
-	ImGuiInputTextCallback Callback, void* UserData, uint32 MaxBytes)
+	ImGuiInputTextCallback Callback, void* UserData)
 {
-	return EditString(Value, Flags, Callback, UserData, MaxBytes,
-		[Label, Hint] (char* Buffer, size_t BufferSize, ImGuiInputTextFlags InFlags, ImGuiInputTextCallback InCallback, void* InUserData)
-		{
-			return ImGui::InputTextWithHint(Label, Hint, Buffer, BufferSize, InFlags, InCallback, InUserData);
-		});
+	return EditString(Value, Flags, Callback, UserData, 0u, MakeInputTextWithHint(Label, Hint));
 }
 
 bool InputTextMultiline (const char* Label, FString& Value, const ImVec2& Size, ImGuiInputTextFlags Flags,
-	ImGuiInputTextCallback Callback, void* UserData, uint32 MaxBytes)
+	ImGuiInputTextCallback Callback, void* UserData)
 {
-	return EditString(Value, Flags, Callback, UserData, MaxBytes,
-		[Label, &Size] (char* Buffer, size_t BufferSize, ImGuiInputTextFlags InFlags, ImGuiInputTextCallback InCallback, void* InUserData)
-		{
-			return ImGui::InputTextMultiline(Label, Buffer, BufferSize, Size, InFlags, InCallback, InUserData);
-		});
+	return EditString(Value, Flags, Callback, UserData, 0u, MakeInputTextMultiline(Label, Size));
+}
+
+bool InputText (const char* Label, FString& Value, SMaxBytes MaxBytes, ImGuiInputTextFlags Flags,
+	ImGuiInputTextCallback Callback, void* UserData)
+{
+	frt_assert(MaxBytes.Value > 0u);
+	return EditString(Value, Flags, Callback, UserData, MaxBytes.Value, MakeInputText(Label));
+}
+
+bool InputTextWithHint (const char* Label, const char* Hint, FString& Value, SMaxBytes MaxBytes, ImGuiInputTextFlags Flags,
+	ImGuiInputTextCallback Callback, void* UserData)
+{
+	frt_assert(MaxBytes.Value > 0u);
+	return EditString(Value, Flags, Callback, UserData, MaxBytes.Value, MakeInputTextWithHint(Label, Hint));
+}
+
+bool InputTextMultiline (const char* Label, FString& Value, SMaxBytes MaxBytes, const ImVec2& Size, ImGuiInputTextFlags Flags,
+	ImGuiInputTextCallback Callback, void* UserData)
+{
+	frt_assert(MaxBytes.Value > 0u);
+	return EditString(Value, Flags, Callback, UserData, MaxBytes.Value, MakeInputTextMultiline(Label, Size));
 }
 
 // ImGui's getter overload takes the items as void*; the cast back lives here, typed, once.
