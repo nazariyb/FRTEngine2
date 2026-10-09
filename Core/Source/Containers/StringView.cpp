@@ -90,9 +90,10 @@ uint32 MatchUnitsFolded (FStringView Hay, uint32 Start, FStringView Needle) noex
 	return h - Start;
 }
 
-// The next key of the IgnoreCase key sequence (6.4): the folded code point of a well-formed unit, one
-// key per byte of an ill-formed one. The bytes after the first of an ill-formed unit are continuation
-// bytes, each a unit of its own: stepping one byte gives exactly one key per byte.
+// The next key of the IgnoreCase key sequence (units as TStringReadOps defines them): the folded code
+// point of a well-formed unit, one key per byte of an ill-formed one. The bytes after the first of an
+// ill-formed unit are continuation bytes, each a unit of its own: stepping one byte gives exactly one
+// key per byte.
 uint32 NextFoldedKey (FStringView Text, uint32& Position) noexcept
 {
 	const char byte = Text.GetData()[Position];

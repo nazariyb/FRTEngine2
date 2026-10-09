@@ -450,7 +450,7 @@ TEST(UnicodePropertiesTest, TableFreeAnswersAgreeWithTheCategories)
 
 TEST(UnicodePropertiesTest, ExactlyTwoNonAsciiCodePointsFoldToAscii)
 {
-	// What lets IgnoreCase take byte shortcuts when the ASCII operand has no s S k K (6.4).
+	// What lets IgnoreCase comparison and search take byte shortcuts when the ASCII operand has no s S k K.
 	std::vector<char32_t> foldsToAscii;
 	for (char32_t c = 0x80u; c <= unicode::MaxCodePoint; ++c)
 	{

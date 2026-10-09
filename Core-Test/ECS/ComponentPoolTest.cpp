@@ -3,7 +3,6 @@
 #include "TestCommon.h"
 
 #include <cstring>
-#include <string>
 #include <type_traits>
 
 #include "Containers/String.h"
@@ -28,7 +27,7 @@ EntityId E (uint32 InIndex, uint32 InGeneration = 0u)
  */
 struct SComp_TestString
 {
-	std::string Value;
+	FString Value;
 };
 }
 
@@ -397,14 +396,14 @@ TEST(ComponentPool, StoresNonTriviallyCopyableComponents)
 	// when the element type is non-trivial.
 	for (uint32 i = 0u; i < 300u; ++i)
 	{
-		pool.Add(E(i)).Value = "entity-" + std::to_string(i);
+		pool.Add(E(i)).Value = test::HeapText(i);
 	}
 
 	const TComponentPool<SComp_TestString>& constPool = pool;
 
 	ASSERT_EQ(pool.Count(), 300u);
-	EXPECT_EQ(constPool.Get(E(0)).Value, "entity-0");
-	EXPECT_EQ(constPool.Get(E(299)).Value, "entity-299") << "contents lost during pool growth";
+	EXPECT_EQ(constPool.Get(E(0)).Value, test::HeapText(0u));
+	EXPECT_EQ(constPool.Get(E(299)).Value, test::HeapText(299u)) << "contents lost during pool growth";
 }
 
 TEST(ComponentPool, SwapAndPopMovesNonTrivialComponents)
@@ -412,9 +411,9 @@ TEST(ComponentPool, SwapAndPopMovesNonTrivialComponents)
 	FRT_TEST_MEMORY_POOL();
 	TComponentPool<SComp_TestString> pool;
 
-	pool.Add(E(3)).Value = "first";
-	pool.Add(E(7)).Value = "second";
-	pool.Add(E(1)).Value = "third";
+	pool.Add(E(3)).Value = test::HeapText("first");
+	pool.Add(E(7)).Value = test::HeapText("second");
+	pool.Add(E(1)).Value = test::HeapText("third");
 
 	pool.Remove(E(3));
 
@@ -422,8 +421,8 @@ TEST(ComponentPool, SwapAndPopMovesNonTrivialComponents)
 
 	ASSERT_EQ(pool.Count(), 2u);
 	EXPECT_FALSE(pool.Contains(E(3)));
-	EXPECT_EQ(constPool.Get(E(7)).Value, "second");
-	EXPECT_EQ(constPool.Get(E(1)).Value, "third") << "swapped element's string was corrupted";
+	EXPECT_EQ(constPool.Get(E(7)).Value, test::HeapText("second"));
+	EXPECT_EQ(constPool.Get(E(1)).Value, test::HeapText("third")) << "swapped element's string was corrupted";
 }
 
 

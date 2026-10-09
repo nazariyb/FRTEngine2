@@ -88,8 +88,9 @@ uint32 LiteralLength (FStringLiteral Name)
 	return Name.Len();
 }
 
-// Negative compile checks go through concepts over a template parameter (section 9). A char32_t must never
-// reach an ASCII-character overload as its truncated low byte.
+// Negative compile checks go through concepts over a template parameter (outside a template an invalid
+// expression is an error, not false). A char32_t must never reach an ASCII-character overload as its
+// truncated low byte.
 template <typename TText, typename TValue>
 concept CanStartsWith = requires (const TText& Text, TValue Value) { Text.StartsWith(Value); };
 
@@ -120,7 +121,7 @@ concept CanConsumeToken = requires (FStringView& Cursor, TValue Value) { Cursor.
 
 
 // ---------------------------------------------------------------------------------
-// Compile-time contracts (6.5, 6.6, 6.9)
+// Compile-time contracts
 // ---------------------------------------------------------------------------------
 
 static_assert(sizeof(FStringView) == 16);
@@ -666,7 +667,7 @@ TEST(StringView, FindMatchReportsMatchedHaystackLength)
 
 
 // ---------------------------------------------------------------------------------
-// Case-insensitive comparison and search (6.4)
+// Case-insensitive comparison and search
 // ---------------------------------------------------------------------------------
 
 TEST(StringViewIgnoreCase, SimpleCaseFolding)
@@ -894,7 +895,7 @@ TEST(StringView, TrimQuotesRemovesOnePair)
 
 
 // ---------------------------------------------------------------------------------
-// Truncate / CopyTo (label-safe, 6.5)
+// Truncate / CopyTo (label-safe)
 // ---------------------------------------------------------------------------------
 
 TEST(StringView, CopyToCutsOnCodePoints)
@@ -957,7 +958,7 @@ TEST(StringView, TruncateBacksOffOverVisibleSequences)
 
 
 // ---------------------------------------------------------------------------------
-// Code points and boundaries (4.1)
+// Code points and boundaries
 // ---------------------------------------------------------------------------------
 
 TEST(StringViewCodePoints, BoundariesInsideMultiByteCharacters)
@@ -1063,6 +1064,35 @@ TEST(StringViewCodePoints, CountAndValidity)
 	EXPECT_FALSE(FStringView("\xC0\xAF").IsValidUtf8());
 	EXPECT_FALSE(FStringView("a\xED\xA0\x80").IsValidUtf8());
 	EXPECT_TRUE(FStringView("a\xED\xA0\x80").IsValidWtf8());
+}
+
+// Code points are not what a reader sees as characters: a letter with a combining mark, an emoji with a
+// skin tone and a flag are each several, and a position between them is a boundary, so Left() cuts there
+// without asserting. Truncate is the cut that keeps such a sequence whole.
+TEST(StringViewCodePoints, CountsCodePointsNotUserPerceivedCharacters)
+{
+	const FStringView decomposed = "и\u0306";   // й as и + COMBINING BREVE
+	EXPECT_EQ(decomposed.CountCodePoints(), 2u);
+	EXPECT_TRUE(decomposed.IsCodePointBoundary(2u));
+	EXPECT_EQ(decomposed.Left(2u), "и");
+	EXPECT_TRUE(decomposed.Truncate(2u).IsEmpty());
+
+	const FStringView thumbsUp = "\U0001F44D\U0001F3FD";   // + EMOJI MODIFIER FITZPATRICK TYPE-4
+	ASSERT_EQ(thumbsUp.Len(), 8u);
+	EXPECT_EQ(thumbsUp.CountCodePoints(), 2u);
+	EXPECT_EQ(thumbsUp.Left(4u), "\U0001F44D");
+	EXPECT_TRUE(thumbsUp.Truncate(4u).IsEmpty());
+
+	const FStringView flag = "\U0001F1FA\U0001F1E6";   // two regional indicators
+	EXPECT_EQ(flag.CountCodePoints(), 2u);
+	EXPECT_TRUE(flag.IsCodePointBoundary(4u));
+
+	std::vector<char32_t> codePoints;
+	for (const char32_t codePoint : decomposed.CodePoints())
+	{
+		codePoints.push_back(codePoint);
+	}
+	EXPECT_EQ(codePoints, (std::vector<char32_t>{ U'и', U'\u0306' }));
 }
 
 TEST(StringViewCodePoints, IteratorIndicesAreExactlyTheBoundaries)
@@ -1588,15 +1618,14 @@ TEST(StringView, EqualityAcrossOperandTypes)
 	EXPECT_TRUE((view <=> "abd") == std::strong_ordering::less);
 	EXPECT_TRUE((stdString <=> view) == std::strong_ordering::equal);
 
-#if FRT_STRING_STD_COMPAT
-	// While the views convert to std::string_view, this pair would be ambiguous without the exact-match templates.
+	// std's own string_view operators are no candidates (the views convert to std::string_view only
+	// explicitly), so both orders reach frt's byte-exact operators, unambiguously.
 	const std::string_view stdView = "abc";
 	EXPECT_TRUE(view == stdView);
 	EXPECT_TRUE(stdView == view);
 	EXPECT_FALSE(stdView != view);
 	EXPECT_TRUE((view <=> stdView) == std::strong_ordering::equal);
 	EXPECT_TRUE((stdView <=> FStringView("abd")) == std::strong_ordering::less);
-#endif
 }
 
 TEST(StringView, ByteOrderIsCodePointOrder)

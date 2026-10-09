@@ -74,7 +74,7 @@ std::string ReplaceAll (std::string Text, std::string_view From, std::string_vie
 	return Text;
 }
 
-// Escape's \xHH digits may be either case (the spec does not fix it): compare with them lowered.
+// Escape's \xHH digits may be either case (its contract does not say which): compare with them lowered.
 FString LowerHexEscapes (FStringView Escaped)
 {
 	FString result;
@@ -115,7 +115,7 @@ FString MakeAliasingText (uint32 Variant)
 }
 
 // Negative compile checks go through concepts over a template parameter: a requires-expression with an
-// invalid non-dependent expression outside a template is ill-formed, not false (section 9).
+// invalid non-dependent expression outside a template is ill-formed, not false.
 template <typename TLeft, typename TRight>
 concept CanConcatenate = requires (TLeft&& Left, TRight&& Right)
 {
@@ -154,7 +154,7 @@ using LiteralRef = const char (&)[2];
 
 
 // ---------------------------------------------------------------------------------
-// Compile-time contracts: layout, conversions, deleted overloads (5.1, 6.7, 6.8)
+// Compile-time contracts: layout, conversions, deleted overloads
 // ---------------------------------------------------------------------------------
 
 static_assert(sizeof(FString) == 24);
@@ -184,14 +184,11 @@ static_assert(!CanMakePathFromNarrowLiteral<FString>);
 static_assert(!CanMakePathFromStdString<FString>);
 static_assert(!CanAppendNarrowPath<FString>);
 static_assert(!CanReadNarrowPath<FString>);
-#if !FRT_STRING_STD_COMPAT
 static_assert(!std::is_convertible_v<FString, std::string>);
+static_assert(!std::is_convertible_v<FString, std::string_view>);
 static_assert(!std::is_convertible_v<FStringView, std::string_view>);
-#else
-// Migration bridge (10.1), removed in B6.
-static_assert(std::is_convertible_v<FString, std::string>);
-static_assert(std::is_convertible_v<FStringView, std::string_view>);
-#endif
+static_assert(!std::is_convertible_v<FStringLiteral, std::string_view>);
+static_assert(std::is_constructible_v<std::string_view, FStringView>);
 
 static_assert(std::is_assignable_v<FString&, const char*>);
 static_assert(std::is_assignable_v<FString&, const char8_t*>);
@@ -392,13 +389,8 @@ TEST(String, AccessAndStlSurface)
 		byte = byte == '!' ? '?' : byte;
 	}
 	EXPECT_EQ(text.ToStdString(), std::string("abc42?"));
+	EXPECT_EQ(static_cast<std::string_view>(text), std::string_view("abc42?"));
 	EXPECT_EQ(text.View(), "abc42?");
-
-#if FRT_STRING_STD_COMPAT
-	// Migration bridge for consumers not migrated yet (10.1); removed in B6.
-	const std::string converted = text;
-	EXPECT_EQ(converted, "abc42?");
-#endif
 }
 
 
@@ -427,7 +419,7 @@ TEST(String, AllocatorCountsThisThreadOnly)
 
 
 // ---------------------------------------------------------------------------------
-// Small-string optimization and growth (5.2)
+// Small-string optimization and growth
 // ---------------------------------------------------------------------------------
 
 TEST(String, ShortStringsStayInline)
@@ -510,7 +502,7 @@ TEST(String, AppendGrowsGeometricallyAndKeepsContent)
 	EXPECT_EQ(grown, reference);
 }
 
-// Growth near MaxLength (5.2) through the helper the growth path uses: reaching it by appending would
+// Growth near MaxLength through the helper the growth path uses: reaching it by appending would
 // take 2 GB. The 1.5 factor is computed in 64 bits and clamped to MaxLength, never past it.
 TEST(String, GrowthNearMaxLengthIsClamped)
 {
@@ -719,7 +711,7 @@ TEST(String, SwapInlineAndHeap)
 
 
 // ---------------------------------------------------------------------------------
-// Aliasing (5.4): every mutator behaves as if its arguments were copied first
+// Aliasing: every mutator behaves as if its arguments were copied first
 // ---------------------------------------------------------------------------------
 
 TEST(StringAliasing, ArgumentsViewingTheStringItself)
@@ -1117,7 +1109,7 @@ TEST(String, TrimFamily)
 
 
 // ---------------------------------------------------------------------------------
-// Case conversion (Unicode simple mappings, 6.7)
+// Case conversion (Unicode simple mappings)
 // ---------------------------------------------------------------------------------
 
 TEST(StringCase, UkrainianAndLatin)
@@ -1199,7 +1191,7 @@ TEST(StringCase, InlineAndRvalueForms)
 
 
 // ---------------------------------------------------------------------------------
-// Concatenation (6.8)
+// Concatenation (the free operator+)
 // ---------------------------------------------------------------------------------
 
 TEST(StringConcatenation, Values)
@@ -1358,7 +1350,7 @@ TEST(StringBuilders, EscapeControlsIllFormedAndInvisibleCharacters)
 
 
 // ---------------------------------------------------------------------------------
-// Maps and sets (6.11)
+// Maps and sets (Containers/StringMap.h)
 // ---------------------------------------------------------------------------------
 
 TEST(StringMap, HeterogeneousLookupDoesNotAllocate)
@@ -1469,7 +1461,7 @@ TEST(StringMap, StringsInTArray)
 
 
 // ---------------------------------------------------------------------------------
-// FormatToBuffer (6.7)
+// FormatToBuffer
 // ---------------------------------------------------------------------------------
 
 TEST(StringFormatToBuffer, FitsWithoutAllocating)

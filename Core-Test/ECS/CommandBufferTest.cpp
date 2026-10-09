@@ -1,9 +1,8 @@
 #include <gtest/gtest.h>
 
-#include <string>
-
 #include "TestCommon.h"
 
+#include "Containers/String.h"
 #include "ECS/CommandBuffer.h"
 #include "ECS/CoreComponents.h"
 #include "ECS/World.h"
@@ -15,7 +14,7 @@ namespace
 /** Non-trivial payload, so the buffer's construct/move/destroy path is exercised. */
 struct SComp_CommandPayload
 {
-	std::string Value;
+	FString Value;
 };
 }
 
@@ -221,7 +220,7 @@ TEST(CommandBuffer, HoldsNonTriviallyCopyablePayloads)
 
 	for (uint32 i = 0u; i < entities.Count(); ++i)
 	{
-		commands.Add<SComp_CommandPayload>(entities[i], std::string("payload-") + std::to_string(i));
+		commands.Add<SComp_CommandPayload>(entities[i], test::HeapText(i));
 	}
 
 	commands.Flush(world);
@@ -229,7 +228,7 @@ TEST(CommandBuffer, HoldsNonTriviallyCopyablePayloads)
 	for (uint32 i = 0u; i < entities.Count(); ++i)
 	{
 		ASSERT_TRUE(world.Has<SComp_CommandPayload>(entities[i]));
-		EXPECT_EQ(world.Get<SComp_CommandPayload>(entities[i]).Value, "payload-" + std::to_string(i));
+		EXPECT_EQ(world.Get<SComp_CommandPayload>(entities[i]).Value, test::HeapText(i));
 	}
 }
 
@@ -247,13 +246,13 @@ TEST(CommandBuffer, PayloadsSurviveManyCommandsAcrossChunks)
 	for (uint32 i = 0u; i < count; ++i)
 	{
 		entities.Add(world.Spawn());
-		commands.Add<SComp_CommandPayload>(entities.Last(), std::string("v") + std::to_string(i));
+		commands.Add<SComp_CommandPayload>(entities.Last(), test::HeapText(i));
 	}
 
 	commands.Flush(world);
 
-	EXPECT_EQ(world.Get<SComp_CommandPayload>(entities[0]).Value, "v0");
-	EXPECT_EQ(world.Get<SComp_CommandPayload>(entities[count - 1u]).Value, "v" + std::to_string(count - 1u));
+	EXPECT_EQ(world.Get<SComp_CommandPayload>(entities[0]).Value, test::HeapText(0u));
+	EXPECT_EQ(world.Get<SComp_CommandPayload>(entities[count - 1u]).Value, test::HeapText(count - 1u));
 }
 
 TEST(CommandBuffer, ClearDiscardsWithoutApplying)
@@ -263,7 +262,7 @@ TEST(CommandBuffer, ClearDiscardsWithoutApplying)
 	CCommandBuffer commands;
 
 	const EntityId e = world.Spawn();
-	commands.Add<SComp_CommandPayload>(e, std::string("discarded"));
+	commands.Add<SComp_CommandPayload>(e, test::HeapText("discarded"));
 
 	commands.Clear();
 
@@ -271,11 +270,11 @@ TEST(CommandBuffer, ClearDiscardsWithoutApplying)
 	EXPECT_FALSE(world.Has<SComp_CommandPayload>(e));
 
 	// Reusable afterwards, and the discarded payload must not have corrupted the arena.
-	commands.Add<SComp_CommandPayload>(e, std::string("kept"));
+	commands.Add<SComp_CommandPayload>(e, test::HeapText("kept"));
 	commands.Flush(world);
 
 	ASSERT_TRUE(world.Has<SComp_CommandPayload>(e));
-	EXPECT_EQ(world.Get<SComp_CommandPayload>(e).Value, "kept");
+	EXPECT_EQ(world.Get<SComp_CommandPayload>(e).Value, test::HeapText("kept"));
 }
 
 TEST(CommandBuffer, ReusableAcrossManyFlushes)
@@ -287,12 +286,12 @@ TEST(CommandBuffer, ReusableAcrossManyFlushes)
 	for (uint32 frame = 0u; frame < 50u; ++frame)
 	{
 		const EntityId e = world.Spawn();
-		commands.Add<SComp_CommandPayload>(e, std::string("frame-") + std::to_string(frame));
+		commands.Add<SComp_CommandPayload>(e, test::HeapText(frame));
 		commands.Add<Comp_LocalTransform>(e);
 		commands.Flush(world);
 
 		ASSERT_TRUE(world.Has<SComp_CommandPayload>(e));
-		EXPECT_EQ(world.Get<SComp_CommandPayload>(e).Value, "frame-" + std::to_string(frame));
+		EXPECT_EQ(world.Get<SComp_CommandPayload>(e).Value, test::HeapText(frame));
 
 		commands.Destroy(e);
 		commands.Flush(world);

@@ -98,10 +98,10 @@ constexpr FStringLiteral ChildArgumentName = "FRT-Test-Argument";
 constexpr FStringLiteral ChildReportName = "FRT-Test-Report";
 
 
-// Everything touching disk works in a directory with a non-ASCII name (section 9 of the string
-// design), under a parent of this process's own: test runs of several configurations may share the
-// temp directory, and a shared parent could be removed by one run between another's creating it and
-// its subdirectory.
+// Everything touching disk works in a directory with a non-ASCII name (every test exercises the path
+// conversions) under a parent of this process's own: test runs of several configurations may share
+// the temp directory, and a shared parent could be removed by one run between another's creating it
+// and its subdirectory.
 class PlatformFileTest : public ::testing::Test
 {
 protected:

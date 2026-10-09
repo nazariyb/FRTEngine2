@@ -60,7 +60,8 @@ bool PointsIntoItself (const FWideString& Text)
 }
 
 /**
- * A directory under the system temp directory whose name is not ASCII (section 9), removed afterwards.
+ * A directory under the system temp directory whose name is not ASCII (every test in it exercises the
+ * path conversions), removed afterwards.
  * Its parent is this process's own, like PlatformFileTest's: test runs of several configurations may
  * share the temp directory, and with a shared parent one run deleted - or removed the parent of -
  * what another had just created. The parent goes once it is empty.
@@ -69,7 +70,7 @@ class CScratchDirectory
 {
 public:
 	explicit CScratchDirectory (std::wstring_view Name)
-		: Root(std::filesystem::temp_directory_path() / std::filesystem::path(L"FRT String Тест 漢字 😀 " + std::to_wstring(GetCurrentProcessId())))
+		: Root(std::filesystem::temp_directory_path() / FString::Format("FRT String Тест 漢字 😀 {}", GetCurrentProcessId()).ToPath())
 		, Path(Root / std::filesystem::path(Name))
 	{
 		std::error_code error;
@@ -100,7 +101,7 @@ private:
 
 
 // ---------------------------------------------------------------------------------
-// UTF-16 <-> WTF-8 (4.2)
+// UTF-16 <-> WTF-8 (FromWide / ToWide)
 // ---------------------------------------------------------------------------------
 
 TEST(StringConversion, LoneSurrogatesRoundTripAsWtf8)
@@ -226,7 +227,7 @@ TEST(StringConversion, IllFormedSequencesGiveOneReplacementPerMaximalSubpart)
 
 
 // ---------------------------------------------------------------------------------
-// FWideString (6.13)
+// FWideString (Containers/WideString.h)
 // ---------------------------------------------------------------------------------
 
 TEST(WideString, EmptyIsAValidCString)
@@ -401,7 +402,7 @@ TEST(StringPath, LoneSurrogateFileNamesRoundTrip)
 
 TEST(StringPath, ProcessCodePageIsUtf8)
 {
-	// The UTF-8 manifest (2.3): narrow text reaching path(const char*) in third-party code decodes as UTF-8.
+	// The UTF-8 process code page: narrow text reaching path(const char*) in third-party code decodes as UTF-8.
 	EXPECT_EQ(std::filesystem::path(reinterpret_cast<const char*>(u8"Тест")), std::filesystem::path(L"Тест"))
 		<< "Is Core/Resources/Utf8CodePage.manifest embedded in Core-Test?";
 }

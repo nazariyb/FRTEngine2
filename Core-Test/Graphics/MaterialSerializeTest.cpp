@@ -60,7 +60,7 @@ protected:
 TEST_F(MaterialFileTest, YamlVersionWithATrailingCommentIsRead)
 {
 	FRT_TEST_MEMORY_POOL();
-	const std::filesystem::path path = Dir / "Цегла.frtmat.yml";
+	const std::filesystem::path path = Dir / FStringView("Цегла.frtmat.yml").ToPath();
 
 	SMaterial brick;
 	brick.Name = "Цегла";

@@ -6,12 +6,12 @@
 // is observable with trivially copyable elements, which is why it survived so long.
 #include <gtest/gtest.h>
 
-#include <string>
 #include <utility>
 
 #include "TestCommon.h"
 
 #include "Containers/Array.h"
+#include "Containers/String.h"
 
 using namespace frt;
 
@@ -31,10 +31,10 @@ struct STracked
 		CopyCount = 0;
 	}
 
-	std::string Value;
+	FString Value;
 
 	STracked () { ++LiveCount; }
-	explicit STracked (std::string InValue) : Value(std::move(InValue)) { ++LiveCount; }
+	explicit STracked (FString InValue) : Value(std::move(InValue)) { ++LiveCount; }
 
 	STracked (const STracked& Other) : Value(Other.Value) { ++LiveCount; ++CopyCount; }
 	STracked (STracked&& Other) noexcept : Value(std::move(Other.Value)) { ++LiveCount; ++MoveCount; }
@@ -72,14 +72,14 @@ TEST(TArrayNonTrivial, GrowthPreservesContents)
 		// Well past the initial capacity, so ReAlloc runs several times.
 		for (uint32 i = 0u; i < 200u; ++i)
 		{
-			arr.Add(STracked("value-" + std::to_string(i)));
+			arr.Add(STracked(test::HeapText(i)));
 		}
 
 		ASSERT_EQ(arr.Count(), 200u);
 
 		for (uint32 i = 0u; i < 200u; ++i)
 		{
-			EXPECT_EQ(arr[i].Value, "value-" + std::to_string(i))
+			EXPECT_EQ(arr[i].Value, test::HeapText(i))
 				<< "element " << i << " did not survive relocation";
 		}
 	}
@@ -110,8 +110,8 @@ TEST(TArrayNonTrivial, RemoveLastElement)
 
 	{
 		TArray<STracked> arr;
-		arr.Add(STracked("a"));
-		arr.Add(STracked("b"));
+		arr.Add(STracked(test::HeapText("a")));
+		arr.Add(STracked(test::HeapText("b")));
 
 		// The case that used to move out of an object it had just destroyed: with
 		// bKeepOrder=false and Index already the last, source and destination are the same
@@ -119,7 +119,7 @@ TEST(TArrayNonTrivial, RemoveLastElement)
 		arr.RemoveAt<false>(1);
 
 		ASSERT_EQ(arr.Count(), 1u);
-		EXPECT_EQ(arr[0].Value, "a");
+		EXPECT_EQ(arr[0].Value, test::HeapText("a"));
 	}
 
 	EXPECT_EQ(STracked::LiveCount, 0);
@@ -132,15 +132,15 @@ TEST(TArrayNonTrivial, SwapAndPopFromMiddle)
 
 	{
 		TArray<STracked> arr;
-		arr.Add(STracked("a"));
-		arr.Add(STracked("b"));
-		arr.Add(STracked("c"));
+		arr.Add(STracked(test::HeapText("a")));
+		arr.Add(STracked(test::HeapText("b")));
+		arr.Add(STracked(test::HeapText("c")));
 
 		arr.RemoveAt<false>(0);
 
 		ASSERT_EQ(arr.Count(), 2u);
-		EXPECT_EQ(arr[0].Value, "c") << "tail element should have been moved into the hole";
-		EXPECT_EQ(arr[1].Value, "b");
+		EXPECT_EQ(arr[0].Value, test::HeapText("c")) << "tail element should have been moved into the hole";
+		EXPECT_EQ(arr[1].Value, test::HeapText("b"));
 	}
 
 	EXPECT_EQ(STracked::LiveCount, 0);
@@ -155,16 +155,16 @@ TEST(TArrayNonTrivial, OrderedRemovalShiftsAndDestroysExactlyOnce)
 		TArray<STracked> arr;
 		for (uint32 i = 0u; i < 5u; ++i)
 		{
-			arr.Add(STracked(std::to_string(i)));
+			arr.Add(STracked(test::HeapText(i)));
 		}
 
 		arr.RemoveAt<true>(1);
 
 		ASSERT_EQ(arr.Count(), 4u);
-		EXPECT_EQ(arr[0].Value, "0");
-		EXPECT_EQ(arr[1].Value, "2");
-		EXPECT_EQ(arr[2].Value, "3");
-		EXPECT_EQ(arr[3].Value, "4");
+		EXPECT_EQ(arr[0].Value, test::HeapText(0));
+		EXPECT_EQ(arr[1].Value, test::HeapText(2));
+		EXPECT_EQ(arr[2].Value, test::HeapText(3));
+		EXPECT_EQ(arr[3].Value, test::HeapText(4));
 		EXPECT_EQ(STracked::LiveCount, 4) << "the vacated tail slot was not destroyed";
 	}
 
@@ -180,7 +180,7 @@ TEST(TArrayNonTrivial, RemoveEveryElement)
 		TArray<STracked> arr;
 		for (uint32 i = 0u; i < 50u; ++i)
 		{
-			arr.Add(STracked(std::to_string(i)));
+			arr.Add(STracked(test::HeapText(i)));
 		}
 
 		while (!arr.IsEmpty())
@@ -202,21 +202,21 @@ TEST(TArrayNonTrivial, CopyAssignment)
 
 	{
 		TArray<STracked> source;
-		source.Add(STracked("one"));
-		source.Add(STracked("two"));
+		source.Add(STracked(test::HeapText("one")));
+		source.Add(STracked(test::HeapText("two")));
 
 		TArray<STracked> destination;
-		destination.Add(STracked("discarded"));
+		destination.Add(STracked(test::HeapText("discarded")));
 
 		// Used to hand ReAlloc the source's element count while the destination's storage
 		// had already been cleared, relocating out of destroyed objects.
 		destination = source;
 
 		ASSERT_EQ(destination.Count(), 2u);
-		EXPECT_EQ(destination[0].Value, "one");
-		EXPECT_EQ(destination[1].Value, "two");
+		EXPECT_EQ(destination[0].Value, test::HeapText("one"));
+		EXPECT_EQ(destination[1].Value, test::HeapText("two"));
 		EXPECT_EQ(source.Count(), 2u) << "source must be untouched";
-		EXPECT_EQ(source[0].Value, "one");
+		EXPECT_EQ(source[0].Value, test::HeapText("one"));
 	}
 
 	EXPECT_EQ(STracked::LiveCount, 0);
@@ -229,18 +229,18 @@ TEST(TArrayNonTrivial, MoveAssignmentDoesNotLeakDestination)
 
 	{
 		TArray<STracked> source;
-		source.Add(STracked("kept"));
+		source.Add(STracked(test::HeapText("kept")));
 
 		TArray<STracked> destination;
 		for (uint32 i = 0u; i < 20u; ++i)
 		{
-			destination.Add(STracked("dropped"));
+			destination.Add(STracked(test::HeapText("dropped")));
 		}
 
 		destination = std::move(source);
 
 		ASSERT_EQ(destination.Count(), 1u);
-		EXPECT_EQ(destination[0].Value, "kept");
+		EXPECT_EQ(destination[0].Value, test::HeapText("kept"));
 		EXPECT_EQ(STracked::LiveCount, 1) << "the destination's old elements were not destroyed";
 	}
 
@@ -254,21 +254,21 @@ TEST(TArrayNonTrivial, AppendMovedArrayDestroysTheMovedFromElements)
 
 	{
 		TArray<STracked> destination;
-		destination.Add(STracked("a"));
-		destination.Add(STracked("b"));
+		destination.Add(STracked(test::HeapText("a")));
+		destination.Add(STracked(test::HeapText("b")));
 
 		TArray<STracked> source;
-		source.Add(STracked("c"));
-		source.Add(STracked("d"));
+		source.Add(STracked(test::HeapText("c")));
+		source.Add(STracked(test::HeapText("d")));
 
 		STracked::CopyCount = 0;
 		destination.Append(std::move(source));
 
 		ASSERT_EQ(destination.Count(), 4u);
-		EXPECT_EQ(destination[0].Value, "a");
-		EXPECT_EQ(destination[1].Value, "b");
-		EXPECT_EQ(destination[2].Value, "c");
-		EXPECT_EQ(destination[3].Value, "d");
+		EXPECT_EQ(destination[0].Value, test::HeapText("a"));
+		EXPECT_EQ(destination[1].Value, test::HeapText("b"));
+		EXPECT_EQ(destination[2].Value, test::HeapText("c"));
+		EXPECT_EQ(destination[3].Value, test::HeapText("d"));
 		EXPECT_EQ(STracked::CopyCount, 0);
 		EXPECT_EQ(source.Count(), 0u);
 		EXPECT_EQ(STracked::LiveCount, 4) << "the moved-from source elements were not destroyed";
@@ -284,12 +284,12 @@ TEST(TArrayNonTrivial, SelfMoveAssignmentIsSafe)
 
 	{
 		TArray<STracked> arr;
-		arr.Add(STracked("value"));
+		arr.Add(STracked(test::HeapText("value")));
 
 		arr = std::move(arr);
 
 		ASSERT_EQ(arr.Count(), 1u);
-		EXPECT_EQ(arr[0].Value, "value");
+		EXPECT_EQ(arr[0].Value, test::HeapText("value"));
 	}
 
 	EXPECT_EQ(STracked::LiveCount, 0);
@@ -303,7 +303,7 @@ TEST(TArrayNonTrivial, ClearDestroysEverything)
 	TArray<STracked> arr;
 	for (uint32 i = 0u; i < 30u; ++i)
 	{
-		arr.Add(STracked(std::to_string(i)));
+		arr.Add(STracked(test::HeapText(i)));
 	}
 
 	ASSERT_EQ(STracked::LiveCount, 30);

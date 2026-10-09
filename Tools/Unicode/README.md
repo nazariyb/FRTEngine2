@@ -88,7 +88,7 @@ The lookup is O(1): three dependent loads. Core's own per-code-point loops inclu
      parsing bug, not a version difference. (It skips where `icu.dll` is missing.)
 5. Nothing in the tests hard-codes the version (it comes from the generated files); adjust only a spot
    check in `UnicodeTest.cpp` that the new version deliberately changes (general categories do move
-   occasionally, e.g. U+0295 became Lo in Unicode 16).
+   occasionally, e.g. U+0295 went from Ll to Lo in Unicode 17).
 
 ## License
 

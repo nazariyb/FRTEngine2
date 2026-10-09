@@ -106,7 +106,7 @@ namespace frt
  *
  * Layout (24 bytes; all-zero bytes are a valid empty string): either 22 bytes of text + terminator
  * inline with the length in the last byte, or a heap block pointer, length and capacity with bit 7 of
- * the last byte set. Lengths and positions are bytes; positions that split a character assert.
+ * the last byte set. Lengths and positions are bytes; positions that split a code point assert.
  *
  * TArray vocabulary for capacity (Reserve is grow-only), UE names for substrings (Left, Mid, RightChop;
  * byte counts) with three forms each: X() const& copies, X() && reuses this buffer, XInline() mutates and
@@ -866,11 +866,6 @@ public:
 	}
 
 	friend void swap (FString& A, FString& B) noexcept { A.Swap(B); }
-
-#if FRT_STRING_STD_COMPAT
-	// Migration only: goes away with FRT_STRING_STD_COMPAT.
-	operator std::string () const { return ToStdString(); }
-#endif
 
 	// ---- STL (for std algorithms, std::back_inserter, std::format_to, gtest). Engine code uses the names above. ----
 	[[nodiscard]] char* data () noexcept FRT_LIFETIMEBOUND { return GetData(); }

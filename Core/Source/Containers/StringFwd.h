@@ -12,19 +12,12 @@
 
 /**
  * What every string header shares, and what a header that only names the string types needs:
- * the migration switch, the lifetime attribute, forward declarations, the small enums and the
- * concepts behind the conversion rules.
+ * the lifetime attribute, forward declarations, the small enums and the concepts behind the
+ * conversion rules.
  *
  * Text in the engine is UTF-8 in char (Containers/String.h): FString owns it, FStringView borrows
  * it, FStringLiteral names static text, FWideString carries UTF-16 to the OS.
  */
-
-// Migration switch. 1 while the engine moves over to the string types: they convert implicitly to
-// std::string_view and FString to std::string, so consumers that are not migrated yet keep compiling
-// when a producer changes. Set to 0 once nothing needs it; the conversions then go away for good.
-#ifndef FRT_STRING_STD_COMPAT
-	#define FRT_STRING_STD_COMPAT 1
-#endif
 
 // Catches views bound to temporaries (C26815/C26816 under /analyze; clang -Wdangling).
 #if defined(__has_cpp_attribute) && __has_cpp_attribute(msvc::lifetimebound)
@@ -78,7 +71,7 @@ enum class EStringSplit : uint8
 enum class EPathStyle : uint8
 {
 	Native,      // path::native() as stored
-	Preferred,   // '\\' (what PathToUtf8 produced: make_preferred)
+	Preferred,   // '\\' (as path::make_preferred: how Windows and its dialogs show paths)
 	Generic,     // '/'  (paths stored in assets and config)
 };
 

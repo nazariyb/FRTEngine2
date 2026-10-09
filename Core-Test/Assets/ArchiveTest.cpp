@@ -1,6 +1,7 @@
-// IWriteArchive's overload set. Write(bool) is virtual, so it cannot be the constrained template R2
-// asks for: pointer -> bool is a standard conversion and beats every user-defined route to FStringView,
-// so text of every spelling needs its own overload, and any other pointer must not compile.
+// IWriteArchive's overload set. Write(bool) is virtual, so it cannot be a template constrained to bool
+// (how the engine keeps a bool parameter out of a text overload set): pointer -> bool is a standard
+// conversion and beats every user-defined route to FStringView, so text of every spelling needs its own
+// overload, and any other pointer must not compile.
 #include <gtest/gtest.h>
 
 #include "TestCommon.h"
@@ -61,7 +62,7 @@ TEST(Archive, TextOfEverySpellingIsWrittenAsText)
 	ar.Write("k", pointer);
 	EXPECT_EQ(ar.Last, "text:pointer");
 
-	// u8"" is how section 7 of the string design spells a non-ASCII literal.
+	// u8"...": non-ASCII text as char8_t, UTF-8 whatever the execution character set.
 	ar.Write("k", u8"Матеріал");
 	EXPECT_EQ(ar.Last, "text:Матеріал");
 

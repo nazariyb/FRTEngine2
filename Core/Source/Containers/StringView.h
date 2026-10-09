@@ -35,13 +35,13 @@
  *
  * Bytes are UTF-8 by contract, not by invariant: nothing validates on construction, every decoder is
  * total (an ill-formed sequence is one U+FFFD per maximal subpart). Lengths and positions are bytes;
- * positions that would split a character assert in Debug/Development (FRT_STRING_ASSERT_BOUNDARY).
+ * positions that would split a code point assert in Debug/Development (FRT_STRING_ASSERT_BOUNDARY).
  * Every case-dependent function takes ESearchCase as a template parameter; CaseSensitive paths are
  * inline, the folded ones are exported from Core (string_impl).
  */
 
 // Every substring/insert/remove position (Debug and Development): a position inside a UTF-8 sequence
-// would split a character. Constant evaluation skips it - the inputs there are literals.
+// would split a code point. Constant evaluation skips it - the inputs there are literals.
 #define FRT_STRING_ASSERT_BOUNDARY(Pos) \
 	if (!std::is_constant_evaluated()) { frt_assert(this->IsCodePointBoundary(static_cast<uint32>(Pos))) }
 
@@ -351,7 +351,9 @@ public:
 	[[nodiscard]] std::optional<std::filesystem::path> TryToPath () const noexcept;
 	// Third-party boundaries only (yaml-cpp).
 	[[nodiscard]] std::string ToStdString () const;
-	constexpr explicit(!FRT_STRING_STD_COMPAT) operator std::string_view () const noexcept;
+	// For a third-party API that takes std::string_view. Explicit: engine text never turns into one
+	// silently, so each such call is visible.
+	constexpr explicit operator std::string_view () const noexcept;
 	// Label-safe Truncate(BufferSize - 1) (FStringView::Truncate), then '\0'. Returns the bytes written
 	// (no NUL). BufferSize == 0 writes nothing.
 	uint32 CopyTo (char* Buffer, uint32 BufferSize) const noexcept;
@@ -1458,23 +1460,6 @@ std::optional<T> ParseNumber (FStringView Text, uint32 Base, uint32& OutConsumed
 {
 	return std::string_view(A.GetData(), A.Len()).compare(std::string_view(B.GetData(), B.Len())) <=> 0;
 }
-
-#if FRT_STRING_STD_COMPAT
-// While the views convert implicitly to std::string_view, `View == StdView` would be ambiguous between the line
-// above and std's (string_view, type_identity_t<string_view>) operator. These exact-match templates win; they
-// accept only std::string_view itself, so `View == "lit"` still has a single candidate.
-template <typename T> requires std::same_as<T, std::string_view>
-[[nodiscard]] constexpr bool operator== (FStringView A, T B) noexcept
-{
-	return A == FStringView(B);
-}
-
-template <typename T> requires std::same_as<T, std::string_view>
-[[nodiscard]] constexpr std::strong_ordering operator<=> (FStringView A, T B) noexcept
-{
-	return A <=> FStringView(B);
-}
-#endif
 
 
 namespace literals

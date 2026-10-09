@@ -15,6 +15,18 @@ namespace frt::test
  * from argv in place - and so from __argv, the same array, while __argc keeps the old count.
  */
 const std::vector<FString>& GetMainArguments ();
+
+/**
+ * Text longer than FString's 22 inline bytes, so it owns a heap block. Payloads of tests for
+ * containers that relocate their elements: a value relocated as raw bytes, or moved out of after it
+ * was destroyed, leaves its block with two owners or none, where inline bytes would survive it and
+ * the test would pass by accident.
+ */
+template <typename T>
+FString HeapText (const T& Tag)
+{
+	return FString::Format("{}: too long for the inline buffer", Tag);
+}
 }
 
 

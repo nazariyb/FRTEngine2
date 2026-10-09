@@ -5,7 +5,6 @@
 
 #include "Config/IniFile.h"
 #include "Containers/String.h"
-#include "Containers/WideString.h"
 #include "Platform/Platform.h"
 
 // No FRT_TEST_MEMORY_POOL here, and that is the point rather than an omission: CIniFile
@@ -393,11 +392,9 @@ TEST(IniFileTest, FilesAreReadAsStoredLikeTheBuildTools)
 	EXPECT_EQ(*utf8.Find("Гра", "Назва"), "Тест 😀");
 
 	// What Notepad saves as "Unicode": a BOM, then UTF-16LE. Lua finds no [Гра] in it, so
-	// neither does the engine. The wide text is a named local: a range over ToWide(...).View()
-	// would outlive the temporary it views.
-	const frt::FWideString wide = frt::ToWide("[Гра]\r\nНазва=Тест 😀\r\n");
+	// neither does the engine.
 	FString bytes = "\xFF\xFE";
-	for (const wchar_t unit : wide.View())
+	for (const char16_t unit : std::u16string_view(u"[Гра]\r\nНазва=Тест 😀\r\n"))
 	{
 		bytes.AppendChar(static_cast<char>(unit & 0xFF));
 		bytes.AppendChar(static_cast<char>(unit >> 8));
