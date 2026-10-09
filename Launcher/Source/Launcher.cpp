@@ -84,7 +84,7 @@ int RunGameLoop (CEngine& Engine, CGameModule& Module)
 		std::cout << "The game module could not create its game" << std::endl;
 		return 1;
 	}
-	automation.Configure(config, *world);
+	automation.Configure(Engine, *world);
 
 #if !defined(FRT_HEADLESS)
 	graphics::CRenderer& renderer = *Engine.GetRenderer();

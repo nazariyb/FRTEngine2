@@ -28,6 +28,11 @@ enum class ETextureColorSpace : uint8
  * threads, and finished textures are uploaded under a per-frame byte budget from Update().
  * Until then GetSrv() reports InvalidDescriptorIndex and shaders fall back to the material
  * factors. Textures are deduplicated by (path, colour space).
+ *
+ * Scripted runs need every frame to be the same from run to run, and the frame a texture
+ * becomes resident is otherwise up to the decode threads: SetDeterministic(true) makes Update()
+ * wait for the textures still decoding, so residency depends only on the frame a texture was
+ * requested in and the upload budget. Interactive runs never wait: a decode cannot stall a frame.
  */
 class FRT_CORE_API CTextureManager
 {
@@ -51,6 +56,9 @@ public:
 	// (materials referencing it need refreshing and progressive accumulation must restart).
 	bool Update (ID3D12GraphicsCommandList* CommandList, uint64 UploadBudgetBytes = 96ull * 1024ull * 1024ull);
 
+	void SetDeterministic (bool bInDeterministic) { bDeterministic = bInDeterministic; }
+
+	// Requested and neither resident nor failed: still decoding, or waiting for upload budget.
 	uint32 GetPendingCount () const;
 	uint32 GetResidentCount () const;
 	uint64 GetResidentBytes () const { return ResidentBytes; }
@@ -85,5 +93,6 @@ private:
 	std::vector<std::unique_ptr<SEntry>> Entries;
 	std::array<TPathMap<HTexture>, 3> Lookup;   // per ETextureColorSpace: resolved path -> Entries index
 	uint64 ResidentBytes = 0u;
+	bool bDeterministic = false;
 };
 }

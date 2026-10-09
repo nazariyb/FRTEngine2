@@ -416,6 +416,7 @@ void CRenderer::Resize (bool bNewFullscreenState)
 
 		DXGI_SWAP_CHAIN_DESC1 desc = {};
 		THROW_IF_FAILED(SwapChain->GetDesc1(&desc));
+		const bool bSizeChanged = desc.Width != BackBufferWidth || desc.Height != BackBufferHeight;
 		BackBufferWidth = desc.Width;
 		BackBufferHeight = desc.Height;
 		for (uint32 i = 0; i < SwapChainBufferCount; ++i)
@@ -427,12 +428,18 @@ void CRenderer::Resize (bool bNewFullscreenState)
 			BackBufferState[i] = D3D12_RESOURCE_STATE_PRESENT;
 		}
 		bFrameBuffersReady = true;
-		// Only views drawing into the swap chain changed size; texture views keep their history.
-		for (std::unique_ptr<CRenderView>& view : Views)
+		// Only views drawing into the swap chain changed size, and only if it really changed;
+		// texture views keep their history. The window also resizes to the same size when it is
+		// shown - on the first frame or a few frames later, depending on timing - and that must not
+		// restart temporal histories on a frame that differs from run to run.
+		if (bSizeChanged)
 		{
-			if (view->GetTarget() == EViewTarget::BackBuffer)
+			for (std::unique_ptr<CRenderView>& view : Views)
 			{
-				view->bForceReset = true;
+				if (view->GetTarget() == EViewTarget::BackBuffer)
+				{
+					view->bForceReset = true;
+				}
 			}
 		}
 	}

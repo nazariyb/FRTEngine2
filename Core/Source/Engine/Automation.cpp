@@ -13,14 +13,17 @@
 
 #if !defined(FRT_HEADLESS)
 #include "Graphics/Render/Renderer.h"
+#include "Graphics/Render/Scene/GpuScene.h"
 #endif
 
 
 namespace frt
 {
-void CAutomation::Configure (const config::CConfig& Config, const CWorldScene& World)
+void CAutomation::Configure (CEngine& Engine, const CWorldScene& World)
 {
+	const config::CConfig& Config = Engine.GetConfig();
 	CaptureFrame = Config.Get("Automation", "CaptureFrame", -1);
+	CaptureTimeoutFrames = Config.Get("Automation", "CaptureTimeoutFrames", 600);
 	ExitFrame = Config.Get("Automation", "ExitFrame", -1);
 	ProfileFrames = Config.Get("Automation", "ProfileFrames", 0);
 	bMotion = ParseVector3(Config.Get("Automation", "CameraMove", ""), CameraMove);
@@ -33,6 +36,13 @@ void CAutomation::Configure (const config::CConfig& Config, const CWorldScene& W
 	const FString capturePath = Config.Get("Automation", "CapturePath", "");
 	CapturePath = capturePath.IsEmpty() ? (paths::GetCaptureDir() / "automation") : capturePath.ToPath();
 	bActive = CaptureFrame >= 0 || ExitFrame >= 0 || bMotion || TimeOfDayFrame >= 0;
+
+#if !defined(FRT_HEADLESS)
+	if (graphics::CRenderer* renderer = Engine.GetRenderer())
+	{
+		renderer->GetScene().GetTextures().SetDeterministic(bActive && Config.Get("Automation", "DeterministicStreaming", true));
+	}
+#endif
 }
 
 void CAutomation::Update (CEngine& Engine, CWorldScene& World, graphics::CRenderView* View, float RealDeltaSeconds)
@@ -57,16 +67,29 @@ void CAutomation::Update (CEngine& Engine, CWorldScene& World, graphics::CRender
 
 #if !defined(FRT_HEADLESS)
 	graphics::CRenderer* renderer = Engine.GetRenderer();
-	if (View && CaptureFrame >= 0 && !bCaptureRequested && frame >= CaptureFrame)
+	if (View && renderer && CaptureFrame >= 0 && !bCaptureRequested && frame >= CaptureFrame)
 	{
-		View->RequestCapture(CapturePath, bCaptureHdr);
-		bCaptureRequested = true;
-		const Vector3f camPos = World.Camera.Transform.GetTranslation();
-		const Vector3f camRot = World.Camera.Transform.GetRotation();
-		std::printf("[automation] capture requested at frame %llu (%u spp accumulated) camera %.6f,%.6f,%.6f rotation %.6f,%.6f,%.6f\n",
-			static_cast<unsigned long long>(frame), View->GetAccumulatedSamples(),
-			camPos.x, camPos.y, camPos.z, camRot.x, camRot.y, camRot.z);
-		std::fflush(stdout);
+		// Textures still streaming would be missing from the image: the capture waits for them.
+		if (renderer->GetScene().IsStreamingIdle())
+		{
+			View->RequestCapture(CapturePath, bCaptureHdr);
+			bCaptureRequested = true;
+			const Vector3f camPos = World.Camera.Transform.GetTranslation();
+			const Vector3f camRot = World.Camera.Transform.GetRotation();
+			std::printf("[automation] capture requested at frame %llu (%u spp accumulated) camera %.6f,%.6f,%.6f rotation %.6f,%.6f,%.6f\n",
+				static_cast<unsigned long long>(frame), View->GetAccumulatedSamples(),
+				camPos.x, camPos.y, camPos.z, camRot.x, camRot.y, camRot.z);
+			std::fflush(stdout);
+		}
+		else if (frame >= CaptureFrame + CaptureTimeoutFrames)
+		{
+			std::fprintf(stderr, "[automation] error: textures still streaming at frame %llu, %lld frames past CaptureFrame; no capture written\n",
+				static_cast<unsigned long long>(frame), static_cast<long long>(CaptureTimeoutFrames));
+			std::fflush(stderr);
+			bCaptureRequested = true;
+			ExitFrame = -1;
+			Engine.RequestQuit(1);
+		}
 	}
 	if (View && renderer && ProfileFrames > 0 && ExitFrame >= 0 && frame >= ExitFrame - ProfileFrames && frame < ExitFrame)
 	{
@@ -89,7 +112,8 @@ void CAutomation::Update (CEngine& Engine, CWorldScene& World, graphics::CRender
 		CpuFrameMs += static_cast<double>(RealDeltaSeconds) * 1000.0;
 		++CpuFrames;
 	}
-	const bool bCapturesPending = renderer && renderer->HasPendingCaptures();
+	const bool bCaptureWaiting = View && CaptureFrame >= 0 && !bCaptureRequested && frame >= CaptureFrame;
+	const bool bCapturesPending = bCaptureWaiting || (renderer && renderer->HasPendingCaptures());
 #else
 	(void)View;
 	(void)RealDeltaSeconds;

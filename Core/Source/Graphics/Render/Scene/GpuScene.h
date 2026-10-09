@@ -101,6 +101,9 @@ public:
 	const std::vector<SSceneDraw>& GetDraws () const { return Draws; }
 	const SSceneStats& GetStats () const { return Stats; }
 	CTextureManager& GetTextures () { return Textures; }
+	// Nothing is loading: the scene was described at least once and every texture it requested
+	// is resident (or failed to load).
+	bool IsStreamingIdle () const { return FrameNumber > 0u && Textures.GetPendingCount() == 0u; }
 	float GetSceneRadius () const { return SceneRadius; }
 	DirectX::XMFLOAT3 GetSceneCenter () const { return SceneCenter; }
 
