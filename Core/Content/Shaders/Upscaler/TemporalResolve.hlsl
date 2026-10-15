@@ -15,9 +15,10 @@
 //   4. 5-tap Catmull-Rom fetch of both histories (colour, temporal moments).
 //   5. Lanczos-2 / Blackman-Harris spatial reconstruction IN LINEAR HDR, kernel narrowed with
 //      the upscale ratio on accumulated pixels and widened on new ones (FSR 2 kernel bias).
-//   6. Rectification: the history's working-space mean is compared with this frame's
-//      neighbourhood and value; the tolerance adds the temporal spread of this pixel's own
-//      input (second history). Rejection shortens the history.
+//   6. Rectification: the history's working-space mean, then the history colour itself, are
+//      compared with this frame's neighbourhood and value; the tolerance adds the temporal
+//      spread of this pixel's own input (second history), except where surfaces slide over
+//      each other (parallax). Rejection shortens the history.
 //   7. Confidence-weighted LINEAR accumulation: alpha = c / (W + c), W = accumulated confidence.
 //
 // Energy. A path-traced input is sparse: most of its energy sits in few, bright samples (the
@@ -41,7 +42,13 @@
 // so a value the history has seen often (a flickering firefly, a highlight that half the
 // jitter phases miss) is no evidence of change, while a ghost (seen never) is. The clip factor
 // t moves both histories toward the current frame by the same fraction and scales the
-// accumulated confidence, so a rejected pixel re-converges as a running mean.
+// accumulated confidence, so a rejected pixel re-converges as a running mean. The colour is
+// then clipped, under motion, into a window of the same form in the working space (with the
+// temporal slack not faded by motion): being a linear mean, it can hold a bright source that
+// E[w] hardly shows (a light's trail when strafing). And the temporal tolerance is not trusted
+// where the neighbourhood has parallax (surfaces at different depths moving relative to each
+// other, i.e. disocclusion in progress): there it measures the jump between the surfaces, and
+// a ghost would justify itself.
 
 #include "Common/Bindings.hlsli"
 #include "Shared/UpscalerData.h"
@@ -128,6 +135,38 @@ float ClipFactor (float3 History, float3 Center, float3 Lo, float3 Hi)
 	const float3 av = abs(v);
 	const float3 ratio = select(av > extent, extent / max(av, 1e-7f), 1.0f);
 	return saturate(min(min(ratio.x, ratio.y), ratio.z));
+}
+
+// Rectification window in the working space for a given temporal slack (see the use).
+void RectificationWindow (float3 Mean, float3 SigmaSpatial, float3 BoxMin, float3 BoxMax, float3 Current, float3 Slack, out float3 Lo, out float3 Hi)
+{
+	if (HasFlag(UpscalerFlag_VarianceClip))
+	{
+		// Hull of two windows, intersected with the neighbourhood's min/max box widened by
+		// the temporal slack:
+		//  - the neighbourhood mean +- (spatial + temporal) spread. Centred on the mean, not
+		//    on this pixel's value: a firefly landing here moves the 3x3 mean by 1/9 only,
+		//    so it cannot drag the history toward itself through the clip. (Centred on the
+		//    current value, every firefly frame clipped the history up and every black frame
+		//    could not clip it down: +118% in the interior after 700 frames at 16 spp.)
+		//  - this pixel's current value +- its temporal spread, so a thin feature the
+		//    history has converged on is not pulled toward its darker 3x3 mean (classic
+		//    variance clipping dims one-pixel highlights).
+		const float3 extent = g_Pass.VarianceGamma * SigmaSpatial + Slack;
+		Lo = min(Mean - extent, Current - Slack);
+		Hi = max(Mean + extent, Current + Slack);
+		Lo = max(Lo, BoxMin - Slack);
+		Hi = min(Hi, BoxMax + Slack);
+	}
+	else
+	{
+		Lo = BoxMin - Slack;
+		Hi = BoxMax + Slack;
+	}
+	// The deringed current value can sit a hair outside the YCoCg box (the clamp in main is
+	// per RGB channel); keep it inside so ClipFactor's segment is well defined.
+	Lo = min(Lo, Current);
+	Hi = max(Hi, Current);
 }
 
 // 5-tap Catmull-Rom history fetch: the 4x4 bicubic is folded into bilinear taps and the four
@@ -353,15 +392,24 @@ void main (uint3 GroupId : SV_GroupID, uint3 DispatchThreadId : SV_DispatchThrea
 	}
 
 	// Closest depth for motion dilation; the centre wins ties (sky everywhere, flat regions).
+	// The farthest sample is kept for the parallax test.
 	float closestZ = taps[4].Z;
 	int2 closestTexel = center;
+	float farthestZ = taps[4].Z;
+	int2 farthestTexel = center;
 	[unroll]
 	for (uint t2 = 0u; t2 < 9u; ++t2)
 	{
+		const int2 k = center + int2(int(t2 % 3u) - 1, int(t2 / 3u) - 1);
 		if (inside[t2] && taps[t2].Z < closestZ)
 		{
 			closestZ = taps[t2].Z;
-			closestTexel = center + int2(int(t2 % 3u) - 1, int(t2 / 3u) - 1);
+			closestTexel = k;
+		}
+		if (inside[t2] && taps[t2].Z > farthestZ)
+		{
+			farthestZ = taps[t2].Z;
+			farthestTexel = k;
 		}
 	}
 
@@ -383,6 +431,26 @@ void main (uint3 GroupId : SV_GroupID, uint3 DispatchThreadId : SV_DispatchThrea
 	const float2 uv = (float2(pixel) + 0.5f) * g_Pass.InvDisplaySize;
 	const float2 prevUv = uv + motion * g_Pass.InvRenderSize;
 	const float speed = length(motion * g_Pass.DisplaySize * g_Pass.InvRenderSize);   // display px / frame
+
+	// Parallax: two surfaces at different depths in this neighbourhood that move relative to
+	// each other on screen, i.e. the nearer one is uncovering or covering the farther one here
+	// (camera translation, moving objects). The 1-2 pixel strip uncovered per frame passes the
+	// depth test (the surface is visible a pixel away) and reads a history fetch that straddles
+	// both surfaces, so the temporal variance it inherits or learns here measures the jump
+	// between the surfaces, not the noise of either; it is discarded below (rectification,
+	// variance update). A static view or a pure rotation has none: the flow of a rotation does
+	// not depend on depth. The depth gap is twice the depth-test tolerance, so a tilted plane
+	// (whose 3x3 spans ~2 slopes) does not count.
+	float parallax = 0.0f;
+	if (bMotionValid && farthestZ - closestZ > 2.0f * (g_Pass.DepthTolerance + relativeSlope) * closestZ)
+	{
+		const float2 farMotion = Tex2DFloat2(g_Pass.InMotionVectors)[farthestTexel];
+		if (all(isfinite(farMotion)))
+		{
+			// 0 below 1/8, 1 above 3/8 render px / frame of relative motion.
+			parallax = saturate(4.0f * length(motion - farMotion) - 0.5f);
+		}
+	}
 
 	float validity = (HasFlag(UpscalerFlag_HistoryValid) && bMotionValid && all(prevUv >= 0.0f) && all(prevUv <= 1.0f)) ? 1.0f : 0.0f;
 	if (validity > 0.0f && HasFlag(UpscalerFlag_DepthTest) && HasFlag(UpscalerFlag_PrevDepthValid))
@@ -478,7 +546,16 @@ void main (uint3 GroupId : SV_GroupID, uint3 DispatchThreadId : SV_DispatchThrea
 	const float invCount = rcp(max(count, 1.0f));
 	const float3 mean = m1 * invCount;
 	const float3 sigmaSpatial = sqrt(max(m2 * invCount - mean * mean, 0.0f));
-	float rectification = 1.0f;
+	float rectification = 1.0f;         // product of both clip factors below
+	float meanRectification = 1.0f;     // clip factor of E[w]
+	float colourRectification = 1.0f;   // clip factor of the colour
+	// Where surfaces slide over each other the fetched variance is the jump between them (see
+	// parallax), not noise. Measured on a 30-frame strafe under the ceiling window: the sky
+	// the ceiling uncovered learned the ceiling/sky jump as variance, which widened its window
+	// enough to keep the dark ceiling history (the newest strip 66% too dark, the oldest 2%;
+	// the window 8% and the whole image 6% below the TAA's input; 1% and 1.3% with this).
+	// Only the spatial prior below remains until the pixel has re-learned its noise.
+	moments.a *= 1.0f - parallax;
 	if (historyWeight > 0.0f)
 	{
 		// Temporal spread of this pixel's input, plus a prior from the spatial spread that
@@ -497,42 +574,62 @@ void main (uint3 GroupId : SV_GroupID, uint3 DispatchThreadId : SV_DispatchThrea
 		const float3 temporalSlack = slackScale * sqrt(temporalVariance) + kRectificationFloor;
 		float3 lo;
 		float3 hi;
-		if (HasFlag(UpscalerFlag_VarianceClip))
-		{
-			// Hull of two windows, intersected with the neighbourhood's min/max box widened by
-			// the temporal slack:
-			//  - the neighbourhood mean +- (spatial + temporal) spread. Centred on the mean, not
-			//    on this pixel's value: a firefly landing here moves the 3x3 mean by 1/9 only,
-			//    so it cannot drag the history toward itself through the clip. (Centred on the
-			//    current value, every firefly frame clipped the history up and every black frame
-			//    could not clip it down: +118% in the interior after 700 frames at 16 spp.)
-			//  - this pixel's current value +- its temporal spread, so a thin feature the
-			//    history has converged on is not pulled toward its darker 3x3 mean (classic
-			//    variance clipping dims one-pixel highlights).
-			const float3 extent = g_Pass.VarianceGamma * sigmaSpatial + temporalSlack;
-			lo = min(mean - extent, currentWorking - temporalSlack);
-			hi = max(mean + extent, currentWorking + temporalSlack);
-			lo = max(lo, boxMin - temporalSlack);
-			hi = min(hi, boxMax + temporalSlack);
-		}
-		else
-		{
-			lo = boxMin - temporalSlack;
-			hi = boxMax + temporalSlack;
-		}
-		// The deringed current value can sit a hair outside the YCoCg box (the clamp above is
-		// per RGB channel); keep it inside so ClipFactor's segment is well defined.
-		lo = min(lo, currentWorking);
-		hi = max(hi, currentWorking);
-		rectification = ClipFactor(moments.rgb, currentWorking, lo, hi);
+		RectificationWindow(mean, sigmaSpatial, boxMin, boxMax, currentWorking, temporalSlack, lo, hi);
+		meanRectification = ClipFactor(moments.rgb, currentWorking, lo, hi);
 
 		// The mean moves with the colour. The variance only shrinks with the confidence: the gap
 		// that caused the clip is a change, not noise (lerping raw second moments would add
 		// t (1 - t) gap^2 to it, and a ghost would widen its own tolerance).
-		history.rgb = lerp(currentLinear, history.rgb, rectification);
-		moments.rgb = lerp(currentWorking, moments.rgb, rectification);
-		moments.a *= rectification;
-		historyWeight *= rectification;
+		history.rgb = lerp(currentLinear, history.rgb, meanRectification);
+		moments.rgb = lerp(currentWorking, moments.rgb, meanRectification);
+		moments.a *= meanRectification;
+		historyWeight *= meanRectification;
+
+		// The colour itself must lie in the window too. E[w] alone is not enough in HDR: the
+		// colour is a LINEAR mean, and a history fetch that straddles a bright source and its
+		// background (or the dilated edge pixel next to it) mixes them linearly, which E[w], a
+		// mean of tonemapped values, barely registers: 10% of the emissive sphere (152 after
+		// exposure) takes a background pixel from 0.16 to 15, but raises its E[w] by 0.04.
+		// Clipping E[w] back into the window then moved the colour by the same fraction
+		// linearly, which left a few percent of the light, still 50-100x the background, for the
+		// running mean to dissolve over 15-20 frames: the trail behind the sphere when strafing
+		// (in it: colour 0.42-0.48 in working units, window top 0.21-0.35, E[w] inside at
+		// 0.18-0.29; luminance 2-8 px behind the sphere 1.1-2.4 against 0.02). The clip of the
+		// colour is done in the working space, so the result sits on the window boundary like
+		// E[w].
+		// Only where the history was reprojected (full from a quarter display pixel per frame).
+		// At rest each pixel fetches exactly its own history, whose colour and E[w] were
+		// accumulated from the same samples, and the colour may rightly sit outside this frame's
+		// window: the linear mean of an edge a few percent covered by the sky is near the sky in
+		// working units, and the frames whose jitter misses the sky have no sky sample in the
+		// 3x3. Clipped there too, the static raster default view lost brightness at such edges
+		// (44 px off by more than 16 / 255, 41 of them darker, most along the ceiling window);
+		// gated, it matches the old resolve to within run-to-run noise.
+		// The colour's window keeps the full temporal slack (no fade with motion). On sparse input
+		// the linear mean of a pixel sits far above its E[w] (a few bright samples dominate it,
+		// Jensen), and the motion-faded window that suits E[w] cut those correct histories down
+		// whenever the camera moved: with the faded window, 1 spp undenoised, the default view
+		// under a 0.003 rad / frame turn came out 9% darker than with E[w] clipping alone (12% at
+		// render scale 0.67) and visibly noisier; with the full slack it is within 0.3% of that.
+		// A ghost gets no such slack: its jump is not learned as variance under parallax (above),
+		// and the trail behind the strafed light stays removed (left-band excess over the TAA-off
+		// input +0.0022 at 0.02 m / frame, as with the faded window; +0.018 without the colour
+		// clip, +0.216 with neither it nor the parallax term).
+		const float3 colourSlack = g_Pass.TemporalGamma * sqrt(temporalVariance) + kRectificationFloor;
+		float3 colourLo;
+		float3 colourHi;
+		RectificationWindow(mean, sigmaSpatial, boxMin, boxMax, currentWorking, colourSlack, colourLo, colourHi);
+		const float3 historyWorking = ToWorkingSpace(history.rgb, g_Pass.Exposure);
+		colourRectification = 1.0f - saturate(4.0f * speed) * (1.0f - ClipFactor(historyWorking, currentWorking, colourLo, colourHi));
+		if (colourRectification < 1.0f)
+		{
+			// Both ends are tonemapped colours (channels in [0, 1)), so their blend inverts safely.
+			history.rgb = FromTonemapped(YCoCgToRgb(lerp(currentWorking, historyWorking, colourRectification)), g_Pass.InvExposure);
+			moments.rgb = lerp(currentWorking, moments.rgb, colourRectification);
+			moments.a *= colourRectification;
+			historyWeight *= colourRectification;
+		}
+		rectification = meanRectification * colourRectification;
 	}
 
 	// --- Accumulation ---------------------------------------------------------------------
@@ -558,10 +655,11 @@ void main (uint3 GroupId : SV_GroupID, uint3 DispatchThreadId : SV_DispatchThrea
 	// mean' = mean + alpha d, var' = (1 - alpha) (var + alpha d^2), d = x - mean. Variance rather
 	// than the raw second moment is stored, so reprojection, which interpolates between pixels,
 	// does not mistake the difference of two neighbours' means for noise.
+	// Under parallax the gap is the jump between two surfaces and is not learned either.
 	const float delta = currentWorking.x - moments.r;
 	float4 newMoments;
 	newMoments.rgb = lerp(moments.rgb, currentWorking, alpha);
-	newMoments.a = (1.0f - alpha) * (moments.a + alpha * delta * delta);
+	newMoments.a = (1.0f - alpha) * (moments.a + alpha * delta * delta * (1.0f - parallax));
 	newMoments = all(isfinite(newMoments)) ? clamp(newMoments, -kUpscalerMaxHdr, kUpscalerMaxHdr) : 0.0f;
 	const float newWeight = min(totalWeight, maxWeight);
 
@@ -582,6 +680,10 @@ void main (uint3 GroupId : SV_GroupID, uint3 DispatchThreadId : SV_DispatchThrea
 		else if (g_Pass.DebugMode == UpscalerDebug_MotionVectors)
 		{
 			output = float3(abs(motion * g_Pass.DisplaySize * g_Pass.InvRenderSize) * 0.1f, 0.0f) * g_Pass.InvExposure;
+		}
+		else if (g_Pass.DebugMode == UpscalerDebug_Parallax)
+		{
+			output = float3(parallax, 1.0f - colourRectification, 1.0f - meanRectification) * g_Pass.InvExposure;
 		}
 		RwTex2D(g_Pass.OutColor)[pixel] = float4(output, 1.0f);
 	}

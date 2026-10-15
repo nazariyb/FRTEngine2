@@ -621,7 +621,7 @@ void CTemporalUpscaler::DrawSettingsUi (SRenderProfile& Profile)
 	ImGui::SliderFloat("Mip bias offset", &s.MipBiasOffset, -2.0f, 1.0f, "%.2f");
 
 	int debug = static_cast<int>(s.DebugMode);
-	if (ImGui::Combo("Debug view", &debug, "None\0History weight\0Rejection (r) / confidence (g) / clip (b)\0Motion vectors\0"))
+	if (ImGui::Combo("Debug view", &debug, "None\0History weight\0Rejection (r) / confidence (g) / clip (b)\0Motion vectors\0Parallax (r) / colour clip (g) / mean clip (b)\0"))
 	{
 		s.DebugMode = static_cast<uint32>(debug);
 	}

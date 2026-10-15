@@ -19,7 +19,8 @@ FRT_GPU_CONST uint UpscalerDebug_None = 0u;
 FRT_GPU_CONST uint UpscalerDebug_HistoryWeight = 1u;         // accumulated confidence / max (grey)
 FRT_GPU_CONST uint UpscalerDebug_Disocclusion = 2u;          // r = rejected history (depth / off-screen), g = spatial confidence, b = rectification (1 - clip factor)
 FRT_GPU_CONST uint UpscalerDebug_MotionVectors = 3u;         // |dilated MV| in display pixels * 0.1
-FRT_GPU_CONST uint UpscalerDebug_Count = 4u;
+FRT_GPU_CONST uint UpscalerDebug_Parallax = 4u;              // r = parallax (temporal variance discarded), g = colour clip, b = E[w] clip (1 - clip factors)
+FRT_GPU_CONST uint UpscalerDebug_Count = 5u;
 
 FRT_GPU_CONST uint UpscalerSharpenFlag_Denoise = 1u << 0u;   // RCAS noise attenuation
 
