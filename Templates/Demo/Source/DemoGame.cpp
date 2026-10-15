@@ -154,11 +154,12 @@ void DemoGame::BuildWorld (const SGameContext& Context)
 	ceiling->Transform.SetScale({ 1.5f, 1.f, 1.f });
 
 	auto portal = World.SpawnEntity("Portal1");
-	portal->Transform.SetTranslation(1.75f, 9.f, 0.f);   // window center
-	portal->Transform.SetRotation(math::PI_OVER_TWO, 0.f, 0.f);   // window center
+	// Window centre: the ceiling's cut at local (-1.5, 0), scaled by 1.5 and offset by -0.5.
+	portal->Transform.SetTranslation(-2.75f, 9.f, 0.f);
+	portal->Transform.SetRotation(math::PI_OVER_TWO, 0.f, 0.f);
 	portal->Portal = memory::NewShared<graphics::Comp_Portal>();
 	portal->Portal->Normal = Vector3f(0, 0, -1);       // faces interior
-	portal->Portal->Edge1  = Vector3f(0.8f, 0, 0);     // half-width
+	portal->Portal->Edge1  = Vector3f(0.75f, 0, 0);    // half-width (0.5 scaled by the ceiling's 1.5)
 	portal->Portal->Edge2  = Vector3f(0, 0.8f, 0);     // half-height
 }
 
