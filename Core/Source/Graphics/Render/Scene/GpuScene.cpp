@@ -186,6 +186,8 @@ void CGpuScene::Initialize (rhi::CDevice& InDevice, rhi::CPipelineLibrary& InPip
 	SkyBakePipeline = Pipelines->CreateCompute("SkyBake", MakeShaderDesc("Scene/SkyBake.hlsl", "BakeEnvironment", "cs_6_6"));
 	SkyPyramidPipeline = Pipelines->CreateCompute("SkyPyramid", MakeShaderDesc("Scene/SkyBake.hlsl", "BuildPyramid", "cs_6_6"));
 	EnergyLutPipeline = Pipelines->CreateCompute("EnergyLut", MakeShaderDesc("Scene/EnergyLut.hlsl", "main", "cs_6_6"));
+	SkyPrefilterPipeline = Pipelines->CreateCompute("SkyPrefilter", MakeShaderDesc("Scene/SkyBake.hlsl", "PrefilterSpecular", "cs_6_6"));
+	SkyIrradiancePipeline = Pipelines->CreateCompute("SkyIrradiance", MakeShaderDesc("Scene/SkyBake.hlsl", "ConvolveIrradiance", "cs_6_6"));
 
 	rhi::STextureDesc env;
 	env.Width = SkyEnvironmentSize;
@@ -211,6 +213,26 @@ void CGpuScene::Initialize (rhi::CDevice& InDevice, rhi::CPipelineLibrary& InPip
 	lut.bUav = true;
 	lut.Name = "GgxEnergyLut";
 	EnergyLut = Device->CreateTexture(lut);
+
+	// Image-based lighting for the raster preview: one prefiltered slice per roughness step,
+	// in a 3D texture so that trilinear filtering also interpolates between roughness levels.
+	rhi::STextureDesc prefiltered;
+	prefiltered.Width = SkyPrefilterSize;
+	prefiltered.Height = SkyPrefilterSize;
+	prefiltered.DepthOrArraySize = static_cast<uint16>(SkyPrefilterSlices);
+	prefiltered.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
+	prefiltered.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+	prefiltered.bUav = true;
+	prefiltered.Name = "SkyPrefiltered";
+	SkyPrefiltered = Device->CreateTexture(prefiltered);
+
+	rhi::STextureDesc irradiance;
+	irradiance.Width = SkyIrradianceSize;
+	irradiance.Height = SkyIrradianceSize;
+	irradiance.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+	irradiance.bUav = true;
+	irradiance.Name = "SkyIrradiance";
+	SkyIrradiance = Device->CreateTexture(irradiance);
 }
 
 void CGpuScene::Shutdown ()
@@ -237,6 +259,8 @@ void CGpuScene::Shutdown ()
 	Device->Destroy(SkyEnvironment);
 	Device->Destroy(SkyPyramid);
 	Device->Destroy(EnergyLut);
+	Device->Destroy(SkyPrefiltered);
+	Device->Destroy(SkyIrradiance);
 	Textures.Shutdown();
 	Device = nullptr;
 }
@@ -365,6 +389,51 @@ CGpuScene::SModelEntry& CGpuScene::EnsureModel (CRenderContext& Context, const S
 		}
 		entry.BoundsMin = vertexCount ? bmin : DirectX::XMFLOAT3{};
 		entry.BoundsMax = vertexCount ? bmax : DirectX::XMFLOAT3{};
+
+		// Per-section surface area and centroid, for the raster preview's energy balance and
+		// emitter stand-ins (instances scale them; the triangles themselves stay on the GPU).
+		entry.SectionArea.assign(Model.Sections.Count(), 0.0f);
+		entry.SectionCentroid.assign(Model.Sections.Count(), DirectX::XMFLOAT3{});
+		entry.SectionBoundsMin.assign(Model.Sections.Count(), DirectX::XMFLOAT3{});
+		entry.SectionBoundsMax.assign(Model.Sections.Count(), DirectX::XMFLOAT3{});
+		for (uint32 s = 0; s < Model.Sections.Count(); ++s)
+		{
+			const SRenderSection& section = Model.Sections[s];
+			double area = 0.0, cx = 0.0, cy = 0.0, cz = 0.0;
+			DirectX::XMFLOAT3 smin = { 1e30f, 1e30f, 1e30f };
+			DirectX::XMFLOAT3 smax = { -1e30f, -1e30f, -1e30f };
+			for (uint32 t = 0; t + 2u < section.IndexCount; t += 3u)
+			{
+				const uint32 base = section.IndexOffset + t;
+				if (base + 2u >= Model.Indices.Count())
+				{
+					break;
+				}
+				const Vector3f& a = Model.Vertices[Model.Indices[base + 0u] + section.VertexOffset].Position;
+				const Vector3f& b = Model.Vertices[Model.Indices[base + 1u] + section.VertexOffset].Position;
+				const Vector3f& c = Model.Vertices[Model.Indices[base + 2u] + section.VertexOffset].Position;
+				const float e1x = b.x - a.x, e1y = b.y - a.y, e1z = b.z - a.z;
+				const float e2x = c.x - a.x, e2y = c.y - a.y, e2z = c.z - a.z;
+				const float nx = e1y * e2z - e1z * e2y, ny = e1z * e2x - e1x * e2z, nz = e1x * e2y - e1y * e2x;
+				const double triArea = 0.5 * std::sqrt(static_cast<double>(nx) * nx + static_cast<double>(ny) * ny + static_cast<double>(nz) * nz);
+				for (const Vector3f* v : { &a, &b, &c })
+				{
+					smin = { (std::min)(smin.x, v->x), (std::min)(smin.y, v->y), (std::min)(smin.z, v->z) };
+					smax = { (std::max)(smax.x, v->x), (std::max)(smax.y, v->y), (std::max)(smax.z, v->z) };
+				}
+				area += triArea;
+				cx += triArea * (a.x + b.x + c.x) / 3.0;
+				cy += triArea * (a.y + b.y + c.y) / 3.0;
+				cz += triArea * (a.z + b.z + c.z) / 3.0;
+			}
+			entry.SectionArea[s] = static_cast<float>(area);
+			entry.SectionBoundsMin[s] = smax.x >= smin.x ? smin : entry.BoundsMin;
+			entry.SectionBoundsMax[s] = smax.x >= smin.x ? smax : entry.BoundsMax;
+			if (area > 0.0)
+			{
+				entry.SectionCentroid[s] = { static_cast<float>(cx / area), static_cast<float>(cy / area), static_cast<float>(cz / area) };
+			}
+		}
 
 		const D3D12_RESOURCE_STATES readState =
 			D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
@@ -801,6 +870,8 @@ bool CGpuScene::Update (CRenderContext& Context)
 	if (!FrameInstances.empty() && sceneMax.x >= sceneMin.x)
 	{
 		SceneCenter = { 0.5f * (sceneMin.x + sceneMax.x), 0.5f * (sceneMin.y + sceneMax.y), 0.5f * (sceneMin.z + sceneMax.z) };
+		SceneMin = sceneMin;
+		SceneMax = sceneMax;
 		const float dx = sceneMax.x - sceneMin.x, dy = sceneMax.y - sceneMin.y, dz = sceneMax.z - sceneMin.z;
 		SceneRadius = (std::max)(0.5f * std::sqrt(dx * dx + dy * dy + dz * dz), 1.0f);
 	}
@@ -937,9 +1008,23 @@ bool CGpuScene::Update (CRenderContext& Context)
 			const SMaterial* material = section.MaterialIndex < model.Materials.Count()
 											? model.Materials[section.MaterialIndex].GetRawIgnoringLifetime() : nullptr;
 			draw.bAlphaBlend = material && material->AlphaMode == EAlphaMode::Blend;
+			draw.bAlphaTested = material && material->AlphaMode == EAlphaMode::Mask;
+			draw.bHelper = FrameInstances[i].bHelper;
+			const bool bSectionBounds = s < entry.SectionBoundsMin.size();
+			const DirectX::XMFLOAT3 lo = bSectionBounds ? entry.SectionBoundsMin[s] : entry.BoundsMin;
+			const DirectX::XMFLOAT3 hi = bSectionBounds ? entry.SectionBoundsMax[s] : entry.BoundsMax;
+			draw.BoundsMin = { 1e30f, 1e30f, 1e30f };
+			draw.BoundsMax = { -1e30f, -1e30f, -1e30f };
+			for (uint32 c = 0; c < 8u; ++c)
+			{
+				const DirectX::XMFLOAT3 p = TransformPoint(FrameInstances[i].ObjectToWorld, (c & 1u) ? hi.x : lo.x, (c & 2u) ? hi.y : lo.y, (c & 4u) ? hi.z : lo.z);
+				draw.BoundsMin = { (std::min)(draw.BoundsMin.x, p.x), (std::min)(draw.BoundsMin.y, p.y), (std::min)(draw.BoundsMin.z, p.z) };
+				draw.BoundsMax = { (std::max)(draw.BoundsMax.x, p.x), (std::max)(draw.BoundsMax.y, p.y), (std::max)(draw.BoundsMax.z, p.z) };
+			}
 			Draws.push_back(draw);
 		}
 	}
+	UpdateRasterLighting();
 
 	// Stats.
 	Stats = {};
@@ -1222,6 +1307,23 @@ void CGpuScene::BakeSky (CRenderContext& Context)
 	Context.Barriers.Uav(SkyPyramid);
 	Context.Barriers.Transition(SkyEnvironment, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 	Context.Barriers.Transition(SkyPyramid, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+
+	// Image-based lighting for the raster preview (which cannot trace the sky): radiance
+	// pre-integrated over GGX lobes per roughness (split-sum) and cosine-convolved irradiance.
+	Context.Barriers.Transition(SkyPrefiltered, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+	Context.Barriers.Transition(SkyIrradiance, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+	{
+		const uint32 filter[4] = { SkyEnvironment.Srv, SkyPrefiltered.Uav, SkyPrefilterSize, SkyPrefilterSlices };
+		Context.SetRootConstants(filter, 4u);
+		Context.Dispatch(SkyPrefilterPipeline, rhi::DivideRoundUp(SkyPrefilterSize, 8u), rhi::DivideRoundUp(SkyPrefilterSize, 8u), SkyPrefilterSlices);
+	}
+	{
+		const uint32 filter[4] = { SkyEnvironment.Srv, SkyIrradiance.Uav, SkyIrradianceSize, 1u };
+		Context.SetRootConstants(filter, 4u);
+		Context.Dispatch2D(SkyIrradiancePipeline, SkyIrradianceSize, SkyIrradianceSize);
+	}
+	Context.Barriers.Transition(SkyPrefiltered, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+	Context.Barriers.Transition(SkyIrradiance, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 	Context.FlushBarriers();
 }
 
@@ -1241,6 +1343,280 @@ void CGpuScene::BakeEnergyLut (CRenderContext& Context)
 	Context.Barriers.Transition(EnergyLut, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
 	Context.FlushBarriers();
 	bEnergyLutBaked = true;
+}
+
+void CGpuScene::UpdateRasterLighting ()
+{
+	// Per instance and section: world area (object area scaled by |det|^(2/3), exact for rotation
+	// and uniform scale), mean reflectance from the material factors and the textures' average
+	// texels, emitted power. Textures that are still streaming count as white until resident.
+	RasterEmitters.clear();
+	struct SSurface
+	{
+		float Area = 0.0f;                  // world area x opacity coverage
+		float Reflectance[3] = {};
+		DirectX::XMFLOAT3 BoundsMin = {};
+		DirectX::XMFLOAT3 BoundsMax = {};
+	};
+	std::vector<SSurface> surfaces;
+	double surfaceArea = 0.0;
+	double flux[3] = {};
+	double surfaceCentroid[3] = {};
+	for (size_t i = 0; i < FrameInstances.size(); ++i)
+	{
+		const SSceneInstance& instance = FrameInstances[i];
+		const auto modelIt = Models.find(instance.Model);
+		if (instance.bHelper || modelIt == Models.end())
+		{
+			continue;
+		}
+		const SModelEntry& entry = modelIt->second;
+		const SRenderModel& model = *instance.Model;
+		const DirectX::XMFLOAT3X4& xf = instance.ObjectToWorld;
+		const float det =
+			xf.m[0][0] * (xf.m[1][1] * xf.m[2][2] - xf.m[1][2] * xf.m[2][1]) -
+			xf.m[0][1] * (xf.m[1][0] * xf.m[2][2] - xf.m[1][2] * xf.m[2][0]) +
+			xf.m[0][2] * (xf.m[1][0] * xf.m[2][1] - xf.m[1][1] * xf.m[2][0]);
+		const float areaScale = std::pow(std::abs(det), 2.0f / 3.0f);
+
+		double emitterArea = 0.0;
+		double emitterFlux[3] = {};
+		double emitterCentroid[3] = {};
+		const uint32 sections = (std::min)({ entry.SectionCount, static_cast<uint32>(entry.SectionArea.size()), model.Sections.Count() });
+		for (uint32 s = 0; s < sections; ++s)
+		{
+			if (entry.GeometryBase + s >= GeometryTable.size())
+			{
+				break;
+			}
+			const gpu::SGeometryData& g = GeometryTable[entry.GeometryBase + s];
+			const gpu::SMaterialData& m = MaterialTable[(std::min)(g.MaterialIndex, static_cast<uint32>(MaterialTable.size() - 1u))];
+			const uint32 mi = model.Sections[s].MaterialIndex;
+			const SMaterial* material = mi < model.Materials.Count() ? model.Materials[mi].GetRawIgnoringLifetime() : nullptr;
+			DirectX::XMFLOAT4 baseAvg = { 1.0f, 1.0f, 1.0f, 1.0f };
+			DirectX::XMFLOAT4 mrAvg = { 1.0f, 1.0f, 1.0f, 1.0f };
+			DirectX::XMFLOAT4 emissiveAvg = { 1.0f, 1.0f, 1.0f, 1.0f };
+			if (const auto materialIt = material ? MaterialEntries.find(material) : MaterialEntries.end(); materialIt != MaterialEntries.end())
+			{
+				baseAvg = Textures.GetAverageColor(materialIt->second.BaseColor);
+				mrAvg = Textures.GetAverageColor(materialIt->second.MetallicRoughness);
+				emissiveAvg = Textures.GetAverageColor(materialIt->second.Emissive);
+			}
+			const float area = entry.SectionArea[s] * areaScale;
+			// Masked and blended surfaces only intercept the light their opacity covers.
+			const bool bCutout = (m.Flags & (gpu::MaterialFlag_AlphaMask | gpu::MaterialFlag_AlphaBlend)) != 0u;
+			const float coverage = bCutout ? std::clamp(m.BaseColorFactor.w * baseAvg.w, 0.0f, 1.0f) : 1.0f;
+			const float metallic = std::clamp(m.Metallic * mrAvg.z, 0.0f, 1.0f);
+			// Hemispherical reflectance of the glTF model: Fresnel-averaged dielectric coat over
+			// the diffuse base, mixed with the metal (whose reflectance is its base colour).
+			const float f0 = 0.04f * m.SpecularFactor;
+			const float coat = f0 + (1.0f - f0) / 21.0f;
+			const float base[3] = { m.BaseColorFactor.x * baseAvg.x, m.BaseColorFactor.y * baseAvg.y, m.BaseColorFactor.z * baseAvg.z };
+			SSurface surface;
+			surface.Area = area * coverage;
+			for (uint32 c = 0; c < 3u; ++c)
+			{
+				const float b = std::clamp(base[c], 0.0f, 1.0f);
+				surface.Reflectance[c] = (1.0f - metallic) * (b * (1.0f - coat) + coat) + metallic * b;
+			}
+			{
+				const DirectX::XMFLOAT3& oc = entry.SectionCentroid[s];
+				const DirectX::XMFLOAT3 wc = TransformPoint(xf, oc.x, oc.y, oc.z);
+				surfaceArea += surface.Area;
+				surfaceCentroid[0] += surface.Area * wc.x;
+				surfaceCentroid[1] += surface.Area * wc.y;
+				surfaceCentroid[2] += surface.Area * wc.z;
+				const bool bBounds = s < entry.SectionBoundsMin.size();
+				const DirectX::XMFLOAT3 lo = bBounds ? entry.SectionBoundsMin[s] : entry.BoundsMin;
+				const DirectX::XMFLOAT3 hi = bBounds ? entry.SectionBoundsMax[s] : entry.BoundsMax;
+				surface.BoundsMin = { 1e30f, 1e30f, 1e30f };
+				surface.BoundsMax = { -1e30f, -1e30f, -1e30f };
+				for (uint32 corner = 0; corner < 8u; ++corner)
+				{
+					const DirectX::XMFLOAT3 w = TransformPoint(xf, (corner & 1u) ? hi.x : lo.x, (corner & 2u) ? hi.y : lo.y, (corner & 4u) ? hi.z : lo.z);
+					surface.BoundsMin = { (std::min)(surface.BoundsMin.x, w.x), (std::min)(surface.BoundsMin.y, w.y), (std::min)(surface.BoundsMin.z, w.z) };
+					surface.BoundsMax = { (std::max)(surface.BoundsMax.x, w.x), (std::max)(surface.BoundsMax.y, w.y), (std::max)(surface.BoundsMax.z, w.z) };
+				}
+			}
+			surfaces.push_back(surface);
+			if ((g.Flags & gpu::GeometryFlag_Emissive) != 0u)
+			{
+				// Same convention as the path tracer's emissive triangles: pi * L per unit area.
+				const float emitted[3] = { m.EmissiveFactor.x * emissiveAvg.x, m.EmissiveFactor.y * emissiveAvg.y, m.EmissiveFactor.z * emissiveAvg.z };
+				const DirectX::XMFLOAT3& oc = entry.SectionCentroid[s];
+				const DirectX::XMFLOAT3 wc = TransformPoint(xf, oc.x, oc.y, oc.z);
+				emitterArea += area;
+				emitterCentroid[0] += area * wc.x;
+				emitterCentroid[1] += area * wc.y;
+				emitterCentroid[2] += area * wc.z;
+				for (uint32 c = 0; c < 3u; ++c)
+				{
+					emitterFlux[c] += kPi * emitted[c] * area;
+				}
+			}
+		}
+		if (emitterArea > 0.0)
+		{
+			SRasterEmitter emitter;
+			emitter.Position = {
+				static_cast<float>(emitterCentroid[0] / emitterArea),
+				static_cast<float>(emitterCentroid[1] / emitterArea),
+				static_cast<float>(emitterCentroid[2] / emitterArea) };
+			// A sphere of the same area and power: radius from 4 pi r^2 = A, radiance = flux / (pi A).
+			emitter.Radius = static_cast<float>(std::sqrt(emitterArea / (4.0 * kPi)));
+			emitter.Radiance = {
+				static_cast<float>(emitterFlux[0] / (kPi * emitterArea)),
+				static_cast<float>(emitterFlux[1] / (kPi * emitterArea)),
+				static_cast<float>(emitterFlux[2] / (kPi * emitterArea)) };
+			emitter.Power = Luminance(static_cast<float>(emitterFlux[0]), static_cast<float>(emitterFlux[1]), static_cast<float>(emitterFlux[2]));
+			emitter.InstanceIndex = static_cast<uint32>(i);
+			if (emitter.Power > 0.0f)
+			{
+				RasterEmitters.push_back(emitter);
+			}
+		}
+	}
+	std::stable_sort(RasterEmitters.begin(), RasterEmitters.end(),
+		[] (const SRasterEmitter& A, const SRasterEmitter& B) { return A.Power > B.Power; });
+
+	// Only a scene that declares portals says it is closed: then the sun and the sky enter
+	// through those openings alone, and the openings absorb whatever reaches them from inside.
+	RasterAmbient = {};
+	RasterAmbient.bEnclosed = !FramePortals.empty();
+	if (!RasterAmbient.bEnclosed)
+	{
+		return;
+	}
+	const SSkyConstants& sky = FrameSky.Constants;
+	const double surfaceWeight = surfaceArea > 0.0 ? 1.0 / surfaceArea : 0.0;
+	// Surfaces and emitters entirely on the outer side of an opening are not in the enclosure
+	// (the shading pass makes the same split per pixel): a roof does not absorb interior light.
+	auto isOutside = [&] (const DirectX::XMFLOAT3& Lo, const DirectX::XMFLOAT3& Hi)
+	{
+		for (const gpu::SPortalData& portal : RasterAmbient.Portals)
+		{
+			bool bAllOutside = true;
+			for (uint32 corner = 0; corner < 8u && bAllOutside; ++corner)
+			{
+				const float x = (corner & 1u) ? Hi.x : Lo.x, y = (corner & 2u) ? Hi.y : Lo.y, z = (corner & 4u) ? Hi.z : Lo.z;
+				bAllOutside = (x - portal.Center.x) * portal.Normal.x + (y - portal.Center.y) * portal.Normal.y + (z - portal.Center.z) * portal.Normal.z < 0.0f;
+			}
+			if (bAllOutside)
+			{
+				return true;
+			}
+		}
+		return false;
+	};
+	const float inside[3] = {
+		static_cast<float>(surfaceCentroid[0] * surfaceWeight),
+		static_cast<float>(surfaceCentroid[1] * surfaceWeight),
+		static_cast<float>(surfaceCentroid[2] * surfaceWeight) };
+	for (gpu::SPortalData portal : FramePortals)
+	{
+		const float side =
+			(inside[0] - portal.Center.x) * portal.Normal.x +
+			(inside[1] - portal.Center.y) * portal.Normal.y +
+			(inside[2] - portal.Center.z) * portal.Normal.z;
+		if (side < 0.0f)
+		{
+			portal.Normal = { -portal.Normal.x, -portal.Normal.y, -portal.Normal.z };
+		}
+		RasterAmbient.Portals.push_back(portal);
+	}
+	surfaceArea = 0.0;
+	double reflectedArea[3] = {};
+	for (const SSurface& surface : surfaces)
+	{
+		if (isOutside(surface.BoundsMin, surface.BoundsMax))
+		{
+			continue;
+		}
+		surfaceArea += surface.Area;
+		for (uint32 c = 0; c < 3u; ++c)
+		{
+			reflectedArea[c] += surface.Area * surface.Reflectance[c];
+		}
+	}
+	for (const SRasterEmitter& emitter : RasterEmitters)
+	{
+		if (!isOutside(emitter.Position, emitter.Position))
+		{
+			// Flux of the stand-in sphere: pi * L * 4 pi r^2 (the emitting area).
+			const float sphereArea = 4.0f * kPi * emitter.Radius * emitter.Radius;
+			flux[0] += kPi * emitter.Radiance.x * sphereArea;
+			flux[1] += kPi * emitter.Radiance.y * sphereArea;
+			flux[2] += kPi * emitter.Radiance.z * sphereArea;
+		}
+	}
+	for (const gpu::SPortalData& portal : RasterAmbient.Portals)
+	{
+		surfaceArea += portal.Area;
+		if (SunLightIndex != FRT_INVALID_INDEX)
+		{
+			const gpu::SLightData& sun = LightTable[SunLightIndex];
+			// The sun must be on the outer side (portal normals face the interior).
+			const float c = -(portal.Normal.x * sun.AxisU.x + portal.Normal.y * sun.AxisU.y + portal.Normal.z * sun.AxisU.z);
+			if (c > 0.0f)
+			{
+				flux[0] += sun.Radiance.x * sun.SolidAngle * portal.Area * c;
+				flux[1] += sun.Radiance.y * sun.SolidAngle * portal.Area * c;
+				flux[2] += sun.Radiance.z * sun.SolidAngle * portal.Area * c;
+			}
+		}
+		if (SkyLightIndex != FRT_INVALID_INDEX)
+		{
+			// Sky irradiance on the opening from outside: cosine-weighted integral over the
+			// sphere (rows uniform in y = uniform in solid angle), facing away from the interior.
+			const int rows = 32, columns = 32;
+			const double cell = 4.0 * kPi / (rows * columns);
+			double e[3] = {};
+			for (int r = 0; r < rows; ++r)
+			{
+				const float y = -1.0f + (2.0f * r + 1.0f) / rows;
+				const float ring = std::sqrt((std::max)(0.0f, 1.0f - y * y));
+				const DirectX::XMFLOAT3 radiance = EvalProceduralSkyCpu(sky, y);
+				for (int k = 0; k < columns; ++k)
+				{
+					const float phi = 2.0f * kPi * (k + 0.5f) / columns;
+					const float cosine = -(portal.Normal.x * ring * std::cos(phi) + portal.Normal.y * y + portal.Normal.z * ring * std::sin(phi));
+					if (cosine > 0.0f)
+					{
+						e[0] += radiance.x * cosine * cell;
+						e[1] += radiance.y * cosine * cell;
+						e[2] += radiance.z * cosine * cell;
+					}
+				}
+			}
+			for (uint32 c = 0; c < 3u; ++c)
+			{
+				flux[c] += e[c] * portal.Area;
+			}
+		}
+	}
+	RasterAmbient.Area = static_cast<float>(surfaceArea);
+	for (uint32 c = 0; c < 3u; ++c)
+	{
+		const double albedo = surfaceArea > 0.0 ? (std::min)(reflectedArea[c] / surfaceArea, 0.98) : 0.0;
+		const double radiance = surfaceArea > 0.0 ? flux[c] * albedo / (1.0 - albedo) / (kPi * surfaceArea) : 0.0;
+		(&RasterAmbient.Albedo.x)[c] = static_cast<float>(albedo);
+		(&RasterAmbient.Flux.x)[c] = static_cast<float>(flux[c]);
+		(&RasterAmbient.Radiance.x)[c] = static_cast<float>(radiance);
+	}
+	const float luminance = Luminance(RasterAmbient.Radiance.x, RasterAmbient.Radiance.y, RasterAmbient.Radiance.z);
+	if (std::abs(luminance - LoggedAmbientLuminance) > 0.01f * (std::max)(luminance, 1e-12f))
+	{
+		LoggedAmbientLuminance = luminance;
+		std::printf("[raster] enclosure: area %.1f m2, albedo %.3f %.3f %.3f, flux %.2f %.2f %.2f W, ambient radiance %.3g %.3g %.3g, %zu emitter(s)\n",
+			RasterAmbient.Area, RasterAmbient.Albedo.x, RasterAmbient.Albedo.y, RasterAmbient.Albedo.z,
+			RasterAmbient.Flux.x, RasterAmbient.Flux.y, RasterAmbient.Flux.z,
+			RasterAmbient.Radiance.x, RasterAmbient.Radiance.y, RasterAmbient.Radiance.z, RasterEmitters.size());
+		for (const gpu::SPortalData& portal : RasterAmbient.Portals)
+		{
+			std::printf("[raster] portal at %.2f %.2f %.2f, interior normal %.2f %.2f %.2f, %.2f m2\n",
+				portal.Center.x, portal.Center.y, portal.Center.z, portal.Normal.x, portal.Normal.y, portal.Normal.z, portal.Area);
+		}
+	}
 }
 
 void CGpuScene::FillFrameConstants (gpu::SFrameConstants& Frame) const

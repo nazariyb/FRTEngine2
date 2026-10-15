@@ -59,6 +59,40 @@ struct SSceneDraw
 	uint32 IndexOffset = 0u;
 	int32 VertexOffset = 0;
 	bool bAlphaBlend = false;
+	bool bAlphaTested = false;     // alpha-masked material: depth-only passes must run the alpha test
+	bool bHelper = false;          // debug geometry (portal quads): seen by the camera, casts no shadow
+	DirectX::XMFLOAT3 BoundsMin = {};   // world-space AABB of the section (culling)
+	DirectX::XMFLOAT3 BoundsMax = {};
+};
+
+// Raster preview stand-in for an emissive instance: a sphere light of the same power and area,
+// centred on the emitting surface (exact for emissive spheres). The path tracer samples the
+// emissive triangles themselves; a rasterizer cannot afford that per pixel.
+struct SRasterEmitter
+{
+	DirectX::XMFLOAT3 Position = {};
+	float Radius = 0.0f;
+	DirectX::XMFLOAT3 Radiance = {};   // mean emitted radiance over the emitting area
+	float Power = 0.0f;                // luminance flux, the ranking key
+	uint32 InstanceIndex = 0u;         // the emitter itself, left out of its own shadow map
+};
+
+// Energy balance of an enclosed scene (one that declares sky portals), the raster preview's
+// substitute for global illumination: the "ambient term" of progressive radiosity (Cohen et al.
+// 1988). Everything that enters through the portals or is emitted inside bounces until it is
+// absorbed or leaves through a portal; spread evenly over the enclosure, the interreflected
+// light is a uniform radiance Flux * Albedo / (1 - Albedo) / (pi * Area) per channel.
+struct SRasterAmbient
+{
+	bool bEnclosed = false;
+	DirectX::XMFLOAT3 Radiance = {};   // uniform indirect radiance inside the enclosure
+	DirectX::XMFLOAT3 Albedo = {};     // area-weighted mean reflectance (portal openings count as 0)
+	DirectX::XMFLOAT3 Flux = {};       // power entering through the portals + emitted inside (W)
+	float Area = 0.0f;                 // surface area, portal openings included (m^2)
+	// The portals with their normals turned toward the interior. Which side is inside is taken
+	// from the geometry, not from the authored normal (the path tracer only uses its line): the
+	// side of the opening that holds the area-weighted centroid of the scene's surfaces.
+	std::vector<gpu::SPortalData> Portals;
 };
 
 /**
@@ -106,6 +140,20 @@ public:
 	bool IsStreamingIdle () const { return FrameNumber > 0u && Textures.GetPendingCount() == 0u; }
 	float GetSceneRadius () const { return SceneRadius; }
 	DirectX::XMFLOAT3 GetSceneCenter () const { return SceneCenter; }
+	DirectX::XMFLOAT3 GetSceneBoundsMin () const { return SceneMin; }
+	DirectX::XMFLOAT3 GetSceneBoundsMax () const { return SceneMax; }
+
+	// ---- raster preview inputs (no ray tracing needed) ----
+	const std::vector<SRasterEmitter>& GetRasterEmitters () const { return RasterEmitters; }
+	const SRasterAmbient& GetRasterAmbient () const { return RasterAmbient; }
+	// Sky radiance pre-integrated against GGX lobes: Texture3D, xy = equal-area octahedral
+	// direction, z = perceptual roughness (slice i = i / (SkyPrefilterSlices - 1)).
+	uint32 GetSkyPrefilteredSrv () const { return SkyPrefiltered.Srv; }
+	// Cosine-convolved sky: irradiance E(n) for a surface facing n (equal-area octahedral, RGBA16F).
+	uint32 GetSkyIrradianceSrv () const { return SkyIrradiance.Srv; }
+	static constexpr uint32 SkyPrefilterSize = 128u;
+	static constexpr uint32 SkyPrefilterSlices = 8u;
+	static constexpr uint32 SkyIrradianceSize = 32u;
 
 	// Light selection: weight sun and sky by the power entering through the portals (closed
 	// interiors) instead of over the scene disk. Changes noise only, never the expectation.
@@ -133,6 +181,11 @@ private:
 		DirectX::XMFLOAT3 BoundsMin = {};
 		DirectX::XMFLOAT3 BoundsMax = {};
 		uint64 LastUsedFrame = 0u;
+		// Object-space area and area-weighted centroid per section (raster energy balance).
+		std::vector<float> SectionArea;
+		std::vector<DirectX::XMFLOAT3> SectionCentroid;
+		std::vector<DirectX::XMFLOAT3> SectionBoundsMin;
+		std::vector<DirectX::XMFLOAT3> SectionBoundsMax;
 	};
 
 	struct SMaterialEntry
@@ -156,6 +209,7 @@ private:
 	void BakeSky (CRenderContext& Context);
 	void BakeEnergyLut (CRenderContext& Context);
 	void BuildLightTables (CRenderContext& Context);
+	void UpdateRasterLighting ();
 
 	rhi::CDevice* Device = nullptr;
 	rhi::CPipelineLibrary* Pipelines = nullptr;
@@ -197,6 +251,13 @@ private:
 	rhi::HPipeline SkyBakePipeline = rhi::InvalidPipelineHandle;
 	rhi::HPipeline SkyPyramidPipeline = rhi::InvalidPipelineHandle;
 	rhi::HPipeline EnergyLutPipeline = rhi::InvalidPipelineHandle;
+	rhi::SGpuTexture SkyPrefiltered;
+	rhi::SGpuTexture SkyIrradiance;
+	rhi::HPipeline SkyPrefilterPipeline = rhi::InvalidPipelineHandle;
+	rhi::HPipeline SkyIrradiancePipeline = rhi::InvalidPipelineHandle;
+	std::vector<SRasterEmitter> RasterEmitters;
+	SRasterAmbient RasterAmbient;
+	float LoggedAmbientLuminance = -1.0f;
 	uint64 SkyHash = 0u;
 	bool bEnergyLutBaked = false;
 	float SkyAverageLuminance = 0.0f;
@@ -212,6 +273,8 @@ private:
 	bool bGeometryTableDirty = true;
 	float SceneRadius = 10.0f;
 	DirectX::XMFLOAT3 SceneCenter = {};
+	DirectX::XMFLOAT3 SceneMin = { -10.0f, -10.0f, -10.0f };
+	DirectX::XMFLOAT3 SceneMax = { 10.0f, 10.0f, 10.0f };
 
 	std::vector<SSceneDraw> Draws;
 	SSceneStats Stats;

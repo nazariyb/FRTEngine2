@@ -1227,6 +1227,10 @@ void CRenderer::DrawRendererUi (CRenderView& Inspected)
 	{
 		Inspected.PathTracer->DrawSettingsUi(Profile.PathTracer, Profile.RadianceCache);
 	}
+	if (ImGui::CollapsingHeader("Raster preview"))
+	{
+		Inspected.RasterPreview->DrawSettingsUi();
+	}
 	if (ImGui::CollapsingHeader("Denoiser"))
 	{
 		Inspected.Denoiser->DrawSettingsUi(Profile.Denoiser);
