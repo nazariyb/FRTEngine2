@@ -1,9 +1,12 @@
 // AssetTool's command line as scripts see it (AssetTool/Source, design §13.1): the exit codes - 0 for
-// success, 2 for every usage error, 4 when a run that writes meets a project another process owns -
-// the shape of the --json lines (one object per line, stable field names), help's list of verbs,
-// newguid's GUIDs, and the writer lock: a read-only run never takes it, and AssetTool's own lock verb
-// keeps every other writer out until its input ends. Runs the AssetTool executable beside Core-Test on
-// a scratch project in a directory with a non-ASCII name. Release builds no AssetTool: skipped there.
+// success, 2 for every usage error (unknown options too), 3 when the writer lock cannot be taken for a
+// reason other than an owner, 4 when a run that writes meets a mount another process owns - the shape of
+// the --json lines (one object per line, stable field names), help's list of verbs, newguid's GUIDs, the
+// writer lock of /Project and, with --engine, of /Engine: a read-only run never takes it, and AssetTool's
+// own lock verb keeps every other writer out until its input ends. A verb that writes nothing runs beside a
+// working directory's project it cannot use. Runs the AssetTool executable beside Core-Test on a scratch
+// project in a directory with a non-ASCII name, and a copy of it in a scratch engine checkout for /Engine.
+// Release builds no AssetTool: skipped there.
 #include <gtest/gtest.h>
 
 #include "TestCommon.h"
@@ -23,6 +26,7 @@
 #include "Platform/FileLock.h"
 #include "Platform/Platform.h"
 #include "Platform/Process.h"
+#include "Project/Project.h"
 
 using namespace frt;
 
@@ -34,16 +38,20 @@ constexpr assets::SGuid InitializerExample
 	{ { 0x9f, 0xc0, 0xd4, 0x01, 0x0b, 0xbf, 0x28, 0xb4, 0x59, 0x40, 0x72, 0xe7, 0x2b, 0x86, 0x55, 0xab } };
 static_assert(InitializerExample.IsValid() && InitializerExample.GetVersion() == 2u);
 
+// What the build appends to the names of this configuration's binaries: Core-Test-<config>.exe gives
+// "-<config>" ("-Development-Default"); Release's plain names give "".
+FString GetConfigurationSuffix ()
+{
+	const FString stem = FString::FromPath(platform::GetExecutablePath().stem());
+	constexpr FStringLiteral prefix = "Core-Test";
+	return FString(stem.View().RightChop(stem.StartsWith(prefix) ? prefix.Len() : stem.Len()));
+}
+
 // AssetTool beside this executable, named as the build names it: Core-Test-<config>.exe runs
 // AssetTool-<config>.exe.
 std::filesystem::path GetAssetToolPath ()
 {
-	const std::filesystem::path executable = platform::GetExecutablePath();
-	const FString stem = FString::FromPath(executable.stem());
-	constexpr FStringLiteral prefix = "Core-Test";
-	FString name("AssetTool");
-	name.Append(stem.View().RightChop(stem.StartsWith(prefix) ? prefix.Len() : stem.Len())).Append(".exe");
-	return executable.parent_path() / name.ToPath();
+	return platform::GetExecutablePath().parent_path() / ("AssetTool" + GetConfigurationSuffix() + ".exe").ToPath();
 }
 
 std::vector<FStringView> SplitLines (FStringView Text)
@@ -132,12 +140,44 @@ protected:
 
 	void TearDown () override
 	{
+		if (bPathChanged)
+		{
+			platform::SetEnvironmentPath("PATH", PreviousPath);
+		}
 		if (!Dir.empty())
 		{
 			platform::SetEnvironmentPath("FRT_USER_DATA_DIR", PreviousUserDataDir);
 			std::error_code ec;
 			std::filesystem::remove_all(Dir, ec);
 		}
+	}
+
+	// An engine checkout of its own in the scratch directory, for --engine runs, which lock the engine
+	// AssetTool belongs to and must not lock this checkout: an Engine.frtengine with a copy of AssetTool
+	// and Core's DLL in Binaries/Win64. Core finds its engine from where it is loaded (EnginePaths.h). The
+	// other libraries Core loads stay where they are, found through PATH, which TearDown puts back.
+	// Returns the copy of AssetTool; Engine is the checkout's directory.
+	std::filesystem::path MakeScratchEngine (const std::filesystem::path& Engine)
+	{
+		const std::filesystem::path binaries = Engine / "Binaries" / "Win64";
+		std::error_code ec;
+		EXPECT_TRUE(std::filesystem::create_directories(binaries, ec)) << FString::FromUtf8Lossy(ec.message()).CStr();
+		EXPECT_TRUE(platform::WriteFileText(Engine / project::EngineFileName.ToPath(), "[Engine]\nName=AssetToolTestEngine\n"));
+		const std::filesystem::path core = ("Core" + GetConfigurationSuffix() + ".dll").ToPath();
+		for (const std::filesystem::path& file : { Exe.filename(), core })
+		{
+			std::filesystem::copy_file(Exe.parent_path() / file, binaries / file, ec);
+			EXPECT_FALSE(ec) << FString::FromPath(file).CStr() << ": " << FString::FromUtf8Lossy(ec.message()).CStr();
+		}
+
+		if (!bPathChanged)
+		{
+			PreviousPath = platform::GetEnvironmentPath("PATH");
+			bPathChanged = true;
+		}
+		EXPECT_TRUE(platform::SetEnvironmentPath("PATH", (FString::FromPath(Exe.parent_path()) + ";" +
+			FString::FromPath(PreviousPath)).ToPath()));
+		return binaries / Exe.filename();
 	}
 
 	// AssetTool with Arguments, in WorkingDir (default: the scratch directory, which holds no project).
@@ -156,6 +196,8 @@ protected:
 	std::filesystem::path ProjectDir;
 	std::filesystem::path ProjectFile;
 	std::filesystem::path PreviousUserDataDir;
+	std::filesystem::path PreviousPath;
+	bool bPathChanged = false;
 };
 }
 
@@ -243,28 +285,168 @@ TEST_F(AssetToolTest, UsageErrorsExitWithTwo)
 	{
 		{ "newguid", "abc" }, { "newguid", "0" }, { "newguid", "10001" }, { "newguid", "1", "2" }, { "help", "nosuch" },
 		{ "help", "a", "b" }, { ProjectArgument(), "lock", "extra" },
+		// Options nobody reads: a typo, a negative number, a host option in the wrong form.
+		{ "newguid", "--jsno" }, { "--cii", ProjectArgument(), "lock" }, { "newguid", "-3" }, { "newguid", "--json=1" },
+		{ "-Run", "newguid" }, { "newguid", "-Assets:ReadOnly" }, { "help", "-" },
 	};
 	for (const std::vector<FString>& arguments : badArguments)
 	{
 		const test::SProcessResult result = Run(arguments);
 		EXPECT_EQ(result.ExitCode, 2) << arguments.back().CStr() << ": " << result.Errors.CStr();
 		EXPECT_FALSE(result.Errors.IsEmpty()) << arguments.back().CStr();
+		EXPECT_TRUE(result.Output.IsEmpty()) << arguments.back().CStr() << ": " << result.Output.CStr();
 	}
+
+	const test::SProcessResult negative = Run({ "newguid", "-3", "--json" });
+	EXPECT_EQ(negative.ExitCode, 2);
+	EXPECT_TRUE(negative.Errors.Contains("newguid: no option '-3'")) << negative.Errors.CStr();
+	EXPECT_TRUE(negative.Output.StartsWith("{\"error\":\"newguid: no option '-3'")) << negative.Output.CStr();
 
 	// A verb that writes needs a mount: no project here, no --engine.
 	const test::SProcessResult noProject = Run({ "lock" });
 	EXPECT_EQ(noProject.ExitCode, 2);
 	EXPECT_TRUE(noProject.Errors.Contains("no project")) << noProject.Errors.CStr();
 
-	// A project that is not there; --engine together with a project.
+	// A project that is not there; --engine together with a project, in each way of naming one.
 	const test::SProcessResult missing = Run({ "-Project=" + FString::FromPath(Dir / "Немає.frtproject"), "newguid" });
 	EXPECT_EQ(missing.ExitCode, 2);
 	EXPECT_TRUE(missing.Errors.Contains("Немає.frtproject")) << missing.Errors.CStr();
-	EXPECT_EQ(Run({ "--engine", ProjectArgument(), "lock" }).ExitCode, 2);
+	for (const FString& project : { ProjectArgument(), "--project=" + FString::FromPath(ProjectFile), FString::FromPath(ProjectFile),
+		FString("-Project=") })
+	{
+		const test::SProcessResult both = Run({ "--engine", project, "newguid" });
+		EXPECT_EQ(both.ExitCode, 2) << project.CStr();
+		EXPECT_TRUE(both.Errors.Contains("--engine acts on /Engine without a project")) << project.CStr() << ": " << both.Errors.CStr();
+	}
 
 	// Verbs that write nothing need no project.
 	EXPECT_EQ(Run({ "newguid" }).ExitCode, 0);
 	EXPECT_EQ(Run({ "--engine", "newguid" }).ExitCode, 0);
+}
+
+// <verb> --help says what the verb does, and does not run it.
+TEST_F(AssetToolTest, HelpWithAVerbDoesNotRunIt)
+{
+	const test::SProcessResult help = Run({ "newguid", "--help" });
+	ASSERT_EQ(help.ExitCode, 0) << help.Errors.CStr();
+	EXPECT_EQ(help.Output, Run({ "help", "newguid" }).Output);
+	EXPECT_EQ(SplitLines(help.Output).size(), 1u) << help.Output.CStr();
+
+	// lock --help takes no lock, so it needs no project.
+	const test::SProcessResult lock = Run({ "-Run=lock", "-?" });
+	EXPECT_EQ(lock.ExitCode, 0) << lock.Errors.CStr();
+	EXPECT_TRUE(lock.Output.Contains("lock:")) << lock.Output.CStr();
+}
+
+// help and newguid work wherever they are run: a project in the working directory that cannot be used - its
+// file does not load, its engine is not there, it is another engine's - is passed over with a warning on stderr.
+// A run that writes, or that names the project, still fails on it.
+TEST_F(AssetToolTest, AVerbThatWritesNothingRunsBesideAProjectItCannotUse)
+{
+	std::error_code ec;
+	const std::filesystem::path otherEngine = Dir / FStringView("Інший рушій").ToPath();
+	ASSERT_TRUE(std::filesystem::create_directories(otherEngine, ec));
+	ASSERT_TRUE(platform::WriteFileText(otherEngine / project::EngineFileName.ToPath(), "[Engine]\nName=OtherEngine\n"));
+
+	struct SCase
+	{
+		FStringView Directory;
+		FString Descriptor;
+		FStringView Why;   // in the warning
+	};
+	const SCase cases[] =
+	{
+		{ "Без рушія", "[Project]\nName=NoEngine\nEngine=C:\\NoSuchEngine\n", "no engine 'C:\\NoSuchEngine'" },
+		{ "Без імені", "[Project]\nEngine=" + FString::FromPath(paths::GetEngineDir()) + "\n", "has no [Project] Name" },
+		{ "Чужий рушій", "[Project]\nName=OtherEngine\nEngine=" + FString::FromPath(otherEngine) + "\n", "uses the engine in" },
+	};
+	for (const SCase& testCase : cases)
+	{
+		SCOPED_TRACE(FString(testCase.Directory).CStr());
+		const std::filesystem::path dir = Dir / testCase.Directory.ToPath();
+		ASSERT_TRUE(std::filesystem::create_directories(dir, ec));
+		const std::filesystem::path file = dir / "Other.frtproject";
+		ASSERT_TRUE(platform::WriteFileText(file, testCase.Descriptor));
+
+		const test::SProcessResult help = Run({ "help" }, dir);
+		EXPECT_EQ(help.ExitCode, 0) << help.Errors.CStr();
+		EXPECT_TRUE(help.Output.Contains("newguid [n]:")) << help.Output.CStr();
+		EXPECT_TRUE(help.Errors.StartsWith("warning: the working directory's project cannot be used, so help runs without one: "))
+			<< help.Errors.CStr();
+		EXPECT_TRUE(help.Errors.Contains(testCase.Why)) << help.Errors.CStr();
+
+		// The warning stays on stderr: --json stdout is the GUIDs alone.
+		const test::SProcessResult guids = Run({ "newguid", "2", "--json" }, dir);
+		EXPECT_EQ(guids.ExitCode, 0) << guids.Errors.CStr();
+		EXPECT_EQ(SplitLines(guids.Output).size(), 2u) << guids.Output.CStr();
+		EXPECT_TRUE(guids.Errors.StartsWith("warning: ")) << guids.Errors.CStr();
+
+		// It is needed: the verb writes, or the project was named.
+		const test::SProcessResult lock = Run({ "lock" }, dir);
+		EXPECT_EQ(lock.ExitCode, 2) << lock.Errors.CStr();
+		EXPECT_FALSE(lock.Errors.Contains("warning")) << lock.Errors.CStr();
+		EXPECT_EQ(Run({ "-Project=" + FString::FromPath(file), "newguid" }).ExitCode, 2);
+		EXPECT_EQ(Run({ FString::FromPath(file), "newguid" }).ExitCode, 2);
+	}
+}
+
+// The writer lock cannot be taken for a reason that is no other owner - here Local is a file, so Local/Assets
+// cannot be made: an internal error, exit code 3, with the reason, and no owner in the JSON object.
+TEST_F(AssetToolTest, AFailureToTakeTheLockIsAnInternalError)
+{
+	ASSERT_TRUE(platform::WriteFileText(ProjectDir / "Local", "not a directory"));
+
+	const test::SProcessResult text = Run({ ProjectArgument(), "lock" });
+	EXPECT_EQ(text.ExitCode, 3) << text.Errors.CStr();
+	EXPECT_TRUE(text.Errors.StartsWith("lock: cannot take the writer lock of /Project: ")) << text.Errors.CStr();
+	EXPECT_TRUE(text.Output.IsEmpty()) << text.Output.CStr();
+
+	const test::SProcessResult json = Run({ ProjectArgument(), "lock", "--json" });
+	EXPECT_EQ(json.ExitCode, 3) << json.Errors.CStr();
+	const std::vector<FStringView> lines = SplitLines(json.Output);
+	ASSERT_EQ(lines.size(), 1u) << json.Output.CStr();
+	EXPECT_TRUE(lines[0].StartsWith("{\"error\":\"lock: cannot take the writer lock of /Project: ")) << json.Output.CStr();
+	EXPECT_TRUE(lines[0].EndsWith(",\"exitCode\":3}")) << json.Output.CStr();
+	EXPECT_FALSE(lines[0].Contains("\"owner\"")) << json.Output.CStr();
+
+	// A run that does not write never asks for the lock.
+	EXPECT_EQ(Run({ ProjectArgument(), "newguid" }).ExitCode, 0);
+}
+
+// --engine: the run acts on /Engine as its owner, with the engine's own Local/Assets/Owner.lock - of the
+// engine this AssetTool belongs to, here a scratch checkout - and is refused while another process owns it,
+// with the design's message naming /Engine. A project in the working directory makes no difference.
+TEST_F(AssetToolTest, TheEnginesOwnerTakesTheEnginesLock)
+{
+	const std::filesystem::path engine = Dir / FStringView("Рушій 引擎").ToPath();
+	const std::filesystem::path engineTool = MakeScratchEngine(engine);
+	ASSERT_FALSE(HasFailure());
+	const std::filesystem::path lockFile = assets::GetOwnerLockPath(engine);
+
+	const test::SProcessResult locked = test::RunProcess(engineTool, std::vector<FString> { "--engine", "lock", "--json" }, ProjectDir);
+	ASSERT_EQ(locked.ExitCode, 0) << locked.Errors.CStr();
+	const std::vector<FStringView> lines = SplitLines(locked.Output);
+	ASSERT_EQ(lines.size(), 2u) << locked.Output.CStr();
+	EXPECT_TRUE(lines[0].StartsWith("{\"locked\":\"/Engine\",\"lockFile\":\"")) << locked.Output.CStr();
+	EXPECT_TRUE(lines[0].Contains(FStringView("Рушій 引擎\\\\Local\\\\Assets\\\\Owner.lock\""))) << locked.Output.CStr();
+	EXPECT_EQ(lines[1], "{\"unlocked\":\"/Engine\"}");
+	EXPECT_FALSE(std::filesystem::exists(lockFile));
+
+	FString error;
+	const std::optional<platform::CExclusiveFileLock> owned = assets::TryTakeOwnerLock(engine, nullptr, &error);
+	ASSERT_TRUE(owned.has_value()) << error.CStr();
+	const FString owner = assets::GetThisProcessAsOwner().Describe();
+
+	const test::SProcessResult refused = test::RunProcess(engineTool, std::vector<FString> { "--engine", "lock" }, ProjectDir);
+	EXPECT_EQ(refused.ExitCode, 4) << refused.Errors.CStr();
+	EXPECT_TRUE(refused.Errors.Contains(owner + " owns /Engine: close it, or run with --ci")) << refused.Errors.CStr();
+
+	const test::SProcessResult refusedJson = test::RunProcess(engineTool, std::vector<FString> { "--engine", "lock", "--json" });
+	EXPECT_EQ(refusedJson.ExitCode, 4) << refusedJson.Errors.CStr();
+	EXPECT_TRUE(refusedJson.Output.Contains("\"exitCode\":4,\"owner\":\"" + owner + "\",\"mount\":\"/Engine\"}")) << refusedJson.Output.CStr();
+
+	// A project's lock is another one: free. (This checkout's AssetTool: the project names this engine.)
+	EXPECT_EQ(Run({ ProjectArgument(), "lock" }).ExitCode, 0);
 }
 
 // The design's message and code for a second writer: this test process owns the project, AssetTool's

@@ -32,13 +32,16 @@ constexpr SCommandlet Commandlets[] =
 		"the end of input, so no other process that writes the mount can run meanwhile", true },
 };
 
-// What help says beyond the verbs: the options every verb takes, and the exit codes.
+// What help says beyond the verbs: the options every verb takes (FindUnknownOption knows the same
+// ones), and the exit codes. FRT.bat assets and AssetTool itself take every spelling of them.
 constexpr FStringLiteral HelpHeader =
 	"Usage: FRT.bat assets <verb> [arguments] [options], or AssetTool <verb> ... / AssetTool -Run=<verb> ...";
 constexpr FStringLiteral HelpOptions[] =
 {
-	"  -Project=<file>     the project to act on (default: the working directory's)",
+	"  --project=<file>    the project to act on, its .frtproject file or directory (default: the working directory's; "
+		"-Project=<file> too)",
 	"  --engine            act on /Engine as its owner, with no project",
+	"  --help              with a verb: what it does, as help <verb>",
 	"  --json              one JSON object per line on stdout instead of text",
 	"  --ci                read-only: writes nothing the mount's owner writes, never takes the writer lock",
 	"  -Assets:ReadOnly=1  read-only, as with --ci",

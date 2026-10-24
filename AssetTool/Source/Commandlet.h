@@ -44,7 +44,8 @@ class CCommandletContext
 {
 public:
 	// The positional arguments after the verb: "newguid 3" -> { "3" }. Options (-Name, --Name,
-	// -Name=Value, -Section:Key=Value) are not among them: FindOption and HasOption read those.
+	// -Name=Value, -Section:Key=Value) are not among them: FindOption and HasOption read those, and
+	// the host has refused every option that neither it nor the commandlet reads (FindUnknownOption).
 	std::vector<FString> Arguments;
 	// Every argument of the command line, as given.
 	std::vector<FString> CommandLine;
@@ -104,7 +105,14 @@ private:
  *                   host takes the mount's writer lock first, and exits with ExitOwned if another
  *                   process owns it - unless the run is read-only, in which case it runs without the
  *                   lock and the verb must write nothing of the kind (it sees bReadOnly). Verbs that
- *                   touch only shared, process-safe stores (the DDC, §7.4) leave it false.
+ *                   touch only shared, process-safe stores (the DDC, §7.4) leave it false. A verb
+ *                   that leaves it false also runs where the working directory holds a project that
+ *                   cannot be used (broken, or another engine's): with a warning, and no project.
+ *   Options         the options of its own, by name without dashes ({ "fix", "max-gb" }): -Name,
+ *                   --Name, -Name=Value and --Name=Value are accepted for each, and the verb reads
+ *                   them with FindOption / HasOption and checks their values itself. Any other option
+ *                   that the host does not read is a usage error, so a typo (--jsno) or a negative
+ *                   number (newguid -3) never runs a verb in a mode nobody asked for. Empty: none.
  */
 struct SCommandlet
 {
@@ -112,10 +120,23 @@ struct SCommandlet
 	int32 (*Run) (CCommandletContext& Context) = nullptr;
 	FStringLiteral Usage;
 	bool bWritesProject = false;
+	std::span<const FStringLiteral> Options;
 };
 
 // The table, in the order help lists it.
 [[nodiscard]] std::span<const SCommandlet> GetCommandlets ();
 // The commandlet named Name (IgnoreCaseAscii), or nullptr.
 [[nodiscard]] const SCommandlet* FindCommandlet (FStringView Name);
+
+/**
+ * The first argument of CommandLine that is an option (it starts with '-') and that neither the host
+ * nor Commandlet reads; nullopt when there is none. The host reads, for every verb:
+ *   -Run=<Verb>, -Project=<file or directory>             with a value
+ *   --json, --ci, --engine, --help, -?                    without one
+ *   -Section:Key=Value                                    a config override (-Assets:ReadOnly=1)
+ * each with one dash or two, the name in any case (platform::FindCommandLineValue's rules). A host
+ * option in the wrong form (--json=1, -Project) is unknown too: it would be ignored otherwise. With no
+ * Commandlet (no verb yet), only the host's options are known.
+ */
+[[nodiscard]] std::optional<FString> FindUnknownOption (std::span<const FString> CommandLine, const SCommandlet* Commandlet);
 }

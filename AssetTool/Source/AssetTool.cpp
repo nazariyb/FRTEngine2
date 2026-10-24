@@ -4,8 +4,11 @@
  *
  *     AssetTool <verb> [arguments] [options]       AssetTool -Run=<Verb> [arguments] [options]
  *
- * It finds the project like the other hosts (-Project=<file>, else the working directory's;
- * project::FindProjectToRun), or with --engine acts on /Engine as its owner with no project (§4.7).
+ * It finds the project like the other hosts (-Project=<file> or --project=<file>, a bare *.frtproject
+ * argument, else the working directory's; project::FindProjectToRun), or with --engine acts on /Engine
+ * as its owner with no project (§4.7). A verb that writes nothing (help, newguid) runs with no project
+ * when the working directory's cannot be used, with a warning: where it is run does not break it.
+ * Options that neither the host nor the verb reads are usage errors (FindUnknownOption).
  * It loads the config layers and makes a memory pool primary as the other hosts do, and opens no
  * window, renderer or game module: the game module joins with the game's types and importers (M5),
  * through SEngineDesc::GameModule. Release builds no AssetTool (it cannot load a game module).
@@ -90,15 +93,40 @@ SVerbAndArguments SplitVerbAndArguments (std::span<const FString> CommandLine)
 	return result;
 }
 
+// The command line names the project, the ways FindProjectToRun reads one: -Project= with a value, or
+// an argument naming a *.frtproject file.
+bool NamesProject (std::span<const FString> CommandLine)
+{
+	if (const std::optional<FString> value = platform::FindCommandLineValue(CommandLine, "Project"); value && !value->IsEmpty())
+	{
+		return true;
+	}
+	for (const FString& argument : CommandLine)
+	{
+		if (project::HasProjectFileExtension(argument.ToPath()))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
 // The project the run acts on, into Context and paths::SetProject. ExitSuccess, or the exit code to
 // end with (the failure already reported). A verb that writes needs a mount: a project or --engine.
+//
+// A project that cannot be used - its file does not load, it names no engine that exists, or another
+// engine - ends a run that needs it: one that writes, or that named it. A verb that writes nothing
+// and was run in that project's directory without naming it (help, newguid, the ddc verbs) does not
+// need it: it warns on stderr and runs with no project, so where it is run never breaks it.
 int32 FindProject (CCommandletContext& Context, const SCommandlet& Commandlet)
 {
+	const bool bNamed = NamesProject(Context.CommandLine);
 	if (Context.bEngineOwner)
 	{
-		if (platform::FindCommandLineValue(Context.CommandLine, "Project").has_value())
+		if (bNamed || platform::FindCommandLineValue(Context.CommandLine, "Project").has_value())
 		{
-			return Context.Fail(ExitUsage, "--engine acts on /Engine without a project: give -Project= or --engine, not both");
+			return Context.Fail(ExitUsage, "--engine acts on /Engine without a project: name a project (--project=<file>, "
+				"-Project=<file> or a .frtproject argument) or give --engine, not both");
 		}
 		return ExitSuccess;
 	}
@@ -114,27 +142,38 @@ int32 FindProject (CCommandletContext& Context, const SCommandlet& Commandlet)
 		if (Commandlet.bWritesProject)
 		{
 			return Context.Fail(ExitUsage, FString::Format("{}: no project to act on. Run it in a project's directory, with "
-				"-Project=<file>, or with --engine for the engine's own content", Commandlet.Name));
+				"--project=<file>, or with --engine for the engine's own content", Commandlet.Name));
 		}
 		return ExitSuccess;
 	}
 
+	const auto unusable = [&] (FStringView Why) -> int32
+	{
+		if (Commandlet.bWritesProject || bNamed)
+		{
+			return Context.Fail(ExitUsage, Why);
+		}
+		Context.PrintError(FString::Format("warning: the working directory's project cannot be used, so {} runs without one: {}",
+			Commandlet.Name, Why));
+		return ExitSuccess;
+	};
+
 	project::SProjectDescriptor descriptor;
 	if (!project::SProjectDescriptor::Load(file, descriptor, &error))
 	{
-		return Context.Fail(ExitUsage, error);
+		return unusable(error);
 	}
 	const std::filesystem::path engineDir = project::ResolveEngineDir(descriptor, &error);
 	if (engineDir.empty())
 	{
-		return Context.Fail(ExitUsage, descriptor.Name + ": " + error);
+		return unusable(descriptor.Name + ": " + error);
 	}
 	std::error_code ec;
 	if (!std::filesystem::equivalent(engineDir, Context.EngineRoot, ec))
 	{
 		// Its metas, keys and DDC values are that engine's to write.
-		return Context.Fail(ExitUsage, FString::Format("{} uses the engine in {}: run that engine's AssetTool (the project's "
-			"FRT.bat assets does)", descriptor.Name, FString::FromPath(engineDir)));
+		return unusable(FString::Format("{} uses the engine in {}: run that engine's AssetTool (the project's FRT.bat assets "
+			"does)", descriptor.Name, FString::FromPath(engineDir)));
 	}
 	paths::SetProject(descriptor);
 	Context.ProjectRoot = descriptor.GetDir();
@@ -165,7 +204,18 @@ int32 RunAssetTool ()
 	{
 		return context.Fail(ExitUsage, FString::Format("No verb '{}': FRT.bat assets help lists the verbs.", verb.Verb));
 	}
+	if (const std::optional<FString> unknown = FindUnknownOption(context.CommandLine, commandlet); unknown.has_value())
+	{
+		return context.Fail(ExitUsage, FString::Format("{}: no option '{}' (FRT.bat assets help {} says what it takes; the options "
+			"of every verb are in FRT.bat assets help)", commandlet->Name, *unknown, commandlet->Name));
+	}
 	context.Arguments = std::move(verb.Arguments);
+	// <verb> --help is help <verb>: the verb itself does not run.
+	if (bHelpSwitch && commandlet != FindCommandlet("help"))
+	{
+		context.Arguments = { FString(commandlet->Name) };
+		commandlet = FindCommandlet("help");
+	}
 
 	// The project, before the config: its Game.ini is a layer of it.
 	context.EngineRoot = paths::GetEngineDir();
@@ -183,6 +233,11 @@ int32 RunAssetTool ()
 
 	memory::CMemoryPool memoryPool(MemoryPoolBytes);
 	memoryPool.MakeThisPrimaryInstance();
+
+	// TODO(M1 integration): the engine's worker pool (jobs::CWorkerPool, piece A1) goes here, in
+	// CEngine::StartUp's order - after the memory pool, before the lock - for the ddc verbs, which
+	// build and verify values on it: CCommandletContext::GetWorkerPool(), and CancelAllAndDrain()
+	// before the lock and the pools go out of scope.
 
 	// Held until the commandlet returns; the OS lets go of it if the process dies first.
 	std::optional<platform::CExclusiveFileLock> ownerLock;
