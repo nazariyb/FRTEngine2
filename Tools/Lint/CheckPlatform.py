@@ -26,9 +26,13 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from CheckStrings import strip_comments  # noqa: E402
 
-# Directories scanned recursively, then single files (globs) scanned as they are.
-SCANNED_DIRS = ['Core/Source/Assets', 'Core/Source/Hash']
-SCANNED_FILES = ['Core/Source/Platform/*.h']
+# Directories scanned recursively, then single files (globs) scanned as they are: the asset system,
+# and the M0 infrastructure it calls (path globs, diagnostics, the log, functions, CPU scopes, the
+# memory pool).
+SCANNED_DIRS = ['Core/Source/Assets', 'Core/Source/Hash', 'Core/Source/Diagnostics', 'Core/Source/Log',
+                'Core/Source/Functional']
+SCANNED_FILES = ['Core/Source/Platform/*.h', 'Core/Source/Containers/PathGlob.*', 'Core/Source/Profiler/CpuProfiler.*',
+                 'Core/Source/Memory/MemoryPool.*']
 EXTENSIONS = ('.h', '.hpp', '.cpp', '.inl')
 
 # OS, graphics and storage headers. Matched case-insensitively: Windows.h and windows.h are one file.
@@ -41,9 +45,12 @@ HEADERS = (r'windows|winbase|winnt|winuser|wingdi|winreg|winerror|winternl|winio
 # (name, pattern, flags)
 GATES = [
     ('os-header', r'#\s*include\s*[<"](' + HEADERS + r')(\.h)?[>"]', re.IGNORECASE),
+    # The Windows implementation's own headers include <Windows.h>: the same hole one step removed.
+    ('platform-impl', r'#\s*include\s*[<"][^>"]*Platform/Windows/', re.IGNORECASE),
     # Win32 calls that have a frt::platform equivalent, or that asset code has no business making.
-    ('win32-call', r'\b(CreateFile[AW]?|ReadFile(Ex)?|WriteFile(Ex)?|CloseHandle|DeviceIoControl|GetFileAttributes(Ex)?[AW]?'
-                   r'|SetFileAttributes[AW]?|GetFileInformationByHandle(Ex)?|SetFileInformationByHandle|GetFileSizeEx?'
+    ('win32-call', r'\b(CreateFile(2|[AW])?|_w(fopen|open)|ReadFile(Ex)?|WriteFile(Ex)?|CloseHandle|DeviceIoControl|GetFileAttributes(Ex)?[AW]?'
+                   r'|SetFileAttributes[AW]?|GetFileInformationByHandle(Ex)?|GetFileInformationByName|SetFileInformationByHandle'
+                   r'|GetFileSizeEx?|NtQueryInformationFile|NtCreateFile'
                    r'|FindFirstFile(Ex)?[AW]?|FindNextFile[AW]?|FindClose|MoveFile(Ex)?[AW]?|ReplaceFile[AW]?|CopyFile(Ex|2)?[AW]?'
                    r'|DeleteFile[AW]?|RemoveDirectory[AW]?|CreateDirectory[AW]?|FlushFileBuffers|LockFileEx?|GetVolumeInformation\w*'
                    r'|GetDriveType[AW]?|GetFinalPathNameByHandle[AW]?|ReadDirectoryChanges(Ex)?W|CreateIoCompletionPort'
