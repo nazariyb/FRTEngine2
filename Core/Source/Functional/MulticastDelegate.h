@@ -58,9 +58,10 @@ namespace frt
  * Modules. ReleaseModule drops every subscription that would run code of an unloading module: its
  * callable was built there (a lambda the module wrote, TUniqueFunction::RefersToImage) or its target
  * lies there (a pointer to one of the module's functions, an object bound with Add(Object, Method)
- * in the module's static data). CGameModule calls it before FreeLibrary, as it calls
- * CComponentRegistry::ReleaseModule (spec §6.7 step 7), so game modules may subscribe to engine
- * delegates.
+ * in the module's static data). The owner of a delegate that game modules subscribe to calls it before
+ * the module's FreeLibrary, as CGameModule::Unload calls CComponentRegistry::ReleaseModule (spec §6.7
+ * step 7, through the module-release listeners that arrive with M5); no engine delegate has game
+ * subscribers yet.
  *
  * Not thread-safe, by design: main-thread use, like the systems that own delegates. Work done on
  * workers reaches the main thread through a queue the owner drains, and the owner broadcasts there.

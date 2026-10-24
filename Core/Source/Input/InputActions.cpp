@@ -572,7 +572,7 @@ void CInputActionMap::Evaluate (const CInputSystem& Input, WindowId Window)
 
 		if (state.bPressed)
 		{
-			OnActionEvent.Invoke(SInputActionEventData{
+			OnActionEvent.Broadcast(SInputActionEventData{
 				.Name = action.Name,
 				.Kind = action.Kind,
 				.Type = EInputActionEventType::Pressed,
@@ -583,7 +583,7 @@ void CInputActionMap::Evaluate (const CInputSystem& Input, WindowId Window)
 
 		if (state.bReleased)
 		{
-			OnActionEvent.Invoke(SInputActionEventData{
+			OnActionEvent.Broadcast(SInputActionEventData{
 				.Name = action.Name,
 				.Kind = action.Kind,
 				.Type = EInputActionEventType::Released,
@@ -594,7 +594,7 @@ void CInputActionMap::Evaluate (const CInputSystem& Input, WindowId Window)
 
 		if (state.bDown && wasDown)
 		{
-			OnActionEvent.Invoke(SInputActionEventData{
+			OnActionEvent.Broadcast(SInputActionEventData{
 				.Name = action.Name,
 				.Kind = action.Kind,
 				.Type = EInputActionEventType::Held,
@@ -605,7 +605,7 @@ void CInputActionMap::Evaluate (const CInputSystem& Input, WindowId Window)
 
 		if (action.Kind == EInputActionKind::Axis && previousValue != state.Value)
 		{
-			OnActionEvent.Invoke(SInputActionEventData{
+			OnActionEvent.Broadcast(SInputActionEventData{
 				.Name = action.Name,
 				.Kind = action.Kind,
 				.Type = EInputActionEventType::ValueChanged,

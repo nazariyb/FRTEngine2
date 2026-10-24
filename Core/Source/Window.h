@@ -3,8 +3,8 @@
 #include <Windows.h>
 
 #include "Core.h"
-#include "Event.h"
 #include "Containers/String.h"
+#include "Functional/MulticastDelegate.h"
 #include "Graphics/Render/RenderCommonTypes.h"
 #include "Math/Math.h"
 #include "User/UserSettings.h"
@@ -90,11 +90,11 @@ protected:
 	static SPosSize CalcPositionAndSize (const graphics::SRect& MonitorRect);
 
 public:
-	CEvent<> PostResizeEvent;
-	CEvent<> PostLoseFocusEvent;
-	CEvent<> PostGainFocusEvent;
-	CEvent<> PostMinimizeEvent;
-	CEvent<> PostRestoreFromMinimizeEvent;
+	TMulticastDelegate<> PostResizeEvent;
+	TMulticastDelegate<> PostLoseFocusEvent;
+	TMulticastDelegate<> PostGainFocusEvent;
+	TMulticastDelegate<> PostMinimizeEvent;
+	TMulticastDelegate<> PostRestoreFromMinimizeEvent;
 
 protected:
 	SWindowParams Params;

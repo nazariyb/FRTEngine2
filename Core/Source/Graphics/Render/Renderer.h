@@ -8,7 +8,6 @@
 #include <memory>
 #include <vector>
 
-#include "Event.h"
 #include "GraphicsCoreTypes.h"
 #include "MaterialLibrary.h"
 #include "Graphics/Render/RenderContext.h"

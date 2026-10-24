@@ -152,7 +152,7 @@ void CWindow::SetDisplaySettings (const SDisplaySettings& NewSettings, const gra
 	else
 	{
 		// no changes to a window, but renderer still should react
-		PostResizeEvent.Invoke();
+		PostResizeEvent.Broadcast();
 	}
 
 	DisplaySettings = NewSettings;
@@ -322,7 +322,7 @@ LRESULT CALLBACK CWindow::WindowProcessMessage (HWND hWnd, UINT Message, WPARAM 
 				{
 					ShowWindow(hWindow, SW_MINIMIZE);
 				}
-				PostLoseFocusEvent.Invoke();
+				PostLoseFocusEvent.Broadcast();
 			}
 			else
 			{
@@ -335,7 +335,7 @@ LRESULT CALLBACK CWindow::WindowProcessMessage (HWND hWnd, UINT Message, WPARAM 
 				{
 					ShowWindow(hWindow, SW_RESTORE);
 				}
-				PostGainFocusEvent.Invoke();
+				PostGainFocusEvent.Broadcast();
 			}
 			// DefWindowProc is what gives the window keyboard focus on activation.
 			return DefWindowProc(hWnd, Message, wParam, lParam);
@@ -381,13 +381,13 @@ LRESULT CALLBACK CWindow::WindowProcessMessage (HWND hWnd, UINT Message, WPARAM 
 			if (wParam == SIZE_MINIMIZED)
 			{
 				bMinimized = true;
-				PostMinimizeEvent.Invoke();
+				PostMinimizeEvent.Broadcast();
 				return 0;
 			}
 			else if (wParam == SIZE_MAXIMIZED)
 			{
 				// mMaximized = true;
-				PostResizeEvent.Invoke();
+				PostResizeEvent.Broadcast();
 			}
 			else if (wParam == SIZE_RESTORED)
 			{
@@ -395,7 +395,7 @@ LRESULT CALLBACK CWindow::WindowProcessMessage (HWND hWnd, UINT Message, WPARAM 
 				if (bMinimized)
 				{
 					bMinimized = false;
-					PostRestoreFromMinimizeEvent.Invoke();
+					PostRestoreFromMinimizeEvent.Broadcast();
 					return 0;
 				}
 
@@ -421,7 +421,7 @@ LRESULT CALLBACK CWindow::WindowProcessMessage (HWND hWnd, UINT Message, WPARAM 
 				else // API call such as SetWindowPos or mSwapChain->SetFullscreenState.
 				*/
 				{
-					PostResizeEvent.Invoke();
+					PostResizeEvent.Broadcast();
 				}
 			}
 			return 0;
