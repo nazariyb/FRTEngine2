@@ -26,7 +26,8 @@ commit message reports, and exits with 1 when any step failed.
   --quick             build Development, run its Core-Test and the lints: the pre-commit subset
   --nightly           everything, and the long checks (placeholders until they exist)
   --record-baselines  record the captures as the baselines instead of comparing with them; a baseline is
-                      kept only when two recordings agree, byte for byte for raster
+                      kept only when two recordings agree, byte for byte for raster, and a configuration's
+                      baselines replace its old ones only when every one of its captures recorded
   --baselines=<dir>   where the baselines are (default <engine>/Local/Verify/Baselines): Debug/ and
                       Development/ for the in-place captures, Release/ for the packaged games'
   --pt-tolerance=<x>  the relative RMSE a path-traced capture may differ by (default 1e-4)
@@ -520,7 +521,7 @@ class Gate:
                     values[key.strip()] = value.strip()
         return values
 
-    def write_manifest(self, config):
+    def write_manifest(self, directory):
         commit = (git('rev-parse', 'HEAD') or b'unknown').decode('utf-8').strip()
         dirty = ' (with uncommitted changes)' if git('status', '--porcelain', '--untracked-files=no') else ''
         lines = [
@@ -533,7 +534,45 @@ class Gate:
         ]
         for kind, kind_arguments, _ in CAPTURE_KINDS:
             lines.append(f'Recipe.{kind}={" ".join(CAPTURE_ARGUMENTS + kind_arguments)}')
-        (self.baselines / config / 'Baseline.ini').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+        (directory / 'Baseline.ini').write_text('\n'.join(lines) + '\n', encoding='utf-8')
+
+    def staging(self, config):
+        """Where --record-baselines records Config's baselines: beside the ones they replace, which stay as
+        they are until every capture of Config recorded (store_baselines)."""
+        return self.baselines / f'{config}.new'
+
+    def store_baselines(self, config, complete):
+        """Swaps the baselines recorded for Config in, Baseline.ini included, when every capture of Config
+        recorded (Complete), and leaves the old ones as they are otherwise. A set of new and old captures
+        under a new Baseline.ini - a raster capture recorded, the path-traced one failing - would hold
+        images of two commits, perhaps of two renderers, and later runs would compare against that mix
+        with nothing to tell, as the recipe would be the same."""
+        staging, target = self.staging(config), self.baselines / config
+        name = f'baselines ({config})'
+        old = f'the old ones in {target} are kept' if target.exists() else f'{target} has none'
+        if not complete or not self.gpu:
+            shutil.rmtree(staging, ignore_errors=True)
+            self.report(name, 'FAILED', None, f'none written, as not every capture of {config} recorded; {old}')
+            return
+        self.write_manifest(staging)
+        previous = self.baselines / f'{config}.old'
+        try:
+            shutil.rmtree(previous, ignore_errors=True)
+            if target.exists():
+                target.rename(previous)
+            try:
+                staging.rename(target)
+            except OSError:
+                if previous.exists() and not target.exists():
+                    previous.rename(target)
+                raise
+        except OSError as error:
+            self.report(name, 'FAILED', None, f'cannot replace {target} ({error}); {old}, the new ones are in '
+                                              f'{staging}')
+            return
+        shutil.rmtree(previous, ignore_errors=True)
+        count = len(list(target.glob('*.pfm')))
+        self.report(name, 'ok', None, f'{count} capture{"" if count == 1 else "s"} and Baseline.ini in {target}')
 
     def agree(self, a, b, exact):
         """(whether two captures agree, a detail text)."""
@@ -554,7 +593,7 @@ class Gate:
         if not Path(exe).exists():
             raise StepFailed(f'no {exe}')
         captures = self.run_dir / 'Captures' / config
-        baseline = self.baselines / config / f'{name}-{kind}'
+        baseline = (self.staging(config) if self.record else self.baselines / config) / f'{name}-{kind}'
         notes = []
         user_settings = Path(cwd) / 'Local' / 'UserSettings.ini'
         if config != 'Release' and user_settings.exists():
@@ -608,15 +647,17 @@ class Gate:
         raise StepFailed('; '.join([f'differs from the baseline: ' + ' | '.join(tried)] + notes))
 
     def captures(self, config):
-        recorded = False
+        if self.record:
+            shutil.rmtree(self.staging(config), ignore_errors=True)
+        complete = True
         for name, exe, arguments, cwd in self.capture_targets(config):
             needs = [(name, config)] if config == 'Release' else [('engine', config), (name, config)]
             for kind, kind_arguments, exact in CAPTURE_KINDS:
                 label = f'capture {name} {"raster" if exact else "path traced"} ({config})'
-                recorded |= self.step(label, self.capture_step, config, name, exe, arguments, cwd, kind,
+                complete &= self.step(label, self.capture_step, config, name, exe, arguments, cwd, kind,
                                       kind_arguments, exact, needs=needs)
-        if self.record and recorded and self.gpu:
-            self.write_manifest(config)
+        if self.record:
+            self.store_baselines(config, complete)
 
     # ---- packages ----
 
