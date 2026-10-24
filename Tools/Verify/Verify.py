@@ -42,7 +42,8 @@ first; packages go to %TEMP%/frtv-<hash of the engine path>.
 The captures pin what would otherwise depend on the machine's state or on wall-clock time: the render
 mode, a windowed window, and manual exposure. Auto exposure adapts by measured frame times, and the
 raster preview's TAA history keeps a trace of every frame's exposure, so with auto exposure a raster
-capture repeats only while every run has the same frame times - not on a busy machine.
+capture repeats only while every run has the same frame times - not on a busy machine. So no capture
+covers auto exposure yet, which every run's summary says (see CAPTURE_ARGUMENTS).
 
 Standard library only.
 """
@@ -77,6 +78,14 @@ PATH_TRACED_TOLERANCE = 1e-4
 PATH_TRACED_ATTEMPTS = 3
 
 # Every capture: frame-indexed, manual exposure, windowed.
+#
+# TODO(renderer): manual exposure leaves auto exposure (ExposureAdapt.hlsl, and its part of
+# PostProcess.cpp) without a capture, so a regression there passes the gate. It adapts by
+# g_Frame.DeltaTime, which nothing sets, so the shader falls back to the CPU's wall-clock frame time
+# (PostProcess.cpp: FallbackDeltaTime) and a capture with auto exposure differs from run to run. Once a
+# renderer change - announced, and judged on its own - sets FrameData.DeltaTime from the automation's
+# fixed step, add a raster capture kind with auto exposure to CAPTURE_KINDS (or take the pin off the
+# raster kind), record the baselines again, and drop the 'capture with auto exposure' line in Gate.run.
 CAPTURE_ARGUMENTS = (
     f'-Automation:CaptureFrame={CAPTURE_FRAME}',
     f'-Automation:ExitFrame={CAPTURE_FRAME}',
@@ -742,6 +751,8 @@ class Gate:
             self.skip('smoke on a scratch copy', 'skipped (M2)')
             for config in CAPTURE_CONFIGS:
                 self.captures(config)
+            # Not a milestone's: a renderer fix first (CAPTURE_ARGUMENTS says which).
+            self.skip('capture with auto exposure', 'skipped (needs FrameData.DeltaTime set)')
             self.skip('captures from an empty and a warm DDC', 'skipped (M6)')
             self.skip('captures with SyncLoadPolicy=Fail', 'skipped (M10)')
             for name in TEMPLATES:
