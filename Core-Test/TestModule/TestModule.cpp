@@ -11,16 +11,16 @@ SCounter Counter;
 }
 
 
-extern "C" __declspec(dllexport) void FrtTestModule_MakeSmallLambda (FCounterFunction* Out)
+extern "C" __declspec(dllexport) void FrtTestModule_MakeSmallLambda (CounterFunction* Out)
 {
-	*Out = FCounterFunction([] (int& Total) { Total += 10; });
+	*Out = CounterFunction([] (int& Total) { Total += 10; });
 }
 
-extern "C" __declspec(dllexport) void FrtTestModule_MakeLargeLambda (FCounterFunction* Out)
+extern "C" __declspec(dllexport) void FrtTestModule_MakeLargeLambda (CounterFunction* Out)
 {
 	std::array<int, 32> payload = {};
 	payload[31] = 100;
-	*Out = FCounterFunction([payload] (int& Total) { Total += payload[31]; });
+	*Out = CounterFunction([payload] (int& Total) { Total += payload[31]; });
 }
 
 extern "C" __declspec(dllexport) void FrtTestModule_AddOne (int& Total)

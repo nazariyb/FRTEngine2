@@ -78,7 +78,7 @@ private:
 		void (*Function) ();
 	};
 
-	using FInvoker = TRet (*) (UTarget, TArgs&&...);
+	using InvokerFunction = TRet (*) (UTarget, TArgs&&...);
 
 	template <typename TFunction>
 	void BindFunction (TFunction* Function) noexcept
@@ -116,7 +116,7 @@ private:
 	}
 
 	UTarget Target;
-	FInvoker Invoker;
+	InvokerFunction Invoker;
 };
 
 // ABI: inline code compiled into every module that names it (game modules too, once a game-facing

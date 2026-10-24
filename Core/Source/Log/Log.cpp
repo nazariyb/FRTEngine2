@@ -32,7 +32,7 @@ struct SLogState
 	SCategoryLevel Levels[MaxCategoryLevels];
 	uint32 NumLevels = 0u;
 	ELevel DefaultMinLevel = ELevel::Info;
-	FHook Hook = nullptr;
+	HookFunction Hook = nullptr;
 	void* HookContext = nullptr;
 	// The most verbose minimum of all: anything more verbose is dropped without the lock.
 	std::atomic<uint8> MostVerboseMinLevel = static_cast<uint8>(ELevel::Info);
@@ -230,11 +230,11 @@ void Write (FStringView Category, ELevel Level, FStringView Message) noexcept
 	platform::OutputDebugText(line);
 }
 
-FHook SetHook (FHook Hook, void* Context, void** OutPreviousContext) noexcept
+HookFunction SetHook (HookFunction Hook, void* Context, void** OutPreviousContext) noexcept
 {
 	SLogState& state = GetState();
 	const std::scoped_lock lock(state.Mutex);
-	const FHook previous = state.Hook;
+	const HookFunction previous = state.Hook;
 	if (OutPreviousContext != nullptr)
 	{
 		*OutPreviousContext = state.HookContext;

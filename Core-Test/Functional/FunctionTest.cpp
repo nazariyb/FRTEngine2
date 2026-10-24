@@ -76,8 +76,8 @@ struct TTracked
 	std::array<uint8, PayloadBytes> Payload = {};
 };
 
-using FSmall = TTracked<8u>;     // a pointer and 8 bytes: inline
-using FLarge = TTracked<128u>;   // heap
+using SmallCallable = TTracked<8u>;     // a pointer and 8 bytes: inline
+using LargeCallable = TTracked<128u>;   // heap
 
 // Small enough for the inline buffer, but its move may throw: it must go to the heap, or moving the
 // function could fail halfway.
@@ -112,8 +112,8 @@ static_assert(std::is_trivially_copyable_v<TFunctionRef<int (int)>>);
 static_assert(!std::is_default_constructible_v<TFunctionRef<int (int)>>);
 static_assert(!std::is_copy_constructible_v<TUniqueFunction<int (int)>>);
 static_assert(std::is_nothrow_move_constructible_v<TUniqueFunction<int (int)>>);
-static_assert(TUniqueFunction<int (int)>::IsStoredInline<FSmall>);
-static_assert(!TUniqueFunction<int (int)>::IsStoredInline<FLarge>);
+static_assert(TUniqueFunction<int (int)>::IsStoredInline<SmallCallable>);
+static_assert(!TUniqueFunction<int (int)>::IsStoredInline<LargeCallable>);
 static_assert(!TUniqueFunction<int (int)>::IsStoredInline<SThrowingMove>);
 static_assert(!TUniqueFunction<int (int)>::IsStoredInline<SOverAligned>);
 // Arguments and results convert as for a call; anything goes for void.
@@ -195,9 +195,9 @@ TEST(UniqueFunction, StartsEmptyAndResetsToEmpty)
 
 TEST(UniqueFunction, StoresASmallCallableInlineAndConstructsItOnce)
 {
-	FSmall::SCounts counts;
+	SmallCallable::SCounts counts;
 	{
-		TUniqueFunction<int (int)> function{ FSmall(counts) };
+		TUniqueFunction<int (int)> function{ SmallCallable(counts) };
 		EXPECT_TRUE(function.IsInline());
 		EXPECT_EQ(function(1), 2);
 		EXPECT_EQ(counts.Called, 1);
@@ -216,9 +216,9 @@ TEST(UniqueFunction, StoresASmallCallableInlineAndConstructsItOnce)
 
 TEST(UniqueFunction, StoresALargeCallableOnTheHeapAndNeverMovesIt)
 {
-	FLarge::SCounts counts;
+	LargeCallable::SCounts counts;
 	{
-		TUniqueFunction<int (int)> function{ FLarge(counts) };
+		TUniqueFunction<int (int)> function{ LargeCallable(counts) };
 		EXPECT_FALSE(function.IsInline());
 		EXPECT_EQ(function(1), 2);
 
@@ -237,10 +237,10 @@ TEST(UniqueFunction, StoresALargeCallableOnTheHeapAndNeverMovesIt)
 
 TEST(UniqueFunction, MoveAssignmentDestroysThePreviousCallable)
 {
-	FSmall::SCounts first;
-	FLarge::SCounts second;
-	TUniqueFunction<int (int)> function{ FSmall(first) };
-	function = TUniqueFunction<int (int)>(FLarge(second));
+	SmallCallable::SCounts first;
+	LargeCallable::SCounts second;
+	TUniqueFunction<int (int)> function{ SmallCallable(first) };
+	function = TUniqueFunction<int (int)>(LargeCallable(second));
 	EXPECT_EQ(first.Constructed + first.Moved, first.Destroyed);
 	EXPECT_EQ(function(0), 1);
 	EXPECT_EQ(second.Called, 1);
@@ -302,9 +302,9 @@ TEST(UniqueFunction, NeverAllocatesFromTheMemoryPool)
 	// No primary pool exists outside FRT_TEST_MEMORY_POOL: anything allocating from TLSF would crash.
 	ASSERT_EQ(memory::CMemoryPool::GetPrimaryInstance(), nullptr);
 
-	FLarge::SCounts mainCounts;
+	LargeCallable::SCounts mainCounts;
 	{
-		TUniqueFunction<int (int)> function{ FLarge(mainCounts) };
+		TUniqueFunction<int (int)> function{ LargeCallable(mainCounts) };
 		EXPECT_EQ(function(1), 2);
 	}
 

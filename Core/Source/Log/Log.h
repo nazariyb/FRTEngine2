@@ -131,11 +131,11 @@ struct SMessage
 	FStringView Line;   // "[Category] Text\n"
 };
 
-using FHook = void (*) (void* Context, const SMessage& Message);
+using HookFunction = void (*) (void* Context, const SMessage& Message);
 
 // For tests: while a hook is set, every message that passes the filters goes to it INSTEAD of stderr
 // and the debugger, so a test can check what would be printed without printing it. Called with the
 // log's mutex held (one message at a time, from whichever thread logged): it must not log. Null
 // restores normal output. Returns the hook it replaced, with its context in OutPreviousContext.
-FRT_CORE_API FHook SetHook (FHook Hook, void* Context, void** OutPreviousContext = nullptr) noexcept;
+FRT_CORE_API HookFunction SetHook (HookFunction Hook, void* Context, void** OutPreviousContext = nullptr) noexcept;
 }

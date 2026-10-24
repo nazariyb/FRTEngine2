@@ -75,7 +75,7 @@ class TMulticastDelegate
 		"every subscriber receives the same arguments: pass by value or by reference, never as an rvalue reference");
 
 public:
-	using FFunction = TUniqueFunction<void (TArgs...)>;
+	using FunctionType = TUniqueFunction<void (TArgs...)>;
 
 	TMulticastDelegate () = default;
 	TMulticastDelegate (const TMulticastDelegate&) = delete;
@@ -90,13 +90,13 @@ public:
 	}
 
 	// Subscribes any callable invocable with the arguments (its result is ignored). An empty callable
-	// (a null function pointer, an empty FFunction) subscribes nothing and returns an invalid handle.
-	// An FFunction is stored as it is, so the module that built it stays known to ReleaseModule.
+	// (a null function pointer, an empty FunctionType) subscribes nothing and returns an invalid handle.
+	// A FunctionType is stored as it is, so the module that built it stays known to ReleaseModule.
 	template <typename F>
-		requires (std::is_constructible_v<FFunction, F>)
+		requires (std::is_constructible_v<FunctionType, F>)
 	SDelegateHandle Add (F&& Callable)
 	{
-		return AddEntry(FFunction(std::forward<F>(Callable)), nullptr);
+		return AddEntry(FunctionType(std::forward<F>(Callable)), nullptr);
 	}
 
 	// Subscribes Object->Method. Object must stay alive until the subscription is removed; it is the
@@ -105,7 +105,7 @@ public:
 	SDelegateHandle Add (TObject* Object, void (TObject::*Method) (TArgs...))
 	{
 		frt_assert(Object != nullptr && Method != nullptr)
-		return AddEntry(FFunction([Object, Method] (TArgs... Args) { (Object->*Method)(std::forward<TArgs>(Args)...); }),
+		return AddEntry(FunctionType([Object, Method] (TArgs... Args) { (Object->*Method)(std::forward<TArgs>(Args)...); }),
 			Object);
 	}
 
@@ -113,13 +113,13 @@ public:
 	SDelegateHandle Add (const TObject* Object, void (TObject::*Method) (TArgs...) const)
 	{
 		frt_assert(Object != nullptr && Method != nullptr)
-		return AddEntry(FFunction([Object, Method] (TArgs... Args) { (Object->*Method)(std::forward<TArgs>(Args)...); }),
+		return AddEntry(FunctionType([Object, Method] (TArgs... Args) { (Object->*Method)(std::forward<TArgs>(Args)...); }),
 			Object);
 	}
 
 	// Add, for subscribers that live as long as the delegate and never unsubscribe (CEvent's syntax).
 	template <typename F>
-		requires (std::is_constructible_v<FFunction, F>)
+		requires (std::is_constructible_v<FunctionType, F>)
 	SDelegateHandle operator+= (F&& Callable)
 	{
 		return Add(std::forward<F>(Callable));
@@ -148,7 +148,7 @@ public:
 				return true;
 			}
 			// Destroyed after the list is consistent again: its destructor may use this delegate.
-			FFunction removed = std::move(Entries[i].Function);
+			FunctionType removed = std::move(Entries[i].Function);
 			Entries.erase(Entries.begin() + static_cast<std::ptrdiff_t>(i));
 			return true;
 		}
@@ -158,7 +158,7 @@ public:
 			if (Pending[i].Id == Handle.Id)
 			{
 				// Added during this broadcast and never called by it: nothing runs it now.
-				FFunction removed = std::move(Pending[i].Function);
+				FunctionType removed = std::move(Pending[i].Function);
 				Pending.erase(Pending.begin() + static_cast<std::ptrdiff_t>(i));
 				return true;
 			}
@@ -258,7 +258,7 @@ public:
 private:
 	struct SEntry
 	{
-		FFunction Function;
+		FunctionType Function;
 		const void* Target = nullptr;   // the object of Add(Object, Method); a function pointer's is in Function
 		uint64 Id = 0u;                 // 0: removed during a broadcast, compacted when it ends
 	};
@@ -286,7 +286,7 @@ private:
 		TMulticastDelegate& Delegate;
 	};
 
-	SDelegateHandle AddEntry (FFunction&& Function, const void* Target)
+	SDelegateHandle AddEntry (FunctionType&& Function, const void* Target)
 	{
 		if (!Function)
 		{

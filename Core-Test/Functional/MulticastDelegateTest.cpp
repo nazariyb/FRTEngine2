@@ -70,13 +70,13 @@ struct SLifetime
 	int* Alive;
 };
 
-using FDelegate = TMulticastDelegate<std::vector<int>&>;
+using DelegateType = TMulticastDelegate<std::vector<int>&>;
 }
 
 
 TEST(MulticastDelegate, CallsSubscribersInTheOrderTheyWereAdded)
 {
-	FDelegate delegate;
+	DelegateType delegate;
 	std::vector<int> calls;
 	SListener listener;
 	const SListener constListener;
@@ -114,7 +114,7 @@ TEST(MulticastDelegate, PassesArgumentsByTheirDeclaredTypes)
 
 TEST(MulticastDelegate, RemoveEndsOneSubscriptionByItsHandle)
 {
-	FDelegate delegate;
+	DelegateType delegate;
 	std::vector<int> calls;
 	const SDelegateHandle first = delegate.Add([] (std::vector<int>& Calls) { Calls.push_back(1); });
 	const SDelegateHandle second = delegate.Add([] (std::vector<int>& Calls) { Calls.push_back(2); });
@@ -131,7 +131,7 @@ TEST(MulticastDelegate, RemoveEndsOneSubscriptionByItsHandle)
 	EXPECT_EQ(calls, (std::vector<int>{ 1, 3 }));
 
 	// Handles are unique in the process: another delegate's handle names nothing here.
-	FDelegate other;
+	DelegateType other;
 	const SDelegateHandle foreign = other.Add([] (std::vector<int>&) {});
 	EXPECT_FALSE(delegate.Contains(foreign));
 	EXPECT_FALSE(delegate.Remove(foreign));
@@ -143,10 +143,10 @@ TEST(MulticastDelegate, RemoveEndsOneSubscriptionByItsHandle)
 
 TEST(MulticastDelegate, AnEmptyCallableSubscribesNothing)
 {
-	FDelegate delegate;
+	DelegateType delegate;
 	void (*null) (std::vector<int>&) = nullptr;
 	EXPECT_FALSE(delegate.Add(null).IsValid());
-	EXPECT_FALSE(delegate.Add(FDelegate::FFunction()).IsValid());
+	EXPECT_FALSE(delegate.Add(DelegateType::FunctionType()).IsValid());
 	EXPECT_TRUE(delegate.IsEmpty());
 }
 
@@ -154,7 +154,7 @@ TEST(MulticastDelegate, RemovedCallablesAreDestroyedExactlyOnce)
 {
 	int alive = 0;
 	{
-		FDelegate delegate;
+		DelegateType delegate;
 		const SLifetime lifetime(alive);
 		const SDelegateHandle handle = delegate.Add([lifetime] (std::vector<int>&) {});
 		delegate.Add([lifetime] (std::vector<int>&) {});
@@ -170,7 +170,7 @@ TEST(MulticastDelegate, RemovedCallablesAreDestroyedExactlyOnce)
 
 TEST(MulticastDelegate, ASubscriberMayRemoveItselfDuringTheBroadcast)
 {
-	FDelegate delegate;
+	DelegateType delegate;
 	std::vector<int> calls;
 	int alive = 0;
 	SDelegateHandle self;
@@ -196,7 +196,7 @@ TEST(MulticastDelegate, ASubscriberMayRemoveItselfDuringTheBroadcast)
 
 TEST(MulticastDelegate, ASubscriberRemovedDuringTheBroadcastIsNotCalledByIt)
 {
-	FDelegate delegate;
+	DelegateType delegate;
 	std::vector<int> calls;
 	SDelegateHandle first;
 	SDelegateHandle third;
@@ -218,7 +218,7 @@ TEST(MulticastDelegate, ASubscriberRemovedDuringTheBroadcastIsNotCalledByIt)
 
 TEST(MulticastDelegate, ASubscriberAddedDuringTheBroadcastIsFirstCalledByTheNextOne)
 {
-	FDelegate delegate;
+	DelegateType delegate;
 	std::vector<int> calls;
 	bool bAdded = false;
 	delegate.Add([&delegate, &bAdded] (std::vector<int>& Calls)
@@ -241,7 +241,7 @@ TEST(MulticastDelegate, ASubscriberAddedDuringTheBroadcastIsFirstCalledByTheNext
 
 TEST(MulticastDelegate, ASubscriberAddedAndRemovedDuringOneBroadcastNeverRuns)
 {
-	FDelegate delegate;
+	DelegateType delegate;
 	std::vector<int> calls;
 	delegate.Add([&delegate] (std::vector<int>& Calls)
 	{
@@ -260,7 +260,7 @@ TEST(MulticastDelegate, ASubscriberAddedAndRemovedDuringOneBroadcastNeverRuns)
 
 TEST(MulticastDelegate, NestedBroadcastsSeeTheSameChangesAndApplyThemOnce)
 {
-	FDelegate delegate;
+	DelegateType delegate;
 	std::vector<int> calls;
 	int depth = 0;
 	SDelegateHandle last;
@@ -284,7 +284,7 @@ TEST(MulticastDelegate, NestedBroadcastsSeeTheSameChangesAndApplyThemOnce)
 
 TEST(MulticastDelegate, ClearDuringTheBroadcastStopsEveryoneLeft)
 {
-	FDelegate delegate;
+	DelegateType delegate;
 	std::vector<int> calls;
 	delegate.Add([&delegate] (std::vector<int>& Calls)
 	{
@@ -301,7 +301,7 @@ TEST(MulticastDelegate, ClearDuringTheBroadcastStopsEveryoneLeft)
 
 TEST(MulticastDelegate, ReleaseModuleDropsSubscriptionsWhoseCodeOrTargetIsInTheImage)
 {
-	FDelegate delegate;
+	DelegateType delegate;
 	std::vector<int> calls;
 	int alive = 0;
 
@@ -311,7 +311,7 @@ TEST(MulticastDelegate, ReleaseModuleDropsSubscriptionsWhoseCodeOrTargetIsInTheI
 	SListener* inImage = new (image) SListener();
 
 	// A function built from a lambda: its invoker stands in for code in the image.
-	FDelegate::FFunction built([lifetime = SLifetime(alive)] (std::vector<int>& Calls) { Calls.push_back(5); });
+	DelegateType::FunctionType built([lifetime = SLifetime(alive)] (std::vector<int>& Calls) { Calls.push_back(5); });
 	const char* invoker = static_cast<const char*>(built.GetInvoker());
 	// A function pointer: its target.
 	const char* target = reinterpret_cast<const char*>(&AppendSeven);
@@ -393,10 +393,10 @@ TEST(MulticastDelegate, ReleaseModuleBeforeUnloadingARealDllLeavesOnlyOtherSubsc
 	ASSERT_NE(module, nullptr) << "cannot load " << FString::FromPath(path).CStr() << " (built with Core-Test)";
 	const SImage image = GetImage(module);
 
-	const auto makeSmall = GetExport<FMakeSmallLambda>(module, MakeSmallLambdaName);
-	const auto makeLarge = GetExport<FMakeLargeLambda>(module, MakeLargeLambdaName);
-	const auto addOne = GetExport<FAddOne>(module, AddOneName);
-	const auto getCounter = GetExport<FGetCounter>(module, GetCounterName);
+	const auto makeSmall = GetExport<MakeSmallLambdaFunction>(module, MakeSmallLambdaName);
+	const auto makeLarge = GetExport<MakeLargeLambdaFunction>(module, MakeLargeLambdaName);
+	const auto addOne = GetExport<AddOneFunction>(module, AddOneName);
+	const auto getCounter = GetExport<GetCounterFunction>(module, GetCounterName);
 	ASSERT_TRUE(makeSmall && makeLarge && addOne && getCounter);
 
 	TMulticastDelegate<int&> delegate;
@@ -404,9 +404,9 @@ TEST(MulticastDelegate, ReleaseModuleBeforeUnloadingARealDllLeavesOnlyOtherSubsc
 	delegate.Add([&ownCalls] (int& Total) { ++ownCalls; Total += 10000; });
 
 	// What the module builds: its code backs the functions, inline and in a block it allocated.
-	FCounterFunction inlineFunction;
+	CounterFunction inlineFunction;
 	makeSmall(&inlineFunction);
-	FCounterFunction heapFunction;
+	CounterFunction heapFunction;
 	makeLarge(&heapFunction);
 	EXPECT_TRUE(inlineFunction.IsInline());
 	EXPECT_FALSE(heapFunction.IsInline());
@@ -418,7 +418,7 @@ TEST(MulticastDelegate, ReleaseModuleBeforeUnloadingARealDllLeavesOnlyOtherSubsc
 	delegate.Add(addOne);
 	SCounter* counter = getCounter();
 	delegate.Add(counter, &SCounter::Bump);
-	const FCounterFunction own([] (int&) {});
+	const CounterFunction own([] (int&) {});
 	EXPECT_FALSE(own.RefersToImage(image.Begin, image.End));
 
 	int total = 0;

@@ -66,7 +66,7 @@ private:
 	}
 
 	std::vector<SEntry> Entries;
-	log::FHook Previous = nullptr;
+	log::HookFunction Previous = nullptr;
 	void* PreviousContext = nullptr;
 };
 }

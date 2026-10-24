@@ -16,7 +16,7 @@
 namespace frt::test_module
 {
 // Each call adds to Total, so a test can tell which subscribers ran.
-using FCounterFunction = TUniqueFunction<void (int&)>;
+using CounterFunction = TUniqueFunction<void (int&)>;
 
 struct SCounter
 {
@@ -30,17 +30,17 @@ struct SCounter
 };
 
 // Builds a lambda that adds 10: small, stored inline; its invoker and manager are in the DLL.
-using FMakeSmallLambda = void (*) (FCounterFunction* Out);
+using MakeSmallLambdaFunction = void (*) (CounterFunction* Out);
 inline constexpr char MakeSmallLambdaName[] = "FrtTestModule_MakeSmallLambda";
 // Builds a lambda that adds 100: large, in a heap block the DLL allocates (and, through its manager,
 // frees).
-using FMakeLargeLambda = void (*) (FCounterFunction* Out);
+using MakeLargeLambdaFunction = void (*) (CounterFunction* Out);
 inline constexpr char MakeLargeLambdaName[] = "FrtTestModule_MakeLargeLambda";
 // A function of the DLL that adds 1, for subscriptions built outside it: only the target is in the
 // image.
-using FAddOne = void (*) (int& Total);
+using AddOneFunction = void (*) (int& Total);
 inline constexpr char AddOneName[] = "FrtTestModule_AddOne";
 // An object in the DLL's static data, for Add(Object, &SCounter::Bump) made outside it.
-using FGetCounter = SCounter* (*) ();
+using GetCounterFunction = SCounter* (*) ();
 inline constexpr char GetCounterName[] = "FrtTestModule_GetCounter";
 }

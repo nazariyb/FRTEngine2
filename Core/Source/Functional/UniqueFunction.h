@@ -29,7 +29,7 @@ enum class EFunctionOp : uint8
 };
 
 // One per stored callable type and storage kind, instantiated in the module that built the function.
-using FFunctionManager = const void* (*) (EFunctionOp Op, void* Self, void* Other) noexcept;
+using ManagerFunction = const void* (*) (EFunctionOp Op, void* Self, void* Other) noexcept;
 
 // As integers: comparing pointers into different objects with < is unspecified.
 [[nodiscard]] inline bool IsAddressInImage (const void* Address, const void* ImageBegin, const void* ImageEnd) noexcept
@@ -176,7 +176,7 @@ public:
 	{
 		if (Manager != nullptr)
 		{
-			const detail::FFunctionManager manager = Manager;
+			const detail::ManagerFunction manager = Manager;
 			Invoker = nullptr;
 			Manager = nullptr;
 			manager(detail::EFunctionOp::Destroy, Storage, nullptr);
@@ -217,7 +217,7 @@ public:
 	}
 
 private:
-	using FInvoker = TRet (*) (void* Storage, TArgs&&...);
+	using InvokerFunction = TRet (*) (void* Storage, TArgs&&...);
 
 	void TakeFrom (TUniqueFunction& Other) noexcept
 	{
@@ -315,8 +315,8 @@ private:
 	}
 
 	alignas(InlineAlignment) std::byte Storage[InlineSize] = {};
-	FInvoker Invoker = nullptr;
-	detail::FFunctionManager Manager = nullptr;
+	InvokerFunction Invoker = nullptr;
+	detail::ManagerFunction Manager = nullptr;
 };
 
 // ABI: inline code compiled into every module that builds one (game modules too, once a game-facing
