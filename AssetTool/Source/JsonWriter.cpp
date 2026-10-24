@@ -50,10 +50,12 @@ void AppendJsonString (FString& Out, FStringView Text)
 			continue;
 		}
 
+		// DecodeWtf8 reads a WTF-8 surrogate as well-formed: its three bytes are no UTF-8, so it is
+		// escaped, never copied.
 		const unicode::SDecodedCodePoint decoded = unicode::DecodeWtf8(data + offset, Text.Len() - offset);
-		if (decoded.bWellFormed)
+		if (!decoded.bWellFormed)
 		{
-			Out.Append(FStringView(data + offset, decoded.Length));
+			appendEscape(static_cast<uint32>(unicode::ReplacementCharacter));
 		}
 		else if (unicode::IsSurrogate(decoded.CodePoint))
 		{
@@ -61,7 +63,7 @@ void AppendJsonString (FString& Out, FStringView Text)
 		}
 		else
 		{
-			appendEscape(static_cast<uint32>(unicode::ReplacementCharacter));
+			Out.Append(FStringView(data + offset, decoded.Length));
 		}
 		offset += decoded.Length;
 	}
