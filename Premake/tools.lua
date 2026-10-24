@@ -586,9 +586,17 @@ local function setupLineEndings()
 		print("Line endings: git is not on PATH, so nothing is checked.")
 		return true
 	end
-	local top = outputOf(git("rev-parse --show-toplevel"))
-	if not top or not isSamePath(top, ROOT_DIR) then
-		print("Line endings: this engine is not a git checkout of its own, so nothing is checked.")
+	-- The engine's path below the top of its work tree: empty for a checkout of its own. Asked of
+	-- git, so it holds however the path is spelled (a subst or mapped drive, a junction), which a
+	-- comparison of git's --show-toplevel with ROOT_DIR would not.
+	local prefix = outputOf(git("rev-parse --show-prefix"))
+	if not prefix then
+		print("Line endings: this engine is not a git checkout, so nothing is checked.")
+		return true
+	end
+	if prefix ~= "" then
+		print("Line endings: this engine is " .. prefix .. " in another repository's work tree, not a checkout")
+		print("of its own, so nothing is checked.")
 		return true
 	end
 	local entries = trackedLineEndings()

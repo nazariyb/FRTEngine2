@@ -259,10 +259,18 @@ def same_bytes(a, b):
 
 def line_ending_problems():
     """{'work': [paths], 'index': [paths]} from git ls-files --eol, and how many files .gitattributes makes
-    LF; None when this is no git checkout of its own."""
-    top = git('rev-parse', '--show-toplevel')
-    if top is None or os.path.normcase(os.path.abspath(top.decode('utf-8').strip())) != os.path.normcase(str(ROOT)):
-        return None, 0
+    LF. The engine must be the top of a work tree, a checkout of its own.
+
+    git rev-parse --show-prefix (ROOT's path below the top of its work tree) is empty exactly then. It
+    asks git itself, so it holds whatever the path is spelled like: comparing --show-toplevel with ROOT,
+    two paths each side resolved its own way (a subst or mapped drive, a junction), could find them
+    different, and the check passed having checked nothing."""
+    prefix = git('rev-parse', '--show-prefix')
+    if prefix is None:
+        raise StepFailed('git rev-parse --show-prefix failed')
+    if prefix.strip():
+        raise StepFailed(f'the engine is {prefix.decode("utf-8", errors="replace").strip()} in another '
+                         f'repository\'s work tree, not a checkout of its own')
     listing = git('ls-files', '--eol', '-z')
     if listing is None:
         raise StepFailed('git ls-files --eol failed')
@@ -431,8 +439,6 @@ class Gate:
 
     def line_endings(self, log):
         problems, lf_files = line_ending_problems()
-        if problems is None:
-            return 'not a git checkout of its own: nothing to check'
         with open(log, 'w', encoding='utf-8') as out:
             for kind, paths in problems.items():
                 for path in paths:
@@ -722,7 +728,10 @@ class Gate:
             self.step('lint platform', self.lint, 'Tools/Lint/CheckPlatform.py')
         else:
             self.skip('lint platform', 'skipped (no Tools/Lint/CheckPlatform.py)')
-        self.step('line endings', self.line_endings)
+        if git('rev-parse', '--git-dir') is None:
+            self.skip('line endings', 'skipped (not a git checkout)')
+        else:
+            self.step('line endings', self.line_endings)
 
         if self.mode != 'quick':
             self.skip('assets validate --ci', 'skipped (M4)')
