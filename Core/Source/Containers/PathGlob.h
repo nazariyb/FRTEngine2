@@ -51,7 +51,8 @@ namespace frt
 // Invalid patterns are reported, never guessed at: Compile returns nullopt with the reason (an
 // unclosed '[' or '{', a reversed range, an empty segment, '.' or '..' segments, too many brace
 // alternatives). Paths must be valid relative paths ('/'-separated, no empty, '.' or '..'
-// segments); an ill-formed UTF-8 unit in a path is one character that no literal or set matches.
+// segments). An ill-formed UTF-8 unit in a path is one character: '?', '*' and negated sets take
+// it, and no literal and no member of a set does ("a[!x].png" takes "a\xFF.png", "a[x].png" not).
 //
 // Uses std::vector, never TArray: rules are evaluated on worker threads and before the memory pool
 // exists. A compiled glob is immutable, so any number of threads may match with it at once.

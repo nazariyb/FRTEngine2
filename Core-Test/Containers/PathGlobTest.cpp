@@ -196,7 +196,8 @@ constexpr SGlobCase CaseCases[] = {
 	{ "[ -\U0010FFFF]", "Ä", true },
 	{ "[ -\U0010FFFF]", "z", true },
 	{ "[!ä]", "Ä", false },
-	// Ill-formed bytes in a path: one character that no literal or set member matches.
+	// Ill-formed bytes in a path: one character, which '?', '*' and negated sets take and no literal
+	// and no set member does.
 	{ "a?.png", "a\xFF.png", true },
 	{ "a*.png", "a\xFF\xFE.png", true },
 	{ "a[!x].png", "a\xFF.png", true },
