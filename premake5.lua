@@ -30,6 +30,7 @@ dofile("Premake/Projects/core.lua")
 dofile("Premake/Projects/core-test.lua")
 dofile("Premake/Projects/launcher.lua")
 dofile("Premake/Projects/editor.lua")
+dofile("Premake/Projects/assettool.lua")
 group ""
 
 if targetProject then

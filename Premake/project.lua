@@ -299,8 +299,8 @@ function resolveEngineDir(project)
 end
 
 -- Project.h: IsValidProjectName. The name is also the module's, its files' and C++ identifiers'.
-local reservedNames = { "Core", "Editor", "Launcher", "Engine", "ImGui", "assimp", "gtest", "googletest", "xxHash",
-	"BLAKE3", "zstd", "ThirdParty" }
+local reservedNames = { "Core", "Editor", "Launcher", "AssetTool", "Engine", "ImGui", "assimp", "gtest", "googletest",
+	"xxHash", "BLAKE3", "zstd", "ThirdParty" }
 
 function isValidProjectName(name)
 	if not name or #name == 0 or #name > 64 then

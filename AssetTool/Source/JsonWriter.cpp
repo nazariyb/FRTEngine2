@@ -1,0 +1,129 @@
+#include "JsonWriter.h"
+
+#include "Unicode/Unicode.h"
+
+
+namespace frt::assettool
+{
+void AppendJsonString (FString& Out, FStringView Text)
+{
+	constexpr FStringLiteral Hex = "0123456789abcdef";
+	const auto appendEscape = [&Out, &Hex] (uint32 Unit)
+	{
+		Out.Append("\\u");
+		for (int32 shift = 12; shift >= 0; shift -= 4)
+		{
+			Out.AppendChar(Hex[(Unit >> static_cast<uint32>(shift)) & 0xFu]);
+		}
+	};
+
+	Out.AppendChar('"');
+	const char* data = Text.GetData();
+	uint32 offset = 0u;
+	while (offset < Text.Len())
+	{
+		const char c = data[offset];
+		const uint32 byte = static_cast<unsigned char>(c);
+		if (byte < 0x80u)
+		{
+			switch (c)
+			{
+			case '"': Out.Append("\\\""); break;
+			case '\\': Out.Append("\\\\"); break;
+			case '\b': Out.Append("\\b"); break;
+			case '\f': Out.Append("\\f"); break;
+			case '\n': Out.Append("\\n"); break;
+			case '\r': Out.Append("\\r"); break;
+			case '\t': Out.Append("\\t"); break;
+			default:
+				if (byte < 0x20u)
+				{
+					appendEscape(byte);
+				}
+				else
+				{
+					Out.AppendChar(c);
+				}
+				break;
+			}
+			++offset;
+			continue;
+		}
+
+		const unicode::SDecodedCodePoint decoded = unicode::DecodeWtf8(data + offset, Text.Len() - offset);
+		if (decoded.bWellFormed)
+		{
+			Out.Append(FStringView(data + offset, decoded.Length));
+		}
+		else if (unicode::IsSurrogate(decoded.CodePoint))
+		{
+			appendEscape(static_cast<uint32>(decoded.CodePoint));
+		}
+		else
+		{
+			appendEscape(static_cast<uint32>(unicode::ReplacementCharacter));
+		}
+		offset += decoded.Length;
+	}
+	Out.AppendChar('"');
+}
+
+
+CJsonObject& CJsonObject::AddString (FStringView Name, FStringView Value)
+{
+	AddName(Name);
+	AppendJsonString(Fields, Value);
+	return *this;
+}
+
+CJsonObject& CJsonObject::AddInt (FStringView Name, int64 Value)
+{
+	AddName(Name);
+	Fields.AppendFormat("{}", Value);
+	return *this;
+}
+
+CJsonObject& CJsonObject::AddUInt (FStringView Name, uint64 Value)
+{
+	AddName(Name);
+	Fields.AppendFormat("{}", Value);
+	return *this;
+}
+
+CJsonObject& CJsonObject::AddBool (FStringView Name, bool Value)
+{
+	AddName(Name);
+	Fields.Append(Value ? "true" : "false");
+	return *this;
+}
+
+CJsonObject& CJsonObject::AddFields (const CJsonObject& Other)
+{
+	if (!Other.Fields.IsEmpty())
+	{
+		if (!Fields.IsEmpty())
+		{
+			Fields.AppendChar(',');
+		}
+		Fields.Append(Other.Fields);
+	}
+	return *this;
+}
+
+FString CJsonObject::ToString () const
+{
+	FString text("{");
+	text.Append(Fields).AppendChar('}');
+	return text;
+}
+
+void CJsonObject::AddName (FStringView Name)
+{
+	if (!Fields.IsEmpty())
+	{
+		Fields.AppendChar(',');
+	}
+	AppendJsonString(Fields, Name);
+	Fields.AppendChar(':');
+}
+}

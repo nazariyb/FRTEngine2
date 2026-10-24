@@ -27,7 +27,8 @@ project "Core-Test"
 
 	defines { "_CONSOLE" }
 
-	dependson { "Core-TestModule" }
+	-- AssetTool: its tests run the executable beside Core-Test (Core-Test/AssetTool).
+	dependson { "Core-TestModule", "AssetTool" }
 
 	useCore()
 	useGoogleTest()

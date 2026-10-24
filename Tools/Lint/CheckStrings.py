@@ -4,7 +4,7 @@ The string types delete the overloads that would turn engine text into the wrong
 Win32 and third-party calls have no such overloads: `YAML::LoadFile(Path.string())`,
 `stbi_load(Name.CStr(), ...)` or `std::filesystem::path(Text.CStr())` compile, pass every ASCII test,
 and fail only for a project under a non-ASCII path. Each gate below is a pattern that must not appear
-in the engine, the editor, the launcher, the templates' game sources or Core-Test, outside the files
+in the engine, the editor, the launcher, AssetTool, the templates' game sources or Core-Test, outside the files
 listed with it, each for the reason given there. Comments are not checked; string literals are.
 
     python -I Tools/Lint/CheckStrings.py [--info]
@@ -20,7 +20,7 @@ import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-SCANNED = ['Core/Source', 'Editor/Source', 'Launcher/Source', 'Core-Test'] + sorted(
+SCANNED = ['Core/Source', 'Editor/Source', 'Launcher/Source', 'AssetTool/Source', 'Core-Test'] + sorted(
     os.path.relpath(p, ROOT).replace(os.sep, '/') for p in glob.glob(os.path.join(ROOT, 'Templates', '*', 'Source')))
 EXTENSIONS = ('.h', '.hpp', '.cpp', '.inl')
 
