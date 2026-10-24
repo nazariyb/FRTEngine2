@@ -128,8 +128,8 @@ void CTextureManager::Initialize (rhi::CDevice& InDevice, jobs::CWorkerPool& InW
 
 void CTextureManager::Shutdown ()
 {
-	// Queued decodes are dropped, running ones finish on their own data, and no completion of this
-	// manager runs after this line: the entries can go.
+	// Queued decodes are dropped and running ones see the cancel; a decode writes only its own slot,
+	// never its entry, so the entries can go.
 	if (WorkerPool != nullptr)
 	{
 		WorkerPool->Cancel(DecodeGroup);
@@ -156,6 +156,7 @@ void CTextureManager::Decode (const std::filesystem::path& Path, ETextureColorSp
 	if (_wfopen_s(&file, Path.c_str(), L"rb") != 0 || file == nullptr)
 	{
 		std::fprintf(stderr, "[texture] failed to open %s\n", FString::FromPath(Path).CStr());
+		Out.bFinished = true;
 		return;
 	}
 	int width = 0;
@@ -170,11 +171,13 @@ void CTextureManager::Decode (const std::filesystem::path& Path, ETextureColorSp
 		{
 			stbi_image_free(pixels);
 		}
+		Out.bFinished = true;
 		return;
 	}
 	if (jobs::CWorkerPool::IsCancelled())
 	{
-		// The manager shut down meanwhile: nobody will take the mips.
+		// The manager shut down or the pool is draining: no answer, the texture is decoded again if
+		// anyone still wants it.
 		stbi_image_free(pixels);
 		return;
 	}
@@ -210,39 +213,78 @@ void CTextureManager::Decode (const std::filesystem::path& Path, ETextureColorSp
 		Out.Average = { top[0] / 255.0f, top[1] / 255.0f, top[2] / 255.0f, top[3] / 255.0f };
 	}
 	Out.bValid = true;
+	Out.bFinished = true;
 }
 
-void CTextureManager::SubmitDecode (SEntry& Entry)
+bool CTextureManager::SubmitDecode (SEntry& Entry)
 {
-	// The decode fills its own SDecoded on a worker; the completion hands it to the entry on the main
-	// thread. The entry's address is stable (Entries holds unique_ptrs), and Shutdown cancels the
-	// group before any entry dies, so the completion never sees a dead one.
-	auto decoded = std::make_shared<SDecoded>();
-	SEntry* entry = &Entry;
-	Entry.DecodeEpoch = WorkerPool->GetEpoch();
-	WorkerPool->Submit(jobs::EWorkPriority::Normal, DecodeGroup,
-		[decoded, path = Entry.Path, colorSpace = Entry.ColorSpace] () { Decode(path, colorSpace, *decoded); },
-		[entry, decoded] () { entry->Ready = decoded; });
+	// The work holds the slot through a guard that marks it done when the work callable dies: on the
+	// worker right after the decode, or wherever the pool drops the task unrun. No completion: the
+	// slot is the hand-over, so Update sees a decode without waiting for a pump. The work holds no
+	// pointer to the entry, so a decode still running after Shutdown writes only its own slot.
+	struct SSlotGuard
+	{
+		std::shared_ptr<SDecoded> Slot;
+
+		explicit SSlotGuard (std::shared_ptr<SDecoded> InSlot) : Slot(std::move(InSlot)) {}
+		SSlotGuard (SSlotGuard&&) noexcept = default;
+		SSlotGuard& operator= (SSlotGuard&&) = delete;
+		~SSlotGuard ()
+		{
+			if (Slot)
+			{
+				Slot->bDone.store(true, std::memory_order_release);
+			}
+		}
+	};
+
+	Entry.Pending = std::make_shared<SDecoded>();
+	const uint64 sequence = WorkerPool->Submit(jobs::EWorkPriority::Normal, DecodeGroup,
+		[guard = SSlotGuard(Entry.Pending), path = Entry.Path, colorSpace = Entry.ColorSpace] ()
+		{
+			Decode(path, colorSpace, *guard.Slot);
+		});
+	return sequence != 0u;
+}
+
+bool CTextureManager::PollDecode (SEntry& Entry)
+{
+	if (Entry.Ready)
+	{
+		return true;
+	}
+	if (Entry.Pending && !Entry.Pending->bDone.load(std::memory_order_acquire))
+	{
+		return false;
+	}
+	if (Entry.Pending && Entry.Pending->bFinished)
+	{
+		Entry.Ready = std::move(Entry.Pending);
+		return true;
+	}
+	// Cancelled while it ran, or dropped before it started (a drain): decode it again.
+	SubmitDecode(Entry);
+	return false;
 }
 
 void CTextureManager::WaitForDecode (SEntry& Entry)
 {
-	while (!Entry.Ready)
+	for (;;)
 	{
-		if (Entry.DecodeEpoch != WorkerPool->GetEpoch())
+		const std::shared_ptr<SDecoded> slot = Entry.Pending;
+		const bool bBack = WorkerPool->PumpUntil([&slot] () { return slot->bDone.load(std::memory_order_acquire); });
+		if (bBack && slot->bFinished)
 		{
-			SubmitDecode(Entry);
+			Entry.Ready = std::move(Entry.Pending);
+			return;
 		}
-		const uint64 epoch = Entry.DecodeEpoch;
-		const bool bBack = WorkerPool->PumpUntil([this, &Entry, epoch] ()
+		if (!bBack || !SubmitDecode(Entry))
 		{
-			return Entry.Ready != nullptr || WorkerPool->GetEpoch() != epoch;
-		});
-		if (!bBack)
-		{
-			// The pool went idle without this decode (nothing could bring it back): the texture fails
-			// instead of the frame waiting forever.
+			// The pool went idle without filling the slot, or will not take the decode again (it is
+			// draining): the texture fails instead of the frame waiting forever.
+			Entry.Pending.reset();
 			Entry.Ready = std::make_shared<SDecoded>();
+			return;
 		}
 	}
 }
@@ -323,15 +365,10 @@ bool CTextureManager::Update (ID3D12GraphicsCommandList* CommandList, uint64 Upl
 		{
 			continue;
 		}
-		if (!entry->Ready)
+		// Interactive: the decode is taken once its slot is done, as the std::future's wait_for(0) took
+		// it. Deterministic: wait for it, pumping.
+		if (!PollDecode(*entry))
 		{
-			if (entry->DecodeEpoch != WorkerPool->GetEpoch())
-			{
-				// The pool threw the decode's completion away (a drain, a new epoch): decode again.
-				SubmitDecode(*entry);
-			}
-			// Interactive: the decode is not back yet (its completion runs in a pump). Deterministic:
-			// wait for it, pumping.
 			if (!bDeterministic)
 			{
 				continue;

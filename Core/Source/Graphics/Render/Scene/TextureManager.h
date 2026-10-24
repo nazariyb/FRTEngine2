@@ -3,6 +3,7 @@
 #include <DirectXMath.h>
 
 #include <array>
+#include <atomic>
 #include <filesystem>
 #include <memory>
 #include <vector>
@@ -30,10 +31,11 @@ enum class ETextureColorSpace : uint8
  *
  * Request() returns a stable handle immediately; decoding and mip generation run on the engine's
  * worker pool (Jobs/WorkerPool.h, one task per texture at Normal priority, in a cancel group of
- * this manager's), and the decoded mips come back to the main thread through the pool's
- * completions. Finished textures are uploaded under a per-frame byte budget from Update(). Until
- * then GetSrv() reports InvalidDescriptorIndex and shaders fall back to the material factors.
- * Textures are deduplicated by (path, colour space).
+ * this manager's). The decode fills a slot of its own that Update() polls, as it polled the
+ * std::future this replaced: a decode is taken by the first Update() after it finished, whether
+ * or not the pool's completions have been pumped since. Finished textures are uploaded under a
+ * per-frame byte budget from Update(). Until then GetSrv() reports InvalidDescriptorIndex and
+ * shaders fall back to the material factors. Textures are deduplicated by (path, colour space).
  *
  * Scripted runs need every frame to be the same from run to run, and the frame a texture
  * becomes resident is otherwise up to the decode threads: SetDeterministic(true) makes Update()
@@ -41,8 +43,8 @@ enum class ETextureColorSpace : uint8
  * only on the frame a texture was requested in and the upload budget. Interactive runs never wait:
  * a decode cannot stall a frame.
  *
- * A decode whose completion the pool threw away (CancelAllAndDrain, a new epoch) is submitted
- * again: the texture still gets resident.
+ * A decode that ended without an answer - cancelled while it ran, or dropped before it started, as
+ * CancelAllAndDrain does - is submitted again: the texture still gets resident.
  */
 class FRT_CORE_API CTextureManager
 {
@@ -77,6 +79,11 @@ public:
 	uint64 GetResidentBytes () const { return ResidentBytes; }
 
 private:
+	// One decode's slot, the future of the std::future it replaces: the decode writes the fields on
+	// a worker and then sets bDone (release); the main thread reads them only once it has seen bDone
+	// (acquire). bDone is set when the decode's work callable dies, whether it ran or the pool dropped
+	// it unrun, the way a std::promise destroyed unfulfilled still makes its future ready: a slot
+	// always fills, and Update never waits on one that cannot.
 	struct SDecoded
 	{
 		uint32 Width = 0u;
@@ -84,17 +91,20 @@ private:
 		std::vector<std::vector<uint8>> Mips;
 		DirectX::XMFLOAT4 Average = { 1.0f, 1.0f, 1.0f, 1.0f };
 		bool bValid = false;
+		// The decode reached an answer, the texture or a failure to load it. False when it was
+		// cancelled while it ran or never started: decode it again.
+		bool bFinished = false;
+		std::atomic<bool> bDone = false;
 	};
 
 	struct SEntry
 	{
 		std::filesystem::path Path;
 		ETextureColorSpace ColorSpace = ETextureColorSpace::Srgb;
-		// Set by the decode's completion, on the main thread; null while the decode runs.
+		// The decode in flight; null once taken into Ready.
+		std::shared_ptr<SDecoded> Pending;
+		// The finished decode, from the slot, until it is uploaded.
 		std::shared_ptr<SDecoded> Ready;
-		// The pool's epoch when the decode was submitted: once the pool moves past it, the decode's
-		// completion will never run.
-		uint64 DecodeEpoch = 0u;
 		rhi::SGpuTexture Texture;
 		DirectX::XMFLOAT4 Average = { 1.0f, 1.0f, 1.0f, 1.0f };
 		bool bResident = false;
@@ -103,7 +113,12 @@ private:
 
 	// On a worker: std containers and the CRT heap only.
 	static void Decode (const std::filesystem::path& Path, ETextureColorSpace ColorSpace, SDecoded& Out);
-	void SubmitDecode (SEntry& Entry);
+	// Submits Entry's decode with a fresh slot in Entry.Pending. False when the pool dropped it at
+	// once (it is draining): the slot is done, without an answer.
+	bool SubmitDecode (SEntry& Entry);
+	// Once Entry's slot is done: takes a finished decode into Ready, or submits one that ended
+	// without an answer again. Returns whether Ready is set.
+	bool PollDecode (SEntry& Entry);
 	// Deterministic mode: pumps the pool until Entry's decode is back.
 	void WaitForDecode (SEntry& Entry);
 
