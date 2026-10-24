@@ -1,0 +1,17 @@
+xxHash 0.8.3, tag v0.8.3 of https://github.com/Cyan4973/xxHash
+Tarball https://github.com/Cyan4973/xxHash/archive/refs/tags/v0.8.3.tar.gz,
+SHA-256 aae608dfe8213dfd05d909a57718ef82f30722c392344583d3f39050c7f29a80
+(its SHA512 8b5c8b9aad4e869f... is the value vcpkg's xxhash 0.8.3 port pins).
+
+Vendored, unmodified: xxhash.h, xxhash.c and LICENSE (BSD 2-Clause for the library; the GPL
+part of that file covers the command-line tool, which is left out). Left out: cli/, tests,
+docs, build files, xxh3.h (a deprecated stub including xxhash.h) and the xxh_x86dispatch
+runtime dispatcher: XXH3 builds with its SSE2 path, the x64 baseline. XXH3's output is frozen
+since 0.8.0 ("stable" in xxhash.h), which is what lets FRT persist SAssetId64 and sub-asset ids.
+
+Built as the xxHash project (Premake/Projects/thirdparty.lua): a DLL in Debug and Development
+(XXH_EXPORT when building it, XXH_IMPORT when using it), a static library in Release. Only Core
+includes it (Core/Source/Hash/StableHash.cpp).
+
+Updating: copy the same three files from the new tag over these and update this file. The
+known-answer tests in Core-Test/Hash/StableHashTest.cpp must still pass unchanged.

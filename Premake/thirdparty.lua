@@ -53,9 +53,12 @@ imguiDir      = path.join(thirdPartyDir, "Imgui")
 assimpDir     = path.join(thirdPartyDir, "assimp")
 yamlCppDir    = path.join(thirdPartyDir, "yaml-cpp")
 googleTestDir = path.join(thirdPartyDir, "googletest")
+xxHashDir     = path.join(thirdPartyDir, "xxHash")
+blake3Dir     = path.join(thirdPartyDir, "BLAKE3")
+zstdDir       = path.join(thirdPartyDir, "zstd")
 
 -- Third-party projects, which are also the names their binaries start with.
-thirdPartyLibraries = { "ImGui", "assimp", "yaml-cpp", "gtest" }
+thirdPartyLibraries = { "ImGui", "assimp", "yaml-cpp", "gtest", "xxHash", "BLAKE3", "zstd" }
 
 -- Where a published archive lives. Fill in after uploading one made by package-thirdparty (e.g.
 -- as a GitHub release asset); --thirdparty-archive and --thirdparty-sha256 override both.
@@ -81,6 +84,9 @@ function thirdPartySourceStamp()
 		path.join(assimpDir, "VERSION.txt"),
 		path.join(yamlCppDir, "VERSION.txt"),
 		path.join(googleTestDir, "VERSION.txt"),
+		path.join(xxHashDir, "VERSION.txt"),
+		path.join(blake3Dir, "VERSION.txt"),
+		path.join(zstdDir, "VERSION.txt"),
 		rootpath("Core/Source/UI/ImGuiConfig.h"),
 	}
 	for _, file in ipairs(files) do
@@ -171,6 +177,29 @@ function useYamlCpp()
 		defines { "YAML_CPP_API=__declspec(dllimport)" }
 	filter "configurations:Release*"
 		defines { "YAML_CPP_STATIC_DEFINE" }
+	filter {}
+end
+
+-- The hashing and compression libraries of the asset pipeline. Core alone includes them, behind
+-- its own headers (Core/Source/Hash): nothing else sees their types, so only Core needs these.
+function useXxHash()
+	useThirdPartyHeaders({ xxHashDir })
+	filter "configurations:not Release*"
+		defines { "XXH_IMPORT" }
+	filter {}
+end
+
+function useBlake3()
+	useThirdPartyHeaders({ path.join(blake3Dir, "c") })
+	filter "configurations:not Release*"
+		defines { "BLAKE3_DLL" }
+	filter {}
+end
+
+function useZstd()
+	useThirdPartyHeaders({ path.join(zstdDir, "lib") })
+	filter "configurations:not Release*"
+		defines { "ZSTD_DLL_IMPORT=1" }
 	filter {}
 end
 

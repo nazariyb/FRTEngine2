@@ -100,6 +100,9 @@ project "Core"
 	useImGui()
 	useAssimp()
 	useYamlCpp()
+	useXxHash()
+	useBlake3()
+	useZstd()
 
 	-- Only where Core is a DLL; in Release the executable links them (useCore).
 	coreDependencies({ "kind:SharedLib" })
