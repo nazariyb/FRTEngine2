@@ -1,14 +1,16 @@
 // The zstd wrapper (Hash/Compression.h): every frame decodes to exactly the bytes it was made from,
 // compression is a pure function of input and level (content-addressed stores and byte-identical cooks
-// depend on it), and anything but one intact frame of the expected size is refused rather than
-// returned as wrong bytes.
+// depend on it) and frozen frames pin it across builds and zstd updates, and anything but one intact
+// frame of the expected size is refused rather than returned as wrong bytes.
 #include <gtest/gtest.h>
 
 #include <optional>
 #include <span>
 #include <vector>
 
+#include "Containers/String.h"
 #include "Hash/Compression.h"
+#include "Hash/StableHash.h"
 
 using namespace frt;
 
@@ -24,6 +26,28 @@ std::vector<uint8> MakeCompressible (size_t Length)
 	{
 		bytes[i] = static_cast<uint8>(sentence[i % (sizeof(sentence) - 1u)] + (i / 4096u) % 3u);
 	}
+	return bytes;
+}
+
+// Pseudo-random words from a small vocabulary: matches at many offsets and lengths and entropy-coded
+// literals, the paths a real asset's frame takes, where MakeCompressible is mostly long repeats.
+std::vector<uint8> MakeWords (size_t Length)
+{
+	constexpr char words[][16] = { "mesh", "texture", "material", "shader", "scene", "light", "camera", "sound",
+		"font", "level", "actor", "prefab", "Ґанок", "світло", "0.25", "1024" };
+	std::vector<uint8> bytes;
+	bytes.reserve(Length + sizeof(words[0]));
+	uint64 state = 0x2545F4914F6CDD1Dull;
+	while (bytes.size() < Length)
+	{
+		state = state * 6364136223846793005ull + 1442695040888963407ull;
+		for (const char* c = words[state >> 60u]; *c != 0; ++c)
+		{
+			bytes.push_back(static_cast<uint8>(*c));
+		}
+		bytes.push_back((state >> 40u) % 7u == 0u ? uint8 { 0x0A } : uint8 { 0x20 });   // newline or space
+	}
+	bytes.resize(Length);
 	return bytes;
 }
 
@@ -81,6 +105,43 @@ TEST(CompressionTest, OutputIsDeterministic)
 	const std::vector<uint8> clamped = compression::CompressZstd(input, 1000);
 	ASSERT_FALSE(clamped.empty());
 	EXPECT_EQ(compression::DecompressZstd(clamped, input.size()), input);
+}
+
+// The frames themselves, not only "the same twice in one process": a build flag (ZSTD_MULTITHREAD,
+// another default parameter) or a zstd update that changes the bytes changes every cooked and cached
+// value, so it must fail here. Frozen once from zstd 1.5.7 (ThirdParty/zstd/VERSION.txt); a deliberate
+// re-freeze is a cooked-output change.
+TEST(CompressionTest, FramesAreFrozen)
+{
+	enum class EInput { Compressible, Words, Incompressible };
+	struct SFrozenFrame
+	{
+		EInput Input;
+		size_t InputSize;
+		int32 Level;
+		size_t FrameSize;
+		FStringLiteral FrameHash;   // BLAKE3-160 of the frame
+	};
+	constexpr int32 defaultLevel = compression::DefaultZstdLevel;
+	constexpr SFrozenFrame frozen[] =
+	{
+		{ EInput::Compressible, 300000u, defaultLevel, 516u, "822e30f803db34e1f8fcb64809cb03f18179da12" },
+		{ EInput::Compressible, 300000u, 19, 414u, "f166cf76c9e7c7b5371b38a4740b33f5aa6bb2fc" },
+		{ EInput::Words, 300000u, defaultLevel, 54517u, "9da431ff0268c9864d632be9826e91f6b40145e7" },
+		{ EInput::Words, 300000u, 19, 38705u, "59c4592fd88897dbaa131c948f44053c7b776196" },
+		{ EInput::Incompressible, 100000u, defaultLevel, 100012u, "1a6d447e958456b08185555b61c81fe1dd4ae5bd" },
+	};
+	for (const SFrozenFrame& expected : frozen)
+	{
+		const std::vector<uint8> input = expected.Input == EInput::Compressible ? MakeCompressible(expected.InputSize)
+			: expected.Input == EInput::Words ? MakeWords(expected.InputSize) : MakeIncompressible(expected.InputSize);
+		const std::vector<uint8> frame = compression::CompressZstd(input, expected.Level);
+		EXPECT_EQ(frame.size(), expected.FrameSize) << input.size() << " bytes, level " << expected.Level;
+		EXPECT_EQ(hash::HashContent(frame).ToString(), expected.FrameHash) << input.size() << " bytes, level "
+			<< expected.Level;
+		EXPECT_EQ(compression::DecompressZstd(frame, input.size()), input) << input.size() << " bytes, level "
+			<< expected.Level;
+	}
 }
 
 TEST(CompressionTest, WrongExpectedSizeIsRefused)

@@ -18,4 +18,9 @@ lib/common/xxhash.h), so it links beside ThirdParty/xxHash. Only Core includes i
 (Core/Source/Hash/Compression.cpp).
 
 Updating: copy the same files and directories from the new release over these (new .c files are
-picked up by the project's globs) and update this file.
+picked up by the project's globs) and update this file. The round-trip tests in
+Core-Test/Hash/CompressionTest.cpp must still pass; CompressionTest.FramesAreFrozen pins the frames
+themselves (size and BLAKE3-160 for fixed inputs and levels). An update that changes those frames
+changes every cooked and cached value: it is a cooked-output change, re-frozen deliberately with the
+update, never just to make the test pass. Build flags that alter frames (ZSTD_MULTITHREAD, other
+default parameters) are the same kind of change.
