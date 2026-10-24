@@ -34,8 +34,9 @@ commit message reports, and exits with 1 when any step failed.
 Baselines belong to a machine: a capture depends on the GPU, its driver and the display's scaling, which
 sets the window's size. Baseline.ini beside them says what took them, and a comparison with baselines
 from another GPU or another recipe fails as such. What a run writes - logs, captures, the smoke tests'
-output, the user-data directory every process it starts gets (FRT_USER_DATA_DIR) - goes to
-<engine>/Local/Verify/Last, emptied first; packages go to %TEMP%/frtv-<hash of the engine path>.
+output, and a user-data directory (FRT_USER_DATA_DIR) of its own, new and empty, for every process it
+starts, so that no step sees what an earlier one left there - goes to <engine>/Local/Verify/Last, emptied
+first; packages go to %TEMP%/frtv-<hash of the engine path>.
 
 The captures pin what would otherwise depend on the machine's state or on wall-clock time: the render
 mode, a windowed window, and manual exposure. Auto exposure adapts by measured frame times, and the
@@ -311,10 +312,22 @@ class Gate:
         self.step_number = 0
 
         env = dict(os.environ)
+        # Never the user's own; every process gets a directory of its own below this one (env_for).
         env['FRT_USER_DATA_DIR'] = str(self.run_dir / 'UserData')
         # The templates find the engine they are in; an override would send them to another one.
         env.pop('FRT_ENGINE_DIR', None)
         self.env = env
+
+    def env_for(self, log):
+        """The environment of the process whose output goes to Log: FRT_USER_DATA_DIR is a directory of its
+        own, new and empty, named after the log. What one process writes there - the editor's state, a
+        game's settings and captures, the engine registry - would otherwise reach every later one, and a
+        step's result would depend on which steps ran before it, and differ when it runs alone or after a
+        step that did not run."""
+        user_data = self.run_dir / 'UserData' / Path(log).stem
+        shutil.rmtree(user_data, ignore_errors=True)
+        user_data.mkdir(parents=True, exist_ok=True)
+        return dict(self.env, FRT_USER_DATA_DIR=str(user_data))
 
     # ---- bookkeeping ----
 
@@ -357,7 +370,7 @@ class Gate:
         retries = []
         for attempt in range(BUILD_ATTEMPTS):
             since = log.stat().st_size if log.exists() else 0
-            code, _ = run([FRT, 'build', *arguments], log, cwd=ROOT, env=self.env, timeout=BUILD_TIMEOUT)
+            code, _ = run([FRT, 'build', *arguments], log, cwd=ROOT, env=self.env_for(log), timeout=BUILD_TIMEOUT)
             if code == 0:
                 return f'after {len(retries)} retr{"y" if len(retries) == 1 else "ies"} ({", ".join(retries)})' \
                     if retries else ''
@@ -390,7 +403,7 @@ class Gate:
         exe = BINARIES / f'Core-Test-{config}-Default.exe'
         if not exe.exists():
             raise StepFailed(f'no {exe.name}')
-        code, seconds = run([exe, '--gtest_brief=1'], log, cwd=ROOT, env=self.env, timeout=TEST_TIMEOUT)
+        code, seconds = run([exe, '--gtest_brief=1'], log, cwd=ROOT, env=self.env_for(log), timeout=TEST_TIMEOUT)
         text = Path(log).read_bytes().decode('utf-8', errors='replace')
         passed = re.findall(r'\[  PASSED  \] (\d+) test', text)
         failed = re.findall(r'\[  FAILED  \] (\d+) test', text)
@@ -409,7 +422,7 @@ class Gate:
         return counts
 
     def lint(self, log, script):
-        code, _ = run([sys.executable, '-I', ROOT / script], log, cwd=ROOT, env=self.env, timeout=LINT_TIMEOUT)
+        code, _ = run([sys.executable, '-I', ROOT / script], log, cwd=ROOT, env=self.env_for(log), timeout=LINT_TIMEOUT)
         if code != 0:
             raise StepFailed(('timed out; ' if code is None else '') + '; '.join(tail(log, lines=3)))
         last = tail(log, lines=1)
@@ -445,7 +458,7 @@ class Gate:
 
         code, seconds = run([exe, f'-Project={project_dir / (name + ".frtproject")}', '-Editor:SmokeTest=1',
                              f'-Editor:SmokeTestDir={output}', '-Assets:ReadOnly=1'],
-                            log, cwd=project_dir, env=self.env, timeout=SMOKE_TIMEOUT, on_line=on_line)
+                            log, cwd=project_dir, env=self.env_for(log), timeout=SMOKE_TIMEOUT, on_line=on_line)
         if first_step:
             self.timings.append((f'editor start to first frame, {name} ({config})', f'{first_step[0]:.1f} s'))
         self.timings.append((f'editor smoke test, {name} ({config})', f'{seconds:.1f} s'))
@@ -474,7 +487,7 @@ class Gate:
 
         log = self.logs / f'capture-{log_name(label)}.log'
         code, seconds = run([exe, *arguments, *CAPTURE_ARGUMENTS, *kind_arguments, f'-Automation:CapturePath={base}'],
-                            log, cwd=cwd, env=self.env, timeout=CAPTURE_TIMEOUT, on_line=on_line)
+                            log, cwd=cwd, env=self.env_for(log), timeout=CAPTURE_TIMEOUT, on_line=on_line)
         self.timings.append((f'capture {label}', f'{seconds:.1f} s'))
         if code != 0:
             raise StepFailed(('timed out' if code is None else f'exit code {code}') + ': ' +
@@ -611,7 +624,7 @@ class Gate:
         project = ROOT / 'Templates' / name / f'{name}.frtproject'
         output = self.package_root / name
         code, seconds = run([FRT, 'package', f'--project={project}', f'--output={output}'], log, cwd=ROOT,
-                            env=self.env, timeout=PACKAGE_TIMEOUT)
+                            env=self.env_for(log), timeout=PACKAGE_TIMEOUT)
         self.timings.append((f'package {name} (Release, build included)', f'{seconds:.1f} s'))
         if code is None:
             raise StepFailed(f'timed out after {PACKAGE_TIMEOUT / 60:g} min and was killed (a hung compiler, '
