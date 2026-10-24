@@ -93,10 +93,15 @@ CAPTURE_KINDS = (
 FLAKY_COMPILER = re.compile(rb'\b(C1060|C1001|C2018|C2026|C1907|C2001)\b')
 BUILD_ATTEMPTS = 4
 
-# How long a process may run before it counts as hung.
+# How long a process may run before it counts as hung, and is killed with everything it started. A build
+# or a package (a Release build of a game, then a copy) gets room for a build from scratch; one that runs
+# past it is a hung compiler, MSBuild node or Premake, and fails without the retries a flaky compiler gets.
+BUILD_TIMEOUT = 3600
+PACKAGE_TIMEOUT = 3600
 CAPTURE_TIMEOUT = 900
 SMOKE_TIMEOUT = 900
 TEST_TIMEOUT = 1800
+LINT_TIMEOUT = 600
 
 
 def log_name(text):
@@ -352,10 +357,14 @@ class Gate:
         retries = []
         for attempt in range(BUILD_ATTEMPTS):
             since = log.stat().st_size if log.exists() else 0
-            code, _ = run([FRT, 'build', *arguments], log, cwd=ROOT, env=self.env)
+            code, _ = run([FRT, 'build', *arguments], log, cwd=ROOT, env=self.env, timeout=BUILD_TIMEOUT)
             if code == 0:
                 return f'after {len(retries)} retr{"y" if len(retries) == 1 else "ies"} ({", ".join(retries)})' \
                     if retries else ''
+            if code is None:
+                raise StepFailed(f'timed out after {BUILD_TIMEOUT / 60:g} min and was killed (a hung compiler, '
+                                 f'MSBuild node or Premake?)' + (f'; retried before: {", ".join(retries)}'
+                                                                if retries else ''))
             with open(log, 'rb') as f:
                 f.seek(since)
                 flaky = FLAKY_COMPILER.search(f.read())
@@ -400,7 +409,7 @@ class Gate:
         return counts
 
     def lint(self, log, script):
-        code, _ = run([sys.executable, '-I', ROOT / script], log, cwd=ROOT, env=self.env, timeout=600)
+        code, _ = run([sys.executable, '-I', ROOT / script], log, cwd=ROOT, env=self.env, timeout=LINT_TIMEOUT)
         if code != 0:
             raise StepFailed(('timed out; ' if code is None else '') + '; '.join(tail(log, lines=3)))
         last = tail(log, lines=1)
@@ -602,8 +611,11 @@ class Gate:
         project = ROOT / 'Templates' / name / f'{name}.frtproject'
         output = self.package_root / name
         code, seconds = run([FRT, 'package', f'--project={project}', f'--output={output}'], log, cwd=ROOT,
-                            env=self.env)
+                            env=self.env, timeout=PACKAGE_TIMEOUT)
         self.timings.append((f'package {name} (Release, build included)', f'{seconds:.1f} s'))
+        if code is None:
+            raise StepFailed(f'timed out after {PACKAGE_TIMEOUT / 60:g} min and was killed (a hung compiler, '
+                             f'MSBuild node or Premake?)')
         if code != 0:
             errors = tail(log, lines=4, pattern=r'\berror\b|failed|cannot')
             raise StepFailed('; '.join(errors) if errors else f'exit code {code}')
