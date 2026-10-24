@@ -119,7 +119,9 @@ newoption
 ---------------  Helpers  ---------------
 -----------------------------------------
 
--- os.execute through cmd.exe, which strips one pair of outer quotes.
+-- os.execute through cmd.exe, which strips one pair of outer quotes - and parses the rest: it
+-- expands %NAME% and reads & | < > ^. Text that is not this script's own goes in escaped for it
+-- (FRT.bat assets: argumentText).
 function runCommand(command)
 	return os.execute('"' .. command .. '"')
 end
@@ -709,12 +711,17 @@ end
 ---------------  Assets  ----------------
 -----------------------------------------
 -- FRT.bat assets <verb> [arguments] [options]: AssetTool (AssetTool/Source/AssetTool.cpp says what
--- it does), for --project or, without one, for the engine itself, as the owner of /Engine
--- (--engine). Everything after the action goes to AssetTool as it was given - the verb, its
--- arguments, -Section:Key=Value overrides, --options - and AssetTool's exit code is this command's:
--- 0 success, 1 problems found, 2 usage error, 3 internal error, 4 the project is owned by another
--- process. The Development build runs, built first when it is missing or older than its sources
--- or Core's. That build's output goes to standard error, so standard output is AssetTool's alone
+-- it does), for a project or, without one, for the engine itself, as the owner of /Engine
+-- (--engine). The project is named as for every command, --project=<file>, or as AssetTool names
+-- it, which reaches this script as a plain argument: -Project=<file> (- or /, any case) or a bare
+-- *.frtproject argument (assetToolArguments). Everything else after the action reaches AssetTool
+-- with the same text - the verb, its arguments, -Section:Key=Value overrides, --options - although
+-- cmd.exe parses the command line on the way (argumentText keeps it from changing anything), and
+-- AssetTool's exit code is this command's: 0 success, 1 problems found, 2 usage error, 3 internal
+-- error, 4 the project is owned by another process. The Development build runs, built first when it
+-- is missing or older than its sources or Core's; if that build fails while an earlier one is there,
+-- the earlier one runs, with a warning (an open editor holds Core's DLL, and verbs like validate --ci
+-- must run beside it). Build output goes to standard error, so standard output is AssetTool's alone
 -- and a --json stream stays one object per line.
 
 local assetToolConfiguration = "Development-Default"
@@ -745,34 +752,97 @@ function prepareAssetsAction()
 	end
 end
 
--- One argument for a program started through cmd.exe, as CommandLineToArgvW reads it back: quoted,
--- a quote inside escaped, the backslashes before a quote - the closing one too - doubled.
-local function argumentText(argument)
+-- One argument as a program started by runCommand reads it back, with the same text. runCommand
+-- goes through cmd.exe (os.execute), which expands %NAME% wherever it is, quoted or not, and ends
+-- the command at & | < > wherever it thinks no quote is open - and it knows nothing of the \" that
+-- CommandLineToArgvW reads as a quote. So the argument is quoted for CommandLineToArgvW first (a
+-- quote inside escaped, the backslashes before a quote - the closing one too - doubled), and then
+-- every character cmd.exe treats specially, the quotes too, gets a caret: cmd.exe sees no quotes at
+-- all, takes each caret off and passes the rest on. A % keeps its caret through the expansion as
+-- well: between two of them, the name always ends in ^, and no variable has such a name.
+-- Layers: the cmd.exe parses on the way, 2 for a batch file, which parses its %* once more.
+local function argumentText(argument, layers)
 	local text = argument:gsub('(\\*)"', function (slashes) return slashes .. slashes .. '\\"' end)
-	text = text:gsub('(\\+)$', '%1%1')
-	return '"' .. text .. '"'
+	text = '"' .. text:gsub('(\\+)$', '%1%1') .. '"'
+	for _ = 1, layers or 1 do
+		text = text:gsub('[%^"%%!&|<>()]', '^%0')
+	end
+	return text
 end
 
--- Every argument of this command line but the action itself, Premake's --file and --project
--- (passed on as AssetTool's own -Project=).
-local function assetToolArguments()
-	local arguments = {}
-	local bActionSeen = false
-	for _, argument in ipairs(_ARGV or {}) do
-		local name = argument:match("^%-%-([%w%-]+)")
-		if not bActionSeen and not name and argument == _ACTION then
-			bActionSeen = true
-		elseif name ~= "file" and name ~= "project" then
-			table.insert(arguments, argumentText(argument))
-		end
+local function argumentsText(arguments, layers)
+	local texts = {}
+	for _, argument in ipairs(arguments) do
+		table.insert(texts, argumentText(argument, layers))
 	end
-	return table.concat(arguments, " ")
+	return table.concat(texts, " ")
 end
 
 -- A usage error before AssetTool runs ends with AssetTool's code for one.
 local function assetsUsageError(message)
 	io.stderr:write("assets: " .. message .. "\n")
 	os.exit(2)
+end
+
+-- The value of an argument that names the project as AssetTool reads one (FindCommandLineValue):
+-- -Project=, --Project= or /Project=, the name in any case. Nil for any other argument.
+local function projectOptionValue(argument)
+	local prefix = argument:match("^%-%-?") or argument:match("^/")
+	if prefix and argument:sub(#prefix + 1, #prefix + 8):lower() == "project=" then
+		return argument:sub(#prefix + 9)
+	end
+	return nil
+end
+
+-- The arguments for AssetTool - every argument of this command line but the action itself,
+-- Premake's --file and those that name the project - and the projects those named, in order: Premake's
+-- --project=, AssetTool's -Project= (an empty one names none) and bare *.frtproject arguments. The
+-- action resolves the project itself, so that a project this engine does not build runs its own
+-- engine's FRT.bat, and so that it knows when to add --engine.
+local function assetToolArguments()
+	local arguments = {}
+	local projects = {}
+	local bActionSeen = false
+	for _, argument in ipairs(_ARGV or {}) do
+		local name = argument:match("^%-%-([%w%-]+)")
+		local project = projectOptionValue(argument)
+		if not bActionSeen and not name and argument == _ACTION then
+			bActionSeen = true
+		elseif name and name:lower() == "file" then
+			-- Premake's own: the script it runs.
+		elseif project then
+			if project ~= "" then
+				table.insert(projects, project)
+			end
+		elseif not argument:match("^[%-/]") and argument:lower():match("%.frtproject$") then
+			table.insert(projects, argument)
+		else
+			if argument:find("[\r\n]") then
+				assetsUsageError("an argument holds a line break, which cmd.exe cannot pass on: " .. argument)
+			end
+			table.insert(arguments, argument)
+		end
+	end
+	return arguments, projects
+end
+
+-- The one project the arguments name (assetToolArguments), loaded, or nil for none. More than one
+-- that are not the same file is a usage error: a project's FRT.bat adds --project= for its own, and
+-- naming another one there must not be overridden by either.
+local function namedProject(locations)
+	local project
+	for _, location in ipairs(locations) do
+		local named, err = loadProject(location)
+		if not named then
+			assetsUsageError(err)
+		end
+		if project and not isSamePath(project.File, named.File) then
+			assetsUsageError("two projects are named, " .. winpath(project.File) .. " and " .. winpath(named.File) ..
+				": name one (a project's FRT.bat names its own)")
+		end
+		project = named
+	end
+	return project
 end
 
 local function fileTime(file)
@@ -791,12 +861,15 @@ local function newestFileTime(pattern)
 	return newest
 end
 
+local assetToolExe = rootpath("Binaries/Win64/AssetTool-" .. assetToolConfiguration .. ".exe")
+local assetToolCore = rootpath("Binaries/Win64/Core-" .. assetToolConfiguration .. ".dll")
+
 -- Missing, or older than a source of its own or of Core's (Core is a DLL it loads: the build
 -- relinks the executable only when the DLL's exports change, so each is compared with its own
 -- sources). Times are whole seconds: a file saved within the second of a link counts as built.
-local function isAssetToolStale(exe)
-	local exeTime = fileTime(exe)
-	local coreTime = fileTime(rootpath("Binaries/Win64/Core-" .. assetToolConfiguration .. ".dll"))
+local function isAssetToolStale()
+	local exeTime = fileTime(assetToolExe)
+	local coreTime = fileTime(assetToolCore)
 	if not exeTime or not coreTime then
 		return true
 	end
@@ -804,8 +877,16 @@ local function isAssetToolStale(exe)
 end
 
 -- The engine's solution, generated again first if it predates the AssetTool project, then
--- AssetTool and what it depends on, all of it printed to standard error. A failure ends the
--- command with AssetTool's code for an internal error.
+-- AssetTool and what it depends on, all of it printed to standard error.
+--
+-- The build cannot replace an executable or a DLL that a running process has loaded: while an open
+-- editor (or another AssetTool, say one holding lock) runs Core's Development DLL, any change to
+-- Core's sources makes this build fail at its link. A run that writes nothing must still work then
+-- (validate --ci beside an open editor, design 13.1), so when the build fails and an earlier build is
+-- there, that one runs, with a warning; the command fails, with AssetTool's code for an internal
+-- error, only when there is nothing to run. (Two FRT.bat assets building at once fail the same way,
+-- and the second runs what the first left, or fails if there was none: Premake's Lua has no
+-- exclusive create or file lock to make one wait for the other.)
 local function buildAssetTool()
 	local ok, err = pcall(function ()
 		local solution = io.readfile(solutionFile(nil))
@@ -814,10 +895,15 @@ local function buildAssetTool()
 		end
 		build(nil, assetToolConfiguration, "AssetTool", true)
 	end)
-	if not ok then
-		io.stderr:write("assets: " .. tostring(err) .. "\n")
+	if ok then
+		return
+	end
+	io.stderr:write("assets: " .. tostring(err) .. "\n")
+	if not (os.isfile(assetToolExe) and os.isfile(assetToolCore)) then
 		os.exit(3)
 	end
+	io.stderr:write("assets: warning: AssetTool could not be built again (does an editor or another AssetTool have it or " ..
+		"Core in use?): running the build that is there, which may not have the latest changes\n")
 end
 
 -- The exit code of a command runCommand ran (3, an internal error, when it has none).
@@ -1178,29 +1264,28 @@ newaction
 	trigger     = "assets",
 	description = "Run the asset tool: FRT.bat assets <verb> [arguments], for --project or the engine (assets help lists the verbs)",
 	execute     = function ()
-		local arguments = assetToolArguments()
-		local mount = " --engine"
-		if _OPTIONS["project"] then
-			local project, err = loadProject(_OPTIONS["project"])
-			if not project then
-				assetsUsageError(err)
-			end
+		local arguments, projects = assetToolArguments()
+		local project = namedProject(projects)
+		-- Without a project, the engine. (AssetTool refuses a project together with --engine; given
+		-- twice, --engine is still one.)
+		local mount = { "--engine" }
+		if project then
 			local engineDir, engineErr = resolveEngineDir(project)
 			if not engineDir then
 				assetsUsageError(project.File .. ": " .. engineErr)
 			end
 			if not isSamePath(engineDir, ROOT_DIR) then
+				-- That engine's FRT.bat is a batch file: its %* is parsed once more.
 				io.stderr:write(project.Name .. " uses the engine in " .. winpath(engineDir) .. ": running its FRT.bat.\n")
-				os.exit(exitCodeOf(runCommand(quoted(path.join(engineDir, "FRT.bat")) .. " assets --project=" ..
-					quoted(project.File) .. " " .. arguments)))
+				os.exit(exitCodeOf(runCommand(quoted(path.join(engineDir, "FRT.bat")) .. " assets " ..
+					argumentText("--project=" .. winpath(project.File), 2) .. " " .. argumentsText(arguments, 2))))
 			end
-			mount = " -Project=" .. quoted(project.File)
+			mount = { "-Project=" .. winpath(project.File) }
 		end
 
-		local exe = rootpath("Binaries/Win64/AssetTool-" .. assetToolConfiguration .. ".exe")
-		if isAssetToolStale(exe) then
+		if isAssetToolStale() then
 			buildAssetTool()
 		end
-		os.exit(exitCodeOf(runCommand(quoted(exe) .. mount .. " " .. arguments)))
+		os.exit(exitCodeOf(runCommand(quoted(assetToolExe) .. " " .. argumentsText(mount) .. " " .. argumentsText(arguments))))
 	end
 }

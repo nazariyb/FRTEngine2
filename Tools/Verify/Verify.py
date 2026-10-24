@@ -11,7 +11,8 @@ script, behind FRT.bat verify (Premake/tools.lua). A milestone branch merges onl
      every file .gitattributes makes LF is LF in the index and in the working tree, every -text file is
      checked out as committed (FRT.bat check-line-endings: the rules FRT.bat setup applies, in
      Premake/tools.lua only);
-  4. AssetTool through FRT.bat assets: newguid --json exits with 0 and prints JSON objects, one per line;
+  4. AssetTool through FRT.bat assets: newguid --json exits with 0, and its standard output is JSON objects,
+     one per line, and nothing else; -Project= names the project, and arguments reach AssetTool unchanged;
   5. the editor's smoke test (-Editor:SmokeTest=1) over Templates/Demo and Templates/Blank, in place, in
      Debug and Development;
   6. automation captures of Templates/Demo through the launcher, in Debug and in Development: one raster,
@@ -69,6 +70,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 BINARIES = ROOT / 'Binaries' / 'Win64'
 FRT = ROOT / 'FRT.bat'
+# What FRT.bat runs, for a check that must start Premake without a batch file in between.
+PREMAKE = ROOT / 'ThirdParty' / 'premake-5.0.0-beta2-windows' / 'premake5.exe'
 TEMPLATES = ('Demo', 'Blank')
 CAPTURED_IN_PLACE = ('Demo',)
 CAPTURE_CONFIGS = ('Debug', 'Development')
@@ -138,22 +141,23 @@ def kill_tree(process):
                    stderr=subprocess.DEVNULL)
 
 
-def run(command, log, cwd=None, env=None, timeout=None, on_line=None):
+def run(command, log, cwd=None, env=None, timeout=None, on_line=None, stdout=None):
     """Runs Command (a list) with its output appended to Log. Returns (exit code, seconds); the code is None
     when it ran past Timeout and was killed. OnLine(line bytes, seconds since start) sees each line, a
-    little after it was written.
+    little after it was written. With Stdout (a path), standard output goes to that file instead, emptied
+    first, and only standard error to Log: for a command whose standard output is data.
 
     The output goes straight into the file, never through a pipe: a build leaves processes behind
     (mspdbsrv, MSBuild nodes) that inherit the output handle, and a pipe would stay open as long as they
     live. A file is read back while the process runs instead."""
     command = [str(part) for part in command]
     start = time.monotonic()
-    with open(log, 'ab') as out:
-        out.write(f'$ {subprocess.list2cmdline(command)}\n'.encode('utf-8'))
+    with open(log, 'ab') as out, open(stdout or os.devnull, 'wb') as data:
+        out.write(f'$ {subprocess.list2cmdline(command)}{f" > {stdout}" if stdout else ""}\n'.encode('utf-8'))
         out.flush()
         offset = out.tell()
-        process = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=out,
-                                   stderr=subprocess.STDOUT)
+        process = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=data if stdout else out,
+                                   stderr=out if stdout else subprocess.STDOUT)
         timed_out = False
         pending = b''
         with open(log, 'rb') as reader:
@@ -442,31 +446,67 @@ class Gate:
 
     # ---- AssetTool ----
 
-    def assets_newguid(self, log):
-        """FRT.bat assets newguid --json, the way a script runs AssetTool: exit code 0, and every line of
-        standard output one JSON object with the stable fields "guid" (32 lowercase hex digits) and "cpp".
-        The log has standard error too (FRT.bat assets would print a build there), whose lines are no
-        objects: only lines that start with '{' count, and each of those must parse."""
-        code, _ = run([FRT, 'assets', 'newguid', '3', '--json'], log, cwd=ROOT, env=self.env_for(log),
-                      timeout=BUILD_TIMEOUT)
-        if code != 0:
-            raise StepFailed(('timed out; ' if code is None else f'exit code {code}; ') + '; '.join(tail(log, lines=3)))
-        guids = []
-        text = Path(log).read_bytes().decode('utf-8', errors='replace')
+    def assets_json(self, log, command, expected_code, timeout=BUILD_TIMEOUT):
+        """Runs Command, an FRT.bat assets command with --json, the way a script runs it: standard output to a
+        file of its own, standard error to Log. Raises StepFailed unless it exits with Expected Code and every
+        line of its standard output is one JSON object - nothing else, not a line from Premake or from a build
+        of AssetTool (those belong on standard error). Returns the objects."""
+        output = Path(log).with_suffix('.stdout')
+        code, _ = run(command, log, cwd=ROOT, env=self.env_for(log), timeout=timeout, stdout=output)
+        text = output.read_bytes().decode('utf-8', errors='replace')
+        if code != expected_code:
+            raise StepFailed(('timed out; ' if code is None else f'exit code {code}, not {expected_code}; ') +
+                             '; '.join(tail(log, lines=3) + text.splitlines()[:2]))
+        objects = []
         for line in text.splitlines():
-            if not line.startswith('{'):
-                continue
             try:
                 value = json.loads(line)
             except ValueError as error:
-                raise StepFailed(f'not a JSON object: {line[:80]} ({error})')
+                raise StepFailed(f'standard output has a line that is no JSON: {line[:80]!r} ({error})')
+            if not isinstance(value, dict):
+                raise StepFailed(f'standard output has a line that is no JSON object: {line[:80]!r}')
+            objects.append(value)
+        return objects
+
+    def assets_newguid(self, log):
+        """FRT.bat assets newguid 3 --json: exit code 0, and standard output is three lines, each a JSON object
+        with the stable fields "guid" (32 lowercase hex digits, all different) and "cpp"."""
+        objects = self.assets_json(log, [FRT, 'assets', 'newguid', '3', '--json'], 0)
+        if len(objects) != 3:
+            raise StepFailed(f'{len(objects)} lines of standard output instead of 3')
+        for value in objects:
             if not isinstance(value.get('guid'), str) or not re.fullmatch(r'[0-9a-f]{32}', value['guid']) or \
                     not isinstance(value.get('cpp'), str):
-                raise StepFailed(f'no "guid" and "cpp" in {line[:80]}')
-            guids.append(value['guid'])
-        if len(guids) != 3 or len(set(guids)) != 3:
-            raise StepFailed(f'{len(set(guids))} distinct GUIDs instead of 3')
+                raise StepFailed(f'no "guid" and "cpp" in {json.dumps(value)[:80]}')
+        if len({value['guid'] for value in objects}) != 3:
+            raise StepFailed('the same GUID twice')
         return '3 GUIDs as JSON lines'
+
+    # The text of an argument that cmd.exe would change on its way from Premake to AssetTool unless it is
+    # escaped for it: variables (%OS% is set everywhere), carets, &, quotes - one after backslashes - a
+    # pipe, redirections, parentheses, !NAME! and non-ASCII text.
+    CMD_SPECIAL_ARGUMENT = '%OS% 50%% ^caret& "quoted" back\\"slash (a|b) <c> !OS! ї 资产'
+
+    def assets_arguments(self, log):
+        """How FRT.bat assets hands its arguments to AssetTool:
+          - -Project=<file or directory>, AssetTool's own spelling of --project, names the project (here
+            Templates/Blank, which lock locks and lets go of at once, as its input is empty);
+          - an argument reaches AssetTool with its text unchanged, through the cmd.exe that Premake starts
+            it with: help '<CMD_SPECIAL_ARGUMENT>' --json exits with 2 and names that text in its error.
+            Premake runs directly, with no FRT.bat: a batch file expands %NAME% itself, before Premake gets
+            to the text, as it does for every command."""
+        locked = self.assets_json(log, [FRT, 'assets', '-Project=Templates/Blank', 'lock', '--json'], 0)
+        lock_file = str(ROOT / 'Templates' / 'Blank' / 'Local' / 'Assets' / 'Owner.lock')
+        if len(locked) != 2 or locked[0].get('locked') != '/Project' or \
+                os.path.normcase(locked[0].get('lockFile', '')) != os.path.normcase(lock_file):
+            raise StepFailed(f'-Project= did not lock Templates/Blank: {json.dumps(locked)[:120]}')
+
+        argument = self.CMD_SPECIAL_ARGUMENT
+        refused = self.assets_json(log, [PREMAKE, f'--file={ROOT / "premake5.lua"}', 'assets', 'help', argument, '--json'], 2)
+        expected = f"help: no verb '{argument}' (FRT.bat assets help lists them)"
+        if len(refused) != 1 or refused[0].get('error') != expected or refused[0].get('exitCode') != 2:
+            raise StepFailed(f'the argument changed on its way: {json.dumps(refused, ensure_ascii=False)[:160]}')
+        return '-Project= and an argument cmd.exe would change'
 
     # ---- the editor's smoke test ----
 
@@ -754,6 +794,7 @@ class Gate:
         else:
             self.step('line endings', self.line_endings)
         self.step('assets newguid --json', self.assets_newguid, needs=[('engine', 'Development')])
+        self.step('assets arguments', self.assets_arguments, needs=[('engine', 'Development')])
 
         if self.mode != 'quick':
             self.skip('assets validate --ci', 'skipped (M4)')
