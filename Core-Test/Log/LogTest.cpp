@@ -1,16 +1,30 @@
 // frt::log writes "[category] message" lines, filtered by a minimum level per category that can
-// change at run time, and stays whole when many threads log at once.
+// change at run time, and stays whole when many threads log at once - through the test hook, and
+// through the real output: stderr and the debugger.
 #include <gtest/gtest.h>
 
 #include "TestCommon.h"
 #include "Log/LogCapture.h"
 
+#include <cstdio>
+#include <filesystem>
 #include <initializer_list>
+#include <mutex>
+#include <optional>
+#include <system_error>
 #include <thread>
 #include <vector>
 
+#include <fcntl.h>
+#include <io.h>
+#include <share.h>
+#include <sys/stat.h>
+
 #include "Containers/String.h"
 #include "Log/Log.h"
+#include "Platform/Platform.h"
+
+#include <Windows.h>
 
 using namespace frt;
 
@@ -24,6 +38,138 @@ protected:
 	void SetUp () override { log::ResetAllMinLevels(); }
 	void TearDown () override { log::ResetAllMinLevels(); }
 };
+
+// Points the process's stderr (file descriptor 2, what std::fwrite(..., stderr) reaches) at a file
+// for as long as it exists, then back at what it was. The file is opened in binary mode and _dup2
+// carries the mode over, so the bytes the log writes arrive unchanged.
+class CStderrRedirect
+{
+public:
+	explicit CStderrRedirect (const std::filesystem::path& Path)
+	{
+		std::fflush(stderr);
+		if (_wsopen_s(&File, Path.c_str(), _O_WRONLY | _O_CREAT | _O_TRUNC | _O_BINARY, _SH_DENYNO,
+			_S_IREAD | _S_IWRITE) != 0)
+		{
+			File = -1;
+			return;
+		}
+		Saved = _dup(_fileno(stderr));
+		if (Saved >= 0 && _dup2(File, _fileno(stderr)) != 0)
+		{
+			_close(Saved);
+			Saved = -1;
+		}
+	}
+
+	~CStderrRedirect ()
+	{
+		Restore();
+	}
+
+	CStderrRedirect (const CStderrRedirect&) = delete;
+	CStderrRedirect& operator= (const CStderrRedirect&) = delete;
+
+	[[nodiscard]] bool IsActive () const { return Saved >= 0; }
+
+	void Restore ()
+	{
+		std::fflush(stderr);
+		if (Saved >= 0)
+		{
+			_dup2(Saved, _fileno(stderr));
+			_close(Saved);
+			Saved = -1;
+		}
+		if (File >= 0)
+		{
+			_close(File);
+			File = -1;
+		}
+	}
+
+private:
+	int File = -1;
+	int Saved = -1;
+};
+
+// Records the text OutputDebugStringW passes to the system while no debugger is attached. It raises
+// DBG_PRINTEXCEPTION_WIDE_C and, when nobody handles that, DBG_PRINTEXCEPTION_C with the text in the
+// ANSI code page (the form DebugView and the DBWIN buffer receive); a vectored handler sees both
+// before the function's own __except, and passes them on. With a debugger attached, the debugger
+// takes them instead and nothing is recorded.
+class CDebugOutputCapture
+{
+public:
+	CDebugOutputCapture () noexcept
+	{
+		Instance = this;
+		Handle = AddVectoredExceptionHandler(1u, &Handler);
+	}
+
+	~CDebugOutputCapture ()
+	{
+		if (Handle != nullptr)
+		{
+			RemoveVectoredExceptionHandler(Handle);
+		}
+		Instance = nullptr;
+	}
+
+	CDebugOutputCapture (const CDebugOutputCapture&) = delete;
+	CDebugOutputCapture& operator= (const CDebugOutputCapture&) = delete;
+
+	[[nodiscard]] bool IsActive () const { return Handle != nullptr; }
+
+	[[nodiscard]] std::vector<FString> GetTexts () const
+	{
+		const std::scoped_lock lock(Mutex);
+		return Texts;
+	}
+
+private:
+	static LONG CALLBACK Handler (EXCEPTION_POINTERS* Info)
+	{
+		const EXCEPTION_RECORD& record = *Info->ExceptionRecord;
+		CDebugOutputCapture* capture = Instance;
+		if (capture != nullptr && record.ExceptionCode == DBG_PRINTEXCEPTION_C && record.NumberParameters >= 2u)
+		{
+			// The length counts the terminating NUL.
+			const auto length = static_cast<uint32>(record.ExceptionInformation[0]);
+			const auto* text = reinterpret_cast<const char*>(record.ExceptionInformation[1]);
+			const std::scoped_lock lock(capture->Mutex);
+			capture->Texts.emplace_back(FStringView(text, length > 0u ? length - 1u : 0u));
+		}
+		return EXCEPTION_CONTINUE_SEARCH;
+	}
+
+	static inline CDebugOutputCapture* Instance = nullptr;
+	void* Handle = nullptr;
+	mutable std::mutex Mutex;
+	std::vector<FString> Texts;
+};
+
+// Checks lines "[assets] thread T message I" from Threads threads, PerThread each: every line whole
+// and each thread's lines in its own order. Lines carry their '\n'.
+void ExpectWholeLinesInThreadOrder (const std::vector<FString>& Lines, int Threads, int PerThread)
+{
+	ASSERT_EQ(Lines.size(), static_cast<size_t>(Threads * PerThread));
+	std::vector<int> next(static_cast<size_t>(Threads), 0);
+	for (const FString& line : Lines)
+	{
+		int thread = -1;
+		for (int t = 0; t < Threads; ++t)
+		{
+			if (line.StartsWith(FString::Format("[assets] thread {} ", t)))
+			{
+				thread = t;
+			}
+		}
+		ASSERT_GE(thread, 0) << line.CStr();
+		const int index = next[static_cast<size_t>(thread)]++;
+		EXPECT_EQ(line, FString::Format("[assets] thread {} message {}\n", thread, index));
+	}
+}
 }
 
 
@@ -174,4 +320,73 @@ TEST_F(LogTest, LinesFromManyThreadsNeverInterleave)
 		EXPECT_EQ(entry.Text, FString::Format("thread {} message {}", thread, index));
 		EXPECT_EQ(entry.Line, FString::Format("[assets] thread {} message {}\n", thread, index));
 	}
+}
+
+TEST_F(LogTest, WithoutAHookEveryLineReachesStderrWholeAndTheDebuggerToo)
+{
+	// No CLogCapture: the path every other test replaces. stderr goes to a file in a directory of
+	// this process's own with a non-ASCII name for the duration.
+	FString name("FRT Журнал 日志 😀 ");
+	name.AppendNumber(GetCurrentProcessId());
+	const std::filesystem::path dir = std::filesystem::temp_directory_path() / name.ToPath();
+	std::error_code ec;
+	std::filesystem::remove_all(dir, ec);
+	ASSERT_TRUE(std::filesystem::create_directories(dir, ec)) << FString::FromUtf8Lossy(ec.message()).CStr();
+	const std::filesystem::path file = dir / u8"stderr журнал.txt";
+
+	constexpr int threads = 8;
+	constexpr int perThread = 500;
+	std::vector<FString> debugTexts;
+	bool bDebuggerAttached = false;
+	{
+		CDebugOutputCapture debugOutput;
+		ASSERT_TRUE(debugOutput.IsActive());
+		CStderrRedirect redirect(file);
+		ASSERT_TRUE(redirect.IsActive()) << "cannot redirect stderr to " << FString::FromPath(file).CStr();
+
+		std::vector<std::thread> workers;
+		for (int t = 0; t < threads; ++t)
+		{
+			workers.emplace_back([t] ()
+			{
+				for (int i = 0; i < perThread; ++i)
+				{
+					log::Info(log::Assets, "thread {} message {}", t, i);
+				}
+			});
+		}
+		for (std::thread& worker : workers)
+		{
+			worker.join();
+		}
+		redirect.Restore();
+		bDebuggerAttached = IsDebuggerPresent() != FALSE;
+		debugTexts = debugOutput.GetTexts();
+	}
+
+	const std::optional<std::vector<uint8>> bytes = platform::ReadFileBytes(file);
+	std::filesystem::remove_all(dir, ec);
+	ASSERT_TRUE(bytes.has_value());
+
+	// One line per message, each ending in '\n' and nothing after the last.
+	const FStringView text(reinterpret_cast<const char*>(bytes->data()), static_cast<uint32>(bytes->size()));
+	ASSERT_TRUE(text.EndsWith("\n"));
+	std::vector<FString> lines;
+	uint32 start = 0u;
+	for (uint32 i = 0u; i < text.Len(); ++i)
+	{
+		if (text.GetData()[i] == '\n')
+		{
+			lines.emplace_back(FStringView(text.GetData() + start, i + 1u - start));
+			start = i + 1u;
+		}
+	}
+	ExpectWholeLinesInThreadOrder(lines, threads, perThread);
+
+	// The same lines went to the debugger's output, one call each.
+	if (bDebuggerAttached)
+	{
+		GTEST_SKIP() << "a debugger takes the debug output itself; only stderr was checked";
+	}
+	ExpectWholeLinesInThreadOrder(debugTexts, threads, perThread);
 }
