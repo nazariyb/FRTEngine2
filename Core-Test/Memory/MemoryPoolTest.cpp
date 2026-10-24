@@ -170,6 +170,52 @@ TEST(MemoryPoolCounters, HighWaterCallbackFiresOncePerUpwardCrossing)
 	EXPECT_EQ(log.Calls, 2u);
 }
 
+TEST(MemoryPoolCounters, ReallocatingOverTheThresholdNeverCallsTheCallback)
+{
+	// A TArray that holds most of a pool's bytes reallocates on every growth. Only a reallocation
+	// that takes the count from below the threshold to the threshold or more is a crossing.
+	CMemoryPool pool(1_Mb);
+	SHighWaterLog log;
+	pool.SetHighWaterCallback(1000u, &RecordHighWater, &log);
+
+	void* a = pool.Allocate(600);
+	void* b = pool.Allocate(600);
+	ASSERT_NE(a, nullptr);
+	ASSERT_NE(b, nullptr);
+	EXPECT_EQ(log.Calls, 1u);
+	EXPECT_EQ(log.LastBytes, 1200u);
+
+	// The same size, a shrink that stays over the threshold, and a growth: no call.
+	b = pool.ReAllocate(b, 600);
+	ASSERT_NE(b, nullptr);
+	EXPECT_EQ(pool.GetAllocatedBytes(), 1200u);
+	EXPECT_EQ(log.Calls, 1u);
+	b = pool.ReAllocate(b, 500);
+	ASSERT_NE(b, nullptr);
+	EXPECT_GE(pool.GetAllocatedBytes(), 1000u);
+	EXPECT_EQ(log.Calls, 1u);
+	b = pool.ReAllocate(b, 4000);
+	ASSERT_NE(b, nullptr);
+	EXPECT_EQ(pool.GetAllocatedBytes(), BlockBytes(600) + BlockBytes(4000));
+	EXPECT_EQ(log.Calls, 1u);
+
+	// A shrink below the threshold is no call either; growing back over it is the next crossing.
+	b = pool.ReAllocate(b, 64);
+	ASSERT_NE(b, nullptr);
+	ASSERT_LT(pool.GetAllocatedBytes(), 1000u);
+	EXPECT_EQ(log.Calls, 1u);
+	b = pool.ReAllocate(b, 600);
+	ASSERT_NE(b, nullptr);
+	EXPECT_EQ(log.Calls, 2u);
+	EXPECT_EQ(log.LastBytes, pool.GetAllocatedBytes());
+	EXPECT_EQ(log.LastBytes, 1200u);
+
+	pool.Free(b);
+	pool.Free(a);
+	EXPECT_EQ(log.Calls, 2u);
+	EXPECT_EQ(pool.GetAllocatedBytes(), 0u);
+}
+
 TEST(MemoryPoolCounters, HighWaterCallbackMayMoveItsThreshold)
 {
 	CMemoryPool pool(1_Mb);

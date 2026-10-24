@@ -32,7 +32,9 @@ class FRT_CORE_API CMemoryPool : public IAllocator
 public:
 	// Called by the allocation that takes the allocated bytes from below the threshold to the
 	// threshold or more (again only after they fall below it and climb back), on the owner thread,
-	// inside Allocate or ReAllocate. It may allocate, and may set a new threshold.
+	// inside Allocate or ReAllocate. A reallocation counts by its net change, the count before the
+	// call against the count after it, so growing, shrinking or keeping a block while the pool is
+	// already over the threshold never calls it. It may allocate, and may set a new threshold.
 	using HighWaterCallback = void (*) (CMemoryPool& Pool, uint64 AllocatedBytes, void* UserData);
 
 	FRT_DELETE_COPY_OPS(CMemoryPool);
@@ -90,7 +92,9 @@ private:
 	// Operation: "Allocate", "ReAllocate" or "Free", for the report.
 	void CheckOwnerThread (const char* Operation);
 	void ReportForeignThread (const char* Operation, uint64 ThreadId) const;
-	void AddAllocatedBytes (uint64 Bytes);
+	// One allocation, reallocation or free: OldBytes leave the count and NewBytes join it in one
+	// step, so the high-water test compares the count before the call with the count after it.
+	void ApplyAllocatedDelta (uint64 OldBytes, uint64 NewBytes);
 
 	uint64 MemorySize = 0ull;
 	uint8* Memory = nullptr;

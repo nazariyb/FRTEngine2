@@ -159,7 +159,7 @@ void* CMemoryPool::Allocate (uint64 Size)
 	void* memory = Tlsf->Malloc(Size);
 	if (memory)
 	{
-		AddAllocatedBytes(GetBlockSize(memory));
+		ApplyAllocatedDelta(0ull, GetBlockSize(memory));
 	}
 	return memory;
 }
@@ -173,13 +173,12 @@ void* CMemoryPool::ReAllocate (void* InMemory, uint64 Size)
 	void* memory = Tlsf->Realloc(InMemory, Size);
 	if (memory)
 	{
-		AllocatedBytes -= oldBytes;
-		AddAllocatedBytes(GetBlockSize(memory));
+		ApplyAllocatedDelta(oldBytes, GetBlockSize(memory));
 	}
 	else if (InMemory && Size == 0ull)
 	{
 		// Realloc to zero frees; a failed Realloc (nullptr for a non-zero size) keeps the old block.
-		AllocatedBytes -= oldBytes;
+		ApplyAllocatedDelta(oldBytes, 0ull);
 	}
 	return memory;
 }
@@ -191,7 +190,7 @@ void CMemoryPool::Free (void* MemoryToFree)
 	if (MemoryToFree)
 	{
 		CheckOwnerThread("Free");
-		AllocatedBytes -= GetBlockSize(MemoryToFree);
+		ApplyAllocatedDelta(GetBlockSize(MemoryToFree), 0ull);
 		Tlsf->Free(MemoryToFree);
 	}
 }
@@ -203,10 +202,12 @@ void CMemoryPool::SetHighWaterCallback (uint64 ThresholdBytes, HighWaterCallback
 	HighWaterUserData = Callback ? UserData : nullptr;
 }
 
-void CMemoryPool::AddAllocatedBytes (uint64 Bytes)
+void CMemoryPool::ApplyAllocatedDelta (uint64 OldBytes, uint64 NewBytes)
 {
+	// Subtracting the old block first and testing the crossing afterwards would measure from the
+	// reduced count: every reallocation of a block over the threshold would look like a crossing.
 	const uint64 before = AllocatedBytes;
-	AllocatedBytes += Bytes;
+	AllocatedBytes = AllocatedBytes - OldBytes + NewBytes;
 	PeakAllocatedBytes = (std::max)(PeakAllocatedBytes, AllocatedBytes);
 	if (HighWaterFunction && before < HighWaterThreshold && AllocatedBytes >= HighWaterThreshold)
 	{
