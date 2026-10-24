@@ -1,7 +1,6 @@
 #pragma once
 
 #include <filesystem>
-#include <memory>
 #include <optional>
 #include <span>
 #include <type_traits>
@@ -11,6 +10,7 @@
 #include "Core.h"
 #include "CoreTypes.h"
 #include "Containers/String.h"
+#include "Functional/FunctionRef.h"
 #include "Platform/BlockingFileReader.h"
 #include "Platform/Platform.h"
 
@@ -117,18 +117,11 @@ struct SDirectoryEntry
 	bool bReparsePoint = false;
 };
 
-namespace detail
-{
-// Return false to stop the listing.
-using FDirectoryVisitor = bool (*) (void* Context, const SDirectoryEntry& Entry);
-FRT_CORE_API bool EnumerateDirectory (const std::filesystem::path& Directory, FDirectoryVisitor Visitor, void* Context, FString* OutError);
-}
-
 /**
  * Calls OnEntry(const SDirectoryEntry&) for every entry of Directory except "." and "..", in the
- * file system's order (NTFS: by name, upcase order; never rely on it). OnEntry returns void, or
- * bool where false stops the listing. Not recursive: a scan walks directories itself, so it can
- * skip excluded ones before reading them.
+ * file system's order (NTFS: by name, upcase order; never rely on it). OnEntry returns bool, where
+ * false stops the listing, or void (the overload below). Not recursive: a scan walks directories
+ * itself, so it can skip excluded ones before reading them.
  *
  * Returns true when the listing ran to its end or OnEntry stopped it; false (with OutError) when
  * the directory cannot be opened or a read of the listing fails midway, possibly after some
@@ -141,24 +134,16 @@ FRT_CORE_API bool EnumerateDirectory (const std::filesystem::path& Directory, FD
  * not implement the extended class (NTFS and ReFS do) fails with a message saying so; there is no
  * fallback without file ids.
  */
+FRT_CORE_API bool EnumerateDirectory (const std::filesystem::path& Directory,
+	TFunctionRef<bool (const SDirectoryEntry&)> OnEntry, FString* OutError = nullptr);
+
+// A visitor that returns nothing sees every entry.
 template <typename F>
+	requires std::is_void_v<std::invoke_result_t<F&, const SDirectoryEntry&>>
 bool EnumerateDirectory (const std::filesystem::path& Directory, F&& OnEntry, FString* OutError = nullptr)
 {
-	using FCallback = std::remove_reference_t<F>;
-	const detail::FDirectoryVisitor visitor = [] (void* Context, const SDirectoryEntry& Entry) -> bool
-	{
-		FCallback& callback = *static_cast<FCallback*>(Context);
-		if constexpr (std::is_void_v<std::invoke_result_t<FCallback&, const SDirectoryEntry&>>)
-		{
-			callback(Entry);
-			return true;
-		}
-		else
-		{
-			return static_cast<bool>(callback(Entry));
-		}
-	};
-	return detail::EnumerateDirectory(Directory, visitor, const_cast<void*>(static_cast<const void*>(std::addressof(OnEntry))), OutError);
+	const auto visitAll = [&OnEntry] (const SDirectoryEntry& Entry) { OnEntry(Entry); return true; };
+	return EnumerateDirectory(Directory, visitAll, OutError);
 }
 
 template <NarrowText T, typename F>

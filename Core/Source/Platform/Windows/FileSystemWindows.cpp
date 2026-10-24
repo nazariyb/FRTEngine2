@@ -313,7 +313,8 @@ std::optional<SFileIdentity> GetFileIdentity (const std::filesystem::path& Path,
 
 // ---------------- Directory listing ----------------
 
-bool detail::EnumerateDirectory (const std::filesystem::path& Directory, FDirectoryVisitor Visitor, void* Context, FString* OutError)
+bool EnumerateDirectory (const std::filesystem::path& Directory, TFunctionRef<bool (const SDirectoryEntry&)> OnEntry,
+	FString* OutError)
 {
 	const CScopedHandle directory(CreateFileW(windows::ToWin32Path(Directory).c_str(),
 		FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
@@ -388,7 +389,7 @@ bool detail::EnumerateDirectory (const std::filesystem::path& Directory, FDirect
 				entry.Stat.CreationTime = windows::ToFileTime(record->CreationTime);
 				entry.Stat.Identity = MakeIdentity(directoryIds.VolumeSerial, record->FileId.Identifier);
 				entry.bReparsePoint = (record->FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0u;
-				if (!Visitor(Context, entry))
+				if (!OnEntry(entry))
 				{
 					return true;
 				}
