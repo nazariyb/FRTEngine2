@@ -342,11 +342,33 @@ function findTemplates()
 	return templates
 end
 
+-- The extensions a project's .gitattributes (Templates/Common's, which every project gets) makes
+-- text eol=lf: "*.ini text eol=lf" gives ".ini". A new project's repository holds those files as
+-- LF in its index, and nothing ever checks a new project out again, so its working copies must be
+-- LF from the start, or they would hash differently from every clone's. The engine checkout they
+-- are copied from may still have them with CRLF: one checked out before .gitattributes made them
+-- LF, which has not run FRT.bat setup yet.
+local function lfExtensions()
+	local extensions = {}
+	local rules = readBinary(path.join(templatesDir, "Common/.gitattributes")) or ""
+	for line in rules:gmatch("[^\r\n]+") do
+		local extension, attributes = line:match("^%*(%.[^%s/%*%?%[]+)%s+(.*)$")
+		if extension and (" " .. attributes .. " "):find(" eol=lf ", 1, true) then
+			extensions[extension:lower()] = true
+		end
+	end
+	return extensions
+end
+
 local function copyTree(sourceDir, destinationDir, templateName, projectName)
+	local lf = lfExtensions()
 	for _, file in ipairs(os.matchfiles(path.join(sourceDir, "**"))) do
 		local relative = path.getrelative(sourceDir, file)
 		if not (templateName and isTemplateOnly(relative, templateName)) then
 			local data = readBinary(file) or fail("new: cannot read " .. file)
+			if lf[path.getextension(file):lower()] then
+				data = data:gsub("\r\n", "\n")
+			end
 			if templateName then
 				relative = relative:gsub(templateName, projectName)
 				if templatedExtensions[path.getextension(file):lower()] then
