@@ -202,6 +202,16 @@ FRT_CORE_API bool WriteFileAtomic (const std::filesystem::path& Path, std::span<
 FRT_CORE_API bool WriteFileAtomic (const std::filesystem::path& Path, FStringView Text, bool bCreateDirectories = true,
 	FString* OutError = nullptr);
 
+// WriteFileAtomic with the temporary file named by the caller instead of beside Path: Temp must not
+// exist yet (it is created new, so two writers never share one) and must be on Path's volume. For a
+// store that keeps every unfinished write in a directory of its own (the derived-data cache's Tmp/,
+// design §7.4): its directories never show a temporary name to a reader or a listing, and a sweep
+// of one directory finds what crashed writers left. The same guarantees as WriteFileAtomic: Path
+// holds Bytes afterwards or what it held before, and a failure deletes Temp. Creates the parent
+// directories of both first when bCreateDirectories.
+FRT_CORE_API bool WriteFileAtomicVia (const std::filesystem::path& Path, const std::filesystem::path& Temp, std::span<const uint8> Bytes,
+	bool bCreateDirectories = true, FString* OutError = nullptr);
+
 template <NarrowText T>
 bool WriteFileBytes (const T&, std::span<const uint8>, bool = true, FString* = nullptr) = delete;
 template <NarrowText T, NarrowText U>
@@ -210,6 +220,76 @@ template <NarrowText T>
 bool WriteFileAtomic (const T&, std::span<const uint8>, bool = true, FString* = nullptr) = delete;
 template <NarrowText T>
 bool WriteFileAtomic (const T&, FStringView, bool = true, FString* = nullptr) = delete;
+template <NarrowText T, NarrowText U>
+bool WriteFileAtomicVia (const T&, const U&, std::span<const uint8>, bool = true, FString* = nullptr) = delete;
+
+
+/**
+ * Append-only files: logs whose records are only ever added at the end (the build state log, the
+ * build journal, the derived-data cache's access logs; design §3.3, §7.4, §7.9). A crash leaves at
+ * most a torn last record, which their readers detect and skip, so no append needs a temporary
+ * file, and appending stays a single write of a few hundred bytes - not a rewrite of the log.
+ *
+ * Every Append lands at the end of the file in one piece, even with other processes appending to the
+ * same file at the same time: their records never interleave inside one Append's bytes. Windows: the
+ * file is opened with FILE_APPEND_DATA and no FILE_WRITE_DATA, so the system positions each WriteFile
+ * at the end of the file under the file's lock (the documented append-only access; on local volumes,
+ * which is where Local/ and the cache live, §3.1). The bytes are in the OS cache when Append returns:
+ * they survive the process being killed, and reach the disk with Flush or in the background.
+ *
+ * The file is shared for reading, writing and deleting, so readers of the log (CBlockingFileReader)
+ * and an atomic replace of it (a compaction) are never refused while it is open; after a replace,
+ * Close and Open again to append to the new file. Not meant to be shared between threads without a
+ * lock of the caller's. No engine allocator.
+ */
+class FRT_CORE_API CAppendFile
+{
+public:
+	CAppendFile () noexcept = default;
+	~CAppendFile ();
+
+	CAppendFile (const CAppendFile&) = delete;
+	CAppendFile& operator= (const CAppendFile&) = delete;
+	CAppendFile (CAppendFile&& Other) noexcept;
+	CAppendFile& operator= (CAppendFile&& Other) noexcept;
+
+	// Opens Path for appending, creating it empty if it does not exist (and its parent directories
+	// first when bCreateDirectories); closes whatever was open. False, with the reason, if it cannot.
+	bool Open (const std::filesystem::path& Path, bool bCreateDirectories = true, FString* OutError = nullptr);
+	template <NarrowText T>
+	bool Open (const T&, bool = true, FString* = nullptr) = delete;
+
+	void Close () noexcept;
+	[[nodiscard]] bool IsOpen () const noexcept { return Handle != nullptr; }
+
+	// Writes Bytes at the end of the file, in one write (see above). False when the write failed or
+	// was short (a full disk): then part of Bytes may be in the file - a torn record for the reader.
+	bool Append (std::span<const uint8> Bytes, FString* OutError = nullptr);
+	// The file's size now, appends of other processes included. nullopt when not open or on failure.
+	[[nodiscard]] std::optional<uint64> GetSize (FString* OutError = nullptr) const;
+	// Everything appended so far is on disk when it returns true (FlushFileBuffers).
+	bool Flush (FString* OutError = nullptr);
+
+private:
+	void* Handle = nullptr;   // the OS file handle; nullptr when closed
+	std::filesystem::path Path;   // for error messages
+};
+
+
+// Deletes the file at Path for good - no Recycle Bin: for files of FRT's own caches and logs, which
+// are rebuilt rather than restored (a corrupt cache file, a sweep's leftovers). True when no file is
+// at Path afterwards, also when there was none. Never deletes a directory, and fails on a read-only
+// file. Readers that have the file open keep reading it; its name is gone at once.
+//
+// Windows: SetFileInformationByHandle(FileDispositionInfoEx, FILE_DISPOSITION_FLAG_DELETE |
+// FILE_DISPOSITION_FLAG_POSIX_SEMANTICS), so the name goes away immediately even while other handles
+// hold the file open with FILE_SHARE_DELETE (as CBlockingFileReader does), and a writer may create a
+// new file under the same name right after; FileDispositionInfo (delete on last close) where the file
+// system lacks POSIX semantics.
+FRT_CORE_API bool RemoveFile (const std::filesystem::path& Path, FString* OutError = nullptr);
+
+template <NarrowText T>
+bool RemoveFile (const T&, FString* = nullptr) = delete;
 
 
 // Moves a file or directory to the user's Recycle Bin, so an editor delete stays recoverable
