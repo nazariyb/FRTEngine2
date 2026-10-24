@@ -351,6 +351,9 @@ public:
 	[[nodiscard]] bool DecodeHex (std::span<uint8> Out) const noexcept;
 
 	// ---- Conversion out ----
+	// The UTF-8 bytes as they are (no terminator), for functions that take bytes: hashes, file
+	// writes, cache keys. Valid while the text is.
+	[[nodiscard]] std::span<const uint8> AsBytes () const noexcept;
 	// WTF-8 -> UTF-16 path; ill-formed -> U+FFFD; separators untouched.
 	[[nodiscard]] std::filesystem::path ToPath () const noexcept;
 	// nullopt unless canonical WTF-8: for text from hand-edited files that names a path.
@@ -1570,6 +1573,13 @@ template <typename TDerived>
 constexpr FStringView TStringReadOps<TDerived>::View () const noexcept
 {
 	return FStringView(Derived().GetData(), Derived().Len());
+}
+
+template <typename TDerived>
+std::span<const uint8> TStringReadOps<TDerived>::AsBytes () const noexcept
+{
+	return std::span<const uint8>(reinterpret_cast<const uint8*>(Derived().GetData()),
+		static_cast<size_t>(Derived().Len()));
 }
 
 template <typename TDerived>

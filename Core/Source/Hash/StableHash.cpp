@@ -34,7 +34,7 @@ uint64 Xxh3_64 (std::span<const uint8> Bytes, uint64 Seed) noexcept
 
 uint64 Xxh3_64 (FStringView Text, uint64 Seed) noexcept
 {
-	return Xxh3_64(TextBytes(Text), Seed);
+	return Xxh3_64(Text.AsBytes(), Seed);
 }
 
 
@@ -89,7 +89,7 @@ void CContentHasher::Update (std::span<const uint8> Bytes) noexcept
 
 void CContentHasher::Update (FStringView Text) noexcept
 {
-	Update(TextBytes(Text));
+	Update(Text.AsBytes());
 }
 
 SContentHash CContentHasher::Finalize () const noexcept

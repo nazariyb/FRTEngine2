@@ -161,8 +161,8 @@ TEST(AssetIdTest, DerivedGuidIsTheDocumentedUuidV8)
 
 	// derive_key("FRT derived GUID v1", Parent || le64(len) || Generator || le64(len) || Label).
 	std::vector<uint8> material(std::begin(parent.Bytes), std::end(parent.Bytes));
-	AppendField(material, hash::TextBytes("variant"));
-	AppendField(material, hash::TextBytes("Win64-D3D12"));
+	AppendField(material, FStringView("variant").AsBytes());
+	AppendField(material, FStringView("Win64-D3D12").AsBytes());
 	SGuid expected;
 	hash::DeriveKeyBytes("FRT derived GUID v1", material, expected.Bytes);
 	SetBits(expected, 8u);
@@ -183,9 +183,9 @@ TEST(AssetIdTest, DerivedGuidValuesAreFrozen)
 
 TEST(AssetIdTest, AutoGuidIsTheDocumentedUuidV4)
 {
-	const hash::SContentHash content = hash::HashContent(hash::TextBytes("PNG bytes"));
+	const hash::SContentHash content = hash::HashContent(FStringView("PNG bytes").AsBytes());
 	std::vector<uint8> input;
-	const std::span<const uint8> path = hash::TextBytes("/project/textures/rock.png");
+	const std::span<const uint8> path = FStringView("/project/textures/rock.png").AsBytes();
 	input.insert(input.end(), path.begin(), path.end());
 	input.insert(input.end(), std::begin(content.Bytes), std::end(content.Bytes));
 
@@ -195,8 +195,8 @@ TEST(AssetIdTest, AutoGuidIsTheDocumentedUuidV4)
 
 	// derive_key("FRT auto GUID v1", le64(len) || Salt || le64(len) || Generator || le64(len) || Input).
 	std::vector<uint8> material;
-	AppendField(material, hash::TextBytes("Demo"));
-	AppendField(material, hash::TextBytes("auto-meta"));
+	AppendField(material, FStringView("Demo").AsBytes());
+	AppendField(material, FStringView("auto-meta").AsBytes());
 	AppendField(material, input);
 	SGuid expected;
 	hash::DeriveKeyBytes("FRT auto GUID v1", material, expected.Bytes);
@@ -214,19 +214,21 @@ TEST(AssetIdTest, AutoGuidIsTheDocumentedUuidV4)
 	// Two machines agree; another project (salt) or another file (input) does not.
 	EXPECT_EQ(MakeAutoGuid("Demo", "auto-meta", input), guid);
 	EXPECT_NE(MakeAutoGuid("Blank", "auto-meta", input), guid);
-	EXPECT_NE(MakeAutoGuid("Demo", "auto-meta", hash::TextBytes("/project/textures/rock.png")), guid);
+	EXPECT_NE(MakeAutoGuid("Demo", "auto-meta", FStringView("/project/textures/rock.png").AsBytes()), guid);
 }
 
 TEST(AssetIdTest, AutoGuidValuesAreFrozen)
 {
-	EXPECT_EQ(MakeAutoGuid("FRT.Engine", "auto-meta", hash::TextBytes("/engine/defaults/white.png")).ToString(), "8358dce72ab7428490a721ef68dc27ba");
-	EXPECT_EQ(MakeAutoGuid("Demo", "migrate-metas", hash::TextBytes("/project/модель.gltf")).ToString(), "273321575b9b495aa75a1db1df1f1a87");
+	EXPECT_EQ(MakeAutoGuid("FRT.Engine", "auto-meta", FStringView("/engine/defaults/white.png").AsBytes()).ToString(),
+		"8358dce72ab7428490a721ef68dc27ba");
+	EXPECT_EQ(MakeAutoGuid("Demo", "migrate-metas", FStringView("/project/модель.gltf").AsBytes()).ToString(),
+		"273321575b9b495aa75a1db1df1f1a87");
 	EXPECT_EQ(MakeAutoGuidCandidate("Demo", "auto-meta", {}, 1u).ToString(), "afe6511d0fa6425f85b35290a26f5fbb");
 }
 
 TEST(AssetIdTest, AutoGuidRerollsWhenALiveGuidHasIt)
 {
-	const std::span<const uint8> input = hash::TextBytes("/project/a.png");
+	const std::span<const uint8> input = FStringView("/project/a.png").AsBytes();
 	const SGuid first = MakeAutoGuidCandidate("Demo", "dedupe", input, 0u);
 	const SGuid second = MakeAutoGuidCandidate("Demo", "dedupe", input, 1u);
 	const SGuid third = MakeAutoGuidCandidate("Demo", "dedupe", input, 2u);

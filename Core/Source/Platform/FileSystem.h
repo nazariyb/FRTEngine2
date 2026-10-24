@@ -171,9 +171,10 @@ bool EnumerateDirectory (const T&, F&&, FString* = nullptr) = delete;
  * for files nothing else reads concurrently (scratch output, test fixtures).
  */
 
-// Replaces the file at Path with Bytes in place (created or truncated, like WriteFileText; binary).
-// Creates the parent directories first when bCreateDirectories. A crash midway leaves a partial
-// file: use WriteFileAtomic for anything that is read back.
+// Replaces the file at Path with Bytes in place (created or truncated; binary). Creates the parent
+// directories first when bCreateDirectories. A crash midway leaves a partial file: use
+// WriteFileAtomic for anything that is read back. The engine's one in-place writer: WriteFileText
+// (Platform.h) is this with the text's bytes.
 FRT_CORE_API bool WriteFileBytes (const std::filesystem::path& Path, std::span<const uint8> Bytes, bool bCreateDirectories = true,
 	FString* OutError = nullptr);
 

@@ -93,9 +93,11 @@ std::vector<uint8> ReadBytes (const std::filesystem::path& Path)
 	return bytes ? std::move(*bytes) : std::vector<uint8>();
 }
 
+// A literal's bytes, for the byte-span overloads: AsBytes("x") reads better in a call than
+// FStringView("x").AsBytes().
 std::span<const uint8> AsBytes (FStringView Text)
 {
-	return std::span<const uint8>(reinterpret_cast<const uint8*>(Text.GetData()), Text.Len());
+	return Text.AsBytes();
 }
 
 // The names in Directory, sorted, as UTF-8.

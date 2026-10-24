@@ -150,16 +150,16 @@ SGuid MakeDerivedGuid (const SGuid& Parent, FStringView Generator, FStringView L
 {
 	hash::CContentHasher hasher = hash::CContentHasher::ForDeriveKey(DerivedGuidContext);
 	hasher.Update(std::span<const uint8>(Parent.Bytes));
-	AppendField(hasher, hash::TextBytes(Generator));
-	AppendField(hasher, hash::TextBytes(Label));
+	AppendField(hasher, Generator.AsBytes());
+	AppendField(hasher, Label.AsBytes());
 	return FinalizeGuid(hasher, 8u);
 }
 
 SGuid MakeAutoGuidCandidate (FStringView Salt, FStringView Generator, std::span<const uint8> Input, uint32 Attempt) noexcept
 {
 	hash::CContentHasher hasher = hash::CContentHasher::ForDeriveKey(AutoGuidContext);
-	AppendField(hasher, hash::TextBytes(Salt));
-	AppendField(hasher, hash::TextBytes(Generator));
+	AppendField(hasher, Salt.AsBytes());
+	AppendField(hasher, Generator.AsBytes());
 	AppendField(hasher, Input);
 	if (Attempt > 0u)
 	{

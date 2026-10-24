@@ -62,7 +62,7 @@ void CKeyWriter::WriteStr (FStringView Name, FStringView Value)
 {
 	if (std::vector<uint8>* value = AddField(Name, EKeyFieldType::Str))
 	{
-		AppendSized(*value, hash::TextBytes(Value));
+		AppendSized(*value, Value.AsBytes());
 	}
 }
 
@@ -144,7 +144,7 @@ void CKeyWriter::WriteEnum (FStringView Name, FStringView StableName)
 	}
 	if (std::vector<uint8>* value = AddField(Name, EKeyFieldType::Enum))
 	{
-		AppendSized(*value, hash::TextBytes(StableName));
+		AppendSized(*value, StableName.AsBytes());
 	}
 }
 
@@ -265,7 +265,7 @@ bool CKeyWriter::EncodeRecord (const std::vector<SField>& Fields, FStringView Pa
 	for (const SField* field : sorted)
 	{
 		Out.push_back(static_cast<uint8>(field->Type));
-		AppendSized(Out, hash::TextBytes(field->Name));
+		AppendSized(Out, field->Name.AsBytes());
 		AppendRaw(Out, field->Value);
 	}
 	return true;

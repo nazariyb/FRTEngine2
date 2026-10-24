@@ -167,8 +167,8 @@ TEST(StableHashTest, Xxh3MatchesTheOfficialSanityVectors)
 TEST(StableHashTest, Xxh3OfTextHashesItsUtf8Bytes)
 {
 	const FStringView text = "Привіт, 漢字 😀";
-	EXPECT_EQ(hash::Xxh3_64(text), hash::Xxh3_64(hash::TextBytes(text)));
-	EXPECT_EQ(hash::Xxh3_64(text, 42u), hash::Xxh3_64(hash::TextBytes(text), 42u));
+	EXPECT_EQ(hash::Xxh3_64(text), hash::Xxh3_64(text.AsBytes()));
+	EXPECT_EQ(hash::Xxh3_64(text, 42u), hash::Xxh3_64(text.AsBytes(), 42u));
 	EXPECT_NE(hash::Xxh3_64(text), hash::Xxh3_64(text, 42u));
 	// The empty text is the empty input, whatever FStringView stores for it.
 	EXPECT_EQ(hash::Xxh3_64(FStringView()), 0x2D06800538D394C2ull);

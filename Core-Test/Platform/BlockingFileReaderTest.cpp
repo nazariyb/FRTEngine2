@@ -52,9 +52,11 @@ std::vector<uint8> MakePattern (size_t Size)
 	return bytes;
 }
 
+// A literal's bytes, for the byte-span overloads: AsBytes("x") reads better in a call than
+// FStringView("x").AsBytes().
 std::span<const uint8> AsBytes (FStringView Text)
 {
-	return std::span<const uint8>(reinterpret_cast<const uint8*>(Text.GetData()), Text.Len());
+	return Text.AsBytes();
 }
 
 class BlockingFileReaderTest : public ::testing::Test

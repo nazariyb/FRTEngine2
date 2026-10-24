@@ -95,6 +95,7 @@ FRT_CORE_API void ShowErrorMessage (FStringView Title, FStringView Text) noexcep
 // Creates the parent directories first when bCreateDirectories. False if anything failed.
 FRT_CORE_API bool WriteFileText (const std::filesystem::path& Path, FStringView Text, bool bCreateDirectories = true);
 
+// WriteFileBytes (Platform/FileSystem.h) with Text.AsBytes(), for callers that need no reason.
 // Narrow text never becomes a path implicitly: std::filesystem::path(const char*) decodes with the
 // ANSI code page. Convert explicitly (FStringView::ToPath).
 //

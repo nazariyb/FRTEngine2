@@ -34,12 +34,7 @@
  */
 namespace frt::hash
 {
-// The bytes of UTF-8 text, for the functions taking a byte span.
-[[nodiscard]] inline std::span<const uint8> TextBytes (FStringView Text) noexcept
-{
-	return { reinterpret_cast<const uint8*>(Text.GetData()), static_cast<size_t>(Text.Len()) };
-}
-
+// Text goes into the functions taking a byte span by its UTF-8 bytes: Text.AsBytes().
 
 // ---------------- XXH3 ----------------
 

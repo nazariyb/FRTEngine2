@@ -541,8 +541,7 @@ bool WriteFileAtomic (const std::filesystem::path& Path, std::span<const uint8> 
 
 bool WriteFileAtomic (const std::filesystem::path& Path, FStringView Text, bool bCreateDirectories, FString* OutError)
 {
-	return WriteFileAtomic(Path, std::span<const uint8>(reinterpret_cast<const uint8*>(Text.GetData()), Text.Len()),
-		bCreateDirectories, OutError);
+	return WriteFileAtomic(Path, Text.AsBytes(), bCreateDirectories, OutError);
 }
 
 
