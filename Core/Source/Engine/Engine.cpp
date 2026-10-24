@@ -161,8 +161,8 @@ void CEngine::ShutDown ()
 #endif
 	HeadlessMaterials.reset();
 	Clock.reset();
-	// After the renderer, whose decodes it may still be running: drains, discards their completions
-	// and joins the threads.
+	// After the renderer, whose decodes it may still be running: drains (drops what is queued, waits
+	// for what runs, destroys every completion left) and joins the threads.
 	WorkerPool.reset();
 }
 
