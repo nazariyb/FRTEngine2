@@ -15,8 +15,6 @@ namespace
 constexpr FStringLiteral DerivedGuidContext = "FRT derived GUID v1";
 constexpr FStringLiteral AutoGuidContext = "FRT auto GUID v1";
 
-constexpr char HexDigits[] = "0123456789abcdef";
-
 // RFC 9562: the version in the high nibble of byte 6, the variant 10 in the two high bits of byte 8.
 void SetVersionAndVariant (SGuid& Guid, uint8 Version) noexcept
 {
@@ -111,13 +109,7 @@ std::optional<SGuid> SGuid::Parse (FStringView Text) noexcept
 
 void SGuid::AppendText (FString& Out) const noexcept
 {
-	char text[TextLength];
-	for (uint32 i = 0u; i < Size; ++i)
-	{
-		text[2u * i] = HexDigits[Bytes[i] >> 4u];
-		text[2u * i + 1u] = HexDigits[Bytes[i] & 0x0Fu];
-	}
-	Out.Append(FStringView(text, TextLength));
+	Out.AppendHexBytes(Bytes, /*bUpperCase*/ false);
 }
 
 FString SGuid::ToString () const noexcept

@@ -61,17 +61,18 @@ struct SContentHash
 	FRT_CORE_API void AppendText (FString& Out) const noexcept;
 	[[nodiscard]] FRT_CORE_API FString ToString () const noexcept;
 
-	// All zero: no hash function produces it in practice, so it marks "no hash yet".
-	[[nodiscard]] constexpr bool IsZero () const noexcept
+	// Not all zero. No hash function produces all zero in practice, so that marks "no hash yet" - as
+	// it marks "none" for every id type (SGuid, SAssetId, SFileIdentity).
+	[[nodiscard]] constexpr bool IsValid () const noexcept
 	{
 		for (const uint8 byte : Bytes)
 		{
 			if (byte != 0u)
 			{
-				return false;
+				return true;
 			}
 		}
-		return true;
+		return false;
 	}
 
 	[[nodiscard]] std::span<const uint8, Size> AsBytes () const noexcept { return std::span<const uint8, Size>(Bytes); }

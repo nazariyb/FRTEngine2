@@ -50,14 +50,7 @@ std::optional<SContentHash> SContentHash::Parse (FStringView Text) noexcept
 
 void SContentHash::AppendText (FString& Out) const noexcept
 {
-	constexpr char digits[] = "0123456789abcdef";
-	char text[TextLength];
-	for (uint32 i = 0u; i < Size; ++i)
-	{
-		text[2u * i] = digits[Bytes[i] >> 4u];
-		text[2u * i + 1u] = digits[Bytes[i] & 0x0Fu];
-	}
-	Out.Append(FStringView(text, TextLength));
+	Out.AppendHexBytes(Bytes, /*bUpperCase*/ false);
 }
 
 FString SContentHash::ToString () const noexcept

@@ -318,6 +318,7 @@ public:
 		return result;
 	}
 
+	// Two hex digits per byte, in byte order: AppendHexBytes on an empty string.
 	[[nodiscard]] FRT_CORE_API static FString FromHexBytes (std::span<const uint8> Bytes, bool bUpperCase = true) noexcept;
 
 	// C-style: \\ \" \n \r \t \0; \xHH for: other bytes < 0x20 and 0x7F, every byte of an ill-formed unit,
@@ -496,6 +497,8 @@ public:
 	FString& AppendPath (const char*, EPathStyle = EPathStyle::Native) = delete;
 	FString& AppendPath (const std::string&, EPathStyle = EPathStyle::Native) = delete;
 	FString& AppendPath (std::string_view, EPathStyle = EPathStyle::Native) = delete;
+	// Two hex digits per byte, in byte order (the text form of hashes and GUIDs).
+	FRT_CORE_API FString& AppendHexBytes (std::span<const uint8> Bytes, bool bUpperCase = true) noexcept;
 
 	template <concepts::StringNumber T>
 	FString& AppendNumber (T Value) noexcept

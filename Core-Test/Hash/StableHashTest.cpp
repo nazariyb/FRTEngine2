@@ -314,8 +314,8 @@ TEST(StableHashTest, ContentHashComparesAsBytes)
 	low.Bytes[0] = 0x01u;
 	high.Bytes[0] = 0x80u;
 	EXPECT_LT(low, high);
-	EXPECT_TRUE(hash::SContentHash().IsZero());
-	EXPECT_FALSE(low.IsZero());
+	EXPECT_FALSE(hash::SContentHash().IsValid());
+	EXPECT_TRUE(low.IsValid());
 	high.Bytes[0] = 0x01u;
 	EXPECT_EQ(low, high);
 }
