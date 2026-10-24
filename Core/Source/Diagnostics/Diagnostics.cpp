@@ -36,6 +36,28 @@ uint32 CountCodeLetters (uint32 Letters) noexcept
 	}
 	return count;
 }
+
+// A hash of every field but Subject, which is equal within one subject. The lengths go in with the
+// numbers, so text moved from one string field to the next changes it. Collisions only cost a full
+// comparison (SameWithinSubject).
+uint64 Fingerprint (const SDiagnostic& Diagnostic) noexcept
+{
+	const uint32 numbers[] = {
+		static_cast<uint32>(Diagnostic.Severity), Diagnostic.Code, Diagnostic.Line, Diagnostic.Column,
+		Diagnostic.File.Len(), Diagnostic.FieldPath.Len(), Diagnostic.Message.Len(),
+	};
+	uint64 fingerprint = hash::HashBytes(numbers, sizeof(numbers));
+	fingerprint = hash::HashBytes(Diagnostic.File.GetData(), Diagnostic.File.Len(), fingerprint);
+	fingerprint = hash::HashBytes(Diagnostic.FieldPath.GetData(), Diagnostic.FieldPath.Len(), fingerprint);
+	return hash::HashBytes(Diagnostic.Message.GetData(), Diagnostic.Message.Len(), fingerprint);
+}
+
+// operator== for two diagnostics of the same subject: the numbers first, the strings last.
+bool SameWithinSubject (const SDiagnostic& A, const SDiagnostic& B) noexcept
+{
+	return A.Code == B.Code && A.Line == B.Line && A.Column == B.Column && A.Severity == B.Severity
+		&& A.File == B.File && A.FieldPath == B.FieldPath && A.Message == B.Message;
+}
 }
 
 
@@ -108,13 +130,15 @@ bool CDiagnosticStore::Append (SDiagnostic Diagnostic)
 	}
 	line.Append(Diagnostic.Message);
 	const log::ELevel level = ToLogLevel(Diagnostic.Severity);
+	const uint64 fingerprint = Fingerprint(Diagnostic);
 
 	{
 		const std::scoped_lock lock(Mutex);
-		std::vector<SDiagnostic>& stored = BySubject[Diagnostic.Subject];
-		for (const SDiagnostic& existing : stored)
+		SSubjectDiagnostics& subject = BySubject[Diagnostic.Subject];
+		const auto [first, last] = subject.ByFingerprint.equal_range(fingerprint);
+		for (auto it = first; it != last; ++it)
 		{
-			if (existing == Diagnostic)
+			if (SameWithinSubject(subject.Diagnostics[it->second], Diagnostic))
 			{
 				return false;
 			}
@@ -132,7 +156,8 @@ bool CDiagnosticStore::Append (SDiagnostic Diagnostic)
 				RecentHead = (RecentHead + 1u) % RecentCapacity;
 			}
 		}
-		stored.push_back(std::move(Diagnostic));
+		subject.ByFingerprint.emplace(fingerprint, static_cast<uint32>(subject.Diagnostics.size()));
+		subject.Diagnostics.push_back(std::move(Diagnostic));
 		++Count;
 		++Revision;
 	}
@@ -145,12 +170,12 @@ std::vector<SDiagnostic> CDiagnosticStore::Query (FStringView Subject) const
 {
 	const std::scoped_lock lock(Mutex);
 	const auto found = BySubject.find(Subject);
-	return found != BySubject.end() ? found->second : std::vector<SDiagnostic>();
+	return found != BySubject.end() ? found->second.Diagnostics : std::vector<SDiagnostic>();
 }
 
 uint32 CDiagnosticStore::ClearSubject (FStringView Subject)
 {
-	std::vector<SDiagnostic> removed;
+	SSubjectDiagnostics removed;
 	{
 		const std::scoped_lock lock(Mutex);
 		const auto found = BySubject.find(Subject);
@@ -160,16 +185,16 @@ uint32 CDiagnosticStore::ClearSubject (FStringView Subject)
 		}
 		removed = std::move(found->second);
 		BySubject.erase(found);
-		Count -= static_cast<uint32>(removed.size());
+		Count -= static_cast<uint32>(removed.Diagnostics.size());
 		++Revision;
 	}
 	// Freed outside the lock.
-	return static_cast<uint32>(removed.size());
+	return static_cast<uint32>(removed.Diagnostics.size());
 }
 
 void CDiagnosticStore::Clear ()
 {
-	std::map<FString, std::vector<SDiagnostic>, SSubjectLess> bySubject;
+	std::map<FString, SSubjectDiagnostics, SSubjectLess> bySubject;
 	std::vector<SDiagnostic> recent;
 	{
 		const std::scoped_lock lock(Mutex);
@@ -198,7 +223,7 @@ void CDiagnosticStore::ForEach (TFunctionRef<void (const SDiagnostic&)> Visit) c
 	const std::scoped_lock lock(Mutex);
 	for (const auto& entry : BySubject)
 	{
-		for (const SDiagnostic& diagnostic : entry.second)
+		for (const SDiagnostic& diagnostic : entry.second.Diagnostics)
 		{
 			Visit(diagnostic);
 		}
@@ -217,7 +242,7 @@ uint32 CDiagnosticStore::GetCount (ESeverity Severity) const
 	uint32 count = 0u;
 	for (const auto& entry : BySubject)
 	{
-		for (const SDiagnostic& diagnostic : entry.second)
+		for (const SDiagnostic& diagnostic : entry.second.Diagnostics)
 		{
 			count += diagnostic.Severity == Severity ? 1u : 0u;
 		}

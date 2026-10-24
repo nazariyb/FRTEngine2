@@ -3,6 +3,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <unordered_map>
 #include <vector>
 
 #include "Core.h"
@@ -135,9 +136,11 @@ FRT_CORE_API FString& AppendDiagnosticCode (FString& Out, uint32 Code) noexcept;
  *
  * The store holds the current problems of each subject: whoever re-checks a subject (a re-import, a
  * validator run) clears it first and appends what it finds. A diagnostic equal to one already stored
- * for its subject is not stored or printed again, so running the same check twice reports once. The
- * ring keeps the last RecentCapacity diagnostics appended, whatever became of their subjects since:
- * the history a log panel shows.
+ * for its subject is not stored or printed again, so running the same check twice reports once. That
+ * check costs one hash lookup, not a comparison with every diagnostic of the subject: a validator may
+ * report thousands for one large table while other workers wait on the lock. The ring keeps the last
+ * RecentCapacity diagnostics appended, whatever became of their subjects since: the history a log
+ * panel shows.
  *
  * Every diagnostic Append stores is printed once through frt::log, at the level of its severity, as
  * "[<category>] <subject>: <message>" (the category is "assets" unless the constructor says
@@ -190,11 +193,20 @@ private:
 		bool operator() (FStringView A, FStringView B) const noexcept { return A < B; }
 	};
 
+	// One subject's diagnostics, and an index of them by fingerprint (a hash of every field but the
+	// subject, computed before the lock): Append compares in full only the diagnostics whose
+	// fingerprint matches.
+	struct SSubjectDiagnostics
+	{
+		std::vector<SDiagnostic> Diagnostics;   // in append order
+		std::unordered_multimap<uint64, uint32> ByFingerprint;   // fingerprint -> index in Diagnostics
+	};
+
 	const uint32 RecentCapacity;
 	const FStringLiteral LogCategory;
 
 	mutable std::mutex Mutex;
-	std::map<FString, std::vector<SDiagnostic>, SSubjectLess> BySubject;
+	std::map<FString, SSubjectDiagnostics, SSubjectLess> BySubject;
 	std::vector<SDiagnostic> Recent;   // a ring once full: RecentHead is the oldest
 	uint32 RecentHead = 0u;
 	uint32 Count = 0u;

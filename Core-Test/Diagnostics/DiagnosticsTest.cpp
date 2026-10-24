@@ -166,6 +166,74 @@ TEST_F(DiagnosticStoreTest, AnEqualDiagnosticIsStoredAndPrintedOnce)
 	EXPECT_EQ(Capture.GetEntries().size(), 2u);
 }
 
+TEST_F(DiagnosticStoreTest, EveryFieldButTheSubjectTellsDiagnosticsApart)
+{
+	CDiagnosticStore store;
+	SDiagnostic base = MakeDiagnostic("Content/Rock.png", "bad field");
+	base.File = "ab";
+	base.Line = 4u;
+	base.Column = 9u;
+	base.FieldPath = "Settings";
+
+	std::vector<SDiagnostic> variants(9u, base);
+	variants[1].Severity = ESeverity::Warning;
+	variants[2].Code = DiagnosticCode("META002");
+	variants[3].File = "Content/Rock.png.meta";
+	variants[4].Line = 5u;
+	variants[5].Column = 10u;
+	variants[6].FieldPath = "Settings.Srgb";
+	variants[7].Message = "bad field!";
+	// The same text, moved from one field to the next.
+	variants[8].File = "a";
+	variants[8].FieldPath = "bSettings";
+
+	for (const SDiagnostic& variant : variants)
+	{
+		EXPECT_TRUE(store.Append(variant));
+	}
+	for (const SDiagnostic& variant : variants)
+	{
+		EXPECT_FALSE(store.Append(variant));
+	}
+	EXPECT_EQ(store.GetCount(), static_cast<uint32>(variants.size()));
+	EXPECT_EQ(store.Query("Content/Rock.png"), variants);
+}
+
+TEST_F(DiagnosticStoreTest, ThousandsOfDiagnosticsForOneSubjectAreEachStoredOnce)
+{
+	// A validator over a large table: the duplicate check must not compare with every earlier one.
+	log::SetMinLevel(log::Assets, log::ELevel::Error);
+	constexpr uint32 count = 20000u;
+	CDiagnosticStore store;
+	for (int pass = 0; pass < 2; ++pass)
+	{
+		for (uint32 i = 0u; i < count; ++i)
+		{
+			SDiagnostic diagnostic = MakeDiagnostic("Tables/Items.frt", "value out of range", ESeverity::Warning,
+				"ROW001");
+			diagnostic.Line = i + 1u;
+			diagnostic.FieldPath = FString::Format("Rows[{}].Weight", i);
+			EXPECT_EQ(store.Append(std::move(diagnostic)), pass == 0) << i;
+		}
+	}
+
+	const std::vector<SDiagnostic> stored = store.Query("Tables/Items.frt");
+	ASSERT_EQ(stored.size(), static_cast<size_t>(count));
+	for (uint32 i = 0u; i < count; ++i)
+	{
+		EXPECT_EQ(stored[i].Line, i + 1u);
+	}
+	EXPECT_TRUE(Capture.GetEntries().empty());
+
+	// A cleared subject starts over: nothing of the old index is left to match.
+	EXPECT_EQ(store.ClearSubject("Tables/Items.frt"), count);
+	SDiagnostic again = MakeDiagnostic("Tables/Items.frt", "value out of range", ESeverity::Warning, "ROW001");
+	again.Line = 1u;
+	again.FieldPath = "Rows[0].Weight";
+	EXPECT_TRUE(store.Append(again));
+	EXPECT_FALSE(store.Append(again));
+}
+
 TEST_F(DiagnosticStoreTest, PrintsEachNewDiagnosticAsSubjectAndMessage)
 {
 	CDiagnosticStore store;
