@@ -15,6 +15,8 @@
 --   open       opens the solution in the program .sln files open with (Visual Studio)
 --   package    builds the project's game in Release and writes it, with everything it runs
 --              with, to a directory of its own that runs anywhere (Packaging, below)
+--   verify     the check before a merge: builds, Core-Test, lints, smoke runs and captures
+--              compared with recorded baselines (Tools/Verify/Verify.py says what and how)
 --
 -- A command for a project that uses another engine runs that engine's FRT.bat instead.
 
@@ -79,6 +81,38 @@ newoption
 	description = "new: build the project once it is created"
 }
 
+newoption
+{
+	trigger     = "quick",
+	description = "verify: only build Development, run its Core-Test and the lints (the pre-commit subset)"
+}
+
+newoption
+{
+	trigger     = "nightly",
+	description = "verify: everything, plus the long-running checks (none exist yet)"
+}
+
+newoption
+{
+	trigger     = "record-baselines",
+	description = "verify: record the captures as the new baselines instead of comparing with them"
+}
+
+newoption
+{
+	trigger     = "baselines",
+	value       = "DIR",
+	description = "verify: where the baseline captures are (default: Local/Verify/Baselines)"
+}
+
+newoption
+{
+	trigger     = "pt-tolerance",
+	value       = "RMSE",
+	description = "verify: the relative RMSE a path-traced capture may differ from its baseline by (default: 1e-4)"
+}
+
 -----------------------------------------
 ---------------  Helpers  ---------------
 -----------------------------------------
@@ -140,6 +174,17 @@ local function msbuild()
 		fail("no Visual Studio 2022 with MSBuild and the v143 C++ toolset found (vswhere)")
 	end
 	return exe
+end
+
+-- Python 3 for Tools/: the newest through the py launcher, else the python on PATH.
+local function python()
+	for _, candidate in ipairs({ "py -3", "python" }) do
+		local version = outputOf(candidate .. " --version")
+		if version and version:match("^Python 3%.") then
+			return candidate
+		end
+	end
+	return nil
 end
 
 local function solutionFile(project)
@@ -431,7 +476,7 @@ end
 -- would rewrite premake5.exe while it runs this, and every source, so the next build would
 -- rebuild everything. Only on a working tree without uncommitted changes, which the reset would
 -- throw away; changes in line endings alone are not changes. Each worktree of a repository has
--- its own working files, and runs setup once.
+-- its own working files, and runs setup once. Tools/Verify/Verify.py checks the same rules.
 
 -- core.safecrlf=false: no warning about the conversions core.autocrlf makes, which are the point.
 local function git(arguments)
@@ -545,7 +590,8 @@ local function setupLineEndings()
 			return false
 		end
 
-		print("Line endings: checking out " .. #problems.work .. " file(s) again, for the line endings .gitattributes asks for...")
+		print("Line endings: checking out " .. #problems.work .. " file(s) again, for the line endings " ..
+			".gitattributes asks for...")
 		local list = path.join(ROOT_DIR, "Local/Setup/LineEndings.txt")
 		if not writeBinary(list, table.concat(problems.work, "\0") .. "\0") then
 			fail("setup: cannot write " .. winpath(list))
@@ -856,5 +902,38 @@ newaction
 			addRecentProject(project.File)
 		end
 		runCommand('start "" ' .. quoted(solution))
+	end
+}
+
+-- The engine's merge gate. There is no CI, and byte-exact D3D12 captures need a GPU machine, so
+-- it runs here: Tools/Verify/Verify.py, which says what it checks.
+newaction
+{
+	trigger     = "verify",
+	description = "Check the engine before a merge (Tools/Verify/Verify.py): [--quick|--nightly] [--record-baselines]",
+	execute     = function ()
+		if _OPTIONS["project"] then
+			fail("verify: checks the engine and its templates; it takes no --project")
+		end
+		if _OPTIONS["quick"] and _OPTIONS["nightly"] then
+			fail("verify: --quick or --nightly, not both")
+		end
+		local interpreter = python() or fail("verify: needs Python 3 (the py launcher or python on PATH)")
+		local command = interpreter .. " -I " .. quoted(rootpath("Tools/Verify/Verify.py"))
+		for _, switch in ipairs({ "quick", "nightly", "record-baselines" }) do
+			if _OPTIONS[switch] then
+				command = command .. " --" .. switch
+			end
+		end
+		if _OPTIONS["baselines"] then
+			command = command .. " --baselines=" .. quoted(canonicalPath(_OPTIONS["baselines"]))
+		end
+		if _OPTIONS["pt-tolerance"] then
+			local tolerance = tonumber(_OPTIONS["pt-tolerance"]) or fail("verify: --pt-tolerance takes a number, e.g. 2e-4")
+			command = command .. " --pt-tolerance=" .. string.format("%.17g", tolerance)
+		end
+		if not runCommand(command) then
+			fail("verify failed (the summary above says what)")
+		end
 	end
 }
