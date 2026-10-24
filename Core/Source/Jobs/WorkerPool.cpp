@@ -119,13 +119,11 @@ void CWorkerPool::RunTask (uint32 Index, TaskPtr Task)
 	// returns, no callable of a module about to be unloaded is left anywhere.
 	Task->Work = nullptr;
 
-	// A cancelled task's completion: destroyed out of the locks, but before the worker counts as idle,
-	// since a drain waits for that too.
-	TaskPtr discarded;
 	bool bAllIdle = false;
 	{
 		// Both locks for the hand-over, so Cancel sees the task either running (and flags it) or with
-		// its completion waiting (and extracts it), never between the two.
+		// its completion waiting (and extracts it), never between the two. One step: the task ends,
+		// the worker goes idle and the owner hears of both at once.
 		std::lock_guard queueLock(QueueMutex);
 		std::lock_guard completionLock(CompletionMutex);
 		RunningTasks[Index] = nullptr;
@@ -138,25 +136,14 @@ void CWorkerPool::RunTask (uint32 Index, TaskPtr Task)
 			RetireLocked(Task->Sequence);
 			if (Task->Completion)
 			{
+				// Cancelled while it ran: its completion never runs, and dies on the owner thread all
+				// the same (the class comment), at its next pump or drain.
 				DiscardedCount.fetch_add(1u, std::memory_order_relaxed);
-				discarded = std::move(Task);
+				Graveyard.push_back(std::move(Task));
 			}
 		}
-		if (!discarded)
-		{
-			--RunningCount;
-			bAllIdle = RunningCount == 0u;
-		}
-		++WakeCount;
-	}
-	if (discarded)
-	{
-		discarded.reset();
-		std::lock_guard queueLock(QueueMutex);
-		std::lock_guard completionLock(CompletionMutex);
 		--RunningCount;
 		bAllIdle = RunningCount == 0u;
-		// The owner may be waiting for the pool to go idle (PumpUntil): this is an event as well.
 		++WakeCount;
 	}
 	CompletionEvent.notify_all();
@@ -164,6 +151,7 @@ void CWorkerPool::RunTask (uint32 Index, TaskPtr Task)
 	{
 		WorkersIdle.notify_all();
 	}
+	// What is left of a task without a completion dies here: nothing that could still run.
 }
 
 bool CWorkerPool::HasQueuedLocked () const noexcept
@@ -217,12 +205,20 @@ uint64 CWorkerPool::Submit (EWorkPriority Priority, uint64 CancelGroup, TUniqueF
 			task->Epoch = Epoch.load(std::memory_order_acquire);
 			Queues[static_cast<uint32>(Priority)].push_back(std::move(task));
 		}
+		else if (task->Completion && !IsOwnerThread())
+		{
+			// Dropped, from a worker or another thread: the drain under way destroys the completion.
+			std::lock_guard completionLock(CompletionMutex);
+			Graveyard.push_back(std::move(task));
+			++WakeCount;
+		}
 	}
 	SubmittedCount.fetch_add(1u, std::memory_order_relaxed);
 	if (sequence == 0u)
 	{
-		// Dropped: the callables die here, out of the lock.
+		// Dropped: what is left of it (all of it on the owner thread) dies here, out of the lock.
 		DroppedCount.fetch_add(1u, std::memory_order_relaxed);
+		CompletionEvent.notify_all();
 		return 0u;
 	}
 	WorkAvailable.notify_one();
@@ -236,6 +232,7 @@ uint32 CWorkerPool::Cancel (uint64 CancelGroup)
 		return 0u;
 	}
 
+	const bool bOnOwner = IsOwnerThread();
 	std::vector<TaskPtr> removed;
 	uint32 dropped = 0u;
 	{
@@ -271,11 +268,16 @@ uint32 CWorkerPool::Cancel (uint64 CancelGroup)
 			RetireLocked(task->Sequence);
 		}
 		ExtractCompletionsLocked(CancelGroup, false, removed);
+		if (!bOnOwner)
+		{
+			BuryLocked(removed);
+		}
 		++WakeCount;
 	}
 	DroppedCount.fetch_add(dropped, std::memory_order_relaxed);
 	CompletionEvent.notify_all();
-	// Destroyed here, out of the locks: dropped tasks with both callables, waiting completions.
+	// Destroyed here, out of the locks: on the owner thread every dropped task and discarded
+	// completion, elsewhere what holds no completion.
 	removed.clear();
 	return dropped;
 }
@@ -315,12 +317,14 @@ bool CWorkerPool::HasPumpableLocked () const noexcept
 	return !Batch.empty() || !Ready.empty();
 }
 
-CWorkerPool::TaskPtr CWorkerPool::TakeNextCompletionLocked ()
+CWorkerPool::TaskPtr CWorkerPool::TakeNextCompletionLocked (uint64 Limit)
 {
 	TaskPtr task;
 	if (Order == ECompletionOrder::Strict)
 	{
-		if (Ready.empty() || Ready.front()->Sequence != NextToRetire)
+		// Ready keeps filling while the pump runs; Limit stops it at what was submitted before. (Batch
+		// order needs no check: the batch was taken from what had arrived when the pump began.)
+		if (Ready.empty() || Ready.front()->Sequence != NextToRetire || Ready.front()->Sequence >= Limit)
 		{
 			return nullptr;
 		}
@@ -375,11 +379,35 @@ void CWorkerPool::ExtractCompletionsLocked (uint64 CancelGroup, bool bAll, std::
 	DiscardedCount.fetch_add(Out.size() - before, std::memory_order_relaxed);
 }
 
+void CWorkerPool::BuryLocked (std::vector<TaskPtr>& Tasks)
+{
+	bool bBuried = false;
+	for (TaskPtr& task : Tasks)
+	{
+		if (task && task->Completion)
+		{
+			Graveyard.push_back(std::move(task));
+			bBuried = true;
+		}
+	}
+	if (bBuried)
+	{
+		++WakeCount;
+	}
+}
+
 uint32 CWorkerPool::PumpCompletions (uint32 MaxCount)
 {
 	frt_assert(IsOwnerThread());
+	uint64 limit = 0u;
+	std::vector<TaskPtr> buried;
 	{
+		std::lock_guard queueLock(QueueMutex);
 		std::lock_guard lock(CompletionMutex);
+		// Every task submitted from here on has a sequence of at least this: their completions wait
+		// for the next pump.
+		limit = NextSequence;
+		buried.swap(Graveyard);
 		WakeCountAtPump = WakeCount;
 		if (Order == ECompletionOrder::Batch && Batch.empty())
 		{
@@ -393,6 +421,8 @@ uint32 CWorkerPool::PumpCompletions (uint32 MaxCount)
 			}
 		}
 	}
+	// The completions discarded on other threads since the last pump die here, on the owner thread.
+	buried.clear();
 
 	uint32 ran = 0u;
 	while (ran < MaxCount)
@@ -400,7 +430,7 @@ uint32 CWorkerPool::PumpCompletions (uint32 MaxCount)
 		TaskPtr task;
 		{
 			std::lock_guard lock(CompletionMutex);
-			task = TakeNextCompletionLocked();
+			task = TakeNextCompletionLocked(limit);
 		}
 		if (!task)
 		{
@@ -524,6 +554,11 @@ void CWorkerPool::CancelAllAndDrain ()
 			RetireLocked(task->Sequence);
 		}
 		ExtractCompletionsLocked(NoCancelGroup, true, removed);
+		for (TaskPtr& task : Graveyard)
+		{
+			removed.push_back(std::move(task));
+		}
+		Graveyard.clear();
 		++WakeCount;
 	}
 	removed.clear();
@@ -532,12 +567,19 @@ void CWorkerPool::CancelAllAndDrain ()
 		std::unique_lock queueLock(QueueMutex);
 		WorkersIdle.wait(queueLock, [this] () { return RunningCount == 0u; });
 
-		// The work that was running was cancelled, so its workers destroyed its completions; this
-		// catches nothing unless a task finished between the two steps above.
+		// The work that was running was cancelled, so its workers buried its completions, and what it
+		// submitted meanwhile was buried as well: both die below. Waiting completions turn up only
+		// when a task finished between the two steps above.
 		std::lock_guard completionLock(CompletionMutex);
 		ExtractCompletionsLocked(NoCancelGroup, true, removed);
+		for (TaskPtr& task : Graveyard)
+		{
+			removed.push_back(std::move(task));
+		}
+		Graveyard.clear();
 		bDraining = false;
 	}
+	// On the owner thread, out of the locks: no callable is left once this returns.
 	removed.clear();
 }
 
@@ -568,6 +610,6 @@ bool CWorkerPool::IsIdle () const
 {
 	std::lock_guard queueLock(QueueMutex);
 	std::lock_guard completionLock(CompletionMutex);
-	return !HasQueuedLocked() && RunningCount == 0u && Ready.empty() && Batch.empty();
+	return !HasQueuedLocked() && RunningCount == 0u && Ready.empty() && Batch.empty() && Graveyard.empty();
 }
 }

@@ -43,7 +43,9 @@
  * Submit gave them, and PumpCompletions runs them on the owner thread in sequence order: what has
  * arrived, sorted (ECompletionOrder::Batch, interactive), or strictly in submission order, a
  * completion waiting for every earlier task to finish or be dropped (ECompletionOrder::Strict:
- * deterministic runs and reproducible tools, §7.8 "Commit order").
+ * deterministic runs and reproducible tools, §7.8 "Commit order"). Either way a pump runs only the
+ * completions of tasks submitted before it began: a completion that submits a quick follow-up (a
+ * poll, a build that keeps discovering inputs) cannot keep one pump, and so one frame, going.
  *
  * Epochs. Every task carries the epoch it was submitted in. BumpEpoch starts a new one, and
  * completions of older epochs are discarded when pumped, never run: the result of work built
@@ -75,8 +77,12 @@
  * may be called from any thread; PumpCompletions, WaitForCompletions, PumpUntil, BumpEpoch,
  * SetCompletionOrder, CancelAllAndDrain and the destructor only from the owner thread. Work runs on
  * workers and so must never touch TLSF, TArray, TRefShared or the world (§8.8): std containers,
- * FString and the CRT heap. Completions run on the owner thread and may use anything. Neither may
- * block on the other side: work never waits for the owner thread.
+ * FString and the CRT heap. Completions run on the owner thread and may use anything, and so they
+ * die there too, run or not: a completion the pool discards on another thread (its task cancelled
+ * while it ran, a Cancel called from elsewhere) waits, unrun, until the owner destroys it at the
+ * start of its next PumpCompletions or in CancelAllAndDrain, so its captures may hold TLSF memory
+ * (a TRefShared, a TArray) as safely as its body. Neither callable may block on the other side:
+ * work never waits for the owner thread.
  */
 namespace frt::jobs
 {
@@ -159,9 +165,11 @@ public:
 
 	// ---- completions (owner thread) ----
 
-	// Runs up to MaxCount completions that are ready, in the order SetCompletionOrder says, and
-	// returns how many ran (discarded ones do not count). A completion may submit, cancel, bump the
-	// epoch or pump again; a completion it cancels or makes stale is discarded, not run.
+	// Destroys the completions discarded off the owner thread since the last pump, then runs up to
+	// MaxCount completions that are ready, of tasks submitted before the call, in the order
+	// SetCompletionOrder says, and returns how many ran (discarded ones do not count). A completion
+	// may submit, cancel, bump the epoch or pump again; a completion it cancels or makes stale is
+	// discarded, not run, and what it submits completes in a later pump.
 	uint32 PumpCompletions (uint32 MaxCount = 0xFFFFFFFFu);
 	// Sleeps until something happened since the last PumpCompletions - a task finished or was
 	// dropped, a completion arrived - or one is ready already; at most TimeoutSeconds (negative:
@@ -187,7 +195,8 @@ public:
 
 	// ---- state ----
 	[[nodiscard]] SWorkerPoolStats GetStats () const;
-	// Nothing queued, running or waiting for the pump.
+	// Nothing queued, running or waiting for the pump, to run or to be destroyed: once a PumpUntil
+	// that waited for it returns, the pool holds no callable.
 	[[nodiscard]] bool IsIdle () const;
 
 private:
@@ -216,9 +225,14 @@ private:
 	void RetireLocked (uint64 Sequence);
 	void PushReadyLocked (TaskPtr Task);
 	[[nodiscard]] bool HasPumpableLocked () const noexcept;
-	[[nodiscard]] TaskPtr TakeNextCompletionLocked ();
+	// The next completion for the pump that began when NextSequence was Limit: none of a task
+	// submitted since.
+	[[nodiscard]] TaskPtr TakeNextCompletionLocked (uint64 Limit);
 	// Moves the group's waiting completions (every one for NoCancelGroup with bAll) into Out.
 	void ExtractCompletionsLocked (uint64 CancelGroup, bool bAll, std::vector<TaskPtr>& Out);
+	// Off the owner thread: moves the discarded tasks that hold a completion into Graveyard for the
+	// owner to destroy, and bumps WakeCount so a waiting owner pumps and does. CompletionMutex held.
+	void BuryLocked (std::vector<TaskPtr>& Tasks);
 
 	const uint64 OwnerThreadId;
 	FString Name;
@@ -243,6 +257,7 @@ private:
 	std::condition_variable CompletionEvent;    // the owner: WakeCount changed
 	std::vector<TaskPtr> Ready;                 // finished tasks with a completion: a heap, lowest sequence on top
 	std::deque<TaskPtr> Batch;                  // Batch order: the arrivals the current pump runs, by sequence
+	std::vector<TaskPtr> Graveyard;             // discarded off the owner thread: destroyed by its next pump or drain
 	std::vector<uint64> RetiredAhead;           // retired sequences above NextToRetire: a heap, lowest on top
 	uint64 NextToRetire = 1u;                   // every sequence below it has retired
 	uint64 WakeCount = 0u;                      // bumped for every finish, drop and arrival

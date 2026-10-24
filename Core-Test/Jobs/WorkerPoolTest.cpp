@@ -9,10 +9,12 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <latch>
 #include <mutex>
 #include <random>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "Jobs/WorkerPool.h"
@@ -26,7 +28,8 @@ namespace
 {
 constexpr double TestTimeoutSeconds = 60.0;
 
-// Opened once by the test; work waits on it. Declared after the pool, so it outlives the work.
+// Opened once by the test; work waits on it. Declared before the pool, so it outlives the work:
+// locals die in reverse order, and the pool's destructor drains the work before the gate goes.
 struct SGate
 {
 	std::atomic<bool> bOpen = false;
@@ -35,14 +38,18 @@ struct SGate
 	void Open ()
 	{
 		bOpen.store(true);
-		bOpen.notify_all();
 	}
 
+	// Returns once the gate opens or the task is cancelled: a test that fails before it opens the
+	// gate then ends in the pool's drain instead of hanging there.
 	void Wait ()
 	{
 		bReached.store(true);
 		bReached.notify_all();
-		bOpen.wait(false);
+		while (!bOpen.load() && !CWorkerPool::IsCancelled())
+		{
+			std::this_thread::sleep_for(std::chrono::microseconds(100));
+		}
 	}
 };
 
@@ -99,6 +106,45 @@ void Busy (uint32 Seed)
 	{
 		sink = sink + i;
 	}
+}
+
+// Where the completions built by WitnessedCompletion died: on the owner thread, run or not.
+struct SDeathSites
+{
+	const uint64 Owner = platform::GetCurrentThreadId();
+	std::atomic<uint32> OnOwner = 0u;
+	std::atomic<uint32> Elsewhere = 0u;
+};
+
+// A capture that tells its SDeathSites which thread destroyed it. A move disarms the source, so only
+// the copy the pool ends up holding reports.
+struct SDeathWitness
+{
+	SDeathSites* Sites = nullptr;
+
+	explicit SDeathWitness (SDeathSites& InSites) : Sites(&InSites) {}
+	SDeathWitness (SDeathWitness&& Other) noexcept : Sites(std::exchange(Other.Sites, nullptr)) {}
+	SDeathWitness& operator= (SDeathWitness&&) = delete;
+	~SDeathWitness ()
+	{
+		if (Sites != nullptr)
+		{
+			(platform::GetCurrentThreadId() == Sites->Owner ? Sites->OnOwner : Sites->Elsewhere).fetch_add(1u);
+		}
+	}
+};
+
+// A completion that sets *bRan when it runs and reports where it dies to Sites.
+TUniqueFunction<void ()> WitnessedCompletion (SDeathSites& Sites, bool* bRan = nullptr)
+{
+	return [witness = SDeathWitness(Sites), bRan] ()
+	{
+		(void)witness;
+		if (bRan != nullptr)
+		{
+			*bRan = true;
+		}
+	};
 }
 }
 
@@ -202,8 +248,8 @@ TEST(WorkerPool, WorkersAreNamedFrtWorkerAndTheirIndex)
 
 TEST(WorkerPool, TasksOfOnePriorityStartInSubmissionOrder)
 {
-	CWorkerPool pool({ .ThreadCount = 1u });
 	SGate gate;
+	CWorkerPool pool({ .ThreadCount = 1u });
 	BlockTheWorker(pool, gate);
 
 	// Only the one worker touches it until the pool is idle again.
@@ -224,8 +270,8 @@ TEST(WorkerPool, TasksOfOnePriorityStartInSubmissionOrder)
 
 TEST(WorkerPool, HigherPriorityTasksStartFirst)
 {
-	CWorkerPool pool({ .ThreadCount = 1u });
 	SGate gate;
+	CWorkerPool pool({ .ThreadCount = 1u });
 	BlockTheWorker(pool, gate);
 
 	std::vector<FString> started;
@@ -346,15 +392,15 @@ TEST(WorkerPool, StrictOrderRunsCompletionsInSubmissionOrder)
 
 TEST(WorkerPool, StrictOrderHoldsLaterCompletionsBackUntilTheEarlierTaskFinishes)
 {
-	CWorkerPool pool({ .ThreadCount = 2u });
-	pool.SetCompletionOrder(ECompletionOrder::Strict);
-
 	// Both workers held: the first task's (which has a completion) until the end, the second's (which
 	// has none) until the queue below is in place.
 	SGate first;
 	SGate second;
-	std::vector<uint32> ran;
 	std::atomic<uint32> holding = 0u;
+	CWorkerPool pool({ .ThreadCount = 2u });
+	pool.SetCompletionOrder(ECompletionOrder::Strict);
+
+	std::vector<uint32> ran;
 	pool.Submit(EWorkPriority::Normal, NoCancelGroup, [&] () { holding.fetch_add(1u); first.Wait(); },
 		[&ran] () { ran.push_back(0u); });
 	pool.Submit(EWorkPriority::Normal, NoCancelGroup, [&] () { holding.fetch_add(1u); second.Wait(); });
@@ -410,6 +456,53 @@ TEST(WorkerPool, PumpCompletionsStopsAtMaxCountAndTheNextPumpGoesOn)
 	EXPECT_TRUE(pool.IsIdle());
 }
 
+TEST(WorkerPool, APumpRunsOnlyTheCompletionsOfTasksSubmittedBeforeItBegan)
+{
+	// A chain: each completion submits the next step, whose work is done, and its completion waiting,
+	// before the completion returns. A pump that took whatever had arrived would run the whole chain
+	// in one call - one frame's pump turned into a loop for as long as the chain goes on.
+	for (const ECompletionOrder order : { ECompletionOrder::Batch, ECompletionOrder::Strict })
+	{
+		const char* const orderName = order == ECompletionOrder::Strict ? "strict" : "batch";
+		CWorkerPool pool({ .ThreadCount = 2u });
+		pool.SetCompletionOrder(order);
+
+		constexpr uint32 StepCount = 8u;
+		uint32 ran = 0u;
+		uint32 followUpsWaiting = 0u;
+		std::function<void (uint32)> issue;
+		issue = [&] (uint32 Step)
+		{
+			pool.Submit(EWorkPriority::Normal, NoCancelGroup, [] () {}, [&, Step] ()
+			{
+				++ran;
+				if (Step + 1u == StepCount)
+				{
+					return;
+				}
+				issue(Step + 1u);
+				const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+				while (pool.GetStats().CompletionsWaiting == 0u && std::chrono::steady_clock::now() < deadline)
+				{
+					std::this_thread::yield();
+				}
+				followUpsWaiting += pool.GetStats().CompletionsWaiting == 1u ? 1u : 0u;
+			});
+		};
+		issue(0u);
+		ASSERT_TRUE(WaitForWorkToFinish(pool));
+
+		for (uint32 step = 0u; step < StepCount; ++step)
+		{
+			ASSERT_EQ(pool.PumpCompletions(), 1u) << orderName << ", pump " << step;
+			ASSERT_EQ(ran, step + 1u) << orderName;
+		}
+		EXPECT_EQ(followUpsWaiting, StepCount - 1u) << orderName;
+		EXPECT_EQ(pool.PumpCompletions(), 0u) << orderName;
+		EXPECT_TRUE(pool.IsIdle()) << orderName;
+	}
+}
+
 
 // ---------------------------------------------------------------------------------
 // Cancel groups
@@ -417,13 +510,13 @@ TEST(WorkerPool, PumpCompletionsStopsAtMaxCountAndTheNextPumpGoesOn)
 
 TEST(WorkerPool, CancelDropsTheGroupsTasksThatHaveNotStarted)
 {
+	SGate gate;
 	CWorkerPool pool({ .ThreadCount = 1u });
 	const uint64 groupA = pool.CreateCancelGroup();
 	const uint64 groupB = pool.CreateCancelGroup();
 	EXPECT_NE(groupA, NoCancelGroup);
 	EXPECT_NE(groupA, groupB);
 
-	SGate gate;
 	BlockTheWorker(pool, gate);
 	std::atomic<uint32> workA = 0u;
 	std::atomic<uint32> workOther = 0u;
@@ -524,9 +617,9 @@ TEST(WorkerPool, ACompletionCanCancelTheRestOfItsGroupInTheSamePump)
 
 TEST(WorkerPool, CancelReachesOnlyTheTasksAlreadyInThePool)
 {
+	SGate gate;
 	CWorkerPool pool({ .ThreadCount = 1u });
 	const uint64 group = pool.CreateCancelGroup();
-	SGate gate;
 	BlockTheWorker(pool, gate);
 	bool bEarlier = false;
 	bool bLater = false;
@@ -538,6 +631,80 @@ TEST(WorkerPool, CancelReachesOnlyTheTasksAlreadyInThePool)
 	EXPECT_FALSE(bEarlier);
 }
 
+TEST(WorkerPool, ADiscardedCompletionDiesOnTheOwnerThread)
+{
+	// A completion's captures may hold TLSF memory (a TRefShared, a TArray), which only the owner
+	// thread may free: a completion discarded on a worker, or by a Cancel from another thread, is
+	// left for the owner's next pump to destroy, never destroyed where it was discarded.
+	SDeathSites sites;
+	SGate gate;
+	std::atomic<bool> bStarted = false;
+	CWorkerPool pool({ .ThreadCount = 1u });
+	const auto cancelElsewhere = [&pool] (uint64 Group)
+	{
+		uint32 dropped = 0u;
+		std::thread([&pool, &dropped, Group] () { dropped = pool.Cancel(Group); }).join();
+		return dropped;
+	};
+	bool bRan = false;
+
+	// Cancelled while it runs: the worker discards the completion.
+	const uint64 running = pool.CreateCancelGroup();
+	pool.Submit(EWorkPriority::Normal, running, [&bStarted] ()
+	{
+		bStarted.store(true);
+		bStarted.notify_all();
+		RunUntilCancelled();
+	}, WitnessedCompletion(sites, &bRan));
+	bStarted.wait(false);
+	EXPECT_EQ(cancelElsewhere(running), 0u);
+	ASSERT_TRUE(WaitForWorkToFinish(pool));
+
+	// Dropped before they started.
+	const uint64 queued = pool.CreateCancelGroup();
+	BlockTheWorker(pool, gate);
+	for (uint32 i = 0u; i < 3u; ++i)
+	{
+		pool.Submit(EWorkPriority::Normal, queued, [] () {}, WitnessedCompletion(sites, &bRan));
+	}
+	EXPECT_EQ(cancelElsewhere(queued), 3u);
+	gate.Open();
+	ASSERT_TRUE(WaitForWorkToFinish(pool));
+
+	// Finished, their completions waiting for the pump.
+	const uint64 waiting = pool.CreateCancelGroup();
+	for (uint32 i = 0u; i < 2u; ++i)
+	{
+		pool.Submit(EWorkPriority::Normal, waiting, [] () {}, WitnessedCompletion(sites, &bRan));
+	}
+	ASSERT_TRUE(WaitForWorkToFinish(pool));
+	EXPECT_EQ(pool.GetStats().CompletionsWaiting, 2u);
+	EXPECT_EQ(cancelElsewhere(waiting), 0u);
+	EXPECT_EQ(pool.GetStats().CompletionsWaiting, 0u);
+
+	// All six wait for the owner: the pool is not idle until it has destroyed them.
+	EXPECT_EQ(sites.OnOwner.load(), 0u);
+	EXPECT_EQ(sites.Elsewhere.load(), 0u);
+	EXPECT_FALSE(pool.IsIdle());
+	EXPECT_EQ(pool.PumpCompletions(), 0u);
+	EXPECT_EQ(sites.OnOwner.load(), 6u);
+	EXPECT_EQ(sites.Elsewhere.load(), 0u);
+	EXPECT_TRUE(pool.IsIdle());
+	EXPECT_FALSE(bRan);
+	const SWorkerPoolStats stats = pool.GetStats();
+	EXPECT_EQ(stats.Dropped, 3u);
+	EXPECT_EQ(stats.Discarded, 3u);
+
+	// A Cancel on the owner thread destroys what it discards at once.
+	const uint64 local = pool.CreateCancelGroup();
+	pool.Submit(EWorkPriority::Normal, local, [] () {}, WitnessedCompletion(sites, &bRan));
+	ASSERT_TRUE(WaitForWorkToFinish(pool));
+	pool.Cancel(local);
+	EXPECT_EQ(sites.OnOwner.load(), 7u);
+	EXPECT_EQ(sites.Elsewhere.load(), 0u);
+	EXPECT_TRUE(pool.IsIdle());
+}
+
 
 // ---------------------------------------------------------------------------------
 // Epochs
@@ -545,6 +712,7 @@ TEST(WorkerPool, CancelReachesOnlyTheTasksAlreadyInThePool)
 
 TEST(WorkerPool, CompletionsOfAnOlderEpochAreDiscarded)
 {
+	SGate gate;
 	CWorkerPool pool({ .ThreadCount = 2u });
 	const uint64 first = pool.GetEpoch();
 	bool bOld = false;
@@ -559,7 +727,6 @@ TEST(WorkerPool, CompletionsOfAnOlderEpochAreDiscarded)
 
 	// A task submitted before the bump and finishing after it is just as stale; one submitted after it
 	// is not.
-	SGate gate;
 	bool bStraddling = false;
 	bool bNew = false;
 	pool.Submit(EWorkPriority::Normal, NoCancelGroup, [&gate] () { gate.Wait(); }, [&] () { bStraddling = true; });
@@ -662,23 +829,31 @@ TEST(WorkerPool, CancelAllAndDrainLeavesNothingBehindUnderStress)
 
 TEST(WorkerPool, CancelAllAndDrainCancelsTheRunningWorkAndDropsWhatItSubmits)
 {
-	CWorkerPool pool({ .ThreadCount = 2u });
+	SDeathSites sites;
 	std::atomic<bool> bStarted = false;
 	std::atomic<uint64> submittedDuringDrain = 1u;
+	CWorkerPool pool({ .ThreadCount = 2u });
 	bool bCompletionRan = false;
+	bool bDroppedRan = false;
 	pool.Submit(EWorkPriority::Normal, NoCancelGroup, [&] ()
 	{
 		bStarted.store(true);
 		bStarted.notify_all();
 		RunUntilCancelled();
 		// The drain is under way: what the running work submits now is dropped.
-		submittedDuringDrain.store(pool.Submit(EWorkPriority::High, NoCancelGroup, [] () {}));
-	}, [&] () { bCompletionRan = true; });
+		submittedDuringDrain.store(pool.Submit(EWorkPriority::High, NoCancelGroup, [] () {},
+			WitnessedCompletion(sites, &bDroppedRan)));
+	}, WitnessedCompletion(sites, &bCompletionRan));
 	bStarted.wait(false);
 
 	pool.CancelAllAndDrain();
 	EXPECT_EQ(submittedDuringDrain.load(), 0u);
 	EXPECT_FALSE(bCompletionRan);
+	EXPECT_FALSE(bDroppedRan);
+	// Both completions were discarded on the worker, and both died on the owner thread before the
+	// drain returned.
+	EXPECT_EQ(sites.OnOwner.load(), 2u);
+	EXPECT_EQ(sites.Elsewhere.load(), 0u);
 	EXPECT_EQ(pool.PumpCompletions(), 0u);
 
 	// The pool takes work again.
@@ -831,25 +1006,8 @@ TEST(WorkerPool, PumpUntilWakesAsSoonAsThePoolGoesIdle)
 {
 	// Every way a task can end is an event for a waiting owner, the last worker going idle included:
 	// a missed one shows as a wait that lasts until its timeout, and PumpUntil would still return
-	// true after it, so each wait is timed.
-	// A completion whose destruction takes a while: when it belongs to a cancelled task, the worker
-	// destroys it after handing the task over and before it counts as idle, which widens the gap
-	// between those two events to something a test can hit every time.
-	struct SSlowToDestroy
-	{
-		bool bArmed = true;
-
-		SSlowToDestroy () = default;
-		SSlowToDestroy (SSlowToDestroy&& Other) noexcept : bArmed(std::exchange(Other.bArmed, false)) {}
-		~SSlowToDestroy ()
-		{
-			if (bArmed)
-			{
-				std::this_thread::sleep_for(std::chrono::milliseconds(5));
-			}
-		}
-	};
-
+	// true after it, so each wait is timed. A cancelled task's completion is one more: the pool is
+	// idle only once the owner's pump has destroyed it.
 	CWorkerPool pool({ .ThreadCount = 2u });
 	const uint64 group = pool.CreateCancelGroup();
 	for (uint32 i = 0u; i < 90u; ++i)
@@ -868,7 +1026,7 @@ TEST(WorkerPool, PumpUntilWakesAsSoonAsThePoolGoesIdle)
 			{
 				bStarted.store(true);
 				RunUntilCancelled();
-			}, [slow = SSlowToDestroy()] () { (void)slow; });
+			}, [] () {});
 			while (!bStarted.load())
 			{
 				std::this_thread::yield();
