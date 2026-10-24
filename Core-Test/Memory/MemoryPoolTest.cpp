@@ -6,8 +6,11 @@
 
 #include <thread>
 #include <utility>
+#include <vector>
 
 #include "Containers/String.h"
+#include "Log/Log.h"
+#include "Log/LogCapture.h"
 #include "Memory/Memory.h"
 #include "Memory/MemoryPool.h"
 #include "Memory/TLSF.h"
@@ -33,29 +36,37 @@ struct SHighWaterLog
 	uint64 LastBytes = 0u;
 };
 
-void RecordHighWater (CMemoryPool& Pool, uint64 AllocatedBytes, void* UserData)
+void RecordHighWater (CMemoryPool& Pool, uint64 AllocatedBytes, void* Context)
 {
 	(void)Pool;
-	SHighWaterLog& log = *static_cast<SHighWaterLog*>(UserData);
+	SHighWaterLog& log = *static_cast<SHighWaterLog*>(Context);
 	++log.Calls;
 	log.LastBytes = AllocatedBytes;
 }
 
 // A budget that warns at each doubling: the callback moves its own threshold.
-void DoubleThreshold (CMemoryPool& Pool, uint64 AllocatedBytes, void* UserData)
+void DoubleThreshold (CMemoryPool& Pool, uint64 AllocatedBytes, void* Context)
 {
-	RecordHighWater(Pool, AllocatedBytes, UserData);
-	Pool.SetHighWaterCallback(AllocatedBytes * 2u, &DoubleThreshold, UserData);
+	RecordHighWater(Pool, AllocatedBytes, Context);
+	Pool.SetHighWaterCallback(AllocatedBytes * 2u, &DoubleThreshold, Context);
 }
 
-// gtest captures stderr at the file-descriptor level, so writes from any thread land in it.
+// What the pool reported through frt::log while Body ran, from any thread: the "memory" messages,
+// in the order they were written. Nothing reaches stderr meanwhile.
 template <typename TBody>
-FString CaptureStderr (TBody&& Body)
+std::vector<test::CLogCapture::SEntry> CaptureMemoryLog (TBody&& Body)
 {
-	testing::internal::CaptureStderr();
+	test::CLogCapture capture;
 	Body();
-	const auto captured = testing::internal::GetCapturedStderr();
-	return FString(FStringView(captured.data(), static_cast<uint32>(captured.size())));
+	std::vector<test::CLogCapture::SEntry> entries;
+	for (const test::CLogCapture::SEntry& entry : capture.GetEntries())
+	{
+		if (entry.Category == log::Memory)
+		{
+			entries.push_back(entry);
+		}
+	}
+	return entries;
 }
 }
 
@@ -241,11 +252,11 @@ TEST(MemoryPoolOwnerThread, TheConstructingThreadOwnsThePool)
 	EXPECT_EQ(pool.GetOwnerThreadId(), platform::GetCurrentThreadId());
 	EXPECT_NE(platform::GetCurrentThreadId(), 0u);
 
-	const FString output = CaptureStderr([&pool] ()
+	const auto entries = CaptureMemoryLog([&pool] ()
 	{
 		pool.Free(pool.ReAllocate(pool.Allocate(16), 32));
 	});
-	EXPECT_FALSE(output.Contains("[memory]")) << output.CStr();
+	EXPECT_TRUE(entries.empty()) << entries.front().Line.CStr();
 }
 
 TEST(MemoryPoolOwnerThread, AnotherThreadIsReportedOnceAndStillAllocates)
@@ -253,7 +264,7 @@ TEST(MemoryPoolOwnerThread, AnotherThreadIsReportedOnceAndStillAllocates)
 	CMemoryPool pool(1_Mb);
 	uint64 workerId = 0u;
 	uint64 bytesSeenByWorker = 0u;
-	const FString output = CaptureStderr([&] ()
+	const auto entries = CaptureMemoryLog([&] ()
 	{
 		std::thread worker([&] ()
 		{
@@ -272,11 +283,15 @@ TEST(MemoryPoolOwnerThread, AnotherThreadIsReportedOnceAndStillAllocates)
 		second.join();
 	});
 
-	EXPECT_EQ(output.CountOccurrences("[memory]"), 2u) << output.CStr();
-	EXPECT_TRUE(output.Contains(FString::Printf("Allocate on thread %llu", workerId))) << output.CStr();
-	EXPECT_TRUE(output.Contains("Free on thread")) << output.CStr();
-	const FString owner = FString::Printf("belongs to thread %llu", platform::GetCurrentThreadId());
-	EXPECT_TRUE(output.Contains(owner)) << output.CStr();
+	ASSERT_EQ(entries.size(), 2u);
+	const FString owner = FString::Format("belongs to thread {}", platform::GetCurrentThreadId());
+	for (const test::CLogCapture::SEntry& entry : entries)
+	{
+		EXPECT_EQ(entry.Level, log::ELevel::Warning) << entry.Line.CStr();
+		EXPECT_TRUE(entry.Text.Contains(owner)) << entry.Line.CStr();
+	}
+	EXPECT_TRUE(entries[0].Text.Contains(FString::Format("Allocate on thread {}", workerId))) << entries[0].Line.CStr();
+	EXPECT_TRUE(entries[1].Text.Contains("Free on thread")) << entries[1].Line.CStr();
 
 	// Logging only: the allocations themselves behaved as before.
 	EXPECT_EQ(bytesSeenByWorker, BlockBytes(64));
@@ -287,7 +302,7 @@ TEST(MemoryPoolOwnerThread, MakingThePoolPrimaryMakesTheCallingThreadItsOwner)
 {
 	CMemoryPool pool(1_Mb);
 	uint64 workerId = 0u;
-	const FString output = CaptureStderr([&] ()
+	const auto entries = CaptureMemoryLog([&] ()
 	{
 		std::thread worker([&] ()
 		{
@@ -300,6 +315,6 @@ TEST(MemoryPoolOwnerThread, MakingThePoolPrimaryMakesTheCallingThreadItsOwner)
 
 	EXPECT_EQ(pool.GetOwnerThreadId(), workerId);
 	EXPECT_EQ(CMemoryPool::GetPrimaryInstance(), &pool);
-	EXPECT_FALSE(output.Contains("[memory]")) << output.CStr();
+	EXPECT_TRUE(entries.empty()) << entries.front().Line.CStr();
 	EXPECT_EQ(pool.GetAllocatedBytes(), 0u);
 }

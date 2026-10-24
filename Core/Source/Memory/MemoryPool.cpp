@@ -4,14 +4,7 @@
 
 #include "Log/Log.h"
 #include "Platform/Thread.h"
-
-#if _WINDOWS
-// #include <intrin.h>
-#include <windows.h>
-#include <memoryapi.h>
-#elif _UNIX
-#include <sys/mman.h>
-#endif
+#include "Platform/VirtualMemory.h"
 
 
 namespace
@@ -51,16 +44,16 @@ CMemoryPool& CMemoryPool::operator= (CMemoryPool&& Other) noexcept
 	AllocatedBytes = Other.AllocatedBytes;
 	PeakAllocatedBytes = Other.PeakAllocatedBytes;
 	HighWaterThreshold = Other.HighWaterThreshold;
-	HighWaterFunction = Other.HighWaterFunction;
-	HighWaterUserData = Other.HighWaterUserData;
+	OnHighWater = Other.OnHighWater;
+	HighWaterContext = Other.HighWaterContext;
 	Other.MemorySize = 0;
 	Other.Memory = nullptr;
 	Other.Tlsf = nullptr;
 	Other.AllocatedBytes = 0ull;
 	Other.PeakAllocatedBytes = 0ull;
 	Other.HighWaterThreshold = 0ull;
-	Other.HighWaterFunction = nullptr;
-	Other.HighWaterUserData = nullptr;
+	Other.OnHighWater = nullptr;
+	Other.HighWaterContext = nullptr;
 
 	// The arena moved, so the primary pointer has to follow it. Otherwise every holder
 	// of GetPrimaryInstance() is left pointing at a pool that no longer owns anything.
@@ -80,14 +73,12 @@ CMemoryPool::CMemoryPool (uint64 InSize)
 	: MemorySize(TLSF::GetSize() + TLSF::GetPoolOverhead() + TLSF::AlignUp(InSize, TLSF::AlignSize))
 	, OwnerThreadId(platform::GetCurrentThreadId())
 {
-#if _WINDOWS
-	// Memory = new uint8[MemorySize];
-	Memory = (uint8*)VirtualAlloc(nullptr, MemorySize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-#elif _UNIX
-		Memory = mmap(nullptr, MemorySize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-		// munmap(pool, PoolSize);
-#endif
-	frt_assert(Memory);
+	// Read-write pages that read as zero, reserved and committed whole, released whole. The commit
+	// stays out of frt_assert, which compiles to nothing in Release.
+	Memory = static_cast<uint8*>(platform::ReserveVirtual(MemorySize));
+	const bool bCommitted = Memory != nullptr && platform::CommitVirtual(Memory, MemorySize);
+	frt_assert(bCommitted);
+	(void)bCommitted;
 	Tlsf = new(Memory) TLSF(MemorySize);
 }
 
@@ -120,11 +111,7 @@ void CMemoryPool::ReleaseMemory ()
 	{
 		frt_assert(Tlsf);
 		Tlsf->~TLSF();
-#if _WINDOWS
-		VirtualFree(Memory, 0, MEM_RELEASE);
-#elif _UNIX
-		munmap(Memory, MemorySize);
-#endif
+		platform::ReleaseVirtual(Memory, MemorySize);
 	}
 
 	Memory = nullptr;
@@ -134,8 +121,8 @@ void CMemoryPool::ReleaseMemory ()
 	AllocatedBytes = 0ull;
 	PeakAllocatedBytes = 0ull;
 	HighWaterThreshold = 0ull;
-	HighWaterFunction = nullptr;
-	HighWaterUserData = nullptr;
+	OnHighWater = nullptr;
+	HighWaterContext = nullptr;
 }
 
 void CMemoryPool::MakeThisPrimaryInstance ()
@@ -193,11 +180,11 @@ void CMemoryPool::Free (void* MemoryToFree)
 	}
 }
 
-void CMemoryPool::SetHighWaterCallback (uint64 ThresholdBytes, HighWaterCallback Callback, void* UserData)
+void CMemoryPool::SetHighWaterCallback (uint64 ThresholdBytes, HighWaterFunction Function, void* Context)
 {
 	HighWaterThreshold = ThresholdBytes;
-	HighWaterFunction = Callback;
-	HighWaterUserData = Callback ? UserData : nullptr;
+	OnHighWater = Function;
+	HighWaterContext = Function ? Context : nullptr;
 }
 
 void CMemoryPool::ApplyAllocatedDelta (uint64 OldBytes, uint64 NewBytes)
@@ -207,9 +194,9 @@ void CMemoryPool::ApplyAllocatedDelta (uint64 OldBytes, uint64 NewBytes)
 	const uint64 before = AllocatedBytes;
 	AllocatedBytes = AllocatedBytes - OldBytes + NewBytes;
 	PeakAllocatedBytes = (std::max)(PeakAllocatedBytes, AllocatedBytes);
-	if (HighWaterFunction && before < HighWaterThreshold && AllocatedBytes >= HighWaterThreshold)
+	if (OnHighWater && before < HighWaterThreshold && AllocatedBytes >= HighWaterThreshold)
 	{
-		HighWaterFunction(*this, AllocatedBytes, HighWaterUserData);
+		OnHighWater(*this, AllocatedBytes, HighWaterContext);
 	}
 }
 
@@ -230,8 +217,8 @@ void CMemoryPool::CheckOwnerThread (const char* Operation)
 
 void CMemoryPool::ReportForeignThread (const char* Operation, uint64 ThreadId) const
 {
-	log::Printf(log::Memory, log::ELevel::Warning,
-		"CMemoryPool %p: %s on thread %llu, but the pool belongs to thread %llu. TLSF is single-threaded: "
+	log::Warning(log::Memory,
+		"CMemoryPool {}: {} on thread {}, but the pool belongs to thread {}. TLSF is single-threaded: "
 		"code off the owner thread uses std::vector and the CRT heap (reported once per thread)",
 		static_cast<const void*>(this), Operation, ThreadId, OwnerThreadId);
 }

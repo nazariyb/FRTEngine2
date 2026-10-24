@@ -22,7 +22,8 @@ namespace frt::memory
  * it or last made it the primary instance. Allocate, ReAllocate or Free on any other thread is a
  * data race on the free lists; code that runs on worker threads or before the pool exists uses
  * std::vector and the CRT heap instead. The pool compares thread ids on every call (one compare,
- * AssetManager-Design I8) and reports the first offence of each thread on stderr and the debugger.
+ * AssetManager-Design I8) and reports the first offence of each thread through frt::log (category
+ * "memory", a warning).
  *
  * It also counts the bytes in its allocated blocks, with their peak, and can call a function when
  * that count first reaches a threshold: plain integers, never atomics, for the same reason.
@@ -35,7 +36,7 @@ public:
 	// inside Allocate or ReAllocate. A reallocation counts by its net change, the count before the
 	// call against the count after it, so growing, shrinking or keeping a block while the pool is
 	// already over the threshold never calls it. It may allocate, and may set a new threshold.
-	using HighWaterCallback = void (*) (CMemoryPool& Pool, uint64 AllocatedBytes, void* UserData);
+	using HighWaterFunction = void (*) (CMemoryPool& Pool, uint64 AllocatedBytes, void* Context);
 
 	FRT_DELETE_COPY_OPS(CMemoryPool);
 	// Moves the arena with its owner thread, counters and high-water callback.
@@ -66,9 +67,9 @@ public:
 	[[nodiscard]] uint64 GetPeakAllocatedBytes () const { return PeakAllocatedBytes; }
 	void ResetPeakAllocatedBytes () { PeakAllocatedBytes = AllocatedBytes; }
 
-	// One callback per pool; a null Callback removes it. Setting it never calls it, even when the
-	// count is already at or above the threshold.
-	void SetHighWaterCallback (uint64 ThresholdBytes, HighWaterCallback Callback, void* UserData = nullptr);
+	// One callback per pool; a null Function removes it. Setting it never calls it, even when the
+	// count is already at or above the threshold. Context is passed to it as it is.
+	void SetHighWaterCallback (uint64 ThresholdBytes, HighWaterFunction Function, void* Context = nullptr);
 
 	template <typename T, typename... Args>
 	[[nodiscard]] T* NewUnmanaged (Args&&... InArgs);
@@ -105,8 +106,8 @@ private:
 	uint64 AllocatedBytes = 0ull;
 	uint64 PeakAllocatedBytes = 0ull;
 	uint64 HighWaterThreshold = 0ull;
-	HighWaterCallback HighWaterFunction = nullptr;
-	void* HighWaterUserData = nullptr;
+	HighWaterFunction OnHighWater = nullptr;
+	void* HighWaterContext = nullptr;
 
 	// Just for convenience, so we don't have to access GameInstance each time
 	static inline CMemoryPool* PrimaryInstance = nullptr;
