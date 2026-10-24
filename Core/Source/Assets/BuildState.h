@@ -155,7 +155,9 @@ public:
 
 	// Appends Entry as the step's latest record (and its KeyBlob, if this blob is new to the log),
 	// in one write. With a KeyBlob, the recorded StaticKey is MakeStaticKey(KeyBlob); without one,
-	// Entry.StaticKey as given.
+	// Entry.StaticKey as given. A record holds at most 16 MiB, the most a reader accepts: diagnostics
+	// beyond that are cut (the first lines kept whole, then one line saying how many were left out);
+	// a KeyBlob or discovered inputs beyond it are refused (false, nothing written).
 	bool Append (const SBuildStateEntry& Entry, FString* OutError = nullptr);
 
 	// The step's latest valid record; nullopt when there is none (a miss).

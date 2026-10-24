@@ -759,6 +759,29 @@ bool RemoveFile (const std::filesystem::path& Path, FString* OutError)
 }
 
 
+// ---------------- Times ----------------
+
+bool TouchFile (const std::filesystem::path& Path, FString* OutError)
+{
+	// Attribute access only, sharing everything; no backup semantics, so a directory does not open.
+	const CScopedHandle file(CreateFileW(windows::ToWin32Path(Path).c_str(), FILE_WRITE_ATTRIBUTES,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+	if (!file.IsValid())
+	{
+		windows::SetError(OutError, "Cannot open", Path, GetLastError());
+		return false;
+	}
+	FILETIME now = {};
+	GetSystemTimeAsFileTime(&now);
+	if (!SetFileTime(file.Get(), nullptr, nullptr, &now))
+	{
+		windows::SetError(OutError, "Cannot set the last write time of", Path, GetLastError());
+		return false;
+	}
+	return true;
+}
+
+
 // ---------------- Volumes ----------------
 
 std::optional<SVolumeInfo> QueryVolumeInfo (const std::filesystem::path& Path, FString* OutError)

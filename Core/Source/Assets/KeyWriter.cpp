@@ -3,52 +3,27 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
-#include <cstring>
+
+#include "Assets/ByteStream.h"
 
 
 namespace frt::assets
 {
 namespace
 {
+// The encoders every binary format of the asset system shares (Assets/ByteStream.h): Str, Enum,
+// Bytes and field names are length-prefixed by AppendSized. KeyWriterTest's golden bytes pin them.
+using binary::AppendLittleEndian;
+using binary::AppendRaw;
+using binary::AppendSized;
+using binary::AppendVarint;
+
 constexpr FStringLiteral StaticKeyContext = "FRT DDC static v1";
-
-// Unsigned LEB128, shortest form.
-void AppendVarint (std::vector<uint8>& Out, uint64 Value)
-{
-	while (Value >= 0x80u)
-	{
-		Out.push_back(static_cast<uint8>(Value | 0x80u));
-		Value >>= 7u;
-	}
-	Out.push_back(static_cast<uint8>(Value));
-}
-
-void AppendLittleEndian (std::vector<uint8>& Out, uint64 Value, uint32 ByteCount)
-{
-	for (uint32 i = 0u; i < ByteCount; ++i)
-	{
-		Out.push_back(static_cast<uint8>(Value >> (8u * i)));
-	}
-}
-
-void AppendRaw (std::vector<uint8>& Out, std::span<const uint8> Bytes)
-{
-	Out.insert(Out.end(), Bytes.begin(), Bytes.end());
-}
-
-// Length-prefixed bytes: Str, Enum, Bytes and field names.
-void AppendSized (std::vector<uint8>& Out, std::span<const uint8> Bytes)
-{
-	AppendVarint(Out, Bytes.size());
-	AppendRaw(Out, Bytes);
-}
 
 // Byte order, a prefix before what extends it: the order the format fixes for field names.
 bool IsNameBefore (FStringView A, FStringView B) noexcept
 {
-	const uint32 common = (std::min)(A.Len(), B.Len());
-	const int32 order = common > 0u ? std::memcmp(A.GetData(), B.GetData(), common) : 0;
-	return order != 0 ? order < 0 : A.Len() < B.Len();
+	return binary::CompareBytes(A, B) < 0;
 }
 }
 

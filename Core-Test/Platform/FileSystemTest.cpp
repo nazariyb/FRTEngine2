@@ -3,7 +3,7 @@
 // file - not even when the writing process is killed at a random moment - and works on every path
 // WriteFileBytes can write, every call reads, stats and lists what the layer writes past MAX_PATH,
 // appends from several handles never tear each other, RemoveFile frees a name a reader still holds,
-// and ReadFileChunksStable never calls a read stable when the file
+// TouchFile moves only the write time, and ReadFileChunksStable never calls a read stable when the file
 // changed underneath it, and retries a file a writer still holds. Everything runs in directories
 // with non-ASCII names, which every path conversion on the way has to survive, and nothing is left
 // behind - not even in the Recycle Bin.
@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <optional>
@@ -960,6 +961,43 @@ TEST_F(FileSystemTest, RemoveFileDeletesAFileEvenWhileAReaderHasItOpen)
 	SetFileAttributesW(wideFile.CStr(), FILE_ATTRIBUTE_NORMAL);
 	EXPECT_TRUE(std::filesystem::exists(file));
 	EXPECT_TRUE(platform::RemoveFile(file, &error)) << error.CStr();
+}
+
+// What the derived-data cache's collector relies on: a touched file's write time is now - also while
+// a reader holds it open - and nothing else about it changes.
+TEST_F(FileSystemTest, TouchFileMovesTheWriteTimeToNowAndKeepsTheFile)
+{
+	const std::filesystem::path file = File("Торкнутися 触摸.bin");
+	const std::vector<uint8> bytes = MakeBytes(5000u, 43u);
+	ASSERT_TRUE(platform::WriteFileBytes(file, bytes));
+	std::error_code ec;
+	std::filesystem::last_write_time(file, std::filesystem::file_time_type::clock::now() - 3h, ec);
+	ASSERT_FALSE(ec) << FString::FromUtf8Lossy(ec.message()).CStr();
+	const std::optional<platform::SFileStat> before = platform::Stat(file);
+	ASSERT_TRUE(before.has_value());
+
+	platform::CBlockingFileReader reader;
+	ASSERT_TRUE(reader.Open(file));
+	FString error;
+	ASSERT_TRUE(platform::TouchFile(file, &error)) << error.CStr();
+	reader.Close();
+
+	const std::optional<platform::SFileStat> after = platform::Stat(file);
+	ASSERT_TRUE(after.has_value());
+	const int64 now = std::filesystem::file_time_type::clock::now().time_since_epoch().count();
+	constexpr int64 Minute = 60ll * 10'000'000ll;
+	EXPECT_GT(after->LastWriteTime, before->LastWriteTime + 2ll * 60ll * Minute);
+	EXPECT_LE(std::abs(now - after->LastWriteTime), Minute);
+	EXPECT_EQ(after->Size, before->Size);
+	EXPECT_EQ(after->Identity, before->Identity);
+	EXPECT_EQ(after->CreationTime, before->CreationTime);
+	EXPECT_EQ(platform::ReadFileBytes(file).value_or(std::vector<uint8>()), bytes);
+
+	// No file, or a directory: nothing to touch.
+	EXPECT_FALSE(platform::TouchFile(File("Немає"), &error));
+	EXPECT_FALSE(error.IsEmpty());
+	EXPECT_FALSE(std::filesystem::exists(File("Немає")));
+	EXPECT_FALSE(platform::TouchFile(Dir, &error));
 }
 
 

@@ -3,15 +3,20 @@
 // exactly the documented thresholds; the two-step lookup finds the key of the input set that is still
 // current; and no damage ever turns into a bad hit - a zero-filled record or a truncated value after
 // a simulated power loss, a flipped bit in a value, two processes writing the same keys at once are
-// all misses or one valid record, and the damaged files are deleted. Garbage collection keeps what
-// is pinned and evicts the least recently used first; Verify finds every corrupt file. ComputeKey's
-// bytes and output are frozen here: every cached artifact on every machine is named by them.
+// all misses or one valid record, and the damaged files are deleted - while a file that merely cannot
+// be read now (another program holding it) is never judged: not FORMAT, not a record, not a value.
+// Garbage collection keeps what is pinned and evicts the least recently used first, and keeps a value
+// a writer just reused; Verify finds every corrupt file. Manifest updates in one process lose nothing;
+// closing the cache under a running call asserts. ComputeKey's bytes and output are frozen here:
+// every cached artifact on every machine is named by them.
 #include <gtest/gtest.h>
 
 #include "TestCommon.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <filesystem>
 #include <optional>
@@ -147,6 +152,40 @@ void AgeFile (const std::filesystem::path& Path, std::chrono::hours Age)
 	std::filesystem::last_write_time(Path, std::filesystem::file_time_type::clock::now() - Age, ec);
 	ASSERT_FALSE(ec) << FString::FromUtf8Lossy(ec.message()).CStr();
 }
+
+int64 GetWriteTime (const std::filesystem::path& Path)
+{
+	const std::optional<platform::SFileStat> stat = platform::Stat(Path);
+	return stat ? stat->LastWriteTime : 0;
+}
+
+constexpr int64 HourFileTicks = 3600ll * 10'000'000ll;
+
+// A file another program (a virus scanner, a backup) holds open for reading while sharing only
+// ShareMode: without FILE_SHARE_READ nobody else can read it until it lets go.
+class CHeldFile
+{
+public:
+	CHeldFile (const std::filesystem::path& Path, DWORD ShareMode)
+		: Handle(CreateFileW(Path.c_str(), GENERIC_READ, ShareMode, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr))
+	{}
+
+	~CHeldFile ()
+	{
+		if (Handle != INVALID_HANDLE_VALUE)
+		{
+			CloseHandle(Handle);
+		}
+	}
+
+	CHeldFile (const CHeldFile&) = delete;
+	CHeldFile& operator= (const CHeldFile&) = delete;
+
+	[[nodiscard]] bool IsValid () const noexcept { return Handle != INVALID_HANDLE_VALUE; }
+
+private:
+	HANDLE Handle;
+};
 
 void ExpectSameValues (const SDdcRecord& Actual, const SDdcRecord& Expected)
 {
@@ -337,6 +376,60 @@ TEST_F(DerivedDataCacheTest, OpenWritesTheFormatAndRefusesAnotherOne)
 	EXPECT_TRUE(error.Contains("FRT-DDC 2")) << error.CStr();
 	EXPECT_FALSE(Ddc.IsOpen());
 	EXPECT_EQ(platform::ReadFileText(Root / "FORMAT").value_or("<missing>"), "FRT-DDC 2\n");
+}
+
+// A FORMAT that is there but cannot be read now may name another engine's format: Open fails and
+// leaves it alone. The holder shares delete, so writing over it would have gone through.
+TEST_F(DerivedDataCacheTest, AFormatThatCannotBeReadIsNeverWrittenOver)
+{
+	Ddc.Close();
+	ASSERT_TRUE(platform::WriteFileText(Root / "FORMAT", "FRT-DDC 2\n"));
+	FString error;
+	{
+		const CHeldFile held(Root / "FORMAT", FILE_SHARE_DELETE);
+		ASSERT_TRUE(held.IsValid());
+		EXPECT_FALSE(Ddc.Open(Root, &error));
+		EXPECT_TRUE(error.Contains("FORMAT")) << error.CStr();
+		EXPECT_FALSE(Ddc.IsOpen());
+	}
+	EXPECT_EQ(platform::ReadFileText(Root / "FORMAT").value_or("<missing>"), "FRT-DDC 2\n");
+
+	// This engine's own store opens again once its FORMAT can be read.
+	ASSERT_TRUE(platform::WriteFileText(Root / "FORMAT", "FRT-DDC 1\n"));
+	ASSERT_TRUE(Ddc.Open(Root, &error)) << error.CStr();
+}
+
+// Manifests and records carry the revision FORMAT names, not a version of their own: a layout change
+// is a new FORMAT, which an engine of the other revision refuses, so two engine revisions never share
+// one store and never delete each other's files. Inside this store another revision is damage.
+TEST_F(DerivedDataCacheTest, ManifestsAndRecordsCarryTheFormatRevision)
+{
+	const hash::SContentHash staticKey = MakeStaticKey(1u);
+	FString error;
+	const std::optional<hash::SContentHash> key = Ddc.Put("Test", staticKey, std::vector<SDdcInput>{ MakeInput("File", "/A.h", 1u, 1u) },
+		MakeRecord({ MakeValue("Small", RandomBytes(100u, 1u)) }), &error);
+	ASSERT_TRUE(key.has_value()) << error.CStr();
+	EXPECT_EQ(platform::ReadFileText(Root / "FORMAT").value_or("<missing>"), "FRT-DDC 1\n");
+	for (const std::filesystem::path& path : { Ddc.GetManifestPath(staticKey), Ddc.GetRecordPath("Test", *key) })
+	{
+		const std::vector<uint8> bytes = ReadBytes(path);
+		ASSERT_GE(bytes.size(), 8u);
+		EXPECT_EQ(std::vector<uint8>(bytes.begin() + 4, bytes.begin() + 8), (std::vector<uint8>{ 1u, 0u, 0u, 0u }))
+			<< FString::FromPath(path).CStr();
+	}
+
+	// A record of revision 2 with a valid checksum: never written by an engine that opened this store.
+	const std::filesystem::path record = Ddc.GetRecordPath("Test", *key);
+	std::vector<uint8> bytes = ReadBytes(record);
+	bytes[4] = 2u;
+	const uint64 checksum = hash::Xxh3_64(std::span<const uint8>(bytes).first(bytes.size() - 8u));
+	for (uint32 i = 0u; i < 8u; ++i)
+	{
+		bytes[bytes.size() - 8u + i] = static_cast<uint8>(checksum >> (8u * i));
+	}
+	ASSERT_TRUE(platform::WriteFileBytes(record, bytes));
+	EXPECT_FALSE(Ddc.GetRecord("Test", *key).has_value());
+	EXPECT_FALSE(std::filesystem::exists(record));
 }
 
 TEST_F(DerivedDataCacheTest, DefaultRootIsTheEnvironmentThenTheConfigThenTheUserDataDir)
@@ -617,6 +710,79 @@ TEST_F(DerivedDataCacheTest, TheManifestKeepsTheFourMostRecentDistinctInputSets)
 	// A version older than the four is gone: a miss, rebuilt and remembered again.
 	const auto isVersion1 = [] (const SDdcInput& Recorded) { return Recorded.Hash == FilledHash(1u); };
 	EXPECT_FALSE(Ddc.FindKey(staticKey, isVersion1).has_value());
+}
+
+// Worker threads add to manifests at once: updates of one manifest are serialized within the process
+// (none is lost), while each thread's own manifest goes on beside the others.
+TEST_F(DerivedDataCacheTest, ManifestUpdatesFromManyThreadsLoseNothing)
+{
+	constexpr uint32 ThreadCount = DdcMaxManifestSets;   // one set each in the shared manifest: all fit
+	constexpr uint32 Rounds = 12u;
+	const hash::SContentHash shared = MakeStaticKey(100u);
+	const auto inputsOf = [] (uint32 Thread, uint32 Round)
+	{
+		const uint8 hashByte = static_cast<uint8>(Thread * Rounds + Round);
+		return std::vector<SDdcInput>{ MakeInput("File", FString::Format("/Include{}.h", Thread), hashByte, Round) };
+	};
+
+	std::atomic<uint32> failures = 0u;
+	std::vector<std::thread> threads;
+	for (uint32 thread = 0u; thread < ThreadCount; ++thread)
+	{
+		threads.emplace_back([&, thread] ()
+		{
+			for (uint32 round = 0u; round < Rounds; ++round)
+			{
+				const std::vector<SDdcInput> inputs = inputsOf(thread, round);
+				const hash::SContentHash own = MakeStaticKey(thread);
+				if (!Ddc.AddToManifest(own, CDerivedDataCache::ComputeKey(own, inputs), inputs))
+				{
+					++failures;
+				}
+				if (round == Rounds / 2u && !Ddc.AddToManifest(shared, CDerivedDataCache::ComputeKey(shared, inputs), inputs))
+				{
+					++failures;
+				}
+			}
+		});
+	}
+	for (std::thread& thread : threads)
+	{
+		thread.join();
+	}
+	EXPECT_EQ(failures.load(), 0u);
+
+	std::vector<hash::SContentHash> sharedKeys;
+	for (const SDdcManifestMatch& set : Ddc.ReadManifest(shared))
+	{
+		sharedKeys.push_back(set.Key);
+	}
+	std::vector<hash::SContentHash> expected;
+	for (uint32 thread = 0u; thread < ThreadCount; ++thread)
+	{
+		expected.push_back(CDerivedDataCache::ComputeKey(shared, inputsOf(thread, Rounds / 2u)));
+	}
+	std::sort(sharedKeys.begin(), sharedKeys.end());
+	std::sort(expected.begin(), expected.end());
+	EXPECT_EQ(sharedKeys, expected);
+
+	// Each thread's own manifest: its last four rounds, the most recent first.
+	for (uint32 thread = 0u; thread < ThreadCount; ++thread)
+	{
+		const hash::SContentHash own = MakeStaticKey(thread);
+		std::vector<hash::SContentHash> keys;
+		for (const SDdcManifestMatch& set : Ddc.ReadManifest(own))
+		{
+			keys.push_back(set.Key);
+		}
+		std::vector<hash::SContentHash> latest;
+		for (uint32 round = Rounds; round > Rounds - DdcMaxManifestSets; --round)
+		{
+			latest.push_back(CDerivedDataCache::ComputeKey(own, inputsOf(thread, round - 1u)));
+		}
+		EXPECT_EQ(keys, latest) << "thread " << thread;
+	}
+	EXPECT_EQ(CountFiles(Root / "Tmp"), 0u);
 }
 
 
@@ -912,6 +1078,81 @@ TEST_F(DerivedDataCacheTest, GarbageCollectionDeletesOnlyOldLeftovers)
 	EXPECT_TRUE(std::filesystem::exists(Ddc.GetValuePath(hash::HashContent(newValue))));
 }
 
+// A writer that finds a value already there - an old leftover of a record since lost - writes the
+// record naming it without rewriting it. It marks the value as just written first: a collection in
+// another process that found it unreferenced and an hour old a moment ago keeps it (the time moved
+// since its walk), and later collections count its hour from now.
+TEST_F(DerivedDataCacheTest, AReusedValueCountsAsJustWritten)
+{
+	FString error;
+	const std::vector<uint8> bytes = RandomBytes(100u * 1024u, 7u);
+	ASSERT_TRUE(Ddc.PutRecord("Test", MakeStaticKey(1u), MakeRecord({ MakeValue("V", bytes) }), &error)) << error.CStr();
+	ASSERT_TRUE(std::filesystem::remove(Ddc.GetRecordPath("Test", MakeStaticKey(1u))));
+	const std::filesystem::path value = Ddc.GetValuePath(hash::HashContent(bytes));
+	AgeFile(value, 2h);
+	const int64 aged = GetWriteTime(value);
+
+	Ddc.ResetCounters();
+	ASSERT_TRUE(Ddc.PutRecord("Test", MakeStaticKey(2u), MakeRecord({ MakeValue("Same", bytes) }), &error)) << error.CStr();
+	EXPECT_EQ(Ddc.GetCounters().ValueWritesSkipped, 1u);
+	EXPECT_EQ(Ddc.GetCounters().ValueWrites, 0u);
+	EXPECT_GT(GetWriteTime(value), aged + HourFileTicks);
+
+	// Even with that record lost as well, the value is no old leftover yet.
+	ASSERT_TRUE(std::filesystem::remove(Ddc.GetRecordPath("Test", MakeStaticKey(2u))));
+	const SDdcGcResult result = Ddc.CollectGarbage(1ull << 40u);
+	EXPECT_TRUE(result.bComplete);
+	EXPECT_EQ(result.ValuesEvicted, 0u);
+	EXPECT_TRUE(std::filesystem::exists(value));
+}
+
+// Which values are referenced is known only when every record was read. A record that another
+// program holds without read sharing while the collection runs - a pinned one here - makes the
+// collection stop at the leftovers: its values, and any value that merely looks unreferenced, stay,
+// and no record goes for a budget that evicting records alone could not reach.
+TEST_F(DerivedDataCacheTest, GarbageCollectionThatCannotReadEveryRecordDeletesNoValues)
+{
+	FString error;
+	const hash::SContentHash pinnedKey = MakeStaticKey(1u);
+	const SDdcRecord pinnedRecord = MakeRecord({ MakeValue("V", RandomBytes(100u * 1024u, 1u)) });
+	ASSERT_TRUE(Ddc.PutRecord("Test", pinnedKey, pinnedRecord, &error)) << error.CStr();
+	const SDdcRecord otherRecord = MakeRecord({ MakeValue("V", RandomBytes(100u * 1024u, 2u)) });
+	ASSERT_TRUE(Ddc.PutRecord("Test", MakeStaticKey(2u), otherRecord, &error)) << error.CStr();
+	const std::vector<uint8> orphan = RandomBytes(100u * 1024u, 3u);
+	ASSERT_TRUE(Ddc.PutRecord("Test", MakeStaticKey(3u), MakeRecord({ MakeValue("V", orphan) }), &error)) << error.CStr();
+	ASSERT_TRUE(std::filesystem::remove(Ddc.GetRecordPath("Test", MakeStaticKey(3u))));
+	const std::filesystem::path pinnedValue = Ddc.GetValuePath(hash::HashContent(pinnedRecord.Values[0].Bytes));
+	const std::filesystem::path orphanValue = Ddc.GetValuePath(hash::HashContent(orphan));
+	AgeFile(pinnedValue, 2h);
+	AgeFile(orphanValue, 2h);
+
+	const hash::SContentHash pinned[] = { pinnedKey };
+	const size_t filesBefore = CountFiles(Root / "Values") + CountFiles(Root / "Records");
+	{
+		const CHeldFile held(Ddc.GetRecordPath("Test", pinnedKey), 0u);
+		ASSERT_TRUE(held.IsValid());
+		const SDdcGcResult result = Ddc.CollectGarbage(0u, pinned);   // a budget of nothing: all unpinned would go
+		EXPECT_FALSE(result.bComplete);
+		EXPECT_EQ(result.RecordsUnreadable, 1u);
+		EXPECT_EQ(result.ValuesEvicted, 0u);
+		EXPECT_EQ(result.RecordsEvicted, 0u);
+		EXPECT_EQ(result.ManifestsEvicted, 0u);
+		EXPECT_FALSE(result.bWithinBudget);
+	}
+	EXPECT_EQ(CountFiles(Root / "Values") + CountFiles(Root / "Records"), filesBefore);
+	ExpectSameValues(Ddc.GetRecord("Test", pinnedKey).value_or(SDdcRecord()), pinnedRecord);
+
+	// Readable again: the next collection does the rest, around the pinned record and its value.
+	const SDdcGcResult result = Ddc.CollectGarbage(0u, pinned);
+	EXPECT_TRUE(result.bComplete);
+	EXPECT_EQ(result.RecordsUnreadable, 0u);
+	EXPECT_EQ(result.RecordsEvicted, 1u);
+	EXPECT_EQ(result.ValuesEvicted, 2u);   // the orphan, and the evicted record's own value
+	EXPECT_FALSE(std::filesystem::exists(orphanValue));
+	EXPECT_TRUE(std::filesystem::exists(pinnedValue));
+	ExpectSameValues(Ddc.GetRecord("Test", pinnedKey).value_or(SDdcRecord()), pinnedRecord);
+}
+
 TEST_F(DerivedDataCacheTest, VerifyDeletesCorruptFilesAndDanglingRecords)
 {
 	FString error;
@@ -955,6 +1196,28 @@ TEST_F(DerivedDataCacheTest, VerifyDeletesCorruptFilesAndDanglingRecords)
 		.value_or(SDdcRecord()), good);
 	EXPECT_EQ(Ddc.Verify().GetProblemCount(), 0u);
 	EXPECT_EQ(CountFiles(Root / "Records"), 2u);
+}
+
+// A value another program holds without read sharing cannot be checked now, which says nothing
+// about it or the record that names it: Verify deletes neither.
+TEST_F(DerivedDataCacheTest, VerifyLeavesAValueThatCannotBeReadNowAndItsRecord)
+{
+	FString error;
+	const hash::SContentHash key = MakeStaticKey(1u);
+	const SDdcRecord record = MakeRecord({ MakeValue("Large", RandomBytes(100u * 1024u, 1u)) });
+	ASSERT_TRUE(Ddc.PutRecord("Test", key, record, &error)) << error.CStr();
+	const std::filesystem::path value = Ddc.GetValuePath(hash::HashContent(record.Values[0].Bytes));
+	{
+		const CHeldFile held(value, 0u);
+		ASSERT_TRUE(held.IsValid());
+		const SDdcVerifyResult result = Ddc.Verify();
+		EXPECT_EQ(result.RecordsChecked, 1u);
+		EXPECT_EQ(result.GetProblemCount(), 0u);
+	}
+	EXPECT_TRUE(std::filesystem::exists(value));
+	EXPECT_TRUE(std::filesystem::exists(Ddc.GetRecordPath("Test", key)));
+	EXPECT_EQ(Ddc.Verify().GetProblemCount(), 0u);
+	ExpectSameValues(Ddc.GetRecord("Test", key).value_or(SDdcRecord()), record);
 }
 
 TEST_F(DerivedDataCacheTest, StatsCountFilesAndBytesPerKind)
@@ -1008,3 +1271,47 @@ TEST_F(DerivedDataCacheTest, TheAccessLogNotesEachRecordOncePerInstanceAndDay)
 	const FString after = platform::ReadFileText(logs[0]).value_or("");
 	EXPECT_EQ(after.Lines().Collect<std::vector<FStringView>>().size(), 2u) << after.CStr();
 }
+
+
+// ---------------- Open and Close ----------------
+
+#if FRT_ASSERTIONS_ENABLED
+// Open, Close and the destructor change the root every other call reads, so the owner drains the
+// calls first. One still running - here a lookup whose IsCurrent never returns - makes Close assert
+// instead of racing with it. The dying process removes its store before it closes.
+TEST(DerivedDataCacheDeathTest, ClosingWhileACallIsRunningAsserts)
+{
+	const auto closeDuringACall = [] ()
+	{
+		const std::filesystem::path root = std::filesystem::temp_directory_path()
+			/ FString::Format("FRT Кеш закриття 缓存 {}", GetCurrentProcessId()).ToPath();
+		CDerivedDataCache* ddc = new CDerivedDataCache();   // never deleted: the process dies in Close
+		const hash::SContentHash staticKey = MakeStaticKey(1u);
+		const std::vector<SDdcInput> inputs = { MakeInput("File", "/A.h", 1u, 1u) };
+		if (!ddc->Open(root) || !ddc->AddToManifest(staticKey, CDerivedDataCache::ComputeKey(staticKey, inputs), inputs))
+		{
+			std::fputs("the store could not be set up\n", stderr);
+			return;
+		}
+		std::atomic<bool> bInCall = false;
+		std::thread caller([ddc, staticKey, &bInCall] ()
+		{
+			(void)ddc->FindKey(staticKey, [&bInCall] (const SDdcInput&)
+			{
+				bInCall = true;
+				std::this_thread::sleep_for(1h);
+				return true;
+			});
+		});
+		caller.detach();
+		while (!bInCall)
+		{
+			std::this_thread::sleep_for(1ms);
+		}
+		std::error_code ec;
+		std::filesystem::remove_all(root, ec);
+		ddc->Close();
+	};
+	EXPECT_DEATH(closeDuringACall(), "ASSERT FAILED");
+}
+#endif

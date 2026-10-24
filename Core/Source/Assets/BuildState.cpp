@@ -69,16 +69,10 @@ std::vector<uint8> EncodeStepKey (const SBuildStepId& Step)
 // Byte order of the four fields, field by field: the order ForEachStep and Compact use.
 bool IsStepBefore (const SBuildStepId& A, const SBuildStepId& B) noexcept
 {
-	const auto compare = [] (FStringView X, FStringView Y)
-	{
-		const uint32 common = (std::min)(X.Len(), Y.Len());
-		const int32 order = common > 0u ? std::memcmp(X.GetData(), Y.GetData(), common) : 0;
-		return order != 0 ? order : (X.Len() == Y.Len() ? 0 : (X.Len() < Y.Len() ? -1 : 1));
-	};
 	for (const auto& [x, y] : { std::pair<FStringView, FStringView>(A.Asset, B.Asset), std::pair<FStringView, FStringView>(A.Builder, B.Builder),
 		std::pair<FStringView, FStringView>(A.Label, B.Label), std::pair<FStringView, FStringView>(A.Target, B.Target) })
 	{
-		if (const int32 order = compare(x, y); order != 0)
+		if (const int32 order = binary::CompareBytes(x, y); order != 0)
 		{
 			return order < 0;
 		}
@@ -86,7 +80,9 @@ bool IsStepBefore (const SBuildStepId& A, const SBuildStepId& B) noexcept
 	return false;
 }
 
-std::vector<uint8> EncodeStepPayload (const SBuildStateEntry& Entry, const hash::SContentHash& StaticKey)
+// Entry as a step payload, with Diagnostics in place of Entry.Diagnostics (FitDiagnostics' choice).
+std::vector<uint8> EncodeStepPayload (const SBuildStateEntry& Entry, const hash::SContentHash& StaticKey,
+	std::span<const FString> Diagnostics)
 {
 	std::vector<uint8> payload;
 	AppendStepKey(payload, Entry.Step);
@@ -101,12 +97,46 @@ std::vector<uint8> EncodeStepPayload (const SBuildStateEntry& Entry, const hash:
 		AppendHash(payload, input.Hash);
 		AppendVarint(payload, input.Size);
 	}
-	AppendVarint(payload, Entry.Diagnostics.size());
-	for (const FString& line : Entry.Diagnostics)
+	AppendVarint(payload, Diagnostics.size());
+	for (const FString& line : Diagnostics)
 	{
 		AppendText(payload, line);
 	}
 	return payload;
+}
+
+/**
+ * A step record is a record like any other: a reader takes a payload past MaxPayloadBytes for garbage,
+ * so one that large would be written, indexed and then lost as a miss. Diagnostics are the only field
+ * that grows without bound (a builder's log, a validator's findings), so they give way: the first lines
+ * that fit are kept whole, then one line says how many were left out. BaseBytes is the payload without
+ * diagnostics and without their count.
+ */
+std::vector<FString> FitDiagnostics (std::span<const FString> Lines, size_t BaseBytes)
+{
+	// Room for the count (at most 10 bytes) and the closing line (well under 128).
+	constexpr size_t Reserve = 10u + 128u;
+	std::vector<FString> kept;
+	if (BaseBytes + Reserve > MaxPayloadBytes)
+	{
+		return kept;
+	}
+	const size_t budget = MaxPayloadBytes - BaseBytes - Reserve;
+	size_t used = 0u;
+	size_t count = 0u;
+	for (; count < Lines.size(); ++count)
+	{
+		const size_t cost = static_cast<size_t>(binary::GetVarintSize(Lines[count].Len())) + Lines[count].Len();
+		if (cost > budget - used)
+		{
+			break;
+		}
+		used += cost;
+	}
+	kept.assign(Lines.begin(), Lines.begin() + static_cast<ptrdiff_t>(count));
+	kept.push_back(FString::Format("... {} more diagnostic lines left out: a build state record holds at most {} MiB", Lines.size() - count,
+		MaxPayloadBytes / (1024u * 1024u)));
+	return kept;
 }
 
 // The step fields at the start of a step payload, as the index hashes them; nullopt if malformed.
@@ -594,7 +624,38 @@ bool CBuildStateLog::Append (const SBuildStateEntry& Entry, FString* OutError)
 		return false;
 	}
 
+	const auto fail = [OutError] (FString Message)
+	{
+		if (OutError != nullptr)
+		{
+			*OutError = std::move(Message);
+		}
+		return false;
+	};
+
+	// Every record within MaxPayloadBytes, which is what readers accept (and what its u32 size holds).
+	if (hash::SContentHash::Size + Entry.KeyBlob.size() > MaxPayloadBytes)
+	{
+		return fail(FString::Format("The KeyBlob of build step {} is {} bytes; a build state record holds at most {}", Entry.Step.ToString(),
+			Entry.KeyBlob.size(), MaxPayloadBytes));
+	}
 	const hash::SContentHash staticKey = Entry.KeyBlob.empty() ? Entry.StaticKey : MakeStaticKey(Entry.KeyBlob);
+	std::vector<uint8> stepPayload = EncodeStepPayload(Entry, staticKey, Entry.Diagnostics);
+	if (stepPayload.size() > MaxPayloadBytes)
+	{
+		const size_t baseBytes = EncodeStepPayload(Entry, staticKey, {}).size() - 1u;   // less the count of zero lines
+		const std::vector<FString> diagnostics = FitDiagnostics(Entry.Diagnostics, baseBytes);
+		stepPayload = EncodeStepPayload(Entry, staticKey, diagnostics);
+		if (stepPayload.size() > MaxPayloadBytes)
+		{
+			return fail(FString::Format("Build step {} has {} discovered inputs, more than a build state record of at most {} bytes holds",
+				Entry.Step.ToString(), Entry.Inputs.size(), MaxPayloadBytes));
+		}
+		const size_t keptLines = diagnostics.empty() ? 0u : diagnostics.size() - 1u;   // less the closing line
+		log::Warning(log::Assets, "build step {}: {} of its {} diagnostic lines did not fit its build state record", Entry.Step.ToString(),
+			Entry.Diagnostics.size() - keptLines, Entry.Diagnostics.size());
+	}
+
 	std::vector<uint8> bytes;
 	std::optional<SLocation> blobLocation;
 	if (!Entry.KeyBlob.empty() && !KeyBlobs.contains(staticKey))
@@ -606,7 +667,7 @@ bool CBuildStateLog::Append (const SBuildStateEntry& Entry, FString* OutError)
 		blobLocation = SLocation{ FileSize, static_cast<uint32>(bytes.size()) };
 	}
 	const size_t stepStart = bytes.size();
-	AppendFrame(bytes, KindStep, EncodeStepPayload(Entry, staticKey));
+	AppendFrame(bytes, KindStep, stepPayload);
 
 	// One write: a crash tears at most the end of it, which the reader skips.
 	if (!Writer.Append(bytes, OutError))

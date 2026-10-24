@@ -11,8 +11,9 @@
 
 /**
  * Little-endian integers, LEB128 varints and length-prefixed bytes for the asset system's binary
- * cache files (the derived-data cache's manifests and records, the build state log). Internal to
- * Core/Source/Assets: header-only, not exported.
+ * encodings: KeyBlobs (CKeyWriter), the derived-data cache's manifests and records, the build state
+ * log. One encoder for all of them, so the normative key bytes and the cache files never drift apart.
+ * Internal to Core/Source/Assets: header-only, not exported.
  *
  * The reader never trusts a length it reads: every count is checked against the bytes that remain
  * before anything is sized from it, so a damaged or hostile file can make a parse fail, never make
@@ -20,6 +21,19 @@
  */
 namespace frt::assets::binary
 {
+// Byte order (memcmp), a prefix before what extends it: -1, 0 or 1. The order of KeyBlob field
+// names, of discovered inputs in DDC keys and manifests, and of steps in the build state log.
+[[nodiscard]] inline int32 CompareBytes (FStringView A, FStringView B) noexcept
+{
+	const uint32 common = A.Len() < B.Len() ? A.Len() : B.Len();
+	const int32 order = common > 0u ? std::memcmp(A.GetData(), B.GetData(), common) : 0;
+	if (order != 0)
+	{
+		return order < 0 ? -1 : 1;
+	}
+	return A.Len() == B.Len() ? 0 : (A.Len() < B.Len() ? -1 : 1);
+}
+
 // Unsigned LEB128, shortest form.
 inline void AppendVarint (std::vector<uint8>& Out, uint64 Value)
 {

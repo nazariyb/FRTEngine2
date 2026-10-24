@@ -292,6 +292,20 @@ template <NarrowText T>
 bool RemoveFile (const T&, FString* = nullptr) = delete;
 
 
+// Sets the last write time of the file at Path to now; its bytes and identity stay. For FRT's own
+// caches, whose collectors judge a file by its write time: the derived-data cache's writer reuses a
+// content-addressed value instead of writing it again, and marks it as just written so a collection
+// running in another process does not delete it as an old leftover. False, with the reason, when
+// there is no file at Path (a directory is not one) or its attributes cannot be written.
+//
+// Windows: CreateFileW with FILE_WRITE_ATTRIBUTES only, sharing everything, so no reader, writer or
+// deleter of the file refuses it; then SetFileTime with the system time.
+FRT_CORE_API bool TouchFile (const std::filesystem::path& Path, FString* OutError = nullptr);
+
+template <NarrowText T>
+bool TouchFile (const T&, FString* = nullptr) = delete;
+
+
 // Moves a file or directory to the user's Recycle Bin, so an editor delete stays recoverable
 // (§4.6). True only when it landed there: on a volume without a Recycle Bin (a network share, most
 // removable drives) it refuses instead of deleting permanently, and leaves the item in place.

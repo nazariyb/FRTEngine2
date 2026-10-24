@@ -30,12 +30,22 @@ using binary::AppendSized;
 using binary::AppendText;
 using binary::AppendVarint;
 using binary::CByteReader;
+using binary::CompareBytes;
 
 constexpr uint8 ManifestMagic[4] = { 'F', 'R', 'T', 'M' };
 constexpr uint8 RecordMagic[4] = { 'F', 'R', 'T', 'R' };
 constexpr uint8 ValueMagic[4] = { 'F', 'R', 'T', 'V' };
-constexpr uint32 ManifestVersion = 1u;
-constexpr uint32 RecordVersion = 1u;
+
+// Manifests and records carry the revision FORMAT names, not versions of their own: the store is
+// shared by every engine revision on the machine, so a layout change - a field, a limit such as
+// DdcMaxManifestSets - is a new FORMAT, which an engine of another revision refuses to open. Two
+// revisions therefore never read, judge corrupt and delete each other's files; a manifest or record
+// of another revision inside this store is damage like any other.
+constexpr uint32 LayoutRevision = 1u;
+static_assert(DdcFormat == FStringView("FRT-DDC 1") && LayoutRevision == 1u,
+	"A layout change bumps FORMAT (DdcFormat) and LayoutRevision together");
+constexpr uint32 ManifestVersion = LayoutRevision;
+constexpr uint32 RecordVersion = LayoutRevision;
 
 // Value flags in a record.
 constexpr uint8 ValueFlagInline = 1u;
@@ -76,18 +86,6 @@ constexpr bool DefaultVerifyValues = true;
 
 
 // ---------------- Small helpers ----------------
-
-// Byte order, a prefix first: the order of names in keys and manifests.
-int32 CompareBytes (FStringView A, FStringView B) noexcept
-{
-	const uint32 common = (std::min)(A.Len(), B.Len());
-	const int32 order = common > 0u ? std::memcmp(A.GetData(), B.GetData(), common) : 0;
-	if (order != 0)
-	{
-		return order < 0 ? -1 : 1;
-	}
-	return A.Len() == B.Len() ? 0 : (A.Len() < B.Len() ? -1 : 1);
-}
 
 // The total order of ComputeKey: Name, then Kind, then Hash, then Size.
 bool IsInputBefore (const SDdcInput& A, const SDdcInput& B) noexcept
@@ -208,11 +206,20 @@ EReadResult ReadWholeFile (const std::filesystem::path& Path, std::vector<uint8>
 	return EReadResult::Ok;
 }
 
+// EnumerateDirectory's result, except that a directory that does not exist (or no longer does) is
+// listed completely: it has no entries. False only when one that exists could not be listed in full.
+bool ListDirectory (const std::filesystem::path& Directory, TFunctionRef<void (const platform::SDirectoryEntry&)> OnEntry)
+{
+	return platform::EnumerateDirectory(Directory, [&OnEntry] (const platform::SDirectoryEntry& Entry) { OnEntry(Entry); })
+		|| !platform::Stat(Directory).has_value();
+}
+
 // Calls OnFile(path, stat) for every file below Directory, depth first; links are not followed.
-void WalkFiles (const std::filesystem::path& Directory, TFunctionRef<void (const std::filesystem::path&, const platform::SFileStat&)> OnFile)
+// False when some directory below could not be listed in full, so some files were not visited.
+bool WalkFiles (const std::filesystem::path& Directory, TFunctionRef<void (const std::filesystem::path&, const platform::SFileStat&)> OnFile)
 {
 	std::vector<std::filesystem::path> subdirectories;
-	platform::EnumerateDirectory(Directory, [&] (const platform::SDirectoryEntry& Entry)
+	bool bComplete = ListDirectory(Directory, [&] (const platform::SDirectoryEntry& Entry)
 	{
 		if (Entry.bReparsePoint)
 		{
@@ -230,8 +237,9 @@ void WalkFiles (const std::filesystem::path& Directory, TFunctionRef<void (const
 	});
 	for (const std::filesystem::path& subdirectory : subdirectories)
 	{
-		WalkFiles(subdirectory, OnFile);
+		bComplete = WalkFiles(subdirectory, OnFile) && bComplete;
 	}
+	return bComplete;
 }
 
 
@@ -604,6 +612,31 @@ const SDdcValue* SDdcRecord::FindValue (FStringView Name) const noexcept
 
 // ---------------- CDerivedDataCache ----------------
 
+// One call in progress, for Open and Close to assert against: they change Root under every other
+// call, which the owner must have drained first (DerivedDataCache.h). Counted only where asserts are.
+struct CDerivedDataCache::SCallScope
+{
+	explicit SCallScope (const CDerivedDataCache& InCache) noexcept
+		: Cache(InCache)
+	{
+#if FRT_ASSERTIONS_ENABLED
+		Cache.CallsInFlight.fetch_add(1u);
+#endif
+	}
+
+	~SCallScope ()
+	{
+#if FRT_ASSERTIONS_ENABLED
+		Cache.CallsInFlight.fetch_sub(1u);
+#endif
+	}
+
+	SCallScope (const SCallScope&) = delete;
+	SCallScope& operator= (const SCallScope&) = delete;
+
+	const CDerivedDataCache& Cache;
+};
+
 size_t CDerivedDataCache::SKeyHash::operator() (const hash::SContentHash& Key) const noexcept
 {
 	// A cryptographic hash: its first bytes are as good as any hash of it.
@@ -664,7 +697,19 @@ bool CDerivedDataCache::Open (const std::filesystem::path& InRoot, FString* OutE
 	const std::filesystem::path formatPath = (ec ? InRoot : root) / FormatFile.ToPath();
 
 	std::vector<uint8> format;
-	if (ReadWholeFile(formatPath, format) == EReadResult::Ok)
+	const EReadResult formatRead = ReadWholeFile(formatPath, format);
+	if (formatRead == EReadResult::Failed)
+	{
+		// There, but unreadable now (held without read sharing, no access): it may name another
+		// engine's format, so it is never written over on a guess.
+		if (OutError != nullptr)
+		{
+			*OutError = FString::Format("Cannot read '{}': the derived-data cache's FORMAT is in use or not accessible",
+				FString::FromPath(formatPath));
+		}
+		return false;
+	}
+	if (formatRead == EReadResult::Ok)
 	{
 		const FStringView text = FStringView(reinterpret_cast<const char*>(format.data()), format.size()).TrimEnd();
 		if (text != DdcFormat)
@@ -683,11 +728,7 @@ bool CDerivedDataCache::Open (const std::filesystem::path& InRoot, FString* OutE
 			format.clear();
 		}
 	}
-	else
-	{
-		format.clear();
-	}
-	if (format.empty())
+	if (format.empty())   // missing, or nothing a writer of any format would leave
 	{
 		const FString text = FString(DdcFormat) + "\n";
 		if (!platform::WriteFileAtomic(formatPath, text.AsBytes(), true, OutError))
@@ -706,6 +747,8 @@ bool CDerivedDataCache::OpenDefault (const config::CConfig* Config, FString* Out
 
 void CDerivedDataCache::Close ()
 {
+	// Every call reads Root: one still running would race with clearing it (and Open's setting it).
+	frt_assert(CallsInFlight.load() == 0u);
 	{
 		const std::lock_guard lock(AccessMutex);
 		AccessLog.Close();
@@ -795,6 +838,7 @@ std::filesystem::path CDerivedDataCache::GetTmpDir () const
 
 std::vector<FString> CDerivedDataCache::ReadToolVerdicts () const
 {
+	const SCallScope call(*this);
 	std::vector<FString> verdicts;
 	std::vector<uint8> bytes;
 	if (Root.empty() || ReadWholeFile(Root / ToolVerdictsFile.ToPath(), bytes) != EReadResult::Ok)
@@ -868,6 +912,7 @@ void CDerivedDataCache::LogAccess (FStringView Bucket, const hash::SContentHash&
 bool CDerivedDataCache::PutRecord (FStringView Bucket, const hash::SContentHash& Key, const SDdcRecord& Record, FString* OutError)
 {
 	FRT_CPU_SCOPE("Assets.Ddc.PutRecord");
+	const SCallScope call(*this);
 	const auto fail = [OutError] (FString Message)
 	{
 		if (OutError != nullptr)
@@ -918,9 +963,15 @@ bool CDerivedDataCache::PutRecord (FStringView Bucket, const hash::SContentHash&
 		const uint64 expectedSize = ValueHeaderBytes + value.GetStored().size();
 		if (const std::optional<platform::SFileStat> stat = platform::Stat(path); stat && !stat->bDirectory && stat->Size == expectedSize)
 		{
-			// Content-addressed: the same bytes are there already (a reader checks them anyway).
-			Counters.ValueWritesSkipped.fetch_add(1u, std::memory_order_relaxed);
-			continue;
+			// Content-addressed: the same bytes are there already (a reader checks them anyway). It may
+			// be an old leftover that a collection in another process is about to delete as unreferenced:
+			// its write time moves to now first, which that collection checks before it deletes a value
+			// (CollectGarbage). If it vanished meanwhile, it is written after all.
+			if (platform::TouchFile(path) || platform::Stat(path).has_value())
+			{
+				Counters.ValueWritesSkipped.fetch_add(1u, std::memory_order_relaxed);
+				continue;
+			}
 		}
 		if (!WriteThroughTmp(path, EncodeValueFile(value), OutError))
 		{
@@ -942,6 +993,7 @@ bool CDerivedDataCache::AddToManifest (const hash::SContentHash& StaticKey, cons
 	FString* OutError)
 {
 	FRT_CPU_SCOPE("Assets.Ddc.AddToManifest");
+	const SCallScope call(*this);
 	if (!IsOpen())
 	{
 		if (OutError != nullptr)
@@ -951,7 +1003,7 @@ bool CDerivedDataCache::AddToManifest (const hash::SContentHash& StaticKey, cons
 		return false;
 	}
 
-	const std::lock_guard lock(ManifestMutex);
+	const std::lock_guard lock(ManifestMutexes[StaticKey.Bytes[0] % ManifestLockCount]);
 	std::vector<SDdcManifestMatch> sets = ReadManifest(StaticKey);
 	std::erase_if(sets, [&Key] (const SDdcManifestMatch& Set) { return Set.Key == Key; });
 	SDdcManifestMatch newest;
@@ -973,6 +1025,7 @@ bool CDerivedDataCache::AddToManifest (const hash::SContentHash& StaticKey, cons
 std::optional<hash::SContentHash> CDerivedDataCache::Put (FStringView Bucket, const hash::SContentHash& StaticKey,
 	std::span<const SDdcInput> Inputs, const SDdcRecord& Record, FString* OutError)
 {
+	const SCallScope call(*this);
 	const hash::SContentHash key = ComputeKey(StaticKey, Inputs);
 	if (!PutRecord(Bucket, key, Record, OutError) || !AddToManifest(StaticKey, key, Inputs, OutError))
 	{
@@ -986,6 +1039,7 @@ std::optional<hash::SContentHash> CDerivedDataCache::Put (FStringView Bucket, co
 
 std::vector<SDdcManifestMatch> CDerivedDataCache::ReadManifest (const hash::SContentHash& StaticKey)
 {
+	const SCallScope call(*this);
 	if (!IsOpen())
 	{
 		return {};
@@ -1009,6 +1063,7 @@ std::optional<SDdcManifestMatch> CDerivedDataCache::FindKey (const hash::SConten
 	TFunctionRef<bool (const SDdcInput& Recorded)> IsCurrent)
 {
 	FRT_CPU_SCOPE("Assets.Ddc.FindKey");
+	const SCallScope call(*this);
 	for (SDdcManifestMatch& set : ReadManifest(StaticKey))
 	{
 		const bool bCurrent = std::all_of(set.Inputs.begin(), set.Inputs.end(), [&IsCurrent] (const SDdcInput& Input)
@@ -1028,6 +1083,7 @@ std::optional<SDdcManifestMatch> CDerivedDataCache::FindKey (const hash::SConten
 std::optional<SDdcRecord> CDerivedDataCache::Get (FStringView Bucket, const hash::SContentHash& StaticKey,
 	TFunctionRef<bool (const SDdcInput& Recorded)> IsCurrent, EDdcRead Read, SDdcManifestMatch* OutMatch)
 {
+	const SCallScope call(*this);
 	std::optional<SDdcManifestMatch> match = FindKey(StaticKey, IsCurrent);
 	if (!match)
 	{
@@ -1063,6 +1119,7 @@ std::optional<std::vector<uint8>> CDerivedDataCache::ReadValueFile (const hash::
 
 std::optional<std::vector<uint8>> CDerivedDataCache::ReadValue (const hash::SContentHash& RawHash, uint64 RawSize)
 {
+	const SCallScope call(*this);
 	if (!IsOpen())
 	{
 		return std::nullopt;
@@ -1073,6 +1130,7 @@ std::optional<std::vector<uint8>> CDerivedDataCache::ReadValue (const hash::SCon
 std::optional<SDdcRecord> CDerivedDataCache::GetRecord (FStringView Bucket, const hash::SContentHash& Key, EDdcRead Read)
 {
 	FRT_CPU_SCOPE("Assets.Ddc.GetRecord");
+	const SCallScope call(*this);
 	const auto miss = [this] () -> std::optional<SDdcRecord>
 	{
 		Counters.RecordMisses.fetch_add(1u, std::memory_order_relaxed);
@@ -1135,6 +1193,7 @@ std::optional<SDdcRecord> CDerivedDataCache::GetRecord (FStringView Bucket, cons
 
 SDdcStats CDerivedDataCache::GetStats () const
 {
+	const SCallScope call(*this);
 	SDdcStats stats;
 	if (!IsOpen())
 	{
@@ -1253,6 +1312,7 @@ struct SLastUse
 SDdcGcResult CDerivedDataCache::CollectGarbage (uint64 MaxBytes, std::span<const hash::SContentHash> PinnedKeys)
 {
 	FRT_CPU_SCOPE("Assets.Ddc.CollectGarbage");
+	const SCallScope call(*this);
 	SDdcGcResult result;
 	if (!IsOpen())
 	{
@@ -1316,16 +1376,19 @@ SDdcGcResult CDerivedDataCache::CollectGarbage (uint64 MaxBytes, std::span<const
 		}
 	}
 
-	// Every record, with the values it references.
+	// Every record, with the values it references. Which values are referenced is known only if every
+	// record was listed and read (see below).
 	std::vector<SRecordFile> records;
-	platform::EnumerateDirectory(Root / RecordsDir.ToPath(), [&] (const platform::SDirectoryEntry& BucketEntry)
+	bool bBucketsListed = true;
+	const bool bRecordsListed = ListDirectory(Root / RecordsDir.ToPath(), [&] (const platform::SDirectoryEntry& BucketEntry)
 	{
 		if (!BucketEntry.Stat.bDirectory || BucketEntry.bReparsePoint || !IsValidBucket(BucketEntry.Name))
 		{
-			return;
+			return;   // nothing this cache writes
 		}
 		const FString bucket(BucketEntry.Name);
-		WalkFiles(Root / RecordsDir.ToPath() / bucket.ToPath(), [&] (const std::filesystem::path& Path, const platform::SFileStat& Stat)
+		const std::filesystem::path bucketDir = Root / RecordsDir.ToPath() / bucket.ToPath();
+		const bool bBucketListed = WalkFiles(bucketDir, [&] (const std::filesystem::path& Path, const platform::SFileStat& Stat)
 		{
 			const std::optional<hash::SContentHash> key = ParseHashFileName(FString::FromPath(Path.filename()), "rec");
 			if (!key)
@@ -1339,7 +1402,8 @@ SDdcGcResult CDerivedDataCache::CollectGarbage (uint64 MaxBytes, std::span<const
 			record.Bucket = bucket;
 			record.Key = *key;
 		});
-	});
+		bBucketsListed = bBucketsListed && bBucketListed;
+	}) && bBucketsListed;
 
 	std::unordered_map<hash::SContentHash, SStoreFile, SKeyHash> values;
 	WalkFiles(Root / ValuesDir.ToPath(), [&] (const std::filesystem::path& Path, const platform::SFileStat& Stat)
@@ -1381,15 +1445,24 @@ SDdcGcResult CDerivedDataCache::CollectGarbage (uint64 MaxBytes, std::span<const
 		}
 	});
 
-	// Parse the records: their external values, their last use, whether they are pinned.
+	// Parse the records: their external values, their last use, whether they are pinned. One that is
+	// there but cannot be read now (a scanner or a backup holding it without read sharing) stays, with
+	// its values unknown.
 	std::unordered_set<hash::SContentHash, SKeyHash> pinned(PinnedKeys.begin(), PinnedKeys.end());
 	std::unordered_map<hash::SContentHash, uint32, SKeyHash> references;
 	std::erase_if(records, [&] (SRecordFile& Record)
 	{
+		Record.bPinned = pinned.contains(Record.Key);
 		std::vector<uint8> bytes;
-		if (ReadWholeFile(Record.Path, bytes) != EReadResult::Ok)
+		const EReadResult read = ReadWholeFile(Record.Path, bytes);
+		if (read == EReadResult::Missing)
 		{
-			return true;   // gone or unreadable now: not ours to judge
+			return true;   // gone since the listing (another collection, Verify)
+		}
+		if (read == EReadResult::Failed)
+		{
+			++result.RecordsUnreadable;   // kept: its bytes count, and it is never evicted unread
+			return false;
 		}
 		const std::optional<SParsedRecord> parsed = ParseRecord(bytes, Record.Key);
 		if (!parsed)
@@ -1417,7 +1490,6 @@ SDdcGcResult CDerivedDataCache::CollectGarbage (uint64 MaxBytes, std::span<const
 			Record.LastUse = use->second.Time;
 			Record.UseOrder = use->second.Order;
 		}
-		Record.bPinned = pinned.contains(Record.Key);
 		return false;
 	});
 
@@ -1452,10 +1524,41 @@ SDdcGcResult CDerivedDataCache::CollectGarbage (uint64 MaxBytes, std::span<const
 		}
 	}
 
+	// Only a walk that read every record knows which values are referenced. Otherwise a value of a
+	// record it missed - a pinned one's too - would look unreferenced, and records evicted without
+	// their values would not bring the content down: this collection stops at the leftovers, and the
+	// next one (the editor's idle task, the next `assets ddc gc`) does the rest.
+	result.bComplete = bRecordsListed && result.RecordsUnreadable == 0u;
+	if (!result.bComplete)
+	{
+		log::Warning(log::Assets, "derived-data cache: garbage collection could not {} ({} unreadable): only leftovers in Tmp/ were deleted",
+			bRecordsListed ? FStringView("read every record") : FStringView("list every record"), result.RecordsUnreadable);
+		result.ContentBytesAfter = total;
+		result.bWithinBudget = total <= MaxBytes;
+		return result;
+	}
+
+	// A writer reusing a value refreshes its write time before it writes the record naming it
+	// (PutRecord): a value whose time changed since the walk is in use again, whatever the walk saw.
 	const auto evictValue = [&] (const hash::SContentHash& Hash)
 	{
 		const auto file = values.find(Hash);
-		if (file != values.end() && platform::RemoveFile(file->second.Path))
+		if (file == values.end())
+		{
+			return;
+		}
+		const std::optional<platform::SFileStat> stat = platform::Stat(file->second.Path);
+		if (!stat)
+		{
+			total -= file->second.Size;   // gone already (another collection)
+			values.erase(file);
+			return;
+		}
+		if (stat->LastWriteTime != file->second.WriteTime)
+		{
+			return;
+		}
+		if (platform::RemoveFile(file->second.Path))
 		{
 			total -= file->second.Size;
 			++result.ValuesEvicted;
@@ -1561,6 +1664,7 @@ SDdcGcResult CDerivedDataCache::CollectGarbage (uint64 MaxBytes, std::span<const
 SDdcVerifyResult CDerivedDataCache::Verify ()
 {
 	FRT_CPU_SCOPE("Assets.Ddc.Verify");
+	const SCallScope call(*this);
 	SDdcVerifyResult result;
 	if (!IsOpen())
 	{
@@ -1646,7 +1750,9 @@ SDdcVerifyResult CDerivedDataCache::Verify ()
 					goodValues[value.RawHash] = value.RawSize;
 					continue;
 				}
-				bDangling = true;
+				// ReadValueFile deletes a corrupt value: one still there could not be read now (held
+				// without read sharing), which says nothing about this record.
+				bDangling = !platform::Stat(GetValuePath(value.RawHash)).has_value();
 			}
 			if (bCorrupt)
 			{

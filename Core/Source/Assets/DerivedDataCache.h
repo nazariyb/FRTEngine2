@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <filesystem>
 #include <mutex>
@@ -53,16 +54,21 @@ class CConfig;
  * File formats (all integers little-endian; varint = unsigned LEB128; Str = varint length + UTF-8;
  * Hash = the 20 bytes of an SContentHash):
  *
- *   Manifest = "FRTM", u32 1, Hash StaticKey, varint SetCount (1-4),
+ *   Manifest = "FRTM", u32 Revision, Hash StaticKey, varint SetCount (1-4),
  *              Set * SetCount: Hash Key, varint InputCount, Input * InputCount,
  *              u64 XXH3_64 of every byte before it
  *   Input    = Str Kind, Str Name, Hash Hash, varint Size
- *   Record   = "FRTR", u32 1, Hash Key, Str Builder, 16 bytes Version (SGuid), varint ValueCount,
+ *   Record   = "FRTR", u32 Revision, Hash Key, Str Builder, 16 bytes Version (SGuid), varint ValueCount,
  *              Value * ValueCount, Hash LogHash, varint BuildMs, u8 bDeterministic,
  *              u64 XXH3_64 of every byte before it
  *   Value    = Str Name, Hash RawHash, varint RawSize, u8 Flags (1 Inline, 2 Zstd),
  *              if Inline: varint StoredSize, StoredSize bytes (raw, or one zstd frame with Zstd)
  *   .val     = "FRTV", u8 Codec (0 None, 1 Zstd), 3 zero bytes, u64 RawSize, Hash RawHash, payload
+ *
+ * Revision is the number in FORMAT (1). Every engine revision on the machine shares the store, so
+ * these layouts and the limits readers check (DdcMaxManifestSets) belong to FORMAT: any change to
+ * them is a new FORMAT, which engines of the other revision refuse to open - never a per-file version
+ * that two revisions sharing one store would each judge corrupt in the other's files and delete.
  *
  * Values are stored as one zstd frame at level 3, or raw when that saves less than 5%. A value is
  * inlined into its record when its stored form is at most 64 KiB and the record stays within
@@ -79,8 +85,12 @@ class CConfig;
  * writer of a key simply wins with equal bytes. A reader that loses a race with a writer or a
  * collector sees a miss, never a bad hit.
  *
- * Thread-safe: build steps read and write it from worker threads (§7.8). Values and records are
- * std::vector (CRT heap), never the engine's memory pool. Reads are synchronous (CBlockingFileReader).
+ * Thread-safe once open: build steps read and write it from worker threads (§7.8), and calls on
+ * different manifests never wait for each other. Open, Close and destruction are not: they change the
+ * root every other call reads, so none of them may overlap any other call - the owner drains the work
+ * that uses the cache first (CWorkerPool::CancelAllAndDrain), and builds with assertions catch a call
+ * still in flight. Values and records are std::vector (CRT heap), never the engine's memory pool.
+ * Reads are synchronous (CBlockingFileReader).
  */
 namespace frt::assets
 {
@@ -94,7 +104,7 @@ inline constexpr FStringLiteral DdcKeyContext = "FRT DDC key v1";
 inline constexpr uint64 DdcMaxInlineValueBytes = 64u * 1024u;
 // ... as long as the record file stays within this size.
 inline constexpr uint64 DdcMaxRecordBytes = 256u * 1024u;
-// A manifest keeps this many input sets, the most recent first.
+// A manifest keeps this many input sets, the most recent first. Readers refuse more: part of FORMAT.
 inline constexpr uint32 DdcMaxManifestSets = 4u;
 
 
@@ -200,7 +210,13 @@ struct SDdcGcResult
 	uint32 ManifestsEvicted = 0u;     // manifests none of whose keys has a record any more
 	uint32 TmpFilesDeleted = 0u;
 	uint32 AccessLogsDeleted = 0u;
-	bool bWithinBudget = true;        // false when pinned content alone exceeds MaxBytes
+	uint32 RecordsUnreadable = 0u;    // records that exist but could not be read now (in use, no access)
+	// False when the content still exceeds MaxBytes: pinned content alone does, or !bComplete.
+	bool bWithinBudget = true;
+	// False when a record could not be read or the records could not all be listed: then which values
+	// are referenced is unknown, and only Tmp/ leftovers, old access logs and corrupt files were deleted.
+	// A later collection does the rest.
+	bool bComplete = true;
 };
 
 struct SDdcVerifyResult
@@ -240,7 +256,9 @@ public:
 	[[nodiscard]] static std::filesystem::path GetDefaultRoot (const config::CConfig* Config = nullptr);
 
 	// Opens the store at Root, creating it (and FORMAT) if needed. False, with the reason, when Root
-	// cannot be created or holds a store of another format. Closes whatever was open.
+	// cannot be created, holds a store of another format, or its FORMAT exists but cannot be read now
+	// (it is left alone: it may say another format). Closes whatever was open. Must not overlap any
+	// other call (see the class comment), nor may Close or the destructor.
 	bool Open (const std::filesystem::path& Root, FString* OutError = nullptr);
 	// Open(GetDefaultRoot(Config)).
 	bool OpenDefault (const config::CConfig* Config = nullptr, FString* OutError = nullptr);
@@ -308,8 +326,9 @@ public:
 	[[nodiscard]] std::optional<std::vector<uint8>> ReadValue (const hash::SContentHash& RawHash, uint64 RawSize);
 
 	// Puts (Key, Inputs) first in StaticKey's manifest: any older set with the same Key goes, and at
-	// most DdcMaxManifestSets stay. Read-modify-write: two processes adding to one manifest at once may
-	// lose one of the two sets (a later miss rebuilds it), never corrupt the file.
+	// most DdcMaxManifestSets stay. Read-modify-write, serialized per manifest within the process (other
+	// manifests do not wait): two processes adding to one manifest at once may lose one of the two sets
+	// (a later miss rebuilds it), never corrupt the file.
 	bool AddToManifest (const hash::SContentHash& StaticKey, const hash::SContentHash& Key, std::span<const SDdcInput> Inputs,
 		FString* OutError = nullptr);
 	// The manifest's sets, most recent first; empty when missing or corrupt (then deleted).
@@ -330,7 +349,13 @@ public:
 	 * when no remaining record references it; a manifest when none of its keys has a record left.
 	 * Leftovers that a crashed writer may have left - Tmp/ files, and values no record references -
 	 * are deleted only once they are older than an hour, so a write in progress in another process is
-	 * never pulled from under it. Access logs older than 30 days are deleted.
+	 * never pulled from under it. A writer that reuses a value already in the store refreshes its write
+	 * time before writing the record that names it, and a value whose time changed since the walk is
+	 * kept, so a record written while a collection runs keeps its values (a lost race in the last
+	 * microseconds is a miss and a rebuild, never a bad hit). Which values are referenced is known only
+	 * when every record was read: if one could not be (a scanner holding it) or the records could not
+	 * all be listed, nothing but leftovers in Tmp/ goes (bComplete false). Access logs older than 30
+	 * days are deleted.
 	 */
 	SDdcGcResult CollectGarbage (uint64 MaxBytes, std::span<const hash::SContentHash> PinnedKeys = {});
 
@@ -384,8 +409,15 @@ private:
 	FString TmpPrefix;
 	std::atomic<uint64> TmpCounter = 0u;
 
-	// Read-modify-write of manifests within this process.
-	std::mutex ManifestMutex;
+	// Read-modify-write of manifests within this process, striped by StaticKey: one manifest's update
+	// (a read, a flushed write and a write-through rename) never makes another manifest wait.
+	static constexpr uint32 ManifestLockCount = 64u;
+	std::array<std::mutex, ManifestLockCount> ManifestMutexes;
+
+	// Calls in progress, counted in builds with assertions: Open and Close assert that there are none,
+	// since they change Root under them (see the class comment).
+	mutable std::atomic<uint32> CallsInFlight = 0u;
+	struct SCallScope;
 
 	// The access log of the current day, and the records this instance already logged in it: each
 	// record is logged once per instance and day, which is all an LRU by session needs.
