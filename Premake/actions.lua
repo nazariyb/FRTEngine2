@@ -23,7 +23,7 @@ newaction
 
 		local folders = project and { "." } or
 		{
-			".", "Core", "Core-Test", "Launcher", "Editor",
+			".", "Core", "Core-Test", "Core-Test/TestModule", "Launcher", "Editor",
 			"ThirdParty/Imgui", "ThirdParty/assimp", "ThirdParty/yaml-cpp", "ThirdParty/googletest",
 			"ThirdParty/xxHash", "ThirdParty/BLAKE3", "ThirdParty/zstd",
 		}
