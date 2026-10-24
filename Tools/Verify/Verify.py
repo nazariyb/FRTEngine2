@@ -517,10 +517,13 @@ class Gate:
         """(whether two captures agree, a detail text)."""
         relative, largest, size = compare_pfm(a.with_suffix('.pfm'), b.with_suffix('.pfm'))
         if exact:
-            identical = same_bytes(a.with_suffix('.png'), b.with_suffix('.png')) and \
-                same_bytes(a.with_suffix('.pfm'), b.with_suffix('.pfm'))
-            return identical, f'{size}, ' + ('identical' if identical else
-                                             f'differ: rel-RMSE {relative:.2e}, max abs {largest:.3g}')
+            different = [extension for extension in ('.png', '.pfm')
+                         if not same_bytes(a.with_suffix(extension), b.with_suffix(extension))]
+            if not different:
+                return True, f'{size}, identical'
+            verb = 'differs' if len(different) == 1 else 'differ'
+            return False, f'{size}, the {" and ".join(different)} {verb} (linear: rel-RMSE {relative:.2e}, ' \
+                          f'max abs {largest:.3g})'
         return relative <= self.tolerance, f'{size}, rel-RMSE {relative:.2e} (max {self.tolerance:.0e}), ' \
                                            f'max abs {largest:.3g}'
 
