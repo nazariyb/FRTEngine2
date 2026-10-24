@@ -19,7 +19,8 @@ constexpr FStringLiteral EngineSection = "Engine";
 // Projects the generated solution already has, and names that would read as engine parts.
 constexpr FStringLiteral ReservedNames[] =
 {
-	"Core", "Editor", "Launcher", "Engine", "ImGui", "assimp", "gtest", "googletest", "ThirdParty",
+	"Core", "Editor", "Launcher", "Engine", "ImGui", "assimp", "gtest", "googletest", "xxHash", "BLAKE3", "zstd",
+	"ThirdParty",
 };
 
 FString Get (const config::CIniFile& File, FStringView Section, FStringView Key)

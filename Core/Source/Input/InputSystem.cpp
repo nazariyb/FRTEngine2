@@ -454,7 +454,7 @@ void CInputSystem::HandleEvent (const SKeyboardEventData& Data)
 		default: break;
 	}
 
-	OnKeyboardEvent.Invoke(Data);
+	OnKeyboardEvent.Broadcast(Data);
 }
 
 void CInputSystem::HandleEvent (const SMouseButtonEventData& Data)
@@ -500,7 +500,7 @@ void CInputSystem::HandleEvent (const SMouseButtonEventData& Data)
 	}
 
 	state.Current.Mouse.Position = Data.Position;
-	OnMouseButtonEvent.Invoke(Data);
+	OnMouseButtonEvent.Broadcast(Data);
 }
 
 void CInputSystem::HandleEvent (const SMouseMoveEventData& Data)
@@ -526,7 +526,7 @@ void CInputSystem::HandleEvent (const SMouseMoveEventData& Data)
 	state.Current.Mouse.Position = Data.Position;
 	state.Current.Mouse.Delta += Data.Delta;
 
-	OnMouseMoveEvent.Invoke(Data);
+	OnMouseMoveEvent.Broadcast(Data);
 }
 
 void CInputSystem::HandleEvent (const SMouseWheelEventData& Data)
@@ -545,7 +545,7 @@ void CInputSystem::HandleEvent (const SMouseWheelEventData& Data)
 	SWindowInputState& state = GetOrCreateState(window);
 	(Data.bHorizontal ? state.Current.Mouse.WheelDeltaX : state.Current.Mouse.WheelDelta) += Data.Delta;
 
-	OnMouseWheelEvent.Invoke(Data);
+	OnMouseWheelEvent.Broadcast(Data);
 }
 
 void CInputSystem::HandleEvent (const SGamepadButtonEventData& Data)
@@ -591,7 +591,7 @@ void CInputSystem::HandleEvent (const SGamepadButtonEventData& Data)
 		default: break;
 	}
 
-	OnGamepadButtonEvent.Invoke(Data);
+	OnGamepadButtonEvent.Broadcast(Data);
 }
 
 void CInputSystem::HandleEvent (const SGamepadAxisEventData& Data)
@@ -622,7 +622,7 @@ void CInputSystem::HandleEvent (const SGamepadAxisEventData& Data)
 	SWindowInputState& state = GetOrCreateState(window);
 	state.Current.Gamepads[gamepadIndex].Axes[axisIndex] = Data.Value;
 
-	OnGamepadAxisEvent.Invoke(Data);
+	OnGamepadAxisEvent.Broadcast(Data);
 }
 
 void CInputSystem::HandleEvent (const SDeviceConnectionEventData& Data)
@@ -648,6 +648,6 @@ void CInputSystem::HandleEvent (const SDeviceConnectionEventData& Data)
 		}
 	}
 
-	OnDeviceConnectionEvent.Invoke(Data);
+	OnDeviceConnectionEvent.Broadcast(Data);
 }
 }

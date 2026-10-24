@@ -16,6 +16,7 @@
 #include "Graphics/Render/GraphicsCoreTypes.h"
 #include "Graphics/Render/Renderer.h"
 #include "Graphics/Render/Scene/WorldExtraction.h"
+#include "Profiler/CpuProfiler.h"
 #include "Profiler/ProfilingExport.h"
 #include "UI/ImGuiString.h"
 
@@ -190,6 +191,30 @@ void CDebugTools::DrawStatsPanel (const SContext& Context)
 
 	ImGui::Text("FPS: %.2f", StatFps);
 	ImGui::Text("MS/frame: %.2f", StatMsPerFrame);
+
+	// FRT_CPU_SCOPE timings of the last frame, every thread, the costliest names first.
+	ImGui::Separator();
+	{
+		const profiler::SCpuFrame& cpuFrame = profiler::CCpuProfiler::GetLastFrame();
+		ImGui::Text("CPU scopes (frame %.3f ms):", cpuFrame.GetDurationMs());
+		constexpr size_t MaxCpuScopesShown = 12u;
+		const size_t shown = (std::min)(cpuFrame.Scopes.size(), MaxCpuScopesShown);
+		for (size_t i = 0; i < shown; ++i)
+		{
+			const profiler::SCpuScopeStats& s = cpuFrame.Scopes[i];
+			ImGui::Text("  %-22.*s %7.3f ms  x%-4u max %.3f",
+				static_cast<int>(s.Name.Len()), s.Name.GetData(), s.TotalMs, s.Count, s.MaxMs);
+		}
+		if (cpuFrame.Scopes.size() > shown)
+		{
+			ImGui::TextDisabled("  ... %u more", static_cast<uint32>(cpuFrame.Scopes.size() - shown));
+		}
+		if (cpuFrame.DroppedEvents > 0u)
+		{
+			ImGui::TextColored(ImVec4(1, 0.5f, 0.2f, 1), "  %llu scopes dropped: a thread's ring was full",
+				static_cast<unsigned long long>(cpuFrame.DroppedEvents));
+		}
+	}
 
 	ImGui::Separator();
 	ImGui::Text("GPU passes:");

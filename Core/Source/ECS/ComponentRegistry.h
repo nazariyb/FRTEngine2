@@ -6,6 +6,7 @@
 #include "Core.h"
 #include "CoreTypes.h"
 #include "Containers/StringView.h"
+#include "Platform/ModuleImage.h"
 
 
 namespace frt
@@ -105,12 +106,12 @@ public:
 	ComponentId Register(const SComponentInfo& InInfo);
 
 	/**
-	 * A module is about to unload; [InImageBegin, InImageEnd) is its image. Every type it
+	 * A module whose image is InImage (platform::GetModuleImage) is about to unload. Every type it
 	 * registered first is released: its functions are dropped, and the next registration
 	 * binds it again. Every pool of such a type must already be gone - a world the module
 	 * populated is destroyed before the module unloads (CGameModule).
 	 */
-	void ReleaseModule(const void* InImageBegin, const void* InImageEnd);
+	void ReleaseModule(const platform::SModuleImage& InImage);
 
 	const SComponentInfo* Find(ComponentId InId) const;
 	const SComponentInfo* FindByName(FStringView InName) const;

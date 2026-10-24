@@ -1,5 +1,7 @@
 #pragma once
 
+#include <filesystem>
+#include <span>
 #include <vector>
 
 #include "Containers/String.h"
@@ -15,6 +17,30 @@ namespace frt::test
  * from argv in place - and so from __argv, the same array, while __argc keeps the old count.
  */
 const std::vector<FString>& GetMainArguments ();
+
+/**
+ * Child modes: Core-Test started as "Core-Test --frt-test-child=<Name> <arguments...>" runs the
+ * function registered under Name instead of the tests, and exits with what it returns.
+ *
+ * For tests that need a second process they can kill at any moment (a crash in the middle of a
+ * write) - a thread cannot be killed safely, and a separate helper executable would be one more
+ * project to build. The child gets the arguments after the switch; it runs before GoogleTest is
+ * initialized and without the engine's memory pool. Register from a test file's namespace scope:
+ *
+ *   const bool bRegistered = test::RegisterChildMode("atomic-writer", &RunAtomicWriter);
+ */
+using FChildMain = int (*) (std::span<const FString> Arguments);
+
+inline constexpr FStringLiteral ChildModeSwitch = "--frt-test-child=";
+
+bool RegisterChildMode (FStringView Name, FChildMain Main);
+
+/**
+ * Core-TestModule.dll beside this executable (Core-Test/TestModule/TestModule.h), named as the build
+ * names it: Core-Test-<config>.exe loads Core-TestModule-<config>.dll (Release-Default: Core-Test.exe,
+ * Core-TestModule.dll). Empty if this executable is not named Core-Test*.
+ */
+std::filesystem::path GetTestModulePath ();
 
 /**
  * Text longer than FString's 22 inline bytes, so it owns a heap block. Payloads of tests for

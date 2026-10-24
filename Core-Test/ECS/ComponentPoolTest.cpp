@@ -167,10 +167,10 @@ TEST(ComponentRegistry, ReleasedModuleKeepsNameAndIdAndRebindsOnRegistration)
 
 	// A module that did not register the type first leaves it alone.
 	char other[8] = {};
-	registry.ReleaseModule(other, other + sizeof(other));
+	registry.ReleaseModule({ other, other + sizeof(other) });
 	EXPECT_TRUE(registry.IsBound(id));
 
-	registry.ReleaseModule(image, image + sizeof(image));
+	registry.ReleaseModule({ image, image + sizeof(image) });
 	std::memset(image, 0xCD, sizeof(image) - 1u);   // the module's memory is gone
 
 	EXPECT_FALSE(registry.IsBound(id));
@@ -191,7 +191,7 @@ TEST(ComponentRegistry, ReleasedModuleKeepsNameAndIdAndRebindsOnRegistration)
 	EXPECT_EQ(registry.Find(id)->Size, 16u);
 	EXPECT_EQ(registry.Find(id)->Name, "Comp_TestReloaded");
 
-	registry.ReleaseModule(reloaded, reloaded + sizeof(reloaded));
+	registry.ReleaseModule({ reloaded, reloaded + sizeof(reloaded) });
 }
 
 TEST(ComponentRegistry, CoreComponentsSurviveAGameModuleRelease)
@@ -205,7 +205,7 @@ TEST(ComponentRegistry, CoreComponentsSurviveAGameModuleRelease)
 	fromGame.Size = sizeof(Comp_Name);
 	EXPECT_EQ(CComponentRegistry::Get().Register(fromGame), nameId);
 
-	CComponentRegistry::Get().ReleaseModule(image, image + sizeof(image));
+	CComponentRegistry::Get().ReleaseModule({ image, image + sizeof(image) });
 	EXPECT_TRUE(CComponentRegistry::Get().IsBound(nameId));
 }
 

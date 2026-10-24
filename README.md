@@ -18,12 +18,13 @@ A small experimental 3D engine built on Direct3D 12 and DirectX Raytracing (DXR)
 | **Model / Mesh** | Model loading through Assimp, plus a procedural **GeometryScript** path for runtime mesh generation (used for portal visualization and test scenes). |
 | **Input** | Platform-abstracted input system (Win32 backend). Supports raw key and mouse events plus a rebindable `InputActionLibrary`. |
 | **Math** | `Vector2`, `Vector3`, `Transform`, and general math utilities on top of DirectXMath. |
-| **Memory** | TLSF-based general allocator, a pool allocator, and reference-counted smart pointers (`TRefShared` / `TRefWeak`). |
+| **Memory** | TLSF-based general allocator, a pool allocator, and reference-counted smart pointers (`TRefShared` / `TRefWeak`). The pool counts its bytes (current, peak, a high-water callback) and logs use from a thread that does not own it. |
 | **Strings** | UTF-8 text throughout: `FString` (owned, 22 bytes inline), `FStringView` (borrowed) and `FStringLiteral` (static names) share one read-only API for searching, comparison (exact, Unicode case-folded or ASCII-only), splitting and parsing; `FString` adds editing and formatting. `FWideString` is only a UTF-16 buffer for the call into the OS. `frt::unicode` holds the codecs and the character tables generated from the Unicode Character Database; `frt::platform` gives the command line, environment and files in UTF-8. See [Strings and text](#strings-and-text). |
 | **Assets** | Visitor-archive serialization framework (`Archive.h`, `Serializer.h`) with a YAML backend (`YamlArchive`) — current format for materials (`.frtmat.yml`). A JSON Schema under `Schemas/` provides IDE auto-completion for the material format. The legacy text-based `TextAssetIO` and the generic `AssetTool` remain available. `EnginePaths` centralizes well-known directory lookups (content, profiling output, etc.). |
-| **Events** | Lightweight typed event/delegate system used throughout the engine. |
+| **Asset foundations** | The base of the asset manager being built (milestone M0; [Docs/Assets.md](Docs/Assets.md)): asset GUIDs and 64-bit ids, frozen hashes (XXH3 for ids, BLAKE3-160 for content and cache keys), the canonical key writer, zstd, segment-aware path globs (`CPathGlob`), and the `frt::platform` file layer - file identities, directory listings, atomic writes, stable reads for hashing, the Recycle Bin, volume info, virtual memory - implemented for Windows behind interfaces. |
+| **Delegates, log, diagnostics** | `TFunctionRef`, `TUniqueFunction` and `TMulticastDelegate` (handles, safe changes while broadcasting, release of a game module's subscriptions); window and input events use them. A minimal `log::` with categories and levels, and structured `SDiagnostic`s with stable codes. |
 | **ImGui** | Dear ImGui is integrated for debug UI in non-headless builds. Includes live raytracing sliders, transform editor, stats panel, and frame-stat overlays. Press `I` to toggle the entire UI on/off. |
-| **Profiling** | GPU timestamps via PIX-named scopes (`CGpuProfiler`), wave-coalesced ray counters via a UAV ring (`CRayCounters`), an analytic scene-descriptor snapshot (per-portal world area + screen coverage), and a rolling per-frame metrics aggregator. A profiling-session driver sweeps a cartesian product of render settings (spp × bounces × Russian-roulette depth × portal on/off) and exports one `.txt` (settings + scene snapshot) and one `.csv` (every measured frame) per configuration under `<project>/Local/Profiling/<session>/`. A Python analysis package (`Tools/Analysis/` — see its own README) parses the output for plots, summary tables, and cost-model validation. |
+| **Profiling** | GPU timestamps via PIX-named scopes (`CGpuProfiler`), wave-coalesced ray counters via a UAV ring (`CRayCounters`), an analytic scene-descriptor snapshot (per-portal world area + screen coverage), and a rolling per-frame metrics aggregator. A profiling-session driver sweeps a cartesian product of render settings (spp × bounces × Russian-roulette depth × portal on/off) and exports one `.txt` (settings + scene snapshot) and one `.csv` (every measured frame) per configuration under `<project>/Local/Profiling/<session>/`. A Python analysis package (`Tools/Analysis/` — see its own README) parses the output for plots, summary tables, and cost-model validation. CPU scopes (`FRT_CPU_SCOPE`) record per thread; the Stats panel shows the last frame's. |
 
 ### Architecture
 
@@ -139,7 +140,9 @@ Code shared between projects is not supported yet; `Core/Source/Project/Project.
 
 | Command | Does |
 |---|---|
-| `FRT.bat setup` | registers the engine and generates `FRTEngine2.sln` |
+| `FRT.bat setup` | registers the engine, gives hashed text files LF in this working tree (checking out again only files whose line endings alone differ; it refuses on uncommitted changes), and generates `FRTEngine2.sln` |
+| `FRT.bat check-line-endings` | only checks those line endings (`git ls-files --eol`) |
+| `FRT.bat verify` | the merge gate: builds, Core-Test, lints, the editor's smoke tests, automation captures against this machine's baselines, the Release package's captures, a clean `git status` (`--quick` for the pre-commit subset, `--record-baselines` to record new baselines in `Local/Verify/Baselines`) |
 | `FRT.bat new --name=MyGame` | creates a project in the current directory (`--location=<dir>`) from a template (`--template=Blank` or `Demo`), with a git repository; `--layout=embedded` adds the engine as a submodule (`--engine-url=<repository>` to follow another remote than the engine's `origin`); `--build` builds it as well |
 | `FRT.bat generate` | (re)generates the solution - after adding or removing source files |
 | `FRT.bat build` | builds the engine, or in a project the game and the hosts (`--config=Debug`, `Release`, `Development-Headless`...; default `Development-Default`) |
@@ -182,7 +185,7 @@ From the command line, build through a solution - `MSBuild FRTEngine2.sln -p:Con
 
 ### Third-party libraries
 
-Dear ImGui, assimp (glTF importers only), yaml-cpp and GoogleTest are vendored in `ThirdParty/` (each directory's `VERSION.txt` says which version and what was left out) and are projects of the solution, in its `ThirdParty` folder. They build once per build type - Default and Headless share them - in a few seconds, with the same compiler, runtime and settings as the engine.
+Dear ImGui, assimp (glTF importers only), yaml-cpp, GoogleTest, xxHash, BLAKE3 and zstd are vendored in `ThirdParty/` (each directory's `VERSION.txt` says which version and what was left out) and are projects of the solution, in its `ThirdParty` folder. They build once per build type - Default and Headless share them - in a few seconds, with the same compiler, runtime and settings as the engine.
 
 To skip building them, use prebuilt binaries:
 
@@ -272,8 +275,11 @@ Launcher/         — runtime host: runs a project's game standalone
 Templates/        — what new projects start from: Blank, and Demo (the sample game: Sponza and other models);
                     each is a project in place too. Common/ is what every project gets
 Schemas/          — JSON Schemas for YAML asset formats (IDE auto-completion)
+Docs/             — short structured docs of systems in progress (Assets.md)
 Tools/Analysis/   — Python package + Jupyter notebook for profiling-session analysis
-ThirdParty/       — vendored libraries, built from source (ImGui, assimp, yaml-cpp, GoogleTest) or as shipped (Stb, D3D12 Agility SDK, DXC, Premake); see each VERSION.txt
+Tools/Lint/       — CheckStrings.py (text and path rules), CheckPlatform.py (no OS calls outside Platform/)
+Tools/Verify/     — Verify.py, behind FRT.bat verify
+ThirdParty/       — vendored libraries, built from source (ImGui, assimp, yaml-cpp, GoogleTest, xxHash, BLAKE3, zstd) or as shipped (Stb, D3D12 Agility SDK, DXC, Premake); see each VERSION.txt
 Premake/          — Premake5 scripts (configurations: workspace.lua; projects and the registry: project.lua; commands: tools.lua; third-party: thirdparty.lua)
 Binaries/         — the engine's DLLs / EXEs
 Intermediate/     — compiled object files

@@ -26,7 +26,7 @@ class CConfig;
 // IMGUI_USE_WCHAR32). Every name, text and path the game-facing types take or hold is an engine
 // string type (FString / FStringView / FStringLiteral) or a std::filesystem::path. Bump on any
 // change to them.
-#define FRT_GAME_API_VERSION 5u
+#define FRT_GAME_API_VERSION 6u
 
 #if defined(FRT_HEADLESS)
 #define FRT_GAME_MODULE_HEADLESS 1u

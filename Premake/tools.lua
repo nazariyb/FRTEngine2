@@ -5,7 +5,8 @@
 -- runs too. In a project, the project's FRT.bat runs its engine's with --project=<the project>.
 --
 --   setup      registers this engine under its name (Engine.frtengine), so shared projects find
---              it, and generates its solution: the first thing to run in a new checkout
+--              it, gives the checkout's hashed text files LF line endings (Line endings, below)
+--              and generates its solution: the first thing to run in a new checkout
 --   new        creates a project from a template, sets up its git repository, generates its
 --              solution: FRT.bat new --name=MyGame [--template=Demo] [--layout=embedded] [--build]
 --   generate   (re)generates the engine's solution, or the project's
@@ -14,6 +15,8 @@
 --   open       opens the solution in the program .sln files open with (Visual Studio)
 --   package    builds the project's game in Release and writes it, with everything it runs
 --              with, to a directory of its own that runs anywhere (Packaging, below)
+--   verify     the check before a merge: builds, Core-Test, lints, smoke runs and captures
+--              compared with recorded baselines (Tools/Verify/Verify.py says what and how)
 --
 -- A command for a project that uses another engine runs that engine's FRT.bat instead.
 
@@ -78,6 +81,38 @@ newoption
 	description = "new: build the project once it is created"
 }
 
+newoption
+{
+	trigger     = "quick",
+	description = "verify: only build Development, run its Core-Test and the lints (the pre-commit subset)"
+}
+
+newoption
+{
+	trigger     = "nightly",
+	description = "verify: everything, plus the long-running checks (none exist yet)"
+}
+
+newoption
+{
+	trigger     = "record-baselines",
+	description = "verify: record the captures as the new baselines instead of comparing with them"
+}
+
+newoption
+{
+	trigger     = "baselines",
+	value       = "DIR",
+	description = "verify: where the baseline captures are (default: Local/Verify/Baselines)"
+}
+
+newoption
+{
+	trigger     = "pt-tolerance",
+	value       = "RMSE",
+	description = "verify: the relative RMSE a path-traced capture may differ from its baseline by (default: 1e-4)"
+}
+
 -----------------------------------------
 ---------------  Helpers  ---------------
 -----------------------------------------
@@ -139,6 +174,17 @@ local function msbuild()
 		fail("no Visual Studio 2022 with MSBuild and the v143 C++ toolset found (vswhere)")
 	end
 	return exe
+end
+
+-- Python 3 for Tools/: the newest through the py launcher, else the python on PATH.
+local function python()
+	for _, candidate in ipairs({ "py -3", "python" }) do
+		local version = outputOf(candidate .. " --version")
+		if version and version:match("^Python 3%.") then
+			return candidate
+		end
+	end
+	return nil
 end
 
 local function solutionFile(project)
@@ -296,11 +342,33 @@ function findTemplates()
 	return templates
 end
 
+-- The extensions a project's .gitattributes (Templates/Common's, which every project gets) makes
+-- text eol=lf: "*.ini text eol=lf" gives ".ini". A new project's repository holds those files as
+-- LF in its index, and nothing ever checks a new project out again, so its working copies must be
+-- LF from the start, or they would hash differently from every clone's. The engine checkout they
+-- are copied from may still have them with CRLF: one checked out before .gitattributes made them
+-- LF, which has not run FRT.bat setup yet.
+local function lfExtensions()
+	local extensions = {}
+	local rules = readBinary(path.join(templatesDir, "Common/.gitattributes")) or ""
+	for line in rules:gmatch("[^\r\n]+") do
+		local extension, attributes = line:match("^%*(%.[^%s/%*%?%[]+)%s+(.*)$")
+		if extension and (" " .. attributes .. " "):find(" eol=lf ", 1, true) then
+			extensions[extension:lower()] = true
+		end
+	end
+	return extensions
+end
+
 local function copyTree(sourceDir, destinationDir, templateName, projectName)
+	local lf = lfExtensions()
 	for _, file in ipairs(os.matchfiles(path.join(sourceDir, "**"))) do
 		local relative = path.getrelative(sourceDir, file)
 		if not (templateName and isTemplateOnly(relative, templateName)) then
 			local data = readBinary(file) or fail("new: cannot read " .. file)
+			if lf[path.getextension(file):lower()] then
+				data = data:gsub("\r\n", "\n")
+			end
 			if templateName then
 				relative = relative:gsub(templateName, projectName)
 				if templatedExtensions[path.getextension(file):lower()] then
@@ -417,15 +485,220 @@ local function writePackageMarker(dir, project, engine, configuration)
 end
 
 -----------------------------------------
+-------------  Line endings  ------------
+-----------------------------------------
+-- The engine hashes text files byte for byte - asset metadata, documents, rules, shader sources -
+-- so every working tree must hold them with the same bytes: LF, as .gitattributes says. The index
+-- already has them as LF. Working trees made with core.autocrlf=true (Git for Windows' default)
+-- have CRLF, and a new .gitattributes converts nothing already checked out: that takes a fresh
+-- checkout of those files. Setup finds the files whose working copy is not what a checkout under
+-- today's attributes writes (git ls-files --eol), checks them out again, and checks the result.
+--
+-- Only those files: checking out everything again (git rm --cached -r . && git reset --hard)
+-- would rewrite premake5.exe while it runs this, and every source, so the next build would
+-- rebuild everything. Only on a working tree without uncommitted changes, which a fresh checkout
+-- would throw away; changes in line endings alone are not changes. Each worktree of a repository
+-- has its own working files, and runs setup once. FRT.bat check-line-endings checks the same rules
+-- without fixing anything, for FRT.bat verify: one implementation of them, here.
+
+-- core.safecrlf=false: no warning about the conversions core.autocrlf makes, which are the point.
+local function git(arguments)
+	return "git -c core.safecrlf=false -C " .. quoted(ROOT_DIR) .. " " .. arguments
+end
+
+-- git ls-files --eol for this checkout: { Path, Index, Work, Attributes } per tracked file.
+local function trackedLineEndings()
+	local output, code = os.outputof(git("ls-files --eol -z"))
+	if code ~= 0 or not output then
+		return nil
+	end
+	local entries = {}
+	for record in output:gmatch("[^\0]+") do
+		local info, file = record:match("^([^\t]*)\t(.*)$")
+		local index, work, attributes = (info or ""):match("^i/(%S*)%s+w/(%S*)%s+attr/(.-)%s*$")
+		if file and index then
+			table.insert(entries, { Path = file, Index = index, Work = work, Attributes = attributes })
+		end
+	end
+	return entries
+end
+
+-- What is wrong with a tracked file's line endings: "index" (only a commit renormalizing it fixes
+-- that), "work" (a fresh checkout of the file fixes it), or nil.
+local function lineEndingProblem(entry)
+	local attributes = " " .. entry.Attributes .. " "
+	if attributes:find(" eol=lf ", 1, true) then
+		if entry.Index == "crlf" or entry.Index == "mixed" then
+			return "index"
+		end
+		if entry.Work == "crlf" or entry.Work == "mixed" then
+			return "work"
+		end
+	elseif attributes:find(" -text ", 1, true) then
+		-- Never converted: the working copy has the committed bytes.
+		if entry.Work ~= "" and entry.Index ~= "" and entry.Work ~= entry.Index then
+			return "work"
+		end
+	elseif attributes:find(" eol=crlf ", 1, true) then
+		if entry.Index == "lf" and entry.Work == "lf" then
+			return "work"
+		end
+	end
+	return nil
+end
+
+-- The tracked files with a problem of each kind: { work = { paths }, index = { paths } }.
+local function lineEndingProblems(entries)
+	local problems = { work = {}, index = {} }
+	for _, entry in ipairs(entries) do
+		local problem = lineEndingProblem(entry)
+		if problem then
+			table.insert(problems[problem], entry.Path)
+		end
+	end
+	return problems
+end
+
+local function printSome(paths, indent)
+	for i = 1, math.min(#paths, 10) do
+		print(indent .. paths[i])
+	end
+	if #paths > 10 then
+		print(indent .. "... and " .. (#paths - 10) .. " more")
+	end
+end
+
+-- The other worktrees of this checkout's repository.
+local function otherWorktrees()
+	local worktrees = {}
+	for line in (outputOf(git("worktree list --porcelain")) or ""):gmatch("[^\r\n]+") do
+		local dir = line:match("^worktree (.+)$")
+		if dir and not isSamePath(dir, ROOT_DIR) then
+			table.insert(worktrees, winpath(dir))
+		end
+	end
+	return worktrees
+end
+
+-- Gives this checkout's working files the line endings .gitattributes asks for. False, having
+-- said why, when that could not be done.
+local function setupLineEndings()
+	if not outputOf("git --version") then
+		print("Line endings: git is not on PATH, so nothing is checked.")
+		return true
+	end
+	-- The engine's path below the top of its work tree: empty for a checkout of its own. Asked of
+	-- git, so it holds however the path is spelled (a subst or mapped drive, a junction), which a
+	-- comparison of git's --show-toplevel with ROOT_DIR would not.
+	local prefix = outputOf(git("rev-parse --show-prefix"))
+	if not prefix then
+		print("Line endings: this engine is not a git checkout, so nothing is checked.")
+		return true
+	end
+	if prefix ~= "" then
+		print("Line endings: this engine is " .. prefix .. " in another repository's work tree, not a checkout")
+		print("of its own, so nothing is checked.")
+		return true
+	end
+	local entries = trackedLineEndings()
+	if not entries then
+		print("Line endings: git ls-files --eol failed.")
+		return false
+	end
+
+	local problems = lineEndingProblems(entries)
+	if #problems.work > 0 then
+		-- "git diff --quiet" with a whitespace option compares contents, so line endings alone
+		-- leave it quiet.
+		if not runCommand(git("diff HEAD --ignore-cr-at-eol --quiet")) then
+			print("Line endings: " .. #problems.work .. " file(s) need a fresh checkout for the line endings " ..
+				".gitattributes asks for,")
+			print("but this working tree has uncommitted changes, which that would overwrite. Commit or stash")
+			print("them, then run FRT.bat setup again. git status:")
+			for line in (os.outputof(git("status --short --untracked-files=no")) or ""):gmatch("[^\r\n]+") do
+				print("  " .. line)
+			end
+			return false
+		end
+
+		print("Line endings: checking out " .. #problems.work .. " file(s) again, for the line endings " ..
+			".gitattributes asks for...")
+		local list = path.join(ROOT_DIR, "Local/Setup/LineEndings.txt")
+		if not writeBinary(list, table.concat(problems.work, "\0") .. "\0") then
+			fail("setup: cannot write " .. winpath(list))
+		end
+		local files = " --pathspec-from-file=" .. quoted(list) .. " --pathspec-file-nul"
+		-- Out of the index first: git writes no file whose index entry says it is up to date,
+		-- whatever its line endings. Then from HEAD into the index and the working tree, those
+		-- files only.
+		local ok = runCommand(git("--literal-pathspecs rm --cached -q" .. files)) and
+			runCommand(git("--literal-pathspecs checkout -q HEAD" .. files))
+		if not ok then
+			-- Their index entries go back whatever was or was not checked out, or the files would
+			-- stay staged as deleted: a change, which the next run would refuse to overwrite (and
+			-- which a commit would make real). Their working copies are as they were or rewritten,
+			-- and either way hold the committed text, so the tree is clean again.
+			if not runCommand(git("--literal-pathspecs reset -q HEAD" .. files)) then
+				print("Line endings: the checkout failed, and so did putting the files back into the index. Run")
+				print("  git -C " .. quoted(ROOT_DIR) .. " --literal-pathspecs reset -q HEAD" .. files)
+				print("before anything else, then FRT.bat setup again.")
+				return false
+			end
+			os.remove(list)
+			print("Line endings: the checkout failed (a file open in another program?); nothing is staged. Close")
+			print("the program and run FRT.bat setup again.")
+			return false
+		end
+		os.remove(list)
+
+		entries = trackedLineEndings() or {}
+		problems = lineEndingProblems(entries)
+		local worktrees = otherWorktrees()
+		if #worktrees > 0 then
+			print("Each worktree has its own working files: run FRT.bat setup in the others too (git worktree list):")
+			printSome(worktrees, "  ")
+		end
+	end
+
+	if #problems.work > 0 then
+		print("Line endings: these files still do not have the line endings .gitattributes asks for:")
+		printSome(problems.work, "  ")
+		return false
+	end
+	if #problems.index > 0 then
+		print("Line endings: these files are committed with CRLF, which .gitattributes forbids; fix them in a commit")
+		print("(git add --renormalize <file>):")
+		printSome(problems.index, "  ")
+		return false
+	end
+	print("Line endings: every hashed text file is LF (git ls-files --eol).")
+	return true
+end
+
+-- How many tracked files .gitattributes makes LF.
+local function countLfFiles(entries)
+	local count = 0
+	for _, entry in ipairs(entries) do
+		if (" " .. entry.Attributes .. " "):find(" eol=lf ", 1, true) then
+			count = count + 1
+		end
+	end
+	return count
+end
+
+-----------------------------------------
 ---------------  Actions  ---------------
 -----------------------------------------
 
 newaction
 {
 	trigger     = "setup",
-	description = "Register this engine for projects to find by name, and generate its solution",
+	description = "Register this engine for projects to find by name, give its text files LF, and generate its solution",
 	execute     = function ()
 		local engine = loadEngine(ROOT_DIR) or fail("setup: " .. rootpath(engineFileName) .. " has no [Engine] Name")
+		-- First: it may rewrite files, and nothing below depends on it.
+		local bLineEndings = setupLineEndings()
+		print("")
 		local previous = findRegisteredEngine(engine.Name)
 		if previous and not isSamePath(previous, ROOT_DIR) and isEngineDir(previous) then
 			print("'" .. engine.Name .. "' was registered to " .. previous .. "; projects using it now use this checkout.")
@@ -438,6 +711,9 @@ newaction
 		print("")
 		print("Open " .. winpath(solutionFile(nil)) .. " and start the editor to create or open a project,")
 		print("or: FRT.bat new --name=MyGame [--template=Demo] [--layout=embedded] [--build]")
+		if not bLineEndings then
+			fail("setup: the line endings are not fixed (see above)")
+		end
 	end
 }
 
@@ -684,5 +960,72 @@ newaction
 			addRecentProject(project.File)
 		end
 		runCommand('start "" ' .. quoted(solution))
+	end
+}
+
+-- The line-ending check of FRT.bat verify (Tools/Verify/Verify.py runs this), by the rules setup
+-- applies, fixing nothing. Unlike setup, it fails when the engine is not a git checkout of its own:
+-- a gate that checked nothing must not pass.
+newaction
+{
+	trigger     = "check-line-endings",
+	description = "Check that every tracked file has the line endings .gitattributes asks for (run by verify)",
+	execute     = function ()
+		local prefix = outputOf(git("rev-parse --show-prefix"))
+		if not prefix then
+			fail("check-line-endings: git rev-parse --show-prefix failed: is this engine a git checkout?")
+		end
+		if prefix ~= "" then
+			fail("check-line-endings: the engine is " .. prefix .. " in another repository's work tree, not a " ..
+				"checkout of its own")
+		end
+		local entries = trackedLineEndings() or fail("check-line-endings: git ls-files --eol failed")
+		local problems = lineEndingProblems(entries)
+		if #problems.work > 0 then
+			print("Checked out with other line endings than .gitattributes asks for (run FRT.bat setup):")
+			printSome(problems.work, "  ")
+		end
+		if #problems.index > 0 then
+			print("Committed with CRLF, which .gitattributes forbids (git add --renormalize <file>):")
+			printSome(problems.index, "  ")
+		end
+		if #problems.work > 0 or #problems.index > 0 then
+			fail("check-line-endings: " .. #problems.work .. " file(s) to check out again, " .. #problems.index ..
+				" committed with CRLF")
+		end
+		print("Line endings: " .. countLfFiles(entries) .. " LF files, all LF in the index and the working tree.")
+	end
+}
+
+-- The engine's merge gate. There is no CI, and byte-exact D3D12 captures need a GPU machine, so
+-- it runs here: Tools/Verify/Verify.py, which says what it checks.
+newaction
+{
+	trigger     = "verify",
+	description = "Check the engine before a merge (Tools/Verify/Verify.py): [--quick|--nightly] [--record-baselines]",
+	execute     = function ()
+		if _OPTIONS["project"] then
+			fail("verify: checks the engine and its templates; it takes no --project")
+		end
+		if _OPTIONS["quick"] and _OPTIONS["nightly"] then
+			fail("verify: --quick or --nightly, not both")
+		end
+		local interpreter = python() or fail("verify: needs Python 3 (the py launcher or python on PATH)")
+		local command = interpreter .. " -I " .. quoted(rootpath("Tools/Verify/Verify.py"))
+		for _, switch in ipairs({ "quick", "nightly", "record-baselines" }) do
+			if _OPTIONS[switch] then
+				command = command .. " --" .. switch
+			end
+		end
+		if _OPTIONS["baselines"] then
+			command = command .. " --baselines=" .. quoted(canonicalPath(_OPTIONS["baselines"]))
+		end
+		if _OPTIONS["pt-tolerance"] then
+			local tolerance = tonumber(_OPTIONS["pt-tolerance"]) or fail("verify: --pt-tolerance takes a number, e.g. 2e-4")
+			command = command .. " --pt-tolerance=" .. string.format("%.17g", tolerance)
+		end
+		if not runCommand(command) then
+			fail("verify failed (the summary above says what)")
+		end
 	end
 }

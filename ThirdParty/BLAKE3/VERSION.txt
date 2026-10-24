@@ -1,0 +1,23 @@
+BLAKE3 1.8.7, tag 1.8.7 of https://github.com/BLAKE3-team/BLAKE3 (the C implementation, c/)
+Tarball https://github.com/BLAKE3-team/BLAKE3/archive/refs/tags/1.8.7.tar.gz,
+SHA-256 c6782a28842b1c0478524ac06a4f2ede784038ee298d6e2162c0b089c4306a3c
+(its SHA512 02374ce3c4fe11ca... is the value vcpkg's blake3 1.8.7 port pins).
+
+Vendored, unmodified, in the upstream layout: from c/ blake3.h, blake3.c, blake3_impl.h,
+blake3_dispatch.c, blake3_portable.c and the x86-64 intrinsics files blake3_sse2.c,
+blake3_sse41.c, blake3_avx2.c, blake3_avx512.c; the three licence files of the repository root
+(LICENSE_A2, LICENSE_A2LLVM, LICENSE_CC0: BLAKE3 is CC0 1.0 or Apache 2.0, with or without the
+LLVM exception, at the user's choice). Left out: the Rust crate and every other directory, the
+assembly files (.asm/.S: the intrinsics files are used instead), blake3_neon.c (Arm), the oneTBB
+glue (blake3_tbb.cpp), the CMake files, examples and tests.
+
+Built as the BLAKE3 project (Premake/Projects/thirdparty.lua): a DLL in Debug and Development
+(BLAKE3_DLL, plus BLAKE3_DLL_EXPORTS when building it), a static library in Release.
+blake3_avx2.c compiles with /arch:AVX2 and blake3_avx512.c with /arch:AVX512, as upstream's CMake
+does for MSVC with x86 intrinsics; SSE2 and SSE4.1 need no flag on x64. blake3_dispatch.c picks
+the widest implementation the CPU supports at run time, and every implementation produces the
+same bytes. Only Core includes it (Core/Source/Hash/StableHash.cpp).
+
+Updating: copy the same files from the new tag's c/ over these, check blake3_dispatch.c and
+CMakeLists.txt for new source files or flags, and update this file. The known-answer tests in
+Core-Test/Hash/StableHashTest.cpp (from test_vectors/test_vectors.json) must still pass unchanged.

@@ -4,7 +4,7 @@
 
 #include "CoreTypes.h"
 #include "Enum.h"
-#include "Event.h"
+#include "Functional/MulticastDelegate.h"
 #include "Math/Math.h"
 
 
@@ -311,13 +311,13 @@ struct SDeviceConnectionEventData
 };
 
 
-using InputEventKeyboard = CEvent<SKeyboardEventData>;
-using InputEventMouseButton = CEvent<SMouseButtonEventData>;
-using InputEventMouseMove = CEvent<SMouseMoveEventData>;
-using InputEventMouseWheel = CEvent<SMouseWheelEventData>;
-using InputEventGamepadButton = CEvent<SGamepadButtonEventData>;
-using InputEventGamepadAxis = CEvent<SGamepadAxisEventData>;
-using InputEventDeviceConnection = CEvent<SDeviceConnectionEventData>;
+using InputEventKeyboard = TMulticastDelegate<SKeyboardEventData>;
+using InputEventMouseButton = TMulticastDelegate<SMouseButtonEventData>;
+using InputEventMouseMove = TMulticastDelegate<SMouseMoveEventData>;
+using InputEventMouseWheel = TMulticastDelegate<SMouseWheelEventData>;
+using InputEventGamepadButton = TMulticastDelegate<SGamepadButtonEventData>;
+using InputEventGamepadAxis = TMulticastDelegate<SGamepadAxisEventData>;
+using InputEventDeviceConnection = TMulticastDelegate<SDeviceConnectionEventData>;
 
 
 struct SButtonState

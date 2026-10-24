@@ -7,6 +7,8 @@
 #include <shellapi.h>
 
 #include "Containers/WideString.h"
+#include "Platform/FileSystem.h"
+#include "Platform/Windows/WindowsCommon.h"
 
 
 namespace frt::platform
@@ -135,8 +137,9 @@ void* GetWritableData (std::vector<uint8>& Buffer) noexcept
 template <typename TBuffer>
 bool ReadWholeFile (const std::filesystem::path& Path, TBuffer& Out)
 {
-	const HANDLE file = CreateFileW(Path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-		nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+	const HANDLE file = CreateFileW(windows::ToWin32Path(Path).c_str(), GENERIC_READ,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+		FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
 	if (file == INVALID_HANDLE_VALUE)
 	{
 		return false;
@@ -517,37 +520,6 @@ std::optional<std::vector<uint8>> ReadFileBytes (const std::filesystem::path& Pa
 
 bool WriteFileText (const std::filesystem::path& Path, FStringView Text, bool bCreateDirectories)
 {
-	if (bCreateDirectories && Path.has_parent_path())
-	{
-		// A failure shows as CreateFileW failing below.
-		std::error_code ec;
-		std::filesystem::create_directories(Path.parent_path(), ec);
-	}
-
-	const HANDLE file = CreateFileW(Path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
-		FILE_ATTRIBUTE_NORMAL, nullptr);
-	if (file == INVALID_HANDLE_VALUE)
-	{
-		return false;
-	}
-
-	bool bWritten = true;
-	const char* data = Text.GetData();
-	uint32 remaining = Text.Len();
-	while (remaining > 0u)
-	{
-		DWORD written = 0u;
-		if (!WriteFile(file, data, remaining, &written, nullptr) || written == 0u)
-		{
-			bWritten = false;
-			break;
-		}
-		data += written;
-		remaining -= written;
-	}
-
-	// Closing can still fail (a full disk, a network share): that is a failed write too.
-	const bool bClosed = CloseHandle(file) != 0;
-	return bWritten && bClosed;
+	return WriteFileBytes(Path, Text.AsBytes(), bCreateDirectories);
 }
 }

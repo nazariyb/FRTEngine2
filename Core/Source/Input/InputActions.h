@@ -67,7 +67,7 @@ struct SInputActionEventData
 	bool bDown = false;
 };
 
-using InputEventAction = CEvent<SInputActionEventData>;
+using InputEventAction = TMulticastDelegate<SInputActionEventData>;
 
 struct SInputActionDefinition
 {

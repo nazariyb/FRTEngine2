@@ -188,7 +188,7 @@ function coreDependencies(scope)
 		links { "d3d12", "dxgi", "d3dcompiler", "dxcompiler" }
 	filter {}
 
-	linkThirdParty(scope, { "assimp", "yaml-cpp" })
+	linkThirdParty(scope, { "assimp", "yaml-cpp", "xxHash", "BLAKE3", "zstd" })
 	linkThirdParty(table.join(scope, { "configurations:not *-Headless" }), { "ImGui" })
 end
 

@@ -5,11 +5,13 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 #include "Core.h"
 #include "CoreTypes.h"
 #include "Containers/String.h"
+#include "Platform/ModuleImage.h"   // GetModuleImage, the address range of a loaded module
 
 
 /**
@@ -72,6 +74,7 @@ FRT_CORE_API void ShowErrorMessage (FStringView Title, FStringView Text) noexcep
 // The file a loaded module (an HMODULE) was loaded from; nullptr is the executable. Long paths are
 // handled (the buffer grows). Empty if the module is not loaded.
 [[nodiscard]] FRT_CORE_API std::filesystem::path GetModulePath (void* Module = nullptr);
+// Its address range is GetModuleImage (Platform/ModuleImage.h, included above).
 [[nodiscard]] FRT_CORE_API std::filesystem::path GetExecutablePath ();
 
 // Output of a child tool (a compiler, a build) as UTF-8. Split on '\n' (terminators kept), each line
@@ -92,10 +95,18 @@ FRT_CORE_API void ShowErrorMessage (FStringView Title, FStringView Text) noexcep
 [[nodiscard]] FRT_CORE_API std::optional<std::vector<uint8>> ReadFileBytes (const std::filesystem::path& Path);
 // Replaces the file with Text's bytes: binary, so UTF-8 without a BOM and line endings as given.
 // Creates the parent directories first when bCreateDirectories. False if anything failed.
+// WriteFileBytes (Platform/FileSystem.h) with Text.AsBytes(), for callers that need no reason.
 FRT_CORE_API bool WriteFileText (const std::filesystem::path& Path, FStringView Text, bool bCreateDirectories = true);
 
 // Narrow text never becomes a path implicitly: std::filesystem::path(const char*) decodes with the
 // ANSI code page. Convert explicitly (FStringView::ToPath).
+//
+// NarrowText is that text (a literal, a char array or pointer, std::string, std::string_view): the
+// other platform headers (FileSystem.h, BlockingFileReader.h) give each function taking a path a
+// deleted template twin constrained on it, one line instead of three overloads.
+template <typename T>
+concept NarrowText = std::is_convertible_v<const T&, std::string_view>;
+
 std::optional<FString> ReadFileText (const char*, ETextFileEncoding = ETextFileEncoding::Detect) = delete;
 std::optional<FString> ReadFileText (const std::string&, ETextFileEncoding = ETextFileEncoding::Detect) = delete;
 std::optional<FString> ReadFileText (std::string_view, ETextFileEncoding = ETextFileEncoding::Detect) = delete;

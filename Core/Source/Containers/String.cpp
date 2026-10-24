@@ -803,17 +803,23 @@ FString FString::FromUtf8Lossy (FStringView Bytes) noexcept
 
 FString FString::FromHexBytes (std::span<const uint8> Bytes, bool bUpperCase) noexcept
 {
-	const uint32 length = string_detail::CheckLength(2u * static_cast<uint64>(Bytes.size()));
 	FString result;
-	result.Reserve(length);
-	result.ResizeUninitialized(length);
-	char* data = result.GetData();
+	result.AppendHexBytes(Bytes, bUpperCase);
+	return result;
+}
+
+FString& FString::AppendHexBytes (std::span<const uint8> Bytes, bool bUpperCase) noexcept
+{
+	const uint32 start = Len();
+	const uint64 length = static_cast<uint64>(start) + 2u * static_cast<uint64>(Bytes.size());
+	ResizeUninitialized(string_detail::CheckLength(length));
+	char* data = GetData() + start;
 	for (size_t i = 0u; i < Bytes.size(); ++i)
 	{
 		data[2u * i] = ascii::HexDigit(Bytes[i] >> 4u, bUpperCase);
 		data[2u * i + 1u] = ascii::HexDigit(Bytes[i], bUpperCase);
 	}
-	return result;
+	return *this;
 }
 
 FString FString::Escape (FStringView Text) noexcept

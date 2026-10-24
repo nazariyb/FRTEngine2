@@ -29,6 +29,15 @@ struct SInputActionMapAsset
 class FRT_CORE_API CInputActionLibrary
 {
 public:
+	// Move-only, like the maps it holds: their action events own their subscriptions
+	// (TMulticastDelegate). Said explicitly because an exported class instantiates every implicit
+	// member, and the map container's copy would not compile.
+	CInputActionLibrary () = default;
+	CInputActionLibrary (const CInputActionLibrary&) = delete;
+	CInputActionLibrary& operator= (const CInputActionLibrary&) = delete;
+	CInputActionLibrary (CInputActionLibrary&&) = default;
+	CInputActionLibrary& operator= (CInputActionLibrary&&) = default;
+
 	SInputActionDefinitionAsset* LoadOrCreateAction (FStringView Name);
 	SInputActionMapAsset* LoadOrCreateActionMap (const std::filesystem::path& Path);
 	bool ReloadModifiedActions ();

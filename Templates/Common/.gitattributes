@@ -1,0 +1,39 @@
+# Text the engine hashes - asset metadata, documents, rules, tables, config, shader sources - has
+# the same bytes in every working copy: content hashes are over the raw bytes on disk, so a CRLF
+# checkout (core.autocrlf=true, Git for Windows' default) and an LF one would key the same file
+# differently. LF in the index and in every working tree, whatever core.autocrlf says. The
+# engine's own .gitattributes has the same rules.
+*.meta text eol=lf
+*.yml text eol=lf
+*.frt text eol=lf
+*.csv text eol=lf
+*.ini text eol=lf
+*.hlsl text eol=lf
+*.hlsli text eol=lf
+# The input documents of today, until they become .frt documents.
+*.frtinputmap text eol=lf
+*.frtinputaction text eol=lf
+
+# Text formats the engine only imports reach the importer byte for byte as committed.
+*.gltf -text
+
+# cmd.exe reads batch files with CRLF line endings; with LF it can misparse labels and blocks.
+*.bat eol=crlf
+
+# Binary sources: never converted, diffed or merged as text, whatever their bytes look like.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.tga binary
+*.exr binary
+*.hdr binary
+*.dds binary
+*.glb binary
+*.bin binary
+*.psd binary
+*.kra binary
+*.blend binary
+*.wav binary
+*.ogg binary
+*.ttf binary
+*.otf binary

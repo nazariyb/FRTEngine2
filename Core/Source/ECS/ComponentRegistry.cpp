@@ -66,20 +66,13 @@ ComponentId CComponentRegistry::Register(const SComponentInfo& InInfo)
 	return id;
 }
 
-void CComponentRegistry::ReleaseModule(const void* InImageBegin, const void* InImageEnd)
+void CComponentRegistry::ReleaseModule(const platform::SModuleImage& InImage)
 {
-	const auto inImage = [InImageBegin, InImageEnd](const void* InAddress)
-	{
-		// As integers: comparing pointers into different objects is unspecified.
-		const uintptr_t address = reinterpret_cast<uintptr_t>(InAddress);
-		return address >= reinterpret_cast<uintptr_t>(InImageBegin) && address < reinterpret_cast<uintptr_t>(InImageEnd);
-	};
-
 	for (uint32 i = 0u; i < Count; ++i)
 	{
 		// The registrant's functions come from the same instantiation as its name, so they
 		// leave with it.
-		if (Registrants[i] != nullptr && inImage(Registrants[i]))
+		if (Registrants[i] != nullptr && InImage.Contains(Registrants[i]))
 		{
 			SComponentInfo& stored = Components[i];
 			stored.Construct = nullptr;

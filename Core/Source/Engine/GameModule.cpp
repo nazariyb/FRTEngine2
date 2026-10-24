@@ -13,6 +13,7 @@
 #include "GameInstance.h"
 #include "Config/Config.h"
 #include "ECS/ComponentRegistry.h"
+#include "Profiler/CpuProfiler.h"
 #include "Platform/Platform.h"
 #include "Project/Project.h"
 
@@ -253,12 +254,18 @@ void CGameModule::Unload ()
 #if !FRT_MONOLITHIC && defined(_WINDOWS)
 	if (Handle)
 	{
+		// Taken while the module is loaded: its headers go with it.
+		const platform::SModuleImage image = platform::GetModuleImage(Handle);
+		// CPU scopes the module's code recorded still name it by the address of their literals until
+		// they are collected; collected names are copies (Profiler/CpuProfiler.h).
+		profiler::CCpuProfiler::CollectPending();
 		// The component types the module registered first refer to its image (their names,
-		// their functions). A module handle is its image's base address.
-		const uint8* image = static_cast<const uint8*>(Handle);
-		const auto* headers = reinterpret_cast<const IMAGE_NT_HEADERS*>(image + reinterpret_cast<const IMAGE_DOS_HEADER*>(image)->e_lfanew);
-		CComponentRegistry::Get().ReleaseModule(image, image + headers->OptionalHeader.SizeOfImage);
+		// their functions).
+		CComponentRegistry::Get().ReleaseModule(image);
+		// Unloading still runs the module's code (DLL_PROCESS_DETACH, its static destructors), which
+		// may record scopes after the collection above: collected again once their names are gone.
 		FreeLibrary(static_cast<HMODULE>(Handle));
+		profiler::CCpuProfiler::ReleaseModule(image);
 	}
 #endif
 #if FRT_WITH_GAME_HOT_RELOAD

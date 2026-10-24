@@ -166,4 +166,78 @@ thirdPartyProject("gtest", "googletest")
 		defines { "GTEST_CREATE_SHARED_LIBRARY=1" }
 	filter {}
 
+------------------------
+-------- xxHash --------
+------------------------
+-- XXH3 for persistent 64-bit ids (Core/Source/Hash/StableHash.h). SSE2, the x64 baseline, without
+-- the runtime dispatcher (ThirdParty/xxHash/VERSION.txt).
+thirdPartyProject("xxHash", "xxHash")
+	language "C"
+	files
+	{
+		path.join(xxHashDir, "xxhash.h"),
+		path.join(xxHashDir, "xxhash.c"),
+		path.join(xxHashDir, "VERSION.txt"),
+	}
+
+	filter "kind:SharedLib"
+		defines { "XXH_EXPORT" }
+	filter {}
+
+------------------------
+-------- BLAKE3 --------
+------------------------
+-- Content hashes and derived keys (Core/Source/Hash/StableHash.h). blake3_dispatch.c picks the
+-- widest implementation the CPU runs at run time, so the AVX2 and AVX-512 files are compiled for
+-- those instruction sets - and only they: everything else must run on any x64 CPU. The flags are
+-- upstream CMake's for MSVC with x86 intrinsics.
+thirdPartyProject("BLAKE3", "BLAKE3")
+	language "C"
+	files
+	{
+		path.join(blake3Dir, "c/blake3.h"),
+		path.join(blake3Dir, "c/blake3_impl.h"),
+		path.join(blake3Dir, "c/blake3.c"),
+		path.join(blake3Dir, "c/blake3_dispatch.c"),
+		path.join(blake3Dir, "c/blake3_portable.c"),
+		path.join(blake3Dir, "c/blake3_sse2.c"),
+		path.join(blake3Dir, "c/blake3_sse41.c"),
+		path.join(blake3Dir, "c/blake3_avx2.c"),
+		path.join(blake3Dir, "c/blake3_avx512.c"),
+		path.join(blake3Dir, "VERSION.txt"),
+	}
+
+	filter "kind:SharedLib"
+		defines { "BLAKE3_DLL", "BLAKE3_DLL_EXPORTS" }
+	filter "files:**/blake3_avx2.c"
+		buildoptions { "/arch:AVX2" }
+	filter "files:**/blake3_avx512.c"
+		buildoptions { "/arch:AVX512" }
+	filter {}
+
+------------------------
+--------- zstd ---------
+------------------------
+-- Compression of cached and cooked data (Core/Source/Hash/Compression.h): the compressor and the
+-- decompressor, single-threaded (ZSTD_MULTITHREAD undefined), without the dictionary builder or
+-- legacy formats (ThirdParty/zstd/VERSION.txt). The sources include each other by relative path.
+thirdPartyProject("zstd", "zstd")
+	language "C"
+	files
+	{
+		path.join(zstdDir, "lib/zstd.h"),
+		path.join(zstdDir, "lib/zstd_errors.h"),
+		path.join(zstdDir, "lib/common/*.h"),
+		path.join(zstdDir, "lib/common/*.c"),
+		path.join(zstdDir, "lib/compress/*.h"),
+		path.join(zstdDir, "lib/compress/*.c"),
+		path.join(zstdDir, "lib/decompress/*.h"),
+		path.join(zstdDir, "lib/decompress/*.c"),
+		path.join(zstdDir, "VERSION.txt"),
+	}
+
+	filter "kind:SharedLib"
+		defines { "ZSTD_DLL_EXPORT=1" }
+	filter {}
+
 group ""

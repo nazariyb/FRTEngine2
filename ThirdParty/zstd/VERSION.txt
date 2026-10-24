@@ -1,0 +1,26 @@
+Zstandard (zstd) 1.5.7, tag v1.5.7 of https://github.com/facebook/zstd
+Release asset https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz,
+SHA-256 eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
+(equal to the release's own zstd-1.5.7.tar.gz.sha256).
+
+Vendored, unmodified, in the upstream layout: lib/zstd.h, lib/zstd_errors.h, lib/common,
+lib/compress and lib/decompress, and LICENSE (zstd is BSD or GPLv2 at the user's choice; FRT uses
+it under the BSD licence, LICENSE). Left out: the dictionary builder (lib/dictBuilder, lib/zdict.h),
+legacy-format decoders (lib/legacy), the deprecated zbuff API (lib/deprecated), lib/dll, the
+programs, tests, contrib and build files. lib/decompress/huf_decompress_amd64.S is vendored with
+its directory but not built: it is for GCC and Clang, and MSVC builds the C decoder.
+
+Built as the zstd project (Premake/Projects/thirdparty.lua) from every .c of lib/common,
+lib/compress and lib/decompress, single-threaded (ZSTD_MULTITHREAD undefined): a DLL in Debug and
+Development (ZSTD_DLL_EXPORT=1 when building it, ZSTD_DLL_IMPORT=1 when using it), a static
+library in Release. zstd's private copy of xxHash prefixes its symbols with ZSTD_ (XXH_NAMESPACE in
+lib/common/xxhash.h), so it links beside ThirdParty/xxHash. Only Core includes it
+(Core/Source/Hash/Compression.cpp).
+
+Updating: copy the same files and directories from the new release over these (new .c files are
+picked up by the project's globs) and update this file. The round-trip tests in
+Core-Test/Hash/CompressionTest.cpp must still pass; CompressionTest.FramesAreFrozen pins the frames
+themselves (size and BLAKE3-160 for fixed inputs and levels). An update that changes those frames
+changes every cooked and cached value: it is a cooked-output change, re-frozen deliberately with the
+update, never just to make the test pass. Build flags that alter frames (ZSTD_MULTITHREAD, other
+default parameters) are the same kind of change.

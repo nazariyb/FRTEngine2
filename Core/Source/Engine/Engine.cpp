@@ -13,6 +13,7 @@
 #include "Graphics/Render/MaterialLibrary.h"
 #include "Memory/Memory.h"
 #include "Platform/Platform.h"
+#include "Profiler/CpuProfiler.h"
 
 #if !defined(FRT_HEADLESS)
 #include "backends/imgui_impl_win32.h"
@@ -178,6 +179,10 @@ bool CEngine::PumpMessages ()
 
 float CEngine::BeginFrame ()
 {
+	// The CPU profiler's frame boundary: the frame that ends here is the one the Stats panel shows.
+	profiler::CCpuProfiler::BeginFrame();
+	FRT_CPU_SCOPE("Engine.BeginFrame");
+
 	++FrameIndex;
 	Clock->Tick();
 	const float deltaSeconds = Clock->GetDeltaSeconds();
@@ -200,6 +205,7 @@ float CEngine::BeginFrame ()
 
 void CEngine::RenderFrame (std::span<const SViewToRender> Views)
 {
+	FRT_CPU_SCOPE("Engine.RenderFrame");
 #if !defined(FRT_HEADLESS)
 	// Minimised (or mid display-mode change): no back buffers. Close the UI frame, skip the GPU.
 	if (!Graphics->Renderer->IsReadyToRender())
