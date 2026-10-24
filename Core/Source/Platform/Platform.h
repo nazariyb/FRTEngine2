@@ -5,6 +5,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 #include "Core.h"
@@ -96,6 +97,13 @@ FRT_CORE_API bool WriteFileText (const std::filesystem::path& Path, FStringView 
 
 // Narrow text never becomes a path implicitly: std::filesystem::path(const char*) decodes with the
 // ANSI code page. Convert explicitly (FStringView::ToPath).
+//
+// NarrowText is that text (a literal, a char array or pointer, std::string, std::string_view): the
+// other platform headers (FileSystem.h, BlockingFileReader.h) give each function taking a path a
+// deleted template twin constrained on it, one line instead of three overloads.
+template <typename T>
+concept NarrowText = std::is_convertible_v<const T&, std::string_view>;
+
 std::optional<FString> ReadFileText (const char*, ETextFileEncoding = ETextFileEncoding::Detect) = delete;
 std::optional<FString> ReadFileText (const std::string&, ETextFileEncoding = ETextFileEncoding::Detect) = delete;
 std::optional<FString> ReadFileText (std::string_view, ETextFileEncoding = ETextFileEncoding::Detect) = delete;

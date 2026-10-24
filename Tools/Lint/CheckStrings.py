@@ -101,12 +101,14 @@ GATES = [
     # Wide literals only as direct arguments of a *W call that takes fixed OS protocol text (L"open"), the DXR
     # export names, _wfopen_s modes, and test inputs.
     ('L-literal', r'\bL"',
-     ['PathTracerPrograms.cpp', 'Platform/Platform.cpp', 'ToolProcess.cpp', 'ProjectManager.cpp', 'TextureManager.cpp',
-      'Core-Test/Containers/String', 'Core-Test/Unicode/', 'Core-Test/Platform/']),
-    # UTF-16 buffers belong in frt::platform: a new one moves there instead of joining this list.
+     ['PathTracerPrograms.cpp', 'Platform/Platform.cpp', 'Platform/Windows/', 'ToolProcess.cpp', 'ProjectManager.cpp',
+      'TextureManager.cpp', 'Core-Test/Containers/String', 'Core-Test/Unicode/', 'Core-Test/Platform/']),
+    # UTF-16 buffers belong in frt::platform (Platform/Platform.cpp and the Windows implementations in
+    # Platform/Windows/): a new one moves there instead of joining this list.
     ('wchar_t', r'\bwchar_t\b',
-     ['Containers/String', 'Containers/WideString', 'Unicode/', 'Platform/Platform.cpp', 'PathTracerPrograms.cpp',
-      'Core-Test/Containers/String', 'Core-Test/Unicode/', 'Core-Test/Platform/', 'Core-Test/Assets/ArchiveTest.cpp']),
+     ['Containers/String', 'Containers/WideString', 'Unicode/', 'Platform/Platform.cpp', 'Platform/Windows/',
+      'PathTracerPrograms.cpp', 'Core-Test/Containers/String', 'Core-Test/Unicode/', 'Core-Test/Platform/',
+      'Core-Test/Assets/ArchiveTest.cpp']),
     # The converters and helpers the string types replaced.
     ('old-helpers', r'\benum_::EqualsIgnoreCase|\bToLowerAscii\b|text::(ToLowerCopy|TrimCopy|StripQuotes)|PathToUtf8'
                     r'|PathFromUtf8|WidenUtf8|\bWiden\(|WideToUtf8|\bNarrow\(', []),
