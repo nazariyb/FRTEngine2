@@ -17,6 +17,8 @@
 --              with, to a directory of its own that runs anywhere (Packaging, below)
 --   verify     the check before a merge: builds, Core-Test, lints, smoke runs and captures
 --              compared with recorded baselines (Tools/Verify/Verify.py says what and how)
+--   assets     the asset system's command line, AssetTool: FRT.bat assets <verb> [arguments]
+--              for the project, or for the engine's own content (Assets, below)
 --
 -- A command for a project that uses another engine runs that engine's FRT.bat instead.
 
@@ -191,13 +193,27 @@ local function solutionFile(project)
 	return project and path.join(project.Dir, project.Name .. ".sln") or rootpath("FRTEngine2.sln")
 end
 
-local function generate(project)
+-- With bToStderr, generate and build print to standard error, and so do the commands they run: for
+-- a command whose standard output is data (FRT.bat assets --json).
+local function say(bToStderr, text)
+	if bToStderr then
+		io.stderr:write(text .. "\n")
+	else
+		print(text)
+	end
+end
+
+local function redirection(bToStderr)
+	return bToStderr and " 1>&2" or ""
+end
+
+local function generate(project, bToStderr)
 	local command = quoted(premakeExecutable()) .. " --file=" .. quoted(rootpath("premake5.lua")) .. " vs2022 " ..
 		generationOptions(true)
 	if project then
 		command = command .. " --project=" .. quoted(project.File)
 	end
-	if not runCommand(command) then
+	if not runCommand(command .. redirection(bToStderr)) then
 		fail("generating " .. (project and project.Name or "the engine") .. "'s solution failed")
 	end
 end
@@ -214,19 +230,22 @@ local function buildConfiguration(action, default)
 	return name
 end
 
-local function build(project, configuration)
+-- EngineTarget: with no project, one of the engine's projects and what it depends on, instead of
+-- the whole engine.
+local function build(project, configuration, engineTarget, bToStderr)
 	local solution = solutionFile(project)
 	if not os.isfile(solution) then
-		generate(project)
+		generate(project, bToStderr)
 	end
 	-- A project: its game, and what that depends on (the hosts, Core, the libraries). The engine:
 	-- everything.
-	local target = project and (" -t:" .. project.Module) or ""
-	print("Building " .. (project and project.Name or "the engine") .. " (" .. configuration .. ")...")
+	local what = project and project.Name or (engineTarget or "the engine")
+	local target = project and (" -t:" .. project.Module) or (engineTarget and " -t:" .. engineTarget or "")
+	say(bToStderr, "Building " .. what .. " (" .. configuration .. ")...")
 	local command = string.format('%s %s%s -p:Configuration=%s -p:Platform=Win64 -m -nologo -v:minimal',
 		quoted(msbuild()), quoted(solution), target, configuration)
-	if not runCommand(command) then
-		fail("building " .. (project and project.Name or "the engine") .. " (" .. configuration .. ") failed")
+	if not runCommand(command .. redirection(bToStderr)) then
+		fail("building " .. what .. " (" .. configuration .. ") failed")
 	end
 end
 
@@ -687,6 +706,129 @@ local function countLfFiles(entries)
 end
 
 -----------------------------------------
+---------------  Assets  ----------------
+-----------------------------------------
+-- FRT.bat assets <verb> [arguments] [options]: AssetTool (AssetTool/Source/AssetTool.cpp says what
+-- it does), for --project or, without one, for the engine itself, as the owner of /Engine
+-- (--engine). Everything after the action goes to AssetTool as it was given - the verb, its
+-- arguments, -Section:Key=Value overrides, --options - and AssetTool's exit code is this command's:
+-- 0 success, 1 problems found, 2 usage error, 3 internal error, 4 the project is owned by another
+-- process. The Development build runs, built first when it is missing or older than its sources
+-- or Core's. That build's output goes to standard error, so standard output is AssetTool's alone
+-- and a --json stream stays one object per line.
+
+local assetToolConfiguration = "Development-Default"
+
+-- Two things Premake does around every action would break FRT.bat assets, so for that action they
+-- are undone here, before Premake gets to them (premake5.lua calls this once every script has
+-- declared its options):
+--   - it refuses --options that no newoption declared, and AssetTool's verbs have their own (--json,
+--     --ci, --engine, more with every verb): those are taken out of _OPTIONS before Premake checks
+--     them, and forwarded from _ARGV (assetToolArguments);
+--   - it prints "Running action 'assets'..." on standard output, which would be the first line of
+--     every --json stream: its step (premake.main.preAction, in the steps premake.main.elements
+--     runs one after the other) is replaced with one that prints nothing.
+function prepareAssetsAction()
+	if _ACTION ~= "assets" then
+		return
+	end
+	for name in pairs(_OPTIONS) do
+		if not (premake.option.get(name) or premake.option.get(name:lower())) then
+			_OPTIONS[name] = nil
+		end
+	end
+	local main = premake.main
+	for i, step in ipairs(main and main.elements or {}) do
+		if step == main.preAction then
+			main.elements[i] = function () end
+		end
+	end
+end
+
+-- One argument for a program started through cmd.exe, as CommandLineToArgvW reads it back: quoted,
+-- a quote inside escaped, the backslashes before a quote - the closing one too - doubled.
+local function argumentText(argument)
+	local text = argument:gsub('(\\*)"', function (slashes) return slashes .. slashes .. '\\"' end)
+	text = text:gsub('(\\+)$', '%1%1')
+	return '"' .. text .. '"'
+end
+
+-- Every argument of this command line but the action itself, Premake's --file and --project
+-- (passed on as AssetTool's own -Project=).
+local function assetToolArguments()
+	local arguments = {}
+	local bActionSeen = false
+	for _, argument in ipairs(_ARGV or {}) do
+		local name = argument:match("^%-%-([%w%-]+)")
+		if not bActionSeen and not name and argument == _ACTION then
+			bActionSeen = true
+		elseif name ~= "file" and name ~= "project" then
+			table.insert(arguments, argumentText(argument))
+		end
+	end
+	return table.concat(arguments, " ")
+end
+
+-- A usage error before AssetTool runs ends with AssetTool's code for one.
+local function assetsUsageError(message)
+	io.stderr:write("assets: " .. message .. "\n")
+	os.exit(2)
+end
+
+local function fileTime(file)
+	local stat = os.stat(file)
+	return stat and stat.mtime or nil
+end
+
+local function newestFileTime(pattern)
+	local newest = 0
+	for _, file in ipairs(os.matchfiles(pattern)) do
+		local time = fileTime(file)
+		if time and time > newest then
+			newest = time
+		end
+	end
+	return newest
+end
+
+-- Missing, or older than a source of its own or of Core's (Core is a DLL it loads: the build
+-- relinks the executable only when the DLL's exports change, so each is compared with its own
+-- sources). Times are whole seconds: a file saved within the second of a link counts as built.
+local function isAssetToolStale(exe)
+	local exeTime = fileTime(exe)
+	local coreTime = fileTime(rootpath("Binaries/Win64/Core-" .. assetToolConfiguration .. ".dll"))
+	if not exeTime or not coreTime then
+		return true
+	end
+	return newestFileTime(rootpath("AssetTool/Source/**")) > exeTime or newestFileTime(rootpath("Core/Source/**")) > coreTime
+end
+
+-- The engine's solution, generated again first if it predates the AssetTool project, then
+-- AssetTool and what it depends on, all of it printed to standard error. A failure ends the
+-- command with AssetTool's code for an internal error.
+local function buildAssetTool()
+	local ok, err = pcall(function ()
+		local solution = io.readfile(solutionFile(nil))
+		if not solution or not solution:find('"AssetTool"', 1, true) then
+			generate(nil, true)
+		end
+		build(nil, assetToolConfiguration, "AssetTool", true)
+	end)
+	if not ok then
+		io.stderr:write("assets: " .. tostring(err) .. "\n")
+		os.exit(3)
+	end
+end
+
+-- The exit code of a command runCommand ran (3, an internal error, when it has none).
+local function exitCodeOf(ok, how, code)
+	if how == "exit" and type(code) == "number" then
+		return code
+	end
+	return ok and 0 or 3
+end
+
+-----------------------------------------
 ---------------  Actions  ---------------
 -----------------------------------------
 
@@ -1027,5 +1169,38 @@ newaction
 		if not runCommand(command) then
 			fail("verify failed (the summary above says what)")
 		end
+	end
+}
+
+-- The asset system's command line (Assets, above).
+newaction
+{
+	trigger     = "assets",
+	description = "Run the asset tool: FRT.bat assets <verb> [arguments], for --project or the engine (assets help lists the verbs)",
+	execute     = function ()
+		local arguments = assetToolArguments()
+		local mount = " --engine"
+		if _OPTIONS["project"] then
+			local project, err = loadProject(_OPTIONS["project"])
+			if not project then
+				assetsUsageError(err)
+			end
+			local engineDir, engineErr = resolveEngineDir(project)
+			if not engineDir then
+				assetsUsageError(project.File .. ": " .. engineErr)
+			end
+			if not isSamePath(engineDir, ROOT_DIR) then
+				io.stderr:write(project.Name .. " uses the engine in " .. winpath(engineDir) .. ": running its FRT.bat.\n")
+				os.exit(exitCodeOf(runCommand(quoted(path.join(engineDir, "FRT.bat")) .. " assets --project=" ..
+					quoted(project.File) .. " " .. arguments)))
+			end
+			mount = " -Project=" .. quoted(project.File)
+		end
+
+		local exe = rootpath("Binaries/Win64/AssetTool-" .. assetToolConfiguration .. ".exe")
+		if isAssetToolStale(exe) then
+			buildAssetTool()
+		end
+		os.exit(exitCodeOf(runCommand(quoted(exe) .. mount .. " " .. arguments)))
 	end
 }

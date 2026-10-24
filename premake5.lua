@@ -8,6 +8,8 @@ dofile("Premake/common.lua")
 dofile("Premake/tools.lua")
 dofile("Premake/actions.lua")
 dofile("Premake/thirdparty.lua")
+-- After every newoption: FRT.bat assets forwards the --options none of them declared (tools.lua).
+prepareAssetsAction()
 
 -- The rest declares the solution, which only the IDE actions write.
 if not (_ACTION and _ACTION:match("^vs")) then

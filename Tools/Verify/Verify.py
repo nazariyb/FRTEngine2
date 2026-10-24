@@ -11,22 +11,23 @@ script, behind FRT.bat verify (Premake/tools.lua). A milestone branch merges onl
      every file .gitattributes makes LF is LF in the index and in the working tree, every -text file is
      checked out as committed (FRT.bat check-line-endings: the rules FRT.bat setup applies, in
      Premake/tools.lua only);
-  4. the editor's smoke test (-Editor:SmokeTest=1) over Templates/Demo and Templates/Blank, in place, in
+  4. AssetTool through FRT.bat assets: newguid --json exits with 0 and prints JSON objects, one per line;
+  5. the editor's smoke test (-Editor:SmokeTest=1) over Templates/Demo and Templates/Blank, in place, in
      Debug and Development;
-  5. automation captures of Templates/Demo through the launcher, in Debug and in Development: one raster,
+  6. automation captures of Templates/Demo through the launcher, in Debug and in Development: one raster,
      compared byte for byte with its baseline, and one path traced, compared by relative RMSE - path
      tracing still varies a little from run to run, as its radiance cache inserts with GPU atomics, so a
      path-traced capture beyond the tolerance is taken again (PATH_TRACED_ATTEMPTS);
-  6. the Release package baseline: FRT.bat package of both templates into a short scratch directory, and
+  7. the Release package baseline: FRT.bat package of both templates into a short scratch directory, and
      the same two captures of each packaged game, against the Release baselines;
-  7. git status --porcelain is empty at the end: nothing it ran changed a tracked file.
+  8. git status --porcelain is empty at the end: nothing it ran changed a tracked file.
 Steps that later milestones bring print "skipped (M<n>)". It ends with a summary table and the timings a
 commit message reports, and exits with 1 when any step failed.
 
     python -I Tools/Verify/Verify.py [--quick | --nightly] [--record-baselines] [--baselines=<dir>]
                                      [--pt-tolerance=<rmse>]
 
-  --quick             build Development, run its Core-Test and the lints: the pre-commit subset
+  --quick             build Development, run its Core-Test, the lints and AssetTool: the pre-commit subset
   --nightly           everything, and the long checks (placeholders until they exist)
   --record-baselines  record the captures as the baselines instead of comparing with them; a baseline is
                       kept only when two recordings agree, byte for byte for raster, and a configuration's
@@ -54,6 +55,7 @@ import argparse
 import array
 import datetime
 import hashlib
+import json
 import math
 import os
 import re
@@ -438,6 +440,34 @@ class Gate:
         summary = re.findall(r'Line endings: (.*?)\.?\s*$', text, re.MULTILINE)
         return summary[-1] if summary else ''
 
+    # ---- AssetTool ----
+
+    def assets_newguid(self, log):
+        """FRT.bat assets newguid --json, the way a script runs AssetTool: exit code 0, and every line of
+        standard output one JSON object with the stable fields "guid" (32 lowercase hex digits) and "cpp".
+        The log has standard error too (FRT.bat assets would print a build there), whose lines are no
+        objects: only lines that start with '{' count, and each of those must parse."""
+        code, _ = run([FRT, 'assets', 'newguid', '3', '--json'], log, cwd=ROOT, env=self.env_for(log),
+                      timeout=BUILD_TIMEOUT)
+        if code != 0:
+            raise StepFailed(('timed out; ' if code is None else f'exit code {code}; ') + '; '.join(tail(log, lines=3)))
+        guids = []
+        text = Path(log).read_bytes().decode('utf-8', errors='replace')
+        for line in text.splitlines():
+            if not line.startswith('{'):
+                continue
+            try:
+                value = json.loads(line)
+            except ValueError as error:
+                raise StepFailed(f'not a JSON object: {line[:80]} ({error})')
+            if not isinstance(value.get('guid'), str) or not re.fullmatch(r'[0-9a-f]{32}', value['guid']) or \
+                    not isinstance(value.get('cpp'), str):
+                raise StepFailed(f'no "guid" and "cpp" in {line[:80]}')
+            guids.append(value['guid'])
+        if len(guids) != 3 or len(set(guids)) != 3:
+            raise StepFailed(f'{len(set(guids))} distinct GUIDs instead of 3')
+        return '3 GUIDs as JSON lines'
+
     # ---- the editor's smoke test ----
 
     def smoke(self, log, name, config):
@@ -695,7 +725,7 @@ class Gate:
         (self.run_dir / 'UserData').mkdir(parents=True, exist_ok=True)
         status_before = git('status', '--porcelain')
         started = time.monotonic()
-        what = {'quick': 'quick (Development, Core-Test, lints)', 'full': 'full', 'nightly': 'nightly'}[self.mode]
+        what = {'quick': 'quick (Development, Core-Test, lints, AssetTool)', 'full': 'full', 'nightly': 'nightly'}[self.mode]
         print(f'[verify] {ROOT}: {what}{", recording baselines" if self.record else ""}')
         print(f'[verify] logs and captures: {self.run_dir}')
         print(f'[verify] baselines: {self.baselines}', flush=True)
@@ -723,6 +753,7 @@ class Gate:
             self.skip('line endings', 'skipped (not a git checkout)')
         else:
             self.step('line endings', self.line_endings)
+        self.step('assets newguid --json', self.assets_newguid, needs=[('engine', 'Development')])
 
         if self.mode != 'quick':
             self.skip('assets validate --ci', 'skipped (M4)')

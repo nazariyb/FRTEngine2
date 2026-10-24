@@ -7,6 +7,8 @@ rem   build      builds the engine, or a project (--config=Development|Debug|Rel
 rem   open       opens the solution
 rem   package    builds a project in Release and writes the game, with everything it runs with, to a
 rem              directory that runs anywhere: FRT.bat package --project=<file> [--output=<dir>]
+rem   assets     the asset tool, for a project or the engine: FRT.bat assets <verb> [arguments]
+rem              (FRT.bat assets help lists the verbs)
 rem Premake/tools.lua has the details. A project has its own FRT.bat, which runs this one for it.
 setlocal
 
