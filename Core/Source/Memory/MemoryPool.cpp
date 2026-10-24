@@ -1,6 +1,11 @@
 ﻿#include "MemoryPool.h"
 
+#include <cstdio>
 #include <new>
+
+#include "Containers/String.h"
+#include "Platform/Platform.h"
+#include "Platform/Thread.h"
 
 #if _WINDOWS
 // #include <intrin.h>
@@ -9,6 +14,18 @@
 #elif _UNIX
 #include <sys/mman.h>
 #endif
+
+
+namespace
+{
+// A thread that used a pool it does not own has been reported: once per thread, whichever pool.
+thread_local bool bForeignThreadReported = false;
+
+uint64 GetBlockSize (void* Memory)
+{
+	return frt::memory::TLSF::SBlockHeader::Cast(Memory)->GetSize();
+}
+}
 
 
 namespace frt::memory
@@ -32,9 +49,20 @@ CMemoryPool& CMemoryPool::operator= (CMemoryPool&& Other) noexcept
 	MemorySize = Other.MemorySize;
 	Memory = Other.Memory;
 	Tlsf = Other.Tlsf;
+	OwnerThreadId = Other.OwnerThreadId;
+	AllocatedBytes = Other.AllocatedBytes;
+	PeakAllocatedBytes = Other.PeakAllocatedBytes;
+	HighWaterThreshold = Other.HighWaterThreshold;
+	HighWaterFunction = Other.HighWaterFunction;
+	HighWaterUserData = Other.HighWaterUserData;
 	Other.MemorySize = 0;
 	Other.Memory = nullptr;
 	Other.Tlsf = nullptr;
+	Other.AllocatedBytes = 0ull;
+	Other.PeakAllocatedBytes = 0ull;
+	Other.HighWaterThreshold = 0ull;
+	Other.HighWaterFunction = nullptr;
+	Other.HighWaterUserData = nullptr;
 
 	// The arena moved, so the primary pointer has to follow it. Otherwise every holder
 	// of GetPrimaryInstance() is left pointing at a pool that no longer owns anything.
@@ -47,10 +75,12 @@ CMemoryPool& CMemoryPool::operator= (CMemoryPool&& Other) noexcept
 }
 
 CMemoryPool::CMemoryPool ()
+	: OwnerThreadId(platform::GetCurrentThreadId())
 {}
 
 CMemoryPool::CMemoryPool (uint64 InSize)
 	: MemorySize(TLSF::GetSize() + TLSF::GetPoolOverhead() + TLSF::AlignUp(InSize, TLSF::AlignSize))
+	, OwnerThreadId(platform::GetCurrentThreadId())
 {
 #if _WINDOWS
 	// Memory = new uint8[MemorySize];
@@ -65,6 +95,7 @@ CMemoryPool::CMemoryPool (uint64 InSize)
 
 CMemoryPool::CMemoryPool (void* InMemory, uint64 InSize)
 	: MemorySize(InSize)
+	, OwnerThreadId(platform::GetCurrentThreadId())
 {
 	frt_assert((uint64)InMemory % TLSF::AlignSize == 0);
 
@@ -101,11 +132,18 @@ void CMemoryPool::ReleaseMemory ()
 	Memory = nullptr;
 	Tlsf = nullptr;
 	MemorySize = 0ull;
+	// The counters describe the arena, which is gone.
+	AllocatedBytes = 0ull;
+	PeakAllocatedBytes = 0ull;
+	HighWaterThreshold = 0ull;
+	HighWaterFunction = nullptr;
+	HighWaterUserData = nullptr;
 }
 
 void CMemoryPool::MakeThisPrimaryInstance ()
 {
 	PrimaryInstance = this;
+	OwnerThreadId = platform::GetCurrentThreadId();
 }
 
 CMemoryPool* CMemoryPool::GetPrimaryInstance ()
@@ -116,15 +154,34 @@ CMemoryPool* CMemoryPool::GetPrimaryInstance ()
 void* CMemoryPool::Allocate (uint64 Size)
 {
 	frt_assert(Tlsf);
+	CheckOwnerThread("Allocate");
 
-	return Tlsf->Malloc(Size);
+	void* memory = Tlsf->Malloc(Size);
+	if (memory)
+	{
+		AddAllocatedBytes(GetBlockSize(memory));
+	}
+	return memory;
 }
 
 void* CMemoryPool::ReAllocate (void* InMemory, uint64 Size)
 {
 	frt_assert(Tlsf);
+	CheckOwnerThread("ReAllocate");
 
-	return Tlsf->Realloc(InMemory, Size);
+	const uint64 oldBytes = InMemory ? GetBlockSize(InMemory) : 0ull;
+	void* memory = Tlsf->Realloc(InMemory, Size);
+	if (memory)
+	{
+		AllocatedBytes -= oldBytes;
+		AddAllocatedBytes(GetBlockSize(memory));
+	}
+	else if (InMemory && Size == 0ull)
+	{
+		// Realloc to zero frees; a failed Realloc (nullptr for a non-zero size) keeps the old block.
+		AllocatedBytes -= oldBytes;
+	}
+	return memory;
 }
 
 void CMemoryPool::Free (void* MemoryToFree)
@@ -133,7 +190,52 @@ void CMemoryPool::Free (void* MemoryToFree)
 
 	if (MemoryToFree)
 	{
+		CheckOwnerThread("Free");
+		AllocatedBytes -= GetBlockSize(MemoryToFree);
 		Tlsf->Free(MemoryToFree);
 	}
+}
+
+void CMemoryPool::SetHighWaterCallback (uint64 ThresholdBytes, HighWaterCallback Callback, void* UserData)
+{
+	HighWaterThreshold = ThresholdBytes;
+	HighWaterFunction = Callback;
+	HighWaterUserData = Callback ? UserData : nullptr;
+}
+
+void CMemoryPool::AddAllocatedBytes (uint64 Bytes)
+{
+	const uint64 before = AllocatedBytes;
+	AllocatedBytes += Bytes;
+	PeakAllocatedBytes = (std::max)(PeakAllocatedBytes, AllocatedBytes);
+	if (HighWaterFunction && before < HighWaterThreshold && AllocatedBytes >= HighWaterThreshold)
+	{
+		HighWaterFunction(*this, AllocatedBytes, HighWaterUserData);
+	}
+}
+
+void CMemoryPool::CheckOwnerThread (const char* Operation)
+{
+	const uint64 threadId = platform::GetCurrentThreadId();
+	if (threadId != OwnerThreadId) [[unlikely]]
+	{
+		// TODO(M1): frt_assert in Debug builds as well (AssetManager-Design I8, "assert in Debug from
+		// M1"), once the worker pool has moved every off-thread allocation to the CRT heap.
+		if (!bForeignThreadReported)
+		{
+			bForeignThreadReported = true;
+			ReportForeignThread(Operation, threadId);
+		}
+	}
+}
+
+void CMemoryPool::ReportForeignThread (const char* Operation, uint64 ThreadId) const
+{
+	const FString message = FString::Printf(
+		"[memory] CMemoryPool %p: %s on thread %llu, but the pool belongs to thread %llu. TLSF is single-threaded: "
+		"code off the owner thread uses std::vector and the CRT heap (reported once per thread)\n",
+		static_cast<const void*>(this), Operation, ThreadId, OwnerThreadId);
+	std::fputs(message.CStr(), stderr);
+	platform::OutputDebugText(message);
 }
 }
