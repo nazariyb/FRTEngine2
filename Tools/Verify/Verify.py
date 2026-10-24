@@ -3,7 +3,9 @@
 There is no CI, and byte-exact D3D12 captures need a GPU, which hosted runners lack, so the gate is this
 script, behind FRT.bat verify (Premake/tools.lua). A milestone branch merges only after it passes. In order:
 
-  1. builds: the engine in Debug and Development (FRT.bat build), and the templates' game modules in both;
+  1. builds: the engine's solution and the templates' generated again (FRT.bat generate: Premake finds
+     source files by glob, so a solution older than the sources would build without the new ones), then
+     the engine in Debug and Development (FRT.bat build), and the templates' game modules in both;
   2. Core-Test in Debug and Development;
   3. the lints: Tools/Lint/CheckStrings.py, Tools/Lint/CheckPlatform.py when it exists, and line endings:
      every file .gitattributes makes LF is LF in the index and in the working tree, every -text file is
@@ -114,6 +116,7 @@ CAPTURE_TIMEOUT = 900
 SMOKE_TIMEOUT = 900
 TEST_TIMEOUT = 1800
 LINT_TIMEOUT = 600
+GENERATE_TIMEOUT = 600
 
 
 def log_name(text):
@@ -289,13 +292,13 @@ class Gate:
         env['FRT_USER_DATA_DIR'] = str(self.run_dir / 'UserData')
         # The templates find the engine they are in; an override would send them to another one.
         env.pop('FRT_ENGINE_DIR', None)
-        self.env = env
-
-    def env_for(self, log):
         # GoogleTest reads its flags from the environment too: a GTEST_FILTER, GTEST_REPEAT or
         # GTEST_SHARD_* left in the shell would run a subset of Core-Test, and the gate would pass on it.
         for key in [key for key in env if key.upper().startswith('GTEST_')]:
             env.pop(key)
+        self.env = env
+
+    def env_for(self, log):
         """The environment of the process whose output goes to Log: FRT_USER_DATA_DIR is a directory of its
         own, new and empty, named after the log. What one process writes there - the editor's state, a
         game's settings and captures, the engine registry - would otherwise reach every later one, and a
@@ -343,6 +346,26 @@ class Gate:
 
     # ---- builds ----
 
+    def generate(self, log, *arguments):
+        """FRT.bat generate, with the generation options this checkout remembers. FRT.bat build generates
+        only a missing solution, and Premake adds source files by glob when it generates, so without this a
+        branch whose solution predates its new sources (a new test file, a new project) would build and
+        test without them, and pass."""
+        code, _ = run([FRT, 'generate', *arguments], log, cwd=ROOT, env=self.env_for(log), timeout=GENERATE_TIMEOUT)
+        if code != 0:
+            errors = tail(log, lines=3, pattern=r'error|failed|cannot')
+            raise StepFailed(('timed out; ' if code is None else '') +
+                             ('; '.join(errors) if errors else f'exit code {code}'))
+
+    def generate_engine(self):
+        if not self.step('generate engine', self.generate):
+            self.broken.add(('generate', 'engine'))
+
+    def generate_template(self, name):
+        project = ROOT / 'Templates' / name / f'{name}.frtproject'
+        if not self.step(f'generate {name}', self.generate, f'--project={project}'):
+            self.broken.add(('generate', name))
+
     def build(self, log, *arguments):
         retries = []
         for attempt in range(BUILD_ATTEMPTS):
@@ -365,13 +388,13 @@ class Gate:
         raise StepFailed('; '.join(errors) if errors else f'exit code {code}')
 
     def build_engine(self, config):
-        if not self.step(f'build engine ({config})', self.build, f'--config={config}'):
+        if not self.step(f'build engine ({config})', self.build, f'--config={config}', needs=[('generate', 'engine')]):
             self.broken.add(('engine', config))
 
     def build_template(self, name, config):
         project = ROOT / 'Templates' / name / f'{name}.frtproject'
         if not self.step(f'build {name} ({config})', self.build, f'--project={project}', f'--config={config}',
-                         needs=[('engine', config)]):
+                         needs=[('generate', name), ('engine', config)]):
             self.broken.add((name, config))
 
     # ---- Core-Test and the lints ----
@@ -678,6 +701,10 @@ class Gate:
         print(f'[verify] baselines: {self.baselines}', flush=True)
 
         configs = ('Development',) if self.mode == 'quick' else CAPTURE_CONFIGS
+        self.generate_engine()
+        if self.mode != 'quick':
+            for name in TEMPLATES:
+                self.generate_template(name)
         for config in configs:
             self.build_engine(config)
         if self.mode != 'quick':
@@ -711,7 +738,7 @@ class Gate:
             self.skip('captures from an empty and a warm DDC', 'skipped (M6)')
             self.skip('captures with SyncLoadPolicy=Fail', 'skipped (M10)')
             for name in TEMPLATES:
-                if not self.step(f'package {name} (Release)', self.package, name):
+                if not self.step(f'package {name} (Release)', self.package, name, needs=[('generate', name)]):
                     self.broken.add((name, 'Release'))
             self.captures('Release')
             self.skip('packaged smoke run', 'skipped (M6)')
