@@ -1,7 +1,8 @@
 // The asset system's file layer (Platform/FileSystem.h): identities follow a file through a rename
 // and tell a copy apart, directory listings agree with Stat, WriteFileAtomic never leaves a torn
 // file - not even when the writing process is killed at a random moment - and works on every path
-// WriteFileBytes can write, and ReadFileChunksStable never calls a read stable when the file
+// WriteFileBytes can write, every call reads, stats and lists what the layer writes past MAX_PATH,
+// and ReadFileChunksStable never calls a read stable when the file
 // changed underneath it, and retries a file a writer still holds. Everything runs in directories
 // with non-ASCII names, which every path conversion on the way has to survive, and nothing is left
 // behind - not even in the Recycle Bin.
@@ -614,37 +615,59 @@ TEST_F(FileSystemTest, WriteFileAtomicWorksWhereverWriteFileBytesDoes)
 	EXPECT_EQ(ListNames(parent), std::vector<FString>{ FString::FromPath(target.filename()) });
 }
 
-// Past MAX_PATH the replace runs on extended-length paths from end to end, the rename's new name
-// included: a target of about 290 units in a directory this test makes by its "\\?\" path. Read back
-// and cleaned up by "\\?\" paths too - nothing else in the engine reaches such paths yet.
-TEST_F(FileSystemTest, WriteFileAtomicTakesATargetPastMaxPath)
+// Past MAX_PATH every call of the file layer runs on extended-length paths, so what it writes there
+// it can read, stat, list and write again: a target of about 290 units in two directories that
+// WriteFileAtomic creates (the inner one starts past MAX_PATH too), the rename's new name included.
+// Only the cleanup goes through "\\?\" paths by hand: the engine deletes nothing outright.
+TEST_F(FileSystemTest, EveryFileCallTakesAPathPastMaxPath)
 {
 	const std::wstring prefix = L"\\\\?\\";
-	const std::filesystem::path parent = Dir / std::filesystem::path(std::wstring(220u, L'д'));
+	const std::filesystem::path outer = Dir / std::filesystem::path(std::wstring(200u, L'д'));
+	const std::filesystem::path parent = outer / std::filesystem::path(std::wstring(40u, L'ш'));
 	const std::filesystem::path target = parent / FStringView("Ціль 目标.bin").ToPath();
-	ASSERT_GE(target.native().size(), static_cast<size_t>(MAX_PATH));
-	ASSERT_TRUE(CreateDirectoryW((prefix + parent.native()).c_str(), nullptr)) << platform::GetSystemErrorMessage(GetLastError()).CStr();
+	const std::filesystem::path text = parent / FStringView("Текст.txt").ToPath();
+	ASSERT_GE(parent.native().size(), static_cast<size_t>(MAX_PATH));
 
 	FString error;
-	const bool bFirst = platform::WriteFileAtomic(target, AsBytes("first"), false, &error);
-	EXPECT_TRUE(bFirst) << error.CStr();
-	const bool bSecond = platform::WriteFileAtomic(target, AsBytes("past MAX_PATH"), false, &error);
-	EXPECT_TRUE(bSecond) << error.CStr();
+	EXPECT_TRUE(platform::WriteFileAtomic(target, AsBytes("first"), true, &error)) << error.CStr();
+	EXPECT_TRUE(platform::WriteFileAtomic(target, AsBytes("past MAX_PATH"), false, &error)) << error.CStr();
 
-	char bytes[32] = {};
-	DWORD read = 0u;
-	const HANDLE file = CreateFileW((prefix + target.native()).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
-		nullptr);
-	if (file != INVALID_HANDLE_VALUE)
+	const std::optional<platform::SFileStat> stat = platform::Stat(target, &error);
+	ASSERT_TRUE(stat.has_value()) << error.CStr();
+	EXPECT_EQ(stat->Size, 13u);
+	EXPECT_FALSE(stat->bDirectory);
+	const std::optional<platform::SFileIdentity> identity = platform::GetFileIdentity(target, &error);
+	ASSERT_TRUE(identity.has_value()) << error.CStr();
+	EXPECT_EQ(*identity, stat->Identity);
+
+	// Only the file: no temporary file left behind.
+	std::vector<FString> names;
+	EXPECT_TRUE(platform::EnumerateDirectory(parent, [&] (const platform::SDirectoryEntry& Entry)
 	{
-		ReadFile(file, bytes, sizeof(bytes), &read, nullptr);
-		CloseHandle(file);
-	}
-	EXPECT_EQ(std::string_view(bytes, read), "past MAX_PATH");
+		names.emplace_back(Entry.Name);
+		EXPECT_EQ(Entry.Stat.Identity, stat->Identity);
+	}, &error)) << error.CStr();
+	EXPECT_EQ(names, std::vector<FString>{ FString::FromPath(target.filename()) });
 
-	// Only the file was there: no temporary file left, or the directory would not go.
+	FString read;
+	EXPECT_EQ(platform::ReadFileChunksStable(target, [&read] (std::span<const uint8> Bytes)
+	{
+		read.Append(FStringView(reinterpret_cast<const char*>(Bytes.data()), static_cast<uint32>(Bytes.size())));
+	}), platform::EStableRead::Stable);
+	EXPECT_EQ(read, "past MAX_PATH");
+	EXPECT_EQ(platform::ReadFileText(target).value_or("<unreadable>"), "past MAX_PATH");
+	EXPECT_TRUE(platform::QueryVolumeInfo(target, &error).has_value()) << error.CStr();
+
+	EXPECT_TRUE(platform::WriteFileBytes(target, AsBytes("in place"), false, &error)) << error.CStr();
+	EXPECT_EQ(ReadBytes(target).size(), 8u);
+	EXPECT_TRUE(platform::WriteFileText(text, "text"));
+	EXPECT_EQ(platform::ReadFileText(text).value_or("<unreadable>"), "text");
+
 	EXPECT_TRUE(DeleteFileW((prefix + target.native()).c_str()));
+	EXPECT_TRUE(DeleteFileW((prefix + text.native()).c_str()));
 	EXPECT_TRUE(RemoveDirectoryW((prefix + parent.native()).c_str())) << platform::GetSystemErrorMessage(GetLastError()).CStr();
+	EXPECT_TRUE(RemoveDirectoryW((prefix + outer.native()).c_str()))
+		<< platform::GetSystemErrorMessage(GetLastError()).CStr();
 }
 
 TEST_F(FileSystemTest, WriteFileAtomicRefusesAReadOnlyFileAndKeepsIt)

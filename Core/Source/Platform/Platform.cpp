@@ -8,6 +8,7 @@
 
 #include "Containers/WideString.h"
 #include "Platform/FileSystem.h"
+#include "Platform/Windows/WindowsCommon.h"
 
 
 namespace frt::platform
@@ -136,8 +137,9 @@ void* GetWritableData (std::vector<uint8>& Buffer) noexcept
 template <typename TBuffer>
 bool ReadWholeFile (const std::filesystem::path& Path, TBuffer& Out)
 {
-	const HANDLE file = CreateFileW(Path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-		nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+	const HANDLE file = CreateFileW(windows::ToWin32Path(Path).c_str(), GENERIC_READ,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+		FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
 	if (file == INVALID_HANDLE_VALUE)
 	{
 		return false;

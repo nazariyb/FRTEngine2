@@ -78,8 +78,9 @@ SHandleIds QueryHandleIds (HANDLE Handle, const BY_HANDLE_FILE_INFORMATION& Info
 // process can refuse it. Directories need FILE_FLAG_BACKUP_SEMANTICS; links are followed.
 HANDLE OpenForAttributes (const std::filesystem::path& Path) noexcept
 {
-	return CreateFileW(Path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-		OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+	const std::filesystem::path win32 = windows::ToWin32Path(Path);
+	return CreateFileW(win32.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+		nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
 }
 
 std::optional<SFileStat> StatHandle (HANDLE Handle, const std::filesystem::path& Path, FString* OutError)
@@ -105,13 +106,30 @@ std::optional<SFileStat> StatHandle (HANDLE Handle, const std::filesystem::path&
 
 // ---------------- Writing ----------------
 
+// Directory and every missing directory above it. CreateDirectoryW on extended-length paths, not
+// std::filesystem::create_directories, which passes the path to Win32 as it is and so stops at
+// MAX_PATH. Walks up only past missing parents, then creates downward.
+void CreateDirectories (const std::filesystem::path& Directory)
+{
+	const std::filesystem::path win32 = windows::ToWin32Path(Directory);
+	if (CreateDirectoryW(win32.c_str(), nullptr) || GetLastError() != ERROR_PATH_NOT_FOUND)
+	{
+		return;   // created, there already (ERROR_ALREADY_EXISTS), or a failure no parent fixes
+	}
+	const std::filesystem::path parent = Directory.parent_path();
+	if (!parent.empty() && parent != Directory)
+	{
+		CreateDirectories(parent);
+		CreateDirectoryW(win32.c_str(), nullptr);
+	}
+}
+
 void CreateParentDirectories (const std::filesystem::path& Path)
 {
+	// A failure shows as the file's creation failing next.
 	if (Path.has_parent_path())
 	{
-		// A failure shows as the file's creation failing next.
-		std::error_code ec;
-		std::filesystem::create_directories(Path.parent_path(), ec);
+		CreateDirectories(Path.parent_path());
 	}
 }
 
@@ -154,7 +172,7 @@ std::filesystem::path MakeTempPath (const std::filesystem::path& Target, uint32 
 
 bool HasAttribute (const std::filesystem::path& Path, DWORD Attribute) noexcept
 {
-	const DWORD attributes = GetFileAttributesW(Path.c_str());
+	const DWORD attributes = GetFileAttributesW(windows::ToWin32Path(Path).c_str());
 	return attributes != INVALID_FILE_ATTRIBUTES && (attributes & Attribute) != 0u;
 }
 
@@ -245,7 +263,8 @@ bool IsInCloudSyncRoot (const std::filesystem::path& Directory) noexcept
 	}
 	SCloudSyncRootBasicInfo info = {};
 	DWORD returned = 0u;
-	return SUCCEEDED(getSyncRootInfo(Directory.c_str(), CloudSyncRootInfoBasic, &info, sizeof(info), &returned));
+	const std::filesystem::path win32 = windows::ToWin32Path(Directory);
+	return SUCCEEDED(getSyncRootInfo(win32.c_str(), CloudSyncRootInfoBasic, &info, sizeof(info), &returned));
 }
 
 // The attributes cloud sync clients put on placeholders (files and folders whose bytes are not all
@@ -257,8 +276,9 @@ constexpr DWORD CloudPlaceholderAttributes = FILE_ATTRIBUTE_RECALL_ON_OPEN | FIL
 std::filesystem::path GetVolumeRoot (const std::filesystem::path& Path)
 {
 	// The root is a prefix of the absolute path, plus a trailing separator at most.
-	std::vector<wchar_t> root((Path.native().size() > MAX_PATH ? Path.native().size() : MAX_PATH) + 2u);
-	if (!GetVolumePathNameW(Path.c_str(), root.data(), static_cast<DWORD>(root.size())))
+	const std::filesystem::path win32 = windows::ToWin32Path(Path);
+	std::vector<wchar_t> root((win32.native().size() > MAX_PATH ? win32.native().size() : MAX_PATH) + 2u);
+	if (!GetVolumePathNameW(win32.c_str(), root.data(), static_cast<DWORD>(root.size())))
 	{
 		return {};
 	}
@@ -295,8 +315,9 @@ std::optional<SFileIdentity> GetFileIdentity (const std::filesystem::path& Path,
 
 bool detail::EnumerateDirectory (const std::filesystem::path& Directory, FDirectoryVisitor Visitor, void* Context, FString* OutError)
 {
-	const CScopedHandle directory(CreateFileW(Directory.c_str(), FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
-		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr));
+	const CScopedHandle directory(CreateFileW(windows::ToWin32Path(Directory).c_str(),
+		FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+		OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr));
 	if (!directory.IsValid())
 	{
 		windows::SetError(OutError, "Cannot open the directory", Directory, GetLastError());
@@ -391,7 +412,8 @@ bool WriteFileBytes (const std::filesystem::path& Path, std::span<const uint8> B
 		CreateParentDirectories(Path);
 	}
 
-	CScopedHandle file(CreateFileW(Path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
+	CScopedHandle file(CreateFileW(windows::ToWin32Path(Path).c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr,
+		CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
 	if (!file.IsValid())
 	{
 		windows::SetError(OutError, "Cannot create", Path, GetLastError());
@@ -485,7 +507,7 @@ bool WriteFileAtomic (const std::filesystem::path& Path, std::span<const uint8> 
 		return false;
 	}
 	// Fails at the replace anyway: say so before writing the whole file.
-	if (HasAttribute(windows::ToWin32Path(Path), FILE_ATTRIBUTE_READONLY))
+	if (HasAttribute(Path, FILE_ATTRIBUTE_READONLY))
 	{
 		windows::SetErrorText(OutError, "Cannot write", Path, "the file is read-only");
 		return false;

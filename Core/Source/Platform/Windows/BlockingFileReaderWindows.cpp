@@ -58,8 +58,9 @@ bool CBlockingFileReader::Open (const std::filesystem::path& Path, FString* OutE
 	Close();
 
 	// Sharing read, write and delete, like ReadFileText: never in a writer's way (see the header).
-	windows::CScopedHandle file(CreateFileW(Path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-		nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+	windows::CScopedHandle file(CreateFileW(windows::ToWin32Path(Path).c_str(), GENERIC_READ,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+		nullptr));
 	if (!file.IsValid())
 	{
 		const DWORD error = GetLastError();

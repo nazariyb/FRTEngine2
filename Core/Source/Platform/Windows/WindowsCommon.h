@@ -59,6 +59,10 @@ private:
 // that form unprefixed, which is what the call would have opened anyway. Device and
 // already-prefixed paths ("\\.\", "\\?\") pass unchanged. The same rule as UE's
 // FWindowsPlatformFile::NormalizeWindowsPath.
+//
+// One rule for this directory: every path handed to a Win32 call goes through ToWin32Path, so the
+// file layer reads, lists and stats every path it can write. Error messages name the caller's
+// spelling of the path, never this one.
 [[nodiscard]] inline std::filesystem::path ToWin32Path (const std::filesystem::path& Path)
 {
 	const auto isDeviceOrExtended = [] (const std::filesystem::path::string_type& Text)
