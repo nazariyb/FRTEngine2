@@ -428,6 +428,9 @@ TEST(MulticastDelegate, ReleaseModuleBeforeUnloadingARealDllLeavesOnlyOtherSubsc
 
 	EXPECT_EQ(delegate.ReleaseModule(image.Begin, image.End), 4u);
 	ASSERT_TRUE(FreeLibrary(module));
+	// FreeLibrary only drops a reference: unless the image is really unmapped, the broadcast below
+	// could run a leftover subscription's code without crashing and prove nothing.
+	ASSERT_EQ(GetModuleHandleW(path.c_str()), nullptr) << "Core-TestModule.dll is still loaded";
 
 	// Nothing of the module runs, or is destroyed, after it is gone.
 	total = 0;
