@@ -104,12 +104,24 @@ int CallRef (TFunctionRef<int (int)> Function, int Value)
 {
 	return Function(Value);
 }
+
+struct SAddOne
+{
+	int operator() (int Value) const { return Value + 1; }
+};
 }
 
 
 static_assert(sizeof(TFunctionRef<int (int)>) == 2u * sizeof(void*));
-static_assert(std::is_trivially_copyable_v<TFunctionRef<int (int)>>);
+static_assert(std::is_trivially_copy_constructible_v<TFunctionRef<int (int)>>);
+static_assert(std::is_trivially_destructible_v<TFunctionRef<int (int)>>);
 static_assert(!std::is_default_constructible_v<TFunctionRef<int (int)>>);
+// Never rebound: assigning a temporary callable would leave the ref pointing at a destroyed object.
+static_assert(!std::is_copy_assignable_v<TFunctionRef<int (int)>>);
+static_assert(!std::is_move_assignable_v<TFunctionRef<int (int)>>);
+static_assert(!std::is_assignable_v<TFunctionRef<int (int)>&, SAddOne>);
+static_assert(!std::is_assignable_v<TFunctionRef<int (int)>&, int (*) (int)>);
+static_assert(std::is_constructible_v<TFunctionRef<int (int)>, SAddOne&>);
 static_assert(!std::is_copy_constructible_v<TUniqueFunction<int (int)>>);
 static_assert(std::is_nothrow_move_constructible_v<TUniqueFunction<int (int)>>);
 static_assert(TUniqueFunction<int (int)>::IsStoredInline<SmallCallable>);

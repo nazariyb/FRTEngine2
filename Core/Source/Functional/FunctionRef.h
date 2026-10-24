@@ -30,8 +30,9 @@ class TFunctionRef;
  * Function pointers and function names are stored by value, so `TFunctionRef<int (int)> F = &Abs;`
  * does not dangle. A ref always refers to something: there is no empty state.
  *
- * Trivially copyable; copies refer to the same callable. Calling it calls the callable as a
- * non-const lvalue, so a mutable lambda passed in keeps its state changes.
+ * Trivially copy-constructible; copies refer to the same callable. Not assignable: a ref names one
+ * callable for its whole life (see operator=). Calling it calls the callable as a non-const lvalue,
+ * so a mutable lambda passed in keeps its state changes.
  */
 template <typename TRet, typename... TArgs>
 class TFunctionRef<TRet (TArgs...)>
@@ -63,7 +64,10 @@ public:
 	}
 
 	TFunctionRef (const TFunctionRef&) noexcept = default;
-	TFunctionRef& operator= (const TFunctionRef&) noexcept = default;
+	// No assignment, as in UE: `Ref = [&] { ... };` would build a ref to the lambda temporary, copy
+	// it in and leave Ref pointing at an object destroyed at the end of the statement, and the
+	// lifetimebound check on the constructor does not see through the assignment.
+	TFunctionRef& operator= (const TFunctionRef&) = delete;
 
 	TRet operator() (TArgs... Args) const
 	{
@@ -122,5 +126,7 @@ private:
 // ABI: inline code compiled into every module that names it (game modules too, once a game-facing
 // interface takes one). A change of its layout bumps FRT_GAME_API_VERSION (Engine/GameModule.h).
 static_assert(sizeof(TFunctionRef<void ()>) == 2u * sizeof(void*));
-static_assert(std::is_trivially_copyable_v<TFunctionRef<void ()>>);
+static_assert(std::is_trivially_copy_constructible_v<TFunctionRef<void ()>>);
+static_assert(std::is_trivially_destructible_v<TFunctionRef<void ()>>);
+static_assert(!std::is_copy_assignable_v<TFunctionRef<void ()>>);
 }
