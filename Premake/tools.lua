@@ -474,9 +474,9 @@ end
 --
 -- Only those files: checking out everything again (git rm --cached -r . && git reset --hard)
 -- would rewrite premake5.exe while it runs this, and every source, so the next build would
--- rebuild everything. Only on a working tree without uncommitted changes, which the reset would
--- throw away; changes in line endings alone are not changes. Each worktree of a repository has
--- its own working files, and runs setup once. Tools/Verify/Verify.py checks the same rules.
+-- rebuild everything. Only on a working tree without uncommitted changes, which a fresh checkout
+-- would throw away; changes in line endings alone are not changes. Each worktree of a repository
+-- has its own working files, and runs setup once. Tools/Verify/Verify.py checks the same rules.
 
 -- core.safecrlf=false: no warning about the conversions core.autocrlf makes, which are the point.
 local function git(arguments)
@@ -596,13 +596,29 @@ local function setupLineEndings()
 		if not writeBinary(list, table.concat(problems.work, "\0") .. "\0") then
 			fail("setup: cannot write " .. winpath(list))
 		end
-		local ok = runCommand(git("--literal-pathspecs rm --cached -q --pathspec-from-file=" .. quoted(list) ..
-			" --pathspec-file-nul")) and runCommand(git("reset -q --hard"))
-		os.remove(list)
+		local files = " --pathspec-from-file=" .. quoted(list) .. " --pathspec-file-nul"
+		-- Out of the index first: git writes no file whose index entry says it is up to date,
+		-- whatever its line endings. Then from HEAD into the index and the working tree, those
+		-- files only.
+		local ok = runCommand(git("--literal-pathspecs rm --cached -q" .. files)) and
+			runCommand(git("--literal-pathspecs checkout -q HEAD" .. files))
 		if not ok then
-			print("Line endings: the checkout failed (a file open in another program?); run FRT.bat setup again.")
+			-- Their index entries go back whatever was or was not checked out, or the files would
+			-- stay staged as deleted: a change, which the next run would refuse to overwrite (and
+			-- which a commit would make real). Their working copies are as they were or rewritten,
+			-- and either way hold the committed text, so the tree is clean again.
+			if not runCommand(git("--literal-pathspecs reset -q HEAD" .. files)) then
+				print("Line endings: the checkout failed, and so did putting the files back into the index. Run")
+				print("  git -C " .. quoted(ROOT_DIR) .. " --literal-pathspecs reset -q HEAD" .. files)
+				print("before anything else, then FRT.bat setup again.")
+				return false
+			end
+			os.remove(list)
+			print("Line endings: the checkout failed (a file open in another program?); nothing is staged. Close")
+			print("the program and run FRT.bat setup again.")
 			return false
 		end
+		os.remove(list)
 
 		entries = trackedLineEndings() or {}
 		problems = lineEndingProblems(entries)
