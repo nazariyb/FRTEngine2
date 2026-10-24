@@ -205,13 +205,17 @@ void CMemoryPool::CheckOwnerThread (const char* Operation)
 	const uint64 threadId = platform::GetCurrentThreadId();
 	if (threadId != OwnerThreadId) [[unlikely]]
 	{
-		// TODO(M1): frt_assert in Debug builds as well (AssetManager-Design I8, "assert in Debug from
-		// M1"), once the worker pool has moved every off-thread allocation to the CRT heap.
 		if (!bForeignThreadReported)
 		{
 			bForeignThreadReported = true;
 			ReportForeignThread(Operation, threadId);
 		}
+#if FRT_BUILD_DEBUG
+		// Debug stops at the offence (AssetManager-Design I8, from M1 on): off-thread work runs on the
+		// worker pool, on std containers and the CRT heap, so a hit here is a data race on TLSF's free
+		// lists in the making. Development keeps running with the report above.
+		frt_assert(threadId == OwnerThreadId);
+#endif
 	}
 }
 
