@@ -188,7 +188,7 @@ uint64 HashBytes (uint64 Hash, const void* Data, size_t Size)
 }
 
 
-CRenderer::CRenderer (CWindow* InWindow)
+CRenderer::CRenderer (CWindow* InWindow, jobs::CWorkerPool& WorkerPool)
 	: Window(InWindow)
 {
 	CreateDevice();
@@ -224,7 +224,7 @@ CRenderer::CRenderer (CWindow* InWindow)
 	Rhi.WriteBufferUav(RayCounterUav, RayCounters.GetResource(), rhi::EBufferViewKind::Raw, profiler::CRayCounters::GetBufferBytes(), 0u);
 
 	Scene = std::make_unique<CGpuScene>();
-	Scene->Initialize(Rhi, Pipelines);
+	Scene->Initialize(Rhi, Pipelines, WorkerPool);
 	PathTracerPrograms = std::make_unique<CPathTracerPrograms>();
 	PathTracerPrograms->Initialize(Rhi, Pipelines);
 	ReferenceResampler = CreateUpscaler(EUpscalerKind::None);

@@ -116,7 +116,8 @@ public:
 	CGpuScene (const CGpuScene&) = delete;
 	CGpuScene& operator= (const CGpuScene&) = delete;
 
-	void Initialize (rhi::CDevice& Device, rhi::CPipelineLibrary& Pipelines);
+	// WorkerPool: where texture streaming decodes (CTextureManager::Initialize).
+	void Initialize (rhi::CDevice& Device, rhi::CPipelineLibrary& Pipelines, jobs::CWorkerPool& WorkerPool);
 	void Shutdown ();
 
 	// ---- frame description ----

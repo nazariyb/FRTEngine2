@@ -24,6 +24,11 @@ namespace frt
 class CWindow;
 }
 
+namespace frt::jobs
+{
+class CWorkerPool;
+}
+
 namespace frt::graphics
 {
 class CGpuScene;
@@ -56,7 +61,8 @@ class FRT_CORE_API CRenderer
 {
 public:
 	CRenderer () = delete;
-	explicit CRenderer (CWindow* Window);
+	// WorkerPool: the engine's, which texture streaming decodes on; it outlives the renderer.
+	CRenderer (CWindow* Window, jobs::CWorkerPool& WorkerPool);
 	~CRenderer ();
 	CRenderer (const CRenderer&) = delete;
 	CRenderer& operator= (const CRenderer&) = delete;

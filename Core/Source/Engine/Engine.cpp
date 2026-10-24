@@ -11,6 +11,7 @@
 #include "ECS/CoreComponents.h"
 #include "Graphics/GraphicsComponents.h"
 #include "Graphics/Render/MaterialLibrary.h"
+#include "Jobs/WorkerPool.h"
 #include "Memory/Memory.h"
 #include "Platform/Platform.h"
 #include "Profiler/CpuProfiler.h"
@@ -71,12 +72,16 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 	MemoryPool = memory::CMemoryPool(2_Gb);
 	MemoryPool.MakeThisPrimaryInstance();
 
-	// 4. Real-time clock.
+	// 4. Worker threads, owned by this (the main) thread: the renderer's texture streaming decodes on
+	//    them, and BeginFrame pumps their completions.
+	WorkerPool = std::make_unique<jobs::CWorkerPool>();
+
+	// 5. Real-time clock.
 	Clock = std::make_unique<CTimer>();
 	Clock->Reset();
 
 #if !defined(FRT_HEADLESS)
-	// 5. Window. DPI awareness must precede its creation: otherwise the process stays
+	// 6. Window. DPI awareness must precede its creation: otherwise the process stays
 	//    DPI-unaware and Windows bitmap-stretches the swap chain on scaled monitors.
 	SDisplaySettings& display = UserSettings.DisplaySettings;
 	if (!Desc.bAllowExclusiveFullscreen && display.FullscreenMode == EFullscreenMode::Fullscreen)
@@ -104,8 +109,8 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 	Graphics->Window->PostRestoreFromMinimizeEvent += [this] () { OnRestoreFromMinimize(); };
 	Input.SetDefaultWindow(static_cast<input::WindowId>(reinterpret_cast<uintptr_t>(Graphics->Window->GetHandle())));
 
-	// 6. Renderer, and the display modes the adapter offers.
-	Graphics->Renderer = std::make_unique<graphics::CRenderer>(Graphics->Window.get());
+	// 7. Renderer, and the display modes the adapter offers.
+	Graphics->Renderer = std::make_unique<graphics::CRenderer>(Graphics->Window.get(), *WorkerPool);
 	Graphics->Renderer->Resize(display.FullscreenMode == EFullscreenMode::Fullscreen);
 	DisplayOptions = graphics::GetDisplayOptions(Graphics->Renderer->GetAdapter());
 	// Clamp the config's monitor index before anything indexes per-monitor data with it.
@@ -121,7 +126,7 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 	HeadlessMaterials = std::make_unique<graphics::CMaterialLibrary>();
 #endif
 
-	// 7. UI.
+	// 8. UI.
 #if !defined(FRT_HEADLESS)
 	Graphics->Ui = std::make_unique<CImGuiLayer>();
 	Graphics->Ui->StartUp(*Graphics->Window, *Graphics->Renderer, Desc.UiIniPath);
@@ -156,6 +161,9 @@ void CEngine::ShutDown ()
 #endif
 	HeadlessMaterials.reset();
 	Clock.reset();
+	// After the renderer, whose decodes it may still be running: drains, discards their completions
+	// and joins the threads.
+	WorkerPool.reset();
 }
 
 bool CEngine::PumpMessages ()
@@ -193,6 +201,13 @@ float CEngine::BeginFrame ()
 	InputActions.ReloadModifiedActionMaps();
 #endif
 	InputActions.EvaluateActionMaps(Input);
+
+	{
+		// What the workers finished since the last frame, before the host's simulation and extraction
+		// see the frame: the frame's one completion pump (waits pump as well, see Jobs/WorkerPool.h).
+		FRT_CPU_SCOPE("Engine.WorkerCompletions");
+		WorkerPool->PumpCompletions();
+	}
 
 #if !defined(FRT_HEADLESS)
 	// Waits for this frame's GPU slot and retires what it used. Before the UI, so everything the

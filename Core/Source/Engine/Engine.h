@@ -29,6 +29,11 @@ class CMaterialLibrary;
 class CRenderer;
 }
 
+namespace frt::jobs
+{
+class CWorkerPool;
+}
+
 
 namespace frt
 {
@@ -57,8 +62,8 @@ struct SViewToRender
  *
  * Owns every subsystem and brings them up and down explicitly, in dependency order (Gregory,
  * GEA "Subsystem Start-Up and Shut-Down") - never through static construction order:
- *   StartUp:  components, config (+ command line, user settings), memory, clock, window,
- *             renderer, input actions, UI.
+ *   StartUp:  components, config (+ command line, user settings), memory, worker pool, clock,
+ *             window, renderer, input actions, UI.
  *   ShutDown: the exact reverse, after the GPU is idle.
  * Headless builds skip the window, renderer and UI, and resolve materials through a library
  * of their own; the class layout is the same either way.
@@ -88,8 +93,9 @@ public:
 	// ---- frame ----
 	// Dispatches every pending OS message. False once the application should quit.
 	bool PumpMessages ();
-	// Ticks the real-time clock, updates input, waits for this frame's GPU slot and opens the
-	// UI frame. Returns the real time elapsed since the previous frame, in seconds.
+	// Ticks the real-time clock, updates input, runs the worker completions that have arrived, waits
+	// for this frame's GPU slot and opens the UI frame. Returns the real time elapsed since the
+	// previous frame, in seconds.
 	float BeginFrame ();
 	// Records the views, then the UI over them, submits and presents. With no back buffer to
 	// present to (minimised), only closes the UI frame.
@@ -105,6 +111,9 @@ public:
 	CTimer& GetClock () { return *Clock; }
 	input::CInputSystem& GetInput () { return Input; }
 	input::CInputActionLibrary& GetInputActions () { return InputActions; }
+	// The engine's worker threads (Jobs/WorkerPool.h), owned by the main thread: BeginFrame pumps
+	// their completions. Headless too. Valid from StartUp to ShutDown.
+	jobs::CWorkerPool& GetWorkerPool () { return *WorkerPool; }
 	// The renderer's library, or a standalone one when headless.
 	graphics::CMaterialLibrary& GetMaterials ();
 
@@ -136,6 +145,9 @@ private:
 	config::CConfig Config;
 	SUserSettings UserSettings;
 	memory::CMemoryPool MemoryPool;
+	// Started after the memory pool and before the renderer (whose texture streaming submits to it),
+	// stopped after the renderer.
+	std::unique_ptr<jobs::CWorkerPool> WorkerPool;
 	std::unique_ptr<CTimer> Clock;
 	// Window, renderer, UI. One opaque block defined in Engine.cpp: headless builds compile none
 	// of them, yet the class layout must not depend on FRT_HEADLESS.
