@@ -34,8 +34,15 @@ namespace frt::assets
  *
  * Text is 32 lowercase hex digits in byte order (9fc0d4010bbf28b4594072e72b8655ab): one greppable
  * token. Parse also takes the dashed and braced spellings other tools write, in either case.
+ *
  * Generated GUIDs whose text is all decimal digits, or digits and a single 'e', are re-rolled
- * (HasNumericText): YAML 1.1 readers would type that text as a number (p about 1e-6).
+ * (HasNumericText, p about 1.5e-6), so no YAML reader types an id as a number. All digits is an
+ * integer under the YAML 1.2 core schema, and under YAML 1.1 unless it starts with 0 (then octal if
+ * every digit is 0-7). Digits around one 'e' ("477e817") are a float under the YAML 1.2 core schema
+ * (ruamel.yaml and others; the JSON schema too without a leading 0); YAML 1.1 floats need a '.' and a
+ * signed exponent, so PyYAML keeps them strings. A leading or trailing 'e' is a number in no schema,
+ * but the rule re-rolls it too: it over-approximates on purpose to stay simple, and it is frozen into
+ * MakeAutoGuid's outputs.
  */
 struct SGuid
 {

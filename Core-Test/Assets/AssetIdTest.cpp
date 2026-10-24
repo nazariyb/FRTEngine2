@@ -247,12 +247,16 @@ struct SNumericAutoGuid
 	FStringLiteral Result;          // candidate 1
 };
 
-// Inputs whose first candidate has numeric text, found by searching le32(0, 1, 2, ...) once: the
-// all-digit case, and the digits-and-one-e case (a YAML 1.1 reader takes "...7e8..." for a float).
+// Inputs whose first candidate has numeric text, found by searching le32(0, 1, 2, ...) once: all
+// digits (an integer in YAML 1.1 and 1.2), digits around one 'e' (a float under the YAML 1.2 core and
+// JSON schemas: "...477e817..."), and a leading and a trailing 'e', which no schema reads as a number
+// but HasNumericText re-rolls as well (it over-approximates on purpose).
 constexpr SNumericAutoGuid NumericAutoGuids[] =
 {
 	{ 1774475u, "73268818840046578426846337839757", "1a157f5380fe465c9292704c18947053" },
+	{ 2246193u, "422041775445477e8174521662289642", "e3345aca3cb94b2a95c91b6527c23460" },
 	{ 977861u, "e8214857537941759601723199963549", "54369a118a8d4cdfaa00f8a3e78e2175" },
+	{ 3603013u, "6551713249824555867886352345197e", "0ea75f6cb46141d3923199eb25f643ae" },
 };
 }
 
