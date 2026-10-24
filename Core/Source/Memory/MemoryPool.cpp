@@ -1,10 +1,8 @@
 ﻿#include "MemoryPool.h"
 
-#include <cstdio>
 #include <new>
 
-#include "Containers/String.h"
-#include "Platform/Platform.h"
+#include "Log/Log.h"
 #include "Platform/Thread.h"
 
 #if _WINDOWS
@@ -232,11 +230,9 @@ void CMemoryPool::CheckOwnerThread (const char* Operation)
 
 void CMemoryPool::ReportForeignThread (const char* Operation, uint64 ThreadId) const
 {
-	const FString message = FString::Printf(
-		"[memory] CMemoryPool %p: %s on thread %llu, but the pool belongs to thread %llu. TLSF is single-threaded: "
-		"code off the owner thread uses std::vector and the CRT heap (reported once per thread)\n",
+	log::Printf(log::Memory, log::ELevel::Warning,
+		"CMemoryPool %p: %s on thread %llu, but the pool belongs to thread %llu. TLSF is single-threaded: "
+		"code off the owner thread uses std::vector and the CRT heap (reported once per thread)",
 		static_cast<const void*>(this), Operation, ThreadId, OwnerThreadId);
-	std::fputs(message.CStr(), stderr);
-	platform::OutputDebugText(message);
 }
 }
