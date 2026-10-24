@@ -5,6 +5,7 @@
 #include "Core.h"
 #include "CoreTypes.h"
 #include "Containers/StringView.h"
+#include "Platform/ModuleImage.h"
 
 
 /**
@@ -25,8 +26,10 @@
  * drains every ring into the frame that is ending (a scope belongs to the frame in which it was
  * collected, so nothing is counted twice or lost to a race at the boundary), aggregates it per
  * name and makes it GetLastFrame. Names are copied (interned) when collected, so results never
- * point into a module's image; a scope recorded by code in a module that is about to unload must
- * be collected first (CollectPending), since until then the ring holds only the literal's address.
+ * point into a module's image. Until then a ring holds only the literal's address, so a module's
+ * unload takes two calls: CollectPending before it, which keeps the real names of everything the
+ * module recorded so far, and ReleaseModule after it, for the scopes its last code recorded while
+ * it unloaded (DLL_PROCESS_DETACH, static destructors) - their names are gone with the image.
  *
  * Compiled into every build. PIX CPU markers would need the binary WinPixEventRuntime, so they
  * are left for later (AssetManager-Design §15, I7).
@@ -83,6 +86,11 @@ public:
 	// Collects every ring into the open frame without closing it: before a module whose code records
 	// scopes is unloaded.
 	static void CollectPending ();
+	// The same, right after the module whose image was Image unloaded: a scope whose name pointed into
+	// it is collected as UnloadedModuleName, without reading the name. Nothing of the module can
+	// record a scope after its unload returned, so this collects the last of them.
+	static void ReleaseModule (const platform::SModuleImage& Image);
+	static constexpr FStringLiteral UnloadedModuleName = "<unloaded module>";
 	// The last closed frame; empty before the first boundary. Collecting thread only, until its next
 	// BeginFrame.
 	[[nodiscard]] static const SCpuFrame& GetLastFrame ();

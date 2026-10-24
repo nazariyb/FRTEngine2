@@ -9,6 +9,7 @@
 
 #include "Core.h"
 #include "CoreTypes.h"
+#include "Platform/ModuleImage.h"
 
 
 namespace frt
@@ -30,13 +31,6 @@ enum class EFunctionOp : uint8
 
 // One per stored callable type and storage kind, instantiated in the module that built the function.
 using ManagerFunction = const void* (*) (EFunctionOp Op, void* Self, void* Other) noexcept;
-
-// As integers: comparing pointers into different objects with < is unspecified.
-[[nodiscard]] inline bool IsAddressInImage (const void* Address, const void* ImageBegin, const void* ImageEnd) noexcept
-{
-	const uintptr_t address = reinterpret_cast<uintptr_t>(Address);
-	return address >= reinterpret_cast<uintptr_t>(ImageBegin) && address < reinterpret_cast<uintptr_t>(ImageEnd);
-}
 
 template <typename T>
 struct TIsUniqueFunction : std::false_type
@@ -197,17 +191,16 @@ public:
 		return Manager != nullptr ? Manager(detail::EFunctionOp::Target, const_cast<std::byte*>(Storage), nullptr) : nullptr;
 	}
 
-	// The function would run code of the module whose image is [ImageBegin, ImageEnd): its invoker or
-	// manager lies there, or its target does. False when empty. Call it before the module unloads.
-	[[nodiscard]] bool RefersToImage (const void* ImageBegin, const void* ImageEnd) const noexcept
+	// The function would run code of the module whose image is Image: its invoker or manager lies
+	// there, or its target does. False when empty. Call it before the module unloads.
+	[[nodiscard]] bool RefersToImage (const platform::SModuleImage& Image) const noexcept
 	{
 		if (Manager == nullptr)
 		{
 			return false;
 		}
-		return detail::IsAddressInImage(GetInvoker(), ImageBegin, ImageEnd)
-			|| detail::IsAddressInImage(reinterpret_cast<const void*>(Manager), ImageBegin, ImageEnd)
-			|| detail::IsAddressInImage(GetTarget(), ImageBegin, ImageEnd);
+		return Image.Contains(GetInvoker()) || Image.Contains(reinterpret_cast<const void*>(Manager))
+			|| Image.Contains(GetTarget());
 	}
 
 	// The callable lives inside this object (no heap block). False when empty. For tests and stats.

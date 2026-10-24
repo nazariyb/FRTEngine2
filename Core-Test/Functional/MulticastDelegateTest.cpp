@@ -326,12 +326,12 @@ TEST(MulticastDelegate, ReleaseModuleDropsSubscriptionsWhoseCodeOrTargetIsInTheI
 
 	// A range matching nothing drops nothing.
 	unsigned char elsewhere[8] = {};
-	EXPECT_EQ(delegate.ReleaseModule(elsewhere, elsewhere + sizeof(elsewhere)), 0u);
+	EXPECT_EQ(delegate.ReleaseModule({ elsewhere, elsewhere + sizeof(elsewhere) }), 0u);
 
-	EXPECT_EQ(delegate.ReleaseModule(image, image + sizeof(image)), 1u);
-	EXPECT_EQ(delegate.ReleaseModule(invoker, invoker + 1), 1u);
+	EXPECT_EQ(delegate.ReleaseModule({ image, image + sizeof(image) }), 1u);
+	EXPECT_EQ(delegate.ReleaseModule({ invoker, invoker + 1 }), 1u);
 	EXPECT_EQ(alive, 0);   // destroyed by the release, while its code is still there
-	EXPECT_EQ(delegate.ReleaseModule(target, target + 1), 1u);
+	EXPECT_EQ(delegate.ReleaseModule({ target, target + 1 }), 1u);
 	inImage->~SListener();
 
 	delegate.Broadcast(calls);
@@ -345,37 +345,6 @@ TEST(MulticastDelegate, ReleaseModuleDropsSubscriptionsWhoseCodeOrTargetIsInTheI
 
 namespace
 {
-// Core-TestModule.dll beside this executable, named as the build names it: Core-Test-<config>.exe
-// loads Core-TestModule-<config>.dll (Release-Default: Core-Test.exe, Core-TestModule.dll).
-std::filesystem::path GetTestModulePath ()
-{
-	const std::filesystem::path executable = platform::GetExecutablePath();
-	const FString stem = FString::FromPath(executable.stem());
-	constexpr FStringLiteral prefix = "Core-Test";
-	if (!stem.StartsWith(prefix))
-	{
-		return {};
-	}
-	FString name("Core-TestModule");
-	name.Append(stem.View().RightChop(prefix.Len())).Append(".dll");
-	return executable.parent_path() / name.ToPath();
-}
-
-// The module's image: [base, base + SizeOfImage), as CGameModule::Unload computes it.
-struct SImage
-{
-	const unsigned char* Begin = nullptr;
-	const unsigned char* End = nullptr;
-};
-
-SImage GetImage (HMODULE Module)
-{
-	const auto* base = reinterpret_cast<const unsigned char*>(Module);
-	const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
-	const auto* headers = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
-	return SImage{ base, base + headers->OptionalHeader.SizeOfImage };
-}
-
 template <typename T>
 T GetExport (HMODULE Module, const char* Name)
 {
@@ -387,11 +356,14 @@ TEST(MulticastDelegate, ReleaseModuleBeforeUnloadingARealDllLeavesOnlyOtherSubsc
 {
 	using namespace frt::test_module;
 
-	const std::filesystem::path path = GetTestModulePath();
+	const std::filesystem::path path = test::GetTestModulePath();
 	ASSERT_FALSE(path.empty());
 	HMODULE module = LoadLibraryW(path.c_str());
 	ASSERT_NE(module, nullptr) << "cannot load " << FString::FromPath(path).CStr() << " (built with Core-Test)";
-	const SImage image = GetImage(module);
+	// As CGameModule::Unload takes it.
+	const platform::SModuleImage image = platform::GetModuleImage(module);
+	ASSERT_NE(image.Begin, image.End);
+	EXPECT_TRUE(image.Contains(module));
 
 	const auto makeSmall = GetExport<MakeSmallLambdaFunction>(module, MakeSmallLambdaName);
 	const auto makeLarge = GetExport<MakeLargeLambdaFunction>(module, MakeLargeLambdaName);
@@ -410,8 +382,8 @@ TEST(MulticastDelegate, ReleaseModuleBeforeUnloadingARealDllLeavesOnlyOtherSubsc
 	makeLarge(&heapFunction);
 	EXPECT_TRUE(inlineFunction.IsInline());
 	EXPECT_FALSE(heapFunction.IsInline());
-	EXPECT_TRUE(inlineFunction.RefersToImage(image.Begin, image.End));
-	EXPECT_TRUE(heapFunction.RefersToImage(image.Begin, image.End));
+	EXPECT_TRUE(inlineFunction.RefersToImage(image));
+	EXPECT_TRUE(heapFunction.RefersToImage(image));
 	delegate.Add(std::move(inlineFunction));
 	delegate.Add(std::move(heapFunction));
 	// What this executable builds around the module's function and object: only targets are there.
@@ -419,14 +391,14 @@ TEST(MulticastDelegate, ReleaseModuleBeforeUnloadingARealDllLeavesOnlyOtherSubsc
 	SCounter* counter = getCounter();
 	delegate.Add(counter, &SCounter::Bump);
 	const CounterFunction own([] (int&) {});
-	EXPECT_FALSE(own.RefersToImage(image.Begin, image.End));
+	EXPECT_FALSE(own.RefersToImage(image));
 
 	int total = 0;
 	delegate.Broadcast(total);
 	EXPECT_EQ(total, 10000 + 10 + 100 + 1 + 1000);
 	EXPECT_EQ(counter->Calls, 1);
 
-	EXPECT_EQ(delegate.ReleaseModule(image.Begin, image.End), 4u);
+	EXPECT_EQ(delegate.ReleaseModule(image), 4u);
 	ASSERT_TRUE(FreeLibrary(module));
 	// FreeLibrary only drops a reference: unless the image is really unmapped, the broadcast below
 	// could run a leftover subscription's code without crashing and prove nothing.

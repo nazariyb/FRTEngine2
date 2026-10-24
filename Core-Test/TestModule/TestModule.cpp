@@ -32,3 +32,8 @@ extern "C" __declspec(dllexport) SCounter* FrtTestModule_GetCounter ()
 {
 	return &Counter;
 }
+
+extern "C" __declspec(dllexport) void FrtTestModule_GetScopeName (frt::FStringLiteral* Out)
+{
+	*Out = "TestModule.UnloadedScope";
+}

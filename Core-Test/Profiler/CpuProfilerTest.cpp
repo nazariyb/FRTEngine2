@@ -1,18 +1,26 @@
 // CPU profiling scopes (AssetManager-Design I7): FRT_CPU_SCOPE records nested scopes on any thread
 // into that thread's ring; the frame boundary collects every scope exactly once, with its thread and
 // depth, and aggregates them per name (total, count, max); a ring that overflows keeps the newest
-// scopes and counts the others as dropped; and collecting while a thread records never yields a
-// torn scope.
+// scopes and counts the others as dropped; collecting while a thread records never yields a torn
+// scope; and a scope whose name was in a module that has since unloaded is collected without
+// reading the name.
 #include <gtest/gtest.h>
 
+#include "TestCommon.h"
+
 #include <atomic>
+#include <filesystem>
 #include <thread>
 #include <vector>
 
 #include "Containers/String.h"
+#include "Platform/ModuleImage.h"
 #include "Platform/Thread.h"
 #include "Platform/Timestamp.h"
 #include "Profiler/CpuProfiler.h"
+#include "TestModule/TestModule.h"
+
+#include <Windows.h>
 
 using namespace frt;
 using namespace frt::profiler;
@@ -242,4 +250,46 @@ TEST(CpuProfiler, CollectingWhileAThreadRecordsNeverYieldsATornScope)
 	// Every scope is either collected or counted as dropped, exactly once.
 	EXPECT_EQ(collected + dropped, Written);
 	EXPECT_GT(collected, 0u);
+}
+
+// A module's code can record a scope while the module unloads (DLL_PROCESS_DETACH, its static
+// destructors), after CGameModule::Unload collected: the ring then holds the address of a literal
+// that is gone. ReleaseModule collects it under a placeholder without reading the name - the image
+// is unmapped, so a read would fault - and a scope collected before the unload keeps its name.
+TEST(CpuProfiler, AScopeNamedInAnUnloadedModuleIsCollectedWithoutReadingItsName)
+{
+	using namespace frt::test_module;
+
+	const std::filesystem::path path = test::GetTestModulePath();
+	ASSERT_FALSE(path.empty());
+	HMODULE module = LoadLibraryW(path.c_str());
+	ASSERT_NE(module, nullptr) << "cannot load " << FString::FromPath(path).CStr() << " (built with Core-Test)";
+	const platform::SModuleImage image = platform::GetModuleImage(module);
+	const auto getScopeName =
+		reinterpret_cast<GetScopeNameFunction>(reinterpret_cast<void*>(GetProcAddress(module, GetScopeNameName)));
+	ASSERT_NE(getScopeName, nullptr);
+	FStringLiteral name;
+	getScopeName(&name);
+	ASSERT_TRUE(image.Contains(name.GetData()));
+
+	CCpuProfiler::BeginFrame();
+	// Recorded by the module's code and collected before the unload, as CGameModule::Unload does.
+	CCpuProfiler::RecordScope(name, 10u, 20u, 0u);
+	CCpuProfiler::CollectPending();
+	// Recorded by its last code, during FreeLibrary.
+	CCpuProfiler::RecordScope(name, 30u, 45u, 0u);
+	ASSERT_TRUE(FreeLibrary(module));
+	ASSERT_EQ(GetModuleHandleW(path.c_str()), nullptr) << "Core-TestModule.dll is still loaded";
+	CCpuProfiler::ReleaseModule(image);
+	CCpuProfiler::BeginFrame();
+
+	const std::vector<SCpuScopeEvent> named = EventsNamed("TestModule.UnloadedScope");
+	ASSERT_EQ(named.size(), 1u);
+	EXPECT_EQ(named[0].BeginTicks, 10u);
+	const std::vector<SCpuScopeEvent> unloaded = EventsNamed(CCpuProfiler::UnloadedModuleName);
+	ASSERT_EQ(unloaded.size(), 1u);
+	EXPECT_EQ(unloaded[0].BeginTicks, 30u);
+	EXPECT_EQ(unloaded[0].EndTicks, 45u);
+	ASSERT_NE(FindStats(CCpuProfiler::UnloadedModuleName), nullptr);
+	EXPECT_EQ(FindStats(CCpuProfiler::UnloadedModuleName)->Count, 1u);
 }

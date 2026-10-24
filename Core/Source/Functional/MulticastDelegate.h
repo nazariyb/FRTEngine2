@@ -236,18 +236,17 @@ public:
 		}
 	}
 
-	// A module is about to unload; [ImageBegin, ImageEnd) is its image. Destroys every subscription
-	// whose callable was built in it or whose target lies in it (see the class comment), while its
-	// code is still loaded, and returns how many. Never during a broadcast.
-	uint32 ReleaseModule (const void* ImageBegin, const void* ImageEnd)
+	// A module whose image is Image (platform::GetModuleImage) is about to unload. Destroys every
+	// subscription whose callable was built in it or whose target lies in it (see the class comment),
+	// while its code is still loaded, and returns how many. Never during a broadcast.
+	uint32 ReleaseModule (const platform::SModuleImage& Image)
 	{
 		frt_assert(BroadcastDepth == 0u)
 
 		std::vector<SEntry> released;
-		const auto inImage = [ImageBegin, ImageEnd] (const SEntry& Entry)
+		const auto inImage = [&Image] (const SEntry& Entry)
 		{
-			return Entry.Function.RefersToImage(ImageBegin, ImageEnd)
-				|| detail::IsAddressInImage(Entry.Target, ImageBegin, ImageEnd);
+			return Entry.Function.RefersToImage(Image) || Image.Contains(Entry.Target);
 		};
 		Compact(Entries, released, inImage);
 		Compact(Pending, released, inImage);

@@ -135,6 +135,20 @@ SThreadRing& RegisterThisThread ()
 	return *ThisThread.Ring;
 }
 
+// The Names index of Text, added if new.
+uint32 InternText (SCollector& Collector, FStringView Text)
+{
+	for (uint32 i = 0u; i < static_cast<uint32>(Collector.Names.size()); ++i)
+	{
+		if (Collector.Names[i] == Text)
+		{
+			return i;
+		}
+	}
+	Collector.Names.emplace_back(Text);
+	return static_cast<uint32>(Collector.Names.size() - 1u);
+}
+
 uint32 InternName (SCollector& Collector, uint64 Address, FStringView Text)
 {
 	if (const auto it = Collector.NameByAddress.find(Address); it != Collector.NameByAddress.end()
@@ -144,29 +158,26 @@ uint32 InternName (SCollector& Collector, uint64 Address, FStringView Text)
 	}
 
 	// A literal not seen at this address: the same text elsewhere (another file or module), or new.
-	uint32 index = NotFound;
-	for (uint32 i = 0u; i < static_cast<uint32>(Collector.Names.size()); ++i)
-	{
-		if (Collector.Names[i] == Text)
-		{
-			index = i;
-			break;
-		}
-	}
-	if (index == NotFound)
-	{
-		index = static_cast<uint32>(Collector.Names.size());
-		Collector.Names.emplace_back(Text);
-	}
+	const uint32 index = InternText(Collector, Text);
 	Collector.NameByAddress[Address] = index;
 	return index;
 }
 
-void AddEvent (SCollector& Collector, const SThreadRing& Ring, const SSlotCopy& Slot)
+// Unloaded: when the slot's name lies in that module's image, which is gone, so is the text.
+void AddEvent (SCollector& Collector, const SThreadRing& Ring, const SSlotCopy& Slot,
+	const platform::SModuleImage* Unloaded)
 {
-	const FStringView literal(reinterpret_cast<const char*>(Slot.NameData),
-		static_cast<uint32>(Slot.NameLengthAndDepth >> 32u));
-	const uint32 name = InternName(Collector, Slot.NameData, literal);
+	uint32 name = NotFound;
+	if (Unloaded != nullptr && Unloaded->Contains(reinterpret_cast<const void*>(Slot.NameData)))
+	{
+		name = InternText(Collector, CCpuProfiler::UnloadedModuleName);
+	}
+	else
+	{
+		const FStringView literal(reinterpret_cast<const char*>(Slot.NameData),
+			static_cast<uint32>(Slot.NameLengthAndDepth >> 32u));
+		name = InternName(Collector, Slot.NameData, literal);
+	}
 
 	SCpuScopeEvent& event = Collector.Open.Events.emplace_back();
 	event.Name = Collector.Names[name];
@@ -193,7 +204,7 @@ void AddEvent (SCollector& Collector, const SThreadRing& Ring, const SSlotCopy& 
 	++accumulator.Count;
 }
 
-void CollectRing (SCollector& Collector, SThreadRing& Ring)
+void CollectRing (SCollector& Collector, SThreadRing& Ring, const platform::SModuleImage* Unloaded)
 {
 	const uint64 published = Ring.Published.load(std::memory_order_acquire);
 	uint64 first = Ring.Collected;
@@ -225,12 +236,12 @@ void CollectRing (SCollector& Collector, SThreadRing& Ring)
 	Collector.Open.DroppedEvents += intact - first;
 	for (uint64 index = intact; index < published; ++index)
 	{
-		AddEvent(Collector, Ring, Collector.Copies[static_cast<size_t>(index - first)]);
+		AddEvent(Collector, Ring, Collector.Copies[static_cast<size_t>(index - first)], Unloaded);
 	}
 	Ring.Collected = published;
 }
 
-void CollectAll (SCollector& Collector)
+void CollectAll (SCollector& Collector, const platform::SModuleImage* Unloaded = nullptr)
 {
 	{
 		const std::lock_guard lock(Collector.RegistryMutex);
@@ -242,9 +253,18 @@ void CollectAll (SCollector& Collector)
 	{
 		// Read before the ring: a thread seen gone has published everything it ever will.
 		bAnyExited |= ring->bThreadExited.load(std::memory_order_acquire);
-		CollectRing(Collector, *ring);
+		CollectRing(Collector, *ring, Unloaded);
 	}
 	Collector.RingsToCollect.clear();
+
+	if (Unloaded != nullptr)
+	{
+		// Another module may be mapped there later: its literals are found by text again.
+		std::erase_if(Collector.NameByAddress, [Unloaded] (const std::pair<const uint64, uint32>& Entry)
+		{
+			return Unloaded->Contains(reinterpret_cast<const void*>(Entry.first));
+		});
+	}
 
 	if (bAnyExited)
 	{
@@ -303,6 +323,11 @@ void CCpuProfiler::BeginFrame ()
 void CCpuProfiler::CollectPending ()
 {
 	CollectAll(GetCollector());
+}
+
+void CCpuProfiler::ReleaseModule (const platform::SModuleImage& Image)
+{
+	CollectAll(GetCollector(), &Image);
 }
 
 const SCpuFrame& CCpuProfiler::GetLastFrame ()

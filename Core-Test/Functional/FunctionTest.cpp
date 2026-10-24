@@ -300,13 +300,14 @@ TEST(UniqueFunction, ExposesTheInvokerAndAFunctionPointersTarget)
 
 	// A range around the invoker stands in for the image of the module that built the function.
 	const char* invoker = static_cast<const char*>(lambda.GetInvoker());
-	EXPECT_TRUE(lambda.RefersToImage(invoker, invoker + 1));
-	EXPECT_FALSE(lambda.RefersToImage(invoker + 1, invoker + 2));
+	EXPECT_TRUE(lambda.RefersToImage({ invoker, invoker + 1 }));
+	EXPECT_FALSE(lambda.RefersToImage({ invoker + 1, invoker + 2 }));
 
 	// A pointer to a function in the image refers to it whoever built the function.
 	const char* target = reinterpret_cast<const char*>(&Twice);
-	EXPECT_TRUE(pointer.RefersToImage(target, target + 1));
-	EXPECT_FALSE(TUniqueFunction<int (int)>().RefersToImage(nullptr, reinterpret_cast<const void*>(~uintptr_t(0))));
+	EXPECT_TRUE(pointer.RefersToImage({ target, target + 1 }));
+	const platform::SModuleImage everything = { nullptr, reinterpret_cast<const void*>(~uintptr_t(0)) };
+	EXPECT_FALSE(TUniqueFunction<int (int)>().RefersToImage(everything));
 }
 
 TEST(UniqueFunction, NeverAllocatesFromTheMemoryPool)

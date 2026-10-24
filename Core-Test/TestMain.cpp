@@ -54,6 +54,20 @@ bool frt::test::RegisterChildMode (FStringView Name, FChildMain Main)
 	return true;
 }
 
+std::filesystem::path frt::test::GetTestModulePath ()
+{
+	const std::filesystem::path executable = platform::GetExecutablePath();
+	const FString stem = FString::FromPath(executable.stem());
+	constexpr FStringLiteral prefix = "Core-Test";
+	if (!stem.StartsWith(prefix))
+	{
+		return {};
+	}
+	FString name("Core-TestModule");
+	name.Append(stem.View().RightChop(prefix.Len())).Append(".dll");
+	return executable.parent_path() / name.ToPath();
+}
+
 
 // GoogleTest's own gtest_main is not built: with GoogleTest a DLL, its main() would be a
 // definition of a dllimport function.

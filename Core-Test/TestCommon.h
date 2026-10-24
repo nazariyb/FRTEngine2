@@ -1,5 +1,6 @@
 #pragma once
 
+#include <filesystem>
 #include <span>
 #include <vector>
 
@@ -33,6 +34,13 @@ using FChildMain = int (*) (std::span<const FString> Arguments);
 inline constexpr FStringLiteral ChildModeSwitch = "--frt-test-child=";
 
 bool RegisterChildMode (FStringView Name, FChildMain Main);
+
+/**
+ * Core-TestModule.dll beside this executable (Core-Test/TestModule/TestModule.h), named as the build
+ * names it: Core-Test-<config>.exe loads Core-TestModule-<config>.dll (Release-Default: Core-Test.exe,
+ * Core-TestModule.dll). Empty if this executable is not named Core-Test*.
+ */
+std::filesystem::path GetTestModulePath ();
 
 /**
  * Text longer than FString's 22 inline bytes, so it owns a heap block. Payloads of tests for
