@@ -292,6 +292,10 @@ class Gate:
         self.env = env
 
     def env_for(self, log):
+        # GoogleTest reads its flags from the environment too: a GTEST_FILTER, GTEST_REPEAT or
+        # GTEST_SHARD_* left in the shell would run a subset of Core-Test, and the gate would pass on it.
+        for key in [key for key in env if key.upper().startswith('GTEST_')]:
+            env.pop(key)
         """The environment of the process whose output goes to Log: FRT_USER_DATA_DIR is a directory of its
         own, new and empty, named after the log. What one process writes there - the editor's state, a
         game's settings and captures, the engine registry - would otherwise reach every later one, and a
