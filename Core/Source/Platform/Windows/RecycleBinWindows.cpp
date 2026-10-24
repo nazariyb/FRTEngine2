@@ -28,7 +28,8 @@ using Microsoft::WRL::ComPtr;
  * hands over the item now in the Recycle Bin, or nullptr when the item was deleted for good
  * (IFileOperationProgressSink::PostDeleteItem, psiNewlyCreated).
  *
- * Lives on the stack for one PerformOperations call, so the reference count is a formality.
+ * Lives on the stack for one PerformOperations call, so the reference count is a formality - as
+ * long as it outlives the operation that holds it (RecycleOnThisThread declares it first).
  */
 class CRecycleWatcher final : public IFileOperationProgressSink
 {
@@ -100,6 +101,10 @@ bool RecycleOnThisThread (const std::filesystem::path& Path, FString* OutError)
 		return false;
 	}
 
+	// Declared before the operation, so it outlives every reference the operation holds: the
+	// operation may keep the sink until it is destroyed itself, even after Unadvise (or when
+	// Unadvise fails), and its last Release must not reach a destroyed object.
+	CRecycleWatcher watcher;
 	ComPtr<IFileOperation> operation;
 	result = CoCreateInstance(__uuidof(FileOperation), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&operation));
 	if (SUCCEEDED(result))
@@ -113,7 +118,6 @@ bool RecycleOnThisThread (const std::filesystem::path& Path, FString* OutError)
 		return false;
 	}
 
-	CRecycleWatcher watcher;
 	DWORD cookie = 0u;
 	const bool bAdvised = SUCCEEDED(operation->Advise(&watcher, &cookie));
 	if (!bAdvised)
@@ -128,6 +132,7 @@ bool RecycleOnThisThread (const std::filesystem::path& Path, FString* OutError)
 	{
 		result = operation->PerformOperations();
 	}
+	// A failure here only means the operation keeps the sink until it goes: harmless (see above).
 	operation->Unadvise(cookie);
 
 	if (watcher.bDeleteSeen && !watcher.bWouldRecycle)

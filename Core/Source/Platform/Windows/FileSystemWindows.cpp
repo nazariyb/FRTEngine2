@@ -158,18 +158,35 @@ bool HasAttribute (const std::filesystem::path& Path, DWORD Attribute) noexcept
 	return attributes != INVALID_FILE_ATTRIBUTES && (attributes & Attribute) != 0u;
 }
 
+// What RenamePosix did: Error is ERROR_SUCCESS or the code of the step that failed; bRenamed says
+// whether the name switched over (a failed flush comes after it).
+struct SRenameResult
+{
+	DWORD Error = ERROR_SUCCESS;
+	bool bRenamed = false;
+};
+
 // Renames Temp over Target with POSIX semantics (FILE_RENAME_FLAG_POSIX_SEMANTICS, Windows 10 1709
 // and later, NTFS): the name switches over even while other handles have the old target open with
 // FILE_SHARE_DELETE - a reader keeps the old file, as on POSIX. MoveFileExW's classic semantics
-// refuse that with access denied as long as any handle is open (measured). ERROR_SUCCESS or the
-// error code.
-DWORD RenamePosix (const std::filesystem::path& Temp, const std::filesystem::path& Target)
+// refuse that with access denied as long as any handle is open (measured).
+//
+// Then it flushes the renamed file through the same handle, so the rename is on disk when this
+// returns - what MOVEFILE_WRITE_THROUGH asks of MoveFileExW. NTFS journals the rename but writes
+// its log lazily; after a power loss the name could otherwise come back pointing at the old file,
+// although the caller was told the write succeeded. The rename rewrites the file's own record (its
+// $FILE_NAME), and FlushFileBuffers writes that record's changes and the log up to them, which
+// holds the whole rename (NtFlushBuffersFileEx: without flags, data and metadata, then a hardware
+// flush). FlushFileBuffers needs write access, hence FILE_WRITE_DATA; FILE_FLAG_WRITE_THROUGH asks
+// the same of the rename itself.
+SRenameResult RenamePosix (const std::filesystem::path& Temp, const std::filesystem::path& Target)
 {
-	const CScopedHandle file(CreateFileW(Temp.c_str(), DELETE | SYNCHRONIZE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-		nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr));
+	const CScopedHandle file(CreateFileW(Temp.c_str(), DELETE | SYNCHRONIZE | FILE_WRITE_DATA,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_WRITE_THROUGH,
+		nullptr));
 	if (!file.IsValid())
 	{
-		return GetLastError();
+		return { GetLastError(), false };
 	}
 
 	// FILE_RENAME_INFO ends in the name; 8-byte aligned storage for its HANDLE member.
@@ -182,7 +199,11 @@ DWORD RenamePosix (const std::filesystem::path& Temp, const std::filesystem::pat
 	info->FileNameLength = static_cast<DWORD>(nameBytes);
 	std::memcpy(info->FileName, name.c_str(), nameBytes + sizeof(name[0]));
 	const DWORD infoBytes = static_cast<DWORD>(storage.size() * sizeof(uint64));
-	return SetFileInformationByHandle(file.Get(), FileRenameInfoEx, info, infoBytes) ? ERROR_SUCCESS : GetLastError();
+	if (!SetFileInformationByHandle(file.Get(), FileRenameInfoEx, info, infoBytes))
+	{
+		return { GetLastError(), false };
+	}
+	return { FlushFileBuffers(file.Get()) ? static_cast<DWORD>(ERROR_SUCCESS) : GetLastError(), true };
 }
 
 // What a file system or server without POSIX renames answers (FAT, older Windows, some SMB servers).
@@ -194,22 +215,6 @@ bool IsUnsupportedRename (DWORD Error) noexcept
 
 
 // ---------------- Volumes ----------------
-
-// HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\kernel\obcaseinsensitive: 1 (the default,
-// also when the value is missing) makes every Win32 open case-insensitive outside directories
-// marked case-sensitive. Read once: it takes effect only at boot.
-bool IsKernelCaseInsensitive () noexcept
-{
-	static const bool bCaseInsensitive = []
-	{
-		DWORD value = 1u;
-		DWORD size = sizeof(value);
-		const LSTATUS status = RegGetValueW(HKEY_LOCAL_MACHINE, L"SYSTEM\\CurrentControlSet\\Control\\Session Manager\\kernel",
-			L"obcaseinsensitive", RRF_RT_REG_DWORD, nullptr, &value, &size);
-		return status != ERROR_SUCCESS || value != 0u;
-	}();
-	return bCaseInsensitive;
-}
 
 // CfGetSyncRootInfoByPath (cldapi.dll, Windows 10 1709+) succeeds for any path inside a Cloud Files
 // sync root (OneDrive, and other sync clients built on that API). Loaded at run time: cfapi.h needs
@@ -404,10 +409,11 @@ bool WriteFileBytes (const std::filesystem::path& Path, std::span<const uint8> B
 
 bool ReplaceFileAtomic (const std::filesystem::path& Temp, const std::filesystem::path& Target, FString* OutError)
 {
-	// The rename takes an absolute name (a relative one would be resolved against the working
-	// directory too, but an absolute one cannot surprise).
-	std::error_code ec;
-	const std::filesystem::path target = std::filesystem::absolute(Target, ec);
+	// Absolute (the rename's name would be resolved against the working directory too, but an
+	// absolute one cannot surprise), and extended-length where long: WriteFileAtomic's temporary
+	// name is longer than the target's.
+	const std::filesystem::path temp = windows::ToWin32Path(Temp);
+	const std::filesystem::path target = windows::ToWin32Path(Target);
 
 	bool bPosix = true;
 	DWORD sleepMs = 1u;
@@ -417,11 +423,23 @@ bool ReplaceFileAtomic (const std::filesystem::path& Temp, const std::filesystem
 		DWORD error = ERROR_SUCCESS;
 		if (bPosix)
 		{
-			error = RenamePosix(Temp, ec ? Target : target);
-			if (error == ERROR_SUCCESS)
+			const SRenameResult rename = RenamePosix(temp, target);
+			if (rename.bRenamed)
 			{
-				return true;
+				if (rename.Error == ERROR_SUCCESS)
+				{
+					return true;
+				}
+				// The new file is in place, but not known to be on disk: not the durable replace the
+				// caller asked for. No retry - Temp is gone.
+				if (OutError != nullptr)
+				{
+					*OutError = FString::Format("Replaced '{}' but cannot flush it to disk: {} ({})", FString::FromPath(Target),
+						GetSystemErrorMessage(rename.Error), rename.Error);
+				}
+				return false;
 			}
+			error = rename.Error;
 			if (IsUnsupportedRename(error))
 			{
 				bPosix = false;
@@ -430,7 +448,7 @@ bool ReplaceFileAtomic (const std::filesystem::path& Temp, const std::filesystem
 		}
 		else
 		{
-			if (MoveFileExW(Temp.c_str(), Target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+			if (MoveFileExW(temp.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
 			{
 				return true;
 			}
@@ -438,10 +456,12 @@ bool ReplaceFileAtomic (const std::filesystem::path& Temp, const std::filesystem
 		}
 
 		// Transient: the target is open without FILE_SHARE_DELETE (a sharing violation, or access
-		// denied while a delete is pending or, for MoveFileExW, while any handle is open). Access
-		// denied for a read-only file or a directory is not.
+		// denied while a delete is pending or, for MoveFileExW, while any handle is open), or the
+		// temporary file is open without FILE_SHARE_WRITE. Access denied for a read-only file or a
+		// directory is not.
 		const bool bTransient = error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION
-			|| (error == ERROR_ACCESS_DENIED && !HasAttribute(Target, FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_DIRECTORY));
+			|| (error == ERROR_ACCESS_DENIED && !HasAttribute(target, FILE_ATTRIBUTE_READONLY | FILE_ATTRIBUTE_DIRECTORY)
+				&& !HasAttribute(temp, FILE_ATTRIBUTE_READONLY));
 		if (!bTransient || sleptMs >= ReplaceRetryBudgetMs)
 		{
 			if (OutError != nullptr)
@@ -465,7 +485,7 @@ bool WriteFileAtomic (const std::filesystem::path& Path, std::span<const uint8> 
 		return false;
 	}
 	// Fails at the replace anyway: say so before writing the whole file.
-	if (HasAttribute(Path, FILE_ATTRIBUTE_READONLY))
+	if (HasAttribute(windows::ToWin32Path(Path), FILE_ATTRIBUTE_READONLY))
 	{
 		windows::SetErrorText(OutError, "Cannot write", Path, "the file is read-only");
 		return false;
@@ -476,13 +496,14 @@ bool WriteFileAtomic (const std::filesystem::path& Path, std::span<const uint8> 
 	}
 
 	// CREATE_NEW: never reuse a file that happens to have the name (a temporary file left by a
-	// crashed process that had the same id).
+	// crashed process that had the same id). Its name is longer than the target's, so its path may
+	// pass MAX_PATH where the target's does not: opened by its extended-length form then.
 	std::filesystem::path temp;
 	HANDLE rawFile = INVALID_HANDLE_VALUE;
 	for (uint32 attempt = 0u; attempt < 16u && rawFile == INVALID_HANDLE_VALUE; ++attempt)
 	{
 		temp = MakeTempPath(Path, gTempFileCounter.fetch_add(1u, std::memory_order_relaxed));
-		rawFile = CreateFileW(temp.c_str(), GENERIC_WRITE, 0u, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+		rawFile = CreateFileW(windows::ToWin32Path(temp).c_str(), GENERIC_WRITE, 0u, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
 		if (rawFile == INVALID_HANDLE_VALUE && GetLastError() != ERROR_FILE_EXISTS)
 		{
 			break;
@@ -511,7 +532,8 @@ bool WriteFileAtomic (const std::filesystem::path& Path, std::span<const uint8> 
 
 	if (!bWritten || !ReplaceFileAtomic(temp, Path, OutError))
 	{
-		DeleteFileW(temp.c_str());
+		// Gone already when the replace went through but could not be flushed.
+		DeleteFileW(windows::ToWin32Path(temp).c_str());
 		return false;
 	}
 	return true;
@@ -572,7 +594,8 @@ std::optional<SVolumeInfo> QueryVolumeInfo (const std::filesystem::path& Path, F
 	{
 		volume.bDirectoryCaseSensitive = (caseInfo.Flags & FILE_CS_FLAG_CASE_SENSITIVE_DIR) != 0u;
 	}
-	volume.bCaseSensitive = volume.bVolumeCaseSensitive && (volume.bDirectoryCaseSensitive || !IsKernelCaseInsensitive());
+	// What FRT's own opens do (FileSystem.h): the kernel's obcaseinsensitive plays no part.
+	volume.bCaseSensitive = volume.bVolumeCaseSensitive && volume.bDirectoryCaseSensitive;
 
 	const std::filesystem::path root = GetVolumeRoot(directory);
 	if (!root.empty())

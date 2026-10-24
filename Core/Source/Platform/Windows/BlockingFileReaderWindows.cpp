@@ -12,6 +12,21 @@ namespace
 // The most one ReadFile call is asked for: its count is a DWORD, and smaller calls keep a failure
 // from losing much. Larger reads are split.
 constexpr uint64 MaxReadPerCall = 1ull << 30u;
+
+EFileFailure ToFileFailure (DWORD Error) noexcept
+{
+	switch (Error)
+	{
+	case ERROR_FILE_NOT_FOUND:
+	case ERROR_PATH_NOT_FOUND:
+		return EFileFailure::NotFound;
+	case ERROR_SHARING_VIOLATION:
+	case ERROR_LOCK_VIOLATION:
+		return EFileFailure::InUse;
+	default:
+		return EFileFailure::Other;
+	}
+}
 }
 
 
@@ -23,6 +38,7 @@ CBlockingFileReader::~CBlockingFileReader ()
 CBlockingFileReader::CBlockingFileReader (CBlockingFileReader&& Other) noexcept
 	: Handle(std::exchange(Other.Handle, nullptr))
 	, Size(std::exchange(Other.Size, 0u))
+	, LastFailure(std::exchange(Other.LastFailure, EFileFailure::None))
 {}
 
 CBlockingFileReader& CBlockingFileReader::operator= (CBlockingFileReader&& Other) noexcept
@@ -32,6 +48,7 @@ CBlockingFileReader& CBlockingFileReader::operator= (CBlockingFileReader&& Other
 		Close();
 		Handle = std::exchange(Other.Handle, nullptr);
 		Size = std::exchange(Other.Size, 0u);
+		LastFailure = std::exchange(Other.LastFailure, EFileFailure::None);
 	}
 	return *this;
 }
@@ -45,7 +62,9 @@ bool CBlockingFileReader::Open (const std::filesystem::path& Path, FString* OutE
 		nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
 	if (!file.IsValid())
 	{
-		windows::SetError(OutError, "Cannot open", Path, GetLastError());
+		const DWORD error = GetLastError();
+		LastFailure = ToFileFailure(error);
+		windows::SetError(OutError, "Cannot open", Path, error);
 		return false;
 	}
 
@@ -53,12 +72,15 @@ bool CBlockingFileReader::Open (const std::filesystem::path& Path, FString* OutE
 	LARGE_INTEGER size = {};
 	if (!GetFileSizeEx(file.Get(), &size))
 	{
-		windows::SetError(OutError, "Cannot get the size of", Path, GetLastError());
+		const DWORD error = GetLastError();
+		LastFailure = ToFileFailure(error);
+		windows::SetError(OutError, "Cannot get the size of", Path, error);
 		return false;
 	}
 
 	Handle = file.Release();
 	Size = static_cast<uint64>(size.QuadPart);
+	LastFailure = EFileFailure::None;
 	return true;
 }
 
@@ -76,12 +98,14 @@ std::optional<uint64> CBlockingFileReader::ReadAt (uint64 Offset, std::span<uint
 {
 	if (Handle == nullptr)
 	{
+		LastFailure = EFileFailure::Other;
 		if (OutError != nullptr)
 		{
 			*OutError = "ReadAt on a reader that is not open";
 		}
 		return std::nullopt;
 	}
+	LastFailure = EFileFailure::None;
 
 	uint64 done = 0u;
 	while (done < Destination.size())
@@ -103,6 +127,7 @@ std::optional<uint64> CBlockingFileReader::ReadAt (uint64 Offset, std::span<uint
 			{
 				break;   // at or past the end: what was read so far is all there is
 			}
+			LastFailure = ToFileFailure(error);
 			if (OutError != nullptr)
 			{
 				*OutError = FString::Format("Reading {} bytes at offset {} failed: {} ({})", wanted, position,

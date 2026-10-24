@@ -13,6 +13,20 @@
 namespace frt::platform
 {
 /**
+ * Why a file operation failed, as far as a caller acts on it. OutError says it in words; this says
+ * whether to retry: a file that is gone or in use may well be readable after the watcher's settle
+ * window (§5.4), the rest will not clear by itself.
+ */
+enum class EFileFailure : uint8
+{
+	None,       // it did not fail
+	NotFound,   // no such file, or a directory on the way is missing
+	InUse,      // another process holds the file, or the bytes asked for, in a way that refuses this access for now
+	            // (Windows: a sharing violation - a writer that denies reading - or a byte-range lock from LockFileEx)
+	Other,      // anything else: no access, a directory, a device error, a reader that is not open
+};
+
+/**
  * Synchronous, positional reads of one file: open, size, ReadAt(offset, bytes), close.
  *
  * The asset system reads in ranges (a chunk of a cooked file, one record of a DDC value, a file
@@ -61,8 +75,13 @@ public:
 	// Exactly Destination.size() bytes from Offset; false on a failed or short read.
 	[[nodiscard]] bool ReadExactAt (uint64 Offset, std::span<uint8> Destination, FString* OutError = nullptr);
 
+	// Why the last Open or ReadAt failed (None after a success; a short read is no failure).
+	// ReadFileChunksStable retries InUse and NotFound instead of reporting them.
+	[[nodiscard]] EFileFailure GetLastFailure () const noexcept { return LastFailure; }
+
 private:
 	void* Handle = nullptr;   // the OS file handle; nullptr when closed
 	uint64 Size = 0u;
+	EFileFailure LastFailure = EFileFailure::None;
 };
 }

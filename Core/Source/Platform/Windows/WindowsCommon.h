@@ -5,6 +5,7 @@
 // Tools/Lint/CheckPlatform.py keeps Win32 out of the asset system's sources).
 
 #include <filesystem>
+#include <system_error>
 
 #include <Windows.h>
 
@@ -48,6 +49,40 @@ public:
 private:
 	HANDLE Handle = nullptr;
 };
+
+// Path as the Win32 file calls take it at any length. The engine does not lift MAX_PATH (no
+// longPathAware manifest, and LongPathsEnabled is off on most machines), so a path of MAX_PATH
+// units or more gets the extended-length prefix - "\\?\C:\..." or "\\?\UNC\server\share\..." - which
+// lifts the limit to about 32767 units. The prefix also turns off the normalization Win32 does to
+// paths, so the path is first made absolute by GetFullPathNameW (std::filesystem::absolute), the
+// normalization every Win32 call applies ("." and "..", '/' to '\'); shorter paths are returned in
+// that form unprefixed, which is what the call would have opened anyway. Device and
+// already-prefixed paths ("\\.\", "\\?\") pass unchanged. The same rule as UE's
+// FWindowsPlatformFile::NormalizeWindowsPath.
+[[nodiscard]] inline std::filesystem::path ToWin32Path (const std::filesystem::path& Path)
+{
+	const auto isDeviceOrExtended = [] (const std::filesystem::path::string_type& Text)
+	{
+		return Text.size() >= 4u && Text[0] == L'\\' && Text[1] == L'\\' && (Text[2] == L'?' || Text[2] == L'.') && Text[3] == L'\\';
+	};
+	if (isDeviceOrExtended(Path.native()))
+	{
+		return Path;
+	}
+
+	std::error_code ec;
+	std::filesystem::path absolute = std::filesystem::absolute(Path, ec);
+	const std::filesystem::path::string_type& full = absolute.native();
+	if (ec || full.size() < MAX_PATH || isDeviceOrExtended(full))
+	{
+		return ec ? Path : absolute;
+	}
+	if (full.size() >= 2u && full[0] == L'\\' && full[1] == L'\\')
+	{
+		return std::filesystem::path(L"\\\\?\\UNC" + full.substr(1u));   // \\server\share -> \\?\UNC\server\share
+	}
+	return std::filesystem::path(L"\\\\?\\" + full);
+}
 
 // "<What> '<Path>': <system message> (<code>)" into *OutError, when there is one.
 inline void SetError (FString* OutError, FStringView What, const std::filesystem::path& Path, DWORD ErrorCode)

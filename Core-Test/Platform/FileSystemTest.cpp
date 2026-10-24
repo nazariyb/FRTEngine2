@@ -1,8 +1,10 @@
 // The asset system's file layer (Platform/FileSystem.h): identities follow a file through a rename
 // and tell a copy apart, directory listings agree with Stat, WriteFileAtomic never leaves a torn
-// file - not even when the writing process is killed at a random moment - and ReadFileChunksStable
-// never calls a read stable when the file changed underneath it. Everything runs in directories
-// with non-ASCII names, which every path conversion on the way has to survive.
+// file - not even when the writing process is killed at a random moment - and works on every path
+// WriteFileBytes can write, and ReadFileChunksStable never calls a read stable when the file
+// changed underneath it, and retries a file a writer still holds. Everything runs in directories
+// with non-ASCII names, which every path conversion on the way has to survive, and nothing is left
+// behind - not even in the Recycle Bin.
 #include <gtest/gtest.h>
 
 #include "TestCommon.h"
@@ -20,6 +22,7 @@
 #include <string_view>
 #include <system_error>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 #include "Containers/String.h"
@@ -28,6 +31,12 @@
 #include "Platform/Platform.h"
 
 #include <Windows.h>
+#include <KnownFolders.h>
+#include <ShlObj.h>
+#include <ShObjIdl.h>
+#include <shellapi.h>
+#include <shlguid.h>
+#include <wrl/client.h>
 
 using namespace frt;
 using namespace std::chrono_literals;
@@ -98,6 +107,12 @@ std::vector<FString> ListNames (const std::filesystem::path& Directory)
 	return names;
 }
 
+// Identities as keys of a hash set, the way the scan's pairing tables use them.
+struct SIdentityHash
+{
+	size_t operator() (const platform::SFileIdentity& Identity) const noexcept { return static_cast<size_t>(Identity.GetHash()); }
+};
+
 // What WriteFileAtomic's temporary files are called (FileSystem.h): ".<name>.<pid>-<n>.tmp".
 bool IsTemporaryName (FStringView Name)
 {
@@ -111,6 +126,79 @@ void AgeFile (const std::filesystem::path& Path)
 	std::error_code ec;
 	std::filesystem::last_write_time(Path, std::filesystem::file_time_type::clock::now() - 1h, ec);
 	ASSERT_FALSE(ec) << FString::FromUtf8Lossy(ec.message()).CStr();
+}
+
+
+// ---------------- The Recycle Bin ----------------
+
+// Where the Recycle Bin says an item came from (its "Original Location" column: PSGUID_DISPLACED
+// and PID_DISPLACED_FROM of shlguid.h).
+constexpr PROPERTYKEY RecycledFromKey = { { 0x9B174B33u, 0x40FFu, 0x11D2u, { 0xA2u, 0x7Eu, 0x00u, 0xC0u, 0x4Fu, 0xC3u, 0x08u, 0x71u } }, 2u };
+
+// Deletes for good what a test moved to the Recycle Bin, so that running the suite leaves nothing
+// in the user's Bin: every item whose name starts with NamePrefix (unique to the test run) and that
+// came from Directory (compared by identity, so short and long spellings of the path agree). Nothing
+// else is touched. Returns how many items it found and deleted - finding them there is also the half
+// of "trash, then restore" a test can check.
+uint32 PurgeFromRecycleBin (FStringView NamePrefix, const std::filesystem::path& Directory)
+{
+	using Microsoft::WRL::ComPtr;
+	const HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+	uint32 purged = 0u;
+	{
+		const std::optional<platform::SFileIdentity> directory = platform::GetFileIdentity(Directory);
+		std::vector<ComPtr<IShellItem>> matches;
+		ComPtr<IShellItem> bin;
+		ComPtr<IEnumShellItems> items;
+		if (directory.has_value()
+			&& SUCCEEDED(SHGetKnownFolderItem(FOLDERID_RecycleBinFolder, KF_FLAG_DEFAULT, nullptr, IID_PPV_ARGS(&bin)))
+			&& SUCCEEDED(bin->BindToHandler(nullptr, BHID_EnumItems, IID_PPV_ARGS(&items))))
+		{
+			ComPtr<IShellItem> item;
+			while (items->Next(1u, item.ReleaseAndGetAddressOf(), nullptr) == S_OK)
+			{
+				// The display name of an item in the Bin is its original path (measured); its last part is
+				// the file's name as Explorer shows it, without the extension where it hides them: a
+				// prefix match.
+				PWSTR name = nullptr;
+				bool bMatch = SUCCEEDED(item->GetDisplayName(SIGDN_NORMALDISPLAY, &name))
+					&& FString::FromPath(std::filesystem::path(name).filename()).StartsWith(NamePrefix);
+				CoTaskMemFree(name);
+
+				ComPtr<IShellItem2> details;
+				PWSTR from = nullptr;
+				bMatch = bMatch && SUCCEEDED(item.As(&details)) && SUCCEEDED(details->GetString(RecycledFromKey, &from))
+					&& platform::GetFileIdentity(std::filesystem::path(from)) == directory;
+				CoTaskMemFree(from);
+				if (bMatch)
+				{
+					matches.push_back(item);
+				}
+			}
+		}
+
+		// Deleting an item that is in the Recycle Bin deletes it for good (no FOFX_RECYCLEONDELETE).
+		ComPtr<IFileOperation> operation;
+		if (!matches.empty() && SUCCEEDED(CoCreateInstance(__uuidof(FileOperation), nullptr, CLSCTX_ALL, IID_PPV_ARGS(&operation)))
+			&& SUCCEEDED(operation->SetOperationFlags(FOF_NO_UI)))
+		{
+			bool bQueued = true;
+			for (const ComPtr<IShellItem>& match : matches)
+			{
+				bQueued = bQueued && SUCCEEDED(operation->DeleteItem(match.Get(), nullptr));
+			}
+			BOOL bAborted = FALSE;
+			if (bQueued && SUCCEEDED(operation->PerformOperations()) && SUCCEEDED(operation->GetAnyOperationsAborted(&bAborted)) && !bAborted)
+			{
+				purged = static_cast<uint32>(matches.size());
+			}
+		}
+	}
+	if (SUCCEEDED(init))
+	{
+		CoUninitialize();
+	}
+	return purged;
 }
 
 
@@ -406,19 +494,17 @@ TEST_F(FileSystemTest, ListingOfALargeDirectoryIsComplete)
 
 	uint32 listed = 0u;
 	std::set<FString> names;
-	std::vector<platform::SFileIdentity> identities;
+	std::unordered_set<platform::SFileIdentity, SIdentityHash> identities;
 	ASSERT_TRUE(platform::EnumerateDirectory(Dir, [&] (const platform::SDirectoryEntry& Entry)
 	{
 		++listed;
 		names.insert(FString(Entry.Name));
-		identities.push_back(Entry.Stat.Identity);
+		EXPECT_TRUE(Entry.Stat.Identity.IsValid());
+		identities.insert(Entry.Stat.Identity);
 	}));
 	EXPECT_EQ(listed, Count);
 	EXPECT_EQ(names.size(), Count);
-	for (size_t i = 1u; i < identities.size(); ++i)
-	{
-		ASSERT_NE(identities[i], identities[i - 1u]);
-	}
+	EXPECT_EQ(identities.size(), Count);   // every file its own identity
 }
 
 TEST_F(FileSystemTest, ListingStopsWhenTheCallbackSaysSoAndReportsErrors)
@@ -494,6 +580,69 @@ TEST_F(FileSystemTest, WriteFileAtomicReplacesAndLeavesNoTemporaryFile)
 	FString error;
 	ASSERT_TRUE(platform::WriteFileAtomic(longName, AsBytes("long"), true, &error)) << error.CStr();
 	EXPECT_EQ(ReadBytes(longName).size(), 4u);
+}
+
+// The temporary file's name is longer than the target's, and the engine does not lift MAX_PATH (no
+// longPathAware manifest): a target whose path is a little under the limit must still be written
+// atomically wherever WriteFileBytes can write it in place. The target's path is 255 UTF-16 units,
+// its temporary file's well over 259.
+TEST_F(FileSystemTest, WriteFileAtomicWorksWhereverWriteFileBytesDoes)
+{
+	constexpr size_t TargetUnits = 255u;
+	constexpr size_t NameUnits = 14u;
+	const std::filesystem::path parentStart = Dir / FStringView("Довгий шлях ").ToPath();
+	const size_t fill = TargetUnits - NameUnits - 1u - parentStart.native().size();
+	ASSERT_LT(fill, 255u);
+	const std::filesystem::path parent = Dir / (FStringView("Довгий шлях ").ToPath().native() + std::wstring(fill, L'ш'));
+	const std::filesystem::path target = parent / FStringView("Ціль 目标 файл.b").ToPath();
+	ASSERT_EQ(target.filename().native().size(), NameUnits);
+	ASSERT_EQ(target.native().size(), TargetUnits);
+	std::error_code ec;
+	ASSERT_TRUE(std::filesystem::create_directories(parent, ec)) << FString::FromUtf8Lossy(ec.message()).CStr();
+
+	FString error;
+	ASSERT_TRUE(platform::WriteFileBytes(target, AsBytes("in place"), false, &error)) << error.CStr();
+
+	const std::vector<uint8> first = MakeBytes(3000u, 21u);
+	ASSERT_TRUE(platform::WriteFileAtomic(target, first, false, &error)) << error.CStr();
+	EXPECT_EQ(ReadBytes(target), first);
+	const std::vector<uint8> second = MakeBytes(100u, 22u);
+	ASSERT_TRUE(platform::WriteFileAtomic(target, second, false, &error)) << error.CStr();
+	EXPECT_EQ(ReadBytes(target), second);
+	EXPECT_EQ(ListNames(parent), std::vector<FString>{ FString::FromPath(target.filename()) });
+}
+
+// Past MAX_PATH the replace runs on extended-length paths from end to end, the rename's new name
+// included: a target of about 290 units in a directory this test makes by its "\\?\" path. Read back
+// and cleaned up by "\\?\" paths too - nothing else in the engine reaches such paths yet.
+TEST_F(FileSystemTest, WriteFileAtomicTakesATargetPastMaxPath)
+{
+	const std::wstring prefix = L"\\\\?\\";
+	const std::filesystem::path parent = Dir / std::filesystem::path(std::wstring(220u, L'д'));
+	const std::filesystem::path target = parent / FStringView("Ціль 目标.bin").ToPath();
+	ASSERT_GE(target.native().size(), static_cast<size_t>(MAX_PATH));
+	ASSERT_TRUE(CreateDirectoryW((prefix + parent.native()).c_str(), nullptr)) << platform::GetSystemErrorMessage(GetLastError()).CStr();
+
+	FString error;
+	const bool bFirst = platform::WriteFileAtomic(target, AsBytes("first"), false, &error);
+	EXPECT_TRUE(bFirst) << error.CStr();
+	const bool bSecond = platform::WriteFileAtomic(target, AsBytes("past MAX_PATH"), false, &error);
+	EXPECT_TRUE(bSecond) << error.CStr();
+
+	char bytes[32] = {};
+	DWORD read = 0u;
+	const HANDLE file = CreateFileW((prefix + target.native()).c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+		nullptr);
+	if (file != INVALID_HANDLE_VALUE)
+	{
+		ReadFile(file, bytes, sizeof(bytes), &read, nullptr);
+		CloseHandle(file);
+	}
+	EXPECT_EQ(std::string_view(bytes, read), "past MAX_PATH");
+
+	// Only the file was there: no temporary file left, or the directory would not go.
+	EXPECT_TRUE(DeleteFileW((prefix + target.native()).c_str()));
+	EXPECT_TRUE(RemoveDirectoryW((prefix + parent.native()).c_str())) << platform::GetSystemErrorMessage(GetLastError()).CStr();
 }
 
 TEST_F(FileSystemTest, WriteFileAtomicRefusesAReadOnlyFileAndKeepsIt)
@@ -737,6 +886,44 @@ TEST_F(FileSystemTest, StableReadReportsATruncation)
 	EXPECT_EQ(result, platform::EStableRead::Changed);
 }
 
+// A writer that holds the file without letting anyone read it (share mode 0, as some editors save)
+// is in the middle of a save: the read is retried after the settle window (§5.4 backs off on a
+// sharing violation), not reported as a failure.
+TEST_F(FileSystemTest, StableReadRetriesAFileAWriterHoldsExclusively)
+{
+	const std::filesystem::path file = File("Зайнятий 占用.bin");
+	ASSERT_TRUE(platform::WriteFileBytes(file, MakeBytes(1000u, 12u)));
+
+	const HANDLE writer = CreateFileW(file.c_str(), GENERIC_WRITE, 0u, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+	ASSERT_NE(writer, INVALID_HANDLE_VALUE);
+	const platform::EStableRead held = platform::ReadFileChunksStable(file, [] (std::span<const uint8>) {});
+	CloseHandle(writer);
+	EXPECT_EQ(held, platform::EStableRead::Changed);
+
+	EXPECT_EQ(platform::ReadFileChunksStable(file, [] (std::span<const uint8>) {}), platform::EStableRead::Stable);
+}
+
+// The same for a writer that locks the bytes it is rewriting (LockFileEx): the read of a locked range
+// fails for now, and the read is retried.
+TEST_F(FileSystemTest, StableReadRetriesARangeAWriterLocked)
+{
+	const std::filesystem::path file = File("Замкнений діапазон.bin");
+	ASSERT_TRUE(platform::WriteFileBytes(file, MakeBytes(100000u, 13u)));
+
+	const HANDLE writer = CreateFileW(file.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+		nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+	ASSERT_NE(writer, INVALID_HANDLE_VALUE);
+	OVERLAPPED range = {};
+	range.Offset = 50000u;
+	ASSERT_TRUE(LockFileEx(writer, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0u, 1000u, 0u, &range));
+	const platform::EStableRead locked = platform::ReadFileChunksStable(file, [] (std::span<const uint8>) {}, 4096u);
+	UnlockFileEx(writer, 0u, 1000u, 0u, &range);
+	CloseHandle(writer);
+	EXPECT_EQ(locked, platform::EStableRead::Changed);
+
+	EXPECT_EQ(platform::ReadFileChunksStable(file, [] (std::span<const uint8>) {}, 4096u), platform::EStableRead::Stable);
+}
+
 // Many reads while a writer keeps replacing the file, pausing a random few milliseconds between
 // versions so that some reads fall between two writes and others across one: every read called
 // Stable must have delivered exactly one complete version - the hash a scan would store is never of
@@ -793,11 +980,14 @@ TEST_F(FileSystemTest, StableReadNeverCallsAMixedReadStable)
 // ---------------- Recycle Bin ----------------
 
 // Restoring from the Recycle Bin is not scriptable, so this checks the half that is: the file is
-// gone from its directory and MoveToTrash says it reached the Bin. Each run leaves two small files
-// named "FRT Core-Test ..." in the user's Recycle Bin.
+// gone from its directory, MoveToTrash says it reached the Bin, and it is there. Then it deletes its
+// two files from the Bin for good, so no run leaves anything in the user's Recycle Bin.
 TEST_F(FileSystemTest, MoveToTrashRemovesTheFile)
 {
-	const std::filesystem::path file = File("FRT Core-Test кошик 🗑.txt");
+	// A name no other item in the Bin has: the clean-up deletes nothing but what this test put there.
+	std::random_device random;
+	const FString stem = FString::Format("FRT Core-Test кошик {:08x}{:08x}", random(), random());
+	const std::filesystem::path file = File(stem + " 🗑.txt");
 	ASSERT_TRUE(platform::WriteFileBytes(file, AsBytes("в кошик")));
 	FString error;
 	EXPECT_TRUE(platform::MoveToTrash(file, &error)) << error.CStr();
@@ -808,7 +998,7 @@ TEST_F(FileSystemTest, MoveToTrashRemovesTheFile)
 	EXPECT_FALSE(error.IsEmpty());
 
 	// From a thread in the multithreaded apartment, where IFileOperation cannot run itself.
-	const std::filesystem::path other = File("FRT Core-Test кошик MTA.txt");
+	const std::filesystem::path other = File(stem + " MTA.txt");
 	ASSERT_TRUE(platform::WriteFileBytes(other, AsBytes("в кошик")));
 	bool bTrashed = false;
 	std::thread mta([&]
@@ -823,6 +1013,9 @@ TEST_F(FileSystemTest, MoveToTrashRemovesTheFile)
 	mta.join();
 	EXPECT_TRUE(bTrashed) << error.CStr();
 	EXPECT_FALSE(std::filesystem::exists(other));
+
+	EXPECT_EQ(PurgeFromRecycleBin(stem, Dir), 2u) << "both files should be in the Recycle Bin";
+	EXPECT_EQ(PurgeFromRecycleBin(stem, Dir), 0u) << "and gone from it after the clean-up";
 }
 
 
@@ -844,8 +1037,9 @@ TEST_F(FileSystemTest, VolumeInfoOfTheTempDirectory)
 		// NTFS can hold names that differ only in case, but lookups here do not tell them apart.
 		EXPECT_TRUE(volume->bVolumeCaseSensitive);
 	}
-	EXPECT_EQ(volume->bCaseSensitive, volume->bVolumeCaseSensitive && volume->bDirectoryCaseSensitive)
-		<< "unless this system turned the kernel's obcaseinsensitive off";
+	// Whatever the kernel's obcaseinsensitive says: FRT's opens fold case outside case-sensitive
+	// directories either way.
+	EXPECT_FALSE(volume->bCaseSensitive);
 
 	// A file: the facts of its directory.
 	const std::filesystem::path file = File("Том.txt");

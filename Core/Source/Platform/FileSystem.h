@@ -177,24 +177,29 @@ bool EnumerateDirectory (const T&, F&&, FString* = nullptr) = delete;
 FRT_CORE_API bool WriteFileBytes (const std::filesystem::path& Path, std::span<const uint8> Bytes, bool bCreateDirectories = true,
 	FString* OutError = nullptr);
 
-// Moves Temp over Target in one step: readers see the old file or the new one, never a mix. Target
-// may not exist yet. Both must be on the same volume (normally the same directory:
-// WriteFileAtomic). Temp keeps its identity and Target's old identity is gone; a reader that has
-// the old Target open keeps reading the old bytes. On failure Temp is left where it was, for the
-// caller to delete or retry.
+// Moves Temp over Target in one step: readers see the old file or the new one, never a mix, and
+// once it returns true the new file survives a crash or power loss. Target may not exist yet. Both
+// must be on the same volume (normally the same directory: WriteFileAtomic), and Temp must be
+// writable (it is a file the caller just wrote). Temp keeps its identity and Target's old identity
+// is gone; a reader that has the old Target open keeps reading the old bytes. On failure Temp is
+// left where it was, for the caller to delete or retry - except in one case: the rename went
+// through but could not be flushed to disk (a device error), where Target already holds the new
+// file, Temp is gone, and false says the replace is not known to be durable.
 //
 // Windows: a rename with POSIX semantics (SetFileInformationByHandle(FileRenameInfoEx,
 // FILE_RENAME_FLAG_REPLACE_IF_EXISTS | FILE_RENAME_FLAG_POSIX_SEMANTICS), Windows 10 1709+ on NTFS),
 // which replaces a target other handles hold open with FILE_SHARE_DELETE - CBlockingFileReader's
-// own, a Stat in another thread. Where the file system does not support it, MoveFileExW(
-// MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH), which fails while any handle is open. Both
-// are journaled metadata operations on NTFS: after a crash the name holds the old file or the new
-// one. A target someone holds open without FILE_SHARE_DELETE (an indexer, a virus scanner, a
-// viewer) fails with a sharing violation or access denied: retried for about a second with growing
-// sleeps, then reported. UE retries its moves for five seconds (FFileManagerGeneric::Move,
-// 10 x 0.5 s), but deletes the target first, so its move is not atomic; an interactive save here
-// would rather fail visibly than hang. A read-only target fails at once (no retry: it will not
-// clear by itself).
+// own, a Stat in another thread - followed by FlushFileBuffers on the renamed file, which on NTFS
+// writes its metadata and the log that holds the rename. Where the file system does not support
+// it, MoveFileExW(MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH), which fails while any
+// handle is open. Both are journaled metadata operations on NTFS: after a crash the name holds the
+// old file or the new one. Paths of MAX_PATH units or more are passed in their extended-length
+// form ("\\?\"). A target someone holds open without FILE_SHARE_DELETE (an indexer, a virus
+// scanner, a viewer) fails with a sharing violation or access denied: retried for about a second
+// with growing sleeps, then reported. UE retries its moves for five seconds
+// (FFileManagerGeneric::Move, 10 x 0.5 s), but deletes the target first, so its move is not
+// atomic; an interactive save here would rather fail visibly than hang. A read-only target fails
+// at once (no retry: it will not clear by itself).
 FRT_CORE_API bool ReplaceFileAtomic (const std::filesystem::path& Temp, const std::filesystem::path& Target, FString* OutError = nullptr);
 
 // Path holds Bytes afterwards, or - after any failure or crash - exactly what it held before. The
@@ -202,7 +207,9 @@ FRT_CORE_API bool ReplaceFileAtomic (const std::filesystem::path& Temp, const st
 // a .tmp, both excluded from asset scans, §3.5.2), are flushed to disk (FlushFileBuffers), then
 // ReplaceFileAtomic swaps it in. A failure deletes the temporary file; a crash can leave one
 // behind, never a partial Path. Path gets a new identity. Creates the parent directories first
-// when bCreateDirectories.
+// when bCreateDirectories. The temporary file's name is longer than Path's; on Windows it is opened
+// by its extended-length path where that passes MAX_PATH, so WriteFileAtomic works wherever
+// WriteFileBytes does.
 FRT_CORE_API bool WriteFileAtomic (const std::filesystem::path& Path, std::span<const uint8> Bytes, bool bCreateDirectories = true,
 	FString* OutError = nullptr);
 // The same for text: its bytes as given (UTF-8 without a BOM, line endings untouched).
@@ -237,12 +244,16 @@ bool MoveToTrash (const T&, FString* = nullptr) = delete;
 /**
  * What the asset system must know about the volume and directory a mount lives in (§3.1, §5.2).
  *
- * bCaseSensitive is whether names that differ only in case are different files here, which decides
- * how the registry's path index compares (§5.2). On Windows that is not the volume flag alone:
- * NTFS reports FILE_CASE_SENSITIVE_SEARCH (it can hold such names), but Win32 opens are
- * case-insensitive unless the directory has the per-directory case-sensitive attribute ("fsutil
- * file setCaseSensitiveInfo", made for WSL) or the system turned the kernel's obcaseinsensitive
- * off. So bCaseSensitive = bVolumeCaseSensitive && (bDirectoryCaseSensitive || that system setting).
+ * bCaseSensitive is whether names that differ only in case are different files to FRT's own opens
+ * here, which decides how the registry's path index compares (§5.2). On Windows that is not the
+ * volume flag alone: NTFS reports FILE_CASE_SENSITIVE_SEARCH (it can hold such names), but
+ * CreateFileW asks for a case-insensitive lookup (OBJ_CASE_INSENSITIVE, unless
+ * FILE_FLAG_POSIX_SEMANTICS, which FRT never passes), and NTFS grants it everywhere except in a
+ * directory with the per-directory case-sensitive attribute ("fsutil file setCaseSensitiveInfo",
+ * made for WSL). So bCaseSensitive = bVolumeCaseSensitive && bDirectoryCaseSensitive. The kernel's
+ * obcaseinsensitive = 0 changes nothing for FRT: it only stops Windows from forcing case-insensitive
+ * lookups on callers that ask for case-sensitive ones (POSIX-semantics tools), which can leave
+ * names that differ only in case in an ordinary directory - PATH001 reports those.
  *
  * bRemote and bCloudPlaceholder trigger the one-time warning of §3.1 for a Local/ cache on a
  * network share or a cloud-synced folder (OneDrive Files On-Demand): reading a placeholder
@@ -266,10 +277,10 @@ struct SVolumeInfo
 // exist or its volume cannot be queried.
 //
 // Windows: GetVolumeInformationByHandleW (file system name and flags), GetFileInformationByHandleEx
-// (FileCaseSensitiveInfo), the kernel's obcaseinsensitive registry value, GetDriveTypeW of the
-// volume root, and for the cloud: CfGetSyncRootInfoByPath (any Cloud Files sync root - OneDrive,
-// and others built on that API) or a placeholder attribute on the directory itself
-// (FILE_ATTRIBUTE_RECALL_ON_OPEN, RECALL_ON_DATA_ACCESS, PINNED, UNPINNED, OFFLINE).
+// (FileCaseSensitiveInfo), GetDriveTypeW of the volume root, and for the cloud:
+// CfGetSyncRootInfoByPath (any Cloud Files sync root - OneDrive, and others built on that API) or a
+// placeholder attribute on the directory itself (FILE_ATTRIBUTE_RECALL_ON_OPEN,
+// RECALL_ON_DATA_ACCESS, PINNED, UNPINNED, OFFLINE).
 [[nodiscard]] FRT_CORE_API std::optional<SVolumeInfo> QueryVolumeInfo (const std::filesystem::path& Path, FString* OutError = nullptr);
 
 template <NarrowText T>
@@ -284,9 +295,12 @@ std::optional<SVolumeInfo> QueryVolumeInfo (const T&, FString* = nullptr) = dele
  * So the reader stats the file before (size, last write time, identity), reads it in chunks
  * through CBlockingFileReader, and stats it again: any difference, a size other than the one
  * stat saw, or a read that ends early means Changed, and the caller discards what it computed and
- * retries after the watcher's settle window (a file that vanished between the first stat and the
- * open counts as Changed). Failed: the file could not be read at all - missing at the start, a
- * directory, no access, or held by a writer that denies reading.
+ * retries after the watcher's settle window. A file that is in the middle of being written counts
+ * as Changed too: one that vanished between the first stat and the open, and one held by a writer
+ * that denies reading or has locked the bytes being read (EFileFailure::InUse: an editor saving
+ * with share mode 0; §5.4 backs off on a sharing violation). A file some process keeps locked for
+ * good stays Changed on every retry; the caller's retry limit turns that into an error. Failed:
+ * the file could not be read at all - missing at the start, a directory, no access.
  *
  * What it cannot see: bytes overwritten in place with neither the size nor the last write time
  * changing - a rewrite within one tick of the file system's clock (SFileStat), or further writes by
@@ -322,7 +336,12 @@ EStableRead ReadFileChunksStable (const std::filesystem::path& Path, F&& OnChunk
 	CBlockingFileReader reader;
 	if (!reader.Open(Path))
 	{
-		// Stat found it a moment ago: replaced or deleted since, or opened by someone denying reads.
+		// Stat found it a moment ago: replaced or deleted since, or held by a writer denying reads.
+		const EFileFailure failure = reader.GetLastFailure();
+		if (failure == EFileFailure::InUse || failure == EFileFailure::NotFound)
+		{
+			return EStableRead::Changed;
+		}
 		return Stat(Path).has_value() ? EStableRead::Failed : EStableRead::Changed;
 	}
 	if (reader.GetSize() != before->Size)
@@ -338,7 +357,8 @@ EStableRead ReadFileChunksStable (const std::filesystem::path& Path, F&& OnChunk
 		const std::optional<uint64> read = reader.ReadAt(offset, std::span<uint8>(buffer.data(), static_cast<size_t>(wanted)));
 		if (!read.has_value())
 		{
-			return EStableRead::Failed;
+			// A writer's lock on these bytes clears; a device error does not.
+			return reader.GetLastFailure() == EFileFailure::InUse ? EStableRead::Changed : EStableRead::Failed;
 		}
 		if (*read == 0u)
 		{
