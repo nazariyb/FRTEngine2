@@ -459,17 +459,40 @@ private:
 		if (Glob.Segments.back().bGlobstar)
 		{
 			Glob.Segments.pop_back();
-			CPathGlob::SSegment anySegment;
-			anySegment.FirstToken = static_cast<uint32>(Glob.Tokens.size());
-			anySegment.TokenCount = 1u;
-			Glob.Tokens.push_back({ CPathGlob::ETokenKind::Star, 0u });
-			Glob.Segments.push_back(anySegment);
-			AddGlobstar(alternative.FirstSegment);
+			AddEverythingBelow(alternative.FirstSegment);
+			alternative.bEverythingBelow = true;
 		}
-
 		alternative.SegmentCount = static_cast<uint32>(Glob.Segments.size()) - alternative.FirstSegment;
 		Glob.Alternatives.push_back(alternative);
+
+		// gitignore's folder rule: a folder that matches takes everything below it, which is the same
+		// segments followed by "/**". An alternative that already ends so takes all below its matches.
+		if (!alternative.bEverythingBelow)
+		{
+			CPathGlob::SAlternative below;
+			below.FirstSegment = static_cast<uint32>(Glob.Segments.size());
+			for (uint32 i = 0u; i < alternative.SegmentCount; ++i)
+			{
+				const CPathGlob::SSegment segment = Glob.Segments[alternative.FirstSegment + i];
+				Glob.Segments.push_back(segment);
+			}
+			AddEverythingBelow(below.FirstSegment);
+			below.SegmentCount = static_cast<uint32>(Glob.Segments.size()) - below.FirstSegment;
+			below.bEverythingBelow = true;
+			Glob.Alternatives.push_back(below);
+		}
 		return true;
+	}
+
+	// A trailing "/**": a '*' segment, so at least one segment more, then a globstar for the rest.
+	void AddEverythingBelow (uint32 FirstSegment)
+	{
+		CPathGlob::SSegment anySegment;
+		anySegment.FirstToken = static_cast<uint32>(Glob.Tokens.size());
+		anySegment.TokenCount = 1u;
+		Glob.Tokens.push_back({ CPathGlob::ETokenKind::Star, 0u });
+		Glob.Segments.push_back(anySegment);
+		AddGlobstar(FirstSegment);
 	}
 
 	// Consecutive globstars are one.
@@ -609,22 +632,85 @@ bool CPathGlob::Matches (FStringView RelativePath) const noexcept
 
 bool CPathGlob::MatchesBelow (FStringView Base, FStringView Path) const noexcept
 {
+	// Path == Base leaves an empty path, which no pattern matches.
+	const std::optional<FStringView> relative = RelativeToBase(Base, Path);
+	return relative && Matches(*relative);
+}
+
+bool CPathGlob::CoversFolder (FStringView Folder) const noexcept
+{
+	// The folder, or one above it, matches: the folder-rule alternatives take everything below.
+	if (Matches(Folder))
+	{
+		return true;
+	}
+
+	// A trailing "/**" takes every path below whatever the segments before it match, so the folder
+	// is covered when they match it: "Docs/**" covers "Docs", and "Scans/" ("**/Scans/**") "a/Scans".
+	// So does a trailing lone '*' together with its folder-rule copy: "Docs/*" takes the files in
+	// Docs, and its folders with everything below them.
+	for (const SAlternative& alternative : Alternatives)
+	{
+		uint32 tail = 0u;
+		if (alternative.bEverythingBelow)
+		{
+			tail = 2u;
+		}
+		else
+		{
+			const SSegment& last = Segments[alternative.FirstSegment + alternative.SegmentCount - 1u];
+			const bool bLoneStar = !last.bGlobstar && last.TokenCount == 1u
+				&& Tokens[last.FirstToken].Kind == ETokenKind::Star;
+			tail = bLoneStar ? 1u : 0u;
+		}
+		if (tail == 0u)
+		{
+			continue;
+		}
+
+		SAlternative head = alternative;
+		head.SegmentCount -= tail;
+		head.bEverythingBelow = false;
+		if (MatchAlternative(head, Folder))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool CPathGlob::CoversFolderBelow (FStringView Base, FStringView Folder) const noexcept
+{
+	const std::optional<FStringView> relative = RelativeToBase(Base, Folder);
+	return relative && CoversFolder(*relative);
+}
+
+std::optional<FStringView> CPathGlob::RelativeToBase (FStringView Base, FStringView Path) noexcept
+{
 	if (Base.EndsWith('/'))
 	{
 		Base = Base.Left(Base.Len() - 1u);
 	}
 	if (Base.IsEmpty())
 	{
-		return Matches(Path);
+		return Path;
 	}
 
 	// The prefix is matched under the same folding as the pattern, so "art" is the base of "Art/A.png".
 	const uint32 matched = string_impl::MatchPrefixFolded(Path, Base, ESearchCase::IgnoreCase);
-	if (matched == NotFound || matched >= Path.Len() || Path[matched] != '/')
+	if (matched == NotFound)
 	{
-		return false;
+		return std::nullopt;
 	}
-	return Matches(Path.Mid(matched + 1u));
+	if (matched == Path.Len())
+	{
+		return FStringView();
+	}
+	if (Path[matched] != '/')
+	{
+		return std::nullopt;
+	}
+	return Path.Mid(matched + 1u);
 }
 
 // Greedy with backtracking to the last globstar, over whole segments: every other pattern segment

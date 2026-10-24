@@ -1,6 +1,7 @@
 // CPathGlob: the asset rules' path patterns (AssetManager-Design §3.5.2). '*' and '?' stay inside one
-// segment, '**' spans segments, anchoring follows gitignore, case folds the same on every host, and
-// a malformed pattern is an error with a reason, never a guess.
+// segment, '**' spans segments, anchoring and folders follow gitignore (a folder that matches takes
+// everything below it, which CoversFolder reports for a whole subtree), case folds the same on every
+// host, and a malformed pattern is an error with a reason, never a guess.
 #include <gtest/gtest.h>
 
 #include <optional>
@@ -34,7 +35,9 @@ void ExpectCases (std::span<const SGlobCase> Cases)
 }
 
 // The examples of the gitignore documentation (git-scm.com/docs/gitignore, "PATTERN FORMAT" and
-// "EXAMPLES"), read as patterns over file paths relative to the folder of the rule file.
+// "EXAMPLES"), read as patterns over file paths relative to the folder of the rule file. The
+// answers are whether git ignores the file, so a file below a folder the pattern matches is taken:
+// git never looks inside an ignored folder.
 constexpr SGlobCase GitignoreCases[] = {
 	// No '/': the name at any depth.
 	{ "*.log", "debug.log", true },
@@ -44,7 +47,17 @@ constexpr SGlobCase GitignoreCases[] = {
 	{ "*.log", "debug.log.txt", false },
 	{ "debug.log", "debug.log", true },
 	{ "debug.log", "logs/debug.log", true },
-	{ "debug.log", "logs/debug.log/x", false },
+	// Without a trailing '/' a pattern "can match both files and directories": here the folder
+	// logs/debug.log matches, and so everything below it is ignored.
+	{ "debug.log", "logs/debug.log/x", true },
+	{ "doc/frotz", "doc/frotz/a.txt", true },
+	{ "/doc/frotz", "doc/frotz/a.txt", true },
+	{ "doc/frotz", "a/doc/frotz/a.txt", false },
+	// "foo/*" matches the folder "foo/bar", so git never sees "foo/bar/hello.c" (the documentation's
+	// "does not match" is about the pattern against that path alone).
+	{ "foo/*", "foo/test.json", true },
+	{ "foo/*", "foo/bar/hello.c", true },
+	{ "foo/*", "foo", false },
 	// A leading '/' anchors to the base.
 	{ "/debug.log", "debug.log", true },
 	{ "/debug.log", "logs/debug.log", false },
@@ -111,8 +124,8 @@ constexpr SGlobCase SegmentCases[] = {
 	{ "Textures/*.png", "A.png", false },
 	{ "*", "A.png", true },
 	{ "*", "Art/Ui/A.png", true },
-	{ "/*", "A.png", true },
-	{ "/*", "Art/A.png", false },
+	{ "/*.png", "A.png", true },
+	{ "/*.png", "Art/A.png", false },
 	{ "/**", "Art/A.png", true },
 	{ "a?b", "a/b", false },
 	{ "a*b", "a/b", false },
@@ -204,6 +217,97 @@ constexpr SGlobCase CaseCases[] = {
 	{ "a[x].png", "a\xFF.png", false },
 	{ "aÿ.png", "a\xFF.png", false },
 };
+
+// gitignore's folder rule: a pattern that matches a folder on the way takes everything below it,
+// so "Scan.Exclude: [ Temp ]" excludes the Temp folders and the built-in ".*" the dot-folders.
+constexpr SGlobCase FolderCases[] = {
+	{ "Temp", "Temp", true },
+	{ "Temp", "Art/Temp", true },
+	{ "Temp", "Temp/A.png", true },
+	{ "Temp", "Art/Temp/Old/B.png", true },
+	{ "Temp", "temp/a.png", true },
+	{ "Temp", "Temporary/A.png", false },
+	{ "Temp", "Art/Temps/A.png", false },
+	{ "node_modules", "Tools/node_modules/x/index.js", true },
+	{ "{Temp,Cache}", "Art/Cache/x.bin", true },
+	{ ".*", ".git/config", true },
+	{ ".*", "Art/.cache/x/y.bin", true },
+	{ ".*", "Art/a.png", false },
+	{ "*.png", "Atlas.png/readme.txt", true },
+	{ "*.png", "Atlas/readme.txt", false },
+	// Anchored patterns too.
+	{ "/Docs", "Docs/Guide.md", true },
+	{ "/Docs", "Art/Docs/Guide.md", false },
+	{ "Ui/Icons", "Ui/Icons/a.png", true },
+	{ "Ui/Icons", "Art/Ui/Icons/a.png", false },
+	{ "Ui/*", "Ui/A.png", true },
+	{ "Ui/*", "Ui/Old/A.png", true },
+	{ "Ui/*", "Ui", false },
+	{ "a/**/b", "a/x/b/c.txt", true },
+	{ "a/**/b", "a/x/bc/d.txt", false },
+	// A trailing '/' names a folder only, and a trailing "/**" never takes the folder itself.
+	{ "Textures/", "Textures", false },
+	{ "Textures/", "Textures/A.png", true },
+	{ "Textures/", "Art/Textures/Old/A.png", true },
+	{ "abc/**", "abc", false },
+};
+
+struct SCoverCase
+{
+	FStringLiteral Pattern;
+	FStringLiteral Folder;
+	bool bCovers = false;
+	// For a folder that is not covered: a path below it that the pattern does not match, which
+	// shows the answer is exact rather than cautious.
+	FStringLiteral Uncovered;
+};
+
+constexpr SCoverCase CoverCases[] = {
+	{ "Temp", "Temp", true, "" },
+	{ "Temp", "Art/Temp", true, "" },
+	{ "Temp", "Temp/Old", true, "" },
+	{ "Temp", "Art", false, "Art/A.png" },
+	{ "Temp", "Temporary", false, "Temporary/A.png" },
+	{ "Temp", "", false, "A.png" },
+	{ "Scans/", "Scans", true, "" },
+	{ "Scans/", "Art/Scans", true, "" },
+	{ "Scans/", "Art/Scans/Old", true, "" },
+	{ "Scans/", "Art", false, "Art/A.png" },
+	{ "Docs/**", "Docs", true, "" },
+	{ "Docs/**", "docs/Old", true, "" },
+	{ "Docs/**", "Art/Docs", false, "Art/Docs/a.md" },
+	{ "**/Reference/**", "Reference", true, "" },
+	{ "**/Reference/**", "Art/Reference", true, "" },
+	{ "**/Reference/**", "Art", false, "Art/a.png" },
+	{ "{Textures,Models}/**", "Models", true, "" },
+	{ "{Textures,Models}/**", "Sounds", false, "Sounds/a.wav" },
+	{ "*.png", "Atlas.png", true, "" },
+	{ "*.png", "Art", false, "Art/a.tga" },
+	{ "Art/*.png", "Art", false, "Art/a.tga" },
+	{ "Ui/*", "Ui", true, "" },
+	{ "a/**/*", "a", true, "" },
+	{ "a/**/b", "a", false, "a/c" },
+	{ "a/**/b", "a/x/b", true, "" },
+	{ "a/*/**", "a", false, "a/f.txt" },
+	{ "a/*/**", "a/x", true, "" },
+	{ "**", "", true, "" },
+	{ "**", "Art", true, "" },
+	{ "*", "", true, "" },
+	{ "**/*", "", true, "" },
+};
+
+constexpr FStringLiteral PathsBelowACoveredFolder[] = { "A.png", "Sub/Deeper/b.txt" };
+
+FString PathBelow (FStringView Folder, FStringView Rest)
+{
+	FString path(Folder);
+	if (!path.IsEmpty())
+	{
+		path.Append("/");
+	}
+	path.Append(Rest);
+	return path;
+}
 }
 
 
@@ -222,21 +326,64 @@ TEST(PathGlob, CaseFoldsUnderUnicodeSimpleCaseFolding)
 	ExpectCases(CaseCases);
 }
 
-TEST(PathGlob, NameOnlyPatternsMatchFileNamesNotFolders)
+TEST(PathGlob, APatternThatMatchesAFolderTakesEverythingBelowIt)
 {
-	// gitignore's "Textures" would also take everything below a folder of that name; a file
-	// pattern takes files, and "Textures/" says folder.
-	const std::optional<CPathGlob> name = CPathGlob::Compile("Textures");
-	ASSERT_TRUE(name);
-	EXPECT_TRUE(name->Matches("Textures"));
-	EXPECT_TRUE(name->Matches("Art/Textures"));
-	EXPECT_FALSE(name->Matches("Textures/A.png"));
+	ExpectCases(FolderCases);
+}
 
-	const std::optional<CPathGlob> folder = CPathGlob::Compile("Textures/");
-	ASSERT_TRUE(folder);
-	EXPECT_FALSE(folder->Matches("Textures"));
-	EXPECT_TRUE(folder->Matches("Textures/A.png"));
-	EXPECT_TRUE(folder->Matches("Art/Textures/A.png"));
+TEST(PathGlob, CoversFolderSaysWhenEveryPathBelowMatches)
+{
+	for (const SCoverCase& entry : CoverCases)
+	{
+		const std::optional<CPathGlob> glob = CPathGlob::Compile(entry.Pattern);
+		ASSERT_TRUE(glob) << entry.Pattern.CStr();
+		EXPECT_EQ(glob->CoversFolder(entry.Folder), entry.bCovers)
+			<< "pattern \"" << entry.Pattern.CStr() << "\", folder \"" << entry.Folder.CStr() << "\"";
+
+		// A covered folder: what Matches says of anything below it agrees.
+		if (entry.bCovers)
+		{
+			for (const FStringLiteral rest : PathsBelowACoveredFolder)
+			{
+				const FString path = PathBelow(entry.Folder, rest);
+				EXPECT_TRUE(glob->Matches(path)) << "pattern \"" << entry.Pattern.CStr() << "\", path \"" << path.CStr()
+					<< "\" below a covered folder";
+			}
+		}
+		else
+		{
+			EXPECT_FALSE(glob->Matches(entry.Uncovered)) << "pattern \"" << entry.Pattern.CStr() << "\", path \""
+				<< entry.Uncovered.CStr() << "\"";
+		}
+	}
+}
+
+TEST(PathGlob, CoversFolderBelowAnchorsToTheFolderOfTheRuleFile)
+{
+	// Content/Environment/Foliage/Assets.yml, "Scans/**" (AssetManager-Design §3.5.4): the scanner
+	// never lists Scans or anything below it.
+	const std::optional<CPathGlob> scans = CPathGlob::Compile("Scans/**");
+	ASSERT_TRUE(scans);
+	EXPECT_TRUE(scans->CoversFolderBelow("Environment/Foliage", "Environment/Foliage/Scans"));
+	EXPECT_TRUE(scans->CoversFolderBelow("Environment/Foliage/", "Environment/Foliage/Scans"));
+	EXPECT_TRUE(scans->CoversFolderBelow("Environment/Foliage", "environment/FOLIAGE/SCANS/Old"));
+	EXPECT_FALSE(scans->CoversFolderBelow("Environment/Foliage", "Environment/Foliage"));
+	EXPECT_FALSE(scans->CoversFolderBelow("Environment/Foliage", "Environment/Scans"));
+	EXPECT_FALSE(scans->CoversFolderBelow("Environment/Foliage", "Environment/FoliageX/Scans"));
+
+	// The base itself may be covered; a folder above it never is.
+	const std::optional<CPathGlob> any = CPathGlob::Compile("**");
+	ASSERT_TRUE(any);
+	EXPECT_TRUE(any->CoversFolderBelow("Environment/Foliage", "Environment/Foliage"));
+	EXPECT_TRUE(any->CoversFolderBelow("", "Environment"));
+	EXPECT_FALSE(any->CoversFolderBelow("Environment/Foliage", "Environment"));
+
+	// The folder rule applies below a base as well.
+	const std::optional<CPathGlob> temp = CPathGlob::Compile("Temp");
+	ASSERT_TRUE(temp);
+	EXPECT_TRUE(temp->MatchesBelow("Art", "Art/Ui/Temp/a.png"));
+	EXPECT_TRUE(temp->CoversFolderBelow("Art", "Art/Ui/Temp"));
+	EXPECT_FALSE(temp->CoversFolderBelow("Art", "Temp"));
 }
 
 TEST(PathGlob, InvalidPatternsAreReportedWithAReason)

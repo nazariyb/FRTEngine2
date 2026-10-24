@@ -34,11 +34,18 @@ namespace frt
 // rule file) matches the whole path below that base, never a part of it. A pattern with no '/'
 // other than a trailing one floats: "*.png" takes "A.png" and "Art/Ui/A.png". A pattern with a '/'
 // at its start or in its middle is anchored to the base: "Ui/*.png" takes "Ui/A.png", not
-// "Art/Ui/A.png"; a leading '/' just anchors ("/A.png" is "A.png" at the base only). A trailing
-// '/' names a folder and takes everything below it: "Scans/" is "**/Scans/**". Patterns match
-// file paths, so a name-only pattern matches the file name, never a folder on the way: "Textures"
-// does not take "Textures/A.png" (gitignore's would); "Textures/" does. Mount prefixes such as
-// "/Project/" are the rules loader's to resolve (it picks the base); here a leading '/' is the base.
+// "Art/Ui/A.png"; a leading '/' just anchors ("/A.png" is "A.png" at the base only). Mount prefixes
+// such as "/Project/" are the rules loader's to resolve (it picks the base); here a leading '/' is
+// the base.
+//
+// Folders follow gitignore too, where git never looks inside an ignored folder: a pattern that
+// matches a folder on the way takes everything below it. "Temp" takes a file named Temp at any
+// depth and every file below a folder named Temp ("Temp/A.png", "Art/Temp/Old/B.png"), which is
+// what "Scan.Exclude: [ Temp ]" and the built-in dot-name exclude mean; "/Docs" takes everything
+// below the base's Docs; "Ui/*" takes "Ui/Old/A.png" as well as "Ui/A.png", because the folder
+// "Ui/Old" matches it. A trailing '/' names a folder only: "Scans/" takes everything below any
+// folder named Scans ("**/Scans/**"), never a file named Scans. CoversFolder asks the same of a
+// whole folder, so a scanner can skip an excluded subtree without listing it.
 //
 // Case: characters compare under Unicode simple case folding from FRT's own tables (the
 // TStringMapIgnoreCase rule, Containers/StringFwd.h), so "Ä*" takes "äpfel.png" and "Σ" takes "σ"
@@ -75,6 +82,18 @@ public:
 	// compared under the same case folding as the pattern.
 	[[nodiscard]] bool MatchesBelow (FStringView Base, FStringView Path) const noexcept;
 
+	// True when every path below Folder matches, so a scanner may skip the folder without listing
+	// it: Folder or a folder above it matches, or the pattern ends in a '*' segment or a globstar
+	// that takes everything below Folder ("Docs/**" and "Docs/*" cover "Docs"). Folder is relative
+	// to the base like a path for Matches; empty is the base itself ("**" and "*" cover it). False
+	// can still mean every path below matches when only several brace alternatives together take
+	// it all ("a/{x*,[!x]*}" for "a"); a scanner then lists the folder and matches each entry,
+	// which gives the same answer, only slower.
+	[[nodiscard]] bool CoversFolder (FStringView Folder) const noexcept;
+	// CoversFolder for a folder relative to the same root as Base (as in MatchesBelow); Folder may
+	// be Base itself. False when Folder is neither Base nor below it.
+	[[nodiscard]] bool CoversFolderBelow (FStringView Base, FStringView Folder) const noexcept;
+
 	// The text it was compiled from.
 	[[nodiscard]] FStringView GetPattern () const noexcept { return Pattern; }
 
@@ -101,11 +120,14 @@ private:
 		bool bGlobstar = false;
 	};
 
-	// One brace alternative: the segments it matches the whole path with.
+	// One brace alternative, or the folder-rule copy of one: the segments it matches the whole path
+	// with. bEverythingBelow: they end in '*' and a globstar, which take every path below what the
+	// segments before them match (a trailing "/**", compiled).
 	struct SAlternative
 	{
 		uint32 FirstSegment = 0u;
 		uint32 SegmentCount = 0u;
+		bool bEverythingBelow = false;
 	};
 
 	// A character set: the members' ranges as written, plus the foldings of members that fold to
@@ -127,6 +149,8 @@ private:
 
 	friend class CPathGlobCompiler;
 
+	// Path relative to Base (empty when Path is Base itself), or nullopt when it is not below it.
+	[[nodiscard]] static std::optional<FStringView> RelativeToBase (FStringView Base, FStringView Path) noexcept;
 	[[nodiscard]] bool MatchAlternative (const SAlternative& Alternative, FStringView Path) const noexcept;
 	[[nodiscard]] bool MatchSegment (const SSegment& Segment, FStringView Text) const noexcept;
 	[[nodiscard]] bool SetContains (const SCharSet& Set, uint32 FoldedKey) const noexcept;
