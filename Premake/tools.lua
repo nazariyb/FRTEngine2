@@ -5,7 +5,8 @@
 -- runs too. In a project, the project's FRT.bat runs its engine's with --project=<the project>.
 --
 --   setup      registers this engine under its name (Engine.frtengine), so shared projects find
---              it, and generates its solution: the first thing to run in a new checkout
+--              it, gives the checkout's hashed text files LF line endings (Line endings, below)
+--              and generates its solution: the first thing to run in a new checkout
 --   new        creates a project from a template, sets up its git repository, generates its
 --              solution: FRT.bat new --name=MyGame [--template=Demo] [--layout=embedded] [--build]
 --   generate   (re)generates the engine's solution, or the project's
@@ -417,15 +418,183 @@ local function writePackageMarker(dir, project, engine, configuration)
 end
 
 -----------------------------------------
+-------------  Line endings  ------------
+-----------------------------------------
+-- The engine hashes text files byte for byte - asset metadata, documents, rules, shader sources -
+-- so every working tree must hold them with the same bytes: LF, as .gitattributes says. The index
+-- already has them as LF. Working trees made with core.autocrlf=true (Git for Windows' default)
+-- have CRLF, and a new .gitattributes converts nothing already checked out: that takes a fresh
+-- checkout of those files. Setup finds the files whose working copy is not what a checkout under
+-- today's attributes writes (git ls-files --eol), checks them out again, and checks the result.
+--
+-- Only those files: checking out everything again (git rm --cached -r . && git reset --hard)
+-- would rewrite premake5.exe while it runs this, and every source, so the next build would
+-- rebuild everything. Only on a working tree without uncommitted changes, which the reset would
+-- throw away; changes in line endings alone are not changes. Each worktree of a repository has
+-- its own working files, and runs setup once.
+
+-- core.safecrlf=false: no warning about the conversions core.autocrlf makes, which are the point.
+local function git(arguments)
+	return "git -c core.safecrlf=false -C " .. quoted(ROOT_DIR) .. " " .. arguments
+end
+
+-- git ls-files --eol for this checkout: { Path, Index, Work, Attributes } per tracked file.
+local function trackedLineEndings()
+	local output, code = os.outputof(git("ls-files --eol -z"))
+	if code ~= 0 or not output then
+		return nil
+	end
+	local entries = {}
+	for record in output:gmatch("[^\0]+") do
+		local info, file = record:match("^([^\t]*)\t(.*)$")
+		local index, work, attributes = (info or ""):match("^i/(%S*)%s+w/(%S*)%s+attr/(.-)%s*$")
+		if file and index then
+			table.insert(entries, { Path = file, Index = index, Work = work, Attributes = attributes })
+		end
+	end
+	return entries
+end
+
+-- What is wrong with a tracked file's line endings: "index" (only a commit renormalizing it fixes
+-- that), "work" (a fresh checkout of the file fixes it), or nil.
+local function lineEndingProblem(entry)
+	local attributes = " " .. entry.Attributes .. " "
+	if attributes:find(" eol=lf ", 1, true) then
+		if entry.Index == "crlf" or entry.Index == "mixed" then
+			return "index"
+		end
+		if entry.Work == "crlf" or entry.Work == "mixed" then
+			return "work"
+		end
+	elseif attributes:find(" -text ", 1, true) then
+		-- Never converted: the working copy has the committed bytes.
+		if entry.Work ~= "" and entry.Index ~= "" and entry.Work ~= entry.Index then
+			return "work"
+		end
+	elseif attributes:find(" eol=crlf ", 1, true) then
+		if entry.Index == "lf" and entry.Work == "lf" then
+			return "work"
+		end
+	end
+	return nil
+end
+
+-- The tracked files with a problem of each kind: { work = { paths }, index = { paths } }.
+local function lineEndingProblems(entries)
+	local problems = { work = {}, index = {} }
+	for _, entry in ipairs(entries) do
+		local problem = lineEndingProblem(entry)
+		if problem then
+			table.insert(problems[problem], entry.Path)
+		end
+	end
+	return problems
+end
+
+local function printSome(paths, indent)
+	for i = 1, math.min(#paths, 10) do
+		print(indent .. paths[i])
+	end
+	if #paths > 10 then
+		print(indent .. "... and " .. (#paths - 10) .. " more")
+	end
+end
+
+-- The other worktrees of this checkout's repository.
+local function otherWorktrees()
+	local worktrees = {}
+	for line in (outputOf(git("worktree list --porcelain")) or ""):gmatch("[^\r\n]+") do
+		local dir = line:match("^worktree (.+)$")
+		if dir and not isSamePath(dir, ROOT_DIR) then
+			table.insert(worktrees, winpath(dir))
+		end
+	end
+	return worktrees
+end
+
+-- Gives this checkout's working files the line endings .gitattributes asks for. False, having
+-- said why, when that could not be done.
+local function setupLineEndings()
+	if not outputOf("git --version") then
+		print("Line endings: git is not on PATH, so nothing is checked.")
+		return true
+	end
+	local top = outputOf(git("rev-parse --show-toplevel"))
+	if not top or not isSamePath(top, ROOT_DIR) then
+		print("Line endings: this engine is not a git checkout of its own, so nothing is checked.")
+		return true
+	end
+	local entries = trackedLineEndings()
+	if not entries then
+		print("Line endings: git ls-files --eol failed.")
+		return false
+	end
+
+	local problems = lineEndingProblems(entries)
+	if #problems.work > 0 then
+		-- "git diff --quiet" with a whitespace option compares contents, so line endings alone
+		-- leave it quiet.
+		if not runCommand(git("diff HEAD --ignore-cr-at-eol --quiet")) then
+			print("Line endings: " .. #problems.work .. " file(s) need a fresh checkout for the line endings " ..
+				".gitattributes asks for,")
+			print("but this working tree has uncommitted changes, which that would overwrite. Commit or stash")
+			print("them, then run FRT.bat setup again. git status:")
+			for line in (os.outputof(git("status --short --untracked-files=no")) or ""):gmatch("[^\r\n]+") do
+				print("  " .. line)
+			end
+			return false
+		end
+
+		print("Line endings: checking out " .. #problems.work .. " file(s) again, for the line endings .gitattributes asks for...")
+		local list = path.join(ROOT_DIR, "Local/Setup/LineEndings.txt")
+		if not writeBinary(list, table.concat(problems.work, "\0") .. "\0") then
+			fail("setup: cannot write " .. winpath(list))
+		end
+		local ok = runCommand(git("--literal-pathspecs rm --cached -q --pathspec-from-file=" .. quoted(list) ..
+			" --pathspec-file-nul")) and runCommand(git("reset -q --hard"))
+		os.remove(list)
+		if not ok then
+			print("Line endings: the checkout failed (a file open in another program?); run FRT.bat setup again.")
+			return false
+		end
+
+		entries = trackedLineEndings() or {}
+		problems = lineEndingProblems(entries)
+		local worktrees = otherWorktrees()
+		if #worktrees > 0 then
+			print("Each worktree has its own working files: run FRT.bat setup in the others too (git worktree list):")
+			printSome(worktrees, "  ")
+		end
+	end
+
+	if #problems.work > 0 then
+		print("Line endings: these files still do not have the line endings .gitattributes asks for:")
+		printSome(problems.work, "  ")
+		return false
+	end
+	if #problems.index > 0 then
+		print("Line endings: these files are committed with CRLF, which .gitattributes forbids; fix them in a commit")
+		print("(git add --renormalize <file>):")
+		printSome(problems.index, "  ")
+		return false
+	end
+	print("Line endings: every hashed text file is LF (git ls-files --eol).")
+	return true
+end
+
+-----------------------------------------
 ---------------  Actions  ---------------
 -----------------------------------------
 
 newaction
 {
 	trigger     = "setup",
-	description = "Register this engine for projects to find by name, and generate its solution",
+	description = "Register this engine for projects to find by name, give its text files LF, and generate its solution",
 	execute     = function ()
 		local engine = loadEngine(ROOT_DIR) or fail("setup: " .. rootpath(engineFileName) .. " has no [Engine] Name")
+		-- First: it may rewrite files, and nothing below depends on it.
+		local bLineEndings = setupLineEndings()
+		print("")
 		local previous = findRegisteredEngine(engine.Name)
 		if previous and not isSamePath(previous, ROOT_DIR) and isEngineDir(previous) then
 			print("'" .. engine.Name .. "' was registered to " .. previous .. "; projects using it now use this checkout.")
@@ -438,6 +607,9 @@ newaction
 		print("")
 		print("Open " .. winpath(solutionFile(nil)) .. " and start the editor to create or open a project,")
 		print("or: FRT.bat new --name=MyGame [--template=Demo] [--layout=embedded] [--build]")
+		if not bLineEndings then
+			fail("setup: the line endings are not fixed (see above)")
+		end
 	end
 }
 
