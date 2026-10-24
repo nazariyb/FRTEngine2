@@ -71,8 +71,8 @@
  * The module barrier. CancelAllAndDrain cancels everything, waits for the running work and destroys
  * every callable the pool holds, so a module's code can be unloaded once it returns.
  *
- * Threads and memory. Submit, Cancel, CreateCancelGroup, GetEpoch, GetStats and IsCancelled may be
- * called from any thread; PumpCompletions, WaitForCompletions, PumpUntil, BumpEpoch,
+ * Threads and memory. Submit, Cancel, CreateCancelGroup, GetEpoch, GetStats, IsIdle and IsCancelled
+ * may be called from any thread; PumpCompletions, WaitForCompletions, PumpUntil, BumpEpoch,
  * SetCompletionOrder, CancelAllAndDrain and the destructor only from the owner thread. Work runs on
  * workers and so must never touch TLSF, TArray, TRefShared or the world (§8.8): std containers,
  * FString and the CRT heap. Completions run on the owner thread and may use anything. Neither may

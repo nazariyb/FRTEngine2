@@ -180,7 +180,12 @@ TEST(WorkerPool, WorkersAreNamedFrtWorkerAndTheirIndex)
 			bOnWorker.push_back(CWorkerPool::IsWorkerThread());
 		});
 	}
-	ASSERT_TRUE(pool.PumpUntil([&] () { std::lock_guard lock(mutex); return names.size() == ThreadCount; }, TestTimeoutSeconds));
+	const auto allNamed = [&] ()
+	{
+		std::lock_guard lock(mutex);
+		return names.size() == ThreadCount;
+	};
+	ASSERT_TRUE(pool.PumpUntil(allNamed, TestTimeoutSeconds));
 
 	std::sort(names.begin(), names.end());
 	EXPECT_EQ(names[0], "FRT Worker 0");
@@ -350,7 +355,8 @@ TEST(WorkerPool, StrictOrderHoldsLaterCompletionsBackUntilTheEarlierTaskFinishes
 	SGate second;
 	std::vector<uint32> ran;
 	std::atomic<uint32> holding = 0u;
-	pool.Submit(EWorkPriority::Normal, NoCancelGroup, [&] () { holding.fetch_add(1u); first.Wait(); }, [&ran] () { ran.push_back(0u); });
+	pool.Submit(EWorkPriority::Normal, NoCancelGroup, [&] () { holding.fetch_add(1u); first.Wait(); },
+		[&ran] () { ran.push_back(0u); });
 	pool.Submit(EWorkPriority::Normal, NoCancelGroup, [&] () { holding.fetch_add(1u); second.Wait(); });
 	while (holding.load() != 2u)
 	{
@@ -365,7 +371,11 @@ TEST(WorkerPool, StrictOrderHoldsLaterCompletionsBackUntilTheEarlierTaskFinishes
 	}
 	EXPECT_EQ(pool.Cancel(group), 1u);
 	second.Open();
-	const auto finished = [&pool] () { const SWorkerPoolStats stats = pool.GetStats(); return stats.Queued == 0u && stats.CompletionsWaiting == 5u; };
+	const auto finished = [&pool] ()
+	{
+		const SWorkerPoolStats stats = pool.GetStats();
+		return stats.Queued == 0u && stats.CompletionsWaiting == 5u;
+	};
 	const auto deadline = std::chrono::steady_clock::now() + std::chrono::duration<double>(TestTimeoutSeconds);
 	while (!finished() && std::chrono::steady_clock::now() < deadline)
 	{
@@ -423,7 +433,8 @@ TEST(WorkerPool, CancelDropsTheGroupsTasksThatHaveNotStarted)
 	{
 		pool.Submit(EWorkPriority::Normal, groupA, [&] () { workA.fetch_add(1u); }, [&] () { ++completionsA; });
 		pool.Submit(EWorkPriority::Low, groupB, [&] () { workOther.fetch_add(1u); }, [&] () { ++completionsOther; });
-		pool.Submit(EWorkPriority::High, NoCancelGroup, [&] () { workOther.fetch_add(1u); }, [&] () { ++completionsOther; });
+		pool.Submit(EWorkPriority::High, NoCancelGroup, [&] () { workOther.fetch_add(1u); },
+			[&] () { ++completionsOther; });
 	}
 
 	EXPECT_EQ(pool.Cancel(groupA), 10u);
@@ -695,7 +706,8 @@ TEST(WorkerPool, DestroyingThePoolDropsQueuedWorkAndWaitsForTheRunningWork)
 		bStarted.wait(false);
 		for (uint32 i = 0u; i < 10u; ++i)
 		{
-			pool.Submit(EWorkPriority::Normal, NoCancelGroup, [&] () { queuedRan.fetch_add(1u); }, [&] () { ++completions; });
+			pool.Submit(EWorkPriority::Normal, NoCancelGroup, [&] () { queuedRan.fetch_add(1u); },
+				[&] () { ++completions; });
 		}
 	}
 	EXPECT_TRUE(bRunningFinished.load());
@@ -799,7 +811,8 @@ TEST(WorkerPool, APumpUntilNestedInACompletionReturns)
 	CFakeScheduler scheduler(pool, 20u);
 	scheduler.IssueAll();
 	scheduler.WaitInsideCompletion(0u, 19u);
-	ASSERT_TRUE(pool.PumpUntil([&] () { return scheduler.bNestedWaitReturned && scheduler.AllDone(); }, TestTimeoutSeconds));
+	const auto done = [&] () { return scheduler.bNestedWaitReturned && scheduler.AllDone(); };
+	ASSERT_TRUE(pool.PumpUntil(done, TestTimeoutSeconds));
 }
 
 TEST(WorkerPool, PumpUntilSeesWorkThatHasNoCompletion)

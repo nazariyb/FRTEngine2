@@ -88,16 +88,19 @@ TEST(ThreadTest, ConfigureThreadSetsEachPriority)
 
 TEST(ThreadTest, AnAffinityMaskSelectsThoseProcessors)
 {
-	EXPECT_EQ(OnNewThread([] ()
+	// The CPU sets a fresh thread selects after ConfigureThread with Mask; 0 when it failed.
+	const auto selectedWith = [] (uint64 Mask)
 	{
-		return platform::ConfigureThread("FRT affinity test", EThreadPriority::Normal, 0b1u) ? SelectedCpuSetCount() : 0u;
-	}), 1u);
+		return OnNewThread([Mask] ()
+		{
+			const bool bApplied = platform::ConfigureThread("FRT affinity test", EThreadPriority::Normal, Mask);
+			return bApplied ? SelectedCpuSetCount() : 0u;
+		});
+	};
+	EXPECT_EQ(selectedWith(0b1u), 1u);
 	if (std::thread::hardware_concurrency() >= 2u)
 	{
-		EXPECT_EQ(OnNewThread([] ()
-		{
-			return platform::ConfigureThread("FRT affinity test", EThreadPriority::Normal, 0b11u) ? SelectedCpuSetCount() : 0u;
-		}), 2u);
+		EXPECT_EQ(selectedWith(0b11u), 2u);
 	}
 }
 
