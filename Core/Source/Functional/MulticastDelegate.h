@@ -105,16 +105,16 @@ public:
 	SDelegateHandle Add (TObject* Object, void (TObject::*Method) (TArgs...))
 	{
 		frt_assert(Object != nullptr && Method != nullptr)
-		return AddEntry(FunctionType([Object, Method] (TArgs... Args) { (Object->*Method)(std::forward<TArgs>(Args)...); }),
-			Object);
+		const auto call = [Object, Method] (TArgs... Args) { (Object->*Method)(std::forward<TArgs>(Args)...); };
+		return AddEntry(FunctionType(call), Object);
 	}
 
 	template <typename TObject>
 	SDelegateHandle Add (const TObject* Object, void (TObject::*Method) (TArgs...) const)
 	{
 		frt_assert(Object != nullptr && Method != nullptr)
-		return AddEntry(FunctionType([Object, Method] (TArgs... Args) { (Object->*Method)(std::forward<TArgs>(Args)...); }),
-			Object);
+		const auto call = [Object, Method] (TArgs... Args) { (Object->*Method)(std::forward<TArgs>(Args)...); };
+		return AddEntry(FunctionType(call), Object);
 	}
 
 	// Add, for subscribers that live as long as the delegate and never unsubscribe (CEvent's syntax).
