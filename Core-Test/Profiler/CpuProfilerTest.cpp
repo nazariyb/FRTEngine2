@@ -227,7 +227,8 @@ TEST(CpuProfiler, CollectingWhileAThreadRecordsNeverYieldsATornScope)
 		for (const SCpuScopeEvent& event : EventsNamed("CpuTest."))
 		{
 			const uint64 i = event.BeginTicks;
-			const FStringView expectedName = i % 2u == 0u ? FStringView("CpuTest.Even") : FStringView("CpuTest.OddName");
+			const FStringView expectedName =
+				i % 2u == 0u ? FStringView("CpuTest.Even") : FStringView("CpuTest.OddName");
 			bTorn |= event.EndTicks != i * 3u + 1u || event.Depth != i % 7u || event.Name != expectedName;
 			bOrdered &= i >= next;
 			next = i + 1u;

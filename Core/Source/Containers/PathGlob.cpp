@@ -287,7 +287,8 @@ private:
 
 		if (!openBraces.empty())
 		{
-			return Fail(FString::Printf("'{' at character %u is never closed", CharacterNumber(Pattern, openBraces.back())));
+			return Fail(FString::Printf("'{' at character %u is never closed",
+				CharacterNumber(Pattern, openBraces.back())));
 		}
 		return true;
 	}

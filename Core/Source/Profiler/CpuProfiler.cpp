@@ -164,7 +164,8 @@ uint32 InternName (SCollector& Collector, uint64 Address, FStringView Text)
 
 void AddEvent (SCollector& Collector, const SThreadRing& Ring, const SSlotCopy& Slot)
 {
-	const FStringView literal(reinterpret_cast<const char*>(Slot.NameData), static_cast<uint32>(Slot.NameLengthAndDepth >> 32u));
+	const FStringView literal(reinterpret_cast<const char*>(Slot.NameData),
+		static_cast<uint32>(Slot.NameLengthAndDepth >> 32u));
 	const uint32 name = InternName(Collector, Slot.NameData, literal);
 
 	SCpuScopeEvent& event = Collector.Open.Events.emplace_back();

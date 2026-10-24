@@ -229,7 +229,8 @@ TEST(MemoryPoolOwnerThread, AnotherThreadIsReportedOnceAndStillAllocates)
 	EXPECT_EQ(output.CountOccurrences("[memory]"), 2u) << output.CStr();
 	EXPECT_TRUE(output.Contains(FString::Printf("Allocate on thread %llu", workerId))) << output.CStr();
 	EXPECT_TRUE(output.Contains("Free on thread")) << output.CStr();
-	EXPECT_TRUE(output.Contains(FString::Printf("belongs to thread %llu", platform::GetCurrentThreadId()))) << output.CStr();
+	const FString owner = FString::Printf("belongs to thread %llu", platform::GetCurrentThreadId());
+	EXPECT_TRUE(output.Contains(owner)) << output.CStr();
 
 	// Logging only: the allocations themselves behaved as before.
 	EXPECT_EQ(bytesSeenByWorker, BlockBytes(64));
