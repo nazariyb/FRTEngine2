@@ -7,7 +7,8 @@ script, behind FRT.bat verify (Premake/tools.lua). A milestone branch merges onl
   2. Core-Test in Debug and Development;
   3. the lints: Tools/Lint/CheckStrings.py, Tools/Lint/CheckPlatform.py when it exists, and line endings:
      every file .gitattributes makes LF is LF in the index and in the working tree, every -text file is
-     checked out as committed (git ls-files --eol; the rules FRT.bat setup applies);
+     checked out as committed (FRT.bat check-line-endings: the rules FRT.bat setup applies, in
+     Premake/tools.lua only);
   4. the editor's smoke test (-Editor:SmokeTest=1) over Templates/Demo and Templates/Blank, in place, in
      Debug and Development;
   5. automation captures of Templates/Demo through the launcher, in Debug and in Development: one raster,
@@ -264,52 +265,6 @@ def same_bytes(a, b):
 
 
 # ---------------------------------------------------------------------------------------------------------
-# Line endings (Premake/tools.lua applies the same rules in FRT.bat setup)
-
-def line_ending_problems():
-    """{'work': [paths], 'index': [paths]} from git ls-files --eol, and how many files .gitattributes makes
-    LF. The engine must be the top of a work tree, a checkout of its own.
-
-    git rev-parse --show-prefix (ROOT's path below the top of its work tree) is empty exactly then. It
-    asks git itself, so it holds whatever the path is spelled like: comparing --show-toplevel with ROOT,
-    two paths each side resolved its own way (a subst or mapped drive, a junction), could find them
-    different, and the check passed having checked nothing."""
-    prefix = git('rev-parse', '--show-prefix')
-    if prefix is None:
-        raise StepFailed('git rev-parse --show-prefix failed')
-    if prefix.strip():
-        raise StepFailed(f'the engine is {prefix.decode("utf-8", errors="replace").strip()} in another '
-                         f'repository\'s work tree, not a checkout of its own')
-    listing = git('ls-files', '--eol', '-z')
-    if listing is None:
-        raise StepFailed('git ls-files --eol failed')
-    problems = {'work': [], 'index': []}
-    lf_files = 0
-    for record in listing.split(b'\0'):
-        info, _, path = record.partition(b'\t')
-        match = re.match(rb'i/(\S*)\s+w/(\S*)\s+attr/(.*?)\s*$', info)
-        if not match:
-            continue
-        index, work, attributes = match.group(1), match.group(2), b' ' + match.group(3) + b' '
-        problem = None
-        if b' eol=lf ' in attributes:
-            lf_files += 1
-            if index in (b'crlf', b'mixed'):
-                problem = 'index'
-            elif work in (b'crlf', b'mixed'):
-                problem = 'work'
-        elif b' -text ' in attributes:
-            if work and index and work != index:
-                problem = 'work'
-        elif b' eol=crlf ' in attributes:
-            if index == b'lf' and work == b'lf':
-                problem = 'work'
-        if problem:
-            problems[problem].append(path.decode('utf-8', errors='replace'))
-    return problems, lf_files
-
-
-# ---------------------------------------------------------------------------------------------------------
 # The gate
 
 class Gate:
@@ -447,18 +402,14 @@ class Gate:
         return last[0].strip() if last else ''
 
     def line_endings(self, log):
-        problems, lf_files = line_ending_problems()
-        with open(log, 'w', encoding='utf-8') as out:
-            for kind, paths in problems.items():
-                for path in paths:
-                    out.write(f'{kind}\t{path}\n')
-        if problems['work']:
-            raise StepFailed(f'{len(problems["work"])} file(s) checked out with other line endings than '
-                             f'.gitattributes asks for (run FRT.bat setup): ' + ', '.join(problems['work'][:3]))
-        if problems['index']:
-            raise StepFailed(f'{len(problems["index"])} file(s) committed with CRLF (git add --renormalize): ' +
-                             ', '.join(problems['index'][:3]))
-        return f'{lf_files} LF files, all LF in the index and the working tree'
+        """FRT.bat check-line-endings: the rules live in Premake/tools.lua alone, beside setup, which fixes
+        what they find. Setup must work before Python is installed, so the check is not written here."""
+        code, _ = run([FRT, 'check-line-endings'], log, cwd=ROOT, env=self.env_for(log), timeout=LINT_TIMEOUT)
+        text = Path(log).read_bytes().decode('utf-8', errors='replace')
+        if code != 0:
+            raise StepFailed(('timed out; ' if code is None else '') + '; '.join(tail(log, lines=4)))
+        summary = re.findall(r'Line endings: (.*?)\.?\s*$', text, re.MULTILINE)
+        return summary[-1] if summary else ''
 
     # ---- the editor's smoke test ----
 

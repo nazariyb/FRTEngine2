@@ -498,7 +498,8 @@ end
 -- would rewrite premake5.exe while it runs this, and every source, so the next build would
 -- rebuild everything. Only on a working tree without uncommitted changes, which a fresh checkout
 -- would throw away; changes in line endings alone are not changes. Each worktree of a repository
--- has its own working files, and runs setup once. Tools/Verify/Verify.py checks the same rules.
+-- has its own working files, and runs setup once. FRT.bat check-line-endings checks the same rules
+-- without fixing anything, for FRT.bat verify: one implementation of them, here.
 
 -- core.safecrlf=false: no warning about the conversions core.autocrlf makes, which are the point.
 local function git(arguments)
@@ -672,6 +673,17 @@ local function setupLineEndings()
 	end
 	print("Line endings: every hashed text file is LF (git ls-files --eol).")
 	return true
+end
+
+-- How many tracked files .gitattributes makes LF.
+local function countLfFiles(entries)
+	local count = 0
+	for _, entry in ipairs(entries) do
+		if (" " .. entry.Attributes .. " "):find(" eol=lf ", 1, true) then
+			count = count + 1
+		end
+	end
+	return count
 end
 
 -----------------------------------------
@@ -948,6 +960,40 @@ newaction
 			addRecentProject(project.File)
 		end
 		runCommand('start "" ' .. quoted(solution))
+	end
+}
+
+-- The line-ending check of FRT.bat verify (Tools/Verify/Verify.py runs this), by the rules setup
+-- applies, fixing nothing. Unlike setup, it fails when the engine is not a git checkout of its own:
+-- a gate that checked nothing must not pass.
+newaction
+{
+	trigger     = "check-line-endings",
+	description = "Check that every tracked file has the line endings .gitattributes asks for (run by verify)",
+	execute     = function ()
+		local prefix = outputOf(git("rev-parse --show-prefix"))
+		if not prefix then
+			fail("check-line-endings: git rev-parse --show-prefix failed: is this engine a git checkout?")
+		end
+		if prefix ~= "" then
+			fail("check-line-endings: the engine is " .. prefix .. " in another repository's work tree, not a " ..
+				"checkout of its own")
+		end
+		local entries = trackedLineEndings() or fail("check-line-endings: git ls-files --eol failed")
+		local problems = lineEndingProblems(entries)
+		if #problems.work > 0 then
+			print("Checked out with other line endings than .gitattributes asks for (run FRT.bat setup):")
+			printSome(problems.work, "  ")
+		end
+		if #problems.index > 0 then
+			print("Committed with CRLF, which .gitattributes forbids (git add --renormalize <file>):")
+			printSome(problems.index, "  ")
+		end
+		if #problems.work > 0 or #problems.index > 0 then
+			fail("check-line-endings: " .. #problems.work .. " file(s) to check out again, " .. #problems.index ..
+				" committed with CRLF")
+		end
+		print("Line endings: " .. countLfFiles(entries) .. " LF files, all LF in the index and the working tree.")
 	end
 }
 
