@@ -265,6 +265,13 @@ TEST_F(ProjectTest, ProjectNamesAreIdentifiersButNotEngineParts)
 	EXPECT_TRUE(error.Contains("engine"));
 	EXPECT_FALSE(project::IsValidProjectName("Core"));
 	EXPECT_FALSE(project::IsValidProjectName("ImGui"));
+
+	// Third-party projects of the solution: a game called zstd would merge into that project and its module
+	// would be named zstd-Development.dll like the library.
+	EXPECT_FALSE(project::IsValidProjectName("zstd"));
+	EXPECT_FALSE(project::IsValidProjectName("Zstd"));
+	EXPECT_FALSE(project::IsValidProjectName("xxHash"));
+	EXPECT_FALSE(project::IsValidProjectName("blake3"));
 }
 
 TEST_F(ProjectTest, RecentProjectsAreOneEntryPerProjectNewestFirst)
