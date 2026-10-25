@@ -18,7 +18,10 @@ script, behind FRT.bat verify (Premake/tools.lua). A milestone branch merges onl
   6. automation captures of Templates/Demo through the launcher, in Debug and in Development: one raster,
      compared byte for byte with its baseline, and one path traced, compared by relative RMSE - path
      tracing still varies a little from run to run, as its radiance cache inserts with GPU atomics, so a
-     path-traced capture beyond the tolerance is taken again (PATH_TRACED_ATTEMPTS);
+     path-traced capture beyond the tolerance is taken again (PATH_TRACED_ATTEMPTS). Every process of the
+     run shares one derived-data cache, emptied at the start: the first editor start compiles the shaders,
+     the second start of each configuration must compile none (its "[shader] cache:" line says so), and
+     the captures, taken from the warm cache, must still match;
   7. the Release package baseline: FRT.bat package of both templates into a short scratch directory, and
      the same two captures of each packaged game, against the Release baselines;
   8. git status --porcelain is empty at the end: nothing it ran changed a tracked file.
@@ -41,8 +44,9 @@ Baselines belong to a machine: a capture depends on the GPU, its driver and the 
 sets the window's size. Baseline.ini beside them says what took them, and a comparison with baselines
 from another GPU or another recipe fails as such. What a run writes - logs, captures, the smoke tests'
 output, and a user-data directory (FRT_USER_DATA_DIR) of its own, new and empty, for every process it
-starts, so that no step sees what an earlier one left there - goes to <engine>/Local/Verify/Last, emptied
-first; packages go to %TEMP%/frtv-<hash of the engine path>.
+starts, so that no step sees what an earlier one left there, except the derived-data cache they share on
+purpose (FRT_DDC_DIR, Last/DDC) - goes to <engine>/Local/Verify/Last, emptied first; packages go to
+%TEMP%/frtv-<hash of the engine path>.
 
 The captures pin what would otherwise depend on the machine's state or on wall-clock time: the render
 mode, a windowed window, and manual exposure. Auto exposure adapts by measured frame times, and the
@@ -296,6 +300,15 @@ class Gate:
         env = dict(os.environ)
         # Never the user's own; every process gets a directory of its own below this one (env_for).
         env['FRT_USER_DATA_DIR'] = str(self.run_dir / 'UserData')
+        # One derived-data cache for every process of the run, never the machine's (and not below a
+        # process's own user-data directory): emptied with run_dir at the start, so the first editor start
+        # compiles every shader and the later ones read them back - which check_shader_cache checks, and
+        # under which the captures must still match their baselines byte for byte.
+        self.ddc_dir = self.run_dir / 'DDC'
+        env['FRT_DDC_DIR'] = str(self.ddc_dir)
+        # The [shader] cache: line of every editor or game start that printed one, per configuration, in
+        # the order they ran: (what, hits, compiled, milliseconds).
+        self.shader_starts = {}
         # The templates find the engine they are in; an override would send them to another one.
         env.pop('FRT_ENGINE_DIR', None)
         # GoogleTest reads its flags from the environment too: a GTEST_FILTER, GTEST_REPEAT or
@@ -508,6 +521,34 @@ class Gate:
             raise StepFailed(f'the argument changed on its way: {json.dumps(refused, ensure_ascii=False)[:160]}')
         return '-Project= and an argument cmd.exe would change'
 
+    # ---- the shader cache ----
+
+    SHADER_CACHE_LINE = re.compile(r'^\[shader\] cache: (\d+) hits, (\d+) compiled \((\d+) ms\)', re.MULTILINE)
+
+    def check_shader_cache(self, config, what, log):
+        """Reads the "[shader] cache: <hits> hits, <compiled> compiled (<ms> ms)" line that a start of Config
+        printed to Log after its first frame, and checks the warm start: every process of the run shares one
+        DDC (FRT_DDC_DIR, emptied at the start), so the first start of a configuration may compile, and its
+        second must compile nothing. Release opens no DDC (its shaders compile at start-up until the cook
+        ships DXIL), so its starts are not checked. Returns a detail text, or raises StepFailed."""
+        if config == 'Release':
+            return ''
+        text = Path(log).read_bytes().decode('utf-8', errors='replace')
+        match = self.SHADER_CACHE_LINE.search(text)
+        if not match:
+            raise StepFailed(f'no "[shader] cache:" line: the shader cache did not report (log: {log})')
+        hits, compiled, milliseconds = (int(group) for group in match.groups())
+        starts = self.shader_starts.setdefault(config, [])
+        starts.append((what, hits, compiled, milliseconds))
+        if len(starts) <= 2:
+            which = 'first' if len(starts) == 1 else 'second'
+            self.timings.append((f'shaders at the {which} start ({config}, {what})',
+                                 f'{hits} hits, {compiled} compiled, {milliseconds} ms'))
+        if len(starts) == 2 and (compiled != 0 or hits == 0):
+            raise StepFailed(f'the second start of {config} compiled {compiled} shader(s) ({hits} hits) from a warm '
+                             f'DDC ({self.ddc_dir}; the first start, {starts[0][0]}, compiled {starts[0][2]})')
+        return f'shaders: {hits} hits, {compiled} compiled'
+
     # ---- the editor's smoke test ----
 
     def smoke(self, log, name, config):
@@ -533,12 +574,14 @@ class Gate:
             failures = re.findall(r'^\[smoke\]\s+FAIL\s+(.*)$', text, re.MULTILINE)
             raise StepFailed(('timed out' if code is None else f'exit code {code}') +
                              (': ' + '; '.join(f.strip() for f in failures[:3]) if failures else ''))
-        return f'{checks} checks passed' + (f', {skips} skipped' if skips else '') + f'; output in {output}'
+        shaders = self.check_shader_cache(config, f'smoke {name}', log)
+        return f'{checks} checks passed' + (f', {skips} skipped' if skips else '') + f'; {shaders}; output in {output}'
 
     # ---- captures ----
 
-    def take_capture(self, exe, arguments, cwd, base, kind_arguments, label):
-        """Runs one scripted capture into Base(.png, .pfm); returns the GPU's name."""
+    def take_capture(self, config, exe, arguments, cwd, base, kind_arguments, label):
+        """Runs one scripted capture of Config into Base(.png, .pfm) and reads its shader cache line
+        (check_shader_cache); returns the GPU's name."""
         base.parent.mkdir(parents=True, exist_ok=True)
         for extension in ('.png', '.pfm'):
             base.with_suffix(extension).unlink(missing_ok=True)
@@ -559,6 +602,7 @@ class Gate:
         for extension in ('.png', '.pfm'):
             if not base.with_suffix(extension).exists():
                 raise StepFailed(f'no {base.name}{extension} written (log: {log})')
+        self.check_shader_cache(config, f'capture {label}', log)
         return gpu[0] if gpu else 'unknown GPU'
 
     def capture_targets(self, config):
@@ -667,7 +711,7 @@ class Gate:
         def take(index):
             base = captures / f'{name}-{kind}-{index}'
             label = f'{name} {kind} ({config})' + (f' #{index}' if self.record or index > 1 else '')
-            gpu = self.take_capture(exe, arguments, cwd, base, kind_arguments, label)
+            gpu = self.take_capture(config, exe, arguments, cwd, base, kind_arguments, label)
             if self.gpu and gpu != self.gpu:
                 raise StepFailed(f'{gpu} rendered this, {self.gpu} the other captures')
             self.gpu = gpu
