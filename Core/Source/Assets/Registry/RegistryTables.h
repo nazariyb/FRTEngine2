@@ -282,6 +282,8 @@ struct SEdgeRow
 	uint32 Target = InvalidRow;         // TARGETS row
 	uint32 FieldPath = InvalidRow;      // NAMES
 	EDepFlags Flags {};                 // as declared, without Unresolved
+
+	bool operator== (const SEdgeRow&) const noexcept = default;
 };
 
 // A reverse entry: Source is the ASSETS row whose edge Edge (OverflowEdgeBit | an OverflowEdges index, else a
@@ -330,7 +332,8 @@ struct STagKeyDesc
 };
 
 // One key's column: Values (int64 | double bits | bool | NameId | STRINGS id | AssetId64 | row key), Present
-// (absent = no value, never zero), MultiValue keys' per-row lists in Multi.
+// (absent = no value, never zero), MultiValue keys' per-row lists in Multi. MultiRanges and Multi hold rows
+// only for a MultiValue key (another key's are empty: Size() 0); Values holds such a row's first item.
 struct STagColumn
 {
 	CPagedColumn<uint64> Values;
@@ -533,6 +536,8 @@ struct SRegistryMemoryStats
 	uint64 Labels = 0u;           // labels and companions
 	uint64 Problems = 0u;
 	uint64 Indices = 0u;
+	uint64 Writer = 0u;           // CRegistryStore::GetMemoryStats only: the writer's lists and maps
+	uint64 ChangeRing = 0u;       // CRegistryStore::GetMemoryStats only
 	uint64 Total = 0u;
 };
 

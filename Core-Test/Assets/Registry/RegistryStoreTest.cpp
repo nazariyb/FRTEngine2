@@ -784,6 +784,7 @@ SRecordUpsert MakeHero (uint32 Variant, int64 Vertices)
 	SRecordUpsert record = MakeRecord("/Project/Hero.gltf", asset_types::Model, "Model.Gltf");
 	record.RuleLabels = { "Hero", "Characters" };
 	record.Companions = { "/Project/Hero.bin" };
+	record.Edges.push_back(MakePathEdge("/Project/Hero.bin", EDepFlags::Build | EDepFlags::Path | EDepFlags::Declared, "buffers[0].uri"));
 	record.Tags = { MakeIntTag("MeshCount", 2) };
 	record.SubEntries.push_back(SSubEntryDecl { FString::Format("mesh:Body{}", Variant), 0u, asset_types::Mesh, ERecordFlags::None,
 		{ MakeIntTag("VertexCount", Vertices) } });
@@ -844,6 +845,8 @@ TEST(RegistryStoreTest, ReUpsertsOfTheSameStructureReuseEveryRowAndPool)
 	const CRegistryView& view = store.Live();
 	EXPECT_EQ(GetPoolSizes(view), initial);
 	EXPECT_EQ(GetTables(view).GarbagePoolItems, 0u);
+	EXPECT_EQ(GetTables(view).Graph.GarbageEdges, 0u);         // the unchanged edge stays where it is
+	EXPECT_EQ(GetTables(view).Graph.OverflowEdges.Size(), 1u);
 	STagValue vertices;
 	ASSERT_TRUE(view.GetTag(FindRecord(view, "/Project/Hero.gltf#mesh:Body0"), "VertexCount", vertices));
 	EXPECT_EQ(vertices.AsInt64(), 119);

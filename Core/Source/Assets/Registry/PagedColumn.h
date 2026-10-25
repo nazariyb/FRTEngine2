@@ -463,10 +463,12 @@ private:
 		return (static_cast<uint64>(Tag) << 32u) | static_cast<uint64>(Value + 1u);
 	}
 
+	// Sizes the table so MinEntries fill at most 3/8 of it (it grows again past half), which keeps probes
+	// short without quadrupling: a quarter-full table cost 32-64 bytes per entry.
 	void Rehash (uint32 MinEntries, uint64 Epoch)
 	{
 		uint32 capacity = 16u;
-		while (capacity < MinEntries * 4u)
+		while (static_cast<uint64>(capacity) * 3u < static_cast<uint64>(MinEntries) * 8u)
 		{
 			capacity *= 2u;
 		}

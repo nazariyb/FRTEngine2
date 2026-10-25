@@ -125,7 +125,13 @@ public:
 
 	[[nodiscard]] const SRegistryCommitStats& GetLastCommitStats () const noexcept { return LastStats; }
 
+	// What the store keeps resident (§5.11's budget): the live view's tables (CRegistryView::GetMemoryStats)
+	// plus the writer's own state - folder lists, target and companion maps, problem subjects - and the
+	// change ring. Owner thread.
+	[[nodiscard]] SRegistryMemoryStats GetMemoryStats () const;
+
 private:
+	struct SRingEntry;
 	struct SWriterState;
 	class CWriter;
 	friend class CWriter;

@@ -16,6 +16,16 @@
 
 namespace frt::assets
 {
+// One change-ring entry: SRecordChange without its FString (the path is a PATHS id, which never changes and
+// is never reused), so 64k entries take 2 MB; ForEachChangeSince spells the path out.
+struct CRegistryStore::SRingEntry
+{
+	uint64 Revision = 0u;
+	SGuid Guid;
+	uint32 Path = InvalidRow;
+	ERecordChange Kind = ERecordChange::Modified;
+};
+
 /**
  * What only the writer needs: lists the readers never look at, so they stay plain std containers outside
  * the views (nothing here is copied when a view is published). AdoptImage rebuilds all of it by committing.
@@ -26,9 +36,10 @@ struct CRegistryStore::SWriterState
 	std::vector<std::vector<uint32>> FolderFiles;      // per FOLDERS row: its FILES rows, unordered
 	std::vector<uint32> FileSlot;                      // per FILES row: its index in FolderFiles[folder]
 
-	// Path targets by every file path they could name (the whole text, and the text before each '#'),
-	// under the portable fold: the targets to re-resolve when a record of that path comes or goes.
-	std::unordered_multimap<FString, uint32, SStringHashIgnoreCase, SStringEqualIgnoreCase> PathTargetCandidates;
+	// Path targets by the portable hash (HashPortable) of every file path they could name (the whole text,
+	// and the text before each '#'): the targets to re-resolve when a record of that path comes or goes. A
+	// hash collision only re-resolves a target that stays as it was; no path is kept twice.
+	std::unordered_multimap<uint64, uint32> PathTargetCandidates;
 	// Guid targets by GUID.
 	std::unordered_multimap<uint64, uint32> GuidTargets;
 	// How many committed records name each companion path (portable fold).
@@ -39,7 +50,7 @@ struct CRegistryStore::SWriterState
 	std::map<FString, uint32, SStringLess> SubjectsByText;
 
 	// The change ring.
-	std::vector<SRecordChange> Ring;
+	std::vector<SRingEntry> Ring;
 	uint32 RingHead = 0u;                              // the oldest entry once the ring is full
 	uint64 DroppedUpTo = 0u;                           // the newest revision whose changes were dropped
 };
@@ -182,9 +193,9 @@ public:
 	}
 
 	// The asset rows changed by this commit and how (for the change ring and the stats).
-	std::vector<SRecordChange> TakeChanges ()
+	std::vector<SRingEntry> TakeChanges ()
 	{
-		std::vector<SRecordChange> changes;
+		std::vector<SRingEntry> changes;
 		std::vector<uint32> rows;
 		rows.reserve(Touched.size());
 		for (const auto& [row, touch] : Touched)
@@ -196,7 +207,7 @@ public:
 		{
 			const STouch& touch = Touched[row];
 			const bool bLive = T.Assets.File[row] != InvalidRow;
-			SRecordChange change;
+			SRingEntry change;
 			change.Revision = Revision;
 			if (touch.bExistedBefore && bLive)
 			{
@@ -216,15 +227,15 @@ public:
 			}
 			if (bLive)
 			{
-				change.Id = SAssetId { T.Assets.Guid[row], 0u };
-				change.MountPath = FString(T.Paths.Get(T.Files.Path[T.Assets.File[row]]));
+				change.Guid = T.Assets.Guid[row];
+				change.Path = T.Files.Path[T.Assets.File[row]];
 			}
 			else
 			{
-				change.Id = SAssetId { touch.RemovedGuid, 0u };
-				change.MountPath = touch.RemovedPath;
+				change.Guid = touch.RemovedGuid;
+				change.Path = touch.RemovedPath;
 			}
-			changes.push_back(std::move(change));
+			changes.push_back(change);
 		}
 		return changes;
 	}
@@ -234,7 +245,7 @@ private:
 	{
 		bool bExistedBefore = false;
 		SGuid RemovedGuid;
-		FString RemovedPath;
+		uint32 RemovedPath = InvalidRow;   // PATHS
 	};
 
 	// ---------------- Problems ----------------
@@ -842,11 +853,15 @@ private:
 		CTypeTable& table = T.Types[Type];
 		const uint32 row = table.Records.Append(RecordValue, Epoch);
 		table.Dead.Grow(row + 1u, Epoch);
-		for (STagColumn& column : table.Columns)
+		for (uint32 key = 0u; key < table.Columns.size(); ++key)
 		{
+			STagColumn& column = table.Columns[key];
 			column.Values.Grow(row + 1u, Epoch);
 			column.PresentBits.Grow(row + 1u, Epoch);
-			column.MultiRanges.Grow(row + 1u, Epoch);
+			if (HasAnyFlags(table.Keys[key].Flags, ETagFlags::MultiValue))
+			{
+				column.MultiRanges.Grow(row + 1u, Epoch);
+			}
 		}
 		++table.LiveRows;
 		return row;
@@ -947,7 +962,10 @@ private:
 				{
 					T.GarbagePoolItems += CountPoolItems(desc, column, Row);
 					column.PresentBits.Set(Row, false, Epoch);
-					column.MultiRanges.SetIfChanged(Row, SPoolRange {}, Epoch);
+					if (HasAnyFlags(desc.Flags, ETagFlags::MultiValue))
+					{
+						column.MultiRanges.SetIfChanged(Row, SPoolRange {}, Epoch);
+					}
 				}
 				continue;
 			}
@@ -1082,19 +1100,6 @@ private:
 			assets.NumSubs.SetIfChanged(Row, 0u, Epoch);
 		}
 
-		SGraphTables& graph = T.Graph;
-		if (!assets.BaseEdgesMasked.Test(Row))
-		{
-			const uint32 count = assets.BaseEdges[Row].Count;
-			graph.GarbageEdges += count;
-			graph.LiveEdges -= count;
-			assets.BaseEdgesMasked.Set(Row, true, Epoch);
-		}
-		const uint32 overflow = assets.OverflowEdges[Row].Count;
-		graph.GarbageEdges += overflow;
-		graph.LiveEdges -= overflow;
-		assets.OverflowEdges.SetIfChanged(Row, SPoolRange {}, Epoch);
-
 		T.Indices.RecordsById64.Erase(MixRegistryKey(assets.AssetId64[Row]), Row, Epoch);
 		T.Indices.RecordsByGuid.Erase(HashGuid(assets.Guid[Row]), Row, Epoch);
 		TouchedGuids.insert(HashGuid(assets.Guid[Row]));
@@ -1112,8 +1117,9 @@ private:
 		const FStringView path = T.Paths.Get(T.Files.Path[file]);
 		STouch& touch = Touched[Row];
 		touch.RemovedGuid = assets.Guid[Row];
-		touch.RemovedPath = FString(path);
+		touch.RemovedPath = T.Files.Path[file];
 		ReleaseRecordContents(Row, false, false);
+		DropEdges(Row);
 		SetLabels(Row, {});
 		SetCompanions(Row, {}, path);
 		T.Indices.RecordsByPortablePath.Erase(HashPortable(path), Row, Epoch);
@@ -1427,7 +1433,9 @@ private:
 		else
 		{
 			target.Kind = ETargetKind::Path;
-			target.Text = T.Paths.Add(Edge.TargetPath, Epoch);
+			// Most references spell a file's path exactly: share its PATHS entry.
+			const uint32 file = FindFileRowExact(T, Edge.TargetPath);
+			target.Text = file != InvalidRow ? T.Files.Path[file] : T.Paths.Add(Edge.TargetPath, Epoch);
 		}
 		const uint32 row = graph.Targets.Append(target, Epoch);
 		graph.OverflowReverseHead.Append(InvalidRow, Epoch);
@@ -1440,16 +1448,37 @@ private:
 		{
 			const FStringView text = Edge.TargetPath;
 			graph.TargetsByKey.Insert(HashExact(text), row, Epoch);
-			W.PathTargetCandidates.emplace(FString(text), row);
+			W.PathTargetCandidates.emplace(HashPortable(text), row);
 			for (const uint32 split : GetLabelSplits(text))
 			{
-				W.PathTargetCandidates.emplace(FString(text.Left(split)), row);
+				W.PathTargetCandidates.emplace(HashPortable(text.Left(split)), row);
 			}
 		}
 		TargetsToResolve.insert(row);
 		return row;
 	}
 
+	// Masks a record's base slice and drops its overflow list: every edge it had becomes garbage.
+	void DropEdges (uint32 Row)
+	{
+		SAssetsTable& assets = T.Assets;
+		SGraphTables& graph = T.Graph;
+		if (!assets.BaseEdgesMasked.Test(Row))
+		{
+			const uint32 count = assets.BaseEdges[Row].Count;
+			graph.GarbageEdges += count;
+			graph.LiveEdges -= count;
+			assets.BaseEdgesMasked.Set(Row, true, Epoch);
+		}
+		const uint32 overflow = assets.OverflowEdges[Row].Count;
+		graph.GarbageEdges += overflow;
+		graph.LiveEdges -= overflow;
+		assets.OverflowEdges.SetIfChanged(Row, SPoolRange {}, Epoch);
+	}
+
+	// A record's edges: kept where they are when the list is the same as its live edges (a re-upsert of an
+	// unchanged file leaves no garbage and no reverse entry), else the old ones are dropped and the new ones
+	// appended to an overflow list.
 	void WriteEdges (uint32 Row, const std::vector<SEdgeDecl>& Decls, FStringView Path)
 	{
 		SAssetsTable& assets = T.Assets;
@@ -1488,7 +1517,18 @@ private:
 				edges.push_back(edge);
 			}
 		}
-		assets.BaseEdgesMasked.Set(Row, true, Epoch);
+		bool bSame = true;
+		uint32 liveCount = 0u;
+		ForEachLiveEdge(T, Row, [&] (uint32 EdgeRef)
+		{
+			bSame = bSame && liveCount < edges.size() && GetEdgeRow(T, EdgeRef) == edges[liveCount];
+			++liveCount;
+		});
+		if (bSame && liveCount == edges.size())
+		{
+			return;
+		}
+		DropEdges(Row);
 		const uint32 begin = graph.OverflowEdges.Size();
 		for (const SEdgeRow& edge : edges)
 		{
@@ -1729,7 +1769,7 @@ private:
 		// Targets whose candidate records changed, and the new ones.
 		for (const FString& path : TouchedRecordPaths)
 		{
-			const auto [begin, end] = W.PathTargetCandidates.equal_range(path);
+			const auto [begin, end] = W.PathTargetCandidates.equal_range(HashPortable(path));
 			for (auto it = begin; it != end; ++it)
 			{
 				TargetsToResolve.insert(it->second);
@@ -1888,21 +1928,26 @@ void CRegistryStore::Commit (SRegistryDelta&& Delta)
 
 	CWriter writer(*this, tables.Revision);
 	writer.Apply(Delta);
-	std::vector<SRecordChange> changes = writer.TakeChanges();
+	std::vector<SRingEntry> changes = writer.TakeChanges();
 
 	LastStats = SRegistryCommitStats {};
 	LastStats.RecordsChanged = static_cast<uint32>(changes.size());
 	SWriterState& state = *Writer;
-	for (SRecordChange& change : changes)
+	for (const SRingEntry& change : changes)
 	{
 		if (state.Ring.size() < ChangeRingCapacity)
 		{
-			state.Ring.push_back(std::move(change));
+			if (state.Ring.size() == state.Ring.capacity())
+			{
+				// Doubling from 1024 ends at exactly ChangeRingCapacity (a power of two), never past it.
+				state.Ring.reserve((std::min)((std::max)(state.Ring.capacity() * 2u, size_t(1024u)), size_t(ChangeRingCapacity)));
+			}
+			state.Ring.push_back(change);
 		}
 		else
 		{
 			state.DroppedUpTo = (std::max)(state.DroppedUpTo, state.Ring[state.RingHead].Revision);
-			state.Ring[state.RingHead] = std::move(change);
+			state.Ring[state.RingHead] = change;
 			state.RingHead = (state.RingHead + 1u) % ChangeRingCapacity;
 		}
 	}
@@ -1919,15 +1964,82 @@ bool CRegistryStore::ForEachChangeSince (uint64 Revision, TFunctionRef<void (con
 		return false;
 	}
 	const uint32 count = static_cast<uint32>(state.Ring.size());
+	SRecordChange change;
 	for (uint32 i = 0u; i < count; ++i)
 	{
-		const SRecordChange& change = state.Ring[(state.RingHead + i) % count];
-		if (change.Revision > Revision)
+		const SRingEntry& entry = state.Ring[(state.RingHead + i) % count];
+		if (entry.Revision > Revision)
 		{
+			change.Revision = entry.Revision;
+			change.Kind = entry.Kind;
+			change.Id = SAssetId { entry.Guid, 0u };
+			change.MountPath = FString(LiveView.Tables.Paths.Get(entry.Path));
 			Visit(change);
 		}
 	}
 	return true;
+}
+
+namespace
+{
+// Approximate heap bytes of the writer's std containers (MSVC's layouts: a hash map's nodes carry two
+// links and its bucket table two pointers per bucket; a tree node three links and two flags; every block
+// some 16 bytes of allocator overhead), FString keys' own blocks included.
+constexpr uint64 BlockOverhead = 16u;
+
+uint64 GetHeapBytes (const FString& Text) noexcept
+{
+	return Text.IsHeapAllocated() ? Text.GetCapacity() + 1u + BlockOverhead : 0u;
+}
+
+uint64 GetHeapBytes (uint64) noexcept
+{
+	return 0u;
+}
+
+template <typename TMap>
+uint64 GetHashMapBytes (const TMap& Map)
+{
+	uint64 bytes = Map.bucket_count() * 2u * sizeof(void*);
+	for (const auto& entry : Map)
+	{
+		bytes += 2u * sizeof(void*) + sizeof(entry) + BlockOverhead + GetHeapBytes(entry.first);
+	}
+	return bytes;
+}
+
+template <typename TMap>
+uint64 GetTreeMapBytes (const TMap& Map)
+{
+	uint64 bytes = 0u;
+	for (const auto& entry : Map)
+	{
+		bytes += 3u * sizeof(void*) + 2u + sizeof(entry) + BlockOverhead + GetHeapBytes(entry.first);
+	}
+	return bytes;
+}
+
+uint64 GetListsBytes (const std::vector<std::vector<uint32>>& Lists)
+{
+	uint64 bytes = Lists.capacity() * sizeof(std::vector<uint32>);
+	for (const std::vector<uint32>& list : Lists)
+	{
+		bytes += list.capacity() == 0u ? 0u : list.capacity() * sizeof(uint32) + BlockOverhead;
+	}
+	return bytes;
+}
+}
+
+SRegistryMemoryStats CRegistryStore::GetMemoryStats () const
+{
+	SRegistryMemoryStats stats = ComputeMemoryStats(LiveView.Tables);
+	const SWriterState& state = *Writer;
+	stats.Writer = GetListsBytes(state.FolderChildren) + GetListsBytes(state.FolderFiles) + state.FileSlot.capacity() * sizeof(uint32)
+		+ GetHashMapBytes(state.PathTargetCandidates) + GetHashMapBytes(state.GuidTargets) + GetHashMapBytes(state.CompanionRefs)
+		+ GetHashMapBytes(state.CompanionPathIds) + GetTreeMapBytes(state.SubjectsByText);
+	stats.ChangeRing = state.Ring.capacity() * sizeof(SRingEntry);
+	stats.Total += stats.Writer + stats.ChangeRing;
+	return stats;
 }
 
 void CRegistryStore::AdoptImage (SRegistryImage&& Image, uint64 Revision)
@@ -2090,14 +2202,17 @@ void CRegistryStore::CompactRecordTables ()
 			{
 				const STagColumn& from = old.Columns[key];
 				STagColumn& to = table.Columns[key];
+				const STagKeyDesc& desc = old.Keys[key];
 				to.Values.Grow(row + 1u, epoch);
 				to.PresentBits.Grow(row + 1u, epoch);
-				to.MultiRanges.Grow(row + 1u, epoch);
+				if (HasAnyFlags(desc.Flags, ETagFlags::MultiValue))
+				{
+					to.MultiRanges.Grow(row + 1u, epoch);
+				}
 				if (!from.PresentBits.Test(oldRow))
 				{
 					continue;
 				}
-				const STagKeyDesc& desc = old.Keys[key];
 				const auto remap = [&] (uint64 Bits) -> uint64
 				{
 					return desc.Type == ETagType::String ? strings.Add(tables.Strings.Get(static_cast<uint32>(Bits)), epoch) : Bits;

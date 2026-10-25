@@ -1,9 +1,11 @@
 // The registry store's rows of the §5.11 budget table at 10k assets: a one-edit commit's main-thread time,
 // GUID / AssetId64 / path lookups, transitive referencers, a substring search over names and the resident
-// memory of a view. Timings mean something in optimized builds only: Debug measures and prints, never
-// judges. In the whole suite the machine is busy, so the checks fail on a clear regression (twice a budget)
-// and hold the exact budgets only with FRT_PERF_STRICT=1. The fixture is this test's own small generator
-// (textures, materials, models with sub-entries, input files); the full §5.11 generator is G3's.
+// memory of the store (its view's tables, the writer's state and a full change ring). Timings mean
+// something in optimized builds only: Debug measures and prints, never judges. In the whole suite the
+// machine is busy, so the checks fail on a clear regression (twice a budget) and hold the exact budgets
+// only with FRT_PERF_STRICT=1. The fixture is this test's own small generator (textures, materials, models
+// with sub-entries, input files) with §5.3's density of about 4.5 edges per asset and rule labels on every
+// record; the full §5.11 generator is G3's. (No M3 type has a String key, so there are no STRINGS values.)
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -31,21 +33,36 @@ FString TexturePath (uint32 I) { return FString::Format("/Project/Textures/Set{}
 FString MaterialPath (uint32 I) { return FString::Format("/Project/Materials/Set{}/M_Rock_{}.frtmat.yml", I % 20u, I); }
 FString ModelPath (uint32 I) { return FString::Format("/Project/Models/Set{}/SM_Rock_{}.gltf", I % 20u, I); }
 
-// 10k assets: textures; materials with three texture edges (texture 0 is used by every 20th material);
-// models with three sub-entries, a .bin companion and edges to two materials; raw and input files.
+FString ActionPath (uint32 I) { return FString::Format("/Project/Data/Set{}/D_{}.frtinputaction", I % 10u, I); }
+
+// Two rule labels per record, as a mount file's Labels rules would give them.
+std::vector<FString> MakeLabels (FStringView Kind, uint32 Set)
+{
+	return { FString(Kind), FString::Format("Set{}", Set) };
+}
+
+// 10k assets, 45k edges: textures; materials with twelve texture edges (texture 0 is used by every 20th
+// material); models with three sub-entries, a .bin companion and edges to it and fourteen materials;
+// input actions with six edges to other actions.
 SRegistryDelta MakeFixture ()
 {
 	SRegistryDelta delta = MakeMountsDelta();
 	for (uint32 i = 0u; i < TextureCount; ++i)
 	{
 		AddTexture(delta, TexturePath(i), 1024, 1024);
+		delta.RecordUpserts.back().RuleLabels = MakeLabels("Texture", i % 50u);
 	}
 	for (uint32 i = 0u; i < MaterialCount; ++i)
 	{
-		const FString a = TexturePath(i % 20u == 0u ? 0u : (i * 3u) % TextureCount);
-		const FString b = TexturePath((i * 3u + 1u) % TextureCount);
-		const FString c = TexturePath((i * 3u + 2u) % TextureCount);
-		AddMaterial(delta, MaterialPath(i), { a, b, c });
+		delta.FileUpserts.push_back(MakeFile(MaterialPath(i)));
+		SRecordUpsert material = MakeRecord(MaterialPath(i), asset_types::Material, "Material.Legacy");
+		material.RuleLabels = MakeLabels("Material", i % 20u);
+		for (uint32 k = 0u; k < 12u; ++k)
+		{
+			const uint32 texture = k == 0u && i % 20u == 0u ? 0u : (i * 12u + k + 1u) % TextureCount;
+			material.Edges.push_back(MakePathEdge(TexturePath(texture), EDepFlags::Build | EDepFlags::Path, FString::Format("slots[{}].texture", k)));
+		}
+		delta.RecordUpserts.push_back(std::move(material));
 	}
 	for (uint32 i = 0u; i < ModelCount; ++i)
 	{
@@ -54,22 +71,30 @@ SRegistryDelta MakeFixture ()
 		delta.FileUpserts.push_back(MakeFile(path, 5000u));
 		delta.FileUpserts.push_back(MakeFile(bin, 50000u, EFileClass::Unclaimed));
 		SRecordUpsert model = MakeRecord(path, asset_types::Model, "Model.Gltf");
+		model.RuleLabels = MakeLabels("Model", i % 20u);
 		model.Tags = { MakeIntTag("MeshCount", 2), MakeIntTag("VertexCount", 4000) };
 		model.SubEntries.push_back(SSubEntryDecl { "mesh:LOD0", 0u, asset_types::Mesh, ERecordFlags::None, { MakeIntTag("VertexCount", 3000) } });
 		model.SubEntries.push_back(SSubEntryDecl { "mesh:LOD1", 0u, asset_types::Mesh, ERecordFlags::None, { MakeIntTag("VertexCount", 1000) } });
 		model.SubEntries.push_back(SSubEntryDecl { "material:Rock", 0u, asset_types::Material, ERecordFlags::None, {} });
 		model.Edges.push_back(MakePathEdge(bin, EDepFlags::Build | EDepFlags::Path | EDepFlags::Declared, "buffers[0].uri"));
-		model.Edges.push_back(MakePathEdge(MaterialPath((i * 2u) % MaterialCount), EDepFlags::Hard));
-		model.Edges.push_back(MakePathEdge(MaterialPath((i * 2u + 1u) % MaterialCount), EDepFlags::Hard));
+		for (uint32 k = 0u; k < 14u; ++k)
+		{
+			model.Edges.push_back(MakePathEdge(MaterialPath((i * 14u + k) % MaterialCount), EDepFlags::Hard, FString::Format("materials[{}]", k)));
+		}
 		model.Companions = { bin };
 		delta.RecordUpserts.push_back(std::move(model));
 	}
 	for (uint32 i = 0u; i < OtherCount; ++i)
 	{
-		const FString path = FString::Format("/Project/Data/Set{}/D_{}.frtinputaction", i % 10u, i);
+		const FString path = ActionPath(i);
 		delta.FileUpserts.push_back(MakeFile(path, 200u));
 		SRecordUpsert action = MakeRecord(path, asset_types::InputAction, "Input.Legacy");
+		action.RuleLabels = MakeLabels("Input", i % 10u);
 		action.Tags = { STagDecl { "ValueType", STagValue::FromName(i % 2u == 0u ? "Button" : "Axis") } };
+		for (uint32 k = 1u; k <= 6u; ++k)
+		{
+			action.Edges.push_back(MakePathEdge(ActionPath((i + k * 37u) % OtherCount), EDepFlags::Path));
+		}
 		delta.RecordUpserts.push_back(std::move(action));
 	}
 	return delta;
@@ -101,9 +126,25 @@ TEST(RegistryBenchmarkTest, TheStoreMeetsItsBudgetsAt10kAssets)
 	const double buildMs = platform::TimestampToMilliseconds(platform::ReadTimestamp() - start);
 	const CRegistryView& live = store.Live();
 	ASSERT_EQ(live.GetRecordCount(), TextureCount + MaterialCount + ModelCount + OtherCount);
-	std::printf("[registry] fixture: %u records, %u sub-entries, %u files, %u folders, committed in %.1f ms\n",
-		live.GetRecordCount(), live.GetSubEntryCount(), live.GetFileCount(), live.GetFolderCount(), buildMs);
+	std::printf("[registry] fixture: %u records, %u sub-entries, %u files, %u folders, %u edges, committed in %.1f ms\n",
+		live.GetRecordCount(), live.GetSubEntryCount(), live.GetFileCount(), live.GetFolderCount(), GetTables(live).Graph.LiveEdges, buildMs);
 	store.CompactGraph();
+
+	// Full re-evaluations (a mount rules edit re-upserts every record) until the change ring has wrapped:
+	// unchanged records reuse their rows, lists and edges, so nothing piles up; F3 compacts when due.
+	const uint32 rounds = FRT_BUILD_DEBUG ? 1u : 6u;
+	double reupsertMs = 0.0;
+	for (uint32 round = 0u; round < rounds; ++round)
+	{
+		store.Commit(MakeFixture());
+		reupsertMs = (std::max)(reupsertMs, store.GetLastCommitStats().Milliseconds);
+		if (store.NeedsCompaction())
+		{
+			store.Compact();
+		}
+	}
+	std::printf("[registry] %u full re-upserts, the slowest %.1f ms; change ring %s\n", rounds, reupsertMs,
+		store.ForEachChangeSince(0u, [] (const SRecordChange&) {}) ? "not full" : "full");
 
 	// One edit: a material re-analyzed with a changed texture. Median of 51 commits.
 	std::vector<double> commits;
@@ -192,12 +233,14 @@ TEST(RegistryBenchmarkTest, TheStoreMeetsItsBudgetsAt10kAssets)
 	EXPECT_GT(hits, 0u);
 	budget.Check("NameSubstringMs", substringMs, 0.2, "ms");
 
-	const SRegistryMemoryStats memory = view->GetMemoryStats();
+	const SRegistryMemoryStats memory = store.GetMemoryStats();
 	std::printf("[registry] resident: files %.2f, folders %.2f, rule files %.2f, assets %.2f, sub-entries %.2f, type tables %.2f, "
-		"graph %.2f, names %.2f, strings %.2f, labels %.2f, problems %.2f, indices %.2f MB\n",
+		"graph %.2f, names %.2f, strings %.2f, labels %.2f, problems %.2f, indices %.2f, writer %.2f, change ring %.2f MB\n",
 		memory.Files / 1048576.0, memory.Folders / 1048576.0, memory.RuleFiles / 1048576.0, memory.Assets / 1048576.0,
 		memory.SubEntries / 1048576.0, memory.TypeTables / 1048576.0, memory.Graph / 1048576.0, memory.Names / 1048576.0,
-		memory.Strings / 1048576.0, memory.Labels / 1048576.0, memory.Problems / 1048576.0, memory.Indices / 1048576.0);
+		memory.Strings / 1048576.0, memory.Labels / 1048576.0, memory.Problems / 1048576.0, memory.Indices / 1048576.0,
+		memory.Writer / 1048576.0, memory.ChangeRing / 1048576.0);
+	EXPECT_EQ(memory.Total, ComputeMemoryStats(GetTables(store.Live())).Total + memory.Writer + memory.ChangeRing);
 	budget.Check("ResidentMemoryMB", memory.Total / 1048576.0, 15.0, "MB");
 
 	// For the snapshot work (H3 owns its budgets): exporting the tables and rebuilding a store from them.
