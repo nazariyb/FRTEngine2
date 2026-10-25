@@ -27,8 +27,9 @@
  *
  * Row numbers are stable for the life of a store: a removed row is tombstoned (FILES/ASSETS: File or
  * Folder = InvalidRow; FOLDERS/RULEFILES: Mount = InvalidMountId; SUBENTRY: Owner = InvalidRow; type
- * tables: the Dead bit) and new rows append. An SRecordId's Value is an ASSETS row, or SubEntryBit | a
- * SUBENTRY row.
+ * tables: the Dead bit) and new rows append. The exception is CRegistryStore::CompactTables, which
+ * renumbers SUBENTRY and type-table rows (and rebuilds the label, companion, Multi and STRINGS pools) in
+ * a revision of its own. An SRecordId's Value is an ASSETS row, or SubEntryBit | a SUBENTRY row.
  *
  * Indices are CPagedHashIndex tables of row numbers keyed by in-memory hashes; the caller compares the
  * candidates it is handed against the columns (the Find* helpers below do). They are never persisted:
