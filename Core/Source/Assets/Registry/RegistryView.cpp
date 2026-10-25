@@ -252,7 +252,7 @@ SRegistryMemoryStats ComputeMemoryStats (const SRegistryTables& Tables)
 	SRegistryMemoryStats stats;
 	const SFilesTable& files = Tables.Files;
 	stats.Files = files.Folder.GetResidentBytes() + files.LeafName.GetResidentBytes() + files.Path.GetResidentBytes()
-		+ files.Mount.GetResidentBytes() + files.Size.GetResidentBytes() + files.MTime.GetResidentBytes()
+		+ files.FoldedPath.GetResidentBytes() + files.Mount.GetResidentBytes() + files.Size.GetResidentBytes() + files.MTime.GetResidentBytes()
 		+ files.Identity.GetResidentBytes() + files.ContentHash.GetResidentBytes() + files.MetaHash.GetResidentBytes()
 		+ files.Class.GetResidentBytes() + files.BaseClass.GetResidentBytes() + files.MetaState.GetResidentBytes()
 		+ files.Record.GetResidentBytes();

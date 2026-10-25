@@ -344,6 +344,10 @@ private:
 			{
 				Violation(root, FString::Format("mount {} has id {}; an upsert with id {} contradicts it: ignored", Upsert.Name, byName->Id, Upsert.Id));
 			}
+			else if (byName->bCaseSensitive != Upsert.bCaseSensitive)
+			{
+				SetMountCaseRule(Upsert.Id, Upsert.bCaseSensitive);
+			}
 			return;
 		}
 		if (Upsert.Id < mounts.size() && !mounts[Upsert.Id].Name.IsEmpty())
@@ -365,6 +369,36 @@ private:
 		T.Mounts = std::make_shared<const std::vector<SMountRow>>(std::move(updated));
 		const uint32 rootFolder = CreateFolderRow(InvalidRow, root, Upsert.Id, Upsert.Name);
 		UpdateMount(Upsert.Id, [&] (SMountRow& Mount) { Mount.RootFolder = rootFolder; });
+	}
+
+	// The mount root's volume changed its case rule since the mount was registered (a snapshot's mounts are
+	// adopted first, then CMountTable's upserts arrive): the FILES and FOLDERS path indices of its rows are
+	// rebuilt under the new rule, so FindFile and FindFolder answer for the volume as it is now.
+	void SetMountCaseRule (MountId Id, bool bCaseSensitive)
+	{
+		const FString name = (*T.Mounts)[Id].Name;
+		log::Info(log::Assets, "registry: mount {} is now case-{}: its path indices are rebuilt", name, bCaseSensitive ? "sensitive" : "insensitive");
+		const uint32 fileRows = T.Files.Folder.Size();
+		for (uint32 row = 0u; row < fileRows; ++row)
+		{
+			if (T.Files.Folder[row] != InvalidRow && T.Files.Mount[row] == Id)
+			{
+				const FStringView path = T.Paths.Get(T.Files.Path[row]);
+				T.Indices.FilesByPath.Erase(HashMountRule(path, !bCaseSensitive), row, Epoch);
+				T.Indices.FilesByPath.Insert(HashMountRule(path, bCaseSensitive), row, Epoch);
+			}
+		}
+		const uint32 folderRows = T.Folders.Mount.Size();
+		for (uint32 row = 0u; row < folderRows; ++row)
+		{
+			if (T.Folders.Mount[row] == Id)
+			{
+				const FStringView path = T.Paths.Get(T.Folders.Path[row]);
+				T.Indices.FoldersByPath.Erase(HashMountRule(path, !bCaseSensitive), row, Epoch);
+				T.Indices.FoldersByPath.Insert(HashMountRule(path, bCaseSensitive), row, Epoch);
+			}
+		}
+		UpdateMount(Id, [&] (SMountRow& Mount) { Mount.bCaseSensitive = bCaseSensitive; });
 	}
 
 	template <typename TEdit>
@@ -418,24 +452,33 @@ private:
 	}
 
 	// The folder of that exact spelling, created with its missing parents. InvalidRow for a malformed path.
+	// Iterative (deep trees must not exhaust the stack): up to the nearest folder that exists, then down.
 	uint32 EnsureFolder (FStringView Path, const SMountRow& Mount)
 	{
-		const uint32 existing = FindFolderRowExact(T, Path);
-		if (existing != InvalidRow)
+		std::vector<FStringView> missing;
+		uint32 parent = InvalidRow;
+		for (FStringView current = Path;;)
 		{
-			return existing;
+			const uint32 existing = FindFolderRowExact(T, current);
+			if (existing != InvalidRow)
+			{
+				parent = existing;
+				break;
+			}
+			const FStringView up = GetMountPathParent(current);
+			if (up.IsEmpty())
+			{
+				parent = Mount.RootFolder;
+				break;
+			}
+			missing.push_back(current);
+			current = up;
 		}
-		const FStringView parentPath = GetMountPathParent(Path);
-		if (parentPath.IsEmpty())
+		for (auto it = missing.rbegin(); it != missing.rend() && parent != InvalidRow; ++it)
 		{
-			return Mount.RootFolder;
+			parent = CreateFolderRow(parent, *it, Mount.Id, GetMountPathLeaf(*it));
 		}
-		const uint32 parent = EnsureFolder(parentPath, Mount);
-		if (parent == InvalidRow)
-		{
-			return InvalidRow;
-		}
-		return CreateFolderRow(parent, Path, Mount.Id, GetMountPathLeaf(Path));
+		return parent;
 	}
 
 	void UpsertFolder (FStringView Path)
@@ -461,17 +504,39 @@ private:
 		ClearProblems(Path, (1u << ProblemSourceCount) - 1u, true);
 	}
 
-	void RemoveFolderSubtree (uint32 Row)
+	// Children before their parent, with an explicit stack (deep trees must not exhaust the thread's).
+	void RemoveFolderSubtree (uint32 Root)
 	{
-		const std::vector<uint32> children = W.FolderChildren[Row];
-		for (const uint32 child : children)
+		std::vector<std::pair<uint32, bool>> stack { { Root, false } };
+		while (!stack.empty())
 		{
-			RemoveFolderSubtree(child);
+			const auto [row, bExpanded] = stack.back();
+			if (!bExpanded)
+			{
+				stack.back().second = true;
+				for (const uint32 child : W.FolderChildren[row])
+				{
+					stack.emplace_back(child, false);
+				}
+				continue;
+			}
+			stack.pop_back();
+			RemoveFolderRow(row);
 		}
-		const std::vector<uint32> files = W.FolderFiles[Row];
-		for (const uint32 file : files)
+	}
+
+	// One folder whose children are gone: its files, its rule file, its index entries and its parent's link.
+	void RemoveFolderRow (uint32 Row)
+	{
+		std::vector<uint32>& files = W.FolderFiles[Row];
+		while (!files.empty())
 		{
-			RemoveFile(file);
+			const size_t before = files.size();
+			RemoveFile(files.back());
+			if (files.size() == before)
+			{
+				files.pop_back();   // never happens: a listed file is live and removing it unlists it
+			}
 		}
 		SFoldersTable& folders = T.Folders;
 		if (folders.RuleFile[Row] != InvalidRow)
@@ -660,7 +725,10 @@ private:
 		SFilesTable& files = T.Files;
 		const uint32 row = files.Folder.Append(folder, Epoch);
 		files.LeafName.Append(T.Names.Intern(GetMountPathLeaf(Path), Epoch), Epoch);
-		files.Path.Append(T.Paths.Add(Path, Epoch), Epoch);
+		const uint32 pathId = T.Paths.Add(Path, Epoch);
+		files.Path.Append(pathId, Epoch);
+		const FString folded = FString(Path).FoldCase();
+		files.FoldedPath.Append(folded.View() == Path ? T.Paths.GetRef(pathId) : T.Paths.Store(folded.View()), Epoch);
 		files.Mount.Append(mount->Id, Epoch);
 		files.Size.Append(0u, Epoch);
 		files.MTime.Append(0, Epoch);
@@ -1248,7 +1316,7 @@ private:
 			edge.Flags = decl.Flags & ~EDepFlags::Unresolved;
 			const bool bDuplicate = std::any_of(edges.begin(), edges.end(), [&] (const SEdgeRow& Other)
 			{
-				return Other.FromSub == edge.FromSub && Other.Target == edge.Target && Other.FieldPath == edge.FieldPath && Other.Flags == edge.Flags;
+				return Other.FromSub == edge.FromSub && Other.Target == edge.Target && Other.Flags == edge.Flags;
 			});
 			if (!bDuplicate)
 			{
@@ -1478,9 +1546,17 @@ private:
 			subject += T.Names.Get(T.SubEntries.Key[sub]);
 			count += CountSubjectProblems(subject);
 		}
-		assets.Problems.SetIfChanged(Row, static_cast<uint16>(count < 0xFFFFu ? count : 0xFFFFu), Epoch);
+		const uint16 problems = static_cast<uint16>(count < 0xFFFFu ? count : 0xFFFFu);
 		const ERecordFlags flags = assets.Flags[Row];
-		assets.Flags.SetIfChanged(Row, count > 0u ? (flags | ERecordFlags::HasProblems) : (flags & ~ERecordFlags::HasProblems), Epoch);
+		const ERecordFlags updated = count > 0u ? (flags | ERecordFlags::HasProblems) : (flags & ~ERecordFlags::HasProblems);
+		if (assets.Problems[Row] != problems || flags != updated)
+		{
+			// $Problems and is:problem changed, so the record changed (a change-ring entry, ChangedRevision),
+			// also when the delta only set or cleared a problem list.
+			assets.Problems.Set(Row, problems, Epoch);
+			assets.Flags.Set(Row, updated, Epoch);
+			Touch(Row, true);
+		}
 	}
 
 	void Finish ()

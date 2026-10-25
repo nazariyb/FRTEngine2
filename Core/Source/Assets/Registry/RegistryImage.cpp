@@ -286,36 +286,54 @@ SRegistryDelta MakeImageDelta (SRegistryImage&& Image)
 		delta.Mounts.push_back(SMountUpsert { mount.Name, mount.bCaseSensitive, mount.Id });
 	}
 
-	// Folder paths (a parent may come after its child in a hand-made image: resolve on demand).
+	// Folder paths (a parent may come after its child in a hand-made image: resolve on demand). Iterative, so a
+	// deep or hostile image cannot exhaust the stack: up the parent chain to a folder already resolved (or a
+	// mount root), then down. A cycle or an out-of-range parent leaves the folders below it without a path.
 	std::vector<FString> folderPaths(Image.Folders.size());
 	std::vector<uint8> state(Image.Folders.size(), 0u);   // 0 unknown, 1 in progress, 2 done
-	const auto folderPath = [&] (auto& Self, uint32 Index) -> FStringView
+	std::vector<uint32> chain;
+	const auto folderPath = [&] (uint32 Index) -> FStringView
 	{
-		if (Index >= Image.Folders.size() || state[Index] == 1u)
+		chain.clear();
+		FStringView base;
+		for (uint32 current = Index;;)
 		{
-			return FStringView();
+			if (current >= Image.Folders.size() || state[current] == 1u)
+			{
+				break;
+			}
+			if (state[current] == 2u)
+			{
+				base = folderPaths[current];
+				break;
+			}
+			state[current] = 1u;
+			chain.push_back(current);
+			if (Image.Folders[current].Parent == ~0u)
+			{
+				break;
+			}
+			current = Image.Folders[current].Parent;
 		}
-		if (state[Index] == 2u)
+		for (auto it = chain.rbegin(); it != chain.rend(); ++it)
 		{
-			return folderPaths[Index];
+			const SImageFolder& folder = Image.Folders[*it];
+			if (folder.Parent == ~0u)
+			{
+				folderPaths[*it] = JoinMountPath(name(folder.Name), FStringView());
+			}
+			else
+			{
+				folderPaths[*it] = base.IsEmpty() ? FString() : MakeChildMountPath(base, name(folder.Name));
+			}
+			state[*it] = 2u;
+			base = folderPaths[*it];
 		}
-		state[Index] = 1u;
-		const SImageFolder& folder = Image.Folders[Index];
-		if (folder.Parent == ~0u)
-		{
-			folderPaths[Index] = JoinMountPath(name(folder.Name), FStringView());
-		}
-		else
-		{
-			const FStringView parent = Self(Self, folder.Parent);
-			folderPaths[Index] = parent.IsEmpty() ? FString() : MakeChildMountPath(parent, name(folder.Name));
-		}
-		state[Index] = 2u;
-		return folderPaths[Index];
+		return Index < Image.Folders.size() && state[Index] == 2u ? folderPaths[Index].View() : FStringView();
 	};
 	for (uint32 i = 0u; i < Image.Folders.size(); ++i)
 	{
-		const FStringView path = folderPath(folderPath, i);
+		const FStringView path = folderPath(i);
 		if (!path.IsEmpty() && Image.Folders[i].Parent != ~0u)
 		{
 			delta.FolderUpserts.push_back(SFolderUpsert { FString(path) });
@@ -326,7 +344,7 @@ SRegistryDelta MakeImageDelta (SRegistryImage&& Image)
 	for (uint32 i = 0u; i < Image.Files.size(); ++i)
 	{
 		const SImageFile& file = Image.Files[i];
-		const FStringView folder = folderPath(folderPath, file.Folder);
+		const FStringView folder = folderPath(file.Folder);
 		if (folder.IsEmpty())
 		{
 			continue;
@@ -352,7 +370,7 @@ SRegistryDelta MakeImageDelta (SRegistryImage&& Image)
 		}
 		SRuleFileUpsert upsert;
 		upsert.MountName = Image.Mounts[ruleFile.Mount].Name;
-		upsert.FolderMountPath = ruleFile.Folder != ~0u ? FString(folderPath(folderPath, ruleFile.Folder)) : FString();
+		upsert.FolderMountPath = ruleFile.Folder != ~0u ? FString(folderPath(ruleFile.Folder)) : FString();
 		upsert.RulesHash = ruleFile.RulesHash;
 		if (ruleFile.Folder == ~0u || !upsert.FolderMountPath.IsEmpty())
 		{

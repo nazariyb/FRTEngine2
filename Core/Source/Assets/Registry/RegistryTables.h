@@ -173,6 +173,7 @@ struct SFilesTable
 	CPagedColumn<uint32> Folder;
 	CPagedColumn<uint32> LeafName;                        // NAMES
 	CPagedColumn<uint32> Path;                            // PATHS
+	CPagedColumn<CStringPool::SRef> FoldedPath;           // Path's folded shadow (FString::FoldCase) in PATHS' bytes
 	CPagedColumn<MountId> Mount;
 	CPagedColumn<uint64> Size;
 	CPagedColumn<int64> MTime;
@@ -272,6 +273,9 @@ struct STargetRow
 	bool bSpellingDiffers = false;      // resolved under the fold with a spelling other than the file's (REF006)
 };
 
+// A record keeps one edge per distinct (FromSub, Target, Flags) (§5.2 "one edge per distinct (target, sub,
+// flags)"): a repeat with another FieldPath (two material slots naming one texture) is dropped and the
+// first FieldPath stays, so each source counts once among a target's referencers.
 struct SEdgeRow
 {
 	uint64 FromSub = 0u;                // 0 = the record; else one of its SubIds
@@ -419,6 +423,13 @@ inline constexpr uint32 RuleLabelBit = 1u << 31u;   // SRegistryTables::Labels: 
 
 // The tables of a view (a free function so the view's public API stays §5.7's).
 [[nodiscard]] FRT_CORE_API const SRegistryTables& GetTables (const CRegistryView& View) noexcept;
+
+// A live FILES row's mount path folded (FString::FoldCase), for caseless substring search over whole paths
+// ("Textures/T_Rock" crosses a '/') without folding per query. Paths never change, so neither does this.
+[[nodiscard]] inline FStringView GetFoldedFilePath (const SRegistryTables& Tables, uint32 FileRow) noexcept
+{
+	return Tables.Paths.Resolve(Tables.Files.FoldedPath[FileRow]);
+}
 
 
 // ---------------- Lookups over the tables (no allocation) ----------------
