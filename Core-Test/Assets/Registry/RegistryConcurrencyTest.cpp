@@ -114,6 +114,112 @@ TEST(RegistryConcurrencyTest, ReadersOnEightThreadsSeeOnlyWholeDeltas)
 	EXPECT_EQ(store.Live().GetRecordCount(), commits + 1u);
 }
 
+namespace
+{
+// Compaction step i (1-based): the model's sub-entry takes a new label (its old SUBENTRY and type rows die)
+// and VertexCount i, MeshCount says i; item i arrives with an edge to the model and item i - 1 is
+// re-upserted with the same edge (its old edge becomes garbage).
+FString CompactionItem (uint32 Step)
+{
+	return FString::Format("/Project/Items/{}/i{}.png", Step % 16u, Step);
+}
+
+SRegistryDelta MakeCompactionStep (uint32 Step)
+{
+	SRegistryDelta delta;
+	SRecordUpsert model = MakeRecord("/Project/Model.gltf", asset_types::Model, "Model.Gltf");
+	model.Tags.push_back(MakeIntTag("MeshCount", Step));
+	model.SubEntries.push_back(SSubEntryDecl { FString::Format("mesh:M{}", Step), 0u, asset_types::Mesh, ERecordFlags::None,
+		{ MakeIntTag("VertexCount", Step) } });
+	model.RuleLabels = { FString::Format("L{}", Step % 3u) };
+	delta.RecordUpserts.push_back(std::move(model));
+	for (const uint32 item : { Step - 1u, Step })
+	{
+		if (item == 0u)
+		{
+			continue;
+		}
+		SRecordUpsert record = MakeRecord(CompactionItem(item));
+		record.Tags.push_back(MakeIntTag("Width", item));
+		record.Edges.push_back(MakePathEdge(FString::Format("/Project/Model.gltf#mesh:M{}", Step)));
+		delta.RecordUpserts.push_back(std::move(record));
+	}
+	return delta;
+}
+}
+
+TEST(RegistryConcurrencyTest, ReadersSeeWholeViewsWhileCompactionsArePublished)
+{
+	// The owner compacts the tables and the graph every 25 commits while four readers check every view
+	// they acquire: record counts, the renumbered sub-entry by path and by AssetId64, its tag, and the
+	// model's referencers through the CSR and the overflow lists.
+	constexpr uint32 commits = FRT_BUILD_DEBUG ? 500u : 2500u;
+	CRegistryStore store;
+	store.Commit(MakeMountsDelta());
+
+	std::atomic<bool> bDone = false;
+	std::atomic<uint32> failures = 0u;
+	std::atomic<uint64> checkedViews = 0u;
+	std::vector<std::thread> readers;
+	for (uint32 t = 0u; t < 4u; ++t)
+	{
+		readers.emplace_back([&] ()
+		{
+			while (!bDone.load(std::memory_order_acquire))
+			{
+				const std::shared_ptr<const CRegistryView> view = store.Acquire();
+				const SRecordId model = view->FindByPath("/Project/Model.gltf").value_or(SRecordId {});
+				STagValue meshCount;
+				if (!model.IsValid() || !view->GetTag(model, "MeshCount", meshCount))
+				{
+					continue;
+				}
+				const uint32 step = static_cast<uint32>(meshCount.AsInt64());
+				bool bOk = view->GetRecordCount() == step + 1u && view->GetSubEntryCount() == 1u;
+				const SRecordId mesh = view->FindByPath(FString::Format("/Project/Model.gltf#mesh:M{}", step)).value_or(SRecordId {});
+				SAssetData data;
+				STagValue vertices;
+				bOk = bOk && view->GetRecord(mesh, data) && view->Find(data.Id64) == mesh;
+				bOk = bOk && view->GetTag(mesh, "VertexCount", vertices) && vertices.AsInt64() == static_cast<int64>(step);
+				uint32 referencers = 0u;
+				view->ForEachReferencer(mesh, EDepFlags {}, EDepFlags {}, [&] (const SDependencyView&) { ++referencers; });
+				bOk = bOk && referencers == (step >= 2u ? 2u : 1u);
+				uint32 modelReferencers = 0u;
+				view->ForEachReferencer(model, EDepFlags {}, EDepFlags {}, [&] (const SDependencyView&) { ++modelReferencers; });
+				bOk = bOk && modelReferencers == step;
+				if (!bOk)
+				{
+					failures.fetch_add(1u);
+				}
+				checkedViews.fetch_add(1u);
+			}
+		});
+	}
+
+	uint32 tableCompactions = 0u;
+	for (uint32 step = 1u; step <= commits; ++step)
+	{
+		store.Commit(MakeCompactionStep(step));
+		if (step % 25u == 0u)
+		{
+			store.CompactTables();
+			store.CompactGraph();
+			++tableCompactions;
+		}
+	}
+	bDone.store(true, std::memory_order_release);
+	for (std::thread& reader : readers)
+	{
+		reader.join();
+	}
+
+	EXPECT_EQ(failures.load(), 0u);
+	EXPECT_GT(checkedViews.load(), 0u);
+	std::printf("[registry] 4 readers checked %llu views over %u commits and %u compactions\n",
+		static_cast<unsigned long long>(checkedViews.load()), commits, tableCompactions);
+	EXPECT_EQ(store.Live().GetRecordCount(), commits + 1u);
+}
+
 TEST(RegistryConcurrencyTest, AnAcquiredViewStaysUnchangedWhileCommitsContinue)
 {
 	CRegistryStore store;
@@ -134,6 +240,7 @@ TEST(RegistryConcurrencyTest, AnAcquiredViewStaysUnchangedWhileCommitsContinue)
 		store.Commit(std::move(edit));
 	}
 	store.CompactGraph();
+	store.CompactTables();
 	EXPECT_EQ(Dump(*held), dumpBefore);
 	EXPECT_EQ(held->GetRevision(), 1u);
 }

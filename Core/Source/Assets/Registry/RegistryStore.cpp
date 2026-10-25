@@ -33,6 +33,8 @@ struct CRegistryStore::SWriterState
 	std::unordered_multimap<uint64, uint32> GuidTargets;
 	// How many committed records name each companion path (portable fold).
 	TStringMapIgnoreCase<uint32> CompanionRefs;
+	// The PATHS id of every companion path ever named (exact bytes), so a re-upsert adds no path again.
+	TStringMap<uint32> CompanionPathIds;
 	// Problem subjects in byte order: the subjects at or below a path are one range ('#' and '/' follow it).
 	std::map<FString, uint32, SStringLess> SubjectsByText;
 
@@ -850,31 +852,67 @@ private:
 		return row;
 	}
 
+	// Tombstones a type row; its MultiValue lists and STRINGS entries become garbage (CompactRecordTables).
 	void KillTypeRow (reflect::TypeId Type, uint32 Row)
 	{
 		CTypeTable& table = T.Types[Type];
-		if (!table.Dead.Test(Row))
+		if (table.Dead.Test(Row))
 		{
-			table.Dead.Set(Row, true, Epoch);
-			--table.LiveRows;
+			return;
+		}
+		table.Dead.Set(Row, true, Epoch);
+		--table.LiveRows;
+		for (uint32 key = 0u; key < table.Keys.size(); ++key)
+		{
+			if (table.Columns[key].PresentBits.Test(Row))
+			{
+				T.GarbagePoolItems += CountPoolItems(table.Keys[key], table.Columns[key], Row);
+			}
 		}
 	}
 
-	void ClearTypeRow (reflect::TypeId Type, uint32 Row)
+	// The pool items a present value of a row holds: its MultiValue list and the STRINGS entries it names.
+	static uint32 CountPoolItems (const STagKeyDesc& Desc, const STagColumn& Column, uint32 Row) noexcept
 	{
-		for (STagColumn& column : T.Types[Type].Columns)
+		const bool bString = Desc.Type == ETagType::String;
+		if (HasAnyFlags(Desc.Flags, ETagFlags::MultiValue))
 		{
-			column.PresentBits.Set(Row, false, Epoch);
-			column.MultiRanges.SetIfChanged(Row, SPoolRange {}, Epoch);
+			const uint32 count = Column.MultiRanges[Row].Count;
+			return bString ? count * 2u : count;
 		}
+		return bString ? 1u : 0u;
 	}
 
+	// The bits a value is stored as: a Name interned, a String in STRINGS, else Value.Bits. Old: the bits the
+	// row holds for the key; a String with the same text keeps its STRINGS entry.
+	uint64 EncodeTag (ETagType Type, const STagValue& Value, const uint64* Old)
+	{
+		if (Type == ETagType::Name)
+		{
+			return T.Names.Intern(Value.Text, Epoch);
+		}
+		if (Type == ETagType::String)
+		{
+			if (Old != nullptr && T.Strings.Get(static_cast<uint32>(*Old)) == Value.Text.View())
+			{
+				return *Old;
+			}
+			return T.Strings.Add(Value.Text, Epoch);
+		}
+		return Value.Bits;
+	}
+
+	/**
+	 * Writes every key of a type row from Tags; a key Tags does not name becomes absent. Row may be a reused
+	 * row that holds the record's previous tags: values, MultiValue lists and STRINGS entries that did not
+	 * change stay as they are, so re-upserting the same tags writes nothing and leaves no garbage.
+	 */
 	void WriteTags (reflect::TypeId Type, uint32 Row, const std::vector<STagDecl>& Tags, FStringView Subject)
 	{
 		CTypeTable& table = T.Types[Type];
 		const FStringLiteral typeName = CAssetTypeRegistry::Get(Type).Name;
-		std::vector<std::vector<uint64>> multi(table.Keys.size());
-		std::vector<uint8> seen(table.Keys.size(), 0u);
+		const uint32 keyCount = static_cast<uint32>(table.Keys.size());
+		std::vector<std::vector<const STagValue*>> values(keyCount);
 		for (const STagDecl& tag : Tags)
 		{
 			const std::optional<uint32> key = CAssetTypeRegistry::FindKey(Type, tag.Key);
@@ -890,40 +928,62 @@ private:
 					enum_::ToString(tag.Value.Type), enum_::ToString(desc.Type)));
 				continue;
 			}
-			uint64 bits = tag.Value.Bits;
-			if (desc.Type == ETagType::Name)
-			{
-				bits = T.Names.Intern(tag.Value.Text, Epoch);
-			}
-			else if (desc.Type == ETagType::String)
-			{
-				bits = T.Strings.Add(tag.Value.Text, Epoch);
-			}
-			if (HasAnyFlags(desc.Flags, ETagFlags::MultiValue))
-			{
-				multi[*key].push_back(bits);
-				continue;
-			}
-			if (seen[*key] != 0u)
+			if (!HasAnyFlags(desc.Flags, ETagFlags::MultiValue) && !values[*key].empty())
 			{
 				Violation(Subject, FString::Format("tag '{}' of {} is not MultiValue and repeats: the first value is kept", tag.Key, typeName));
 				continue;
 			}
-			seen[*key] = 1u;
-			STagColumn& column = table.Columns[*key];
-			column.Values.SetIfChanged(Row, bits, Epoch);
-			column.PresentBits.Set(Row, true, Epoch);
+			values[*key].push_back(&tag.Value);
 		}
-		for (uint32 key = 0u; key < multi.size(); ++key)
+		for (uint32 key = 0u; key < keyCount; ++key)
 		{
-			if (multi[key].empty())
+			const STagKeyDesc& desc = table.Keys[key];
+			STagColumn& column = table.Columns[key];
+			const bool bWasPresent = column.PresentBits.Test(Row);
+			const std::vector<const STagValue*>& list = values[key];
+			if (list.empty())
 			{
+				if (bWasPresent)
+				{
+					T.GarbagePoolItems += CountPoolItems(desc, column, Row);
+					column.PresentBits.Set(Row, false, Epoch);
+					column.MultiRanges.SetIfChanged(Row, SPoolRange {}, Epoch);
+				}
 				continue;
 			}
-			STagColumn& column = table.Columns[key];
-			const uint32 begin = column.Multi.Append(multi[key], Epoch);
-			column.MultiRanges.Set(Row, SPoolRange { begin, static_cast<uint32>(multi[key].size()) }, Epoch);
-			column.Values.SetIfChanged(Row, multi[key][0], Epoch);
+			if (!HasAnyFlags(desc.Flags, ETagFlags::MultiValue))
+			{
+				const uint64 old = column.Values[Row];
+				const uint64 bits = EncodeTag(desc.Type, *list[0], bWasPresent ? &old : nullptr);
+				if (bWasPresent && desc.Type == ETagType::String && bits != old)
+				{
+					++T.GarbagePoolItems;
+				}
+				column.Values.SetIfChanged(Row, bits, Epoch);
+				column.PresentBits.Set(Row, true, Epoch);
+				continue;
+			}
+			// A MultiValue list: kept when every item is the same, else appended anew.
+			const SPoolRange oldRange = bWasPresent ? column.MultiRanges[Row] : SPoolRange {};
+			std::vector<uint64> items;
+			items.reserve(list.size());
+			bool bSame = oldRange.Count == list.size();
+			for (uint32 i = 0u; i < list.size(); ++i)
+			{
+				const uint64 oldItem = bSame ? column.Multi[oldRange.Begin + i] : 0u;
+				items.push_back(EncodeTag(desc.Type, *list[i], bSame ? &oldItem : nullptr));
+				bSame = bSame && items.back() == oldItem;
+			}
+			if (!bSame)
+			{
+				if (bWasPresent)
+				{
+					T.GarbagePoolItems += CountPoolItems(desc, column, Row);
+				}
+				const uint32 begin = column.Multi.Append(items, Epoch);
+				column.MultiRanges.Set(Row, SPoolRange { begin, static_cast<uint32>(items.size()) }, Epoch);
+			}
+			column.Values.SetIfChanged(Row, items[0], Epoch);
 			column.PresentBits.Set(Row, true, Epoch);
 		}
 	}
@@ -994,30 +1054,33 @@ private:
 		return row;
 	}
 
-	// Drops what an upsert replaces: sub-entries, edges, companions, index entries; the type row unless the
-	// caller reuses it.
-	void ReleaseRecordContents (uint32 Row, bool bKeepTypeRow)
+	// Drops what an upsert replaces: edges and index entries; the type row and the sub-entries unless the caller
+	// reuses them (labels and companions are compared and replaced by SetLabels and SetCompanions).
+	void ReleaseRecordContents (uint32 Row, bool bKeepTypeRow, bool bKeepSubEntries)
 	{
 		SAssetsTable& assets = T.Assets;
 		if (!bKeepTypeRow && assets.TypeRow[Row] != InvalidRow)
 		{
 			KillTypeRow(assets.Type[Row], assets.TypeRow[Row]);
 		}
-		SSubEntryTable& subs = T.SubEntries;
-		const uint32 firstSub = assets.FirstSub[Row];
-		for (uint32 i = 0u; i < assets.NumSubs[Row]; ++i)
+		if (!bKeepSubEntries)
 		{
-			const uint32 sub = firstSub + i;
-			if (subs.Owner[sub] == InvalidRow)
+			SSubEntryTable& subs = T.SubEntries;
+			const uint32 firstSub = assets.FirstSub[Row];
+			for (uint32 i = 0u; i < assets.NumSubs[Row]; ++i)
 			{
-				continue;
+				const uint32 sub = firstSub + i;
+				if (subs.Owner[sub] == InvalidRow)
+				{
+					continue;
+				}
+				KillTypeRow(subs.Type[sub], subs.TypeRow[sub]);
+				T.Indices.RecordsById64.Erase(MixRegistryKey(subs.AssetId64[sub]), SubEntryBit | sub, Epoch);
+				subs.Owner.Set(sub, InvalidRow, Epoch);
+				--T.LiveSubEntries;
 			}
-			KillTypeRow(subs.Type[sub], subs.TypeRow[sub]);
-			T.Indices.RecordsById64.Erase(MixRegistryKey(subs.AssetId64[sub]), SubEntryBit | sub, Epoch);
-			subs.Owner.Set(sub, InvalidRow, Epoch);
-			--T.LiveSubEntries;
+			assets.NumSubs.SetIfChanged(Row, 0u, Epoch);
 		}
-		assets.NumSubs.SetIfChanged(Row, 0u, Epoch);
 
 		SGraphTables& graph = T.Graph;
 		if (!assets.BaseEdgesMasked.Test(Row))
@@ -1031,13 +1094,6 @@ private:
 		graph.GarbageEdges += overflow;
 		graph.LiveEdges -= overflow;
 		assets.OverflowEdges.SetIfChanged(Row, SPoolRange {}, Epoch);
-
-		const SPoolRange companions = assets.Companions[Row];
-		for (uint32 i = 0u; i < companions.Count; ++i)
-		{
-			ReleaseCompanionRef(T.Paths.Get(T.Companions[companions.Begin + i]));
-		}
-		assets.Companions.SetIfChanged(Row, SPoolRange {}, Epoch);
 
 		T.Indices.RecordsById64.Erase(MixRegistryKey(assets.AssetId64[Row]), Row, Epoch);
 		T.Indices.RecordsByGuid.Erase(HashGuid(assets.Guid[Row]), Row, Epoch);
@@ -1057,7 +1113,9 @@ private:
 		STouch& touch = Touched[Row];
 		touch.RemovedGuid = assets.Guid[Row];
 		touch.RemovedPath = FString(path);
-		ReleaseRecordContents(Row, false);
+		ReleaseRecordContents(Row, false, false);
+		SetLabels(Row, {});
+		SetCompanions(Row, {}, path);
 		T.Indices.RecordsByPortablePath.Erase(HashPortable(path), Row, Epoch);
 		TouchedRecordPaths.insert(FString(path));
 		T.Files.Record.Set(file, InvalidRow, Epoch);
@@ -1086,11 +1144,16 @@ private:
 
 		uint32 row = T.Files.Record[file];
 		const bool bExisted = row != InvalidRow;
+		const std::vector<SSubPlan> subPlan = PlanSubEntries(Upsert.SubEntries, path);
 		bool bKeepTypeRow = false;
+		bool bKeepSubEntries = false;
 		if (bExisted)
 		{
+			// The same type and the same sub-entries (SubIds and types, in order) reuse their rows in place:
+			// a re-upsert of an unchanged structure (a rules edit, a re-analyzed file) appends nothing.
 			bKeepTypeRow = assets.Type[row] == type && assets.TypeRow[row] != InvalidRow;
-			ReleaseRecordContents(row, bKeepTypeRow);
+			bKeepSubEntries = CanReuseSubEntries(row, subPlan);
+			ReleaseRecordContents(row, bKeepTypeRow, bKeepSubEntries);
 		}
 		else
 		{
@@ -1113,11 +1176,7 @@ private:
 		T.Indices.RecordsById64.Insert(MixRegistryKey(id64), row, Epoch);
 		TouchedGuids.insert(HashGuid(guid));
 
-		if (bKeepTypeRow)
-		{
-			ClearTypeRow(type, assets.TypeRow[row]);
-		}
-		else
+		if (!bKeepTypeRow)
 		{
 			assets.Type.Set(row, type, Epoch);
 			assets.TypeRow.Set(row, AddTypeRow(type, row), Epoch);
@@ -1140,35 +1199,89 @@ private:
 		{
 			labels.push_back(T.Names.Intern(label, Epoch) | RuleLabelBit);
 		}
-		const SPoolRange labelRange { labels.empty() ? 0u : T.Labels.Append(labels, Epoch), static_cast<uint32>(labels.size()) };
-		assets.Labels.SetIfChanged(row, labelRange, Epoch);
+		SetLabels(row, labels);
 
 		WriteTags(type, assets.TypeRow[row], Upsert.Tags, path);
-		WriteSubEntries(row, guid, Upsert.SubEntries, path);
+		WriteSubEntries(row, guid, subPlan, path, bKeepSubEntries);
 		WriteEdges(row, Upsert.Edges, path);
+		SetCompanions(row, Upsert.Companions, path);
+	}
 
-		std::vector<uint32> companions;
-		for (const FString& companion : Upsert.Companions)
+	// A record's label list: kept when it is the same, else appended anew (the old one is garbage).
+	void SetLabels (uint32 Row, const std::vector<uint32>& Labels)
+	{
+		SAssetsTable& assets = T.Assets;
+		const SPoolRange old = assets.Labels[Row];
+		bool bSame = old.Count == Labels.size();
+		for (uint32 i = 0u; bSame && i < Labels.size(); ++i)
+		{
+			bSame = T.Labels[old.Begin + i] == Labels[i];
+		}
+		if (bSame)
+		{
+			return;
+		}
+		T.GarbagePoolItems += old.Count;
+		assets.Labels.SetIfChanged(Row, SPoolRange { Labels.empty() ? 0u : T.Labels.Append(Labels, Epoch), static_cast<uint32>(Labels.size()) }, Epoch);
+	}
+
+	// A record's companions: each path interned once (CompanionPathIds), the list kept when it is the same.
+	// New references are counted before old ones are released, so a path in both never changes class.
+	void SetCompanions (uint32 Row, const std::vector<FString>& Companions, FStringView Path)
+	{
+		std::vector<uint32> ids;
+		ids.reserve(Companions.size());
+		for (const FString& companion : Companions)
 		{
 			if (!IsWellFormedMountPath(companion) || !HasRelativePart(companion))
 			{
-				Violation(path, FString::Format("companion '{}' is not a well-formed mount path of a file: dropped", companion));
+				Violation(Path, FString::Format("companion '{}' is not a well-formed mount path of a file: dropped", companion));
 				continue;
 			}
-			companions.push_back(T.Paths.Add(companion, Epoch));
-			AddCompanionRef(companion);
+			const auto [it, bInserted] = W.CompanionPathIds.try_emplace(companion, 0u);
+			if (bInserted)
+			{
+				it->second = T.Paths.Add(companion, Epoch);
+			}
+			ids.push_back(it->second);
 		}
-		const SPoolRange companionRange { companions.empty() ? 0u : T.Companions.Append(companions, Epoch), static_cast<uint32>(companions.size()) };
-		assets.Companions.SetIfChanged(row, companionRange, Epoch);
+		SAssetsTable& assets = T.Assets;
+		const SPoolRange old = assets.Companions[Row];
+		bool bSame = old.Count == ids.size();
+		for (uint32 i = 0u; bSame && i < ids.size(); ++i)
+		{
+			bSame = T.Companions[old.Begin + i] == ids[i];
+		}
+		if (bSame)
+		{
+			return;
+		}
+		for (const uint32 id : ids)
+		{
+			AddCompanionRef(T.Paths.Get(id));
+		}
+		for (uint32 i = 0u; i < old.Count; ++i)
+		{
+			ReleaseCompanionRef(T.Paths.Get(T.Companions[old.Begin + i]));
+		}
+		T.GarbagePoolItems += old.Count;
+		assets.Companions.SetIfChanged(Row, SPoolRange { ids.empty() ? 0u : T.Companions.Append(ids, Epoch), static_cast<uint32>(ids.size()) }, Epoch);
 	}
 
-	void WriteSubEntries (uint32 Row, const SGuid& Guid, const std::vector<SSubEntryDecl>& Decls, FStringView Path)
+	// The sub-entries an upsert declares, checked (a repeated SubId is dropped, an unknown type becomes
+	// frt.Unknown; both reported) before the store decides whether the record's rows can be reused.
+	struct SSubPlan
 	{
-		SAssetsTable& assets = T.Assets;
-		SSubEntryTable& subs = T.SubEntries;
-		const uint32 first = subs.Owner.Size();
+		const SSubEntryDecl* Decl = nullptr;
+		uint64 SubId = 0u;
+		reflect::TypeId Type = 0u;
+	};
+
+	std::vector<SSubPlan> PlanSubEntries (const std::vector<SSubEntryDecl>& Decls, FStringView Path)
+	{
+		std::vector<SSubPlan> plan;
+		plan.reserve(Decls.size());
 		std::unordered_set<uint64> subIds;
-		uint32 count = 0u;
 		for (const SSubEntryDecl& decl : Decls)
 		{
 			const uint64 subId = decl.SubId != 0u ? decl.SubId : MakeSubId(decl.Label);
@@ -1183,21 +1296,73 @@ private:
 				Violation(Path, FString::Format("sub-entry '{}' has type {}, not in the asset type table: frt.Unknown", decl.Label, type));
 				type = asset_types::Unknown;
 			}
+			plan.push_back(SSubPlan { &decl, subId, type });
+		}
+		return plan;
+	}
+
+	// The record's sub-entry rows can take the plan in place: the same SubIds with the same types, in order.
+	bool CanReuseSubEntries (uint32 Row, const std::vector<SSubPlan>& Plan) const
+	{
+		const SSubEntryTable& subs = T.SubEntries;
+		if (T.Assets.NumSubs[Row] != Plan.size())
+		{
+			return false;
+		}
+		const uint32 first = T.Assets.FirstSub[Row];
+		for (uint32 i = 0u; i < Plan.size(); ++i)
+		{
+			const uint32 sub = first + i;
+			if (subs.Owner[sub] != Row || subs.SubId[sub] != Plan[i].SubId || subs.Type[sub] != Plan[i].Type)
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
+	void WriteSubEntries (uint32 Row, const SGuid& Guid, const std::vector<SSubPlan>& Plan, FStringView Path, bool bReuse)
+	{
+		SAssetsTable& assets = T.Assets;
+		SSubEntryTable& subs = T.SubEntries;
+		if (bReuse)
+		{
+			const uint32 first = assets.FirstSub[Row];
+			for (uint32 i = 0u; i < Plan.size(); ++i)
+			{
+				const uint32 sub = first + i;
+				const SSubEntryDecl& decl = *Plan[i].Decl;
+				subs.Key.SetIfChanged(sub, T.Names.Intern(decl.Label, Epoch), Epoch);
+				subs.Flags.SetIfChanged(sub, decl.Flags & ~ERecordFlags::HasProblems, Epoch);
+				const uint64 id64 = MakeAssetId64(SAssetId { Guid, Plan[i].SubId }).Value;
+				if (subs.AssetId64[sub] != id64)
+				{
+					T.Indices.RecordsById64.Erase(MixRegistryKey(subs.AssetId64[sub]), SubEntryBit | sub, Epoch);
+					T.Indices.RecordsById64.Insert(MixRegistryKey(id64), SubEntryBit | sub, Epoch);
+					subs.AssetId64.Set(sub, id64, Epoch);
+				}
+				WriteTags(Plan[i].Type, subs.TypeRow[sub], decl.Tags, Path);
+			}
+			return;
+		}
+		const uint32 first = subs.Owner.Size();
+		for (const SSubPlan& plan : Plan)
+		{
+			const SSubEntryDecl& decl = *plan.Decl;
 			const uint32 sub = subs.Owner.Append(Row, Epoch);
-			subs.SubId.Append(subId, Epoch);
+			subs.SubId.Append(plan.SubId, Epoch);
 			subs.Key.Append(T.Names.Intern(decl.Label, Epoch), Epoch);
-			subs.Type.Append(type, Epoch);
+			subs.Type.Append(plan.Type, Epoch);
 			subs.Flags.Append(decl.Flags & ~ERecordFlags::HasProblems, Epoch);
-			subs.TypeRow.Append(AddTypeRow(type, SubEntryBit | sub), Epoch);
-			const uint64 id64 = MakeAssetId64(SAssetId { Guid, subId }).Value;
+			subs.TypeRow.Append(AddTypeRow(plan.Type, SubEntryBit | sub), Epoch);
+			const uint64 id64 = MakeAssetId64(SAssetId { Guid, plan.SubId }).Value;
 			subs.AssetId64.Append(id64, Epoch);
 			T.Indices.RecordsById64.Insert(MixRegistryKey(id64), SubEntryBit | sub, Epoch);
 			++T.LiveSubEntries;
-			++count;
-			WriteTags(type, subs.TypeRow[sub], decl.Tags, Path);
+			WriteTags(plan.Type, subs.TypeRow[sub], decl.Tags, Path);
 		}
-		assets.FirstSub.SetIfChanged(Row, first, Epoch);
-		assets.NumSubs.SetIfChanged(Row, count, Epoch);
+		assets.FirstSub.SetIfChanged(Row, Plan.empty() ? 0u : first, Epoch);
+		assets.NumSubs.SetIfChanged(Row, static_cast<uint32>(Plan.size()), Epoch);
 	}
 
 	// ---------------- Edges and targets ----------------
@@ -1742,13 +1907,7 @@ void CRegistryStore::Commit (SRegistryDelta&& Delta)
 		}
 	}
 
-	const SGraphTables& graph = tables.Graph;
-	if (graph.GarbageEdges >= 65536u && graph.GarbageEdges >= graph.LiveEdges / 4u)
-	{
-		CompactGraphTables();
-		LastStats.bCompactedGraph = true;
-	}
-	Publish();
+	Publish();   // never a compaction here: NeedsCompaction / Compact, at the owner's idle time
 	LastStats.Milliseconds = platform::TimestampToMilliseconds(platform::ReadTimestamp() - start);
 }
 
@@ -1795,11 +1954,230 @@ void CRegistryStore::AdoptImage (SRegistryImage&& Image, uint64 Revision)
 	LastStats.Milliseconds = platform::TimestampToMilliseconds(platform::ReadTimestamp() - start);
 }
 
+bool CRegistryStore::GraphNeedsCompaction () const noexcept
+{
+	const SGraphTables& graph = LiveView.Tables.Graph;
+	return graph.GarbageEdges >= 65536u && graph.GarbageEdges >= graph.LiveEdges / 4u;
+}
+
+bool CRegistryStore::RecordTablesNeedCompaction () const noexcept
+{
+	const SRegistryTables& tables = LiveView.Tables;
+	uint64 rows = tables.SubEntries.Owner.Size();
+	uint64 deadRows = rows - tables.LiveSubEntries;
+	uint64 poolItems = static_cast<uint64>(tables.Labels.Size()) + tables.Companions.Size() + tables.Strings.Size();
+	for (const CTypeTable& table : tables.Types)
+	{
+		rows += table.Records.Size();
+		deadRows += table.Records.Size() - table.LiveRows;
+		for (const STagColumn& column : table.Columns)
+		{
+			poolItems += column.Multi.Size();
+		}
+	}
+	const uint64 garbage = tables.GarbagePoolItems;
+	return (deadRows >= 4096u && deadRows * 4u >= rows) || (garbage >= 16384u && garbage * 4u >= poolItems);
+}
+
+bool CRegistryStore::NeedsCompaction () const noexcept
+{
+	return GraphNeedsCompaction() || RecordTablesNeedCompaction();
+}
+
+void CRegistryStore::Compact ()
+{
+	CheckOwnerThread();
+	const bool bGraph = GraphNeedsCompaction();
+	const bool bTables = RecordTablesNeedCompaction();
+	if (bGraph || bTables)
+	{
+		RunCompaction(bGraph, bTables);
+	}
+}
+
 void CRegistryStore::CompactGraph ()
 {
 	CheckOwnerThread();
-	CompactGraphTables();
+	RunCompaction(true, false);
+}
+
+void CRegistryStore::CompactTables ()
+{
+	CheckOwnerThread();
+	RunCompaction(false, true);
+}
+
+void CRegistryStore::RunCompaction (bool bGraph, bool bTables)
+{
+	const uint64 start = platform::ReadTimestamp();
+	LastStats = SRegistryCommitStats {};
+	if (bTables)
+	{
+		LiveView.Tables.Revision += 1u;   // sub-entry and type-table rows are renumbered
+		CompactRecordTables();
+		LastStats.bCompactedTables = true;
+	}
+	if (bGraph)
+	{
+		CompactGraphTables();
+		LastStats.bCompactedGraph = true;
+	}
 	Publish();
+	LastStats.Milliseconds = platform::TimestampToMilliseconds(platform::ReadTimestamp() - start);
+}
+
+/**
+ * Rebuilds SUBENTRY, the type tables, the label, companion, Multi and STRINGS pools and the AssetId64 index
+ * from the live rows, then remaps FirstSub and TypeRow. New columns are built (as CompactGraphTables does),
+ * so views that hold the old ones keep them; Names and Paths stay (NAMES is interned, PATHS ids are stable).
+ */
+void CRegistryStore::CompactRecordTables ()
+{
+	SRegistryTables& tables = LiveView.Tables;
+	SAssetsTable& assets = tables.Assets;
+	const uint64 epoch = Epoch;
+	const uint32 assetRows = assets.File.Size();
+
+	// SUBENTRY: each live record's sub-entries in declared order, records by row.
+	const SSubEntryTable& oldSubs = tables.SubEntries;
+	SSubEntryTable subs;
+	std::vector<uint32> subMap(oldSubs.Owner.Size(), InvalidRow);
+	for (uint32 row = 0u; row < assetRows; ++row)
+	{
+		const uint32 count = assets.File[row] != InvalidRow ? assets.NumSubs[row] : 0u;
+		const uint32 first = subs.Owner.Size();
+		for (uint32 i = 0u; i < count; ++i)
+		{
+			const uint32 old = assets.FirstSub[row] + i;
+			subMap[old] = subs.Owner.Append(row, epoch);
+			subs.SubId.Append(oldSubs.SubId[old], epoch);
+			subs.Key.Append(oldSubs.Key[old], epoch);
+			subs.Type.Append(oldSubs.Type[old], epoch);
+			subs.Flags.Append(oldSubs.Flags[old], epoch);
+			subs.TypeRow.Append(oldSubs.TypeRow[old], epoch);   // remapped below
+			subs.AssetId64.Append(oldSubs.AssetId64[old], epoch);
+		}
+		assets.FirstSub.SetIfChanged(row, count > 0u ? first : 0u, epoch);
+	}
+
+	// Type tables without dead rows; STRINGS rebuilt from the values that remain.
+	CTextPool strings;
+	std::vector<CTypeTable> types;
+	types.reserve(tables.Types.size());
+	std::vector<std::vector<uint32>> rowMaps(tables.Types.size());
+	for (uint32 type = 0u; type < tables.Types.size(); ++type)
+	{
+		const CTypeTable& old = tables.Types[type];
+		CTypeTable table;
+		table.Type = old.Type;
+		table.TagSchemaHash = old.TagSchemaHash;
+		table.Keys = old.Keys;
+		table.Columns.resize(old.Columns.size());
+		std::vector<uint32>& rowMap = rowMaps[type];
+		rowMap.assign(old.Records.Size(), InvalidRow);
+		for (uint32 oldRow = 0u; oldRow < old.Records.Size(); ++oldRow)
+		{
+			const uint32 record = old.Records[oldRow];
+			const bool bSub = (record & SubEntryBit) != 0u;
+			if (old.Dead.Test(oldRow) || (bSub && subMap[record & ~SubEntryBit] == InvalidRow))
+			{
+				continue;
+			}
+			const uint32 row = table.Records.Append(bSub ? (SubEntryBit | subMap[record & ~SubEntryBit]) : record, epoch);
+			rowMap[oldRow] = row;
+			table.Dead.Grow(row + 1u, epoch);
+			for (uint32 key = 0u; key < old.Columns.size(); ++key)
+			{
+				const STagColumn& from = old.Columns[key];
+				STagColumn& to = table.Columns[key];
+				to.Values.Grow(row + 1u, epoch);
+				to.PresentBits.Grow(row + 1u, epoch);
+				to.MultiRanges.Grow(row + 1u, epoch);
+				if (!from.PresentBits.Test(oldRow))
+				{
+					continue;
+				}
+				const STagKeyDesc& desc = old.Keys[key];
+				const auto remap = [&] (uint64 Bits) -> uint64
+				{
+					return desc.Type == ETagType::String ? strings.Add(tables.Strings.Get(static_cast<uint32>(Bits)), epoch) : Bits;
+				};
+				to.PresentBits.Set(row, true, epoch);
+				if (HasAnyFlags(desc.Flags, ETagFlags::MultiValue))
+				{
+					const SPoolRange range = from.MultiRanges[oldRow];
+					std::vector<uint64> items(range.Count);
+					for (uint32 i = 0u; i < range.Count; ++i)
+					{
+						items[i] = remap(from.Multi[range.Begin + i]);
+					}
+					to.MultiRanges.Set(row, SPoolRange { items.empty() ? 0u : to.Multi.Append(items, epoch), range.Count }, epoch);
+					to.Values.Set(row, items.empty() ? 0u : items[0], epoch);
+				}
+				else
+				{
+					to.Values.Set(row, remap(from.Values[oldRow]), epoch);
+				}
+			}
+		}
+		table.LiveRows = table.Records.Size();
+		types.push_back(std::move(table));
+	}
+	for (uint32 row = 0u; row < assetRows; ++row)
+	{
+		if (assets.File[row] != InvalidRow && assets.TypeRow[row] != InvalidRow)
+		{
+			assets.TypeRow.SetIfChanged(row, rowMaps[assets.Type[row]][assets.TypeRow[row]], epoch);
+		}
+	}
+	for (uint32 sub = 0u; sub < subs.Owner.Size(); ++sub)
+	{
+		subs.TypeRow.Set(sub, rowMaps[subs.Type[sub]][subs.TypeRow[sub]], epoch);
+	}
+
+	// Labels and companions: the live records' lists, in row order.
+	CPagedPool<uint32> labels;
+	CPagedPool<uint32> companions;
+	std::vector<uint32> items;
+	const auto repack = [&] (CPagedColumn<SPoolRange>& Ranges, const CPagedPool<uint32>& From, CPagedPool<uint32>& To, uint32 Row)
+	{
+		const SPoolRange range = assets.File[Row] != InvalidRow ? Ranges[Row] : SPoolRange {};
+		items.resize(range.Count);
+		for (uint32 i = 0u; i < range.Count; ++i)
+		{
+			items[i] = From[range.Begin + i];
+		}
+		Ranges.SetIfChanged(Row, SPoolRange { items.empty() ? 0u : To.Append(items, epoch), range.Count }, epoch);
+	};
+	for (uint32 row = 0u; row < assetRows; ++row)
+	{
+		repack(assets.Labels, tables.Labels, labels, row);
+		repack(assets.Companions, tables.Companions, companions, row);
+	}
+
+	// The AssetId64 index names SUBENTRY rows: rebuilt.
+	CPagedHashIndex byId64;
+	byId64.Reserve(tables.LiveRecords + subs.Owner.Size(), epoch);
+	for (uint32 row = 0u; row < assetRows; ++row)
+	{
+		if (assets.File[row] != InvalidRow)
+		{
+			byId64.Insert(MixRegistryKey(assets.AssetId64[row]), row, epoch);
+		}
+	}
+	for (uint32 sub = 0u; sub < subs.Owner.Size(); ++sub)
+	{
+		byId64.Insert(MixRegistryKey(subs.AssetId64[sub]), SubEntryBit | sub, epoch);
+	}
+
+	tables.SubEntries = std::move(subs);
+	tables.LiveSubEntries = tables.SubEntries.Owner.Size();
+	tables.Types = std::move(types);
+	tables.Strings = std::move(strings);
+	tables.Labels = std::move(labels);
+	tables.Companions = std::move(companions);
+	tables.Indices.RecordsById64 = std::move(byId64);
+	tables.GarbagePoolItems = 0u;
 }
 
 /**

@@ -775,6 +775,185 @@ TEST(RegistryStoreTest, AFileAndItsSubEntriesAreOneNodeForEveryTraversal)
 }
 
 
+// ---------------- Garbage and compaction ----------------
+
+namespace
+{
+SRecordUpsert MakeHero (uint32 Variant, int64 Vertices)
+{
+	SRecordUpsert record = MakeRecord("/Project/Hero.gltf", asset_types::Model, "Model.Gltf");
+	record.RuleLabels = { "Hero", "Characters" };
+	record.Companions = { "/Project/Hero.bin" };
+	record.Tags = { MakeIntTag("MeshCount", 2) };
+	record.SubEntries.push_back(SSubEntryDecl { FString::Format("mesh:Body{}", Variant), 0u, asset_types::Mesh, ERecordFlags::None,
+		{ MakeIntTag("VertexCount", Vertices) } });
+	record.SubEntries.push_back(SSubEntryDecl { "material:Skin", 0u, asset_types::Material, ERecordFlags::None, {} });
+	return record;
+}
+
+SRecordUpsert MakeInputMap (std::initializer_list<FStringView> Actions)
+{
+	SRecordUpsert record = MakeRecord("/Project/Input/Map.frtinputmap", asset_types::InputActionMap, "Input.Legacy");
+	for (const FStringView action : Actions)
+	{
+		record.Tags.push_back(STagDecl { "Actions", STagValue::FromName(action) });
+	}
+	return record;
+}
+
+struct SPoolSizes
+{
+	uint32 SubEntries = 0u;
+	uint32 MeshRows = 0u;
+	uint32 Labels = 0u;
+	uint32 Companions = 0u;
+	uint32 Paths = 0u;
+	uint32 Actions = 0u;
+
+	bool operator== (const SPoolSizes&) const = default;
+};
+
+SPoolSizes GetPoolSizes (const CRegistryView& View)
+{
+	const SRegistryTables& tables = GetTables(View);
+	return SPoolSizes { tables.SubEntries.Owner.Size(), tables.Types[asset_types::Mesh].Records.Size(), tables.Labels.Size(),
+		tables.Companions.Size(), tables.Paths.Size(), tables.Types[asset_types::InputActionMap].Columns[0].Multi.Size() };
+}
+}
+
+TEST(RegistryStoreTest, ReUpsertsOfTheSameStructureReuseEveryRowAndPool)
+{
+	CRegistryStore store;
+	SRegistryDelta delta = MakeMountsDelta();
+	delta.FileUpserts.push_back(MakeFile("/Project/Hero.gltf"));
+	delta.FileUpserts.push_back(MakeFile("/Project/Hero.bin", 5u, EFileClass::Unclaimed));
+	delta.FileUpserts.push_back(MakeFile("/Project/Input/Map.frtinputmap"));
+	delta.RecordUpserts.push_back(MakeHero(0u, 100));
+	delta.RecordUpserts.push_back(MakeInputMap({ "Jump", "Fire" }));
+	store.Commit(std::move(delta));
+	const SPoolSizes initial = GetPoolSizes(store.Live());
+
+	// A rules edit or a re-analyzed file re-upserts the same structure: values change, nothing appends.
+	for (uint32 i = 0u; i < 20u; ++i)
+	{
+		SRegistryDelta again;
+		again.RecordUpserts.push_back(MakeHero(0u, 100 + i));
+		again.RecordUpserts.push_back(MakeInputMap({ "Jump", "Fire" }));
+		store.Commit(std::move(again));
+	}
+	const CRegistryView& view = store.Live();
+	EXPECT_EQ(GetPoolSizes(view), initial);
+	EXPECT_EQ(GetTables(view).GarbagePoolItems, 0u);
+	STagValue vertices;
+	ASSERT_TRUE(view.GetTag(FindRecord(view, "/Project/Hero.gltf#mesh:Body0"), "VertexCount", vertices));
+	EXPECT_EQ(vertices.AsInt64(), 119);
+	std::vector<FString> labels;
+	view.ForEachLabel(FindRecord(view, "/Project/Hero.gltf"), [&] (FStringView Label, bool) { labels.push_back(FString(Label)); });
+	EXPECT_EQ(labels, (std::vector<FString> { "Hero", "Characters" }));
+	SFileData bin;
+	ASSERT_TRUE(view.GetFile(*view.FindFileExact("/Project/Hero.bin"), bin));
+	EXPECT_EQ(bin.Class, EFileClass::Companion);
+}
+
+TEST(RegistryStoreTest, ACompactionReclaimsDeadRowsAndPoolsAndRenumbersSubEntries)
+{
+	CRegistryStore store;
+	SRegistryDelta delta = MakeMountsDelta();
+	delta.FileUpserts.push_back(MakeFile("/Project/Hero.gltf"));
+	delta.FileUpserts.push_back(MakeFile("/Project/Hero.bin", 5u, EFileClass::Unclaimed));
+	delta.FileUpserts.push_back(MakeFile("/Project/Input/Map.frtinputmap"));
+	delta.RecordUpserts.push_back(MakeHero(0u, 100));
+	delta.RecordUpserts.push_back(MakeInputMap({ "Jump", "Fire" }));
+	AddTexture(delta, "/Project/T/gone.png");
+	store.Commit(std::move(delta));
+	const SPoolSizes initial = GetPoolSizes(store.Live());
+
+	// Other sub-entries and other actions each time: dead rows and replaced lists pile up.
+	for (uint32 i = 1u; i <= 10u; ++i)
+	{
+		SRegistryDelta change;
+		change.RecordUpserts.push_back(MakeHero(i, i));
+		change.RecordUpserts.push_back(MakeInputMap({ "Jump", FString::Format("Action{}", i) }));
+		store.Commit(std::move(change));
+	}
+	SRegistryDelta remove;
+	remove.FileRemoves.push_back("/Project/T/gone.png");
+	store.Commit(std::move(remove));
+	EXPECT_GT(GetPoolSizes(store.Live()).SubEntries, initial.SubEntries);
+	EXPECT_GT(GetTables(store.Live()).GarbagePoolItems, 0u);
+	EXPECT_FALSE(store.NeedsCompaction());   // far below the thresholds
+
+	const std::shared_ptr<const CRegistryView> held = store.Acquire();
+	const FString before = Dump(*held);
+	const SRecordId oldBody = FindRecord(*held, "/Project/Hero.gltf#mesh:Body10");
+	ASSERT_TRUE(oldBody.IsValid());
+	store.CompactTables();
+	EXPECT_TRUE(store.GetLastCommitStats().bCompactedTables);
+
+	const CRegistryView& view = store.Live();
+	EXPECT_EQ(Dump(view), before);
+	EXPECT_EQ(Dump(*held), before);   // the held view keeps its columns
+	EXPECT_EQ(view.GetRevision(), held->GetRevision() + 1u);
+	EXPECT_FALSE(view.IsValid(oldBody));
+	EXPECT_EQ(GetPoolSizes(view), (SPoolSizes { 2u, 1u, 2u, 1u, initial.Paths, 2u }));
+	EXPECT_EQ(GetTables(view).Types[asset_types::Texture].Records.Size(), 0u);
+	EXPECT_EQ(GetTables(view).GarbagePoolItems, 0u);
+
+	const SRecordId body = FindRecord(view, "/Project/Hero.gltf#mesh:Body10");
+	ASSERT_TRUE(body.IsValid());
+	STagValue vertices;
+	ASSERT_TRUE(view.GetTag(body, "VertexCount", vertices));
+	EXPECT_EQ(vertices.AsInt64(), 10);
+	SAssetData data;
+	ASSERT_TRUE(view.GetRecord(body, data));
+	EXPECT_EQ(view.Find(data.Id64), body);
+	EXPECT_EQ(view.Find(data.Id), body);
+	std::vector<FString> actions;
+	view.ForEachTagValue(FindRecord(view, "/Project/Input/Map.frtinputmap"), "Actions",
+		[&] (const STagValue& Value) { actions.push_back(Value.Text); });
+	EXPECT_EQ(actions, (std::vector<FString> { "Jump", "Action10" }));
+
+	// Commits after a compaction append behind the compacted rows.
+	SRegistryDelta later;
+	later.RecordUpserts.push_back(MakeHero(11u, 11));
+	store.Commit(std::move(later));
+	EXPECT_TRUE(FindRecord(store.Live(), "/Project/Hero.gltf#mesh:Body11").IsValid());
+	EXPECT_FALSE(FindRecord(store.Live(), "/Project/Hero.gltf#mesh:Body10").IsValid());
+}
+
+TEST(RegistryStoreTest, EnoughDeadRowsMakeACompactionDueAndCommitsNeverRunIt)
+{
+	CRegistryStore store;
+	SRegistryDelta delta = MakeMountsDelta();
+	delta.FileUpserts.push_back(MakeFile("/Project/Big.gltf"));
+	store.Commit(std::move(delta));
+	// 64 sub-entries under new labels 70 times: some 4500 dead SUBENTRY rows and as many dead mesh rows.
+	for (uint32 round = 0u; round < 70u && !store.NeedsCompaction(); ++round)
+	{
+		SRecordUpsert model = MakeRecord("/Project/Big.gltf", asset_types::Model, "Model.Gltf");
+		for (uint32 i = 0u; i < 64u; ++i)
+		{
+			model.SubEntries.push_back(SSubEntryDecl { FString::Format("mesh:R{}_{}", round, i), 0u, asset_types::Mesh, ERecordFlags::None, {} });
+		}
+		SRegistryDelta change;
+		change.RecordUpserts.push_back(std::move(model));
+		store.Commit(std::move(change));
+		EXPECT_FALSE(store.GetLastCommitStats().bCompactedTables);
+		EXPECT_FALSE(store.GetLastCommitStats().bCompactedGraph);
+	}
+	ASSERT_TRUE(store.NeedsCompaction());
+	const FString before = Dump(store.Live());
+	store.Compact();
+	EXPECT_TRUE(store.GetLastCommitStats().bCompactedTables);
+	EXPECT_FALSE(store.NeedsCompaction());
+	EXPECT_EQ(Dump(store.Live()), before);
+	EXPECT_EQ(GetTables(store.Live()).SubEntries.Owner.Size(), 64u);
+	const uint64 revision = store.GetRevision();
+	store.Compact();   // nothing due: no publication, no revision
+	EXPECT_EQ(store.GetRevision(), revision);
+}
+
+
 // ---------------- Companions ----------------
 
 TEST(RegistryStoreTest, CompanionsAreClassifiedInEitherCommitOrder)

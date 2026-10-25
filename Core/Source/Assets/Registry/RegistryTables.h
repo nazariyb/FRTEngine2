@@ -417,6 +417,9 @@ struct SRegistryTables
 	uint32 LiveRuleFiles = 0u;
 	uint32 LiveRecords = 0u;
 	uint32 LiveSubEntries = 0u;
+	// Items of Labels, Companions, the type tables' Multi pools and STRINGS that no live row uses any more
+	// (replaced lists, dead rows' values): what CRegistryStore::CompactTables reclaims.
+	uint32 GarbagePoolItems = 0u;
 };
 
 inline constexpr uint32 RuleLabelBit = 1u << 31u;   // SRegistryTables::Labels: a rule label (Assets.yml), else authored

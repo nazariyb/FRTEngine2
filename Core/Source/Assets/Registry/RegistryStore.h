@@ -57,9 +57,10 @@ struct SRecordChange
 
 struct SRegistryCommitStats
 {
-	double Milliseconds = 0.0;          // the last Commit or AdoptImage, publication included
+	double Milliseconds = 0.0;          // the last Commit, AdoptImage or compaction, publication included
 	uint32 RecordsChanged = 0u;
 	bool bCompactedGraph = false;
+	bool bCompactedTables = false;
 };
 
 
@@ -98,9 +99,29 @@ public:
 	 */
 	void AdoptImage (SRegistryImage&& Image, uint64 Revision);
 
-	// Rebuilds the forward and reverse CSR from the live edges (Commit does it on its own once a quarter of
-	// the edges are garbage). Publishes like a commit, without a new revision. Owner thread.
+	/**
+	 * Compaction (§5.2 "Mutation strategy"). Edits leave garbage behind: masked and superseded edges, dead
+	 * SUBENTRY and type-table rows (a record whose sub-entries changed), replaced label, companion and
+	 * MultiValue lists. Commit never compacts, so an interactive commit's main-thread time stays one edit's:
+	 * the owner (F3) asks NeedsCompaction at idle and inside PumpUntil and calls Compact then.
+	 *	- NeedsCompaction: the graph has at least 64k garbage edges and a quarter as many as live ones, or the
+	 *	  record tables have at least 4096 dead rows and a quarter of their rows dead, or at least 16k garbage
+	 *	  pool items and a quarter of the pools.
+	 *	- Compact: compacts what NeedsCompaction names and publishes; nothing when nothing is due.
+	 *	- CompactGraph: rebuilds the forward and reverse CSR from the live edges. No row number changes, so it
+	 *	  publishes without a new revision.
+	 *	- CompactTables: rebuilds SUBENTRY (each live record's sub-entries in declared order, records by row),
+	 *	  every type table without dead rows, the label, companion, Multi and STRINGS pools and the AssetId64
+	 *	  index. Sub-entry and type-table row numbers change, so it publishes a new revision (SRecordIds of an
+	 *	  older view fail their check) with no change-ring entry: no record's content changed. FILES, FOLDERS
+	 *	  and ASSETS rows of removed items are not reclaimed (they are skipped by every scan); a restart, which
+	 *	  adopts a snapshot of the live rows, drops them.
+	 * Readers holding older views keep the columns they have. All four belong to the owner thread.
+	 */
+	[[nodiscard]] bool NeedsCompaction () const noexcept;
+	void Compact ();
 	void CompactGraph ();
+	void CompactTables ();
 
 	[[nodiscard]] const SRegistryCommitStats& GetLastCommitStats () const noexcept { return LastStats; }
 
@@ -111,7 +132,11 @@ private:
 
 	void CheckOwnerThread ();
 	void Publish ();
+	[[nodiscard]] bool GraphNeedsCompaction () const noexcept;
+	[[nodiscard]] bool RecordTablesNeedCompaction () const noexcept;
+	void RunCompaction (bool bGraph, bool bTables);
 	void CompactGraphTables ();
+	void CompactRecordTables ();
 
 	CRegistryView LiveView;
 	std::unique_ptr<SWriterState> Writer;
