@@ -735,6 +735,12 @@ bool CDerivedDataCache::OpenDefault (const config::CConfig* Config, FString* Out
 	return Open(GetDefaultRoot(Config), OutError);
 }
 
+bool CDerivedDataCache::HoldsStore (const std::filesystem::path& InRoot)
+{
+	const std::optional<platform::SFileStat> format = platform::Stat(InRoot / FormatFile.ToPath());
+	return format.has_value() && !format->bDirectory;
+}
+
 void CDerivedDataCache::Close ()
 {
 	// Every call reads Root: one still running would race with clearing it (and Open's setting it).

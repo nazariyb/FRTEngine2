@@ -276,6 +276,9 @@ public:
 	bool Open (const std::filesystem::path& Root, FString* OutError = nullptr);
 	// Open(GetDefaultRoot(Config)).
 	bool OpenDefault (const config::CConfig* Config = nullptr, FString* OutError = nullptr);
+	// Whether Root holds a store (its FORMAT file is there), asked without creating or changing anything:
+	// for tools that inspect a store and must not make one to find out there is none (AssetTool's ddc).
+	[[nodiscard]] static bool HoldsStore (const std::filesystem::path& Root);
 	void Close ();
 
 	[[nodiscard]] bool IsOpen () const noexcept { return !Root.empty(); }

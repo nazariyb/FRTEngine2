@@ -672,6 +672,13 @@ TEST_F(AssetToolTest, DdcStatsCountsTheStoreItIsPointedAt)
 	FillDdc(other, 1u);
 	const test::SProcessResult filled = Run({ "ddc", "stats", "--json", "--ddc=" + FString::FromPath(other) });
 	EXPECT_EQ(JsonUInt(filled.Output, "recordFiles"), 1u) << filled.Output.CStr();
+
+	// The root it prints has one separator style and no detour, however --ddc spelled it.
+	const FString spelled = FString::FromPath(other).Replace("\\", "/") + "/../" + FString::FromPath(other.filename());
+	const test::SProcessResult normalized = Run({ "ddc", "stats", "--json", "--ddc=" + spelled });
+	EXPECT_EQ(JsonUInt(normalized.Output, "recordFiles"), 1u) << normalized.Output.CStr();
+	EXPECT_TRUE(normalized.Output.Contains("{\"ddc\":\"" + FString::FromPath(other).Replace("\\", "\\\\") + "\""))
+		<< normalized.Output.CStr();
 }
 
 // ddc gc trims the content to the budget, least recently used first, keeping every record the project's

@@ -305,7 +305,10 @@ int32 RunDdc (CCommandletContext& Context)
 		}
 	}
 
-	// The store: --ddc, else the machine's.
+	// The store: --ddc, a path argument, so relative to the working directory like every other (it wins
+	// over FRT_DDC_DIR); else the machine's (GetDefaultRoot: FRT_DDC_DIR, then [DerivedDataCache] Path=,
+	// a config value, which -DerivedDataCache:Path= overrides like any other and which, as in a config
+	// file, is relative to the per-user data directory).
 	std::filesystem::path root;
 	if (const std::optional<FString> dir = Context.FindOption("ddc"))
 	{
@@ -325,10 +328,13 @@ int32 RunDdc (CCommandletContext& Context)
 	{
 		root = assets::CDerivedDataCache::GetDefaultRoot(&Context.GetConfig());
 	}
+	// One separator style in what scripts read, whichever way the parts were joined.
+	root = root.lexically_normal();
+	root.make_preferred();
 	const FString rootText = FString::FromPath(root);
 
-	// No FORMAT, no store: nothing to do, and nothing is created to find that out.
-	if (!platform::Stat(root / "FORMAT").has_value())
+	// No store: nothing to do, and nothing is created to find that out.
+	if (!assets::CDerivedDataCache::HoldsStore(root))
 	{
 		Context.Print(FString::Format("No derived-data cache at {}: nothing to {}", rootText, bStats ? "count" : (bGc ? "trim" : "check")));
 		Context.PrintJson(CJsonObject().AddString("ddc", rootText).AddBool("exists", false));
