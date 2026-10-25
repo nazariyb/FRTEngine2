@@ -678,7 +678,7 @@ TEST_F(ShaderCacheTest, VerifyCompilesHitsAgainAndReportsDifferentBytesAsBuild00
 // (ShaderCache.cpp) and in ExpectedVersion below, or old records would be served under new meanings.
 TEST_F(ShaderCacheTest, TheShaderDxilKeySchemaIsFrozen)
 {
-	constexpr FStringLiteral ExpectedVersion = "25efada7f08f4343968370e13b8c50aa";
+	constexpr FStringLiteral ExpectedVersion = "68a2fffa8b5b48dfaa459f36e36b73f2";
 	EXPECT_EQ(GetShaderDxilBuilderVersion().ToString(), ExpectedVersion);
 
 	// Every field present: an entry point, defines, extra arguments, debug information.

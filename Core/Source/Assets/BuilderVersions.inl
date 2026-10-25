@@ -25,7 +25,7 @@
 //
 // No include guard: an X-macro table, included once per use with FRT_BUILDER defined.
 
-FRT_BUILDER("Shader.Dxil", "93a477e6298749ed92c02ef91eea79bd", "c36305055964a074",
+FRT_BUILDER("Shader.Dxil", "68a2fffa8b5b48dfaa459f36e36b73f2", "56f2f6a7a0e273a3",
 	"Core/Source/Graphics/Render/RHI/ShaderCompiler.*;"
 	"Core/Source/Graphics/Render/RHI/ShaderCache.*;"
 	"Core/Source/Assets/KeyWriter.*")

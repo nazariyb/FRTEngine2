@@ -75,10 +75,16 @@ void PrintWarnings (const SShaderCompileDesc& Desc, FStringView Log)
 
 assets::SGuid GetShaderDxilBuilderVersion () noexcept
 {
-	// A new GUID (FRT.bat assets newguid) whenever a change to ShaderCompiler.* or ShaderCache.* may
-	// change the DXIL of a key or what a record means: arguments, the reading of sources, the KeyBlob.
-	return assets::SGuid { { 0x25, 0xef, 0xad, 0xa7, 0xf0, 0x8f, 0x43, 0x43, 0x96, 0x83, 0x70, 0xe1, 0x3b, 0x8c, 0x50,
-		0xaa } };
+	// The committed GUID of the Shader.Dxil row in Assets/BuilderVersions.inl. A change to ShaderCompiler.*
+	// or ShaderCache.* that may change the DXIL of a key or what a record means gets a new GUID there
+	// (FRT.bat assets newguid, then FRT.bat check-builders --update); until it has one, the builder
+	// source guard keys its outputs with a local-only discriminator (GetShaderDxilKeyVersion).
+	return GetShaderDxilKeyVersion().Version;
+}
+
+assets::SBuilderKeyVersion GetShaderDxilKeyVersion () noexcept
+{
+	return assets::GetBuilderKeyVersion(ShaderDxilBuilder);
 }
 
 
@@ -253,7 +259,8 @@ bool CShaderCache::Store (const SShaderCacheKey& Key, const SShaderBinary& Binar
 
 	assets::SDdcRecord record;
 	record.Builder = ShaderDxilBuilder;
-	record.Version = GetShaderDxilBuilderVersion();
+	const assets::SBuilderKeyVersion version = GetShaderDxilKeyVersion();
+	record.Version = version.Version;
 	const std::span<const uint8> dxil = GetBlobBytes(Binary.Blob.Get());
 	record.Values.push_back({ FString(DxilValueName), {}, 0u, false, std::vector<uint8>(dxil.begin(), dxil.end()) });
 	if (!Binary.Log.IsEmpty())
@@ -263,8 +270,9 @@ bool CShaderCache::Store (const SShaderCacheKey& Key, const SShaderBinary& Binar
 		record.LogHash = hash::HashContent(log);
 	}
 	record.BuildMs = BuildMs;
-	// Debug information embeds the sources' absolute paths: this machine's, this checkout's (§14.5).
-	record.bDeterministic = !Compiler->HasDebugInfo();
+	// Debug information embeds the sources' absolute paths: this machine's, this checkout's (§14.5). Code
+	// changed without a version bump builds outputs that never leave this machine either (§7.3).
+	record.bDeterministic = !Compiler->HasDebugInfo() && !version.bLocalOnly;
 
 	FString error;
 	if (!Settings.Cache->Put(ShaderCacheBucket, Key.StaticKey, *inputs, record, &error))
@@ -386,9 +394,10 @@ std::optional<SShaderCacheKey> CShaderCache::MakeKey (const SShaderCompileDesc& 
 		return fail("cannot read " + FString::FromPath(sourcePath));
 	}
 
+	const assets::SBuilderKeyVersion version = GetShaderDxilKeyVersion();
 	assets::CKeyWriter key;
 	key.WriteStr("Builder", ShaderDxilBuilder);
-	key.WriteGuid("Version", GetShaderDxilBuilderVersion());
+	key.WriteGuid("Version", version.Version);
 	key.WriteGuid("BuildSystem", assets::BuildSystemVersion);
 
 	key.BeginRecord("Target");
@@ -441,10 +450,17 @@ std::optional<SShaderCacheKey> CShaderCache::MakeKey (const SShaderCompileDesc& 
 	key.WriteU64("Size", source->Size);
 	key.EndRecord();
 
-	if (Compiler->HasDebugInfo())
+	if (Compiler->HasDebugInfo() || version.bLocalOnly)
 	{
 		key.BeginRecord("Discriminators");
-		key.WriteHash160("DebugInfoRoot", hash::HashContent(FString::FromPath(Compiler->GetShaderRoot()).AsBytes()));
+		if (Compiler->HasDebugInfo())
+		{
+			key.WriteHash160("DebugInfoRoot", hash::HashContent(FString::FromPath(Compiler->GetShaderRoot()).AsBytes()));
+		}
+		if (version.bLocalOnly)
+		{
+			key.WriteStr(assets::LocalSourceDiscriminator, version.LocalDiscriminator);
+		}
 		key.EndRecord();
 	}
 

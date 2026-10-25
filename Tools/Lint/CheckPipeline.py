@@ -64,14 +64,27 @@ ALLOWED = [
      'mount paths of', None),
     (SHADER_COMPILER, 'platform-read', r'\bplatform::ReadFileText\(\s*Path\b',
      "LoadSourceBlob: the one read of the main file and of each include, every one recorded", None),
-    # The include probes of the compiler as it is before the shader cache: a candidate that does not exist
-    # is not recorded, so a file appearing later at a higher-priority candidate (the DXC path, which may be
-    # relative to the working directory, before the shader root) would not change a cached key and the
-    # cache would serve DXIL built from the old include. Harmless while nothing caches the output, so the
-    # exemption lapses once the cache is listed: its probes must then record a candidate that does not
-    # exist as an absent input, or resolve from the shader root alone, before they may be exempt.
-    (SHADER_COMPILER, 'std-filesystem', r'\bstd::filesystem::exists\(\s*(?:requested|underRoot|byName)\s*,\s*ec\s*\)',
-     'include probes whose outcome nothing caches yet', SHADER_CACHE),
+    # The include probes: a candidate that exists is read through LoadSourceBlob and recorded with its hash,
+    # and one that does not is recorded too, as an "Absent" input (SShaderBinary::FilesMissing), so a header
+    # created later at a higher-priority place changes the key instead of being missed (§14.5).
+    (SHADER_COMPILER, 'std-filesystem', r'\bstd::filesystem::exists\(\s*candidate\s*,\s*ec\s*\)',
+     'include probe whose outcome, found or absent, the cache records as a discovered input', None),
+    (SHADER_COMPILER, 'std-filesystem', r'\bstd::filesystem::weakly_canonical\(\s*candidate\s*,\s*ec\s*\)',
+     'the one name of an absent candidate, recorded as an "Absent" input', None),
+    (SHADER_COMPILER, 'platform-read', r'\bplatform::ReadFileChunksStable\(\s*Path\s*,',
+     'hashes what the key records: the bytes of a file DXC read, and the DXC binaries of its identity', None),
+    (SHADER_COMPILER, 'paths', r'\bpaths::GetEngineDir\(\)',
+     "where ThirdParty/Dxc/VERSION.txt is; only its content hash enters the key (the compiler identity)", None),
+    # The shader cache: its file access is the build context's bookkeeping - turning paths into mount paths
+    # for keys and re-hashing recorded inputs to match a manifest set - never an unrecorded read.
+    (SHADER_CACHE, 'std-filesystem', r'\bstd::filesystem::path\b',
+     'the path type (parameters, members, path arithmetic): naming a file opens nothing; keys get mount paths',
+     None),
+    (SHADER_CACHE, 'std-filesystem', r'\bstd::filesystem::weakly_canonical\(\s*Desc\.SourcePath\s*,\s*ec\s*\)',
+     'one name for the main file, for ToMountPath', None),
+    (SHADER_CACHE, 'platform-read', r'\bplatform::ReadFileChunksStable\(\s*Path\s*,',
+     'HashCurrentFile: the race-free re-hash of a recorded input or the main file, to match manifest sets',
+     None),
 ]
 
 EXTENSIONS = ('.h', '.hpp', '.cpp', '.inl', '.c', '.cc', '.cxx')

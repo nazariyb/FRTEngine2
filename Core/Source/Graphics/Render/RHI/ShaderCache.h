@@ -10,6 +10,7 @@
 #include "Core.h"
 #include "CoreTypes.h"
 #include "Assets/AssetId.h"
+#include "Assets/BuilderGuard.h"
 #include "Assets/DerivedDataCache.h"
 #include "Containers/String.h"
 #include "Graphics/Render/RHI/ShaderCompiler.h"
@@ -42,7 +43,9 @@
  *                               ExtraArguments: Record { "0000": Str, ... } (omitted when none),
  *                               FixedArguments: Record { "0000": Str, ... } }
  *     Source          Record  { Hash: Hash160, Size: U64 } of the main file's bytes as stored
- *     Discriminators  Record  { DebugInfoRoot: Hash160 }, only with debug information (see below)
+ *     Discriminators  Record  { DebugInfoRoot: Hash160 } with debug information (see below), and
+ *                             { LocalSource: Str } while the builder's sources differ from their committed
+ *                             hash (Assets/BuilderGuard.h); omitted when neither applies
  *
  * FixedArguments is CShaderCompiler::MakeFixedArguments with the shader root and the source's
  * directory written as mount paths ("-I", "/Engine/Shaders/Scene"), so the key is the command line
@@ -86,9 +89,11 @@ inline constexpr FStringLiteral ShaderCacheBucket = "Shader";
 // Where the compiler's shader root is mounted, in keys: <engine>/Core/Content is /Engine.
 inline constexpr FStringLiteral EngineShaderMountPath = "/Engine/Shaders";
 
-// The Shader.Dxil builder's version (§7.3). The one place it is obtained, so the builder source
-// guard (a local-only discriminator while ShaderCompiler.* or ShaderCache.* differ from the committed
-// hashes) can wrap it.
+// The Shader.Dxil builder's version (§7.3): its row in Assets/BuilderVersions.inl, through the builder
+// source guard. While ShaderCompiler.*, ShaderCache.* or KeyWriter.* differ from the row's committed
+// hash, bLocalOnly is set: keys carry Discriminators.LocalSource and records stay on this machine.
+[[nodiscard]] FRT_CORE_API assets::SBuilderKeyVersion GetShaderDxilKeyVersion () noexcept;
+// Its Version field alone.
 [[nodiscard]] FRT_CORE_API assets::SGuid GetShaderDxilBuilderVersion () noexcept;
 
 // What the cache did since Init (or ResetCounters).
