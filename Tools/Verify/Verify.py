@@ -7,10 +7,12 @@ script, behind FRT.bat verify (Premake/tools.lua). A milestone branch merges onl
      source files by glob, so a solution older than the sources would build without the new ones), then
      the engine in Debug and Development (FRT.bat build), and the templates' game modules in both;
   2. Core-Test in Debug and Development;
-  3. the lints: Tools/Lint/CheckStrings.py, Tools/Lint/CheckPlatform.py when it exists, and line endings:
-     every file .gitattributes makes LF is LF in the index and in the working tree, every -text file is
-     checked out as committed (FRT.bat check-line-endings: the rules FRT.bat setup applies, in
-     Premake/tools.lua only);
+  3. the lints: Tools/Lint/CheckStrings.py, Tools/Lint/CheckPipeline.py (the builder contract, over the
+     files the build listed in Local/Build/PipelineSources.txt), Tools/Lint/CheckPlatform.py when it exists,
+     line endings: every file .gitattributes makes LF is LF in the index and in the working tree, every
+     -text file is checked out as committed (FRT.bat check-line-endings: the rules FRT.bat setup applies, in
+     Premake/tools.lua only), and the builder source guard: no builder's sources changed without a new
+     version GUID (FRT.bat check-builders, BUILD003);
   4. AssetTool through FRT.bat assets: newguid --json exits with 0, and its standard output is JSON objects,
      one per line, and nothing else; -Project= names the project, and arguments reach AssetTool unchanged;
   5. the editor's smoke test (-Editor:SmokeTest=1) over Templates/Demo and Templates/Blank, in place, in
@@ -457,6 +459,19 @@ class Gate:
         summary = re.findall(r'Line endings: (.*?)\.?\s*$', text, re.MULTILINE)
         return summary[-1] if summary else ''
 
+    def check_builders(self, log):
+        """FRT.bat check-builders (BUILD003): every builder whose sources changed since the hash committed with
+        its version has a new version GUID and the new hash recorded. Lua in Premake/tools.lua, beside the
+        builder-hashes step every build runs, so the hash is computed in one place."""
+        code, _ = run([FRT, 'check-builders'], log, cwd=ROOT, env=self.env_for(log), timeout=LINT_TIMEOUT)
+        text = Path(log).read_bytes().decode('utf-8', errors='replace')
+        if code != 0:
+            problems = re.findall(r'^(BUILD003 \S+|\S+ \(Core/Source/Assets/BuilderVersions\.inl:\d+\))', text, re.MULTILINE)
+            raise StepFailed(('timed out; ' if code is None else '') +
+                             ('; '.join(problems[:3]) if problems else '; '.join(tail(log, lines=3))))
+        summary = re.findall(r'Builders: (.*?)\.?\s*$', text, re.MULTILINE)
+        return summary[-1] if summary else ''
+
     # ---- AssetTool ----
 
     def assets_json(self, log, command, expected_code, timeout=BUILD_TIMEOUT):
@@ -829,6 +844,8 @@ class Gate:
             self.step(f'Core-Test ({config})', self.core_test, config, needs=[('engine', config)])
 
         self.step('lint strings', self.lint, 'Tools/Lint/CheckStrings.py')
+        # Over the list the build writes (FRT.bat builder-hashes, Core's prebuild step).
+        self.step('lint pipeline', self.lint, 'Tools/Lint/CheckPipeline.py')
         if (ROOT / 'Tools' / 'Lint' / 'CheckPlatform.py').exists():
             self.step('lint platform', self.lint, 'Tools/Lint/CheckPlatform.py')
         else:
@@ -837,6 +854,7 @@ class Gate:
             self.skip('line endings', 'skipped (not a git checkout)')
         else:
             self.step('line endings', self.line_endings)
+        self.step('builder source guard (BUILD003)', self.check_builders)
         self.step('assets newguid --json', self.assets_newguid, needs=[('engine', 'Development')])
         self.step('assets arguments', self.assets_arguments, needs=[('engine', 'Development')])
 
@@ -858,7 +876,6 @@ class Gate:
                     self.broken.add((name, 'Release'))
             self.captures('Release')
             self.skip('packaged smoke run', 'skipped (M6)')
-            self.skip('builder source guard (BUILD003)', 'skipped (M1)')
             self.skip('assets docs --check', 'skipped (M1)')
         if self.mode == 'nightly':
             self.skip('assets build --determinism-check', 'skipped (M1)')
