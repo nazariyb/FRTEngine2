@@ -135,7 +135,10 @@ struct SFileChange
 /**
  * Which changes of a subscription's directory it is told. A file change matches when its path (or a
  * Moved's old path) is at or below Prefix and its name ends with one of Extensions; a directory
- * change matches when its subtree and Prefix overlap, whatever the extensions.
+ * change matches when its subtree and Prefix overlap, whatever the extensions. A file moved across the
+ * edge of the filter is, to this subscription, an Added (moved into it) or a Removed (moved out of it;
+ * not told at all when another change of the old path is told in the same call, as when ReplaceFileW
+ * renames the old file to a backup name and the new one into its place).
  */
 struct SWatchFilter
 {
