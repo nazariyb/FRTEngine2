@@ -1,9 +1,9 @@
 # Assets
 
 FRTEngine2's asset system is being built in milestones (M0-M13). This file describes what exists, briefly and
-structurally; every milestone updates it. Today, after **M0 (foundations)**, the infrastructure the asset system stands
-on exists, but no asset is loaded through it yet: materials, textures, models, input files and shaders still load as
-before.
+structurally; every milestone updates it. Today, after **M1 (tool host, worker pool, DDC, shader cache)**, the
+infrastructure exists and its first client runs: shaders are compiled once and served from the derived-data cache.
+Materials, textures, models and input files still load as before.
 
 ## Where it is going
 
@@ -16,6 +16,83 @@ before.
 - **Runtime.** Loads are asynchronous, through generational handles and reference-counted pointers, with deterministic
   publication so scripted captures stay byte-exact.
 - **Packages.** A cook turns content into paks of final, GPU-ready data plus a runtime registry.
+
+## Tool host, worker pool, derived-data cache, shader cache (M1)
+
+### AssetTool and `FRT.bat assets`
+
+`AssetTool.exe` is the asset system's command line, a console host beside the editor and the launcher (Debug,
+Development, Development-Headless; Release cannot load a game module, so it never runs tools). `FRT.bat assets <verb>`
+runs it (building it first when it is missing or stale) for the current project, or for `/Engine` with `--engine`.
+
+| Verb | Does |
+|---|---|
+| `help [verb]` | lists the verbs, or explains one |
+| `newguid [n]` | fresh GUIDs for builder versions and built-in assets, as text and as a C++ initializer |
+| `lock` | holds the mount's writer lock until Enter (for tests and scripts) |
+| `ddc stats`, `ddc gc [--max-gb=<n>]`, `ddc verify [--ddc=<dir>]` | the derived-data cache: counts, LRU trim (a dry run with `--ci`), re-check and delete corrupt files |
+
+Options: `--json` (one object per line), `--ci` or `-Assets:ReadOnly=1` (read-only, never takes the writer lock),
+`--project=<file>`, `--engine`. Exit codes: 0 success, 1 problems found, 2 usage error, 3 internal error, 4 the mount is
+owned by another process. **One writer per mount**: a writing run takes `<mount>/Local/Assets/Owner.lock` (an exclusive
+handle the OS releases when the process dies; its text names the holder), and a second writer exits with code 4 naming
+the owner. The editor takes the same lock from M4, when it starts writing metas.
+
+### Worker pool (`Jobs/WorkerPool.h`)
+
+`CWorkerPool` runs on engine-owned threads (`cores - 2`, at least 1, named through `platform::ConfigureThread`), with
+three priorities, 64-bit cancel groups and an MPSC completion queue. Completions run on the owner thread, in batch or
+strict submission order, when it pumps (`PumpCompletions`, `PumpUntil`); a wait is always a pump loop, never a bare
+block. `BumpEpoch` discards completions of older work; `CancelAllAndDrain` is the barrier a game-module reload will use.
+`CEngine` owns one pool (`GetWorkerPool()`, pumped in `BeginFrame`); texture decoding runs on it. Workers never touch
+TLSF, `TArray` or `TRefShared`: in Debug, `CMemoryPool` asserts when another thread uses it.
+
+### Derived-data cache (`Assets/DerivedDataCache.h`)
+
+A machine-wide, content-addressed store: `FRT_DDC_DIR`, else `[DerivedDataCache] Path=`, else
+`%LOCALAPPDATA%\FRTEngine\DerivedDataCache` (`FRT_USER_DATA_DIR` moves it for tests). Every process, project and
+worktree on the machine shares it, without locks.
+
+- **Keys: two steps.** The StaticKey hashes everything known before a build (`CKeyWriter`'s KeyBlob: builder, version,
+  target facets, settings, source hash). The discovered inputs (for shaders, every include, and every place an include
+  was looked for and not found) are known only after it: `Manifests/<StaticKey>` keeps up to four input sets with the
+  Key each gave, so editing an include misses and reverting it hits again. `Key = BLAKE3-160(StaticKey ‖ inputs)`.
+- **Layout.** `Manifests/`, `Records/<Bucket>/` (small values inlined, up to 64 KiB each and 256 KiB per record),
+  `Values/` (large values, zstd when it saves 5% or more), `Tmp/`, `Access/` logs for LRU. Writes go to `Tmp/`, are
+  flushed, then renamed: large values, record, manifest, so a crash leaves only unreferenced files. Every record and
+  manifest ends in a checksum, every value's raw hash is checked on read: anything that fails is a miss and is deleted.
+- **Never in a key:** paths, the asset's own GUID, timestamps, machine names.
+- **Per-project state**: `Local/Assets/BuildState.log` (append-only, checksummed step records: KeyBlob, inputs, Key,
+  status) and `Local/Assets/BuildJournal.log` (a step that began and never ended is reported as crashed). Only the
+  writer-lock holder writes them.
+
+### Shader cache (`Graphics/Render/RHI/ShaderCache.h`)
+
+`CShaderCache` sits between `CPipelineLibrary` and DXC in dev builds: a warm editor start compiles no shader. Its key
+holds the DXC identity (hashes of `dxcompiler.dll`, `dxil.dll` and `ThirdParty/Dxc/VERSION.txt`), entry, profile,
+defines, arguments with every path written as a mount path (`/Engine/Shaders/...`), the source hash, and `Rhi: D3D12`
+(DXIL depends on the shader model, never on the GPU). Debug information embeds absolute paths, so that variant adds a
+hash of the shader root and never leaves this machine. Hot reload works as before. The startup log prints
+`[shader] cache: <hits> hits, <compiled> compiled`; the Stats panel shows the counters. Switches: `-Ddc:Shaders=0`
+(compile without the cache; until M2) and `-Ddc:Verify=<percent>` (recompile that share of hits and compare; a difference
+is `BUILD002`). Release builds still compile at run time until the cook ships DXIL (M12).
+
+### Builder versions and the source guard
+
+A builder is a pure function of its key, so its version GUID must change whenever its code could change its output.
+`Core/Source/Assets/BuilderVersions.inl` lists every builder: name, version GUID, the hash of its sources when that GUID
+was set, and the globs of those sources. Every build regenerates the current hashes (`FRT.bat builder-hashes`, a
+prebuild step). A builder whose sources changed while its GUID did not keeps working, but local-only: its keys carry a
+`LocalSource` discriminator and its outputs never leave this machine. `FRT.bat check-builders` fails (`BUILD003`) until
+the GUID is bumped: `FRT.bat assets newguid`, paste it into the row, then `FRT.bat check-builders --update`, which pairs
+each new GUID with exactly one source hash. `python -I Tools/Lint/CheckPipeline.py` keeps builder sources pure: no
+file access, config or paths outside the recorded inputs, no TLSF types, no hash-table iteration, no mutable globals.
+
+### Build scheduler (`Assets/BuildScheduler.h`)
+
+`CBuildScheduler` is the skeleton later milestones build on: requests with a priority (`Escalated`, `Visible`,
+`Background`, `Cook`) and a sequence, steps on the worker pool, a step that needs other steps first is restarted at most
+3 times (then a cycle error), cancellation, and the pool's commit-order modes.
 
 ## Identity and hashing (`Assets/AssetId.h`, `Hash/StableHash.h`, `Assets/KeyWriter.h`)
 
