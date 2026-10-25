@@ -1,6 +1,7 @@
 #include "Assets/Registry/RegistryView.h"
 
 #include <algorithm>
+#include <unordered_map>
 
 #include "Assets/AssetDiagnosticCodes.h"
 #include "Assets/AssetTypes.h"
@@ -758,80 +759,155 @@ void CRegistryView::ForEachReferencer (SRecordId Record, EDepFlags Require, EDep
 
 namespace
 {
-// Records as dense node numbers for the traversals: ASSETS rows, then SUBENTRY rows.
-struct SNodeSpace
+/**
+ * The traversals' unit is a file (an asset record stands for its whole file): its dependencies are every
+ * edge of the file, whichever sub-entry declared it, and it is reached by every edge that resolves to it,
+ * whichever sub-entry the edge names. Reaching any record of a file reaches all of them. So the closure
+ * of R holds T exactly when the referencer closure of T holds R, for asset records and sub-entries alike,
+ * and WhyReferenced agrees with both.
+ */
+bool FollowsEdge (EDepFlags Flags, EDepFlags Follow) noexcept
 {
-	uint32 AssetRows = 0u;
-	uint32 SubRows = 0u;
+	return Follow == EDepFlags {} || HasAnyFlags(Flags, Follow);
+}
 
-	[[nodiscard]] uint32 GetIndex (SRecordId Record) const noexcept
+// The asset row of a valid record.
+uint32 GetOwnerRow (const SRegistryTables& Tables, SRecordId Record) noexcept
+{
+	return Record.IsSubEntry() ? Tables.SubEntries.Owner[Record.Value & ~SubEntryBit] : Record.Value;
+}
+
+// Visit(uint32 SourceRow, uint32 EdgeRef) for every live edge of a file that resolves to AssetRow.
+template <typename TVisit>
+void ForEachEdgeInto (const SRegistryTables& Tables, uint32 AssetRow, TVisit&& Visit)
+{
+	Tables.Graph.TargetsByResolved.ForEach(MixRegistryKey(AssetRow), [&] (uint32 TargetRow)
 	{
-		return Record.IsSubEntry() ? AssetRows + (Record.Value & ~SubEntryBit) : Record.Value;
+		if (Tables.Graph.Targets[TargetRow].Resolved == AssetRow)
+		{
+			ForEachLiveReverseEdge(Tables, TargetRow, [&] (const SReverseEdge& Entry) { Visit(Entry.Source, Entry.Edge); });
+		}
+		return true;
+	});
+}
+
+// Visit(uint32 TargetRow, uint32 EdgeRef) for every live, resolved edge of a file.
+template <typename TVisit>
+void ForEachEdgeOutOf (const SRegistryTables& Tables, uint32 AssetRow, TVisit&& Visit)
+{
+	ForEachLiveEdge(Tables, AssetRow, [&] (uint32 EdgeRef)
+	{
+		const STargetRow& target = Tables.Graph.Targets[GetEdgeRow(Tables, EdgeRef).Target];
+		if (target.State == ETargetState::Resolved)
+		{
+			Visit(target.Resolved, EdgeRef);
+		}
+	});
+}
+
+// Breadth-first over files from the roots' files: Expand(Row, Enter) calls Enter(AssetRow) for every file
+// one step from Row. Returns the files in the order they were reached.
+template <typename TExpand>
+std::vector<uint32> WalkFiles (const SRegistryTables& Tables, std::span<const uint32> RootRows, TExpand&& Expand)
+{
+	std::vector<uint8> seen(Tables.Assets.File.Size(), 0u);
+	std::vector<uint32> rows;
+	const auto enter = [&] (uint32 Row)
+	{
+		if (seen[Row] == 0u)
+		{
+			seen[Row] = 1u;
+			rows.push_back(Row);
+		}
+	};
+	for (const uint32 root : RootRows)
+	{
+		enter(root);
 	}
-	[[nodiscard]] uint32 GetCount () const noexcept { return AssetRows + SubRows; }
-};
+	for (size_t i = 0u; i < rows.size(); ++i)
+	{
+		Expand(rows[i], enter);
+	}
+	return rows;
+}
+}
+
+std::vector<uint32> CRegistryView::GetRootRows (std::span<const SRecordId> Roots) const
+{
+	std::vector<uint32> rows;
+	for (const SRecordId root : Roots)
+	{
+		if (IsValid(root))
+		{
+			rows.push_back(GetOwnerRow(Tables, root));
+		}
+	}
+	return rows;
+}
+
+// The roots first (valid ones, once each), then every record of each file in walk order: the asset record,
+// then its sub-entries in declared order.
+void CRegistryView::ListFiles (std::span<const SRecordId> Roots, std::span<const uint32> Rows, std::vector<SRecordId>& Out) const
+{
+	Out.clear();
+	std::vector<uint32> rootValues;
+	for (const SRecordId root : Roots)
+	{
+		if (IsValid(root) && std::find(rootValues.begin(), rootValues.end(), root.Value) == rootValues.end())
+		{
+			rootValues.push_back(root.Value);
+			Out.push_back(root);
+		}
+	}
+	std::sort(rootValues.begin(), rootValues.end());
+	const auto list = [&] (uint32 Value)
+	{
+		if (!std::binary_search(rootValues.begin(), rootValues.end(), Value))
+		{
+			Out.push_back(MakeRecordId(Value));
+		}
+	};
+	for (const uint32 row : Rows)
+	{
+		list(row);
+		const uint32 first = Tables.Assets.FirstSub[row];
+		for (uint32 i = 0u; i < Tables.Assets.NumSubs[row]; ++i)
+		{
+			list(SubEntryBit | (first + i));
+		}
+	}
 }
 
 void CRegistryView::GetClosure (std::span<const SRecordId> Roots, EDepFlags Follow, std::vector<SRecordId>& Out) const
 {
-	Out.clear();
-	const SNodeSpace nodes { Tables.Assets.File.Size(), Tables.SubEntries.Owner.Size() };
-	std::vector<uint8> visited(nodes.GetCount(), 0u);
-	for (const SRecordId root : Roots)
+	const std::vector<uint32> roots = GetRootRows(Roots);
+	const std::vector<uint32> rows = WalkFiles(Tables, roots, [&] (uint32 Row, auto&& Enter)
 	{
-		if (IsValid(root) && visited[nodes.GetIndex(root)] == 0u)
+		ForEachEdgeOutOf(Tables, Row, [&] (uint32 Target, uint32 EdgeRef)
 		{
-			visited[nodes.GetIndex(root)] = 1u;
-			Out.push_back(root);
-		}
-	}
-	for (size_t i = 0u; i < Out.size(); ++i)
-	{
-		ForEachDependency(Out[i], EDepFlags {}, EDepFlags {}, [&] (const SDependencyView& Edge)
-		{
-			if (!Edge.To.IsValid() || (Follow != EDepFlags {} && !HasAnyFlags(Edge.Flags, Follow)))
+			if (FollowsEdge(GetEdgeRow(Tables, EdgeRef).Flags, Follow))
 			{
-				return;
-			}
-			uint8& seen = visited[nodes.GetIndex(Edge.To)];
-			if (seen == 0u)
-			{
-				seen = 1u;
-				Out.push_back(Edge.To);
+				Enter(Target);
 			}
 		});
-	}
+	});
+	ListFiles(Roots, rows, Out);
 }
 
 void CRegistryView::GetReferencerClosure (std::span<const SRecordId> Roots, EDepFlags Follow, std::vector<SRecordId>& Out) const
 {
-	Out.clear();
-	const SNodeSpace nodes { Tables.Assets.File.Size(), Tables.SubEntries.Owner.Size() };
-	std::vector<uint8> visited(nodes.GetCount(), 0u);
-	for (const SRecordId root : Roots)
+	const std::vector<uint32> roots = GetRootRows(Roots);
+	const std::vector<uint32> rows = WalkFiles(Tables, roots, [&] (uint32 Row, auto&& Enter)
 	{
-		if (IsValid(root) && visited[nodes.GetIndex(root)] == 0u)
+		ForEachEdgeInto(Tables, Row, [&] (uint32 Source, uint32 EdgeRef)
 		{
-			visited[nodes.GetIndex(root)] = 1u;
-			Out.push_back(root);
-		}
-	}
-	for (size_t i = 0u; i < Out.size(); ++i)
-	{
-		ForEachReferencer(Out[i], EDepFlags {}, EDepFlags {}, [&] (const SDependencyView& Edge)
-		{
-			if (Follow != EDepFlags {} && !HasAnyFlags(Edge.Flags, Follow))
+			if (FollowsEdge(GetEdgeRow(Tables, EdgeRef).Flags, Follow))
 			{
-				return;
-			}
-			uint8& seen = visited[nodes.GetIndex(Edge.From)];
-			if (seen == 0u)
-			{
-				seen = 1u;
-				Out.push_back(Edge.From);
+				Enter(Source);
 			}
 		});
-	}
+	});
+	ListFiles(Roots, rows, Out);
 }
 
 bool CRegistryView::WhyReferenced (SRecordId From, SRecordId To, std::vector<SDependencyView>& OutChain) const
@@ -841,44 +917,43 @@ bool CRegistryView::WhyReferenced (SRecordId From, SRecordId To, std::vector<SDe
 	{
 		return false;
 	}
-	const SNodeSpace nodes { Tables.Assets.File.Size(), Tables.SubEntries.Owner.Size() };
-	struct SParent
+	const uint32 start = GetOwnerRow(Tables, From);
+	const uint32 goal = GetOwnerRow(Tables, To);
+	if (start == goal)
 	{
-		uint32 Node = InvalidRow;
-		SDependencyView Edge;
+		return true;   // one file: its records reach one another with no edge
+	}
+	// Only the files reached so far: the file each was reached from and the edge that did it.
+	struct SStep
+	{
+		uint32 Parent = InvalidRow;
+		uint32 EdgeRef = InvalidRow;
 	};
-	std::vector<SParent> parents(nodes.GetCount());
-	std::vector<uint8> visited(nodes.GetCount(), 0u);
-	std::vector<SRecordId> queue { From };
-	visited[nodes.GetIndex(From)] = 1u;
-	bool bFound = From == To;
+	std::unordered_map<uint32, SStep> steps;
+	steps.emplace(start, SStep {});
+	std::vector<uint32> queue { start };
+	bool bFound = false;
 	for (size_t i = 0u; i < queue.size() && !bFound; ++i)
 	{
-		const SRecordId current = queue[i];
-		ForEachDependency(current, EDepFlags {}, EDepFlags {}, [&] (const SDependencyView& Edge)
+		const uint32 current = queue[i];
+		ForEachEdgeOutOf(Tables, current, [&] (uint32 Target, uint32 EdgeRef)
 		{
-			if (bFound || !Edge.To.IsValid())
+			if (!bFound && steps.try_emplace(Target, SStep { current, EdgeRef }).second)
 			{
-				return;
+				queue.push_back(Target);
+				bFound = Target == goal;
 			}
-			const uint32 index = nodes.GetIndex(Edge.To);
-			if (visited[index] != 0u)
-			{
-				return;
-			}
-			visited[index] = 1u;
-			parents[index] = SParent { nodes.GetIndex(current), Edge };
-			queue.push_back(Edge.To);
-			bFound = Edge.To == To;
 		});
 	}
 	if (!bFound)
 	{
 		return false;
 	}
-	for (uint32 node = nodes.GetIndex(To); node != nodes.GetIndex(From); node = parents[node].Node)
+	for (uint32 row = goal; row != start;)
 	{
-		OutChain.push_back(parents[node].Edge);
+		const SStep& step = steps.at(row);
+		OutChain.push_back(MakeDependencyView(step.Parent, step.EdgeRef));
+		row = step.Parent;
 	}
 	std::reverse(OutChain.begin(), OutChain.end());
 	return true;

@@ -554,24 +554,115 @@ TEST(RegistryStoreTest, ClosuresAndWhyReferencedFollowResolvedEdges)
 	EXPECT_EQ(GetDependencies(view, skin).size(), 1u);
 	EXPECT_EQ(GetReferencers(view, material), std::vector<SRecordId> { skin });
 
+	// The traversals walk files: the model's file reaches the texture through its sub-entry's edge, and the
+	// texture's referencers reach the whole model file.
 	std::vector<SRecordId> closure;
 	const SRecordId roots[] = { hero };
 	view.GetClosure(roots, EDepFlags {}, closure);
-	EXPECT_EQ(closure, (std::vector<SRecordId> { hero, material, texture }));
+	EXPECT_EQ(closure, (std::vector<SRecordId> { hero, skin, material, texture }));
 	view.GetClosure(roots, EDepFlags::Hard, closure);   // no Hard edges
-	EXPECT_EQ(closure, std::vector<SRecordId> { hero });
+	EXPECT_EQ(closure, (std::vector<SRecordId> { hero, skin }));
 
 	const SRecordId referencerRoots[] = { texture };
 	view.GetReferencerClosure(referencerRoots, EDepFlags {}, closure);
-	EXPECT_EQ(closure, (std::vector<SRecordId> { texture, material, skin }));
+	EXPECT_EQ(closure, (std::vector<SRecordId> { texture, material, hero, skin }));
 
 	std::vector<SDependencyView> chain;
 	ASSERT_TRUE(view.WhyReferenced(hero, texture, chain));
 	ASSERT_EQ(chain.size(), 2u);
+	EXPECT_EQ(chain[0].From, skin);
 	EXPECT_EQ(chain[0].To, material);
 	EXPECT_EQ(chain[1].From, material);
 	EXPECT_EQ(chain[1].To, texture);
+	EXPECT_TRUE(view.WhyReferenced(skin, texture, chain));
+	EXPECT_EQ(chain.size(), 2u);
+	EXPECT_TRUE(view.WhyReferenced(hero, skin, chain));   // one file
+	EXPECT_TRUE(chain.empty());
 	EXPECT_FALSE(view.WhyReferenced(texture, hero, chain));
+}
+
+TEST(RegistryStoreTest, AFileAndItsSubEntriesAreOneNodeForEveryTraversal)
+{
+	// Hero.gltf: a file-level edge to its buffer, a sub-entry with an edge to a texture. Whole references
+	// the file, Part references a sub-entry that declares no edges, Loose references the texture directly.
+	CRegistryStore store;
+	SRegistryDelta delta = MakeMountsDelta();
+	AddTexture(delta, "/Project/T/skin.png");
+	AddTexture(delta, "/Project/Hero.bin");   // stands in for a buffer with a record of its own
+	delta.FileUpserts.push_back(MakeFile("/Project/Hero.gltf"));
+	SRecordUpsert model = MakeRecord("/Project/Hero.gltf", asset_types::Model, "Model.Gltf");
+	model.SubEntries.push_back(SSubEntryDecl { "mesh:Body", 0u, asset_types::Mesh, ERecordFlags::None, {} });
+	model.SubEntries.push_back(SSubEntryDecl { "material:Skin", 0u, asset_types::Material, ERecordFlags::None, {} });
+	model.Edges.push_back(MakePathEdge("/Project/Hero.bin", EDepFlags::Build | EDepFlags::Path, "buffers[0].uri"));
+	SEdgeDecl skinEdge = MakePathEdge("/Project/T/skin.png", EDepFlags::Hard);
+	skinEdge.FromSub = MakeSubId("material:Skin");
+	model.Edges.push_back(skinEdge);
+	delta.RecordUpserts.push_back(std::move(model));
+	AddMaterial(delta, "/Project/Whole.frtmat.yml", { "/Project/Hero.gltf" });
+	AddMaterial(delta, "/Project/Part.frtmat.yml", { "/Project/Hero.gltf#mesh:Body" });
+	AddMaterial(delta, "/Project/Loose.frtmat.yml", { "/Project/T/skin.png" });
+	store.Commit(std::move(delta));
+
+	const CRegistryView& view = store.Live();
+	const SRecordId hero = FindRecord(view, "/Project/Hero.gltf");
+	const SRecordId body = FindRecord(view, "/Project/Hero.gltf#mesh:Body");
+	const SRecordId skin = FindRecord(view, "/Project/Hero.gltf#material:Skin");
+	const SRecordId bin = FindRecord(view, "/Project/Hero.bin");
+	const SRecordId texture = FindRecord(view, "/Project/T/skin.png");
+	const SRecordId whole = FindRecord(view, "/Project/Whole.frtmat.yml");
+	const SRecordId part = FindRecord(view, "/Project/Part.frtmat.yml");
+	const SRecordId loose = FindRecord(view, "/Project/Loose.frtmat.yml");
+	const std::vector<SRecordId> all { hero, body, skin, bin, texture, whole, part, loose };
+	for (const SRecordId record : all)
+	{
+		ASSERT_TRUE(record.IsValid());
+	}
+	const auto contains = [] (const std::vector<SRecordId>& List, SRecordId Record)
+	{
+		return std::find(List.begin(), List.end(), Record) != List.end();
+	};
+
+	// Whoever references the file or one of its parts transitively references what any part references.
+	std::vector<SRecordId> closure;
+	const SRecordId textureRoot[] = { texture };
+	view.GetReferencerClosure(textureRoot, EDepFlags {}, closure);
+	for (const SRecordId expected : { hero, body, skin, whole, part, loose })
+	{
+		EXPECT_TRUE(contains(closure, expected));
+	}
+	const SRecordId partRoot[] = { part };
+	view.GetClosure(partRoot, EDepFlags {}, closure);
+	EXPECT_EQ(closure, (std::vector<SRecordId> { part, hero, body, skin, bin, texture }));
+	std::vector<SDependencyView> chain;
+	ASSERT_TRUE(view.WhyReferenced(part, bin, chain));
+	ASSERT_EQ(chain.size(), 2u);
+	EXPECT_EQ(chain[0].To, body);
+	EXPECT_EQ(chain[1].From, hero);
+	EXPECT_EQ(chain[1].To, bin);
+	EXPECT_TRUE(view.WhyReferenced(part, hero, chain));
+	EXPECT_TRUE(view.WhyReferenced(whole, texture, chain));
+	EXPECT_FALSE(view.WhyReferenced(loose, hero, chain));
+
+	// The three traversals agree on every pair, and Follow filters both directions alike.
+	for (const EDepFlags follow : { EDepFlags {}, EDepFlags::Hard })
+	{
+		for (const SRecordId from : all)
+		{
+			const SRecordId fromRoot[] = { from };
+			view.GetClosure(fromRoot, follow, closure);
+			for (const SRecordId to : all)
+			{
+				const SRecordId toRoot[] = { to };
+				std::vector<SRecordId> referencers;
+				view.GetReferencerClosure(toRoot, follow, referencers);
+				EXPECT_EQ(contains(closure, to), contains(referencers, from)) << from.Value << " -> " << to.Value;
+				if (follow == EDepFlags {})
+				{
+					EXPECT_EQ(contains(closure, to), view.WhyReferenced(from, to, chain)) << from.Value << " -> " << to.Value;
+				}
+			}
+		}
+	}
 }
 
 

@@ -175,12 +175,20 @@ public:
 	// Unordered: sort when the order matters.
 	void ForEachReferencer (SRecordId Record, EDepFlags Require, EDepFlags Exclude,
 		TFunctionRef<void (const SDependencyView&)> Visit) const;
-	// Every record reachable from Roots over resolved edges with any bit of Follow (every edge when Follow is
-	// empty), the roots included, in breadth-first order.
+	/**
+	 * The traversals walk files: an asset record stands for its whole file, so a file's dependencies are all
+	 * of its edges (any FromSub) and it is reached by every edge that resolves to it (any TargetSub), and
+	 * reaching one record of a file reaches every record of it. Hence T is in GetClosure(R) exactly when R is
+	 * in GetReferencerClosure(T), and WhyReferenced(R, T) agrees with both.
+	 *
+	 * GetClosure: every record reachable from Roots over resolved edges with any bit of Follow (every edge
+	 * when Follow is empty) - the roots first, then each reached file's asset record and sub-entries, files
+	 * in breadth-first order. GetReferencerClosure: the same over referencers (transitive referencers).
+	 */
 	void GetClosure (std::span<const SRecordId> Roots, EDepFlags Follow, std::vector<SRecordId>& Out) const;
-	// The same over referencers: every record that reaches Roots (transitive referencers).
 	void GetReferencerClosure (std::span<const SRecordId> Roots, EDepFlags Follow, std::vector<SRecordId>& Out) const;
-	// A shortest chain of edges from From to To; false when To is not reachable.
+	// A chain with the fewest edges from From's file to To's file; false when To is not reachable. Records of
+	// one file give true with an empty chain. Memory grows with the files visited, not with the view.
 	bool WhyReferenced (SRecordId From, SRecordId To, std::vector<SDependencyView>& OutChain) const;
 
 	// ---- Diagnostics ----
@@ -240,6 +248,8 @@ private:
 
 	[[nodiscard]] SRecordId MakeRecordId (uint32 Value) const noexcept { return SRecordId { Value, static_cast<uint32>(Tables.Revision) }; }
 	[[nodiscard]] SDependencyView MakeDependencyView (uint32 Source, uint32 EdgeRef) const;
+	[[nodiscard]] std::vector<uint32> GetRootRows (std::span<const SRecordId> Roots) const;
+	void ListFiles (std::span<const SRecordId> Roots, std::span<const uint32> Rows, std::vector<SRecordId>& Out) const;
 
 	SRegistryTables Tables;
 };
