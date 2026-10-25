@@ -1,11 +1,14 @@
 #include "EnginePaths.h"
 
+#include <mutex>
 #include <system_error>
+#include <utility>
 
 #if defined(_WINDOWS)
 #include <Windows.h>
 #endif
 
+#include "Assets/Discovery/Mounts.h"
 #include "Platform/FileSystem.h"
 #include "Platform/Platform.h"
 #include "Project/Project.h"
@@ -198,5 +201,37 @@ std::filesystem::path GetUserConfigPath ()
 std::filesystem::path GetEditorUserDir ()
 {
 	return GetEngineDir() / "Local" / "Editor";
+}
+
+// The installed table is read from any thread and replaced whole: a mutex around the pointer (no
+// std::atomic<std::shared_ptr>: its load is not lock-free on MSVC either, and this is never hot).
+namespace
+{
+std::mutex MountTableMutex;
+std::shared_ptr<const assets::CMountTable> MountTable;
+}
+
+void SetMountTable (std::shared_ptr<const assets::CMountTable> Table)
+{
+	const std::lock_guard lock(MountTableMutex);
+	MountTable = std::move(Table);
+}
+
+std::shared_ptr<const assets::CMountTable> GetMountTable ()
+{
+	const std::lock_guard lock(MountTableMutex);
+	return MountTable;
+}
+
+std::optional<FString> ToMountPath (const std::filesystem::path& Absolute)
+{
+	const std::shared_ptr<const assets::CMountTable> table = GetMountTable();
+	return table != nullptr ? table->ToMountPath(Absolute) : std::nullopt;
+}
+
+std::optional<std::filesystem::path> FromMountPath (FStringView MountPath)
+{
+	const std::shared_ptr<const assets::CMountTable> table = GetMountTable();
+	return table != nullptr ? table->FromMountPath(MountPath) : std::nullopt;
 }
 }

@@ -1,13 +1,21 @@
 #pragma once
 
 #include <filesystem>
+#include <memory>
+#include <optional>
 
 #include "Core.h"
+#include "Containers/String.h"
 
 
 namespace frt::project
 {
 struct SProjectDescriptor;
+}
+
+namespace frt::assets
+{
+class CMountTable;
 }
 
 
@@ -80,4 +88,15 @@ FRT_CORE_API std::filesystem::path GetUserConfigPath ();             // <local>/
 // ---- the editor's ----
 // Its own files, whatever the project (layout, input overrides, project manager): <engine>/Local/Editor.
 FRT_CORE_API std::filesystem::path GetEditorUserDir ();
+
+// ---- mounts (design §3.1) ----
+// The only conversion points between absolute paths and mount paths ("/Project/Textures/Rock.png"):
+// thin wrappers over the process's mount table, which the asset registry resolves at start-up and
+// installs (assets::CMountTable, Assets/Discovery/Mounts.h, says what each conversion accepts). Until
+// one is installed, and after SetMountTable(nullptr), both return nullopt. Any thread: the table is
+// immutable and swapped whole.
+FRT_CORE_API void SetMountTable (std::shared_ptr<const assets::CMountTable> Table);
+[[nodiscard]] FRT_CORE_API std::shared_ptr<const assets::CMountTable> GetMountTable ();
+[[nodiscard]] FRT_CORE_API std::optional<FString> ToMountPath (const std::filesystem::path& Absolute);
+[[nodiscard]] FRT_CORE_API std::optional<std::filesystem::path> FromMountPath (FStringView MountPath);
 }
