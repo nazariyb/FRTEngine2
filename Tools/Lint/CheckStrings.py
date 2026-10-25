@@ -93,7 +93,8 @@ GATES = [
     # sets that must or must not accept it, the platform layer against the CRT).
     ('std-string', r'std::(w?string|w?string_view|u8string)\b',
      ['Containers/StringFwd.h', 'Containers/StringView.', 'Containers/String.', 'Containers/WideString.',
-      'Platform/Platform.cpp', 'Platform/Platform.h', 'Assets/Yaml/YamlString.h', 'Assets/Yaml/YamlArchive.cpp',
+      'Platform/Platform.cpp', 'Platform/Platform.h', 'Platform/TextDecoding.cpp', 'Assets/Yaml/YamlString.h',
+      'Assets/Yaml/YamlArchive.cpp',
       'Graphics/AssimpWideIO.', 'Core-Test/Containers/String', 'Core-Test/Unicode/', 'Core-Test/Platform/',
       'Core-Test/Assets/ArchiveTest.cpp']),
     # path.string() narrows through the code page: FString::FromPath(Path) instead.
@@ -103,10 +104,12 @@ GATES = [
     ('L-literal', r'\bL"',
      ['PathTracerPrograms.cpp', 'Platform/Platform.cpp', 'Platform/Windows/', 'ToolProcess.cpp', 'ProjectManager.cpp',
       'TextureManager.cpp', 'Core-Test/Containers/String', 'Core-Test/Unicode/', 'Core-Test/Platform/']),
-    # UTF-16 buffers belong in frt::platform (Platform/Platform.cpp and the Windows implementations in
-    # Platform/Windows/): a new one moves there instead of joining this list.
+    # UTF-16 buffers belong in frt::platform (Platform/Platform.cpp, its text-file decoding in
+    # Platform/TextDecoding.cpp, and the Windows implementations in Platform/Windows/): a new one moves there
+    # instead of joining this list.
     ('wchar_t', r'\bwchar_t\b',
-     ['Containers/String', 'Containers/WideString', 'Unicode/', 'Platform/Platform.cpp', 'Platform/Windows/',
+     ['Containers/String', 'Containers/WideString', 'Unicode/', 'Platform/Platform.cpp', 'Platform/TextDecoding.cpp',
+      'Platform/Windows/',
       'PathTracerPrograms.cpp', 'Core-Test/Containers/String', 'Core-Test/Unicode/', 'Core-Test/Platform/',
       'Core-Test/Assets/ArchiveTest.cpp']),
     # The converters and helpers the string types replaced.

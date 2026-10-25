@@ -246,12 +246,20 @@ const SDxcIdentity& CShaderCompiler::GetDxcIdentity ()
 		{
 			result.Dxcompiler = HashFile(dxcompiler);
 		}
-		// dxcompiler.dll loads dxil.dll on its first validation, from the same search path: beside the
-		// executable, where the build copies both.
+		// dxil.dll validates and signs every program, and dxcompiler.dll loads it by name the first time
+		// it validates. Loaded here first, from dxcompiler.dll's directory (where the build puts both),
+		// it is the module DXC gets then - the loader hands a by-name load the dxil.dll already in the
+		// process, wherever it came from - so the file hashed is the one that signs. It stays loaded, as
+		// it would once DXC had loaded it. Without one the hash stays unset, and the shader cache keys
+		// nothing (CShaderCache::MakeKey).
 		std::filesystem::path dxil = platform::GetLoadedModulePath("dxil.dll");
 		if (dxil.empty() && !dxcompiler.empty())
 		{
-			dxil = dxcompiler.parent_path() / FStringView("dxil.dll").ToPath();
+			const std::filesystem::path besideDxcompiler = dxcompiler.parent_path() / FStringView("dxil.dll").ToPath();
+			if (LoadLibraryExW(besideDxcompiler.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH) != nullptr)
+			{
+				dxil = platform::GetLoadedModulePath("dxil.dll");
+			}
 		}
 		if (!dxil.empty())
 		{

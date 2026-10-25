@@ -37,7 +37,8 @@
  *     Target          Record  { Rhi: Str "D3D12" }: DXIL depends on the shader model in the profile, never
  *                             on the GPU (§7.13)
  *     Compiler        Record  { Name: Str "DXC", Dxcompiler, Dxil, VersionText: Hash160 } (CShaderCompiler::
- *                             GetDxcIdentity; a hash whose file was not found is omitted)
+ *                             GetDxcIdentity): the in-process compiler's identity (§7.4 "Compiler"); with
+ *                             any of the three unknown there is no key, and the program compiles uncached
  *     Settings        Record  { Entry: Str (omitted for a library), Profile: Str,
  *                               Defines: Record { <name>: Str <value> } (omitted when none),
  *                               ExtraArguments: Record { "0000": Str, ... } (omitted when none),
@@ -90,8 +91,9 @@ inline constexpr FStringLiteral ShaderCacheBucket = "Shader";
 inline constexpr FStringLiteral EngineShaderMountPath = "/Engine/Shaders";
 
 // The Shader.Dxil builder's version (§7.3): its row in Assets/BuilderVersions.inl, through the builder
-// source guard. While ShaderCompiler.*, ShaderCache.* or KeyWriter.* differ from the row's committed
-// hash, bLocalOnly is set: keys carry Discriminators.LocalSource and records stay on this machine.
+// source guard. While the row's sources (ShaderCompiler.*, ShaderCache.*, Platform/TextDecoding.cpp and
+// the key infrastructure) differ from its committed hash, bLocalOnly is set: keys carry
+// Discriminators.LocalSource and records stay on this machine.
 [[nodiscard]] FRT_CORE_API assets::SBuilderKeyVersion GetShaderDxilKeyVersion () noexcept;
 // Its Version field alone.
 [[nodiscard]] FRT_CORE_API assets::SGuid GetShaderDxilBuilderVersion () noexcept;
@@ -127,6 +129,9 @@ struct SShaderCacheKey
 	std::vector<uint8> KeyBlob;
 	hash::SContentHash StaticKey;
 	SShaderFileRead Source;
+	// The builder version the KeyBlob was written with: what a record stored under it says, local-only
+	// included, whatever the builder source guard's switch says by then.
+	assets::SBuilderKeyVersion Version;
 };
 
 

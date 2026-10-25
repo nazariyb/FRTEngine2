@@ -174,27 +174,6 @@ bool ReadWholeFile (const std::filesystem::path& Path, TBuffer& Out)
 	return bRead;
 }
 
-// The bytes after a UTF-16 BOM, as canonical WTF-8. nullopt for an odd byte count: not UTF-16 at
-// all, or cut off.
-std::optional<FString> DecodeUtf16File (FStringView Bytes, bool bBigEndian)
-{
-	if (Bytes.Len() % 2u != 0u)
-	{
-		return std::nullopt;
-	}
-
-	const auto* bytes = reinterpret_cast<const unsigned char*>(Bytes.GetData());
-	std::vector<wchar_t> units(Bytes.Len() / 2u);
-	for (size_t i = 0u; i < units.size(); ++i)
-	{
-		const uint32 first = bytes[2u * i];
-		const uint32 second = bytes[2u * i + 1u];
-		units[i] = static_cast<wchar_t>(bBigEndian ? (first << 8u) | second : (second << 8u) | first);
-	}
-	return FString::FromWide(std::wstring_view(units.data(), units.size()));
-}
-
-
 // ---------------- System text ----------------
 
 // The system's OEM code page: what console tools write when nobody told them otherwise. Asked of
@@ -498,24 +477,6 @@ std::optional<FString> ReadFileText (const std::filesystem::path& Path, ETextFil
 		return text;
 	}
 	return DecodeTextFile(std::move(text));
-}
-
-std::optional<FString> DecodeTextFile (FString Bytes)
-{
-	if (Bytes.RemoveFromStart(Utf8Bom))
-	{
-		return Bytes;
-	}
-	const FStringView bytes = Bytes.View();
-	if (bytes.StartsWith("\xFF\xFE"))
-	{
-		return DecodeUtf16File(bytes.RightChop(2u), false);
-	}
-	if (bytes.StartsWith("\xFE\xFF"))
-	{
-		return DecodeUtf16File(bytes.RightChop(2u), true);
-	}
-	return Bytes;
 }
 
 std::optional<std::vector<uint8>> ReadFileBytes (const std::filesystem::path& Path)

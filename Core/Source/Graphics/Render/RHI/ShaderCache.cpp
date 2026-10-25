@@ -4,7 +4,7 @@
 #include <cstdio>
 #include <cstring>
 
-#include "Assets/BuildSystem.h"
+#include "Assets/BuilderGuard.h"
 #include "Assets/KeyWriter.h"
 #include "Log/Log.h"
 
@@ -259,8 +259,8 @@ bool CShaderCache::Store (const SShaderCacheKey& Key, const SShaderBinary& Binar
 
 	assets::SDdcRecord record;
 	record.Builder = ShaderDxilBuilder;
-	const assets::SBuilderKeyVersion version = GetShaderDxilKeyVersion();
-	record.Version = version.Version;
+	// The version the key was written with, never resolved again: the record must say what the key does.
+	record.Version = Key.Version.Version;
 	const std::span<const uint8> dxil = GetBlobBytes(Binary.Blob.Get());
 	record.Values.push_back({ FString(DxilValueName), {}, 0u, false, std::vector<uint8>(dxil.begin(), dxil.end()) });
 	if (!Binary.Log.IsEmpty())
@@ -272,7 +272,7 @@ bool CShaderCache::Store (const SShaderCacheKey& Key, const SShaderBinary& Binar
 	record.BuildMs = BuildMs;
 	// Debug information embeds the sources' absolute paths: this machine's, this checkout's (§14.5). Code
 	// changed without a version bump builds outputs that never leave this machine either (§7.3).
-	record.bDeterministic = !Compiler->HasDebugInfo() && !version.bLocalOnly;
+	record.bDeterministic = !Compiler->HasDebugInfo() && !Key.Version.bLocalOnly;
 
 	FString error;
 	if (!Settings.Cache->Put(ShaderCacheBucket, Key.StaticKey, *inputs, record, &error))
@@ -394,31 +394,27 @@ std::optional<SShaderCacheKey> CShaderCache::MakeKey (const SShaderCompileDesc& 
 		return fail("cannot read " + FString::FromPath(sourcePath));
 	}
 
-	const assets::SBuilderKeyVersion version = GetShaderDxilKeyVersion();
+	// Two DXC builds must never share keys: a compiler whose identity is not known in full keys nothing.
+	const SDxcIdentity& dxc = CShaderCompiler::GetDxcIdentity();
+	if (!dxc.Dxcompiler.IsValid() || !dxc.Dxil.IsValid() || !dxc.VersionText.IsValid())
+	{
+		return fail(FString::Format("DXC identity unknown (dxcompiler.dll {}, dxil.dll {}, ThirdParty/Dxc/VERSION.txt {})",
+			dxc.Dxcompiler.IsValid() ? "hashed" : "not found", dxc.Dxil.IsValid() ? "hashed" : "not loaded",
+			dxc.VersionText.IsValid() ? "hashed" : "not found"));
+	}
+
 	assets::CKeyWriter key;
-	key.WriteStr("Builder", ShaderDxilBuilder);
-	key.WriteGuid("Version", version.Version);
-	key.WriteGuid("BuildSystem", assets::BuildSystemVersion);
+	const assets::SBuilderKeyVersion version = assets::WriteBuilderKeyHeader(key, ShaderDxilBuilder);
 
 	key.BeginRecord("Target");
 	key.WriteStr("Rhi", "D3D12");
 	key.EndRecord();
 
-	const SDxcIdentity& dxc = CShaderCompiler::GetDxcIdentity();
 	key.BeginRecord("Compiler");
 	key.WriteStr("Name", "DXC");
-	if (dxc.Dxcompiler.IsValid())
-	{
-		key.WriteHash160("Dxcompiler", dxc.Dxcompiler);
-	}
-	if (dxc.Dxil.IsValid())
-	{
-		key.WriteHash160("Dxil", dxc.Dxil);
-	}
-	if (dxc.VersionText.IsValid())
-	{
-		key.WriteHash160("VersionText", dxc.VersionText);
-	}
+	key.WriteHash160("Dxcompiler", dxc.Dxcompiler);
+	key.WriteHash160("Dxil", dxc.Dxil);
+	key.WriteHash160("VersionText", dxc.VersionText);
 	key.EndRecord();
 
 	key.BeginRecord("Settings");
@@ -457,10 +453,7 @@ std::optional<SShaderCacheKey> CShaderCache::MakeKey (const SShaderCompileDesc& 
 		{
 			key.WriteHash160("DebugInfoRoot", hash::HashContent(FString::FromPath(Compiler->GetShaderRoot()).AsBytes()));
 		}
-		if (version.bLocalOnly)
-		{
-			key.WriteStr(assets::LocalSourceDiscriminator, version.LocalDiscriminator);
-		}
+		assets::WriteLocalSourceDiscriminator(key, version);
 		key.EndRecord();
 	}
 
@@ -474,6 +467,7 @@ std::optional<SShaderCacheKey> CShaderCache::MakeKey (const SShaderCompileDesc& 
 	result.KeyBlob = std::move(*blob);
 	result.StaticKey = assets::MakeStaticKey(result.KeyBlob);
 	result.Source = *source;
+	result.Version = version;
 	return result;
 }
 

@@ -11,6 +11,7 @@
 
 #include "BuildConfig.h"
 #include "Assets/BuilderGuard.h"
+#include "Assets/BuildSystem.h"
 #include "Assets/KeyWriter.h"
 #include "Containers/String.h"
 
@@ -43,7 +44,7 @@ hash::SContentHash MakeKey (const SBuilderKeyVersion& Version)
 	if (Version.bLocalOnly)
 	{
 		key.BeginRecord("Discriminators");
-		key.WriteStr(LocalSourceDiscriminator, Version.LocalDiscriminator);
+		WriteLocalSourceDiscriminator(key, Version);
 		key.EndRecord();
 	}
 	FString error;
@@ -75,7 +76,7 @@ TEST_F(BuilderGuardTest, TheTableHoldsTheShaderBuilderWithAVersionAndItsGlobs)
 	EXPECT_EQ(shader->CurrentSourceHash.Len(), 16u);
 	EXPECT_TRUE(IsLowerHex(shader->CurrentSourceHash)) << shader->CurrentSourceHash.CStr();
 	EXPECT_TRUE(FStringView(shader->Globs).Contains("Core/Source/Graphics/Render/RHI/ShaderCompiler.*")) << shader->Globs.CStr();
-	EXPECT_TRUE(FStringView(shader->Globs).Contains("Core/Source/Assets/KeyWriter.*")) << shader->Globs.CStr();
+	EXPECT_TRUE(FStringView(shader->Globs).Contains("Core/Source/Platform/TextDecoding.cpp")) << shader->Globs.CStr();
 
 	// Names are key content: exact.
 	EXPECT_EQ(FindBuilder("shader.dxil"), nullptr);
@@ -111,6 +112,34 @@ TEST_F(BuilderGuardTest, ChangedSourcesMakeTheOutputsLocalOnlyWithTheCurrentHash
 	EXPECT_NE(MakeKey(edited), MakeKey(committed));
 	EXPECT_NE(MakeKey(edited), MakeKey(otherEdit));
 	EXPECT_EQ(MakeKey(edited), MakeKey(ResolveBuilderKeyVersion(SomeVersion, "0123456789abcdef", "fedcba9876543210", true)));
+}
+
+// One way to start every builder's key: Builder, Version and BuildSystem from one resolved version, which
+// the builder keeps for its Discriminators and its record; the local-only field only when local-only.
+TEST_F(BuilderGuardTest, EveryBuildersKeyStartsWithTheHeaderOfOneResolvedVersion)
+{
+	CKeyWriter key;
+	const SBuilderKeyVersion version = WriteBuilderKeyHeader(key, "Shader.Dxil");
+	EXPECT_EQ(version, GetBuilderKeyVersion("Shader.Dxil"));
+	CKeyWriter expected;
+	expected.WriteStr("Builder", "Shader.Dxil");
+	expected.WriteGuid("Version", version.Version);
+	expected.WriteGuid("BuildSystem", BuildSystemVersion);
+	EXPECT_EQ(key.Finish(), expected.Finish());
+
+	CKeyWriter local;
+	local.BeginRecord("Discriminators");
+	WriteLocalSourceDiscriminator(local, ResolveBuilderKeyVersion(SomeVersion, "0123456789abcdef", "fedcba9876543210", true));
+	local.EndRecord();
+	CKeyWriter expectedLocal;
+	expectedLocal.BeginRecord("Discriminators");
+	expectedLocal.WriteStr(LocalSourceDiscriminator, "fedcba9876543210");
+	expectedLocal.EndRecord();
+	EXPECT_EQ(local.Finish(), expectedLocal.Finish());
+
+	CKeyWriter committed;
+	WriteLocalSourceDiscriminator(committed, ResolveBuilderKeyVersion(SomeVersion, "0123456789abcdef", "0123456789abcdef", true));
+	EXPECT_EQ(committed.Finish(), CKeyWriter().Finish());
 }
 
 TEST_F(BuilderGuardTest, TheSwitchTurnsTheGuardOff)

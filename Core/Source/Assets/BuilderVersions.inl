@@ -9,9 +9,13 @@
 //                        invalidates every output the builder ever made, on every machine; never an
 //                        integer, which two branches would bump to the same value
 //   CommittedSourceHash  16 hex digits: the hash of the builder's sources when VersionGuid was set,
-//                        written by FRT.bat check-builders --update, never by hand
+//                        written by FRT.bat check-builders --update, never by hand. A GUID is paired
+//                        with one hash, ever: a later change needs another new GUID
 //   globs                the builder's sources, engine-relative, ';'-separated: everything whose
-//                        change can change its output
+//                        change can change its output. The key infrastructure - the key encoder
+//                        (KeyWriter.*, ByteStream.h) and BuilderGuard.h - is a source of every builder
+//                        without being listed: FRT.bat adds it to each row (Premake/tools.lua,
+//                        keyInfrastructureGlobs), so no row can forget it
 //
 // Every argument is a string literal; adjacent literals are joined, as in C++, so a long glob list
 // splits over lines. Nothing else goes inside a row (no macros, no comments).
@@ -25,7 +29,7 @@
 //
 // No include guard: an X-macro table, included once per use with FRT_BUILDER defined.
 
-FRT_BUILDER("Shader.Dxil", "68a2fffa8b5b48dfaa459f36e36b73f2", "56f2f6a7a0e273a3",
+FRT_BUILDER("Shader.Dxil", "5abfc33aa94748d1b5110d8ee7928913", "702eb614b6234479",
 	"Core/Source/Graphics/Render/RHI/ShaderCompiler.*;"
 	"Core/Source/Graphics/Render/RHI/ShaderCache.*;"
-	"Core/Source/Assets/KeyWriter.*")
+	"Core/Source/Platform/TextDecoding.cpp")

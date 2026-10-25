@@ -94,7 +94,8 @@ FRT_CORE_API void ShowErrorMessage (FStringView Title, FStringView Text) noexcep
 // as stored. nullopt if the file cannot be read (missing, a directory, locked, over 2 GB).
 [[nodiscard]] FRT_CORE_API std::optional<FString> ReadFileText (const std::filesystem::path& Path, ETextFileEncoding Encoding = ETextFileEncoding::Detect);
 // What ReadFileText(Detect) makes of a file's bytes as stored (ReadFileText(Raw)): for a reader that
-// also hashes the stored bytes, so the hash and the text it uses come from one read.
+// also hashes the stored bytes, so the hash and the text it uses come from one read. In
+// Platform/TextDecoding.cpp, a source of the Shader.Dxil builder (its output is what DXC compiles).
 [[nodiscard]] FRT_CORE_API std::optional<FString> DecodeTextFile (FString Bytes);
 // A whole file as bytes (fonts, binary assets). A std::vector: usable before the memory pool
 // exists. nullopt as for ReadFileText.

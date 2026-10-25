@@ -71,7 +71,8 @@ struct SShaderBinary
 // What identifies the DXC a process compiles with (design §14.5): the BLAKE3-160 of dxcompiler.dll and
 // dxil.dll as loaded (dxil.dll validates and signs the DXIL, so it changes the output too) and of
 // ThirdParty/Dxc/VERSION.txt, which says which release was vendored. A hash is unset (IsValid false)
-// when its file was not found.
+// when its file was not found, or for dxil.dll when DXC could not load one; the shader cache then keys
+// nothing, as two different compilers must never share keys.
 struct SDxcIdentity
 {
 	hash::SContentHash Dxcompiler;

@@ -678,7 +678,7 @@ TEST_F(ShaderCacheTest, VerifyCompilesHitsAgainAndReportsDifferentBytesAsBuild00
 // (ShaderCache.cpp) and in ExpectedVersion below, or old records would be served under new meanings.
 TEST_F(ShaderCacheTest, TheShaderDxilKeySchemaIsFrozen)
 {
-	constexpr FStringLiteral ExpectedVersion = "68a2fffa8b5b48dfaa459f36e36b73f2";
+	constexpr FStringLiteral ExpectedVersion = "5abfc33aa94748d1b5110d8ee7928913";
 	EXPECT_EQ(GetShaderDxilBuilderVersion().ToString(), ExpectedVersion);
 
 	// Every field present: an entry point, defines, extra arguments, debug information.
@@ -699,10 +699,10 @@ TEST_F(ShaderCacheTest, TheShaderDxilKeySchemaIsFrozen)
 		"BuildSystem Guid",
 		"Builder Str",
 		"Compiler Record",
-		"Compiler.Dxcompiler Hash160",      // omitted only when the file was not found
-		"Compiler.Dxil Hash160",            // likewise
+		"Compiler.Dxcompiler Hash160",      // always: without all three hashes there is no key
+		"Compiler.Dxil Hash160",
 		"Compiler.Name Str",
-		"Compiler.VersionText Hash160",     // likewise
+		"Compiler.VersionText Hash160",
 		"Discriminators Record",            // baseline: absent (no debug information)
 		"Discriminators.DebugInfoRoot Hash160",
 		"Settings Record",

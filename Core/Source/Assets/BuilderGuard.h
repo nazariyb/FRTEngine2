@@ -5,6 +5,8 @@
 #include "Core.h"
 #include "CoreTypes.h"
 #include "Assets/AssetId.h"
+#include "Assets/BuildSystem.h"
+#include "Assets/KeyWriter.h"
 #include "Containers/String.h"
 
 
@@ -26,17 +28,24 @@
  * never reach a shared one (§7.4 "Store chain"). The missing bump itself is an error where it belongs:
  * FRT.bat check-builders, in FRT.bat verify and the opt-in pre-commit hook.
  *
- * Usage, in the code that writes a builder's KeyBlob:
+ * Usage, in the code that writes a builder's KeyBlob - one way for every builder, and the version
+ * resolved once per key (the guard's switch may flip on another thread between two calls):
  *
- *   const SBuilderKeyVersion version = GetBuilderKeyVersion("Shader.Dxil");
- *   key.WriteGuid("Version", version.Version);
- *   if (version.bLocalOnly)          // with the builder's other discriminators, if any
+ *   const SBuilderKeyVersion version = WriteBuilderKeyHeader(key, "Shader.Dxil");   // kept with the key
+ *   ...
+ *   if (version.bLocalOnly || bOwnDiscriminator)
  *   {
  *       key.BeginRecord("Discriminators");
- *       key.WriteStr(LocalSourceDiscriminator, version.LocalDiscriminator);
+ *       WriteLocalSourceDiscriminator(key, version);
+ *       ...                                                   // the builder's own discriminators
  *       key.EndRecord();
  *   }
+ *   // and when it stores what it built under that key:
+ *   record.Version = version.Version;
  *   record.bDeterministic = record.bDeterministic && !version.bLocalOnly;   // never leaves this machine
+ *
+ * This header is part of every builder's sources (Premake/tools.lua, keyInfrastructureGlobs): what it
+ * writes is in every key.
  *
  * Release builds compare nothing: they have no developer tools and write no shared store, and their
  * keys (the cook's, M12) come from committed code only.
@@ -98,4 +107,26 @@ struct SBuilderInfo
  */
 FRT_CORE_API void SetBuilderSourceGuardEnabled (bool bEnabled) noexcept;
 [[nodiscard]] FRT_CORE_API bool IsBuilderSourceGuardEnabled () noexcept;
+
+// The fields every builder's KeyBlob starts with - Builder, Version (GetBuilderKeyVersion(Builder))
+// and BuildSystem - and the version they were written with, for the builder to keep with its key
+// (see the usage above).
+inline SBuilderKeyVersion WriteBuilderKeyHeader (CKeyWriter& Key, FStringView Builder)
+{
+	SBuilderKeyVersion version = GetBuilderKeyVersion(Builder);
+	Key.WriteStr("Builder", Builder);
+	Key.WriteGuid("Version", version.Version);
+	Key.WriteGuid("BuildSystem", BuildSystemVersion);
+	return version;
+}
+
+// In the key's open Discriminators record: the local-only source hash when Version is local-only,
+// nothing otherwise.
+inline void WriteLocalSourceDiscriminator (CKeyWriter& Key, const SBuilderKeyVersion& Version)
+{
+	if (Version.bLocalOnly)
+	{
+		Key.WriteStr(LocalSourceDiscriminator, Version.LocalDiscriminator);
+	}
+}
 }

@@ -760,7 +760,8 @@ end
 -- GUID for different code all pair a recorded GUID with a second hash: BUILD003.
 --
 -- The source hash of a builder: 64-bit FNV-1a, as 16 lowercase hex digits, over every file its globs
--- match, in byte order of their engine-relative paths ('/'-separated), each as
+-- match and every file of the key infrastructure (keyInfrastructureGlobs, part of every builder), in
+-- byte order of their engine-relative paths ('/'-separated), each as
 --     path, NUL, decimal length of its content, NUL, its content
 -- with every carriage return removed from the content first, so a CRLF checkout and an LF one agree.
 -- Paths are part of it: a rename changes it. It only detects change: no key ever contains it, except
@@ -770,6 +771,18 @@ local builderTableFile = "Core/Source/Assets/BuilderVersions.inl"
 local builderHashesFile = "Intermediate/Generated/BuilderSourceHashes.gen.h"
 local pipelineSourcesFile = "Local/Build/PipelineSources.txt"
 local builderRecordFile = "Local/Build/BuilderVersionHashes.txt"
+
+-- The sources of every builder besides its own globs: the key encoder (CKeyWriter, and its byte
+-- encoding in ByteStream.h) and the header every builder writes its key's first fields and its
+-- local-only discriminator with (BuilderGuard.h). A change there can change or collapse the KeyBlob
+-- bytes of every builder, so it changes every builder's source hash, and the pipeline lint checks
+-- these files too. One list, so that no builder's row can forget it.
+local keyInfrastructureGlobs =
+{
+	"Core/Source/Assets/KeyWriter.*",
+	"Core/Source/Assets/ByteStream.h",
+	"Core/Source/Assets/BuilderGuard.h",
+}
 
 -- Text with its // and /* */ comments replaced by spaces (line breaks kept), so every byte stays
 -- where it was: string literals stay, a "//" inside one included.
@@ -941,15 +954,18 @@ local function isBytewiseLess(a, b)
 	return #a < #b
 end
 
--- The engine-relative paths of the files a builder's globs match, each once, in byte order.
+-- The engine-relative paths of the files a builder's globs and the key infrastructure's match, each
+-- once, in byte order.
 local function builderSources(row)
 	local files, seen = {}, {}
-	for _, glob in ipairs(row.Globs) do
-		for _, file in ipairs(os.matchfiles(rootpath(glob))) do
-			local relative = path.getrelative(ROOT_DIR, file)
-			if not seen[relative] then
-				seen[relative] = true
-				table.insert(files, relative)
+	for _, globs in ipairs({ row.Globs, keyInfrastructureGlobs }) do
+		for _, glob in ipairs(globs) do
+			for _, file in ipairs(os.matchfiles(rootpath(glob))) do
+				local relative = path.getrelative(ROOT_DIR, file)
+				if not seen[relative] then
+					seen[relative] = true
+					table.insert(files, relative)
+				end
 			end
 		end
 	end
