@@ -104,7 +104,7 @@ struct SShaderCacheCounters
 	uint64 Hits = 0u;               // programs read from the DDC
 	uint64 Misses = 0u;             // looked up and not found: compiled (and stored, if that worked)
 	uint64 Compiled = 0u;           // programs DXC compiled: the misses, and compiles without the cache
-	uint64 Uncached = 0u;           // ... of those, without the cache: none open, -Ddc:Shaders=0, no path-free key
+	uint64 Uncached = 0u;           // ... of those, without the cache: none open, no path-free key
 	uint64 Failed = 0u;             // compiles that failed (and wrote nothing)
 	uint64 NotStored = 0u;          // compiled after a miss, but not stored: a file changed meanwhile or could not
 	                                // be read, a write failed
@@ -115,7 +115,7 @@ struct SShaderCacheCounters
 
 struct SShaderCacheSettings
 {
-	// The store; null compiles every program with DXC (Release, -Ddc:Shaders=0, or no store opened).
+	// The store; null compiles every program with DXC (Release, or no store opened).
 	assets::CDerivedDataCache* Cache = nullptr;
 	// -Ddc:Verify: the share of hits compiled again and compared, in percent (0 to 100).
 	float VerifyPercent = 0.0f;
