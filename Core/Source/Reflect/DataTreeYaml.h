@@ -25,7 +25,10 @@ struct SDiagnostic;
  * - nesting at most CDataTreeBuilder::DefaultMaxDepth maps and sequences deep;
  * - every quote closes (yaml-cpp 0.8.0 accepts "a: 'open" followed by a line break at the end of the text).
  * A plain key spelled like YAML's null (`null: 1`, `~: 1`) is the text it spells; an empty key is an error. A null
- * value (empty, `~`, `null`, and yaml-cpp's YAML 1.2 core spellings `Null` and `NULL`) is a Null node.
+ * value (empty, `~` or `null`, as HDataNode::IsNull reads a tree from any builder) is a Null node; yaml-cpp's other
+ * YAML 1.2 core spellings `Null` and `NULL` are plain scalars of that text.
+ * A plain value cannot start with * & ! % @ or ` (an alias, anchor, tag, directive or reserved indicator): the error
+ * at such a value says to quote it (an Assets.yml glob that starts with `**` is the usual case).
  *
  * Scalar styles come from yaml-cpp's non-specific tags ('?' plain, '!' quoted or block) refined by the source byte
  * at the scalar's mark (' " | >). Positions are yaml-cpp's marks plus one: Line from 1, Column from 1 in bytes of
@@ -36,9 +39,21 @@ struct SDiagnostic;
  */
 namespace frt::reflect
 {
+// Why ParseYaml failed, for a caller that treats the two differently (E3 warns about a file the runtime's YAML::Load
+// still reads, and keeps its record).
+enum class EYamlFailure : uint8
+{
+	None,     // parsed
+	Syntax,   // not YAML that yaml-cpp reads (YAML::Load refuses it too); the error is yaml-cpp's
+	Subset,   // YAML that yaml-cpp reads to the end, outside FRT's subset: a duplicate key, an anchor, alias or tag, a
+	          // complex or empty key, a second document, nesting past the depth limit, an unclosed quote at the end
+};
+
 /**
  * Parses Text into Out (replacing it). On failure Out is empty and OutError gets Severity Error, Line, Column (from 1;
- * 0 when yaml-cpp gives no position) and Message; the caller fills File, Subject and Code. Never throws.
+ * 0 when yaml-cpp gives no position) and Message; the caller fills File, Subject and Code. OutFailure gets the kind
+ * (None on success). After a subset violation the parse reads on to the end of the document without building, so
+ * Subset means the rest is YAML too; when it is not, the result is Syntax with yaml-cpp's error. Never throws.
  */
-FRT_CORE_API bool ParseYaml (FStringView Text, CDataTree& Out, SDiagnostic* OutError = nullptr);
+FRT_CORE_API bool ParseYaml (FStringView Text, CDataTree& Out, SDiagnostic* OutError = nullptr, EYamlFailure* OutFailure = nullptr);
 }

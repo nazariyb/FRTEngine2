@@ -276,6 +276,147 @@ TEST(DataTreeYamlTest, NullValuesAndNullSpelledKeys)
 	EXPECT_TRUE(error.Message.Contains("empty")) << error.Message.CStr();
 }
 
+TEST(DataTreeYamlTest, NullIsOnlyEmptyTildeOrLowerCaseNull)
+{
+	// YAML 1.2's `Null` and `NULL` are plain text in FRT, as HDataNode::IsNull reads a tree from any builder.
+	const CDataTree tree = Parse(
+		"a: NULL\n"
+		"b: Null\n"
+		"c: [NULL, Null, null, ~]\n"
+		"d: NULL # a comment\n"
+		"e:\n"
+		"NULL: 1\n"
+		"f: {Null}\n"
+		"g:\n"
+		"  -\n"
+		"Null: 2\n"
+		"h:\n"
+		"  i:\n"
+		"j: {k: NULL, l: , m: Null}\n");
+	const HDataNode a = tree.Find("a");
+	EXPECT_EQ(a.GetKind(), EDataNodeKind::Scalar);
+	EXPECT_EQ(a.GetScalarStyle(), EScalarStyle::Plain);
+	EXPECT_FALSE(a.IsNull());
+	SDiagnostic error;
+	EXPECT_EQ(a.AsText(&error), std::optional<FStringView>("NULL")) << error.Message.CStr();
+	ExpectPosition(a, 1u, 4u);
+	EXPECT_EQ(tree.Find("b").AsText(), std::optional<FStringView>("Null"));
+	EXPECT_EQ(tree.Find("c.0").AsText(), std::optional<FStringView>("NULL"));
+	EXPECT_EQ(tree.Find("c.1").AsText(), std::optional<FStringView>("Null"));
+	EXPECT_EQ(tree.Find("c.2").GetKind(), EDataNodeKind::Null);
+	EXPECT_EQ(tree.Find("c.3").GetKind(), EDataNodeKind::Null);
+	EXPECT_EQ(tree.Find("d").AsText(), std::optional<FStringView>("NULL"));
+
+	// An empty value followed by a key spelled NULL or Null: the value is empty and the key is that text.
+	EXPECT_EQ(tree.Find("e").GetKind(), EDataNodeKind::Null);
+	EXPECT_EQ(tree.GetRoot().FindChild("NULL").AsInt64(), std::optional<int64>(1));
+	EXPECT_EQ(tree.Find("f").GetCount(), 1u);
+	EXPECT_EQ(tree.Find("f").GetKey(0u), "Null");
+	EXPECT_EQ(tree.Find("f").GetValue(0u).GetKind(), EDataNodeKind::Null);
+	EXPECT_EQ(tree.Find("g").GetCount(), 1u);
+	EXPECT_EQ(tree.Find("g.0").GetKind(), EDataNodeKind::Null);
+	EXPECT_EQ(tree.GetRoot().FindChild("Null").AsInt64(), std::optional<int64>(2));
+	EXPECT_EQ(tree.Find("h.i").GetKind(), EDataNodeKind::Null);
+	EXPECT_EQ(tree.Find("j.k").AsText(), std::optional<FStringView>("NULL"));
+	EXPECT_EQ(tree.Find("j.l").GetKind(), EDataNodeKind::Null);
+	EXPECT_EQ(tree.Find("j.m").AsText(), std::optional<FStringView>("Null"));
+
+	// The block map's end before the next key spelled NULL.
+	const CDataTree nested = Parse("outer:\n  inner:\nNULL: 3\n");
+	EXPECT_EQ(nested.Find("outer.inner").GetKind(), EDataNodeKind::Null);
+	EXPECT_EQ(nested.GetRoot().FindChild("NULL").AsInt64(), std::optional<int64>(3));
+	EXPECT_EQ(Parse("NULL").GetRoot().AsText(), std::optional<FStringView>("NULL"));
+}
+
+TEST(DataTreeYamlTest, FailuresTellSubsetViolationsFromSyntaxErrors)
+{
+	const auto failureOf = [] (FStringView Text, SDiagnostic* OutError = nullptr) {
+		CDataTree tree;
+		EYamlFailure failure = EYamlFailure::None;
+		EXPECT_FALSE(ParseYaml(Text, tree, OutError, &failure)) << Text.GetData();
+		return failure;
+	};
+
+	CDataTree tree;
+	EYamlFailure failure = EYamlFailure::Syntax;
+	EXPECT_TRUE(ParseYaml("a: 1\n", tree, nullptr, &failure));
+	EXPECT_EQ(failure, EYamlFailure::None);
+
+	// YAML that yaml-cpp reads to the end (the runtime's YAML::Load accepts it), outside FRT's subset.
+	SDiagnostic error;
+	EXPECT_EQ(failureOf("a: 1\nb: 2\na: 3\n", &error), EYamlFailure::Subset);
+	EXPECT_TRUE(error.Message.Contains("duplicate key")) << error.Message.CStr();
+	EXPECT_EQ(failureOf("a: &x 1\nb: *x\n"), EYamlFailure::Subset);
+	EXPECT_EQ(failureOf("a: !!str 1\n"), EYamlFailure::Subset);
+	EXPECT_EQ(failureOf("? [a, b]\n: 1\n"), EYamlFailure::Subset);
+	EXPECT_EQ(failureOf("a: 1\n: 2\n"), EYamlFailure::Subset);
+	EXPECT_EQ(failureOf("a: 1\n---\nb: 2\n"), EYamlFailure::Subset);
+	EXPECT_EQ(failureOf("a: 'open\n"), EYamlFailure::Subset);
+	FString balanced;
+	for (uint32 i = 0u; i <= CDataTreeBuilder::DefaultMaxDepth; ++i)
+	{
+		balanced += '[';
+	}
+	for (uint32 i = 0u; i <= CDataTreeBuilder::DefaultMaxDepth; ++i)
+	{
+		balanced += ']';
+	}
+	EXPECT_EQ(failureOf(balanced.View(), &error), EYamlFailure::Subset);
+	EXPECT_TRUE(error.Message.Contains("deeper")) << error.Message.CStr();
+
+	// Not YAML: yaml-cpp's own error.
+	EXPECT_EQ(failureOf("a: [1, 2\nb: 3\n"), EYamlFailure::Syntax);
+	EXPECT_EQ(failureOf("b: *nowhere\n"), EYamlFailure::Syntax);
+	EXPECT_EQ(failureOf("a: b: c\n"), EYamlFailure::Syntax);
+
+	// A subset violation, then a syntax error further on: Syntax, and the error reported is yaml-cpp's, since the
+	// file is not YAML for any reader.
+	EXPECT_EQ(failureOf("a: &x 1\nb: [1, 2\nc: 3\n", &error), EYamlFailure::Syntax);
+	EXPECT_FALSE(error.Message.Contains("anchor")) << error.Message.CStr();
+	EXPECT_GE(error.Line, 2u);
+	EXPECT_EQ(failureOf("a: !!str 1\nb: c: d\n", &error), EYamlFailure::Syntax);
+	EXPECT_EQ(error.Line, 2u);
+
+	// A second document is not read (YAML::Load reads the first one only), whatever it holds.
+	EXPECT_EQ(failureOf("a: 1\n---\nb: [1, 2\n"), EYamlFailure::Subset);
+}
+
+TEST(DataTreeYamlTest, ValuesStartingWithAnIndicatorAskToBeQuoted)
+{
+	// An unquoted glob that starts with '*' reads as an alias: the error says to quote it, at the '*'.
+	SDiagnostic error = ParseError("Quiet: [**/README.md]\n");
+	EXPECT_EQ(error.Line, 1u);
+	EXPECT_EQ(error.Column, 9u);
+	EXPECT_TRUE(error.Message.Contains("quote a value that starts with '*'")) << error.Message.CStr();
+	EXPECT_TRUE(error.Message.Contains("\"**/README.md\"")) << error.Message.CStr();
+
+	error = ParseError("Scan:\n  Exclude:\n    - **/Temp/**\n");
+	EXPECT_EQ(error.Line, 3u);
+	EXPECT_EQ(error.Column, 7u);
+	EXPECT_TRUE(error.Message.Contains("'*'")) << error.Message.CStr();
+
+	error = ParseError("a: &b\n");
+	EXPECT_TRUE(error.Message.Contains("quote a value that starts with '&'")) << error.Message.CStr();
+	error = ParseError("a: !important\n");
+	EXPECT_TRUE(error.Message.Contains("quote a value that starts with '!'")) << error.Message.CStr();
+	error = ParseError("a: @home\n");
+	EXPECT_EQ(error.Column, 4u);
+	EXPECT_TRUE(error.Message.Contains("quote a value that starts with '@'")) << error.Message.CStr();
+	error = ParseError("a: `cmd`\n");
+	EXPECT_TRUE(error.Message.Contains("quote a value that starts with '`'")) << error.Message.CStr();
+	error = ParseError("a: [* x]\n");
+	EXPECT_TRUE(error.Message.Contains("quote a value that starts with '*'")) << error.Message.CStr();
+
+	// Quoted, the same values are text.
+	const CDataTree tree = Parse("Quiet: [\"**/README.md\", '*.tmp']\na: '@home'\n");
+	EXPECT_EQ(tree.Find("Quiet.0").GetText(), "**/README.md");
+	EXPECT_EQ(tree.Find("Quiet.1").GetText(), "*.tmp");
+	EXPECT_EQ(tree.Find("a").GetText(), "@home");
+	// No hint where the indicator is not the cause.
+	error = ParseError("a: [1, 2\nb: 3\n");
+	EXPECT_FALSE(error.Message.Contains("quote a value")) << error.Message.CStr();
+}
+
 TEST(DataTreeYamlTest, BlankTextGivesAnEmptyTree)
 {
 	CDataTree tree = Parse("a: 1");
