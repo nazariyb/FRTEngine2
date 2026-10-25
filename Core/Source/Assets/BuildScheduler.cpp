@@ -121,7 +121,7 @@ CBuildScheduler::CBuildScheduler (jobs::CWorkerPool& InPool, FBuildStepResolver 
 	: Pool(InPool)
 	, Resolver(std::move(InResolver))
 	, MaxInFlight(Desc.MaxInFlight != 0u ? Desc.MaxInFlight : std::max(InPool.GetThreadCount(), 1u))
-	, CommitOrder(Desc.CommitOrder)
+	, CommitOrder(Desc.CommitOrder.value_or(InPool.GetCommitOrder()))
 {
 	CheckOwnerThread();
 }
@@ -724,7 +724,7 @@ uint32 CBuildScheduler::Tick ()
 	// request order (deterministic). Their outcomes are taken and their state released first; the
 	// callbacks run last, so a callback that makes or cancels requests sees a consistent scheduler.
 	std::vector<uint64> committing;
-	if (CommitOrder == EBuildCommitOrder::Completion)
+	if (CommitOrder == jobs::ECommitOrder::Completion)
 	{
 		committing.assign(ReadyToCommit.begin(), ReadyToCommit.end());
 	}
@@ -792,7 +792,7 @@ bool CBuildScheduler::PumpUntil (TFunctionRef<bool ()> Done, double TimeoutSecon
 			return false;
 		}
 		// Something to commit already (a callback may have made it so): go round again at once.
-		if (!ReadyToCommit.empty() && CommitOrder == EBuildCommitOrder::Completion)
+		if (!ReadyToCommit.empty() && CommitOrder == jobs::ECommitOrder::Completion)
 		{
 			continue;
 		}

@@ -310,7 +310,7 @@ void CWorkerPool::PushReadyLocked (TaskPtr Task)
 
 bool CWorkerPool::HasPumpableLocked () const noexcept
 {
-	if (Order == ECompletionOrder::Strict)
+	if (Order == ECommitOrder::Sequence)
 	{
 		return !Ready.empty() && Ready.front()->Sequence == NextToRetire;
 	}
@@ -320,9 +320,9 @@ bool CWorkerPool::HasPumpableLocked () const noexcept
 CWorkerPool::TaskPtr CWorkerPool::TakeNextCompletionLocked (uint64 Limit)
 {
 	TaskPtr task;
-	if (Order == ECompletionOrder::Strict)
+	if (Order == ECommitOrder::Sequence)
 	{
-		// Ready keeps filling while the pump runs; Limit stops it at what was submitted before. (Batch
+		// Ready keeps filling while the pump runs; Limit stops it at what was submitted before. (Completion
 		// order needs no check: the batch was taken from what had arrived when the pump began.)
 		if (Ready.empty() || Ready.front()->Sequence != NextToRetire || Ready.front()->Sequence >= Limit)
 		{
@@ -409,7 +409,7 @@ uint32 CWorkerPool::PumpCompletions (uint32 MaxCount)
 		limit = NextSequence;
 		buried.swap(Graveyard);
 		WakeCountAtPump = WakeCount;
-		if (Order == ECompletionOrder::Batch && Batch.empty())
+		if (Order == ECommitOrder::Completion && Batch.empty())
 		{
 			// This pump's batch: everything that has arrived, lowest sequence first. A pump nested in
 			// a completion continues the same batch.
@@ -499,11 +499,11 @@ bool CWorkerPool::PumpUntil (TFunctionRef<bool ()> Done, double TimeoutSeconds)
 	}
 }
 
-void CWorkerPool::SetCompletionOrder (ECompletionOrder InOrder)
+void CWorkerPool::SetCommitOrder (ECommitOrder InOrder)
 {
 	frt_assert(IsOwnerThread());
 	std::lock_guard lock(CompletionMutex);
-	if (InOrder == ECompletionOrder::Strict)
+	if (InOrder == ECommitOrder::Sequence)
 	{
 		// What a batch still holds goes back to wait its turn.
 		for (TaskPtr& task : Batch)

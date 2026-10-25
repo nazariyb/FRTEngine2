@@ -13,12 +13,7 @@
 #include "Containers/String.h"
 #include "Functional/FunctionRef.h"
 #include "Functional/UniqueFunction.h"
-
-
-namespace frt::jobs
-{
-class CWorkerPool;
-}
+#include "Jobs/WorkerPool.h"
 
 
 /**
@@ -61,9 +56,11 @@ class CWorkerPool;
  *
  * Commit order. Every request's OnComplete runs exactly once, in a Tick on the owner thread, with its
  * outcome - Succeeded, Failed or Cancelled - unless the scheduler is destroyed first. Interactively
- * (EBuildCommitOrder::Completion) each Tick commits every request that has finished, in sequence order;
- * deterministic runs and reproducible tools (EBuildCommitOrder::Sequence) commit strictly in request
- * order, a finished request waiting for every earlier one (§7.8 "Commit order", §8.10). OnComplete may
+ * (jobs::ECommitOrder::Completion) each Tick commits every request that has finished, in sequence order;
+ * deterministic runs and reproducible tools (jobs::ECommitOrder::Sequence) commit strictly in request
+ * order, a finished request waiting for every earlier one (§7.8 "Commit order", §8.10). The order is the
+ * pool's (CWorkerPool::GetCommitOrder) unless SBuildSchedulerDesc names one, so a deterministic host sets
+ * it once, on the pool, for builds and for the work it submits to the pool directly. OnComplete may
  * make, cancel or escalate requests.
  *
  * Memory and threads: std containers and the CRT heap only; every function on the owner thread. A step's
@@ -163,12 +160,6 @@ struct SBuildOutcome
 
 using FBuildCompletion = TUniqueFunction<void (const SBuildOutcome& Outcome)>;
 
-enum class EBuildCommitOrder : uint8
-{
-	Completion,   // each Tick commits what has finished, in request order (interactive)
-	Sequence,     // strictly in request order (deterministic runs, reproducible tools)
-};
-
 // Where a step is (tests, panels).
 enum class EBuildStepState : uint8
 {
@@ -184,7 +175,8 @@ struct SBuildSchedulerDesc
 {
 	// Steps on workers at once; 0: the pool's thread count.
 	uint32 MaxInFlight = 0u;
-	EBuildCommitOrder CommitOrder = EBuildCommitOrder::Completion;
+	// Unset: the pool's, when the scheduler is made (see the class comment).
+	std::optional<jobs::ECommitOrder> CommitOrder;
 };
 
 // Counts since construction, and the state now.
@@ -241,8 +233,8 @@ public:
 	// rounds until the pool has news; a Done() that something else turns true is seen within a second.
 	bool PumpUntil (TFunctionRef<bool ()> Done, double TimeoutSeconds = -1.0);
 
-	void SetCommitOrder (EBuildCommitOrder Order) noexcept { CommitOrder = Order; }
-	[[nodiscard]] EBuildCommitOrder GetCommitOrder () const noexcept { return CommitOrder; }
+	void SetCommitOrder (jobs::ECommitOrder Order) noexcept { CommitOrder = Order; }
+	[[nodiscard]] jobs::ECommitOrder GetCommitOrder () const noexcept { return CommitOrder; }
 
 	// No open request and no step.
 	[[nodiscard]] bool IsIdle () const noexcept { return Requests.empty() && Nodes.empty(); }
@@ -322,7 +314,7 @@ private:
 	jobs::CWorkerPool& Pool;
 	FBuildStepResolver Resolver;
 	uint32 MaxInFlight = 1u;
-	EBuildCommitOrder CommitOrder = EBuildCommitOrder::Completion;
+	jobs::ECommitOrder CommitOrder = jobs::ECommitOrder::Completion;
 
 	std::map<uint64, SNode> Nodes;               // by id: creation order
 	std::map<FString, uint64> NodesByKey;

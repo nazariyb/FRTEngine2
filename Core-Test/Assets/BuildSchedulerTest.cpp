@@ -5,7 +5,7 @@
 // forever; a failed or missing input fails its step without another run; cancelling a request cancels its
 // step only when nothing else needs it, a running step sees IsCancelled and its inputs nobody else needs go
 // too; every request's OnComplete runs exactly once, on the owner thread in a Tick, in request order with
-// EBuildCommitOrder::Sequence whatever finishes first; a step whose run the pool discards (a new epoch,
+// jobs::ECommitOrder::Sequence whatever finishes first; a step whose run the pool discards (a new epoch,
 // the module barrier) runs again, never beside its first run, and its request completes; and a random
 // graph of steps under random delays
 // always completes with the outputs a sequential build gives - an owner that waits by pumping never
@@ -638,11 +638,24 @@ TEST(BuildSchedulerTest, CancellingARequestReleasesTheInputsNothingElseNeeds)
 	EXPECT_TRUE(scheduler.IsIdle());
 }
 
+// One commit order for a host (§7.8): a scheduler takes the pool's unless its desc names one, so a
+// deterministic run sets it once, on the pool, for builds and for the work it submits directly.
+TEST(BuildSchedulerTest, TheCommitOrderIsThePoolsUnlessTheDescNamesOne)
+{
+	jobs::CWorkerPool pool(Threads(1));
+	EXPECT_EQ(CBuildScheduler(pool).GetCommitOrder(), jobs::ECommitOrder::Completion);
+	pool.SetCommitOrder(jobs::ECommitOrder::Sequence);
+	EXPECT_EQ(CBuildScheduler(pool).GetCommitOrder(), jobs::ECommitOrder::Sequence);
+	SBuildSchedulerDesc desc;
+	desc.CommitOrder = jobs::ECommitOrder::Completion;
+	EXPECT_EQ(CBuildScheduler(pool, nullptr, desc).GetCommitOrder(), jobs::ECommitOrder::Completion);
+}
+
 TEST(BuildSchedulerTest, SequenceOrderCommitsInRequestOrderWhateverFinishesFirst)
 {
-	for (const EBuildCommitOrder order : { EBuildCommitOrder::Sequence, EBuildCommitOrder::Completion })
+	for (const jobs::ECommitOrder order : { jobs::ECommitOrder::Sequence, jobs::ECommitOrder::Completion })
 	{
-		SCOPED_TRACE(order == EBuildCommitOrder::Sequence ? "Sequence" : "Completion");
+		SCOPED_TRACE(order == jobs::ECommitOrder::Sequence ? "Sequence" : "Completion");
 		SGate gates[3];
 		CRunLog log;
 		jobs::CWorkerPool pool(Threads(3));
@@ -666,7 +679,7 @@ TEST(BuildSchedulerTest, SequenceOrderCommitsInRequestOrderWhateverFinishesFirst
 			scheduler.Tick();
 		}
 		ASSERT_TRUE(scheduler.PumpUntil([&] { return committed.size() == 3u; }, TestTimeoutSeconds));
-		if (order == EBuildCommitOrder::Sequence)
+		if (order == jobs::ECommitOrder::Sequence)
 		{
 			EXPECT_EQ(committed, (std::vector<FString>{ "1", "2", "3" }));
 		}
@@ -841,7 +854,7 @@ TEST(BuildSchedulerTest, StepsTheModuleBarrierDrainedRunAgainAndTheirRequestsCom
 // random while - requested at random priorities: every request completes, every step the scheduler made
 // ran at most twice (its first run and the restart once its needs are built; a step nothing holds any more
 // goes, and one needed again later is made anew), and every output equals what a sequential build
-// computes. With EBuildCommitOrder::Sequence the commits come in request order every time.
+// computes. With jobs::ECommitOrder::Sequence the commits come in request order every time.
 TEST(BuildSchedulerTest, ARandomGraphOfStepsAlwaysCompletesWithTheSequentialOutputs)
 {
 	constexpr uint32 StepCount = 120u;
@@ -909,7 +922,7 @@ TEST(BuildSchedulerTest, ARandomGraphOfStepsAlwaysCompletesWithTheSequentialOutp
 		}
 		jobs::CWorkerPool pool(Threads(4));
 		SBuildSchedulerDesc desc;
-		desc.CommitOrder = EBuildCommitOrder::Sequence;
+		desc.CommitOrder = jobs::ECommitOrder::Sequence;
 		CBuildScheduler scheduler(pool, steps.MakeResolver(), desc);
 		SOutcomes outcomes;
 		std::vector<uint64> requests;

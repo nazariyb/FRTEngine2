@@ -41,9 +41,11 @@
  *
  * Completions. Finished tasks go into one multi-producer queue tagged with the sequence number
  * Submit gave them, and PumpCompletions runs them on the owner thread in sequence order: what has
- * arrived, sorted (ECompletionOrder::Batch, interactive), or strictly in submission order, a
- * completion waiting for every earlier task to finish or be dropped (ECompletionOrder::Strict:
- * deterministic runs and reproducible tools, §7.8 "Commit order"). Either way a pump runs only the
+ * arrived, sorted (ECommitOrder::Completion, interactive), or strictly in submission order, a
+ * completion waiting for every earlier task to finish or be dropped (ECommitOrder::Sequence:
+ * deterministic runs and reproducible tools, §7.8 "Commit order"). The build scheduler, which commits
+ * what runs here, takes the pool's order unless told otherwise (Assets/BuildScheduler.h), so a
+ * deterministic host sets it once, here. Either way a pump runs only the
  * completions of tasks submitted before it began: a completion that submits a quick follow-up (a
  * poll, a build that keeps discovering inputs) cannot keep one pump, and so one frame, going.
  *
@@ -75,7 +77,7 @@
  *
  * Threads and memory. Submit, Cancel, CreateCancelGroup, GetEpoch, GetStats, IsIdle and IsCancelled
  * may be called from any thread; PumpCompletions, WaitForCompletions, PumpUntil, BumpEpoch,
- * SetCompletionOrder, CancelAllAndDrain and the destructor only from the owner thread. Work runs on
+ * SetCommitOrder, CancelAllAndDrain and the destructor only from the owner thread. Work runs on
  * workers and so must never touch TLSF, TArray, TRefShared or the world (§8.8): std containers,
  * FString and the CRT heap. Completions run on the owner thread and may use anything, and so they
  * die there too, run or not: a completion the pool discards on another thread (its task cancelled
@@ -98,10 +100,12 @@ inline constexpr uint32 WorkPriorityCount = 3u;
 // The group of a task that belongs to none: Cancel never reaches it, CancelAllAndDrain does.
 inline constexpr uint64 NoCancelGroup = 0u;
 
-enum class ECompletionOrder : uint8
+// The order results are committed in on the owner thread (§7.8 "Commit order"): the pool's completions,
+// and the build scheduler's requests (Assets/BuildScheduler.h), one vocabulary for both.
+enum class ECommitOrder : uint8
 {
-	Batch,    // each pump runs the completions that have arrived, in sequence order (the default)
-	Strict,   // a completion runs only after every task submitted before it has finished or been dropped
+	Completion,   // what has finished, in sequence order (interactive; the default)
+	Sequence,     // strictly in sequence order: each waits for everything submitted or requested before it
 };
 
 struct SWorkerPoolDesc
@@ -167,7 +171,7 @@ public:
 
 	// Destroys the completions discarded off the owner thread since the last pump, then runs up to
 	// MaxCount completions that are ready, of tasks submitted before the call, in the order
-	// SetCompletionOrder says, and returns how many ran (discarded ones do not count). A completion
+	// SetCommitOrder says, and returns how many ran (discarded ones do not count). A completion
 	// may submit, cancel, bump the epoch or pump again; a completion it cancels or makes stale is
 	// discarded, not run, and what it submits completes in a later pump.
 	uint32 PumpCompletions (uint32 MaxCount = 0xFFFFFFFFu);
@@ -181,8 +185,8 @@ public:
 	// such a wait could never end.
 	bool PumpUntil (TFunctionRef<bool ()> Done, double TimeoutSeconds = -1.0);
 
-	void SetCompletionOrder (ECompletionOrder Order);
-	[[nodiscard]] ECompletionOrder GetCompletionOrder () const noexcept { return Order; }
+	void SetCommitOrder (ECommitOrder Order);
+	[[nodiscard]] ECommitOrder GetCommitOrder () const noexcept { return Order; }
 
 	// Starts a new epoch and returns it; completions of earlier epochs are discarded when pumped.
 	uint64 BumpEpoch () noexcept;
@@ -220,7 +224,7 @@ private:
 	[[nodiscard]] TaskPtr PopQueuedLocked ();
 
 	// Retirement: a task retires when its completion is taken by a pump or discarded, or, without
-	// one, when its work finished or it was dropped. Strict order runs a completion only when its
+	// one, when its work finished or it was dropped. Sequence order runs a completion only when its
 	// sequence is the oldest one that has not retired. CompletionMutex held.
 	void RetireLocked (uint64 Sequence);
 	void PushReadyLocked (TaskPtr Task);
@@ -240,7 +244,7 @@ private:
 	std::vector<std::thread> Threads;
 	std::atomic<uint64> NextCancelGroup = 1u;
 	std::atomic<uint64> Epoch = 1u;
-	ECompletionOrder Order = ECompletionOrder::Batch;   // owner thread, changed under CompletionMutex
+	ECommitOrder Order = ECommitOrder::Completion;   // owner thread, changed under CompletionMutex
 
 	// Lock order: QueueMutex before CompletionMutex, wherever both are held.
 	mutable std::mutex QueueMutex;
@@ -256,7 +260,7 @@ private:
 	mutable std::mutex CompletionMutex;
 	std::condition_variable CompletionEvent;    // the owner: WakeCount changed
 	std::vector<TaskPtr> Ready;                 // finished tasks with a completion: a heap, lowest sequence on top
-	std::deque<TaskPtr> Batch;                  // Batch order: the arrivals the current pump runs, by sequence
+	std::deque<TaskPtr> Batch;                  // Completion order: the arrivals the current pump runs, by sequence
 	std::vector<TaskPtr> Graveyard;             // discarded off the owner thread: destroyed by its next pump or drain
 	std::vector<uint64> RetiredAhead;           // retired sequences above NextToRetire: a heap, lowest on top
 	uint64 NextToRetire = 1u;                   // every sequence below it has retired

@@ -325,7 +325,7 @@ TEST(WorkerPool, CompletionsRunOnTheOwnerThreadAfterTheirWork)
 TEST(WorkerPool, EachPumpRunsTheArrivedCompletionsInSequenceOrder)
 {
 	CWorkerPool pool({ .ThreadCount = 4u });
-	ASSERT_EQ(pool.GetCompletionOrder(), ECompletionOrder::Batch);
+	ASSERT_EQ(pool.GetCommitOrder(), ECommitOrder::Completion);
 
 	constexpr uint32 TaskCount = 400u;
 	struct SRun
@@ -371,10 +371,10 @@ TEST(WorkerPool, EachPumpRunsTheArrivedCompletionsInSequenceOrder)
 	}
 }
 
-TEST(WorkerPool, StrictOrderRunsCompletionsInSubmissionOrder)
+TEST(WorkerPool, SequenceOrderRunsCompletionsInSubmissionOrder)
 {
 	CWorkerPool pool({ .ThreadCount = 4u });
-	pool.SetCompletionOrder(ECompletionOrder::Strict);
+	pool.SetCommitOrder(ECommitOrder::Sequence);
 
 	constexpr uint32 TaskCount = 300u;
 	std::vector<uint32> ran;
@@ -390,7 +390,7 @@ TEST(WorkerPool, StrictOrderRunsCompletionsInSubmissionOrder)
 	}
 }
 
-TEST(WorkerPool, StrictOrderHoldsLaterCompletionsBackUntilTheEarlierTaskFinishes)
+TEST(WorkerPool, SequenceOrderHoldsLaterCompletionsBackUntilTheEarlierTaskFinishes)
 {
 	// Both workers held: the first task's (which has a completion) until the end, the second's (which
 	// has none) until the queue below is in place.
@@ -398,7 +398,7 @@ TEST(WorkerPool, StrictOrderHoldsLaterCompletionsBackUntilTheEarlierTaskFinishes
 	SGate second;
 	std::atomic<uint32> holding = 0u;
 	CWorkerPool pool({ .ThreadCount = 2u });
-	pool.SetCompletionOrder(ECompletionOrder::Strict);
+	pool.SetCommitOrder(ECommitOrder::Sequence);
 
 	std::vector<uint32> ran;
 	pool.Submit(EWorkPriority::Normal, NoCancelGroup, [&] () { holding.fetch_add(1u); first.Wait(); },
@@ -461,11 +461,11 @@ TEST(WorkerPool, APumpRunsOnlyTheCompletionsOfTasksSubmittedBeforeItBegan)
 	// A chain: each completion submits the next step, whose work is done, and its completion waiting,
 	// before the completion returns. A pump that took whatever had arrived would run the whole chain
 	// in one call - one frame's pump turned into a loop for as long as the chain goes on.
-	for (const ECompletionOrder order : { ECompletionOrder::Batch, ECompletionOrder::Strict })
+	for (const ECommitOrder order : { ECommitOrder::Completion, ECommitOrder::Sequence })
 	{
-		const char* const orderName = order == ECompletionOrder::Strict ? "strict" : "batch";
+		const char* const orderName = order == ECommitOrder::Sequence ? "sequence" : "completion";
 		CWorkerPool pool({ .ThreadCount = 2u });
-		pool.SetCompletionOrder(order);
+		pool.SetCommitOrder(order);
 
 		constexpr uint32 StepCount = 8u;
 		uint32 ran = 0u;
@@ -963,10 +963,10 @@ TEST(WorkerPool, AnOwnerThreadWaitingOnAFakeSchedulerNeverDeadlocks)
 {
 	for (const uint32 threadCount : { 1u, 4u })
 	{
-		for (const ECompletionOrder order : { ECompletionOrder::Batch, ECompletionOrder::Strict })
+		for (const ECommitOrder order : { ECommitOrder::Completion, ECommitOrder::Sequence })
 		{
 			CWorkerPool pool({ .ThreadCount = threadCount });
-			pool.SetCompletionOrder(order);
+			pool.SetCommitOrder(order);
 			CFakeScheduler scheduler(pool, 200u);
 			scheduler.IssueAll();
 
