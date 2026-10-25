@@ -399,6 +399,53 @@ TEST(RegistryStoreTest, TwoFilesEqualUnderTheFoldMakeEdgesAndLookupsFailWithPath
 	EXPECT_EQ(GetDiagnostics(store.Live(), material2, Ref006).size(), 1u);
 }
 
+TEST(RegistryStoreTest, ACaseSensitiveMountFindsFilesAndFoldersByteExact)
+{
+	// /Project on a case-sensitive volume: its FILES and FOLDERS indices compare bytes, so the OS's two files
+	// stay two rows and a third spelling finds neither. /Engine stays case-insensitive (NTFS's rule). The
+	// portable lookups do not follow the volume: FindByPath still fails with PATH001.
+	CRegistryStore store;
+	SRegistryDelta delta;
+	delta.Mounts.push_back(MakeMount("Engine", EngineMountId));
+	delta.Mounts.push_back(MakeMount("Project", ProjectMountId, true));
+	AddTexture(delta, "/Project/T/Rock.png", 1, 1);
+	AddTexture(delta, "/Project/T/rock.png", 2, 2);
+	AddTexture(delta, "/Engine/A/White.png");
+	store.Commit(std::move(delta));
+	const CRegistryView& view = store.Live();
+
+	ASSERT_TRUE(view.FindMount("Project").has_value());
+	EXPECT_TRUE(view.FindMount("Project")->bCaseSensitive);
+	EXPECT_FALSE(view.FindMount("Engine")->bCaseSensitive);
+	const std::optional<uint32> upper = view.FindFileExact("/Project/T/Rock.png");
+	const std::optional<uint32> lower = view.FindFileExact("/Project/T/rock.png");
+	ASSERT_TRUE(upper.has_value() && lower.has_value());
+	EXPECT_NE(*upper, *lower);
+	EXPECT_EQ(view.FindFile("/Project/T/Rock.png"), upper);
+	EXPECT_EQ(view.FindFile("/Project/T/rock.png"), lower);
+	EXPECT_FALSE(view.FindFile("/Project/T/ROCK.png").has_value());
+	EXPECT_FALSE(view.FindFile("/Project/t/Rock.png").has_value());
+	EXPECT_TRUE(view.FindFolder("/Project/T").has_value());
+	EXPECT_FALSE(view.FindFolder("/Project/t").has_value());
+	EXPECT_EQ(view.FindFile("/Engine/a/WHITE.PNG"), view.FindFileExact("/Engine/A/White.png"));
+	EXPECT_EQ(view.FindFolder("/Engine/a"), view.FindFolder("/Engine/A"));
+
+	SDiagnostic error;
+	EXPECT_FALSE(view.FindByPath("/Project/T/Rock.png", &error).has_value());
+	EXPECT_EQ(error.Code, Path001);
+
+	// Removing one spelling leaves the other alone; the third spelling still names no file on this volume,
+	// while the portable lookup now resolves.
+	SRegistryDelta remove;
+	remove.FileRemoves.push_back("/Project/T/rock.png");
+	store.Commit(std::move(remove));
+	EXPECT_EQ(store.Live().FindFile("/Project/T/Rock.png"), upper);
+	EXPECT_FALSE(store.Live().FindFile("/Project/T/rock.png").has_value());
+	EXPECT_FALSE(store.Live().FindFile("/Project/T/ROCK.png").has_value());
+	EXPECT_EQ(FindRecord(store.Live(), "/Project/T/ROCK.png"), FindRecord(store.Live(), "/Project/T/Rock.png"));
+	EXPECT_TRUE(FindRecord(store.Live(), "/Project/T/Rock.png").IsValid());
+}
+
 TEST(RegistryStoreTest, LabelledTargetsResolveToSubEntriesAndHashesInFolderNamesStayPaths)
 {
 	CRegistryStore store;
@@ -849,6 +896,61 @@ TEST(RegistryStoreTest, AnExportedImageAdoptedByAFreshStoreDumpsIdentically)
 	merged.AdoptImage(std::move(projectImage), 7u);   // the project first: its edge into /Engine waits
 	merged.AdoptImage(std::move(engineImage), 8u);
 	EXPECT_EQ(Dump(merged.Live()), original);
+}
+
+TEST(RegistryStoreTest, EdgesByIdResolveInEitherOrderAndLeaveAnImageByPath)
+{
+	// An edge that names its target by SAssetId (a .meta reference from M4 on) waits unresolved until a
+	// record with that GUID arrives, then points at the sub-entry its SubId names.
+	const SGuid heroGuid = MakeProvisionalGuid("/Engine/Hero.gltf");
+	const SAssetId body { heroGuid, MakeSubId("mesh:Body") };
+	CRegistryStore store;
+	SRegistryDelta first = MakeMountsDelta();
+	first.FileUpserts.push_back(MakeFile("/Project/User.frtmat.yml"));
+	SRecordUpsert user = MakeRecord("/Project/User.frtmat.yml", asset_types::Material, "Material.Legacy");
+	SEdgeDecl byId;
+	byId.Target = body;
+	byId.Flags = EDepFlags::Hard | EDepFlags::Declared;
+	byId.FieldPath = "mesh";
+	user.Edges.push_back(byId);
+	first.RecordUpserts.push_back(std::move(user));
+	store.Commit(std::move(first));
+	std::vector<SDependencyView> edges = GetDependencies(store.Live(), FindRecord(store.Live(), "/Project/User.frtmat.yml"));
+	ASSERT_EQ(edges.size(), 1u);
+	EXPECT_TRUE(HasAnyFlags(edges[0].Flags, EDepFlags::Unresolved));
+	EXPECT_EQ(edges[0].TargetId, body);
+
+	SRegistryDelta second;
+	second.FileUpserts.push_back(MakeFile("/Engine/Hero.gltf"));
+	SRecordUpsert model = MakeRecord("/Engine/Hero.gltf", asset_types::Model, "Model.Gltf");
+	model.SubEntries.push_back(SSubEntryDecl { "mesh:Body", 0u, asset_types::Mesh, ERecordFlags::None, {} });
+	second.RecordUpserts.push_back(std::move(model));
+	store.Commit(std::move(second));
+	const CRegistryView& view = store.Live();
+	edges = GetDependencies(view, FindRecord(view, "/Project/User.frtmat.yml"));
+	ASSERT_EQ(edges.size(), 1u);
+	EXPECT_FALSE(HasAnyFlags(edges[0].Flags, EDepFlags::Unresolved));
+	EXPECT_EQ(edges[0].To, FindRecord(view, "/Engine/Hero.gltf#mesh:Body"));
+	EXPECT_EQ(GetReferencers(view, FindRecord(view, "/Engine/Hero.gltf#mesh:Body")).size(), 1u);
+
+	// The project's image names the engine record by its mount path, and resolves again once both are loaded.
+	const MountId project[] = { ProjectMountId };
+	const MountId engine[] = { EngineMountId };
+	SRegistryImage projectImage = view.ExportImage(project);
+	ASSERT_EQ(projectImage.Edges.size(), 1u);
+	EXPECT_FALSE(projectImage.Edges[0].Target.IsValid());
+	ASSERT_LT(projectImage.Edges[0].TargetPath, projectImage.Strings.size());
+	EXPECT_EQ(projectImage.Strings[projectImage.Edges[0].TargetPath], "/Engine/Hero.gltf#mesh:Body");
+	CRegistryStore merged;
+	merged.AdoptImage(std::move(projectImage), 1u);
+	edges = GetDependencies(merged.Live(), FindRecord(merged.Live(), "/Project/User.frtmat.yml"));
+	ASSERT_EQ(edges.size(), 1u);
+	EXPECT_TRUE(HasAnyFlags(edges[0].Flags, EDepFlags::Unresolved));
+	merged.AdoptImage(view.ExportImage(engine), 2u);
+	edges = GetDependencies(merged.Live(), FindRecord(merged.Live(), "/Project/User.frtmat.yml"));
+	ASSERT_EQ(edges.size(), 1u);
+	EXPECT_EQ(edges[0].To, FindRecord(merged.Live(), "/Engine/Hero.gltf#mesh:Body"));
+	EXPECT_EQ(edges[0].TargetId, body);
 }
 
 TEST(RegistryStoreTest, AnImageRecordOfAnUnknownTypeIsKeptSchemalessWithStaleTags)

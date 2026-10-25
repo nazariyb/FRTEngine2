@@ -199,4 +199,14 @@ TEST(RegistryBenchmarkTest, TheStoreMeetsItsBudgetsAt10kAssets)
 		memory.SubEntries / 1048576.0, memory.TypeTables / 1048576.0, memory.Graph / 1048576.0, memory.Names / 1048576.0,
 		memory.Strings / 1048576.0, memory.Labels / 1048576.0, memory.Problems / 1048576.0, memory.Indices / 1048576.0);
 	budget.Check("ResidentMemoryMB", memory.Total / 1048576.0, 15.0, "MB");
+
+	// For the snapshot work (H3 owns its budgets): exporting the tables and rebuilding a store from them.
+	start = platform::ReadTimestamp();
+	SRegistryImage image = view->ExportImage({});
+	const double exportMs = platform::TimestampToMilliseconds(platform::ReadTimestamp() - start);
+	CRegistryStore adopted;
+	adopted.AdoptImage(std::move(image), view->GetRevision());
+	std::printf("[registry] image: export %.2f ms, adopt (every index rebuilt, targets resolved, CSR built) %.2f ms\n",
+		exportMs, adopted.GetLastCommitStats().Milliseconds);
+	EXPECT_EQ(adopted.Live().GetRecordCount(), view->GetRecordCount());
 }
