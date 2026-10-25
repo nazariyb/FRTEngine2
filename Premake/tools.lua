@@ -477,10 +477,20 @@ local function copyFile(source, destination)
 	end
 end
 
--- Every file under SourceDir, to the same place under DestinationDir.
-local function copyFiles(sourceDir, destinationDir)
+-- Every file under SourceDir, to the same place under DestinationDir, except those whose path
+-- relative to SourceDir starts with one of the prefixes in Skipped ({ "Bin/" }), when given.
+local function copyFiles(sourceDir, destinationDir, skipped)
 	for _, file in ipairs(os.matchfiles(path.join(sourceDir, "**"))) do
-		copyFile(file, path.join(destinationDir, path.getrelative(sourceDir, file)))
+		local relative = path.getrelative(sourceDir, file)
+		local skip = false
+		for _, prefix in ipairs(skipped or {}) do
+			if relative:sub(1, #prefix) == prefix then
+				skip = true
+			end
+		end
+		if not skip then
+			copyFile(file, path.join(destinationDir, relative))
+		end
 	end
 end
 
@@ -1160,7 +1170,9 @@ newaction
 		copyFiles(path.join(project.Dir, "Content"), path.join(dir, "Content"))
 		copyFiles(path.join(project.Dir, "Config"), path.join(dir, "Config"))
 
-		copyFiles(rootpath("Core/Content/Shaders"), path.join(dir, "Engine/Content/Shaders"))
+		-- The shader sources, which Release compiles at start-up until the cook ships DXIL (M12); not the
+		-- stale Bin/ an old build left there, which nothing reads.
+		copyFiles(rootpath("Core/Content/Shaders"), path.join(dir, "Engine/Content/Shaders"), { "Bin/" })
 		copyFiles(rootpath("Core/Content/Fonts"), path.join(dir, "Engine/Content/Fonts"))
 		copyFile(rootpath("Core/Config/Engine.ini"), path.join(dir, "Engine/Config/Engine.ini"))
 

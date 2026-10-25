@@ -41,6 +41,9 @@ project "Core"
 		rootpath("Tools/Lint/*.py"),
 		rootpath("Tools/Unicode/*.py"),
 	}
+	-- Compiled shaders an old build wrote there: nothing reads them (programs come from the shader
+	-- cache, Graphics/Render/RHI/ShaderCache.h), so they stay out of the project and of packages.
+	removefiles { rootpath("%{prj.name}/Content/Shaders/Bin/**") }
 
 	filter "configurations:not *-Headless"
 		files
