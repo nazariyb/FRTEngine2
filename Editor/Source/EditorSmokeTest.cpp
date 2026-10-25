@@ -17,6 +17,7 @@
 #include "Entity.h"
 #include "WorldScene.h"
 #include "Graphics/Camera.h"
+#include "Graphics/Render/MaterialLibrary.h"
 #include "Graphics/Render/Renderer.h"
 #include "Platform/Platform.h"
 #include "UI/DebugTools.h"
@@ -97,6 +98,17 @@ bool Near (float A, float B, float Tolerance = 1e-4f)
 {
 	return std::abs(A - B) <= Tolerance;
 }
+
+// Path is Directory or below it (both made canonical as far as they exist, so spelling and case
+// do not matter).
+bool IsInside (const std::filesystem::path& Path, const std::filesystem::path& Directory)
+{
+	std::error_code ec;
+	const std::filesystem::path path = std::filesystem::weakly_canonical(Path, ec);
+	const std::filesystem::path directory = std::filesystem::weakly_canonical(Directory, ec);
+	const std::filesystem::path relative = path.lexically_relative(directory);
+	return !relative.empty() && *relative.begin() != "..";
+}
 }
 
 CEditorSmokeTest::CEditorSmokeTest (const config::CConfig& Config)
@@ -107,6 +119,7 @@ CEditorSmokeTest::CEditorSmokeTest (const config::CConfig& Config)
 	// overrides in the working directory, and the run would pass.
 	const std::optional<std::filesystem::path> configuredDir = dir.IsEmpty() ? std::nullopt : dir.TryToPath();
 	OutputDir = configuredDir.value_or(paths::GetLocalDir() / "SmokeTest");
+	bEditFiles = Config.Get("Editor", "SmokeTestEdits", false);
 	std::error_code ec;
 	std::filesystem::create_directories(OutputDir, ec);
 	std::ofstream(OutputDir / "SmokeTest.log", std::ios::trunc);
@@ -155,6 +168,115 @@ void CEditorSmokeTest::FlushWatcher (CEngine& Engine, const std::filesystem::pat
 {
 	assets::CFileWatcherService* watcher = Engine.GetFileWatcher();
 	Check(watcher != nullptr && watcher->Flush(Directory), FString::Format("the file watcher has seen {}", What));
+}
+
+void CEditorSmokeTest::BeginFileEdits (CEngine& Engine)
+{
+	if (!bEditFiles)
+	{
+		Log("  skip  file edits: not asked for ([Editor] SmokeTestEdits=1, on a scratch copy only)");
+		return;
+	}
+	// Never the engine checkout's files: the project must be a copy outside it (FRT.bat new), and
+	// the shaders a copy named by [Render] ShaderRoot.
+	const std::filesystem::path& engineDir = paths::GetEngineDir();
+	const bool bProjectOutside = !paths::GetProjectDir().empty() && !IsInside(paths::GetProjectDir(), engineDir);
+	const bool bShadersOutside = !IsInside(paths::GetShaderRootDir(), engineDir);
+	Check(bProjectOutside, "the project is a copy outside the engine checkout: " + FString::FromPath(paths::GetProjectDir()));
+	Check(bShadersOutside, "the shaders are a copy outside the engine checkout ([Render] ShaderRoot): " + FString::FromPath(paths::GetShaderRootDir()));
+	bCanEditFiles = bProjectOutside && bShadersOutside;
+	if (!bCanEditFiles)
+	{
+		Log("  refusing to edit files of the engine checkout");
+		return;
+	}
+
+	// The project's material with the first path, so that every run edits the same one.
+	const std::filesystem::path content = paths::GetProjectContentDir();
+	Engine.GetMaterials().ForEachMaterial([&] (const memory::TRefShared<graphics::SMaterial>& Material)
+	{
+		std::error_code ec;
+		if (!Material->SourcePath.empty() && IsInside(Material->SourcePath, content) && std::filesystem::is_regular_file(Material->SourcePath, ec)
+			&& (EditedMaterial == nullptr || Material->SourcePath < EditedMaterial->SourcePath))
+		{
+			EditedMaterial = Material.GetRawIgnoringLifetime();
+		}
+	});
+	Check(EditedMaterial != nullptr, "the project has a material loaded from its Content/");
+	WatchFiles(Engine, true);
+}
+
+void CEditorSmokeTest::EditMaterial (CEngine& Engine)
+{
+	if (!bCanEditFiles || EditedMaterial == nullptr)
+	{
+		return;
+	}
+	// Rewritten as the editor would save it: the whole document, one value changed.
+	graphics::SMaterial edited = *EditedMaterial;
+	edited.Roughness = EditedMaterial->Roughness < 0.5f ? 0.75f : 0.25f;
+	MaterialVersion = EditedMaterial->Version;
+	EditedRoughness = edited.Roughness;
+	const assets::ISerializer<graphics::SMaterial>* writer = Engine.GetMaterials().GetSerializers().PickWriter();
+	Check(writer != nullptr && writer->Write(edited.SourcePath, edited),
+		FString::Format("{} rewritten with roughness {}", FString::FromPath(edited.SourcePath.filename()), edited.Roughness));
+	FlushWatcher(Engine, edited.SourcePath.parent_path(), "the material's change");
+}
+
+void CEditorSmokeTest::CheckMaterialReloaded ()
+{
+	if (!bCanEditFiles || EditedMaterial == nullptr)
+	{
+		return;
+	}
+	Check(EditedMaterial->Version > MaterialVersion && EditedMaterial->Roughness == EditedRoughness,
+		FString::Format("{} reloaded: version {} -> {}, roughness {}", FString::FromPath(EditedMaterial->SourcePath.filename()),
+			MaterialVersion, EditedMaterial->Version, EditedMaterial->Roughness));
+}
+
+void CEditorSmokeTest::EditShaderInclude (CEngine& Engine)
+{
+	if (!bCanEditFiles)
+	{
+		return;
+	}
+	// The include the fewest programs read (then the first by path): the shortest rebuild.
+	graphics::rhi::CPipelineLibrary& pipelines = Engine.GetRenderer()->GetPipelines();
+	const std::filesystem::path shaderRoot = paths::GetShaderRootDir();
+	for (const auto& [file, programs] : pipelines.GetWatchedFiles())
+	{
+		if (FString::FromPath(file.extension()).Equals<ESearchCase::IgnoreCaseAscii>(".hlsli") && IsInside(file, shaderRoot)
+			&& (EditedInclude.empty() || programs < IncludePrograms))
+		{
+			EditedInclude = file;
+			IncludePrograms = programs;
+		}
+	}
+	if (EditedInclude.empty())
+	{
+		Check(false, "a program reads an include from the shaders' copy");
+		return;
+	}
+	HotReloads = pipelines.GetHotReloadCount();
+	// A comment changes the file's hash - so the shader cache misses and compiles - and none of its code.
+	{
+		std::ofstream include(EditedInclude, std::ios::app | std::ios::binary);
+		include << "\n// FRT editor smoke test: a comment changes this file's hash, not its code\n";
+		Check(include.good(), "a comment appended to " + FString::FromPath(EditedInclude.filename()));
+	}
+	FlushWatcher(Engine, shaderRoot, "the include's change");
+}
+
+void CEditorSmokeTest::CheckProgramsRebuilt (CEngine& Engine)
+{
+	if (!bCanEditFiles || EditedInclude.empty())
+	{
+		return;
+	}
+	const graphics::rhi::CPipelineLibrary& pipelines = Engine.GetRenderer()->GetPipelines();
+	Check(pipelines.GetHotReloadCount() == HotReloads + IncludePrograms && pipelines.GetErrors().empty(),
+		FString::Format("exactly the {} program(s) that read {} were rebuilt ({}), without errors ({})", IncludePrograms,
+			FString::FromPath(EditedInclude.filename()), pipelines.GetHotReloadCount() - HotReloads, pipelines.GetErrors().size()));
 }
 
 void CEditorSmokeTest::CheckCameraController ()
@@ -618,6 +740,19 @@ void CEditorSmokeTest::Update (CEditor& Editor, CEngine& Engine)
 		{ 1031u, "third such name", [] (CEditorSmokeTest& T, CEditor& E, CEngine&) { T.SelectNamedEntity(E, 2u); } },
 		{ 1040u, "third such name, shown", [] (CEditorSmokeTest& T, CEditor&, CEngine& G) { T.CaptureNamedEntity(G, 2u, "20_entity_name_3"); } },
 		{ 1041u, "names done", [] (CEditorSmokeTest&, CEditor& E, CEngine&) { E.GetTools().SelectEntity(-1); } },
+		// ---- [Editor] SmokeTestEdits: a scratch copy's files edited, and reloaded through the watcher ----
+		{ 1050u, "file edits", [] (CEditorSmokeTest& T, CEditor&, CEngine& G) { T.BeginFileEdits(G); } },
+		{ 1051u, "edit a material", [] (CEditorSmokeTest& T, CEditor&, CEngine& G) { T.EditMaterial(G); } },
+		{ 1060u, "material reloaded", [] (CEditorSmokeTest& T, CEditor&, CEngine&) { T.CheckMaterialReloaded(); } },
+		{ 1061u, "edit a shader include", [] (CEditorSmokeTest& T, CEditor&, CEngine& G) { T.EditShaderInclude(G); } },
+		{ 1070u, "programs rebuilt", [] (CEditorSmokeTest& T, CEditor&, CEngine& G)
+		{
+			T.CheckProgramsRebuilt(G);
+			if (T.bCanEditFiles)
+			{
+				T.WatchFiles(G, false);
+			}
+		} },
 	};
 
 	// Hitches: the longest frame between two steps goes into the log with the next step.

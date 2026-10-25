@@ -52,8 +52,13 @@ FRT_CORE_API std::filesystem::path GetProjectDir ();
 
 // ---- engine ----
 FRT_CORE_API std::filesystem::path GetEngineContentDir ();           // <engine>/Core/Content
-// Root of every HLSL source and of Shared/*.h.
-FRT_CORE_API std::filesystem::path GetShaderRootDir ();              // <engine>/Core/Content/Shaders
+// Root of every HLSL source and of Shared/*.h: <engine>/Core/Content/Shaders, unless overridden.
+FRT_CORE_API std::filesystem::path GetShaderRootDir ();
+// Dev builds: where the renderer reads its shaders from instead ([Render] ShaderRoot, which
+// CEngine::StartUp applies before the renderer exists), so that a scripted run can edit a copy of
+// them and never the engine checkout. Empty restores the default. The C++ side's Shared/*.h are
+// compiled in and do not follow.
+FRT_CORE_API void SetShaderRootOverride (const std::filesystem::path& Directory);
 
 // ---- project ----
 FRT_CORE_API std::filesystem::path GetProjectContentDir ();          // <project>/Content

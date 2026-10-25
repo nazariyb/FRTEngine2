@@ -18,6 +18,11 @@ namespace frt::config
 class CConfig;
 }
 
+namespace frt::graphics
+{
+struct SMaterial;
+}
+
 
 namespace frt::editor
 {
@@ -36,8 +41,13 @@ class CEditor;
  * (also where a run whose SmokeTestDir is not UTF-8 fails).
  *
  * A smoke test is a scripted run, so the file watcher starts disabled ([Assets] Watch=0,
- * Engine/Automation.h); the steps that need it - the input overrides - turn it on for themselves and
- * Flush it after they write, so that what they check does not depend on timing.
+ * Engine/Automation.h); the steps that need it turn it on for themselves and Flush it after they
+ * write, so that what they check does not depend on timing: the input overrides, and with
+ * [Editor] SmokeTestEdits=1 the steps that edit the project's files, for a scratch copy only (FRT.bat
+ * verify makes one with FRT.bat new, and a copy of the shaders it names with [Render] ShaderRoot):
+ * one of the project's materials is rewritten and must reload (its Version goes up, its new value
+ * shows), and one shader include gets a comment and exactly the programs that include it must be
+ * rebuilt. They refuse, and fail, when the project or the shaders are in the engine checkout.
  */
 class CEditorSmokeTest
 {
@@ -59,7 +69,12 @@ private:
 	void WatchFiles (CEngine& Engine, bool bOn);
 	// Everything the watcher has seen happen in Directory's root is told now (CFileWatcherService::Flush).
 	void FlushWatcher (CEngine& Engine, const std::filesystem::path& Directory, FStringView What);
-
+	// [Editor] SmokeTestEdits: checks that the files to edit are a scratch copy's, picks them, watches.
+	void BeginFileEdits (CEngine& Engine);
+	void EditMaterial (CEngine& Engine);
+	void CheckMaterialReloaded ();
+	void EditShaderInclude (CEngine& Engine);
+	void CheckProgramsRebuilt (CEngine& Engine);
 	// The Which-th entity (of the first three) whose name is not ASCII, selected in the Editor
 	// panel after checking the UI font has a glyph for each of its characters; Which 0 finds them.
 	void SelectNamedEntity (CEditor& Editor, uint32 Which);
@@ -83,5 +98,14 @@ private:
 	std::vector<int32> NamedEntities;          // edit world indices, for SelectNamedEntity
 	bool bCanReload = false;
 	bool bFinished = false;
+	// ---- [Editor] SmokeTestEdits ----
+	bool bEditFiles = false;                   // asked for
+	bool bCanEditFiles = false;                // and the files are a scratch copy's
+	const graphics::SMaterial* EditedMaterial = nullptr;   // the material library keeps it alive
+	uint32 MaterialVersion = 0u;
+	float EditedRoughness = 0.0f;
+	std::filesystem::path EditedInclude;
+	uint32 IncludePrograms = 0u;               // programs that read EditedInclude
+	uint64 HotReloads = 0u;                    // the pipeline library's count before the edit
 };
 }

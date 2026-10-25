@@ -17,6 +17,7 @@ namespace
 {
 project::SProjectDescriptor Project;
 bool bHasProject = false;
+std::filesystem::path ShaderRootOverride;
 
 std::filesystem::path CurrentDir ()
 {
@@ -135,7 +136,14 @@ std::filesystem::path GetEngineContentDir ()
 
 std::filesystem::path GetShaderRootDir ()
 {
-	return GetEngineContentDir() / "Shaders";
+	return ShaderRootOverride.empty() ? GetEngineContentDir() / "Shaders" : ShaderRootOverride;
+}
+
+void SetShaderRootOverride (const std::filesystem::path& Directory)
+{
+	std::error_code ec;
+	const std::filesystem::path absolute = std::filesystem::absolute(Directory, ec);
+	ShaderRootOverride = Directory.empty() ? std::filesystem::path() : (ec ? Directory : absolute).lexically_normal();
 }
 
 std::filesystem::path GetProjectContentDir ()

@@ -16,14 +16,17 @@ script, behind FRT.bat verify (Premake/tools.lua). A milestone branch merges onl
   4. AssetTool through FRT.bat assets: newguid --json exits with 0, and its standard output is JSON objects,
      one per line, and nothing else; -Project= names the project, and arguments reach AssetTool unchanged;
   5. the editor's smoke test (-Editor:SmokeTest=1) over Templates/Demo and Templates/Blank, in place, in
-     Debug and Development;
+     Debug and Development; then its steps that edit files, on a scratch copy of Templates/Demo made with
+     FRT.bat new and a copy of the shaders (Gate.smoke_scratch): a material rewritten must reload and a
+     shader include edited must rebuild exactly the programs that include it, through the file watcher;
   6. automation captures of Templates/Demo through the launcher, in Debug and in Development: one raster,
      compared byte for byte with its baseline, and one path traced, compared by relative RMSE - path
      tracing still varies a little from run to run, as its radiance cache inserts with GPU atomics, so a
      path-traced capture beyond the tolerance is taken again (PATH_TRACED_ATTEMPTS). Every process of the
      run shares one derived-data cache, emptied at the start: the first editor start compiles the shaders,
      the second start of each configuration must compile none (its "[shader] cache:" line says so), and
-     the captures, taken from the warm cache, must still match;
+     the captures, taken from the warm cache, must still match (step 5's scratch copy is not counted: debug
+     information names the shader root, a copy there, so it compiles its own);
   7. the Release package baseline: FRT.bat package of both templates into a short scratch directory, and
      the same two captures of each packaged game, against the Release baselines;
   8. git status --porcelain is empty at the end: nothing it ran changed a tracked file.
@@ -48,7 +51,8 @@ from another GPU or another recipe fails as such. What a run writes - logs, capt
 output, and a user-data directory (FRT_USER_DATA_DIR) of its own, new and empty, for every process it
 starts, so that no step sees what an earlier one left there, except the derived-data cache they share on
 purpose (FRT_DDC_DIR, Last/DDC) - goes to <engine>/Local/Verify/Last, emptied first; packages go to
-%TEMP%/frtv-<hash of the engine path>.
+%TEMP%/frtv-<hash of the engine path>, the scratch copy to %TEMP%/frts-<the same hash> (short paths: MSBuild
+fails on paths beyond MAX_PATH), deleted once its step passed.
 
 The captures pin what would otherwise depend on the machine's state or on wall-clock time: the render
 mode, a windowed window, and manual exposure. Auto exposure adapts by measured frame times, and the
@@ -67,6 +71,7 @@ import math
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -80,6 +85,11 @@ FRT = ROOT / 'FRT.bat'
 PREMAKE = ROOT / 'ThirdParty' / 'premake-5.0.0-beta2-windows' / 'premake5.exe'
 TEMPLATES = ('Demo', 'Blank')
 CAPTURED_IN_PLACE = ('Demo',)
+# The scratch copy's template, its name (FRT.bat new) and the configuration its smoke steps run in: one is
+# enough for steps that test the file watcher, and Development compiles the copy's shaders fastest.
+SCRATCH_TEMPLATE = 'Demo'
+SCRATCH_NAME = 'Scratch'
+SCRATCH_CONFIG = 'Development'
 CAPTURE_CONFIGS = ('Debug', 'Development')
 SMOKE_CONFIGS = ('Debug', 'Development')
 CAPTURE_FRAME = 400
@@ -219,6 +229,24 @@ def git(*arguments):
     return output_of(['git', '-C', ROOT, *arguments])
 
 
+def remove_tree(path):
+    """Deletes the directory Path with everything in it, read-only files included (git makes its objects
+    read-only, and a scratch copy is a git repository). Nothing when it does not exist."""
+    def make_writable_and_retry(function, failed, *_):
+        try:
+            os.chmod(failed, stat.S_IWRITE)
+            function(failed)
+        except OSError:
+            pass
+
+    if not Path(path).exists():
+        return
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=make_writable_and_retry)
+    else:
+        shutil.rmtree(path, onerror=make_writable_and_retry)
+
+
 # ---------------------------------------------------------------------------------------------------------
 # Images: PFM (the linear HDR capture) parsed here; PNG compared as bytes only
 
@@ -291,8 +319,9 @@ class Gate:
         self.baselines = Path(options.baselines) if options.baselines else ROOT / 'Local' / 'Verify' / 'Baselines'
         self.run_dir = ROOT / 'Local' / 'Verify' / 'Last'
         self.logs = self.run_dir / 'Logs'
-        self.package_root = Path(tempfile.gettempdir()) / (
-            'frtv-' + hashlib.sha1(os.path.normcase(str(ROOT)).encode('utf-8')).hexdigest()[:8])
+        engine_hash = hashlib.sha1(os.path.normcase(str(ROOT)).encode('utf-8')).hexdigest()[:8]
+        self.package_root = Path(tempfile.gettempdir()) / ('frtv-' + engine_hash)
+        self.scratch_root = Path(tempfile.gettempdir()) / ('frts-' + engine_hash)
         self.results = []    # (name, status, seconds, detail)
         self.timings = []    # (what, text)
         self.broken = set()  # what failed and so cannot be used: ('engine', config), (template, config)
@@ -387,11 +416,13 @@ class Gate:
         if not self.step(f'generate {name}', self.generate, f'--project={project}'):
             self.broken.add(('generate', name))
 
-    def build(self, log, *arguments):
+    def build(self, log, *arguments, env=None):
+        """FRT.bat build with Arguments, retried when the compiler crashed (FLAKY_COMPILER). Env: the
+        environment of every attempt; by default each gets a new user-data directory (env_for)."""
         retries = []
         for attempt in range(BUILD_ATTEMPTS):
             since = log.stat().st_size if log.exists() else 0
-            code, _ = run([FRT, 'build', *arguments], log, cwd=ROOT, env=self.env_for(log), timeout=BUILD_TIMEOUT)
+            code, _ = run([FRT, 'build', *arguments], log, cwd=ROOT, env=env or self.env_for(log), timeout=BUILD_TIMEOUT)
             if code == 0:
                 return f'after {len(retries)} retr{"y" if len(retries) == 1 else "ies"} ({", ".join(retries)})' \
                     if retries else ''
@@ -591,6 +622,64 @@ class Gate:
                              (': ' + '; '.join(f.strip() for f in failures[:3]) if failures else ''))
         shaders = self.check_shader_cache(config, f'smoke {name}', log)
         return f'{checks} checks passed' + (f', {skips} skipped' if skips else '') + f'; {shaders}; output in {output}'
+
+    # Lines of the smoke test's file edits that must have passed: without them the step tested nothing.
+    SCRATCH_EDIT_CHECKS = (
+        ('the material reload', re.compile(r'^\[smoke\]\s+ok\s+.* reloaded: version', re.MULTILINE)),
+        ('the shader rebuild', re.compile(r'^\[smoke\]\s+ok\s+exactly the \d+ program\(s\) that read ', re.MULTILINE)),
+    )
+
+    def smoke_scratch(self, log, config):
+        """The smoke steps that edit files, on a scratch copy (design 13.5, step 3), never on the engine
+        checkout: FRT.bat new copies Templates/Demo into a short directory of its own in %TEMP% (a git
+        repository, as every new project is), FRT.bat build builds its game module in Config, the shaders
+        are copied beside it, and the editor's smoke test runs over the copy with -Editor:SmokeTestEdits=1
+        and -Render:ShaderRoot=<the copy of the shaders>. Besides its usual steps it rewrites one of the
+        copy's materials and appends a comment to one shader include, and checks through the file watcher
+        (which a scripted run keeps off until those steps turn it on) that the material reloads and that
+        exactly the programs including that file are rebuilt. The three commands share one user-data
+        directory, where FRT.bat new registers this engine for the copy to find it. The copy is deleted
+        when the step passes, and kept for a look when it fails."""
+        root = self.scratch_root
+        remove_tree(root)
+        root.mkdir(parents=True, exist_ok=True)
+        env = self.env_for(log)
+        project_dir = root / SCRATCH_NAME
+        project = project_dir / f'{SCRATCH_NAME}.frtproject'
+
+        code, seconds = run([FRT, 'new', f'--name={SCRATCH_NAME}', f'--template={SCRATCH_TEMPLATE}', f'--location={root}'],
+                            log, cwd=ROOT, env=env, timeout=GENERATE_TIMEOUT)
+        self.timings.append((f'scratch copy of {SCRATCH_TEMPLATE} (FRT.bat new)', f'{seconds:.1f} s'))
+        if code != 0 or not project.exists():
+            errors = tail(log, lines=3, pattern=r'error|failed|cannot|new:')
+            raise StepFailed('FRT.bat new: ' + ('timed out' if code is None else
+                                                '; '.join(errors) if errors else f'exit code {code}'))
+        retries = self.build(log, f'--project={project}', f'--config={config}', env=env)
+
+        shaders = root / 'Shaders'
+        shutil.copytree(ROOT / 'Core' / 'Content' / 'Shaders', shaders, ignore=shutil.ignore_patterns('Bin'))
+
+        exe = BINARIES / f'Editor-{config}-Default.exe'
+        output = self.run_dir / 'Smoke' / f'{SCRATCH_NAME}-{config}'
+        code, seconds = run([exe, f'-Project={project}', '-Editor:SmokeTest=1', f'-Editor:SmokeTestDir={output}',
+                             '-Editor:SmokeTestEdits=1', f'-Render:ShaderRoot={shaders}'],
+                            log, cwd=project_dir, env=env, timeout=SMOKE_TIMEOUT)
+        self.timings.append((f'editor smoke test with file edits, scratch copy ({config})', f'{seconds:.1f} s'))
+        text = Path(log).read_bytes().decode('utf-8', errors='replace')
+        checks = len(re.findall(r'^\[smoke\]\s+ok\s', text, re.MULTILINE))
+        skips = len(re.findall(r'^\[smoke\]\s+skip\s', text, re.MULTILINE))
+        if code != 0:
+            failures = re.findall(r'^\[smoke\]\s+FAIL\s+(.*)$', text, re.MULTILINE)
+            raise StepFailed(('timed out' if code is None else f'exit code {code}') +
+                             (': ' + '; '.join(f.strip() for f in failures[:3]) if failures else '') +
+                             f' (the copy is kept: {root})')
+        missing = [what for what, pattern in self.SCRATCH_EDIT_CHECKS if not pattern.search(text)]
+        if missing:
+            raise StepFailed(f'no check of {" or ".join(missing)} passed (the copy is kept: {root})')
+        remove_tree(root)
+        return (f'{checks} checks passed' + (f', {skips} skipped' if skips else '') +
+                ', the material reloaded and the shader programs rebuilt' + (f'; build {retries}' if retries else '') +
+                f'; output in {output}')
 
     # ---- captures ----
 
@@ -864,7 +953,8 @@ class Gate:
                 for name in TEMPLATES:
                     self.step(f'smoke {name} in place ({config})', self.smoke, name, config,
                               needs=[('engine', config), (name, config)])
-            self.skip('smoke on a scratch copy', 'skipped (M2)')
+            self.step(f'smoke on a scratch copy ({SCRATCH_CONFIG})', self.smoke_scratch, SCRATCH_CONFIG,
+                      needs=[('engine', SCRATCH_CONFIG)])
             for config in CAPTURE_CONFIGS:
                 self.captures(config)
             # Not a milestone's: a renderer fix first (CAPTURE_ARGUMENTS says which).

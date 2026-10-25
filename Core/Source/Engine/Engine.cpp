@@ -1,6 +1,9 @@
 #include "Engine/Engine.h"
 
 #include <cstdio>
+#include <filesystem>
+#include <optional>
+#include <system_error>
 
 #if defined(_WINDOWS)
 #include <Windows.h>
@@ -155,10 +158,28 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 
 	// 7. Renderer, and the display modes the adapter offers. Its programs come from the shader cache:
 	//    -Ddc:Verify=<percent> compiles that share of the hits again and compares the bytes (BUILD002
-	//    on a difference). Materials and programs hot reload through the file watcher.
+	//    on a difference). Dev builds read the shaders from [Render] ShaderRoot when it is set, a copy
+	//    a scripted run may edit (EnginePaths.h). Materials and programs hot reload through the file
+	//    watcher.
 	graphics::rhi::SShaderCacheSettings shaderCache;
 	shaderCache.Cache = DerivedData.get();
 	shaderCache.VerifyPercent = Config.Get("Ddc", "Verify", 0.0f);
+#if FRT_WITH_DEV_TOOLS
+	if (const FString shaderRoot = Config.Get("Render", "ShaderRoot", ""); !shaderRoot.IsEmpty())
+	{
+		const std::optional<std::filesystem::path> root = shaderRoot.TryToPath();
+		std::error_code ec;
+		if (root && std::filesystem::is_directory(*root, ec))
+		{
+			paths::SetShaderRootOverride(*root);
+			log::Info("shader", "sources from {} ([Render] ShaderRoot)", FString::FromPath(paths::GetShaderRootDir()));
+		}
+		else
+		{
+			log::Warning("shader", "[Render] ShaderRoot \"{}\" is no directory; the engine's shaders are used", FString::FromUtf8Lossy(shaderRoot));
+		}
+	}
+#endif
 	Graphics->Renderer = std::make_unique<graphics::CRenderer>(Graphics->Window.get(), *WorkerPool, shaderCache, FileWatcher.get());
 	Graphics->Renderer->Resize(display.FullscreenMode == EFullscreenMode::Fullscreen);
 	DisplayOptions = graphics::GetDisplayOptions(Graphics->Renderer->GetAdapter());
@@ -213,6 +234,9 @@ void CEngine::ShutDown ()
 	// later) end theirs first. Ends every subscription left.
 	InputActions.SetFileWatcher(nullptr);
 	FileWatcher.reset();
+#if FRT_WITH_DEV_TOOLS
+	paths::SetShaderRootOverride({});
+#endif
 	Clock.reset();
 	// After the renderer, whose decodes it may still be running: drains (drops what is queued, waits
 	// for what runs, destroys every completion left) and joins the threads.
