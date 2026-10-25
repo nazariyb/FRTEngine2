@@ -9,6 +9,7 @@
 #include "BuildConfig.h"
 #include "EnginePaths.h"
 #include "Assets/DerivedDataCache.h"
+#include "Assets/FileWatcherService.h"
 #include "ECS/CoreComponents.h"
 #include "Graphics/GraphicsComponents.h"
 #include "Graphics/Render/MaterialLibrary.h"
@@ -103,6 +104,13 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 	}
 #endif
 
+	// 4c. The file watcher, in dev builds, headless too: the systems that reload files subscribe to it
+	//     (Assets/FileWatcherService.h). It watches nothing until they do - no thread, no handle - and
+	//     nothing at all with [Assets] Watch=0.
+#if FRT_WITH_DEV_TOOLS
+	FileWatcher = std::make_unique<assets::CFileWatcherService>(assets::SFileWatcherSettings::FromConfig(Config));
+#endif
+
 	// 5. Real-time clock.
 	Clock = std::make_unique<CTimer>();
 	Clock->Reset();
@@ -195,6 +203,9 @@ void CEngine::ShutDown ()
 	}
 #endif
 	HeadlessMaterials.reset();
+	// After the renderer and the headless materials, whose libraries subscribe to it; ends every
+	// subscription left.
+	FileWatcher.reset();
 	Clock.reset();
 	// After the renderer, whose decodes it may still be running: drains (drops what is queued, waits
 	// for what runs, destroys every completion left) and joins the threads.
@@ -234,6 +245,12 @@ float CEngine::BeginFrame ()
 
 	Input.Update(deltaSeconds);
 #if FRT_WITH_DEV_TOOLS
+	// Files that changed on disk and have settled: their subscribers reload them now, before this
+	// frame's input is evaluated and before the host's simulation and extraction see the frame.
+	if (FileWatcher)
+	{
+		FileWatcher->Pump();
+	}
 	InputActions.ReloadModifiedActions();
 	InputActions.ReloadModifiedActionMaps();
 #endif

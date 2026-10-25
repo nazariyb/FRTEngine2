@@ -26,6 +26,7 @@ class CWindow;
 namespace frt::assets
 {
 class CDerivedDataCache;
+class CFileWatcherService;
 }
 
 namespace frt::graphics
@@ -75,8 +76,8 @@ struct SViewToRender
  * Owns every subsystem and brings them up and down explicitly, in dependency order (Gregory,
  * GEA "Subsystem Start-Up and Shut-Down") - never through static construction order:
  *   StartUp:  components, config (+ command line, user settings), memory, worker pool, derived-data
- *             cache (dev builds), clock, window, renderer, input actions, UI; a tool host stops after
- *             the worker pool (SEngineDesc::bToolHost).
+ *             cache and file watcher (dev builds), clock, window, renderer, input actions, UI; a tool
+ *             host stops after the worker pool (SEngineDesc::bToolHost).
  *   ShutDown: the exact reverse, after the GPU is idle.
  * Headless builds skip the window, renderer and UI, and resolve materials through a library
  * of their own; the class layout is the same either way.
@@ -106,7 +107,8 @@ public:
 	// ---- frame ----
 	// Dispatches every pending OS message. False once the application should quit.
 	bool PumpMessages ();
-	// Ticks the real-time clock, updates input, runs the worker completions that have arrived, waits
+	// Ticks the real-time clock, updates input, pumps the file watcher (dev builds), runs the worker
+	// completions that have arrived, waits
 	// for this frame's GPU slot and opens the UI frame. Returns the real time elapsed since the
 	// previous frame, in seconds.
 	float BeginFrame ();
@@ -133,6 +135,15 @@ public:
 	// the store could not be opened (said once at start-up; everything is then built as if it were
 	// empty). Valid from StartUp to ShutDown.
 	assets::CDerivedDataCache* GetDerivedDataCache () { return DerivedData.get(); }
+	// The one file watcher (Assets/FileWatcherService.h): what reloads materials, input actions, shaders
+	// and the editor's INI files subscribes to, instead of polling. BeginFrame pumps it, so callbacks run
+	// on the main thread during BeginFrame (before the input actions are evaluated). In Debug and
+	// Development, headless too, and never null there - [Assets] Watch=0 keeps it from watching
+	// anything (CFileWatcherService::SetEnabled). Null in Release, which reloads nothing, and in tool
+	// hosts. Valid from StartUp until ShutDown destroys it, right after the renderer: subscribers
+	// destroyed later (CEngine's own members, the hosts' objects) unsubscribe before ShutDown or just
+	// drop their handles.
+	assets::CFileWatcherService* GetFileWatcher () { return FileWatcher.get(); }
 	// The renderer's library, or a standalone one when headless.
 	graphics::CMaterialLibrary& GetMaterials ();
 
@@ -171,6 +182,9 @@ private:
 	// the pool's drain. A member in every build, so the layout does not depend on FRT_WITH_DEV_TOOLS
 	// or FRT_HEADLESS.
 	std::unique_ptr<assets::CDerivedDataCache> DerivedData;
+	// Dev builds only, created after the derived-data cache; destroyed in ShutDown after the renderer
+	// (whose libraries subscribe) and before the worker pool. A member in every build, like DerivedData.
+	std::unique_ptr<assets::CFileWatcherService> FileWatcher;
 	std::unique_ptr<CTimer> Clock;
 	// Window, renderer, UI. One opaque block defined in Engine.cpp: headless builds compile none
 	// of them, yet the class layout must not depend on FRT_HEADLESS.

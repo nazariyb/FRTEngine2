@@ -1,0 +1,1674 @@
+#include "Assets/FileWatcherService.h"
+
+#include <algorithm>
+#include <optional>
+#include <system_error>
+#include <unordered_map>
+#include <utility>
+
+#include "Asserts.h"
+#include "Config/Config.h"
+#include "Log/Log.h"
+#include "Platform/FileSystem.h"
+#include "Platform/Process.h"
+#include "Platform/Thread.h"
+#include "Platform/Timestamp.h"
+#include "Profiler/CpuProfiler.h"
+
+
+namespace frt::assets
+{
+namespace
+{
+constexpr FStringLiteral LogCategory = "watch";
+
+// Flush's fence files: never told to anyone, wherever they appear.
+constexpr FStringLiteral FencePrefix = ".frt-fence-";
+
+uint64 MsToTicks (uint32 Ms) noexcept
+{
+	return platform::GetTimestampFrequency() * Ms / 1000u;
+}
+
+// Ticks from Earlier to Later; 0 when Later is not after it (timestamps of events taken in a batch may
+// be older than the pump's "now", never the other way round, but nothing here may underflow).
+uint64 Elapsed (uint64 Earlier, uint64 Later) noexcept
+{
+	return Later > Earlier ? Later - Earlier : 0u;
+}
+
+FString JoinPath (FStringView Parent, FStringView Child)
+{
+	if (Parent.IsEmpty())
+	{
+		return FString(Child);
+	}
+	if (Child.IsEmpty())
+	{
+		return FString(Parent);
+	}
+	FString path(Parent);
+	path.AppendChar('/');
+	path.Append(Child);
+	return path;
+}
+
+FStringView GetName (FStringView Path)
+{
+	const uint32 slash = Path.FindLast('/');
+	return slash == FStringView::NotFound ? Path : Path.RightChop(slash + 1u);
+}
+
+// How many names a root-relative path has ("a/b/c": 3, "": 0).
+uint32 CountNames (FStringView Path)
+{
+	return Path.IsEmpty() ? 0u : Path.CountOccurrences("/") + 1u;
+}
+
+// Path without its first Count names ("a/b/c", 1: "b/c"); empty when it has no more. Paths and their
+// keys (folded or not) have the same names in the same places, so this cuts both the same way.
+FStringView DropNames (FStringView Path, uint32 Count)
+{
+	uint32 start = 0u;
+	for (uint32 i = 0u; i < Count; ++i)
+	{
+		const uint32 slash = Path.Find('/', start);
+		if (slash == FStringView::NotFound)
+		{
+			return {};
+		}
+		start = slash + 1u;
+	}
+	return Path.RightChop(start);
+}
+
+// Key is Prefix or a path below it (both root-relative keys); an empty Prefix holds everything.
+bool IsAtOrBelow (FStringView Key, FStringView Prefix)
+{
+	if (Prefix.IsEmpty())
+	{
+		return true;
+	}
+	return Key.StartsWith(Prefix) && (Key.Len() == Prefix.Len() || Key.Get(Prefix.Len()) == '/');
+}
+
+bool IsFence (FStringView Path)
+{
+	return GetName(Path).StartsWith(FStringView(FencePrefix));
+}
+
+// Absolute and lexically normal, without a trailing separator (a volume root keeps its own).
+std::filesystem::path NormalizePath (const std::filesystem::path& Path)
+{
+	std::error_code ec;
+	std::filesystem::path path = std::filesystem::absolute(Path, ec);
+	if (ec)
+	{
+		path = Path;
+	}
+	path = path.lexically_normal();
+	if (!path.has_filename() && path.has_relative_path())
+	{
+		path = path.parent_path();
+	}
+	return path;
+}
+
+// The names of Path below Root, '/' separated ("" for Root itself), or nullopt when Path is not at or
+// below Root. Both normalized; names compare ignoring case unless the root's directory is
+// case-sensitive.
+std::optional<FString> GetRelativePath (const std::filesystem::path& Path, const std::filesystem::path& Root, bool bCaseSensitive)
+{
+	auto pathIt = Path.begin();
+	for (auto rootIt = Root.begin(); rootIt != Root.end(); ++rootIt, ++pathIt)
+	{
+		if (pathIt == Path.end())
+		{
+			return std::nullopt;
+		}
+		const FString a = FString::FromPath(*pathIt);
+		const FString b = FString::FromPath(*rootIt);
+		if (bCaseSensitive ? a != b : !a.Equals<ESearchCase::IgnoreCase>(b))
+		{
+			return std::nullopt;
+		}
+	}
+	FString relative;
+	for (; pathIt != Path.end(); ++pathIt)
+	{
+		const FString name = FString::FromPath(*pathIt);
+		if (!name.IsEmpty())
+		{
+			if (!relative.IsEmpty())
+			{
+				relative.AppendChar('/');
+			}
+			relative.Append(name);
+		}
+	}
+	return relative;
+}
+
+// The expected-write table's key: the absolute path, generic, folded (NTFS compares names so).
+FString MakeExpectedKey (const std::filesystem::path& Path)
+{
+	return FString::FromPath(NormalizePath(Path), EPathStyle::Generic).FoldCase();
+}
+
+std::optional<hash::SContentHash> HashFileStable (const std::filesystem::path& Path)
+{
+	hash::CContentHasher hasher;
+	const platform::EStableRead read = platform::ReadFileChunksStable(Path, [&hasher] (std::span<const uint8> Bytes) { hasher.Update(Bytes); });
+	if (read != platform::EStableRead::Stable)
+	{
+		return std::nullopt;
+	}
+	return hasher.Finalize();
+}
+}
+
+
+SFileWatcherSettings SFileWatcherSettings::FromConfig (const config::CConfig& Config)
+{
+	SFileWatcherSettings settings;
+	settings.bEnabled = Config.Get("Assets", "Watch", settings.bEnabled);
+	settings.VcsSettleMs = Config.Get("AssetsEditor", "VcsSettleMs", settings.VcsSettleMs);
+	return settings;
+}
+
+
+/**
+ * The service's state. Paths inside are relative to their root, '/' separated, spelled as the OS
+ * reported them; keys are the same paths folded (FString::FoldCase) on case-insensitive directories,
+ * which is what pending entries, pairing and filters compare.
+ */
+struct CFileWatcherService::SState
+{
+	// What happened at one path since it was last told (§5.4 "Stage 3": the level-triggered dirty set).
+	enum class EEntry : uint8
+	{
+		File,               // a file, or a path of unknown type
+		DirectoryRemoved,   // a directory removed or moved out (its subtree with it)
+		DirectoryMoved,     // a directory renamed or moved within the root, from MovedFrom
+	};
+
+	struct SPending
+	{
+		FString Path;          // the latest spelling
+		FString FirstPath;     // the spelling at the first event of the window (a case-only rename differs)
+		FString MovedFrom;     // a paired move's source; empty without one
+		uint64 FirstSeen = 0u;
+		uint64 LastSeen = 0u;
+		uint64 NextProbe = 0u;   // a writer held it: not probed again before this
+		uint64 HeldSince = 0u;
+		uint32 ProbeFailures = 0u;
+		EEntry Type = EEntry::File;
+		bool bExistedBefore = false;    // inferred from its first event: anything but a creation
+		bool bExistsNow = false;        // from its last event; the stat at settle has the last word
+		bool bMovedFromExisted = false; // the move's source was there before the window (else a temporary file)
+		bool bMaybeDirectory = false;   // removed without an entry type (no extended information)
+		bool bMovedAway = false;        // its file moved to another path, whose entry tells the move; kept so
+		                                // that a file landing here afterwards is a Modified (S4's backup rename)
+		bool bWarnedHeld = false;
+	};
+
+	using FPendingList = std::vector<std::pair<FString, SPending>>;
+
+	enum class ERootState : uint8
+	{
+		Unarmed,   // watching is off
+		Missing,   // the directory does not exist (or cannot be watched yet): looked for every RootPollMs
+		Armed,
+		Lost,      // the platform lost it; it arms it again by itself and reports an Overflow
+	};
+
+	struct SRenamedOld
+	{
+		FString Path;
+		FString Key;
+		platform::SFileIdentity Identity;
+		uint64 Time = 0u;
+		bool bDirectory = false;
+		bool bValid = false;
+	};
+
+	struct SRoot
+	{
+		std::filesystem::path Path;   // normalized, as its first subscriber spelled it
+		bool bCaseSensitive = false;
+		bool bCaseKnown = false;
+		ERootState State = ERootState::Unarmed;
+		uint32 WatcherId = 0u;
+		uint64 NextPoll = 0u;
+		bool bRescanPending = false;
+		uint64 RescanSince = 0u;
+		bool bArmFailureLogged = false;
+		uint32 SubscriptionCount = 0u;
+		std::unordered_map<FString, SPending, SStringHash, SStringEqual> Pending;   // by key
+		SRenamedOld LastRenamedOld;   // for pairing by adjacency where events carry no identity
+	};
+
+	// A Removed or RenamedOld waiting PairWindowMs for the Added or RenamedNew of the same identity.
+	struct SRemoval
+	{
+		SRoot* Root = nullptr;
+		FString Path;
+		FString Key;
+		platform::SFileIdentity Identity;
+		uint64 Time = 0u;
+		bool bDirectory = false;
+		// A directory's: what was pending below it, re-pathed if the directory turns out to have moved
+		// within the root; and the removals its files that had moved in from elsewhere leave behind,
+		// pending once it turns out to have gone for good (ExpireRemovals).
+		FPendingList Below;
+		FPendingList LeftBehind;
+	};
+
+	struct SSubscription
+	{
+		uint64 Id = 0u;   // 0: removed during a delivery, compacted when it ends
+		SRoot* Root = nullptr;
+		std::filesystem::path Directory;   // normalized, as the subscriber spelled it
+		FString SubPath;      // Directory relative to the root
+		FString SubKey;
+		FString RegionPath;   // SubPath joined with the filter's Prefix: the root-relative region it watches
+		FString RegionKey;
+		std::vector<FString> Extensions;
+		FFileChangesCallback Callback;
+	};
+
+	// A change that has settled, before it is cut to each subscription.
+	struct SReady
+	{
+		SRoot* Root = nullptr;
+		EFileChange Kind = EFileChange::Modified;
+		bool bDirectory = false;
+		bool bMaybeDirectory = false;
+		FString Path;
+		FString Key;
+		FString OldPath;
+		FString OldKey;
+	};
+
+	struct SExpected
+	{
+		hash::SContentHash Hash;
+		uint64 Size = 0u;
+		uint64 Deadline = 0u;
+	};
+
+	// Flush's fence: entries of Root seen no later than Time are told regardless of the windows.
+	struct SFence
+	{
+		const SRoot* Root = nullptr;
+		uint64 Time = 0u;
+	};
+
+	SFileWatcherSettings Settings;
+	std::unique_ptr<platform::IFileWatcher> Watcher;
+	const uint64 OwnerThread;
+
+	uint64 SettleTicks = 0u;
+	uint64 MaxLatencyTicks = 0u;
+	uint64 RemoveGraceTicks = 0u;
+	uint64 PairTicks = 0u;
+	uint64 VcsSettleTicks = 0u;
+	uint64 VcsPollTicks = 0u;
+	uint64 HeldWarningTicks = 0u;
+	uint64 RootPollTicks = 0u;
+
+	std::vector<std::unique_ptr<SRoot>> Roots;
+	std::unordered_map<uint32, SRoot*> RootsByWatcherId;
+	std::vector<SSubscription> Subscriptions;
+	std::vector<SSubscription> AddedDuringDelivery;
+	uint32 DeliveryDepth = 0u;
+	uint32 RemovedDuringDelivery = 0u;
+
+	std::vector<SRemoval> Removals;
+	std::unordered_map<FString, SExpected, SStringHash, SStringEqual> Expected;
+	std::unordered_map<FString, uint64, SStringHash, SStringEqual> SeenFences;   // fence name -> event time
+	uint64 FenceCounter = 0u;
+
+	TUniqueFunction<bool ()> VcsBusy;
+	bool bVcsBusy = false;
+	uint64 LastVcsPoll = 0u;
+
+	bool bHolding = false;          // a burst, an overflow or a busy VCS: everything waits for quiet
+	uint32 ActivityEvents = 0u;     // events since the last SettleMs pause
+	uint64 LastEventTime = 0u;
+
+	SFileWatcherStats Stats;
+	std::vector<platform::SFileEvent> EventBuffer;
+
+	SState (const SFileWatcherSettings& InSettings, std::unique_ptr<platform::IFileWatcher> InWatcher)
+		: Settings(InSettings)
+		, Watcher(std::move(InWatcher))
+		, OwnerThread(platform::GetCurrentThreadId())
+	{
+		SettleTicks = MsToTicks(Settings.SettleMs);
+		MaxLatencyTicks = MsToTicks(Settings.MaxLatencyMs);
+		RemoveGraceTicks = MsToTicks(Settings.RemoveGraceMs);
+		PairTicks = MsToTicks(Settings.PairWindowMs);
+		VcsSettleTicks = MsToTicks(Settings.VcsSettleMs);
+		VcsPollTicks = MsToTicks(Settings.VcsPollMs);
+		HeldWarningTicks = MsToTicks(Settings.HeldWarningMs);
+		RootPollTicks = MsToTicks(Settings.RootPollMs);
+	}
+
+	void CheckOwner () const
+	{
+		frt_assert(platform::GetCurrentThreadId() == OwnerThread)
+	}
+
+	[[nodiscard]] FString MakeKey (const SRoot& Root, FStringView Path) const
+	{
+		return Root.bCaseSensitive ? FString(Path) : FString(Path).FoldCase();
+	}
+
+	[[nodiscard]] std::filesystem::path MakeFullPath (const SRoot& Root, FStringView Path) const
+	{
+		return Path.IsEmpty() ? Root.Path : (Root.Path / Path.ToPath()).make_preferred();
+	}
+
+	// ---------------- Roots ----------------
+
+	SRoot* FindRoot (const std::filesystem::path& Directory, FString* OutRelative)
+	{
+		SRoot* best = nullptr;
+		for (const std::unique_ptr<SRoot>& root : Roots)
+		{
+			std::optional<FString> relative = GetRelativePath(Directory, root->Path, root->bCaseSensitive);
+			if (relative && (best == nullptr || CountNames(*relative) < CountNames(*OutRelative)))
+			{
+				best = root.get();
+				*OutRelative = std::move(*relative);
+			}
+		}
+		return best;
+	}
+
+	// Arms Root if watching is on and its directory exists; else leaves it Missing (looked for later)
+	// or Unarmed. True when it is armed now.
+	bool ArmRoot (SRoot& Root, uint64 Now)
+	{
+		if (!Settings.bEnabled)
+		{
+			Root.State = ERootState::Unarmed;
+			return false;
+		}
+		const std::optional<platform::SFileStat> stat = platform::Stat(Root.Path);
+		if (!stat || !stat->bDirectory)
+		{
+			Root.State = ERootState::Missing;
+			Root.NextPoll = Now + RootPollTicks;
+			return false;
+		}
+		if (!Watcher)
+		{
+			Watcher = platform::CreateFileWatcher(Settings.Watcher);
+		}
+		FString error;
+		const uint32 id = Watcher->Arm(Root.Path, &error);
+		if (id == 0u)
+		{
+			if (!Root.bArmFailureLogged)
+			{
+				log::Warning(LogCategory, "cannot watch {}: {}; trying again every {} ms", FString::FromPath(Root.Path), error,
+					Settings.RootPollMs);
+				Root.bArmFailureLogged = true;
+			}
+			Root.State = ERootState::Missing;
+			Root.NextPoll = Now + RootPollTicks;
+			return false;
+		}
+		Root.WatcherId = id;
+		Root.State = ERootState::Armed;
+		Root.bArmFailureLogged = false;
+		RootsByWatcherId[id] = &Root;
+		if (!Root.bCaseKnown)
+		{
+			if (const std::optional<platform::SVolumeInfo> volume = platform::QueryVolumeInfo(Root.Path))
+			{
+				Root.bCaseSensitive = volume->bCaseSensitive;
+			}
+			Root.bCaseKnown = true;
+			RefreshSubscriptionKeys(Root);
+		}
+		log::Verbose(LogCategory, "watching {}", FString::FromPath(Root.Path));
+		return true;
+	}
+
+	void DisarmRoot (SRoot& Root)
+	{
+		if (Root.WatcherId != 0u)
+		{
+			if (Watcher)
+			{
+				Watcher->Disarm(Root.WatcherId);
+			}
+			RootsByWatcherId.erase(Root.WatcherId);
+			Root.WatcherId = 0u;
+		}
+		Root.State = ERootState::Unarmed;
+		Root.Pending.clear();
+		Root.bRescanPending = false;
+		Root.LastRenamedOld = {};
+		std::erase_if(Removals, [&Root] (const SRemoval& Removal) { return Removal.Root == &Root; });
+	}
+
+	// Roots without subscriptions go (never during a delivery: SReady entries point at them).
+	void ReleaseUnusedRoots ()
+	{
+		if (DeliveryDepth > 0u)
+		{
+			return;
+		}
+		for (size_t i = Roots.size(); i-- > 0u;)
+		{
+			if (Roots[i]->SubscriptionCount == 0u)
+			{
+				DisarmRoot(*Roots[i]);
+				Roots.erase(Roots.begin() + static_cast<std::ptrdiff_t>(i));
+			}
+		}
+	}
+
+	// Subscribed directories that did not exist (or could not be watched) yet.
+	void PollRoots (uint64 Now)
+	{
+		for (const std::unique_ptr<SRoot>& root : Roots)
+		{
+			if (root->State == ERootState::Missing && Now >= root->NextPoll && ArmRoot(*root, Now))
+			{
+				// It appeared: whatever is in it is news to its subscribers.
+				MarkRescan(*root, Now, false);
+			}
+		}
+	}
+
+	void MarkRescan (SRoot& Root, uint64 Time, bool bHold)
+	{
+		Root.bRescanPending = true;
+		Root.RescanSince = Root.RescanSince > Time ? Root.RescanSince : Time;
+		if (bHold)
+		{
+			StartHolding();
+		}
+	}
+
+	void StartHolding ()
+	{
+		if (!bHolding)
+		{
+			bHolding = true;
+			++Stats.Bursts;
+		}
+	}
+
+	// ---------------- Subscriptions ----------------
+
+	void ComputeSubscriptionKeys (SSubscription& Subscription, FStringView Prefix) const
+	{
+		Subscription.SubKey = MakeKey(*Subscription.Root, Subscription.SubPath);
+		Subscription.RegionPath = JoinPath(Subscription.SubPath, Prefix);
+		Subscription.RegionKey = MakeKey(*Subscription.Root, Subscription.RegionPath);
+	}
+
+	// The root's case sensitivity became known: keys made before used the default.
+	void RefreshSubscriptionKeys (SRoot& Root)
+	{
+		const auto refresh = [this, &Root] (SSubscription& Subscription)
+		{
+			if (Subscription.Root == &Root)
+			{
+				const FString prefix(DropNames(Subscription.RegionPath, CountNames(Subscription.SubPath)));
+				ComputeSubscriptionKeys(Subscription, prefix);
+			}
+		};
+		std::for_each(Subscriptions.begin(), Subscriptions.end(), refresh);
+		std::for_each(AddedDuringDelivery.begin(), AddedDuringDelivery.end(), refresh);
+	}
+
+	[[nodiscard]] static bool MatchesExtension (const SSubscription& Subscription, FStringView Path)
+	{
+		if (Subscription.Extensions.empty())
+		{
+			return true;
+		}
+		const FStringView name = GetName(Path);
+		for (const FString& extension : Subscription.Extensions)
+		{
+			if (name.EndsWith<ESearchCase::IgnoreCase>(extension))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	[[nodiscard]] static bool MatchesFile (const SSubscription& Subscription, FStringView Key, FStringView Path)
+	{
+		return IsAtOrBelow(Key, Subscription.RegionKey) && MatchesExtension(Subscription, Path);
+	}
+
+	// Some live subscription of the root would be told about this entry: only those are stat'ed,
+	// probed and hashed.
+	[[nodiscard]] bool IsRelevant (const SRoot& Root, const SPending& Entry, FStringView Key) const
+	{
+		const FString movedKey = Entry.MovedFrom.IsEmpty() ? FString() : MakeKey(Root, Entry.MovedFrom);
+		for (const SSubscription& subscription : Subscriptions)
+		{
+			if (subscription.Id == 0u || subscription.Root != &Root)
+			{
+				continue;
+			}
+			if (MatchesFile(subscription, Key, Entry.Path) || (!movedKey.IsEmpty() && MatchesFile(subscription, movedKey, Entry.MovedFrom))
+				|| (Entry.bMaybeDirectory && IsAtOrBelow(subscription.RegionKey, Key)))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	// ---------------- Events ----------------
+
+	void PumpEvents ()
+	{
+		if (!Watcher)
+		{
+			return;
+		}
+		EventBuffer.clear();
+		Watcher->TakeEvents(EventBuffer);
+		for (const platform::SFileEvent& event : EventBuffer)
+		{
+			Ingest(event);
+		}
+		// Removals older than the pair window can no longer pair.
+		if (LastEventTime > PairTicks)
+		{
+			ExpireRemovals(LastEventTime - PairTicks - 1u);
+		}
+	}
+
+	// Removals seen at Time or earlier will not pair any more: a directory's leaves its left-behind
+	// removals pending.
+	void ExpireRemovals (uint64 Time)
+	{
+		for (size_t i = 0u; i < Removals.size();)
+		{
+			SRemoval& removal = Removals[i];
+			if (removal.Time > Time)
+			{
+				++i;
+				continue;
+			}
+			for (auto& [key, entry] : removal.LeftBehind)
+			{
+				removal.Root->Pending.try_emplace(std::move(key), std::move(entry));
+			}
+			Removals.erase(Removals.begin() + static_cast<std::ptrdiff_t>(i));
+		}
+	}
+
+	void Ingest (const platform::SFileEvent& Event)
+	{
+		++Stats.Events;
+		const auto rootIt = RootsByWatcherId.find(Event.RootId);
+		if (rootIt == RootsByWatcherId.end())
+		{
+			return;   // disarmed meanwhile
+		}
+		SRoot& root = *rootIt->second;
+		const uint64 time = Event.Timestamp != 0u ? Event.Timestamp : platform::ReadTimestamp();
+
+		// Activity: more than BurstEvents events without a SettleMs pause is a VCS operation.
+		if (Elapsed(LastEventTime, time) > SettleTicks)
+		{
+			ActivityEvents = 0u;
+		}
+		++ActivityEvents;
+		LastEventTime = time > LastEventTime ? time : LastEventTime;
+		if (!bHolding && ActivityEvents > Settings.BurstEvents)
+		{
+			StartHolding();
+			log::Info(LogCategory, "more than {} changes at once (a checkout or a sync?): waiting for {} ms of quiet", Settings.BurstEvents,
+				Settings.VcsSettleMs);
+		}
+
+		switch (Event.Kind)
+		{
+		case platform::EFileEventKind::Overflow:
+			++Stats.Overflows;
+			root.State = ERootState::Armed;
+			if (!root.bRescanPending)
+			{
+				log::Info(LogCategory, "{}: changes were missed; rescanning it once the tree is quiet", FString::FromPath(root.Path));
+			}
+			MarkRescan(root, time, true);
+			return;
+		case platform::EFileEventKind::RootLost:
+			++Stats.RootsLost;
+			root.State = ERootState::Lost;
+			log::Warning(LogCategory, "{} went away; watching it again when it is back", FString::FromPath(root.Path));
+			MarkRescan(root, time, false);
+			return;
+		default:
+			break;
+		}
+
+		if (IsFence(Event.Path))
+		{
+			if (Event.Kind == platform::EFileEventKind::Added || Event.Kind == platform::EFileEventKind::RenamedNew)
+			{
+				SeenFences[FString(GetName(Event.Path))] = time;
+			}
+			return;
+		}
+
+		bool bDirectory = Event.EntryType == platform::EFileEntryType::Directory;
+		if (Event.EntryType == platform::EFileEntryType::Unknown
+			&& (Event.Kind == platform::EFileEventKind::Added || Event.Kind == platform::EFileEventKind::RenamedNew))
+		{
+			const std::optional<platform::SFileStat> stat = platform::Stat(MakeFullPath(root, Event.Path));
+			bDirectory = stat && stat->bDirectory;
+		}
+		if (bDirectory)
+		{
+			IngestDirectory(root, Event, time);
+		}
+		else
+		{
+			IngestFile(root, Event, time);
+		}
+	}
+
+	SPending& Touch (SRoot& Root, const FString& Key, FStringView Path, bool bExistedIfNew, uint64 Time)
+	{
+		auto [it, bInserted] = Root.Pending.try_emplace(Key);
+		SPending& entry = it->second;
+		if (bInserted)
+		{
+			entry.FirstPath = FString(Path);
+			entry.bExistedBefore = bExistedIfNew;
+			entry.FirstSeen = Time;
+		}
+		entry.Path = FString(Path);
+		entry.LastSeen = Time > entry.LastSeen ? Time : entry.LastSeen;
+		return entry;
+	}
+
+	// The removal (or rename's old half) the Added or RenamedNew Event completes: same identity within
+	// the pair window, else - without identities - the RenamedOld right before a RenamedNew. Its index
+	// in Removals, or nullopt; for adjacency, Removals.size() (the root's LastRenamedOld).
+	std::optional<size_t> FindMoveSource (const SRoot& Root, const platform::SFileEvent& Event, uint64 Time) const
+	{
+		if (Event.Identity.IsValid())
+		{
+			for (size_t i = Removals.size(); i-- > 0u;)
+			{
+				const SRemoval& removal = Removals[i];
+				if (removal.Root == &Root && removal.Identity == Event.Identity && Elapsed(removal.Time, Time) <= PairTicks)
+				{
+					return i;
+				}
+			}
+			return std::nullopt;
+		}
+		if (Event.Kind == platform::EFileEventKind::RenamedNew && Root.LastRenamedOld.bValid && !Root.LastRenamedOld.Identity.IsValid()
+			&& Elapsed(Root.LastRenamedOld.Time, Time) <= PairTicks)
+		{
+			return Removals.size();
+		}
+		return std::nullopt;
+	}
+
+	// The source of a paired move, taken out of Removals (and the root's adjacency slot).
+	SRemoval TakeMoveSource (SRoot& Root, size_t Index)
+	{
+		SRemoval source;
+		if (Index == Removals.size())
+		{
+			source.Root = &Root;
+			source.Path = std::move(Root.LastRenamedOld.Path);
+			source.Key = std::move(Root.LastRenamedOld.Key);
+			source.Time = Root.LastRenamedOld.Time;
+			source.bDirectory = Root.LastRenamedOld.bDirectory;
+		}
+		else
+		{
+			source = std::move(Removals[Index]);
+			Removals.erase(Removals.begin() + static_cast<std::ptrdiff_t>(Index));
+		}
+		Root.LastRenamedOld = {};
+		return source;
+	}
+
+	void IngestFile (SRoot& Root, const platform::SFileEvent& Event, uint64 Time)
+	{
+		const FString key = MakeKey(Root, Event.Path);
+		switch (Event.Kind)
+		{
+		case platform::EFileEventKind::Added:
+		case platform::EFileEventKind::RenamedNew:
+		{
+			const std::optional<size_t> sourceIndex = FindMoveSource(Root, Event, Time);
+			SPending& entry = Touch(Root, key, Event.Path, false, Time);
+			entry.bExistsNow = true;
+			if (sourceIndex)
+			{
+				const SRemoval source = TakeMoveSource(Root, *sourceIndex);
+				if (source.Key != key)
+				{
+					TransferMove(Root, key, source);
+				}
+			}
+			if (Event.Kind == platform::EFileEventKind::RenamedNew)
+			{
+				Root.LastRenamedOld = {};
+			}
+			break;
+		}
+		case platform::EFileEventKind::Removed:
+		case platform::EFileEventKind::RenamedOld:
+		{
+			SPending& entry = Touch(Root, key, Event.Path, true, Time);
+			entry.bExistsNow = false;
+			entry.bMaybeDirectory = entry.bMaybeDirectory || Event.EntryType == platform::EFileEntryType::Unknown;
+			SRemoval removal;
+			removal.Root = &Root;
+			removal.Path = Event.Path;
+			removal.Key = key;
+			removal.Identity = Event.Identity;
+			removal.Time = Time;
+			if (Event.Kind == platform::EFileEventKind::RenamedOld)
+			{
+				Root.LastRenamedOld = { Event.Path, key, Event.Identity, Time, false, true };
+			}
+			if (Event.Identity.IsValid())
+			{
+				Removals.push_back(std::move(removal));
+			}
+			break;
+		}
+		case platform::EFileEventKind::Modified:
+		{
+			SPending& entry = Touch(Root, key, Event.Path, true, Time);
+			entry.bExistsNow = true;
+			break;
+		}
+		default:
+			break;
+		}
+	}
+
+	// The entry at DestinationKey is where Source's file went: it takes over the source's history (a
+	// chain a -> b -> c is one move from a), and the source's entry stays only to remember that its
+	// path held a file before (bMovedAway: dropped at settle unless a file lands there again).
+	void TransferMove (SRoot& Root, const FString& DestinationKey, const SRemoval& Source)
+	{
+		FString from = Source.Path;
+		bool bExisted = true;
+		const auto sourceIt = Root.Pending.find(Source.Key);
+		if (sourceIt != Root.Pending.end())
+		{
+			SPending& sourceEntry = sourceIt->second;
+			bExisted = sourceEntry.bExistedBefore;
+			if (!sourceEntry.MovedFrom.IsEmpty())
+			{
+				from = sourceEntry.MovedFrom;
+				bExisted = sourceEntry.bMovedFromExisted;
+				sourceEntry.MovedFrom.Clear();
+			}
+			if (!sourceEntry.bExistsNow)
+			{
+				sourceEntry.bMovedAway = true;
+			}
+		}
+
+		SPending& destination = Root.Pending[DestinationKey];
+		if (MakeKey(Root, from) == DestinationKey)
+		{
+			// Moved away and back (a -> b -> a): the file is where it was.
+			destination.MovedFrom.Clear();
+			destination.bExistedBefore = destination.bExistedBefore || bExisted;
+			return;
+		}
+		destination.MovedFrom = std::move(from);
+		destination.bMovedFromExisted = bExisted;
+	}
+
+	void IngestDirectory (SRoot& Root, const platform::SFileEvent& Event, uint64 Time)
+	{
+		const FString key = MakeKey(Root, Event.Path);
+		switch (Event.Kind)
+		{
+		case platform::EFileEventKind::Removed:
+		case platform::EFileEventKind::RenamedOld:
+		{
+			// Gone with everything below it: one record stands for the subtree. What was pending below
+			// it waits in the removal, in case the directory turns out to have moved within the root.
+			SRemoval removal;
+			removal.Root = &Root;
+			removal.Path = Event.Path;
+			removal.Key = key;
+			removal.Identity = Event.Identity;
+			removal.Time = Time;
+			removal.bDirectory = true;
+			ExtractBelow(Root, key, removal.Below, removal.LeftBehind);
+			SPending& entry = Touch(Root, key, Event.Path, true, Time);
+			entry.Type = EEntry::DirectoryRemoved;
+			entry.bExistsNow = false;
+			entry.MovedFrom.Clear();
+			if (Event.Kind == platform::EFileEventKind::RenamedOld)
+			{
+				Root.LastRenamedOld = { Event.Path, key, Event.Identity, Time, true, true };
+			}
+			if (Event.Identity.IsValid())
+			{
+				Removals.push_back(std::move(removal));
+			}
+			else
+			{
+				// It can never pair: gone for good.
+				for (auto& [leftKey, leftEntry] : removal.LeftBehind)
+				{
+					Root.Pending.try_emplace(std::move(leftKey), std::move(leftEntry));
+				}
+			}
+			break;
+		}
+		case platform::EFileEventKind::Added:
+		case platform::EFileEventKind::RenamedNew:
+		{
+			const std::optional<size_t> sourceIndex = FindMoveSource(Root, Event, Time);
+			if (sourceIndex)
+			{
+				SRemoval source = TakeMoveSource(Root, *sourceIndex);
+				if (source.bDirectory && source.Key != key)
+				{
+					// Renamed or moved within the root: what was pending below it moves along.
+					RepathInto(Root, std::move(source.Below), source.Path, key, Event.Path);
+					Root.Pending.erase(source.Key);
+					SPending& entry = Touch(Root, key, Event.Path, false, Time);
+					entry.Type = EEntry::DirectoryMoved;
+					entry.MovedFrom = source.Path;
+					entry.bExistsNow = true;
+					break;
+				}
+			}
+			if (Event.Kind == platform::EFileEventKind::RenamedNew)
+			{
+				Root.LastRenamedOld = {};
+			}
+			// Created, moved in from outside, restored: its subtree reported nothing by itself.
+			const auto removed = Root.Pending.find(key);
+			if (removed != Root.Pending.end() && removed->second.Type == EEntry::DirectoryRemoved)
+			{
+				// Removed and back within the window: whatever was below it may differ (a Rescan).
+				removed->second.bExistsNow = true;
+				removed->second.LastSeen = Time > removed->second.LastSeen ? Time : removed->second.LastSeen;
+			}
+			EnumerateInto(Root, Event.Path, Time);
+			break;
+		}
+		default:
+			break;   // a directory's own times: its children report themselves
+		}
+	}
+
+	// Takes what is pending below the directory at Key out of the root into OutBelow: the directory's own
+	// record will stand for all of it. A file that had moved in from elsewhere in the root leaves a
+	// removal behind where it came from (OutLeftBehind), told if the directory is gone for good.
+	void ExtractBelow (SRoot& Root, FStringView Key, FPendingList& OutBelow, FPendingList& OutLeftBehind)
+	{
+		for (auto it = Root.Pending.begin(); it != Root.Pending.end();)
+		{
+			if (it->first == Key || !IsAtOrBelow(it->first, Key))
+			{
+				++it;
+				continue;
+			}
+			const SPending& entry = it->second;
+			if (!entry.MovedFrom.IsEmpty() && entry.bMovedFromExisted)
+			{
+				FString sourceKey = MakeKey(Root, entry.MovedFrom);
+				if (!IsAtOrBelow(sourceKey, Key))
+				{
+					SPending removed;
+					removed.Path = entry.MovedFrom;
+					removed.FirstPath = entry.MovedFrom;
+					removed.FirstSeen = entry.FirstSeen;
+					removed.LastSeen = entry.LastSeen;
+					removed.bExistedBefore = true;
+					OutLeftBehind.emplace_back(std::move(sourceKey), std::move(removed));
+				}
+			}
+			OutBelow.emplace_back(it->first, std::move(it->second));
+			it = Root.Pending.erase(it);
+		}
+	}
+
+	// Entries that were pending below the directory OldPath, now below NewPath (whose key is NewKey).
+	void RepathInto (SRoot& Root, FPendingList&& Entries, FStringView OldPath, FStringView NewKey, FStringView NewPath)
+	{
+		const uint32 oldNames = CountNames(OldPath);
+		for (auto& [oldKey, entry] : Entries)
+		{
+			FString newKey = JoinPath(NewKey, DropNames(oldKey, oldNames));
+			entry.Path = JoinPath(NewPath, DropNames(entry.Path, oldNames));
+			entry.FirstPath = JoinPath(NewPath, DropNames(entry.FirstPath, oldNames));
+			Root.Pending.insert_or_assign(std::move(newKey), std::move(entry));
+		}
+	}
+
+	// Every file at or below Directory (root-relative) becomes an Added entry: a directory that moved in
+	// reports nothing for its children (S13).
+	void EnumerateInto (SRoot& Root, FStringView Directory, uint64 Time)
+	{
+		std::vector<FString> stack;
+		stack.emplace_back(Directory);
+		while (!stack.empty())
+		{
+			const FString directory = std::move(stack.back());
+			stack.pop_back();
+			++Stats.DirectoriesEnumerated;
+			platform::EnumerateDirectory(MakeFullPath(Root, directory), [&] (const platform::SDirectoryEntry& Entry)
+			{
+				FString path = JoinPath(directory, Entry.Name);
+				if (IsFence(path))
+				{
+					return;
+				}
+				if (Entry.Stat.bDirectory)
+				{
+					if (!Entry.bReparsePoint)
+					{
+						stack.push_back(std::move(path));
+					}
+					return;
+				}
+				SPending& entry = Touch(Root, MakeKey(Root, path), path, false, Time);
+				entry.bExistsNow = true;
+			});
+		}
+	}
+
+	// ---------------- Settling ----------------
+
+	[[nodiscard]] bool IsSettled (const SPending& Entry, uint64 Now) const
+	{
+		const bool bGone = Entry.Type == EEntry::DirectoryRemoved ? !Entry.bExistsNow : Entry.bExistedBefore && !Entry.bExistsNow;
+		const uint64 needed = SettleTicks + (bGone ? RemoveGraceTicks : 0u);
+		return Elapsed(Entry.LastSeen, Now) >= needed || Elapsed(Entry.FirstSeen, Now) >= MaxLatencyTicks;
+	}
+
+	[[nodiscard]] bool HasPending () const
+	{
+		for (const std::unique_ptr<SRoot>& root : Roots)
+		{
+			if (!root->Pending.empty() || root->bRescanPending)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	// Whether everything waits: a burst or an overflow until VcsSettleMs of quiet, a busy VCS until it
+	// is not and then the same quiet. True when nothing may be told now; ReleaseAll says the hold just
+	// ended (everything pending goes at once).
+	bool UpdateHold (uint64 Now, bool& OutReleaseAll)
+	{
+		OutReleaseAll = false;
+		if (VcsBusy && Elapsed(LastVcsPoll, Now) >= VcsPollTicks && HasPending())
+		{
+			LastVcsPoll = Now;
+			bVcsBusy = VcsBusy();
+			if (bVcsBusy)
+			{
+				StartHolding();
+			}
+		}
+		if (!bHolding)
+		{
+			return false;
+		}
+		if (bVcsBusy || Elapsed(LastEventTime, Now) < VcsSettleTicks)
+		{
+			return true;
+		}
+		bHolding = false;
+		ActivityEvents = 0u;
+		OutReleaseAll = true;
+		return false;
+	}
+
+	enum class EOutcome : uint8
+	{
+		Tell,
+		Drop,
+		Keep,
+	};
+
+	// What a settled entry turns out to be, by the disk now: Tell (Out filled), Drop (nothing to tell,
+	// or a self-write), Keep (a writer holds it, or it changed under the probe: wait).
+	EOutcome Resolve (SRoot& Root, const FString& Key, SPending& Entry, uint64 Now, SReady& Out)
+	{
+		Out.Root = &Root;
+		Out.Path = Entry.Path;
+		Out.Key = Key;
+		const std::filesystem::path full = MakeFullPath(Root, Entry.Path);
+
+		if (Entry.Type == EEntry::DirectoryRemoved)
+		{
+			const std::optional<platform::SFileStat> stat = platform::Stat(full);
+			Out.bDirectory = true;
+			Out.Kind = stat && stat->bDirectory ? EFileChange::Rescan : EFileChange::Removed;
+			return EOutcome::Tell;
+		}
+		if (Entry.Type == EEntry::DirectoryMoved)
+		{
+			const std::optional<platform::SFileStat> stat = platform::Stat(full);
+			Out.bDirectory = true;
+			if (stat && stat->bDirectory)
+			{
+				Out.Kind = EFileChange::Moved;
+				Out.OldPath = Entry.MovedFrom;
+				Out.OldKey = MakeKey(Root, Entry.MovedFrom);
+			}
+			else
+			{
+				// Moved, then gone from its new place too.
+				Out.Kind = EFileChange::Removed;
+				Out.Path = Entry.MovedFrom;
+				Out.Key = MakeKey(Root, Entry.MovedFrom);
+			}
+			return EOutcome::Tell;
+		}
+
+		if (!IsRelevant(Root, Entry, Key))
+		{
+			return EOutcome::Drop;
+		}
+		const std::optional<platform::SFileStat> stat = platform::Stat(full);
+		if (stat && stat->bDirectory)
+		{
+			// A directory where a file event was (a file system without entry types, or a file replaced
+			// by a directory): what is below it is unknown.
+			Out.Kind = EFileChange::Rescan;
+			Out.bDirectory = true;
+			return EOutcome::Tell;
+		}
+		const bool bExists = stat.has_value();
+		if (Entry.bMovedAway && !bExists)
+		{
+			return EOutcome::Drop;   // where its file went tells the move
+		}
+		const bool bMoved = !Entry.MovedFrom.IsEmpty() && Entry.bMovedFromExisted;
+		if (bExists && bMoved)
+		{
+			Out.Kind = EFileChange::Moved;
+			Out.OldPath = Entry.MovedFrom;
+		}
+		else if (bExists && Entry.bExistedBefore)
+		{
+			Out.Kind = EFileChange::Modified;
+			if (Entry.FirstPath != Entry.Path)
+			{
+				// Its name's case changed (a case-only rename, git restoring the index's case).
+				Out.Kind = EFileChange::Moved;
+				Out.OldPath = Entry.FirstPath;
+			}
+		}
+		else if (bExists)
+		{
+			Out.Kind = EFileChange::Added;
+		}
+		else if (Entry.bExistedBefore)
+		{
+			Out.Kind = EFileChange::Removed;
+			Out.bMaybeDirectory = Entry.bMaybeDirectory;
+		}
+		else if (bMoved)
+		{
+			// Moved here, then deleted: gone from where it was.
+			Out.Kind = EFileChange::Removed;
+			Out.Path = Entry.MovedFrom;
+			Out.Key = MakeKey(Root, Entry.MovedFrom);
+		}
+		else
+		{
+			return EOutcome::Drop;   // born and gone within the window: a temporary file
+		}
+		if (!Out.OldPath.IsEmpty())
+		{
+			Out.OldKey = MakeKey(Root, Out.OldPath);
+		}
+		if (!bExists)
+		{
+			return EOutcome::Tell;
+		}
+
+		// A writer may still be at it (Modified arrives at close, usually; S3, S19).
+		switch (platform::ProbeFileWriters(full))
+		{
+		case platform::EWriterProbe::Held:
+			BackOff(Entry, full, Now);
+			return EOutcome::Keep;
+		case platform::EWriterProbe::Missing:
+			// Gone since the stat: settle again.
+			Entry.bExistsNow = false;
+			Entry.LastSeen = Now;
+			return EOutcome::Keep;
+		default:
+			break;
+		}
+
+		// The echo of a write of the caller's own: exactly the bytes it said it would write.
+		const auto expected = Expected.find(MakeExpectedKey(full));
+		if (expected != Expected.end())
+		{
+			const bool bMatch = stat->Size == expected->second.Size && HashFileStable(full) == std::optional(expected->second.Hash);
+			Expected.erase(expected);
+			if (bMatch)
+			{
+				++Stats.SelfWritesSuppressed;
+				return EOutcome::Drop;
+			}
+		}
+		return EOutcome::Tell;
+	}
+
+	void BackOff (SPending& Entry, const std::filesystem::path& Full, uint64 Now)
+	{
+		++Stats.WriterBackoffs;
+		++Entry.ProbeFailures;
+		if (Entry.HeldSince == 0u)
+		{
+			Entry.HeldSince = Now;
+		}
+		const uint32 shift = Entry.ProbeFailures - 1u < 16u ? Entry.ProbeFailures - 1u : 16u;
+		const uint64 backoffMs = static_cast<uint64>(Settings.ProbeBackoffMs) << shift;
+		const uint32 waitMs = static_cast<uint32>(backoffMs < Settings.MaxProbeBackoffMs ? backoffMs : Settings.MaxProbeBackoffMs);
+		Entry.NextProbe = Now + MsToTicks(waitMs);
+		if (!Entry.bWarnedHeld && Elapsed(Entry.HeldSince, Now) >= HeldWarningTicks)
+		{
+			log::Warning(LogCategory, "{} is still open for writing in another process; waiting for it to finish", FString::FromPath(Full));
+			Entry.bWarnedHeld = true;
+		}
+	}
+
+	// Everything that has settled (or that Fence covers), resolved against the disk, in root order and
+	// sorted by key within each root.
+	std::vector<SReady> CollectReady (uint64 Now, const SFence* Fence)
+	{
+		std::vector<SReady> ready;
+		bool bReleaseAll = false;
+		const bool bHold = UpdateHold(Now, bReleaseAll);
+		for (const std::unique_ptr<SRoot>& rootPtr : Roots)
+		{
+			SRoot& root = *rootPtr;
+			const bool bFenced = Fence != nullptr && Fence->Root == &root;
+			const size_t firstOfRoot = ready.size();
+
+			if (root.bRescanPending)
+			{
+				const bool bDue = (bFenced && root.RescanSince <= Fence->Time)
+					|| (!bHold && (bReleaseAll || Elapsed(root.RescanSince, Now) >= SettleTicks));
+				if (bDue)
+				{
+					// One Rescan of the root stands for everything pending in it.
+					SReady rescan;
+					rescan.Root = &root;
+					rescan.Kind = EFileChange::Rescan;
+					rescan.bDirectory = true;
+					ready.push_back(std::move(rescan));
+					++Stats.Rescans;
+					root.bRescanPending = false;
+					root.Pending.clear();
+				}
+				continue;
+			}
+
+			for (auto it = root.Pending.begin(); it != root.Pending.end();)
+			{
+				SPending& entry = it->second;
+				const bool bForced = bFenced && entry.LastSeen <= Fence->Time;
+				const bool bDue = bForced || (!bHold && (bReleaseAll || IsSettled(entry, Now)));
+				if (!bDue || (!bForced && Now < entry.NextProbe))
+				{
+					++it;
+					continue;
+				}
+				SReady change;
+				switch (Resolve(root, it->first, entry, Now, change))
+				{
+				case EOutcome::Tell:
+					ready.push_back(std::move(change));
+					it = root.Pending.erase(it);
+					break;
+				case EOutcome::Drop:
+					it = root.Pending.erase(it);
+					break;
+				case EOutcome::Keep:
+					++it;
+					break;
+				}
+			}
+			std::sort(ready.begin() + static_cast<std::ptrdiff_t>(firstOfRoot), ready.end(),
+				[] (const SReady& A, const SReady& B) { return A.Key < B.Key; });
+		}
+		return ready;
+	}
+
+	// ---------------- Delivery ----------------
+
+	// Path (root-relative) as the subscriber spells it: below its directory, the directory it gave joined
+	// with the names below it; elsewhere in the root, the root's path.
+	std::filesystem::path ToSubscriberPath (const SSubscription& Subscription, FStringView Path, FString* OutRelative) const
+	{
+		const FString key = MakeKey(*Subscription.Root, Path);
+		if (IsAtOrBelow(key, Subscription.SubKey))
+		{
+			const FStringView below = DropNames(Path, CountNames(Subscription.SubPath));
+			if (OutRelative != nullptr)
+			{
+				*OutRelative = FString(below);
+			}
+			return below.IsEmpty() ? Subscription.Directory : (Subscription.Directory / below.ToPath()).make_preferred();
+		}
+		return MakeFullPath(*Subscription.Root, Path);
+	}
+
+	SFileChange Compose (const SSubscription& Subscription, EFileChange Kind, bool bDirectory, FStringView Path, FStringView OldPath) const
+	{
+		SFileChange change;
+		change.Kind = Kind;
+		change.bDirectory = bDirectory;
+		change.Path = ToSubscriberPath(Subscription, Path, &change.RelativePath);
+		if (!OldPath.IsEmpty())
+		{
+			change.OldPath = ToSubscriberPath(Subscription, OldPath, nullptr);
+		}
+		return change;
+	}
+
+	// Ready, cut to Subscription's region (see SWatchFilter), appended to Out when it matches. All is the
+	// whole batch Ready belongs to.
+	void AppendMatches (const SSubscription& Subscription, const SReady& Ready, const std::vector<SReady>& All,
+		std::vector<SFileChange>& Out) const
+	{
+		const FString& region = Subscription.RegionKey;
+		const bool bMove = Ready.Kind == EFileChange::Moved;
+		if (Ready.bDirectory)
+		{
+			if (IsAtOrBelow(Ready.Key, region) || (bMove && IsAtOrBelow(Ready.OldKey, region)))
+			{
+				Out.push_back(Compose(Subscription, Ready.Kind, true, Ready.Path, Ready.OldPath));
+			}
+			else if (bMove && IsAtOrBelow(region, Ready.OldKey))
+			{
+				// The whole region moved along with a directory above it.
+				const FString moved = JoinPath(Ready.Path, DropNames(Subscription.RegionPath, CountNames(Ready.OldPath)));
+				Out.push_back(Compose(Subscription, EFileChange::Moved, true, moved, Subscription.RegionPath));
+			}
+			else if (IsAtOrBelow(region, Ready.Key))
+			{
+				// A record about a subtree that holds the whole region (a removed parent, a rescanned root, a
+				// directory moved over it): told about the region as a whole.
+				Out.push_back(Compose(Subscription, bMove ? EFileChange::Rescan : Ready.Kind, true, Subscription.RegionPath, {}));
+			}
+			return;
+		}
+		const bool bNewMatches = MatchesFile(Subscription, Ready.Key, Ready.Path);
+		const bool bOldMatches = !Ready.OldKey.IsEmpty() && MatchesFile(Subscription, Ready.OldKey, Ready.OldPath);
+		if (bMove && bNewMatches != bOldMatches)
+		{
+			// A move across the edge of the filter is, to this subscriber, an addition or a removal - and
+			// no removal at all when something else is told at the old path in the same batch (S4: the
+			// old file renamed to a backup name, the new one renamed into its place).
+			if (bNewMatches)
+			{
+				Out.push_back(Compose(Subscription, EFileChange::Added, false, Ready.Path, {}));
+			}
+			else if (std::none_of(All.begin(), All.end(), [&Ready] (const SReady& Other)
+				{
+					return Other.Root == Ready.Root && !Other.bDirectory && Other.Key == Ready.OldKey;
+				}))
+			{
+				Out.push_back(Compose(Subscription, EFileChange::Removed, false, Ready.OldPath, {}));
+			}
+			return;
+		}
+		if (bNewMatches || bOldMatches)
+		{
+			Out.push_back(Compose(Subscription, Ready.Kind, false, Ready.Path, Ready.OldPath));
+		}
+		else if (Ready.bMaybeDirectory && IsAtOrBelow(region, Ready.Key))
+		{
+			Out.push_back(Compose(Subscription, Ready.Kind, true, Subscription.RegionPath, {}));
+		}
+	}
+
+	void Deliver (const std::vector<SReady>& Ready)
+	{
+		if (Ready.empty())
+		{
+			return;
+		}
+		++DeliveryDepth;
+		std::vector<SFileChange> changes;
+		// Subscriptions neither grows nor shrinks during a delivery: adds wait in AddedDuringDelivery,
+		// removes only clear the id. Indexed: a callback's Subscribe never moves the vector.
+		const size_t count = Subscriptions.size();
+		for (size_t i = 0u; i < count; ++i)
+		{
+			if (Subscriptions[i].Id == 0u)
+			{
+				continue;
+			}
+			changes.clear();
+			for (const SReady& ready : Ready)
+			{
+				if (ready.Root == Subscriptions[i].Root)
+				{
+					AppendMatches(Subscriptions[i], ready, Ready, changes);
+				}
+			}
+			if (!changes.empty())
+			{
+				++Stats.Deliveries;
+				Stats.Changes += changes.size();
+				Subscriptions[i].Callback(std::span<const SFileChange>(changes));
+			}
+		}
+		--DeliveryDepth;
+		if (DeliveryDepth == 0u)
+		{
+			FinishDelivery();
+		}
+	}
+
+	void FinishDelivery ()
+	{
+		std::vector<SSubscription> removed;
+		if (RemovedDuringDelivery > 0u)
+		{
+			for (size_t i = Subscriptions.size(); i-- > 0u;)
+			{
+				if (Subscriptions[i].Id == 0u)
+				{
+					removed.push_back(std::move(Subscriptions[i]));
+					Subscriptions.erase(Subscriptions.begin() + static_cast<std::ptrdiff_t>(i));
+				}
+			}
+			RemovedDuringDelivery = 0u;
+		}
+		for (SSubscription& added : AddedDuringDelivery)
+		{
+			Subscriptions.push_back(std::move(added));
+		}
+		AddedDuringDelivery.clear();
+		ReleaseUnusedRoots();
+		// The removed callbacks are destroyed last, with the lists consistent.
+	}
+
+	void Pump ()
+	{
+		CheckOwner();
+		frt_assert(DeliveryDepth == 0u)
+		SeenFences.clear();   // only a Flush waits for its fence, inside the Flush
+		PumpEvents();
+		const uint64 now = platform::ReadTimestamp();
+		PollRoots(now);
+		std::erase_if(Expected, [now] (const auto& Item) { return Item.second.Deadline <= now; });
+		Deliver(CollectReady(now, nullptr));
+	}
+};
+
+
+CFileWatcherService::CFileWatcherService (const SFileWatcherSettings& Settings, std::unique_ptr<platform::IFileWatcher> Watcher)
+	: State(std::make_unique<SState>(Settings, std::move(Watcher)))
+{}
+
+CFileWatcherService::~CFileWatcherService ()
+{
+	State->CheckOwner();
+	for (const std::unique_ptr<SState::SRoot>& root : State->Roots)
+	{
+		State->DisarmRoot(*root);
+	}
+}
+
+SDelegateHandle CFileWatcherService::Subscribe (const std::filesystem::path& Directory, const SWatchFilter& Filter,
+	FFileChangesCallback Callback)
+{
+	SState& state = *State;
+	state.CheckOwner();
+	if (!Callback)
+	{
+		return {};
+	}
+
+	SState::SSubscription subscription;
+	subscription.Id = detail::NewDelegateHandleId();
+	subscription.Directory = NormalizePath(Directory);
+	subscription.Extensions = Filter.Extensions;
+	subscription.Callback = std::move(Callback);
+
+	FString relative;
+	SState::SRoot* root = state.FindRoot(subscription.Directory, &relative);
+	if (root == nullptr)
+	{
+		auto newRoot = std::make_unique<SState::SRoot>();
+		newRoot->Path = subscription.Directory;
+		root = newRoot.get();
+		state.Roots.push_back(std::move(newRoot));
+		relative.Clear();
+	}
+	subscription.Root = root;
+	subscription.SubPath = std::move(relative);
+	FString prefix = Filter.Prefix;
+	prefix.ReplaceCharInline('\\', '/');
+	state.ComputeSubscriptionKeys(subscription, prefix.View().TrimStartAndEnd("/"));
+	++root->SubscriptionCount;
+
+	const SDelegateHandle handle{ subscription.Id };
+	(state.DeliveryDepth > 0u ? state.AddedDuringDelivery : state.Subscriptions).push_back(std::move(subscription));
+	if (root->State == SState::ERootState::Unarmed)
+	{
+		state.ArmRoot(*root, platform::ReadTimestamp());
+	}
+	return handle;
+}
+
+bool CFileWatcherService::Unsubscribe (SDelegateHandle Handle)
+{
+	SState& state = *State;
+	state.CheckOwner();
+	if (!Handle.IsValid())
+	{
+		return false;
+	}
+	for (size_t i = 0u; i < state.Subscriptions.size(); ++i)
+	{
+		SState::SSubscription& subscription = state.Subscriptions[i];
+		if (subscription.Id != Handle.Id)
+		{
+			continue;
+		}
+		--subscription.Root->SubscriptionCount;
+		if (state.DeliveryDepth > 0u)
+		{
+			// It may be running: destroyed when the delivery ends.
+			subscription.Id = 0u;
+			++state.RemovedDuringDelivery;
+			return true;
+		}
+		SState::SSubscription removed = std::move(subscription);
+		state.Subscriptions.erase(state.Subscriptions.begin() + static_cast<std::ptrdiff_t>(i));
+		state.ReleaseUnusedRoots();
+		return true;
+	}
+	for (size_t i = 0u; i < state.AddedDuringDelivery.size(); ++i)
+	{
+		if (state.AddedDuringDelivery[i].Id == Handle.Id)
+		{
+			--state.AddedDuringDelivery[i].Root->SubscriptionCount;
+			SState::SSubscription removed = std::move(state.AddedDuringDelivery[i]);
+			state.AddedDuringDelivery.erase(state.AddedDuringDelivery.begin() + static_cast<std::ptrdiff_t>(i));
+			return true;
+		}
+	}
+	return false;
+}
+
+void CFileWatcherService::SetEnabled (bool bEnabled)
+{
+	SState& state = *State;
+	state.CheckOwner();
+	if (state.Settings.bEnabled == bEnabled)
+	{
+		return;
+	}
+	state.Settings.bEnabled = bEnabled;
+	if (!bEnabled)
+	{
+		for (const std::unique_ptr<SState::SRoot>& root : state.Roots)
+		{
+			state.DisarmRoot(*root);
+		}
+		state.Removals.clear();
+		state.bHolding = false;
+		state.ActivityEvents = 0u;
+		return;
+	}
+	const uint64 now = platform::ReadTimestamp();
+	for (const std::unique_ptr<SState::SRoot>& root : state.Roots)
+	{
+		state.ArmRoot(*root, now);
+	}
+}
+
+bool CFileWatcherService::IsEnabled () const noexcept
+{
+	return State->Settings.bEnabled;
+}
+
+void CFileWatcherService::Pump ()
+{
+	FRT_CPU_SCOPE("Assets.FileWatcher");
+	State->Pump();
+}
+
+bool CFileWatcherService::Flush (const std::filesystem::path& Directory, double TimeoutSeconds)
+{
+	SState& state = *State;
+	state.CheckOwner();
+	frt_assert(state.DeliveryDepth == 0u)
+	FString relative;
+	SState::SRoot* root = state.FindRoot(NormalizePath(Directory), &relative);
+	if (root == nullptr || root->State != SState::ERootState::Armed || !state.Watcher)
+	{
+		return false;
+	}
+
+	FString name(FencePrefix);
+	name.AppendFormat("{}-{}", platform::GetCurrentProcessId(), ++state.FenceCounter);
+	const std::filesystem::path fence = root->Path / name.ToPath();
+	if (!platform::WriteFileBytes(fence, {}, false))
+	{
+		return false;
+	}
+
+	// Events of one root arrive in order: once the fence's has, everything before it has too.
+	const uint64 frequency = platform::GetTimestampFrequency();
+	const uint64 deadline = platform::ReadTimestamp() + static_cast<uint64>(TimeoutSeconds * static_cast<double>(frequency));
+	std::optional<uint64> fenceTime;
+	while (true)
+	{
+		state.PumpEvents();
+		if (const auto seen = state.SeenFences.find(name); seen != state.SeenFences.end())
+		{
+			fenceTime = seen->second;
+			state.SeenFences.erase(seen);
+			break;
+		}
+		const uint64 now = platform::ReadTimestamp();
+		if (now >= deadline || root->State != SState::ERootState::Armed)
+		{
+			break;
+		}
+		const double remaining = static_cast<double>(deadline - now) / static_cast<double>(frequency);
+		state.Watcher->WaitForEvents(remaining < 0.05 ? remaining : 0.05);
+	}
+
+	const uint64 now = platform::ReadTimestamp();
+	if (fenceTime)
+	{
+		// Both halves of a move arrive together: a removal older than the fence will not pair any more.
+		state.ExpireRemovals(*fenceTime);
+	}
+	state.PollRoots(now);
+	std::erase_if(state.Expected, [now] (const auto& Item) { return Item.second.Deadline <= now; });
+	const SState::SFence settled{ root, fenceTime.value_or(0u) };
+	state.Deliver(state.CollectReady(now, fenceTime ? &settled : nullptr));
+	platform::RemoveFile(fence);
+	return fenceTime.has_value();
+}
+
+void CFileWatcherService::ExpectWrite (const std::filesystem::path& Path, const hash::SContentHash& Hash, uint64 Size, uint64 Deadline)
+{
+	State->CheckOwner();
+	State->Expected.insert_or_assign(MakeExpectedKey(Path), SState::SExpected{ Hash, Size, Deadline });
+}
+
+void CFileWatcherService::ExpectWrite (const std::filesystem::path& Path, std::span<const uint8> Bytes, double TimeoutSeconds)
+{
+	ExpectWrite(Path, hash::HashContent(Bytes), Bytes.size(), MakeDeadline(TimeoutSeconds));
+}
+
+uint64 CFileWatcherService::MakeDeadline (double SecondsFromNow) noexcept
+{
+	const double ticks = SecondsFromNow * static_cast<double>(platform::GetTimestampFrequency());
+	return platform::ReadTimestamp() + (ticks > 0.0 ? static_cast<uint64>(ticks) : 0u);
+}
+
+void CFileWatcherService::SetVcsBusyQuery (TUniqueFunction<bool ()> IsBusy)
+{
+	State->CheckOwner();
+	State->VcsBusy = std::move(IsBusy);
+	State->bVcsBusy = false;
+}
+
+SFileWatcherStats CFileWatcherService::GetStats () const
+{
+	const SState& state = *State;
+	SFileWatcherStats stats = state.Stats;
+	stats.Subscriptions = 0u;
+	for (const SState::SSubscription& subscription : state.Subscriptions)
+	{
+		stats.Subscriptions += subscription.Id != 0u ? 1u : 0u;
+	}
+	stats.Subscriptions += static_cast<uint32>(state.AddedDuringDelivery.size());
+	for (const std::unique_ptr<SState::SRoot>& root : state.Roots)
+	{
+		stats.Roots += root->State == SState::ERootState::Armed || root->State == SState::ERootState::Lost ? 1u : 0u;
+		stats.PendingPaths += static_cast<uint32>(root->Pending.size());
+	}
+	stats.bHolding = state.bHolding;
+	return stats;
+}
+
+bool CFileWatcherService::IsIdle () const
+{
+	return !State->bHolding && !State->HasPending();
+}
+
+const SFileWatcherSettings& CFileWatcherService::GetSettings () const noexcept
+{
+	return State->Settings;
+}
+}
