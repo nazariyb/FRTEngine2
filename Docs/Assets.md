@@ -1,9 +1,10 @@
 # Assets
 
 FRTEngine2's asset system is being built in milestones (M0-M13). This file describes what exists, briefly and
-structurally; every milestone updates it. Today, after **M1 (tool host, worker pool, DDC, shader cache)**, the
-infrastructure exists and its first client runs: shaders are compiled once and served from the derived-data cache.
-Materials, textures, models and input files still load as before.
+structurally; every milestone updates it. Today, after **M2 (one file watcher)**, the infrastructure exists and its
+first client runs: shaders are compiled once and served from the derived-data cache, and everything that reloads files
+in dev builds learns about changes from one file watcher. Materials, textures, models and input files still load as
+before.
 
 ## Where it is going
 
@@ -16,6 +17,68 @@ Materials, textures, models and input files still load as before.
 - **Runtime.** Loads are asynchronous, through generational handles and reference-counted pointers, with deterministic
   publication so scripted captures stay byte-exact.
 - **Packages.** A cook turns content into paks of final, GPU-ready data plus a runtime registry.
+
+## One file watcher (M2)
+
+Every system that reloads files in dev builds learns about changes from one watcher instead of polling timestamps:
+materials, input actions and maps, shader programs and the editor's input files. Release builds watch nothing.
+
+### `platform::IFileWatcher` (`Platform/FileWatcher.h`)
+
+Reports what the OS says happened under armed roots as portable events: root, path relative to it (UTF-8, `/`),
+kind (`Added`, `Removed`, `Modified`, `RenamedOld`, `RenamedNew`, `Overflow`, `RootLost`), entry type and file identity
+(the bytes `platform::Stat` reports, for pairing moves). It decides nothing. Windows: one I/O completion port thread
+for all roots with `ReadDirectoryChangesExW` (extended information, 64 KiB double buffers), which only re-arms, parses
+and queues; a completion with 0 bytes is an `Overflow`, the leading `REMOVED` of a case-only rename is dropped, a
+deleted or renamed root is `RootLost` and is armed again once it is back. `platform::ProbeFileWriters` tells whether a
+writer still holds a file.
+
+### `assets::CFileWatcherService` (`Assets/FileWatcherService.h`)
+
+Portable, on the owner thread (the engine's main thread). **Level-triggered**: an event only marks a path dirty; when
+the path has settled, its state on disk decides what subscribers are told, so a lost event costs a rescan and never a
+wrong answer.
+
+| Rule | |
+|---|---|
+| Settling | a path is told after 200 ms without events, at most 2 s after its first; a removal waits 1 s longer |
+| Coalescing | `Removed` then `Added` is `Modified` (git's unlink and write, atomic saves), `Added` then `Removed` is nothing |
+| Moves | the two halves pair by identity within 150 ms into one `Moved`; a case-only rename is a `Moved` |
+| Directories | one moved or copied in is enumerated (every file `Added`); one renamed is one directory `Moved`; one removed is one directory `Removed` |
+| Bursts | more than 256 events without a pause hold everything until `[AssetsEditor] VcsSettleMs` (1500) of quiet, then one batch; `SetVcsBusyQuery` is the seam for M4's VCS provider |
+| Overflow, lost root | one `Rescan` of the root: compare what you hold with the disk, reload only what differs |
+| Writers | a file a writer still holds waits (back-off up to 2 s, a warning after 10 s) |
+| Self-writes | `ExpectWrite(path, hash, size, deadline)`: an echo with exactly those bytes is not told |
+
+`Subscribe(directory, { Prefix, Extensions }, callback)` (the directory need not exist yet), `Unsubscribe`, `Pump()`
+(once per frame: `CEngine::BeginFrame`), `Flush(directory)` (a fence file `.frt-fence-<pid>-<n>`: everything older is
+told now; for tests and scripted steps), `SetEnabled`, `GetStats`. `IsFileAffected(change, file)` is the rule loaders
+share: a change of the file's path, or of a directory above it, and never a removal. `CEngine::GetFileWatcher()` owns
+one in Debug and Development (headless too; null in Release and in tool hosts). `[Assets] Watch` (default 1) turns it
+off.
+
+### Subscribers
+
+| Subscriber | Watches | On a change |
+|---|---|---|
+| `CMaterialLibrary` | the directory of every material it loaded (`.frtmat.yml`) | marks the material if its write time differs; `ReloadModifiedMaterials` (the renderer, once per frame) reads it again, `Version` goes up |
+| `CInputActionLibrary` | the directories of the actions and maps it loaded (`.frtinputaction`, `.frtinputmap`) | reads them again inside `Pump`, before the frame's maps are evaluated |
+| `CPipelineLibrary` | the shader root, and the directory of any file a build read outside it | marks every program that read the file; `RebuildChangedPrograms` (the renderer) builds them again |
+| `CEditorInput` | `Editor/Config/EditorInput.ini` and `Local/Editor/EditorInput.ini` | both read again on the next frame |
+
+A removed file keeps what was loaded. The game module's DLL keeps its own exclusive-open "linker done" probe.
+`CMaterialLibrary` and `CInputActionLibrary` are passed to game modules and changed layout, so the game module ABI is 7.
+
+### Scripted runs
+
+Automation runs (an `[Automation]` key that makes a run scripted) and the editor's smoke tests are scripted:
+`CEngine::StartUp` forces `[Assets] Watch=0` (nothing reloads behind a capture's back) and `[Assets] ReadOnly=1`
+(the asset system writes nothing; the switch is for M4) (`CAutomation::IsScriptedRun`, `ApplyScriptedRunRules`). A
+smoke step that needs the watcher turns it on for itself and flushes it after writing, so its result never depends on
+timing. With `-Editor:SmokeTestEdits=1` the smoke test also edits files - a material, which must reload, and a shader
+include, which must rebuild exactly the programs that read it - but only on a project outside the engine checkout and
+with the shaders read from a copy, `-Render:ShaderRoot=<dir>` (dev builds). `FRT.bat verify` runs it on a scratch copy
+of `Templates/Demo` made with `FRT.bat new` in `%TEMP%`.
 
 ## Tool host, worker pool, derived-data cache, shader cache (M1)
 
@@ -72,10 +135,10 @@ worktree on the machine shares it, without locks.
 holds the DXC identity (hashes of `dxcompiler.dll`, `dxil.dll` and `ThirdParty/Dxc/VERSION.txt`), entry, profile,
 defines, arguments with every path written as a mount path (`/Engine/Shaders/...`), the source hash, and `Rhi: D3D12`
 (DXIL depends on the shader model, never on the GPU). Debug information embeds absolute paths, so that variant adds a
-hash of the shader root and never leaves this machine. Hot reload works as before. The startup log prints
-`[shader] cache: <hits> hits, <compiled> compiled`; the Stats panel shows the counters. Switches: `-Ddc:Shaders=0`
-(compile without the cache; until M2) and `-Ddc:Verify=<percent>` (recompile that share of hits and compare; a difference
-is `BUILD002`). Release builds still compile at run time until the cook ships DXIL (M12).
+hash of the shader root and never leaves this machine. Hot reload goes through the file watcher (M2). The startup log
+prints `[shader] cache: <hits> hits, <compiled> compiled`; the Stats panel shows the counters. Switch:
+`-Ddc:Verify=<percent>` (recompile that share of hits and compare; a difference is `BUILD002`). Release builds still
+compile at run time until the cook ships DXIL (M12).
 
 ### Builder versions and the source guard
 
@@ -144,7 +207,7 @@ folders only. Invalid patterns are reported, never guessed at.
 
 - `TFunctionRef` (a callable passed down a call), `TUniqueFunction` (a stored callable, small buffer, CRT heap) and
   `TMulticastDelegate` (handles, safe add and remove while broadcasting, `ReleaseModule` for a game module's image).
-  `CEvent` is retired; window and input events are delegates (game module ABI 6).
+  `CEvent` is retired; window and input events are delegates (game module ABI 6; 7 since M2).
 - `log::` (`Log/Log.h`): categories (`assets`, `platform`, `memory`, `game`) and levels (`Error`, `Warning`, `Info`,
   `Verbose`), written as `[category] message` to stderr and the debugger.
 - `SDiagnostic` and `CDiagnosticStore` (`Diagnostics/Diagnostics.h`): structured problems with stable codes such as
@@ -161,7 +224,7 @@ folders only. Invalid patterns are reported, never guessed at.
 - Hashed text formats (`.meta`, `.yml`, `.frt`, `.csv`, `.ini`, shaders) are LF in every working tree, so content hashes
   are the same on every machine. `.gitattributes` says which; `FRT.bat setup` checks out again any file whose working
   copy has the wrong line endings, and `FRT.bat check-line-endings` only checks.
-- `FRT.bat verify` is the merge gate: builds, Core-Test, lints, the editor's smoke tests, automation captures against
-  baselines (raster byte for byte, path tracing within a tolerance), the Release package's captures, and a clean
-  `git status` at the end. `--quick` runs the pre-commit subset; `--record-baselines` records new baselines in
+- `FRT.bat verify` is the merge gate: builds, Core-Test, lints, the editor's smoke tests (in place, read-only, and with
+  file edits on a scratch copy), automation captures against baselines (raster byte for byte, path tracing within a
+  tolerance), the Release package's captures, and a clean `git status` at the end. `--quick` runs the pre-commit subset; `--record-baselines` records new baselines in
   `Local/Verify/Baselines`, which belong to the machine that took them.
