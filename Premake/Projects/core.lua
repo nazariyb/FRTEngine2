@@ -102,6 +102,7 @@ project "Core"
 	----- Libs -----
 	----------------
 	useStb()
+	useCgltf()
 	useImGui()
 	useAssimp()
 	useYamlCpp()

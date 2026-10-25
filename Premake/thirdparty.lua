@@ -159,6 +159,12 @@ function useStb()
 	useThirdPartyHeaders({ path.join(thirdPartyDir, "Stb") })
 end
 
+-- Header-only; Core compiles the implementation (Assets/Pipeline/Cgltf.cpp) and no Core header
+-- includes it, so only Core needs it. Not a library: nothing to link, package or stamp.
+function useCgltf()
+	useThirdPartyHeaders({ path.join(thirdPartyDir, "cgltf") })
+end
+
 -- ImGuiConfig.h selects the linkage.
 function useImGui()
 	useThirdPartyHeaders({ imguiDir })
