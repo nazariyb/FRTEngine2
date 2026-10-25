@@ -102,7 +102,8 @@ bool CEditor::StartUp ()
 	// Shipped bindings, then the user's overrides - a scripted run's own, so that it neither
 	// depends on nor touches the user's.
 	Input.Load(paths::GetEngineDir() / "Editor" / "Config" / "EditorInput.ini",
-		SmokeTest ? SmokeTest->GetOutputDir() / "EditorInput.ini" : paths::GetEditorUserDir() / "EditorInput.ini");
+		SmokeTest ? SmokeTest->GetOutputDir() / "EditorInput.ini" : paths::GetEditorUserDir() / "EditorInput.ini",
+		Engine.GetFileWatcher());
 	ApplyInputConfig(true);
 	bStarted = true;
 	return true;

@@ -9,6 +9,7 @@
 #include "EnginePaths.h"
 #include "Timer.h"
 #include "Window.h"
+#include "Assets/FileWatcherService.h"
 #include "Config/Config.h"
 #include "Containers/String.h"
 #include "Engine/Engine.h"
@@ -138,6 +139,22 @@ void CEditorSmokeTest::TouchGameBuild (CEditor& Editor)
 	std::filesystem::last_write_time(build, std::filesystem::file_time_type::clock::now(), ec);
 	Check(!ec, "the game module's DLL takes a newer write time");
 	Editor.PollGameModuleNow();
+}
+
+void CEditorSmokeTest::WatchFiles (CEngine& Engine, bool bOn)
+{
+	assets::CFileWatcherService* watcher = Engine.GetFileWatcher();
+	if (watcher)
+	{
+		watcher->SetEnabled(bOn);
+	}
+	Check(watcher != nullptr && watcher->IsEnabled() == bOn, bOn ? "the file watcher is on for the steps that need it" : "the file watcher is off again");
+}
+
+void CEditorSmokeTest::FlushWatcher (CEngine& Engine, const std::filesystem::path& Directory, FStringView What)
+{
+	assets::CFileWatcherService* watcher = Engine.GetFileWatcher();
+	Check(watcher != nullptr && watcher->Flush(Directory), FString::Format("the file watcher has seen {}", What));
 }
 
 void CEditorSmokeTest::CheckCameraController ()
@@ -446,6 +463,8 @@ void CEditorSmokeTest::Update (CEditor& Editor, CEngine& Engine)
 			T.Check(input.GetShortcutText(EEditorCommand::TogglePlay) == "Ctrl+P" && input.GetShortcutText(EEditorCommand::ExitFullscreen) == "Escape",
 				"TogglePlay is Ctrl+P, ExitFullscreen is Escape");
 			T.InputGeneration = input.GetGeneration();
+			// Overrides are re-read when the file watcher reports them: on for these steps.
+			T.WatchFiles(G, true);
 			PostCtrlP(G, true);
 		} },
 		{ 335u, "Ctrl+P", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G)
@@ -459,7 +478,7 @@ void CEditorSmokeTest::Update (CEditor& Editor, CEngine& Engine)
 			T.Check(!E.GetPlaySession().IsPlaying(), "... and stops it");
 			PostCtrlP(G, false);
 			T.WriteInputOverrides("[Commands]\nTogglePlay=F5\n");
-			E.GetInput().PollNow();
+			T.FlushWatcher(G, T.OutputDir, "the override written");
 		} },
 		{ 400u, "user override", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G)
 		{
@@ -486,9 +505,9 @@ void CEditorSmokeTest::Update (CEditor& Editor, CEngine& Engine)
 			T.Check(!E.GetPlaySession().IsPlaying(), "the overridden chord no longer plays");
 			PostCtrlP(G, false);
 			T.WriteInputOverrides("[Commands]\nTogglePlay=Bogus\n[Nonsense]\nX=1\n");
-			E.GetInput().PollNow();
+			T.FlushWatcher(G, T.OutputDir, "the bad override written");
 		} },
-		{ 470u, "bad override", [] (CEditorSmokeTest& T, CEditor& E, CEngine&)
+		{ 470u, "bad override", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G)
 		{
 			const CEditorInput& input = E.GetInput();
 			T.Check(input.GetGeneration() > T.InputGeneration && input.GetProblems().size() == 2u && input.GetChords(EEditorCommand::TogglePlay).empty(),
@@ -496,13 +515,14 @@ void CEditorSmokeTest::Update (CEditor& Editor, CEngine& Engine)
 			T.InputGeneration = input.GetGeneration();
 			std::error_code ec;
 			std::filesystem::remove(T.OutputDir / "EditorInput.ini", ec);
-			E.GetInput().PollNow();
+			T.FlushWatcher(G, T.OutputDir, "the override removed");
 		} },
-		{ 530u, "override removed", [] (CEditorSmokeTest& T, CEditor& E, CEngine&)
+		{ 530u, "override removed", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G)
 		{
 			const CEditorInput& input = E.GetInput();
 			T.Check(input.GetGeneration() > T.InputGeneration && input.GetProblems().empty() && input.GetShortcutText(EEditorCommand::TogglePlay) == "Ctrl+P",
 				"removing the override restores the shipped binding");
+			T.WatchFiles(G, false);
 			E.Execute(EEditorCommand::ResetLayout);
 		} },
 		{ 550u, "keyboard navigation", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G)

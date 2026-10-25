@@ -2,6 +2,7 @@
 
 #include "Material.h"
 
+#include "Assets/FileWatcherService.h"
 #include "Graphics/Render/Serializers/MaterialSerialize.h"
 #include "Graphics/Render/Serializers/MaterialSerializers.h"
 #include "Memory/Memory.h"
@@ -18,6 +19,11 @@ CMaterialLibrary::CMaterialLibrary ()
 	Serializers.SetDefaultWriteFormat(assets::EAssetFormat::Yaml);
 }
 
+CMaterialLibrary::~CMaterialLibrary ()
+{
+	Unwatch();
+}
+
 memory::TRefShared<SMaterial> CMaterialLibrary::LoadOrCreateMaterial (
 	const std::filesystem::path& MaterialPath,
 	const SMaterial& DefaultMaterial)
@@ -32,33 +38,117 @@ memory::TRefShared<SMaterial> CMaterialLibrary::LoadOrCreateMaterial (
 	SMaterialRecord record;
 	record.Material = LoadMaterialFromFile(MaterialPath, DefaultMaterial, true);
 	Materials.emplace(key, record);
+	Watch(MaterialPath);
 	return record.Material;
+}
+
+void CMaterialLibrary::SetFileWatcher (assets::CFileWatcherService* Watcher)
+{
+	if (Watcher == FileWatcher)
+	{
+		return;
+	}
+	Unwatch();
+	FileWatcher = Watcher;
+	for (const auto& entry : Materials)
+	{
+		if (entry.second.Material && !entry.second.Material->SourcePath.empty())
+		{
+			Watch(entry.second.Material->SourcePath);
+		}
+	}
+}
+
+void CMaterialLibrary::Watch (const std::filesystem::path& MaterialPath)
+{
+	if (!FileWatcher)
+	{
+		return;
+	}
+	const std::filesystem::path directory = MaterialPath.parent_path();
+	const FString key = MakeKey(directory);
+	if (WatchedDirectories.contains(key))
+	{
+		return;
+	}
+	assets::SWatchFilter filter;
+	filter.Extensions.push_back(".frtmat.yml");
+	const SDelegateHandle handle = FileWatcher->Subscribe(directory, filter,
+		[this] (std::span<const assets::SFileChange> Changes) { OnFilesChanged(Changes); });
+	WatchedDirectories.try_emplace(key, handle);
+}
+
+void CMaterialLibrary::Unwatch ()
+{
+	if (FileWatcher)
+	{
+		for (const auto& entry : WatchedDirectories)
+		{
+			FileWatcher->Unsubscribe(entry.second);
+		}
+	}
+	WatchedDirectories.clear();
+	FileWatcher = nullptr;
+}
+
+void CMaterialLibrary::OnFilesChanged (std::span<const assets::SFileChange> Changes)
+{
+	// Level-triggered: a change only says where to look. A material is read again when its file's
+	// write time differs from the one it was read with, so the library's own writes (create, upgrade)
+	// and repeated reports of one edit read nothing twice.
+	for (auto& entry : Materials)
+	{
+		SMaterialRecord& record = entry.second;
+		if (record.bChanged || !record.Material || record.Material->SourcePath.empty())
+		{
+			continue;
+		}
+		const std::filesystem::path& path = record.Material->SourcePath;
+		for (const assets::SFileChange& change : Changes)
+		{
+			if (!assets::IsFileAffected(change, path))
+			{
+				continue;
+			}
+			std::error_code ec;
+			const std::filesystem::file_time_type writeTime = std::filesystem::last_write_time(path, ec);
+			if (!ec && writeTime != record.Material->LastWriteTime)
+			{
+				record.bChanged = true;
+				bAnyChanged = true;
+			}
+			break;
+		}
+	}
 }
 
 bool CMaterialLibrary::ReloadModifiedMaterials ()
 {
+	if (!bAnyChanged)
+	{
+		return false;
+	}
+	bAnyChanged = false;
+
 	bool anyReloaded = false;
 	for (auto& entry : Materials)
 	{
-		if (!entry.second.Material)
+		SMaterialRecord& record = entry.second;
+		if (!record.bChanged)
 		{
 			continue;
 		}
+		record.bChanged = false;
 
-		SMaterial& material = *entry.second.Material;
-		if (material.SourcePath.empty())
-		{
-			continue;
-		}
-
+		// The write time is taken before the content: a write that lands while the file is read
+		// leaves a newer time behind, and its own report reads it again.
+		SMaterial& material = *record.Material;
 		std::error_code ec;
-		const std::filesystem::file_time_type newWriteTime =
-			std::filesystem::last_write_time(material.SourcePath, ec);
-		if (ec || newWriteTime == material.LastWriteTime)
+		const std::filesystem::file_time_type newWriteTime = std::filesystem::last_write_time(material.SourcePath, ec);
+		if (ec)
 		{
 			continue;
 		}
-
 		if (ReadMaterial(material.SourcePath, material))
 		{
 			material.LastWriteTime = newWriteTime;
@@ -68,6 +158,17 @@ bool CMaterialLibrary::ReloadModifiedMaterials ()
 	}
 
 	return anyReloaded;
+}
+
+void CMaterialLibrary::ForEachMaterial (TFunctionRef<void (const memory::TRefShared<SMaterial>&)> Visit) const
+{
+	for (const auto& entry : Materials)
+	{
+		if (entry.second.Material)
+		{
+			Visit(entry.second.Material);
+		}
+	}
 }
 
 memory::TRefShared<SMaterial> CMaterialLibrary::LoadMaterialFromFile (

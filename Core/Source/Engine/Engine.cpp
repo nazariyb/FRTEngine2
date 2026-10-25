@@ -11,6 +11,7 @@
 #include "Assets/DerivedDataCache.h"
 #include "Assets/FileWatcherService.h"
 #include "ECS/CoreComponents.h"
+#include "Engine/Automation.h"
 #include "Graphics/GraphicsComponents.h"
 #include "Graphics/Render/MaterialLibrary.h"
 #include "Jobs/WorkerPool.h"
@@ -71,6 +72,12 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 	{
 		std::printf("[config] %u command-line override(s)\n", applied);
 	}
+	// Scripted runs (captures, smoke tests) reload nothing behind their back and write nothing:
+	// forced before anything below is created from the config (Engine/Automation.h).
+	if (!Desc.bToolHost && CAutomation::IsScriptedRun(Config))
+	{
+		CAutomation::ApplyScriptedRunRules(Config);
+	}
 	LoadUserSettings(Config, UserSettings);
 
 	// 3. Memory: the primary pool every TArray, component pool and managed object allocates from.
@@ -105,10 +112,12 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 #endif
 
 	// 4c. The file watcher, in dev builds, headless too: the systems that reload files subscribe to it
-	//     (Assets/FileWatcherService.h). It watches nothing until they do - no thread, no handle - and
-	//     nothing at all with [Assets] Watch=0.
+	//     (Assets/FileWatcherService.h) - the input actions here, the renderer's materials and shader
+	//     programs below, the editor's input files. It watches nothing until they do - no thread, no
+	//     handle - and nothing at all with [Assets] Watch=0 (scripted runs).
 #if FRT_WITH_DEV_TOOLS
 	FileWatcher = std::make_unique<assets::CFileWatcherService>(assets::SFileWatcherSettings::FromConfig(Config));
+	InputActions.SetFileWatcher(FileWatcher.get());
 #endif
 
 	// 5. Real-time clock.
@@ -145,15 +154,12 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 	Input.SetDefaultWindow(static_cast<input::WindowId>(reinterpret_cast<uintptr_t>(Graphics->Window->GetHandle())));
 
 	// 7. Renderer, and the display modes the adapter offers. Its programs come from the shader cache:
-	//    -Ddc:Shaders=0 compiles every one, as before the cache (until M2); -Ddc:Verify=<percent>
-	//    compiles that share of the hits again and compares the bytes (BUILD002 on a difference).
+	//    -Ddc:Verify=<percent> compiles that share of the hits again and compares the bytes (BUILD002
+	//    on a difference). Materials and programs hot reload through the file watcher.
 	graphics::rhi::SShaderCacheSettings shaderCache;
-	if (DerivedData && Config.Get("Ddc", "Shaders", true))
-	{
-		shaderCache.Cache = DerivedData.get();
-	}
+	shaderCache.Cache = DerivedData.get();
 	shaderCache.VerifyPercent = Config.Get("Ddc", "Verify", 0.0f);
-	Graphics->Renderer = std::make_unique<graphics::CRenderer>(Graphics->Window.get(), *WorkerPool, shaderCache);
+	Graphics->Renderer = std::make_unique<graphics::CRenderer>(Graphics->Window.get(), *WorkerPool, shaderCache, FileWatcher.get());
 	Graphics->Renderer->Resize(display.FullscreenMode == EFullscreenMode::Fullscreen);
 	DisplayOptions = graphics::GetDisplayOptions(Graphics->Renderer->GetAdapter());
 	// Clamp the config's monitor index before anything indexes per-monitor data with it.
@@ -203,8 +209,9 @@ void CEngine::ShutDown ()
 	}
 #endif
 	HeadlessMaterials.reset();
-	// After the renderer and the headless materials, whose libraries subscribe to it; ends every
-	// subscription left.
+	// After the renderer, whose libraries subscribe to it; the input actions (a member, destroyed
+	// later) end theirs first. Ends every subscription left.
+	InputActions.SetFileWatcher(nullptr);
 	FileWatcher.reset();
 	Clock.reset();
 	// After the renderer, whose decodes it may still be running: drains (drops what is queued, waits
@@ -245,14 +252,14 @@ float CEngine::BeginFrame ()
 
 	Input.Update(deltaSeconds);
 #if FRT_WITH_DEV_TOOLS
-	// Files that changed on disk and have settled: their subscribers reload them now, before this
-	// frame's input is evaluated and before the host's simulation and extraction see the frame.
+	// Files that changed on disk and have settled: their subscribers reload them now - input actions
+	// and maps right here, before this frame's input is evaluated; materials and shader programs are
+	// marked and read again before the scene is drawn - before the host's simulation and extraction
+	// see the frame.
 	if (FileWatcher)
 	{
 		FileWatcher->Pump();
 	}
-	InputActions.ReloadModifiedActions();
-	InputActions.ReloadModifiedActionMaps();
 #endif
 	InputActions.EvaluateActionMaps(Input);
 

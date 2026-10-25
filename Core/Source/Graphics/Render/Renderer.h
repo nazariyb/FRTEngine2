@@ -30,6 +30,11 @@ namespace frt::jobs
 class CWorkerPool;
 }
 
+namespace frt::assets
+{
+class CFileWatcherService;
+}
+
 namespace frt::graphics
 {
 class CGpuScene;
@@ -64,8 +69,10 @@ public:
 	CRenderer () = delete;
 	// WorkerPool: the engine's, which texture streaming decodes on; it outlives the renderer.
 	// ShaderCache: where programs come from (the engine's DDC in dev builds, else every one compiled);
-	// its store outlives the renderer too.
-	CRenderer (CWindow* Window, jobs::CWorkerPool& WorkerPool, const rhi::SShaderCacheSettings& ShaderCache = {});
+	// its store outlives the renderer too. FileWatcher: what materials and shader programs hot
+	// reload through (the engine's, in dev builds), outliving the renderer; null reloads nothing.
+	CRenderer (CWindow* Window, jobs::CWorkerPool& WorkerPool, const rhi::SShaderCacheSettings& ShaderCache = {},
+		assets::CFileWatcherService* FileWatcher = nullptr);
 	~CRenderer ();
 	CRenderer (const CRenderer&) = delete;
 	CRenderer& operator= (const CRenderer&) = delete;

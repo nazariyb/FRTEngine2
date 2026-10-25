@@ -151,6 +151,17 @@ struct SWatchFilter
 
 using FFileChangesCallback = TUniqueFunction<void (std::span<const SFileChange>)>;
 
+/**
+ * For subscribers that keep files they loaded: whether the file at File may hold other bytes now
+ * than before Change, so that its loader should look again - compare the write time it loaded with
+ * the file's now, and read it only when they differ (level-triggered, as the service is). True when
+ * Change's Path is File (Added, Modified, or a Moved onto it), or when Change is about a directory
+ * (Rescan, a directory Moved) that File lies below. Never for Removed, nor for a Moved's OldPath:
+ * the file is gone from there, and a loader keeps what it has. Paths compare as the service compares
+ * them (absolute, normalized, names ignoring case).
+ */
+[[nodiscard]] FRT_CORE_API bool IsFileAffected (const SFileChange& Change, const std::filesystem::path& File);
+
 // Counts at the moment of the call; the totals count since construction.
 struct SFileWatcherStats
 {

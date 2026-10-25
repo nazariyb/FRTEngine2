@@ -586,7 +586,7 @@ TEST_F(ShaderCacheTest, WithoutAStoreEveryProgramIsCompiled)
 	CShaderCompiler compiler;
 	ASSERT_TRUE(compiler.Init(Root));
 	CShaderCache cache;
-	cache.Init(compiler, SShaderCacheSettings{});   // -Ddc:Shaders=0, or Release
+	cache.Init(compiler, SShaderCacheSettings{});   // no store, as in Release
 	EXPECT_FALSE(cache.IsCaching());
 	EXPECT_TRUE(cache.Compile(First()).bSuccess);
 	EXPECT_TRUE(cache.Compile(First()).bSuccess);

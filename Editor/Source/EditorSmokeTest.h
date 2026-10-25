@@ -34,6 +34,10 @@ class CEditor;
  * captures the whole window to PNG along the way, and exits with 0 when every check passed (2
  * otherwise). Captures and a log go to [Editor] SmokeTestDir, by default <project>/Local/SmokeTest
  * (also where a run whose SmokeTestDir is not UTF-8 fails).
+ *
+ * A smoke test is a scripted run, so the file watcher starts disabled ([Assets] Watch=0,
+ * Engine/Automation.h); the steps that need it - the input overrides - turn it on for themselves and
+ * Flush it after they write, so that what they check does not depend on timing.
  */
 class CEditorSmokeTest
 {
@@ -51,6 +55,11 @@ private:
 	void CheckCameraController ();
 	void TouchGameBuild (CEditor& Editor);
 	void WriteInputOverrides (FStringView Text);
+	// The file watcher on or off for the steps that need it ([Assets] Watch is off in scripted runs).
+	void WatchFiles (CEngine& Engine, bool bOn);
+	// Everything the watcher has seen happen in Directory's root is told now (CFileWatcherService::Flush).
+	void FlushWatcher (CEngine& Engine, const std::filesystem::path& Directory, FStringView What);
+
 	// The Which-th entity (of the first three) whose name is not ASCII, selected in the Editor
 	// panel after checking the UI font has a glyph for each of its characters; Which 0 finds them.
 	void SelectNamedEntity (CEditor& Editor, uint32 Which);

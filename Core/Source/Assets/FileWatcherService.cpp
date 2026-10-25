@@ -1671,4 +1671,14 @@ const SFileWatcherSettings& CFileWatcherService::GetSettings () const noexcept
 {
 	return State->Settings;
 }
+
+bool IsFileAffected (const SFileChange& Change, const std::filesystem::path& File)
+{
+	if (Change.Kind == EFileChange::Removed)
+	{
+		return false;
+	}
+	const std::optional<FString> relative = GetRelativePath(NormalizePath(File), NormalizePath(Change.Path), false);
+	return relative.has_value() && (Change.bDirectory || relative->IsEmpty());
+}
 }

@@ -1,7 +1,9 @@
 #include "Graphics/Render/RHI/Pipelines.h"
 
+#include <algorithm>
 #include <cstdio>
 
+#include "Assets/FileWatcherService.h"
 #include "Graphics/Render/RHI/Device.h"
 
 
@@ -101,16 +103,40 @@ ComPtr<ID3D12RootSignature> CreateGlobalRootSignature (ID3D12Device* Device, boo
 }
 
 
-void CPipelineLibrary::Init (CDevice& InDevice, CShaderCache& InShaders)
+void CPipelineLibrary::Init (CDevice& InDevice, CShaderCache& InShaders, assets::CFileWatcherService* Watcher)
 {
 	Device = &InDevice;
 	Shaders = &InShaders;
 	ComputeRootSignature = CreateGlobalRootSignature(Device->GetDevice(), false);
 	GraphicsRootSignature = CreateGlobalRootSignature(Device->GetDevice(), true);
+	FileWatcher = Watcher;
+	// One subscription for the whole shader root, where every source and include lives: a file read
+	// from elsewhere gets one for its directory as a build finds it (Watch).
+	WatchDirectory(Shaders->GetCompiler().GetShaderRoot());
+}
+
+CPipelineLibrary::~CPipelineLibrary ()
+{
+	Unwatch();
+}
+
+void CPipelineLibrary::Unwatch ()
+{
+	if (FileWatcher)
+	{
+		for (const auto& [directory, handle] : WatchedDirectories)
+		{
+			FileWatcher->Unsubscribe(handle);
+		}
+	}
+	WatchedDirectories.clear();
+	FileWatcher = nullptr;
+	bAnyChanged = false;
 }
 
 void CPipelineLibrary::Shutdown ()
 {
+	Unwatch();
 	Programs.clear();
 	for (TStringMap<uint32>& byName : ProgramIndex)
 	{
@@ -248,22 +274,85 @@ void CPipelineLibrary::Watch (SProgram& Program, const std::vector<std::filesyst
 		{
 			std::error_code ec;
 			Program.Watched.push_back({ dep, std::filesystem::last_write_time(dep, ec) });
+			WatchDirectory(dep.parent_path());
 		}
 	}
 }
 
-bool CPipelineLibrary::IsStale (const SProgram& Program) const
+void CPipelineLibrary::WatchDirectory (const std::filesystem::path& Directory)
 {
-	for (const SWatchedFile& file : Program.Watched)
+	if (!FileWatcher || Directory.empty())
 	{
-		std::error_code ec;
-		const auto writeTime = std::filesystem::last_write_time(file.Path, ec);
-		if (!ec && writeTime != file.WriteTime)
+		return;
+	}
+	// A directory change stands for everything below it, so IsFileAffected answers "is Directory
+	// at or below this watched one" the way the watcher compares paths.
+	assets::SFileChange inside;
+	inside.Kind = assets::EFileChange::Rescan;
+	inside.bDirectory = true;
+	for (const auto& [watched, handle] : WatchedDirectories)
+	{
+		inside.Path = watched;
+		if (assets::IsFileAffected(inside, Directory))
 		{
-			return true;
+			return;
 		}
 	}
-	return false;
+	const SDelegateHandle handle = FileWatcher->Subscribe(Directory, {},
+		[this] (std::span<const assets::SFileChange> Changes) { OnFilesChanged(Changes); });
+	WatchedDirectories.emplace_back(Directory, handle);
+}
+
+void CPipelineLibrary::OnFilesChanged (std::span<const assets::SFileChange> Changes)
+{
+	// Level-triggered: a change only says where to look. A program is rebuilt when a file it read
+	// has another write time than its last build saw, the comparison the per-frame poll before the
+	// watcher made. A file that is gone keeps the program as it is.
+	for (SProgram& program : Programs)
+	{
+		if (program.bChanged)
+		{
+			continue;
+		}
+		for (const SWatchedFile& file : program.Watched)
+		{
+			const bool bAffected = std::any_of(Changes.begin(), Changes.end(),
+				[&file] (const assets::SFileChange& Change) { return assets::IsFileAffected(Change, file.Path); });
+			if (!bAffected)
+			{
+				continue;
+			}
+			std::error_code ec;
+			const auto writeTime = std::filesystem::last_write_time(file.Path, ec);
+			if (!ec && writeTime != file.WriteTime)
+			{
+				program.bChanged = true;
+				bAnyChanged = true;
+				break;
+			}
+		}
+	}
+}
+
+std::vector<std::pair<std::filesystem::path, uint32>> CPipelineLibrary::GetWatchedFiles () const
+{
+	TPathMap<std::pair<std::filesystem::path, uint32>> byPath;
+	for (const SProgram& program : Programs)
+	{
+		for (const SWatchedFile& file : program.Watched)
+		{
+			auto [it, inserted] = byPath.try_emplace(FString::FromPath(file.Path.lexically_normal(), EPathStyle::Generic), file.Path, 0u);
+			++it->second.second;
+		}
+	}
+	std::vector<std::pair<std::filesystem::path, uint32>> files;
+	files.reserve(byPath.size());
+	for (auto& entry : byPath)
+	{
+		files.push_back(std::move(entry.second));
+	}
+	std::sort(files.begin(), files.end(), [] (const auto& A, const auto& B) { return A.first < B.first; });
+	return files;
 }
 
 bool CPipelineLibrary::Build (SProgram& Program)
@@ -271,7 +360,8 @@ bool CPipelineLibrary::Build (SProgram& Program)
 	ID3D12Device5* device = Device->GetDevice();
 
 	// Refresh the watch list's timestamps up front: a failed build must not be retried every
-	// frame, only after the next edit.
+	// frame, only after the next edit; and a write that lands while it compiles leaves a newer time
+	// behind, which that write's own report sees.
 	for (SWatchedFile& file : Program.Watched)
 	{
 		std::error_code ec;
@@ -390,29 +480,27 @@ bool CPipelineLibrary::Build (SProgram& Program)
 	return true;
 }
 
-bool CPipelineLibrary::PollHotReload ()
+bool CPipelineLibrary::RebuildChangedPrograms ()
 {
-	if (!bHotReload)
+	if (!bHotReload || !bAnyChanged)
 	{
 		return false;
 	}
-	// Stat-ing every dependency each frame is cheap but pointless; ~4 Hz is plenty.
-	if ((++PollCounter % 15u) != 0u)
-	{
-		return false;
-	}
+	bAnyChanged = false;
 
 	bool bAnyRebuilt = false;
 	for (SProgram& program : Programs)
 	{
-		if (!IsStale(program))
+		if (!program.bChanged)
 		{
 			continue;
 		}
+		program.bChanged = false;
 		std::fprintf(stdout, "[shader] hot reload: %s\n", program.Name.CStr());
 		if (Build(program))
 		{
 			bAnyRebuilt = true;
+			++HotReloads;
 		}
 	}
 	if (bAnyRebuilt)

@@ -190,7 +190,7 @@ uint64 HashBytes (uint64 Hash, const void* Data, size_t Size)
 
 
 CRenderer::CRenderer (CWindow* InWindow, jobs::CWorkerPool& WorkerPool,
-	const rhi::SShaderCacheSettings& ShaderCacheSettings)
+	const rhi::SShaderCacheSettings& ShaderCacheSettings, assets::CFileWatcherService* FileWatcher)
 	: Window(InWindow)
 {
 	CreateDevice();
@@ -215,7 +215,10 @@ CRenderer::CRenderer (CWindow* InWindow, jobs::CWorkerPool& WorkerPool,
 
 	ShaderCompiler.Init(paths::GetShaderRootDir());
 	ShaderCache.Init(ShaderCompiler, ShaderCacheSettings);
-	Pipelines.Init(Rhi, ShaderCache);
+	// Hot reload of programs and materials, through the engine's file watcher (dev builds; Release
+	// has none and reloads nothing).
+	Pipelines.Init(Rhi, ShaderCache, FileWatcher);
+	MaterialLibrary.SetFileWatcher(FileWatcher);
 #if !FRT_WITH_DEV_TOOLS
 	Pipelines.SetHotReloadEnabled(false);
 #endif
@@ -827,13 +830,15 @@ void CRenderer::ApplyProfile (CRenderView& View)
 void CRenderer::PrepareScene ()
 {
 	frt_assert(bCommandListRecording);
+	// What the file watcher reported changed (dev builds), read and built again before the scene
+	// and the views use it.
 #if FRT_WITH_DEV_TOOLS
 	if (MaterialLibrary.ReloadModifiedMaterials())
 	{
 		ResetAccumulation();
 	}
 #endif
-	if (Pipelines.PollHotReload())
+	if (Pipelines.RebuildChangedPrograms())
 	{
 		ResetAccumulation();
 	}

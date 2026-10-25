@@ -1,6 +1,7 @@
 #include "Input/InputActionLibrary.h"
 
 #include "EnginePaths.h"
+#include "Assets/FileWatcherService.h"
 
 
 namespace frt::input
@@ -8,6 +9,7 @@ namespace frt::input
 namespace
 {
 	constexpr FStringLiteral InputActionExtension = ".frtinputaction";
+	constexpr FStringLiteral InputActionMapExtension = ".frtinputmap";
 
 	// Action definitions (.frtinputaction) named by a map: the project's Content/Input, or the
 	// engine's without a project.
@@ -26,6 +28,11 @@ namespace
 		}
 		return absolute.lexically_normal();
 	}
+}
+
+CInputActionLibrary::~CInputActionLibrary ()
+{
+	Unwatch();
 }
 
 SInputActionDefinitionAsset* CInputActionLibrary::LoadOrCreateAction (FStringView Name)
@@ -55,6 +62,7 @@ SInputActionDefinitionAsset* CInputActionLibrary::LoadOrCreateAction (FStringVie
 	asset.LastWriteTime = std::filesystem::last_write_time(asset.SourcePath, ec);
 
 	auto [insertedIt, inserted] = ActionDefinitions.emplace(FString(key), std::move(asset));
+	Watch(insertedIt->second.SourcePath);
 	return &insertedIt->second;
 }
 
@@ -86,37 +94,8 @@ SInputActionMapAsset* CInputActionLibrary::LoadOrCreateActionMap (const std::fil
 	asset.LastWriteTime = std::filesystem::last_write_time(resolvedPath, ec);
 
 	auto [insertedIt, inserted] = ActionMaps.emplace(key, std::move(asset));
+	Watch(resolvedPath);
 	return &insertedIt->second;
-}
-
-bool CInputActionLibrary::ReloadModifiedActions ()
-{
-	bool anyReloaded = false;
-
-	for (auto& entry : ActionDefinitions)
-	{
-		SInputActionDefinitionAsset& asset = entry.second;
-		if (asset.SourcePath.empty())
-		{
-			continue;
-		}
-
-		std::error_code ec;
-		const std::filesystem::file_time_type newWriteTime =
-			std::filesystem::last_write_time(asset.SourcePath, ec);
-		if (ec || newWriteTime == asset.LastWriteTime)
-		{
-			continue;
-		}
-
-		if (LoadInputActionDefinition(asset.SourcePath, &asset.Action))
-		{
-			asset.LastWriteTime = newWriteTime;
-			anyReloaded = true;
-		}
-	}
-
-	return anyReloaded;
 }
 
 void CInputActionLibrary::EvaluateActionMaps (const CInputSystem& Input)
@@ -127,34 +106,100 @@ void CInputActionLibrary::EvaluateActionMaps (const CInputSystem& Input)
 	}
 }
 
-bool CInputActionLibrary::ReloadModifiedActionMaps ()
+void CInputActionLibrary::SetFileWatcher (assets::CFileWatcherService* Watcher)
 {
-	bool anyReloaded = false;
+	if (Watcher == FileWatcher)
+	{
+		return;
+	}
+	Unwatch();
+	FileWatcher = Watcher;
+	for (const auto& entry : ActionDefinitions)
+	{
+		Watch(entry.second.SourcePath);
+	}
+	for (const auto& entry : ActionMaps)
+	{
+		Watch(entry.second.SourcePath);
+	}
+}
 
+void CInputActionLibrary::Watch (const std::filesystem::path& Path)
+{
+	if (!FileWatcher || Path.empty())
+	{
+		return;
+	}
+	const std::filesystem::path directory = Path.parent_path();
+	const FString key = MakeKey(directory);
+	if (WatchedDirectories.contains(key))
+	{
+		return;
+	}
+	assets::SWatchFilter filter;
+	filter.Extensions.push_back(InputActionExtension);
+	filter.Extensions.push_back(InputActionMapExtension);
+	const SDelegateHandle handle = FileWatcher->Subscribe(directory, filter,
+		[this] (std::span<const assets::SFileChange> Changes) { OnFilesChanged(Changes); });
+	WatchedDirectories.try_emplace(key, handle);
+}
+
+void CInputActionLibrary::Unwatch ()
+{
+	if (FileWatcher)
+	{
+		for (const auto& entry : WatchedDirectories)
+		{
+			FileWatcher->Unsubscribe(entry.second);
+		}
+	}
+	WatchedDirectories.clear();
+	FileWatcher = nullptr;
+}
+
+void CInputActionLibrary::OnFilesChanged (std::span<const assets::SFileChange> Changes)
+{
+	// Level-triggered: a change only says where to look. A file is read again when its write time
+	// differs from the one it was read with - the time taken before the content, so a write that
+	// lands while it is read leaves a newer time behind, and its own report reads it again. A read
+	// that fails keeps the old time: the next save tries again.
+	const auto changedSince = [Changes] (const std::filesystem::path& Path, std::filesystem::file_time_type LastWriteTime,
+		std::filesystem::file_time_type& OutWriteTime)
+	{
+		if (Path.empty())
+		{
+			return false;
+		}
+		for (const assets::SFileChange& change : Changes)
+		{
+			if (assets::IsFileAffected(change, Path))
+			{
+				std::error_code ec;
+				OutWriteTime = std::filesystem::last_write_time(Path, ec);
+				return !ec && OutWriteTime != LastWriteTime;
+			}
+		}
+		return false;
+	};
+
+	for (auto& entry : ActionDefinitions)
+	{
+		SInputActionDefinitionAsset& asset = entry.second;
+		std::filesystem::file_time_type writeTime;
+		if (changedSince(asset.SourcePath, asset.LastWriteTime, writeTime) && LoadInputActionDefinition(asset.SourcePath, &asset.Action))
+		{
+			asset.LastWriteTime = writeTime;
+		}
+	}
 	for (auto& entry : ActionMaps)
 	{
 		SInputActionMapAsset& asset = entry.second;
-		if (asset.SourcePath.empty())
+		std::filesystem::file_time_type writeTime;
+		if (changedSince(asset.SourcePath, asset.LastWriteTime, writeTime) && asset.ActionMap.LoadFromFile(asset.SourcePath))
 		{
-			continue;
-		}
-
-		std::error_code ec;
-		const std::filesystem::file_time_type newWriteTime =
-			std::filesystem::last_write_time(asset.SourcePath, ec);
-		if (ec || newWriteTime == asset.LastWriteTime)
-		{
-			continue;
-		}
-
-		if (asset.ActionMap.LoadFromFile(asset.SourcePath))
-		{
-			asset.LastWriteTime = newWriteTime;
-			anyReloaded = true;
+			asset.LastWriteTime = writeTime;
 		}
 	}
-
-	return anyReloaded;
 }
 
 const SInputActionDefinitionAsset* CInputActionLibrary::FindAction (FStringView Name) const
@@ -211,6 +256,7 @@ SInputActionDefinitionAsset* CInputActionLibrary::LoadActionIfExists (FStringVie
 	FString key(MakeActionKey(asset.Action.Name.IsEmpty() ? Name : asset.Action.Name.View()));
 
 	auto [insertedIt, inserted] = ActionDefinitions.emplace(std::move(key), std::move(asset));
+	Watch(insertedIt->second.SourcePath);
 	return &insertedIt->second;
 }
 

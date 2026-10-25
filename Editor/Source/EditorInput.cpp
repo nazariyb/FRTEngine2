@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <system_error>
 
+#include "Assets/FileWatcherService.h"
 #include "Input/InputSystem.h"
 
 
@@ -21,51 +22,57 @@ constexpr FStringLiteral CameraKeys[] =
 	"InvertMouseLookY", "InvertOrbitY", "InvertMiddleMousePan", "InvertRightMouseDollyY",
 };
 
-// How often the files' timestamps are checked.
-constexpr std::chrono::milliseconds PollInterval(250);
-
-std::filesystem::file_time_type GetWriteTime (const std::filesystem::path& Path, bool& bOutExists)
-{
-	std::error_code ec;
-	bOutExists = std::filesystem::exists(Path, ec) && !ec;
-	if (!bOutExists)
-	{
-		return {};
-	}
-	const std::filesystem::file_time_type time = std::filesystem::last_write_time(Path, ec);
-	return ec ? std::filesystem::file_time_type() : time;
-}
+// How often a file that exists but could not be read is tried again.
+constexpr std::chrono::milliseconds RetryInterval(250);
 }
 
-void CEditorInput::Load (const std::filesystem::path& DefaultsPath, const std::filesystem::path& UserPath)
+CEditorInput::~CEditorInput ()
 {
+	Unwatch();
+}
+
+void CEditorInput::Load (const std::filesystem::path& DefaultsPath, const std::filesystem::path& UserPath,
+	assets::CFileWatcherService* Watcher)
+{
+	Unwatch();
 	Defaults.Path = DefaultsPath;
 	User.Path = UserPath;
+	// One subscription per file, on its directory with the file's name as the filter: the user's
+	// directory may not exist yet (the watcher waits for it), and an editor that saves through a
+	// temporary file and a rename is one change of the file all the same.
+	FileWatcher = Watcher;
+	if (FileWatcher)
+	{
+		const SLayer* layers[] = { &Defaults, &User };
+		for (size_t i = 0u; i < std::size(layers); ++i)
+		{
+			assets::SWatchFilter filter;
+			filter.Prefix = FString::FromPath(layers[i]->Path.filename());
+			WatchHandles[i] = FileWatcher->Subscribe(layers[i]->Path.parent_path(), filter,
+				[this] (std::span<const assets::SFileChange>) { bChanged = true; });
+		}
+	}
 	Read();
-	LastPoll = std::chrono::steady_clock::now();
 }
 
-void CEditorInput::PollNow ()
+void CEditorInput::Unwatch ()
 {
-	LastPoll = {};
+	if (FileWatcher)
+	{
+		for (SDelegateHandle& handle : WatchHandles)
+		{
+			FileWatcher->Unsubscribe(handle);
+			handle.Reset();
+		}
+	}
+	FileWatcher = nullptr;
 }
 
 bool CEditorInput::ReloadIfChanged ()
 {
-	const std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
-	if (now - LastPoll < PollInterval)
-	{
-		return false;
-	}
-	LastPoll = now;
-
-	const auto changed = [] (const SLayer& Layer)
-	{
-		bool bExists = false;
-		const std::filesystem::file_time_type time = GetWriteTime(Layer.Path, bExists);
-		return bExists != Layer.bExists || (bExists && time != Layer.WriteTime);
-	};
-	if (!changed(Defaults) && !changed(User))
+	const bool bRetry = (Defaults.bUnreadable || User.bUnreadable)
+		&& std::chrono::steady_clock::now() - LastRead >= RetryInterval;
+	if (!bChanged && !bRetry)
 	{
 		return false;
 	}
@@ -153,21 +160,24 @@ std::vector<input::SInputChord> CEditorInput::ReadChords (FStringView Section, F
 void CEditorInput::Read ()
 {
 	Problems.clear();
+	// Cleared before the files are read: a write that lands while they are read is reported again,
+	// and a later frame reads it.
+	bChanged = false;
+	LastRead = std::chrono::steady_clock::now();
 
-	// The timestamp is taken before the content: a write that lands while the file is read
-	// leaves a newer timestamp behind, and the next poll reads it again.
 	const auto load = [this] (SLayer& Layer)
 	{
-		bool bExists = false;
-		Layer.WriteTime = GetWriteTime(Layer.Path, bExists);
+		std::error_code ec;
+		const bool bExists = std::filesystem::exists(Layer.Path, ec) && !ec;
 		const bool bLoaded = bExists && Layer.File.LoadFromFile(Layer.Path);
 		if (!bLoaded)
 		{
 			Layer.File.Clear();
 		}
-		if (bExists && !bLoaded)
+		Layer.bUnreadable = bExists && !bLoaded;
+		if (Layer.bUnreadable)
 		{
-			// Locked by its writer, say. Recorded as absent, so the next poll tries again.
+			// Locked by its writer, say. Recorded as absent, and tried again shortly.
 			Report(FString::Format("cannot open {}; trying again", FString::FromPath(Layer.Path)));
 		}
 		Layer.bExists = bLoaded;
