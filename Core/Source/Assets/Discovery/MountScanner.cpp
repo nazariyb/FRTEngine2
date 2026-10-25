@@ -211,7 +211,10 @@ void ScanFolder (SScanState& State, SFolderNode& Node)
 		}
 		if (IsRuleFileName(entry.Name))
 		{
-			continue;   // the folder's rule file (or a second spelling of it): never a file of the batch
+			// The folder's rule file (or a second spelling of it): never a file of the batch, but a file of
+			// the mount all the same, so the portable-name checks see it (Assets.yml beside assets.yml).
+			recorded.push_back(i);
+			continue;
 		}
 		const std::optional<SFileVerdict> verdict = State.Membership->Classify(*Node.Scope, childPath);
 		if (!verdict.has_value())

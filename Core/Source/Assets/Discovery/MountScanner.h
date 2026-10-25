@@ -43,7 +43,7 @@ class CWorkerPool;
  *	- Rule files. A folder's Assets.yml (RuleFileName, under the portable fold; the byte-exact spelling
  *	  wins when a case-sensitive folder holds two) is handed to EnterFolder and never appears in Files.
  *	- Portable names (§3.1, §13.4), warnings until M4, over the entries the batch records (files Classify
- *	  kept and folders it entered): PATH001 for every member of a group of siblings equal under the
+ *	  kept, folders it entered, and every spelling of the rule file): PATH001 for every member of a group of siblings equal under the
  *	  portable fold (Rock.png and rock.png in a case-sensitive folder; U+212A KELVIN SIGN and 'k' on any
  *	  NTFS folder) - a sibling check, so a subtree scan reports its part completely; PATH002 for a name
  *	  that is illegal on a supported platform or not valid UTF-8 (GetNonPortableNameReason); PATH003 for

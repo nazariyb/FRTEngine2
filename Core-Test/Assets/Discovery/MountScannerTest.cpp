@@ -727,7 +727,7 @@ TEST(MountScannerTest, JunctionsAreSkippedAndNothingBelowThemIsRecorded)
 // ---------------- Portable names ----------------
 
 // Rock.png and rock.png in a case-sensitive mount are two files, both scanned under their own spelling;
-// PATH001 names each; known files match byte-exact.
+// PATH001 names each, the rule file's two spellings included; known files match byte-exact.
 TEST(MountScannerTest, ACaseSensitiveMountScansBothSpellingsAndReportsPath001)
 {
 	CDiscoveryTree tree("Case-sensitive");
@@ -754,13 +754,16 @@ TEST(MountScannerTest, ACaseSensitiveMountScansBothSpellingsAndReportsPath001)
 	EXPECT_EQ(FilePaths(first), (std::vector<FString> { "/Project/Rock.png", "/Project/rock.png", "/Project/Textures/a.png", "/Project/textures/b.png" }));
 	EXPECT_GE(IndexOf(membership.GetEvents(), "enter /Project Assets.yml"), 0);   // the reserved spelling wins
 	const std::vector<const SDiagnostic*> collisions = FindDiagnostics(first, Path001);
-	ASSERT_EQ(collisions.size(), 4u) << DumpBatch(first).CStr();
-	EXPECT_EQ(collisions[0]->Subject, "/Project/Rock.png");
-	EXPECT_EQ(collisions[1]->Subject, "/Project/rock.png");
-	EXPECT_EQ(collisions[2]->Subject, "/Project/Textures");
-	EXPECT_EQ(collisions[3]->Subject, "/Project/textures");
-	EXPECT_EQ(collisions[0]->Severity, ESeverity::Warning);
-	EXPECT_TRUE(collisions[0]->Message.View().Contains(FStringView("'rock.png'")));
+	ASSERT_EQ(collisions.size(), 6u) << DumpBatch(first).CStr();
+	// The rule file's two spellings collide too, although neither is a file of the batch.
+	EXPECT_EQ(collisions[0]->Subject, "/Project/Assets.yml");
+	EXPECT_EQ(collisions[1]->Subject, "/Project/assets.yml");
+	EXPECT_EQ(collisions[2]->Subject, "/Project/Rock.png");
+	EXPECT_EQ(collisions[3]->Subject, "/Project/rock.png");
+	EXPECT_EQ(collisions[4]->Subject, "/Project/Textures");
+	EXPECT_EQ(collisions[5]->Subject, "/Project/textures");
+	EXPECT_EQ(collisions[2]->Severity, ESeverity::Warning);
+	EXPECT_TRUE(collisions[2]->Message.View().Contains(FStringView("'rock.png'")));
 
 	CKnownMap known;
 	const SScanFile& upper = *FindFile(first, "/Project/Rock.png");
