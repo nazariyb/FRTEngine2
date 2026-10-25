@@ -543,6 +543,93 @@ TEST_F(FileWatcherServiceTest, AFileThatTakesARemovedDirectorysPlaceIsAddedAfter
 	EXPECT_TRUE(assets::IsFileAffected(*found[1], File("Шлях"))) << "a loader of the file looks at it";
 }
 
+TEST_F(FileWatcherServiceTest, ADirectoryRenamedTwiceIsOneMovedFromWhereItBegan)
+{
+	std::error_code ec;
+	std::filesystem::create_directories(File("Перша"), ec);
+	WriteText(File("Перша/x.txt"), "x");
+	assets::SFileWatcherSettings settings;
+	settings.SettleMs = 10000u;   // only the fence tells
+	Start(settings);
+
+	// A script's rename through a temporary name: a -> b -> c within milliseconds.
+	std::filesystem::rename(File("Перша"), File("Друга"), ec);
+	ASSERT_FALSE(ec);
+	std::filesystem::rename(File("Друга"), File("Третя"), ec);
+	ASSERT_FALSE(ec);
+	Flush();
+	ASSERT_TRUE(Recorder.HasOnly("Третя", assets::EFileChange::Moved)) << Recorder.Describe().CStr();
+	EXPECT_EQ(Recorder.Find("Третя")[0]->OldPath, File("Перша")) << Recorder.Describe().CStr();
+	EXPECT_TRUE(Recorder.Find("Третя")[0]->bDirectory);
+	EXPECT_EQ(Recorder.Changes.size(), 1u) << "nothing about the name in between\n" << Recorder.Describe().CStr();
+}
+
+TEST_F(FileWatcherServiceTest, ADirectoryRenamedThenMovedOutIsRemovedWhereItBegan)
+{
+	std::error_code ec;
+	std::filesystem::create_directories(File("Перша"), ec);
+	WriteText(File("Перша/x.txt"), "x");
+	assets::SFileWatcherSettings settings;
+	settings.SettleMs = 10000u;
+	Start(settings);
+
+	std::filesystem::rename(File("Перша"), File("Друга"), ec);
+	ASSERT_FALSE(ec);
+	std::filesystem::rename(File("Друга"), Outside / FStringView("Друга").ToPath(), ec);
+	ASSERT_FALSE(ec);
+	Flush();
+	ASSERT_TRUE(Recorder.HasOnly("Перша", assets::EFileChange::Removed)) << Recorder.Describe().CStr();
+	EXPECT_TRUE(Recorder.Find("Перша")[0]->bDirectory);
+	EXPECT_EQ(Recorder.Changes.size(), 1u) << Recorder.Describe().CStr();
+}
+
+TEST_F(FileWatcherServiceTest, ACaseOnlyDirectoryRenameIsOneMovedAndAFileMovedIntoItKeepsItsSource)
+{
+	std::error_code ec;
+	std::filesystem::create_directories(File("Звідки"), ec);
+	std::filesystem::create_directories(File("тека"), ec);
+	WriteText(File("Звідки/X.txt"), "x");
+	WriteText(File("тека/Був.txt"), "was there");
+	assets::SFileWatcherSettings settings;
+	settings.SettleMs = 10000u;
+	Start(settings);
+
+	// G3/G4 applied to a folder, just after a file moved into it.
+	std::filesystem::rename(File("Звідки/X.txt"), File("тека/X.txt"), ec);
+	ASSERT_FALSE(ec);
+	ASSERT_TRUE(MoveFileExW(File("тека").c_str(), File("Тека").c_str(), 0u));
+	Flush();
+	ASSERT_TRUE(Recorder.HasOnly("Тека", assets::EFileChange::Moved)) << Recorder.Describe().CStr();
+	EXPECT_EQ(Recorder.Find("Тека")[0]->OldPath, File("тека"));
+	EXPECT_TRUE(Recorder.Find("Тека")[0]->bDirectory);
+	ASSERT_TRUE(Recorder.HasOnly("Тека/X.txt", assets::EFileChange::Moved)) << Recorder.Describe().CStr();
+	EXPECT_EQ(Recorder.Find("Тека/X.txt")[0]->OldPath, File("Звідки/X.txt")) << "the move's source is told";
+	EXPECT_EQ(Recorder.Changes.size(), 2u) << "no Rescan, nothing enumerated\n" << Recorder.Describe().CStr();
+}
+
+TEST_F(FileWatcherServiceTest, AFileRenamedInADirectoryThatIsThenRenamedMovesFromItsNewPlace)
+{
+	std::error_code ec;
+	std::filesystem::create_directories(File("Стара"), ec);
+	WriteText(File("Стара/x.txt"), "x");
+	assets::SFileWatcherSettings settings;
+	settings.SettleMs = 10000u;
+	Start(settings);
+
+	std::filesystem::rename(File("Стара/x.txt"), File("Стара/y.txt"), ec);
+	ASSERT_FALSE(ec);
+	std::filesystem::rename(File("Стара"), File("Нова"), ec);
+	ASSERT_FALSE(ec);
+	Flush();
+	ASSERT_EQ(Recorder.Changes.size(), 2u) << Recorder.Describe().CStr();
+	EXPECT_EQ(Recorder.Changes[0].RelativePath, "Нова") << "the directory first\n" << Recorder.Describe().CStr();
+	EXPECT_EQ(Recorder.Changes[0].Kind, assets::EFileChange::Moved);
+	EXPECT_EQ(Recorder.Changes[0].OldPath, File("Стара"));
+	EXPECT_EQ(Recorder.Changes[1].RelativePath, "Нова/y.txt") << Recorder.Describe().CStr();
+	EXPECT_EQ(Recorder.Changes[1].Kind, assets::EFileChange::Moved);
+	EXPECT_EQ(Recorder.Changes[1].OldPath, File("Нова/x.txt")) << "a path that exists once the directory has moved";
+}
+
 TEST_F(FileWatcherServiceTest, WithoutEntryTypesADirectorysOwnModifiedIsDropped)
 {
 	// The fallback without extended information says nothing about what an entry is, and reports a
@@ -575,6 +662,74 @@ TEST_F(FileWatcherServiceTest, WithoutEntryTypesADirectorysOwnModifiedIsDropped)
 	ASSERT_TRUE(PumpUntil([this] { return !Recorder.Changes.empty() && Service->IsIdle(); })) << Recorder.Describe().CStr();
 	EXPECT_TRUE(Recorder.HasOnly("Нова/x.hlsli", assets::EFileChange::Added)) << Recorder.Describe().CStr();
 	EXPECT_EQ(Recorder.Changes.size(), 1u) << Recorder.Describe().CStr();
+}
+
+TEST_F(FileWatcherServiceTest, WithoutEntryTypesARemovedDirectoryIsADirectoryRemovedForEverySubscriptionItConcerns)
+{
+	std::error_code ec;
+	std::filesystem::create_directories(File("Матеріали/Глибше"), ec);
+	WriteText(File("Матеріали/Глибше/a.frtmat.yml"), "a");
+	const auto queue = std::make_shared<CScriptedWatcher::SQueue>();
+	assets::SFileWatcherSettings settings;
+	settings.SettleMs = 20u;
+	settings.RemoveGraceMs = 20u;
+	Service = std::make_unique<assets::CFileWatcherService>(settings, std::make_unique<CScriptedWatcher>(queue));
+	Service->Subscribe(Content, {}, Recorder.MakeCallback());
+	SRecorder materials;
+	assets::SWatchFilter filter;
+	filter.Extensions = { ".frtmat.yml" };
+	Service->Subscribe(Content, filter, materials.MakeCallback());
+	SRecorder inner;
+	Service->Subscribe(File("Матеріали/Глибше"), {}, inner.MakeCallback());
+	ASSERT_EQ(Service->GetStats().Roots, 1u);
+
+	// The fallback says only that the name is gone; the disk cannot say what it was.
+	std::filesystem::remove_all(File("Матеріали"), ec);
+	ASSERT_FALSE(ec);
+	queue->Push(platform::EFileEventKind::Removed, "Матеріали");
+	ASSERT_TRUE(PumpUntil([&] { return !Recorder.Changes.empty() && Service->IsIdle(); })) << Recorder.Describe().CStr();
+	ASSERT_EQ(Recorder.Changes.size(), 1u) << Recorder.Describe().CStr();
+	EXPECT_EQ(Recorder.Changes[0].Kind, assets::EFileChange::Removed);
+	EXPECT_TRUE(Recorder.Changes[0].bDirectory) << "everything at or below it is gone";
+	ASSERT_EQ(materials.Changes.size(), 1u) << "an extension filter does not hide a directory\n" << materials.Describe().CStr();
+	EXPECT_EQ(materials.Changes[0].RelativePath, "Матеріали");
+	EXPECT_TRUE(materials.Changes[0].bDirectory);
+	ASSERT_EQ(inner.Changes.size(), 1u) << inner.Describe().CStr();
+	EXPECT_EQ(inner.Changes[0].Path, File("Матеріали/Глибше")) << "told about its region as a whole";
+	EXPECT_TRUE(inner.Changes[0].bDirectory);
+}
+
+TEST_F(FileWatcherServiceTest, WithoutEntryTypesARenamedDirectoryIsOneMovedAndWhatWasPendingBelowItMovesAlong)
+{
+	std::error_code ec;
+	std::filesystem::create_directories(File("Стара"), ec);
+	WriteText(File("Стара/f.frtmat.yml"), "f");
+	WriteText(File("Стара/g.frtmat.yml"), "g");
+	const auto queue = std::make_shared<CScriptedWatcher::SQueue>();
+	assets::SFileWatcherSettings settings;
+	settings.SettleMs = 20u;
+	settings.RemoveGraceMs = 20u;
+	Service = std::make_unique<assets::CFileWatcherService>(settings, std::make_unique<CScriptedWatcher>(queue));
+	Service->Subscribe(Content, {}, Recorder.MakeCallback());
+	SRecorder materials;
+	assets::SWatchFilter filter;
+	filter.Extensions = { ".frtmat.yml" };
+	Service->Subscribe(Content, filter, materials.MakeCallback());
+
+	WriteText(File("Стара/f.frtmat.yml"), "f, changed");
+	queue->Push(platform::EFileEventKind::Modified, "Стара/f.frtmat.yml");
+	std::filesystem::rename(File("Стара"), File("Нова"), ec);
+	ASSERT_FALSE(ec);
+	queue->Push(platform::EFileEventKind::RenamedOld, "Стара");
+	queue->Push(platform::EFileEventKind::RenamedNew, "Нова");
+	ASSERT_TRUE(PumpUntil([&] { return !Recorder.Changes.empty() && Service->IsIdle(); })) << Recorder.Describe().CStr();
+	ASSERT_TRUE(Recorder.HasOnly("Нова", assets::EFileChange::Moved)) << Recorder.Describe().CStr();
+	EXPECT_TRUE(Recorder.Find("Нова")[0]->bDirectory);
+	EXPECT_EQ(Recorder.Find("Нова")[0]->OldPath, File("Стара"));
+	EXPECT_TRUE(Recorder.HasOnly("Нова/f.frtmat.yml", assets::EFileChange::Modified)) << "re-pathed\n" << Recorder.Describe().CStr();
+	EXPECT_EQ(Recorder.Changes.size(), 2u) << "no Removed of the old name, no Added below the new one\n" << Recorder.Describe().CStr();
+	EXPECT_TRUE(materials.HasOnly("Нова", assets::EFileChange::Moved)) << materials.Describe().CStr();
+	EXPECT_EQ(materials.Changes.size(), 2u) << materials.Describe().CStr();
 }
 
 // ---------------- Overflow, fences, self-writes ----------------

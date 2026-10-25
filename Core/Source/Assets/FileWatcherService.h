@@ -45,11 +45,16 @@ class CConfig;
  *	  whose two paths differ in case only.
  *	- Directories: one event stands for a whole subtree. A directory moved in (or created, or restored
  *	  from the Recycle Bin) is enumerated with platform::EnumerateDirectory and every file in it is
- *	  Added; one renamed or moved within the root re-paths what is pending below it and is told as one
- *	  directory Moved; one removed or moved out is one directory Removed, which stands for everything
- *	  below it (UE's RemoveAssetPath leaves ghosts there), followed by the file's Added when a file took
- *	  its place within the window. Where the platform gives no entry types, the disk is asked, and a
- *	  directory's own Modified (its times, changed by an entry inside) is dropped.
+ *	  Added; one renamed or moved within the root (a case-only rename included) re-paths what is
+ *	  pending below it and is told as one directory Moved from where it was when the window began (a
+ *	  chain a -> b -> c is one Moved from a); one removed or moved out is one directory Removed, which
+ *	  stands for everything below it (UE's RemoveAssetPath leaves ghosts there) - at a, if it had moved
+ *	  from a within the window - followed by the file's Added when a file took its place within the
+ *	  window. Where the platform gives no entry types, the disk is asked, and a directory's own Modified
+ *	  (its times, changed by an entry inside) is dropped; the disk cannot say what a removed entry was,
+ *	  so a removal of unknown type is told as a directory Removed (everything at or below the path,
+ *	  true of a file too) to every subscription whose region holds it or lies below it, and a rename
+ *	  whose new half is a directory is a directory Moved.
  *	- Bursts. More than BurstEvents (256) events without a SettleMs pause is a VCS operation (a
  *	  checkout, a sync): everything is held until the whole tree has been quiet for VcsSettleMs
  *	  ([AssetsEditor] VcsSettleMs, 1500), then told at once, so no subscriber ever sees a half-updated

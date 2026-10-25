@@ -587,8 +587,9 @@ struct CFileWatcherService::SState
 			{
 				continue;
 			}
+			// A removal of unknown type may have been a directory, at or below the region or holding it.
 			if (MatchesFile(subscription, Key, Entry.Path) || (!movedKey.IsEmpty() && MatchesFile(subscription, movedKey, Entry.MovedFrom))
-				|| (Entry.bMaybeDirectory && IsAtOrBelow(subscription.RegionKey, Key)))
+				|| (Entry.bMaybeDirectory && (IsAtOrBelow(subscription.RegionKey, Key) || IsAtOrBelow(Key, subscription.RegionKey))))
 			{
 				return true;
 			}
@@ -730,6 +731,13 @@ struct CFileWatcherService::SState
 			{
 				return;
 			}
+		}
+		else if (Event.EntryType == platform::EFileEntryType::Unknown)
+		{
+			// A removal: the disk cannot say what is gone, but the window may know - a directory that
+			// moved or appeared here within it.
+			const auto known = root.Pending.find(MakeKey(root, Event.Path));
+			bDirectory = known != root.Pending.end() && known->second.Type != EEntry::File;
 		}
 		if (bDirectory)
 		{
@@ -915,9 +923,12 @@ struct CFileWatcherService::SState
 			removal.bDirectory = true;
 			ExtractBelow(Root, key, removal.Below, removal.LeftBehind);
 			SPending& entry = Touch(Root, key, Event.Path, true, Time);
+			if (entry.Type == EEntry::File)
+			{
+				entry.MovedFrom.Clear();   // a file's history; a directory that moved here keeps where it came from
+			}
 			entry.Type = EEntry::DirectoryRemoved;
 			entry.bExistsNow = false;
-			entry.MovedFrom.Clear();
 			if (Event.Kind == platform::EFileEventKind::RenamedOld)
 			{
 				Root.LastRenamedOld = { Event.Path, key, Event.Identity, Time, true, true };
@@ -939,16 +950,18 @@ struct CFileWatcherService::SState
 			const std::optional<size_t> sourceIndex = FindMoveSource(Root, Event, Time);
 			if (sourceIndex)
 			{
+				const bool bAdjacent = *sourceIndex == Removals.size();
 				SRemoval source = TakeMoveSource(Root, *sourceIndex);
-				if (source.bDirectory && source.Key != key)
+				if (!source.bDirectory && bAdjacent)
 				{
-					// Renamed or moved within the root: what was pending below it moves along.
-					RepathInto(Root, std::move(source.Below), source.Path, key, Event.Path);
-					Root.Pending.erase(source.Key);
-					SPending& entry = Touch(Root, key, Event.Path, false, Time);
-					entry.Type = EEntry::DirectoryMoved;
-					entry.MovedFrom = source.Path;
-					entry.bExistsNow = true;
+					// Without entry types the old half went in as a file (the disk could not say what was
+					// gone); the new half is a directory, so the old one was too.
+					source.bDirectory = true;
+					ExtractBelow(Root, source.Key, source.Below, source.LeftBehind);
+				}
+				if (source.bDirectory)
+				{
+					MoveDirectory(Root, std::move(source), Event.Path, key, Time);
 					break;
 				}
 			}
@@ -970,6 +983,33 @@ struct CFileWatcherService::SState
 		default:
 			break;   // a directory's own times: its children report themselves
 		}
+	}
+
+	// The directory Source removed is at Path (Key) now, renamed or moved within the root - also when only
+	// its name's case changed: what was pending below it moves along, and it is one Moved from where it
+	// was when the window began (a chain a -> b -> c is one move from a, as TransferMove makes it for
+	// files; back where it began, spelled the same, the directory itself is told nothing).
+	void MoveDirectory (SRoot& Root, SRemoval&& Source, FStringView Path, const FString& Key, uint64 Time)
+	{
+		FString from = Source.Path;
+		const auto sourceIt = Root.Pending.find(Source.Key);
+		if (sourceIt != Root.Pending.end())
+		{
+			if (sourceIt->second.Type != EEntry::File && !sourceIt->second.MovedFrom.IsEmpty())
+			{
+				from = sourceIt->second.MovedFrom;
+			}
+			Root.Pending.erase(sourceIt);
+		}
+		RepathInto(Root, std::move(Source.Below), Source.Path, Key, Path);
+		if (from == Path)
+		{
+			return;
+		}
+		SPending& entry = Touch(Root, Key, Path, false, Time);
+		entry.Type = EEntry::DirectoryMoved;
+		entry.MovedFrom = std::move(from);
+		entry.bExistsNow = true;
 	}
 
 	// Takes what is pending below the directory at Key out of the root into OutBelow: the directory's own
@@ -1004,15 +1044,22 @@ struct CFileWatcherService::SState
 		}
 	}
 
-	// Entries that were pending below the directory OldPath, now below NewPath (whose key is NewKey).
+	// Entries that were pending below the directory OldPath, now below NewPath (whose key is NewKey). A
+	// move that began inside the directory is re-pathed too: told after the directory's own Moved (keys
+	// sort below it), its source is where the directory's move put it.
 	void RepathInto (SRoot& Root, FPendingList&& Entries, FStringView OldPath, FStringView NewKey, FStringView NewPath)
 	{
 		const uint32 oldNames = CountNames(OldPath);
+		const FString oldDirectoryKey = MakeKey(Root, OldPath);
 		for (auto& [oldKey, entry] : Entries)
 		{
 			FString newKey = JoinPath(NewKey, DropNames(oldKey, oldNames));
 			entry.Path = JoinPath(NewPath, DropNames(entry.Path, oldNames));
 			entry.FirstPath = JoinPath(NewPath, DropNames(entry.FirstPath, oldNames));
+			if (!entry.MovedFrom.IsEmpty() && IsAtOrBelow(MakeKey(Root, entry.MovedFrom), oldDirectoryKey))
+			{
+				entry.MovedFrom = JoinPath(NewPath, DropNames(entry.MovedFrom, oldNames));
+			}
 			Root.Pending.insert_or_assign(std::move(newKey), std::move(entry));
 		}
 	}
@@ -1122,6 +1169,16 @@ struct CFileWatcherService::SState
 		{
 			const std::optional<platform::SFileStat> stat = platform::Stat(full);
 			Out.bDirectory = true;
+			if (!Entry.MovedFrom.IsEmpty())
+			{
+				// It had moved here within the window (a -> b), then went on or away: gone from where it
+				// was. Whatever is at its path now is resolved after that, as a path nobody knew.
+				Out.Kind = EFileChange::Removed;
+				Out.Path = Entry.MovedFrom;
+				Out.Key = MakeKey(Root, Entry.MovedFrom);
+				Entry.MovedFrom.Clear();
+				return stat ? EOutcome::TellAndResolveAgain : EOutcome::Tell;
+			}
 			Out.Kind = stat && stat->bDirectory ? EFileChange::Rescan : EFileChange::Removed;
 			if (stat && !stat->bDirectory)
 			{
@@ -1330,7 +1387,7 @@ struct CFileWatcherService::SState
 					break;
 				case EOutcome::TellAndResolveAgain:
 					ready.push_back(std::move(change));
-					break;   // the same entry again, now a file entry (it never asks for this twice)
+					break;   // the same entry again, changed so that it does not ask for this forever
 				}
 			}
 			// Stable: two changes of one path (a directory removed, a file in its place) keep their order.
@@ -1399,6 +1456,20 @@ struct CFileWatcherService::SState
 			}
 			return;
 		}
+		if (Ready.bMaybeDirectory)
+		{
+			// A removal of unknown type (no entry types: a share, FAT, ReFS) may have been a directory:
+			// everything at or below the path is gone - true of a file as well - whatever the filter.
+			if (IsAtOrBelow(Ready.Key, region))
+			{
+				Out.push_back(Compose(Subscription, Ready.Kind, true, Ready.Path, {}));
+			}
+			else if (IsAtOrBelow(region, Ready.Key))
+			{
+				Out.push_back(Compose(Subscription, Ready.Kind, true, Subscription.RegionPath, {}));
+			}
+			return;
+		}
 		const bool bNewMatches = MatchesFile(Subscription, Ready.Key, Ready.Path);
 		const bool bOldMatches = !Ready.OldKey.IsEmpty() && MatchesFile(Subscription, Ready.OldKey, Ready.OldPath);
 		if (bMove && bNewMatches != bOldMatches)
@@ -1422,10 +1493,6 @@ struct CFileWatcherService::SState
 		if (bNewMatches || bOldMatches)
 		{
 			Out.push_back(Compose(Subscription, Ready.Kind, false, Ready.Path, Ready.OldPath));
-		}
-		else if (Ready.bMaybeDirectory && IsAtOrBelow(region, Ready.Key))
-		{
-			Out.push_back(Compose(Subscription, Ready.Kind, true, Subscription.RegionPath, {}));
 		}
 	}
 
