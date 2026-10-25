@@ -7,6 +7,7 @@
 #include <shellapi.h>
 
 #include "Containers/WideString.h"
+#include "Platform/BlockingFileReader.h"
 #include "Platform/FileSystem.h"
 #include "Platform/Windows/WindowsCommon.h"
 
@@ -22,7 +23,7 @@ constexpr uint32 MaxEnvironmentUnits = 32767u;
 // Windows paths are at most 32767 UTF-16 units, whatever the long-path setting.
 constexpr size_t MaxPathUnits = 32768u;
 
-// Longest file the read functions return: the most an FString holds.
+// Longest file ReadFileText returns: the most an FString holds.
 constexpr int64 MaxFileBytes = FString::MaxLength;
 
 
@@ -117,23 +118,13 @@ void SetBufferLength (FString& Buffer, uint32 Length) noexcept
 	Buffer.ResizeUninitialized(Length);
 }
 
-void SetBufferLength (std::vector<uint8>& Buffer, uint32 Length)
-{
-	Buffer.resize(Length);
-}
-
 void* GetWritableData (FString& Buffer) noexcept
 {
 	return Buffer.GetData();
 }
 
-void* GetWritableData (std::vector<uint8>& Buffer) noexcept
-{
-	return Buffer.data();
-}
-
-// The whole file into Out. Shares read, write and delete access as the C++ streams do, so a file
-// another process holds open for writing (an editor saving it) can still be read.
+// The whole file into Out (ReadFileText). Shares read, write and delete access as the C++ streams do,
+// so a file another process holds open for writing (an editor saving it) can still be read.
 template <typename TBuffer>
 bool ReadWholeFile (const std::filesystem::path& Path, TBuffer& Out)
 {
@@ -479,10 +470,23 @@ std::optional<FString> ReadFileText (const std::filesystem::path& Path, ETextFil
 	return DecodeTextFile(std::move(text));
 }
 
-std::optional<std::vector<uint8>> ReadFileBytes (const std::filesystem::path& Path)
+std::optional<std::vector<uint8>> ReadFileBytes (const std::filesystem::path& Path, FString* OutError, EFileFailure* OutFailure)
 {
+	CBlockingFileReader reader;
 	std::vector<uint8> bytes;
-	if (!ReadWholeFile(Path, bytes))
+	bool bRead = reader.Open(Path, OutError);
+	if (bRead)
+	{
+		bytes.resize(static_cast<size_t>(reader.GetSize()));
+		bRead = bytes.empty() || reader.ReadExactAt(0u, bytes, OutError);
+	}
+	if (OutFailure != nullptr)
+	{
+		// A short read (the file shrank since it was opened) is no failure of the reader's.
+		*OutFailure = bRead ? EFileFailure::None
+			: (reader.GetLastFailure() != EFileFailure::None ? reader.GetLastFailure() : EFileFailure::Other);
+	}
+	if (!bRead)
 	{
 		return std::nullopt;
 	}

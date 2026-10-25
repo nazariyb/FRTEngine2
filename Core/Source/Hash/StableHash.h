@@ -1,6 +1,7 @@
 #pragma once
 
 #include <compare>
+#include <cstring>
 #include <optional>
 #include <span>
 
@@ -78,6 +79,18 @@ struct SContentHash
 	[[nodiscard]] std::span<const uint8, Size> AsBytes () const noexcept { return std::span<const uint8, Size>(Bytes); }
 
 	constexpr auto operator<=> (const SContentHash&) const = default;
+};
+
+// The hasher of hash tables keyed by SContentHash (DDC keys, KeyBlob hashes). The hash is cryptographic:
+// its first bytes are as good as any hash of it.
+struct SContentHashHasher
+{
+	size_t operator() (const SContentHash& Hash) const noexcept
+	{
+		size_t value = 0u;
+		std::memcpy(&value, Hash.Bytes, sizeof(value));
+		return value;
+	}
 };
 
 

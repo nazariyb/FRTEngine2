@@ -268,21 +268,6 @@ size_t FindNextMagic (std::span<const uint8> Bytes, size_t Offset)
 	return Bytes.size();
 }
 
-std::optional<std::vector<uint8>> ReadWholeFile (const std::filesystem::path& Path, FString* OutError)
-{
-	platform::CBlockingFileReader reader;
-	if (!reader.Open(Path, OutError))
-	{
-		return std::nullopt;
-	}
-	std::vector<uint8> bytes(static_cast<size_t>(reader.GetSize()));
-	if (!bytes.empty() && !reader.ReadExactAt(0u, bytes, OutError))
-	{
-		return std::nullopt;
-	}
-	return bytes;
-}
-
 bool IsHeaderValid (std::span<const uint8> Bytes) noexcept
 {
 	return Bytes.size() >= sizeof(LogHeader) && std::memcmp(Bytes.data(), LogHeader, sizeof(LogHeader)) == 0;
@@ -434,13 +419,6 @@ std::optional<SBuildStepId> SBuildStepId::Parse (FStringView Text)
 
 // ---------------- CBuildStateLog ----------------
 
-size_t CBuildStateLog::SKeyHash::operator() (const hash::SContentHash& Key) const noexcept
-{
-	size_t value = 0u;
-	std::memcpy(&value, Key.Bytes, sizeof(value));
-	return value;
-}
-
 CBuildStateLog::SStepHash CBuildStateLog::HashStep (std::span<const uint8> StepKey) noexcept
 {
 	// Two independent XXH3 seeds make 128 bits ("FRTSTEP1", "FRTSTEP2" read as le64).
@@ -544,7 +522,7 @@ bool CBuildStateLog::LoadIndexLocked (FString* OutError)
 	}
 	FRT_CPU_SCOPE("Assets.BuildState.LoadIndex");
 	const uint64 start = platform::ReadTimestamp();
-	const std::optional<std::vector<uint8>> bytes = ReadWholeFile(Path, OutError);
+	const std::optional<std::vector<uint8>> bytes = platform::ReadFileBytes(Path, OutError);
 	if (!bytes)
 	{
 		return false;
@@ -791,7 +769,7 @@ std::vector<hash::SContentHash> CBuildStateLog::CollectKeys ()
 std::optional<std::vector<hash::SContentHash>> CBuildStateLog::ReadKeys (const std::filesystem::path& File,
 	FString* OutError)
 {
-	const std::optional<std::vector<uint8>> bytes = ReadWholeFile(File, OutError);
+	const std::optional<std::vector<uint8>> bytes = platform::ReadFileBytes(File, OutError);
 	if (!bytes)
 	{
 		return std::nullopt;
@@ -834,7 +812,7 @@ bool CBuildStateLog::Compact (FString* OutError)
 	{
 		return false;
 	}
-	const std::optional<std::vector<uint8>> old = ReadWholeFile(Path, OutError);
+	const std::optional<std::vector<uint8>> old = platform::ReadFileBytes(Path, OutError);
 	if (!old)
 	{
 		return false;
@@ -858,7 +836,7 @@ bool CBuildStateLog::Compact (FString* OutError)
 	std::sort(steps.begin(), steps.end(), [] (const auto& A, const auto& B) { return IsStepBefore(A.first.Step, B.first.Step); });
 
 	std::vector<uint8> bytes(LogHeader, LogHeader + sizeof(LogHeader));
-	std::unordered_set<hash::SContentHash, SKeyHash> written;
+	std::unordered_set<hash::SContentHash, hash::SContentHashHasher> written;
 	for (const auto& [entry, location] : steps)
 	{
 		if (const auto blob = KeyBlobs.find(entry.StaticKey); blob != KeyBlobs.end() && written.insert(entry.StaticKey).second)
@@ -900,7 +878,7 @@ SBuildStateLogStats CBuildStateLog::GetStats ()
 
 	// Live: the header, every step's latest record and the blobs those name (read to know which).
 	uint64 live = sizeof(LogHeader);
-	std::unordered_set<hash::SContentHash, SKeyHash> named;
+	std::unordered_set<hash::SContentHash, hash::SContentHashHasher> named;
 	for (const auto& [key, location] : Steps)
 	{
 		live += location.Size;
@@ -937,7 +915,7 @@ bool CBuildJournal::Open (const std::filesystem::path& File, FString* OutError)
 
 	// B lines without a later E, by step; a last line without its line break is torn: ignored.
 	std::vector<std::pair<FString, FString>> open;   // step text -> its B line
-	if (const std::optional<std::vector<uint8>> bytes = ReadWholeFile(File, nullptr))
+	if (const std::optional<std::vector<uint8>> bytes = platform::ReadFileBytes(File, nullptr))
 	{
 		FStringView text(reinterpret_cast<const char*>(bytes->data()), bytes->size());
 		while (!text.IsEmpty())

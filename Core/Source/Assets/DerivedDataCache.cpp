@@ -191,18 +191,16 @@ enum class EReadResult : uint8
 	Failed,    // could not be read now (in use, no access): a miss, but nothing to delete
 };
 
+// platform::ReadFileBytes, its failure as the store acts on it.
 EReadResult ReadWholeFile (const std::filesystem::path& Path, std::vector<uint8>& Out)
 {
-	platform::CBlockingFileReader reader;
-	if (!reader.Open(Path))
+	platform::EFileFailure failure = platform::EFileFailure::None;
+	std::optional<std::vector<uint8>> bytes = platform::ReadFileBytes(Path, nullptr, &failure);
+	if (!bytes)
 	{
-		return reader.GetLastFailure() == platform::EFileFailure::NotFound ? EReadResult::Missing : EReadResult::Failed;
+		return failure == platform::EFileFailure::NotFound ? EReadResult::Missing : EReadResult::Failed;
 	}
-	Out.resize(static_cast<size_t>(reader.GetSize()));
-	if (!Out.empty() && !reader.ReadExactAt(0u, Out))
-	{
-		return EReadResult::Failed;
-	}
+	Out = std::move(*bytes);
 	return EReadResult::Ok;
 }
 
@@ -636,14 +634,6 @@ struct CDerivedDataCache::SCallScope
 
 	const CDerivedDataCache& Cache;
 };
-
-size_t CDerivedDataCache::SKeyHash::operator() (const hash::SContentHash& Key) const noexcept
-{
-	// A cryptographic hash: its first bytes are as good as any hash of it.
-	size_t value = 0u;
-	std::memcpy(&value, Key.Bytes, sizeof(value));
-	return value;
-}
 
 CDerivedDataCache::CDerivedDataCache ()
 	: bVerifyValues(DefaultVerifyValues)
@@ -1415,7 +1405,7 @@ SDdcGcResult CDerivedDataCache::CollectGarbage (uint64 MaxBytes, std::span<const
 		bBucketsListed = bBucketsListed && bBucketListed;
 	}) && bBucketsListed;
 
-	std::unordered_map<hash::SContentHash, SStoreFile, SKeyHash> values;
+	std::unordered_map<hash::SContentHash, SStoreFile, hash::SContentHashHasher> values;
 	WalkFiles(Root / ValuesDir.ToPath(), [&] (const std::filesystem::path& Path, const platform::SFileStat& Stat)
 	{
 		if (const std::optional<hash::SContentHash> hash = ParseHashFileName(FString::FromPath(Path.filename()), "val"))
@@ -1458,8 +1448,8 @@ SDdcGcResult CDerivedDataCache::CollectGarbage (uint64 MaxBytes, std::span<const
 	// Parse the records: their external values, their last use, whether they are pinned. One that is
 	// there but cannot be read now (a scanner or a backup holding it without read sharing) stays, with
 	// its values unknown.
-	std::unordered_set<hash::SContentHash, SKeyHash> pinned(PinnedKeys.begin(), PinnedKeys.end());
-	std::unordered_map<hash::SContentHash, uint32, SKeyHash> references;
+	std::unordered_set<hash::SContentHash, hash::SContentHashHasher> pinned(PinnedKeys.begin(), PinnedKeys.end());
+	std::unordered_map<hash::SContentHash, uint32, hash::SContentHashHasher> references;
 	std::erase_if(records, [&] (SRecordFile& Record)
 	{
 		Record.bPinned = pinned.contains(Record.Key);
@@ -1518,7 +1508,7 @@ SDdcGcResult CDerivedDataCache::CollectGarbage (uint64 MaxBytes, std::span<const
 	}
 	result.ContentBytesBefore = total;
 
-	std::unordered_set<hash::SContentHash, SKeyHash> pinnedValues;
+	std::unordered_set<hash::SContentHash, hash::SContentHashHasher> pinnedValues;
 	for (const SRecordFile& record : records)
 	{
 		if (record.bPinned)
@@ -1592,7 +1582,7 @@ SDdcGcResult CDerivedDataCache::CollectGarbage (uint64 MaxBytes, std::span<const
 	}
 
 	// Least recently used first, until the content fits.
-	std::unordered_set<hash::SContentHash, SKeyHash> evictedKeys;
+	std::unordered_set<hash::SContentHash, hash::SContentHashHasher> evictedKeys;
 	if (total > MaxBytes)
 	{
 		std::vector<SRecordFile*> order;
@@ -1641,7 +1631,7 @@ SDdcGcResult CDerivedDataCache::CollectGarbage (uint64 MaxBytes, std::span<const
 
 	// Manifests whose every key has lost its record. A young one may be another process's fresh
 	// write whose record this walk missed: kept unless this collection evicted one of its keys.
-	std::unordered_set<hash::SContentHash, SKeyHash> liveKeys;
+	std::unordered_set<hash::SContentHash, hash::SContentHashHasher> liveKeys;
 	for (const SRecordFile& record : records)
 	{
 		if (!record.bEvicted)
@@ -1688,7 +1678,7 @@ SDdcVerifyResult CDerivedDataCache::Verify ()
 	};
 
 	// Values first, so that records can be checked against what survived.
-	std::unordered_map<hash::SContentHash, uint64, SKeyHash> goodValues;   // raw hash -> raw size
+	std::unordered_map<hash::SContentHash, uint64, hash::SContentHashHasher> goodValues;   // raw hash -> raw size
 	WalkFiles(Root / ValuesDir.ToPath(), [&] (const std::filesystem::path& Path, const platform::SFileStat& Stat)
 	{
 		const std::optional<hash::SContentHash> rawHash = ParseHashFileName(FString::FromPath(Path.filename()), "val");

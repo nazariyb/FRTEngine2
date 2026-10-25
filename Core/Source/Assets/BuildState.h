@@ -206,11 +206,6 @@ private:
 		size_t operator() (const SStepHash& Hash) const noexcept { return static_cast<size_t>(Hash.Low); }
 	};
 
-	struct SKeyHash
-	{
-		size_t operator() (const hash::SContentHash& Key) const noexcept;
-	};
-
 	mutable std::mutex Mutex;
 	std::filesystem::path Path;
 	platform::CAppendFile Writer;
@@ -218,7 +213,7 @@ private:
 	bool bIndexLoaded = false;
 	uint64 FileSize = 0u;   // where the next record lands (this process is the only writer)
 	std::unordered_map<SStepHash, SLocation, SStepHashHasher> Steps;   // step -> its latest record
-	std::unordered_map<hash::SContentHash, SLocation, SKeyHash> KeyBlobs;
+	std::unordered_map<hash::SContentHash, SLocation, hash::SContentHashHasher> KeyBlobs;
 	SBuildStateLogStats Stats;
 
 	[[nodiscard]] static SStepHash HashStep (std::span<const uint8> StepKey) noexcept;

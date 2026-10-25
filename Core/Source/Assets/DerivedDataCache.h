@@ -414,11 +414,6 @@ private:
 		std::atomic<uint64> CorruptFilesDeleted = 0u;
 	};
 
-	struct SKeyHash
-	{
-		size_t operator() (const hash::SContentHash& Key) const noexcept;
-	};
-
 	std::filesystem::path Root;
 	std::atomic<bool> bVerifyValues;
 	mutable SAtomicCounters Counters;
@@ -442,7 +437,7 @@ private:
 	std::mutex AccessMutex;
 	FString AccessDay;
 	platform::CAppendFile AccessLog;
-	std::unordered_set<hash::SContentHash, SKeyHash> AccessLogged;
+	std::unordered_set<hash::SContentHash, hash::SContentHashHasher> AccessLogged;
 
 	// Writes Bytes to Path through a new file in Tmp/.
 	bool WriteThroughTmp (const std::filesystem::path& Path, std::span<const uint8> Bytes, FString* OutError);
