@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <initializer_list>
 #include <vector>
 
 #include "CoreTypes.h"
@@ -65,8 +66,10 @@ private:
 	void CheckCameraController ();
 	void TouchGameBuild (CEditor& Editor);
 	void WriteInputOverrides (FStringView Text);
-	// The file watcher on or off for the steps that need it ([Assets] Watch is off in scripted runs).
-	void WatchFiles (CEngine& Engine, bool bOn);
+	// The file watcher on or off for the steps that need it ([Assets] Watch is off in scripted runs),
+	// on for the roots in or above OnlyUnder only (CFileWatcherService::SetEnabled): a step watches
+	// its own files, never the rest of the checkout it runs in, which a developer may be editing.
+	void WatchFiles (CEngine& Engine, bool bOn, std::initializer_list<std::filesystem::path> OnlyUnder = {});
 	// Everything the watcher has seen happen in Directory's root is told now (CFileWatcherService::Flush).
 	void FlushWatcher (CEngine& Engine, const std::filesystem::path& Directory, FStringView What);
 	// [Editor] SmokeTestEdits: checks that the files to edit are a scratch copy's, picks them, watches.

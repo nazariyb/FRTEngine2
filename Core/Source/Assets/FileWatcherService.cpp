@@ -297,11 +297,13 @@ struct CFileWatcherService::SState
 		uint64 Deadline = 0u;
 	};
 
-	// Flush's fence: entries of Root seen no later than Time are told regardless of the windows.
+	// Flush's fence of one root: entries of Root seen no later than Time are told regardless of the
+	// windows. Also what Ingest records of every fence event it sees (Name: the file's name).
 	struct SFence
 	{
 		const SRoot* Root = nullptr;
 		uint64 Time = 0u;
+		FString Name;
 	};
 
 	SFileWatcherSettings Settings;
@@ -326,8 +328,13 @@ struct CFileWatcherService::SState
 
 	std::vector<SRemoval> Removals;
 	std::unordered_map<FString, SExpected, SStringHash, SStringEqual> Expected;
-	std::unordered_map<FString, uint64, SStringHash, SStringEqual> SeenFences;   // fence name -> event time
+	// Fence events by the root that reported them: a fence in a root that lies inside another is
+	// reported by both, and each root's own events are ordered only with each other.
+	std::vector<SFence> SeenFences;
 	uint64 FenceCounter = 0u;
+	// SetEnabled's OnlyUnder (normalized): when not empty, only roots that hold one of these
+	// directories or lie below one are armed.
+	std::vector<std::filesystem::path> EnabledOnlyUnder;
 
 	TUniqueFunction<bool ()> VcsBusy;
 	bool bVcsBusy = false;
@@ -387,11 +394,29 @@ struct CFileWatcherService::SState
 		return best;
 	}
 
-	// Arms Root if watching is on and its directory exists; else leaves it Missing (looked for later)
-	// or Unarmed. True when it is armed now.
+	// Root and Directory overlap: one holds the other (both normalized).
+	[[nodiscard]] static bool Overlaps (const SRoot& Root, const std::filesystem::path& Directory)
+	{
+		return GetRelativePath(Directory, Root.Path, Root.bCaseSensitive).has_value()
+			|| GetRelativePath(Root.Path, Directory, Root.bCaseSensitive).has_value();
+	}
+
+	// Watching is on for Root: on, and Root within SetEnabled's OnlyUnder when it named directories.
+	[[nodiscard]] bool IsWatchingOn (const SRoot& Root) const
+	{
+		return Settings.bEnabled
+			&& (EnabledOnlyUnder.empty()
+				|| std::any_of(EnabledOnlyUnder.begin(), EnabledOnlyUnder.end(), [&Root] (const std::filesystem::path& Directory)
+					{
+						return Overlaps(Root, Directory);
+					}));
+	}
+
+	// Arms Root if watching is on for it and its directory exists; else leaves it Missing (looked for
+	// later) or Unarmed. True when it is armed now.
 	bool ArmRoot (SRoot& Root, uint64 Now)
 	{
-		if (!Settings.bEnabled)
+		if (!IsWatchingOn(Root))
 		{
 			Root.State = ERootState::Unarmed;
 			return false;
@@ -585,31 +610,54 @@ struct CFileWatcherService::SState
 		{
 			Ingest(event);
 		}
-		// Removals older than the pair window can no longer pair.
-		if (LastEventTime > PairTicks)
+		// Removals older than the pair window can no longer pair: by the newest event, and by the clock,
+		// so that a removal no event follows - a directory removed last, whose left-behind removals
+		// wait for its expiry - is not kept until something unrelated happens. The clock's bound leaves
+		// one more pair window for events the watcher thread read (and stamped) but has not queued yet.
+		const uint64 now = platform::ReadTimestamp();
+		const uint64 byEvents = LastEventTime > PairTicks ? LastEventTime - PairTicks - 1u : 0u;
+		const uint64 byClock = now > 2u * PairTicks ? now - 2u * PairTicks : 0u;
+		const uint64 expireUpTo = byEvents > byClock ? byEvents : byClock;
+		if (expireUpTo > 0u)
 		{
-			ExpireRemovals(LastEventTime - PairTicks - 1u);
+			ExpireRemovals(expireUpTo);
 		}
 	}
 
-	// Removals seen at Time or earlier will not pair any more: a directory's leaves its left-behind
-	// removals pending.
-	void ExpireRemovals (uint64 Time)
+	// Removals (of Only's root, or of every root) seen at Time or earlier will not pair any more: a
+	// directory's leaves its left-behind removals pending.
+	void ExpireRemovals (uint64 Time, const SRoot* Only = nullptr)
 	{
 		for (size_t i = 0u; i < Removals.size();)
 		{
 			SRemoval& removal = Removals[i];
-			if (removal.Time > Time)
+			if (removal.Time > Time || (Only != nullptr && removal.Root != Only))
 			{
 				++i;
 				continue;
 			}
-			for (auto& [key, entry] : removal.LeftBehind)
-			{
-				removal.Root->Pending.try_emplace(std::move(key), std::move(entry));
-			}
+			ReinsertLeftBehind(*removal.Root, removal.LeftBehind);
 			Removals.erase(Removals.begin() + static_cast<std::ptrdiff_t>(i));
 		}
+	}
+
+	// A directory gone for good: the removals its files that had moved in from elsewhere in the root
+	// left behind are pending now. A source whose own entry is still pending remembers that its file
+	// moved away (bMovedAway, dropped at settle because the destination tells the move); the
+	// destination went with the directory, so the source's removal is told after all.
+	static void ReinsertLeftBehind (SRoot& Root, FPendingList& LeftBehind)
+	{
+		for (auto& [key, entry] : LeftBehind)
+		{
+			// try_emplace moves neither the key nor the entry when the key is there already.
+			const auto [it, bInserted] = Root.Pending.try_emplace(std::move(key), std::move(entry));
+			if (!bInserted)
+			{
+				it->second.bMovedAway = false;
+				it->second.LastSeen = entry.LastSeen > it->second.LastSeen ? entry.LastSeen : it->second.LastSeen;
+			}
+		}
+		LeftBehind.clear();
 	}
 
 	void Ingest (const platform::SFileEvent& Event)
@@ -662,17 +710,26 @@ struct CFileWatcherService::SState
 		{
 			if (Event.Kind == platform::EFileEventKind::Added || Event.Kind == platform::EFileEventKind::RenamedNew)
 			{
-				SeenFences[FString(GetName(Event.Path))] = time;
+				SeenFences.push_back({ &root, time, FString(GetName(Event.Path)) });
 			}
 			return;
 		}
 
 		bool bDirectory = Event.EntryType == platform::EFileEntryType::Directory;
 		if (Event.EntryType == platform::EFileEntryType::Unknown
-			&& (Event.Kind == platform::EFileEventKind::Added || Event.Kind == platform::EFileEventKind::RenamedNew))
+			&& (Event.Kind == platform::EFileEventKind::Added || Event.Kind == platform::EFileEventKind::RenamedNew
+				|| Event.Kind == platform::EFileEventKind::Modified))
 		{
+			// Without entry types (ReadDirectoryChangesW on FAT, ReFS or a share) the disk says what the
+			// entry is. A directory that appeared is enumerated below; a directory's own Modified is its
+			// times, changed by an entry inside that reports itself, so it is dropped here as the platform
+			// layer drops it where it knows the type - else every edit would rescan its parent directory.
 			const std::optional<platform::SFileStat> stat = platform::Stat(MakeFullPath(root, Event.Path));
 			bDirectory = stat && stat->bDirectory;
+			if (bDirectory && Event.Kind == platform::EFileEventKind::Modified)
+			{
+				return;
+			}
 		}
 		if (bDirectory)
 		{
@@ -872,10 +929,7 @@ struct CFileWatcherService::SState
 			else
 			{
 				// It can never pair: gone for good.
-				for (auto& [leftKey, leftEntry] : removal.LeftBehind)
-				{
-					Root.Pending.try_emplace(std::move(leftKey), std::move(leftEntry));
-				}
+				ReinsertLeftBehind(Root, removal.LeftBehind);
 			}
 			break;
 		}
@@ -1013,7 +1067,8 @@ struct CFileWatcherService::SState
 				return true;
 			}
 		}
-		return false;
+		// A directory removal still waiting to pair holds removals that become pending when it expires.
+		return std::any_of(Removals.begin(), Removals.end(), [] (const SRemoval& Removal) { return !Removal.LeftBehind.empty(); });
 	}
 
 	// Whether everything waits: a burst or an overflow until VcsSettleMs of quiet, a busy VCS until it
@@ -1050,10 +1105,12 @@ struct CFileWatcherService::SState
 		Tell,
 		Drop,
 		Keep,
+		TellAndResolveAgain,
 	};
 
 	// What a settled entry turns out to be, by the disk now: Tell (Out filled), Drop (nothing to tell,
-	// or a self-write), Keep (a writer holds it, or it changed under the probe: wait).
+	// or a self-write), Keep (a writer holds it, or it changed under the probe: wait),
+	// TellAndResolveAgain (Out filled, and the entry, changed into another, is resolved once more).
 	EOutcome Resolve (SRoot& Root, const FString& Key, SPending& Entry, uint64 Now, SReady& Out)
 	{
 		Out.Root = &Root;
@@ -1066,6 +1123,20 @@ struct CFileWatcherService::SState
 			const std::optional<platform::SFileStat> stat = platform::Stat(full);
 			Out.bDirectory = true;
 			Out.Kind = stat && stat->bDirectory ? EFileChange::Rescan : EFileChange::Removed;
+			if (stat && !stat->bDirectory)
+			{
+				// A file took the directory's place (git switching a path from a directory on one branch to
+				// a file on another): the directory is told gone, then the path is resolved as the file
+				// that is there now - an Added, or the Moved of a file that came from elsewhere in the root
+				// - with the writer probe and the self-write check every file gets.
+				Entry.Type = EEntry::File;
+				Entry.FirstPath = Entry.Path;
+				Entry.bExistedBefore = false;
+				Entry.bExistsNow = true;
+				Entry.bMaybeDirectory = false;
+				Entry.bMovedAway = false;
+				return EOutcome::TellAndResolveAgain;
+			}
 			return EOutcome::Tell;
 		}
 		if (Entry.Type == EEntry::DirectoryMoved)
@@ -1200,9 +1271,9 @@ struct CFileWatcherService::SState
 		}
 	}
 
-	// Everything that has settled (or that Fence covers), resolved against the disk, in root order and
-	// sorted by key within each root.
-	std::vector<SReady> CollectReady (uint64 Now, const SFence* Fence)
+	// Everything that has settled (or that one of Fences covers), resolved against the disk, in root
+	// order and sorted by key within each root.
+	std::vector<SReady> CollectReady (uint64 Now, std::span<const SFence> Fences)
 	{
 		std::vector<SReady> ready;
 		bool bReleaseAll = false;
@@ -1210,12 +1281,14 @@ struct CFileWatcherService::SState
 		for (const std::unique_ptr<SRoot>& rootPtr : Roots)
 		{
 			SRoot& root = *rootPtr;
-			const bool bFenced = Fence != nullptr && Fence->Root == &root;
+			const auto fenceIt = std::find_if(Fences.begin(), Fences.end(), [&root] (const SFence& Fence) { return Fence.Root == &root; });
+			const SFence* fence = fenceIt != Fences.end() ? &*fenceIt : nullptr;
+			const bool bFenced = fence != nullptr;
 			const size_t firstOfRoot = ready.size();
 
 			if (root.bRescanPending)
 			{
-				const bool bDue = (bFenced && root.RescanSince <= Fence->Time)
+				const bool bDue = (bFenced && root.RescanSince <= fence->Time)
 					|| (!bHold && (bReleaseAll || Elapsed(root.RescanSince, Now) >= SettleTicks));
 				if (bDue)
 				{
@@ -1235,7 +1308,7 @@ struct CFileWatcherService::SState
 			for (auto it = root.Pending.begin(); it != root.Pending.end();)
 			{
 				SPending& entry = it->second;
-				const bool bForced = bFenced && entry.LastSeen <= Fence->Time;
+				const bool bForced = bFenced && entry.LastSeen <= fence->Time;
 				const bool bDue = bForced || (!bHold && (bReleaseAll || IsSettled(entry, Now)));
 				if (!bDue || (!bForced && Now < entry.NextProbe))
 				{
@@ -1255,9 +1328,13 @@ struct CFileWatcherService::SState
 				case EOutcome::Keep:
 					++it;
 					break;
+				case EOutcome::TellAndResolveAgain:
+					ready.push_back(std::move(change));
+					break;   // the same entry again, now a file entry (it never asks for this twice)
 				}
 			}
-			std::sort(ready.begin() + static_cast<std::ptrdiff_t>(firstOfRoot), ready.end(),
+			// Stable: two changes of one path (a directory removed, a file in its place) keep their order.
+			std::stable_sort(ready.begin() + static_cast<std::ptrdiff_t>(firstOfRoot), ready.end(),
 				[] (const SReady& A, const SReady& B) { return A.Key < B.Key; });
 		}
 		return ready;
@@ -1424,7 +1501,7 @@ struct CFileWatcherService::SState
 		const uint64 now = platform::ReadTimestamp();
 		PollRoots(now);
 		std::erase_if(Expected, [now] (const auto& Item) { return Item.second.Deadline <= now; });
-		Deliver(CollectReady(now, nullptr));
+		Deliver(CollectReady(now, {}));
 	}
 };
 
@@ -1525,15 +1602,12 @@ bool CFileWatcherService::Unsubscribe (SDelegateHandle Handle)
 	return false;
 }
 
-void CFileWatcherService::SetEnabled (bool bEnabled)
+void CFileWatcherService::SetEnabled (bool bEnabled, std::span<const std::filesystem::path> OnlyUnder)
 {
 	SState& state = *State;
 	state.CheckOwner();
-	if (state.Settings.bEnabled == bEnabled)
-	{
-		return;
-	}
 	state.Settings.bEnabled = bEnabled;
+	state.EnabledOnlyUnder.clear();
 	if (!bEnabled)
 	{
 		for (const std::unique_ptr<SState::SRoot>& root : state.Roots)
@@ -1545,10 +1619,26 @@ void CFileWatcherService::SetEnabled (bool bEnabled)
 		state.ActivityEvents = 0u;
 		return;
 	}
+	for (const std::filesystem::path& directory : OnlyUnder)
+	{
+		state.EnabledOnlyUnder.push_back(NormalizePath(directory));
+	}
+	// Roots armed already stay armed (watching them did not stop); the others are armed when they are
+	// in scope now, and disarmed when they left it.
 	const uint64 now = platform::ReadTimestamp();
 	for (const std::unique_ptr<SState::SRoot>& root : state.Roots)
 	{
-		state.ArmRoot(*root, now);
+		if (!state.IsWatchingOn(*root))
+		{
+			if (root->State != SState::ERootState::Unarmed)
+			{
+				state.DisarmRoot(*root);
+			}
+		}
+		else if (root->State == SState::ERootState::Unarmed)
+		{
+			state.ArmRoot(*root, now);
+		}
 	}
 }
 
@@ -1568,36 +1658,74 @@ bool CFileWatcherService::Flush (const std::filesystem::path& Directory, double 
 	SState& state = *State;
 	state.CheckOwner();
 	frt_assert(state.DeliveryDepth == 0u)
-	FString relative;
-	SState::SRoot* root = state.FindRoot(NormalizePath(Directory), &relative);
-	if (root == nullptr || root->State != SState::ERootState::Armed || !state.Watcher)
+	if (!state.Watcher)
 	{
 		return false;
 	}
 
-	FString name(FencePrefix);
-	name.AppendFormat("{}-{}", platform::GetCurrentProcessId(), ++state.FenceCounter);
-	const std::filesystem::path fence = root->Path / name.ToPath();
-	if (!platform::WriteFileBytes(fence, {}, false))
+	// Every armed root that watches some of Directory - one that holds it, or one below it - gets a
+	// fence of its own, in its own directory. Roots overlap when a directory was subscribed before one
+	// above it, and each subscription hears only its own root, so a fence in one of them would leave
+	// the others' subscribers to their windows.
+	struct SWaiting
+	{
+		SState::SRoot* Root = nullptr;
+		FString Name;
+		std::filesystem::path File;
+		std::optional<uint64> Time;
+	};
+	const std::filesystem::path directory = NormalizePath(Directory);
+	std::vector<SWaiting> waiting;
+	bool bAllWritten = true;
+	for (const std::unique_ptr<SState::SRoot>& root : state.Roots)
+	{
+		if (root->State != SState::ERootState::Armed || !SState::Overlaps(*root, directory))
+		{
+			continue;
+		}
+		SWaiting fence;
+		fence.Root = root.get();
+		fence.Name = FString(FencePrefix);
+		fence.Name.AppendFormat("{}-{}", platform::GetCurrentProcessId(), ++state.FenceCounter);
+		fence.File = root->Path / fence.Name.ToPath();
+		if (platform::WriteFileBytes(fence.File, {}, false))
+		{
+			waiting.push_back(std::move(fence));
+		}
+		else
+		{
+			bAllWritten = false;
+		}
+	}
+	if (waiting.empty())
 	{
 		return false;
 	}
 
-	// Events of one root arrive in order: once the fence's has, everything before it has too.
+	// Events of one root arrive in order: once its fence's has, everything before it has too.
 	const uint64 frequency = platform::GetTimestampFrequency();
 	const uint64 deadline = platform::ReadTimestamp() + static_cast<uint64>(TimeoutSeconds * static_cast<double>(frequency));
-	std::optional<uint64> fenceTime;
 	while (true)
 	{
 		state.PumpEvents();
-		if (const auto seen = state.SeenFences.find(name); seen != state.SeenFences.end())
+		bool bAllSeen = true;
+		bool bAnyArmed = false;
+		for (SWaiting& fence : waiting)
 		{
-			fenceTime = seen->second;
-			state.SeenFences.erase(seen);
-			break;
+			if (!fence.Time)
+			{
+				const auto seen = std::find_if(state.SeenFences.begin(), state.SeenFences.end(),
+					[&fence] (const SState::SFence& Seen) { return Seen.Root == fence.Root && Seen.Name == fence.Name; });
+				if (seen != state.SeenFences.end())
+				{
+					fence.Time = seen->Time;
+				}
+			}
+			bAllSeen = bAllSeen && fence.Time.has_value();
+			bAnyArmed = bAnyArmed || (!fence.Time && fence.Root->State == SState::ERootState::Armed);
 		}
 		const uint64 now = platform::ReadTimestamp();
-		if (now >= deadline || root->State != SState::ERootState::Armed)
+		if (bAllSeen || !bAnyArmed || now >= deadline)
 		{
 			break;
 		}
@@ -1606,17 +1734,26 @@ bool CFileWatcherService::Flush (const std::filesystem::path& Directory, double 
 	}
 
 	const uint64 now = platform::ReadTimestamp();
-	if (fenceTime)
+	std::vector<SState::SFence> settled;
+	bool bAllFenced = bAllWritten;
+	for (const SWaiting& fence : waiting)
 	{
-		// Both halves of a move arrive together: a removal older than the fence will not pair any more.
-		state.ExpireRemovals(*fenceTime);
+		if (fence.Time)
+		{
+			// Both halves of a move arrive together: a removal older than the fence will not pair any more.
+			state.ExpireRemovals(*fence.Time, fence.Root);
+			settled.push_back({ fence.Root, *fence.Time, {} });
+		}
+		bAllFenced = bAllFenced && fence.Time.has_value();
 	}
 	state.PollRoots(now);
 	std::erase_if(state.Expected, [now] (const auto& Item) { return Item.second.Deadline <= now; });
-	const SState::SFence settled{ root, fenceTime.value_or(0u) };
-	state.Deliver(state.CollectReady(now, fenceTime ? &settled : nullptr));
-	platform::RemoveFile(fence);
-	return fenceTime.has_value();
+	state.Deliver(state.CollectReady(now, settled));
+	for (const SWaiting& fence : waiting)
+	{
+		platform::RemoveFile(fence.File);
+	}
+	return bAllFenced;
 }
 
 void CFileWatcherService::ExpectWrite (const std::filesystem::path& Path, const hash::SContentHash& Hash, uint64 Size, uint64 Deadline)

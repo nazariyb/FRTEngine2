@@ -3,13 +3,15 @@
 // the measured scenarios (gap-watch-meta §1.3, S1-S19 and G1-G5) as far as a test can produce them:
 // create, write and delete; a rename in one directory and a move between two (paired by identity);
 // directory renames, moves out (one record for the subtree) and moves in (the subtree enumerated:
-// a Recycle Bin restore and a folder drag-in); a case-only rename; atomic saves of three kinds, which
-// change the identity and are still one Modified; a writer that holds the file (nothing is told until
-// it lets go); an overflow (a Rescan once the tree is quiet); Flush's fence; self-writes that diff to
-// nothing; a slow checkout of files arriving over seconds; and a scripted git checkout of 300 files,
-// told as one batch after the tree settles, with no callback in the middle of it. Filters, the
-// directory that does not exist yet, the VCS seam and the off switch are covered too. Everything runs
-// in directories with non-ASCII names.
+// a Recycle Bin restore and a folder drag-in); a file moved into a directory that then goes, with no
+// event after it; a file taking a removed directory's place; a case-only rename; atomic saves of three
+// kinds, which change the identity and are still one Modified; a writer that holds the file (nothing is
+// told until it lets go); an overflow (a Rescan once the tree is quiet); Flush's fence, also over roots
+// that overlap; self-writes that diff to nothing; a slow checkout of files arriving over seconds; and a
+// scripted git checkout of 300 files, told as one batch after the tree settles, with no callback in the
+// middle of it. Filters, the directory that does not exist yet, the VCS seam, the off switch and its
+// scope are covered too, and - through a scripted platform watcher - a file system without entry types,
+// whose directories report their own Modified. Everything runs in directories with non-ASCII names.
 #include <gtest/gtest.h>
 
 #include "TestCommon.h"
@@ -132,6 +134,52 @@ void WriteText (const std::filesystem::path& Path, FStringView Text)
 {
 	ASSERT_TRUE(platform::WriteFileBytes(Path, Text.AsBytes())) << FString::FromPath(Path).CStr();
 }
+
+// A platform watcher the test speaks for, reporting what a file system without entry types reports
+// (ReadDirectoryChangesW's fallback on FAT, ReFS or a share): every event's EntryType is Unknown.
+class CScriptedWatcher final : public platform::IFileWatcher
+{
+public:
+	struct SQueue
+	{
+		std::vector<platform::SFileEvent> Events;
+		uint32 LastRootId = 0u;
+
+		void Push (platform::EFileEventKind Kind, FStringView Path)
+		{
+			platform::SFileEvent event;
+			event.RootId = LastRootId;
+			event.Kind = Kind;
+			event.Path = FString(Path);
+			Events.push_back(std::move(event));
+		}
+	};
+
+	explicit CScriptedWatcher (std::shared_ptr<SQueue> InQueue)
+		: Queue(std::move(InQueue))
+	{}
+
+	uint32 Arm (const std::filesystem::path&, FString*) override
+	{
+		return ++Queue->LastRootId;
+	}
+
+	void Disarm (uint32) override {}
+
+	void TakeEvents (std::vector<platform::SFileEvent>& Out) override
+	{
+		Out.insert(Out.end(), Queue->Events.begin(), Queue->Events.end());
+		Queue->Events.clear();
+	}
+
+	bool WaitForEvents (double) override
+	{
+		return !Queue->Events.empty();
+	}
+
+private:
+	std::shared_ptr<SQueue> Queue;
+};
 
 std::optional<std::filesystem::path> FindGitOnPath ()
 {
@@ -450,6 +498,85 @@ TEST_F(FileWatcherServiceTest, ADirectoryMovedInHasItsSubtreeEnumerated)
 	EXPECT_EQ(Recorder.Changes.size(), 2u) << Recorder.Describe().CStr();
 }
 
+TEST_F(FileWatcherServiceTest, AFileMovedIntoADirectoryThatThenGoesIsRemovedWhereItCameFromWithNoLaterEvent)
+{
+	std::error_code ec;
+	std::filesystem::create_directories(File("Звідки"), ec);
+	std::filesystem::create_directories(File("Куди"), ec);
+	WriteText(File("Звідки/X.txt"), "x");
+	Start();
+
+	// X moves into Куди/ (Removed and Added, one identity), Куди/ leaves the root with it, and then
+	// nothing happens at all: the directory's removal must expire by the clock, and X's removal from
+	// where it was must be told although its entry remembered that X had moved away.
+	std::filesystem::rename(File("Звідки/X.txt"), File("Куди/X.txt"), ec);
+	ASSERT_FALSE(ec);
+	std::filesystem::rename(File("Куди"), Outside / "Куди", ec);
+	ASSERT_FALSE(ec);
+	ASSERT_TRUE(PumpUntil([this] { return !Recorder.Find("Звідки/X.txt").empty() && Service->IsIdle(); })) << Recorder.Describe().CStr();
+	PumpUntil([] { return false; }, 300ms);
+	EXPECT_TRUE(Recorder.HasOnly("Звідки/X.txt", assets::EFileChange::Removed)) << Recorder.Describe().CStr();
+	EXPECT_TRUE(Recorder.HasOnly("Куди", assets::EFileChange::Removed)) << Recorder.Describe().CStr();
+	EXPECT_TRUE(Recorder.Find("Куди/X.txt").empty()) << "the directory's removal stands for it\n" << Recorder.Describe().CStr();
+	EXPECT_EQ(Recorder.Changes.size(), 2u) << Recorder.Describe().CStr();
+}
+
+TEST_F(FileWatcherServiceTest, AFileThatTakesARemovedDirectorysPlaceIsAddedAfterTheDirectorysRemoval)
+{
+	std::error_code ec;
+	std::filesystem::create_directories(File("Шлях"), ec);
+	WriteText(File("Шлях/a.txt"), "a");
+	Start();
+
+	// git switching a path from a directory on one branch to a file on another, within the window.
+	std::filesystem::remove_all(File("Шлях"), ec);
+	ASSERT_FALSE(ec);
+	WriteText(File("Шлях"), "a file now");
+	Flush();
+	const std::vector<const assets::SFileChange*> found = Recorder.Find("Шлях");
+	ASSERT_EQ(found.size(), 2u) << Recorder.Describe().CStr();
+	EXPECT_EQ(found[0]->Kind, assets::EFileChange::Removed) << Recorder.Describe().CStr();
+	EXPECT_TRUE(found[0]->bDirectory) << "the directory first, standing for a.txt";
+	EXPECT_EQ(found[1]->Kind, assets::EFileChange::Added) << Recorder.Describe().CStr();
+	EXPECT_FALSE(found[1]->bDirectory);
+	EXPECT_EQ(Recorder.Changes.size(), 2u) << Recorder.Describe().CStr();
+	EXPECT_TRUE(assets::IsFileAffected(*found[1], File("Шлях"))) << "a loader of the file looks at it";
+}
+
+TEST_F(FileWatcherServiceTest, WithoutEntryTypesADirectorysOwnModifiedIsDropped)
+{
+	// The fallback without extended information says nothing about what an entry is, and reports a
+	// directory's own MODIFIED whenever an entry inside it changes.
+	std::error_code ec;
+	std::filesystem::create_directories(File("Шейдери"), ec);
+	WriteText(File("Шейдери/Common.hlsli"), "// one\n");
+	const auto queue = std::make_shared<CScriptedWatcher::SQueue>();
+	assets::SFileWatcherSettings settings;
+	settings.SettleMs = 20u;
+	settings.RemoveGraceMs = 20u;
+	Service = std::make_unique<assets::CFileWatcherService>(settings, std::make_unique<CScriptedWatcher>(queue));
+	Service->Subscribe(Content, {}, Recorder.MakeCallback());   // no filter, as the shader root's
+	ASSERT_EQ(Service->GetStats().Roots, 1u);
+
+	WriteText(File("Шейдери/Common.hlsli"), "// two\n");
+	queue->Push(platform::EFileEventKind::Modified, "Шейдери/Common.hlsli");
+	queue->Push(platform::EFileEventKind::Modified, "Шейдери");
+	ASSERT_TRUE(PumpUntil([this] { return !Recorder.Changes.empty() && Service->IsIdle(); })) << Recorder.Describe().CStr();
+	EXPECT_TRUE(Recorder.HasOnly("Шейдери/Common.hlsli", assets::EFileChange::Modified)) << Recorder.Describe().CStr();
+	EXPECT_EQ(Recorder.Changes.size(), 1u) << "no Rescan of the edited file's directory\n" << Recorder.Describe().CStr();
+	EXPECT_EQ(Service->GetStats().Rescans, 0u);
+
+	// A directory that appears is still known as one, by the disk, and enumerated.
+	Recorder.Clear();
+	std::filesystem::create_directories(File("Нова"), ec);
+	WriteText(File("Нова/x.hlsli"), "x");
+	queue->Push(platform::EFileEventKind::Added, "Нова");
+	queue->Push(platform::EFileEventKind::Modified, "Нова");
+	ASSERT_TRUE(PumpUntil([this] { return !Recorder.Changes.empty() && Service->IsIdle(); })) << Recorder.Describe().CStr();
+	EXPECT_TRUE(Recorder.HasOnly("Нова/x.hlsli", assets::EFileChange::Added)) << Recorder.Describe().CStr();
+	EXPECT_EQ(Recorder.Changes.size(), 1u) << Recorder.Describe().CStr();
+}
+
 // ---------------- Overflow, fences, self-writes ----------------
 
 TEST_F(FileWatcherServiceTest, AnOverflowBecomesOneRescanOnceTheTreeIsQuiet)
@@ -542,6 +669,44 @@ TEST_F(FileWatcherServiceTest, FlushTellsEverythingBeforeItsFenceAndNothingOfThe
 
 	// A directory nobody watches cannot be flushed.
 	EXPECT_FALSE(Service->Flush(Outside));
+}
+
+TEST_F(FileWatcherServiceTest, FlushReachesEveryRootWhenADirectoryWasSubscribedBeforeOneAboveIt)
+{
+	std::error_code ec;
+	std::filesystem::create_directories(File("Моделі/Спонза"), ec);
+	assets::SFileWatcherSettings settings;
+	settings.SettleMs = 60000u;   // nothing settles by itself: only the fences tell
+	settings.RemoveGraceMs = 60000u;
+	Service = std::make_unique<assets::CFileWatcherService>(settings);
+	// A material in a subdirectory loaded before one above it: two roots, each subscription on its own.
+	SRecorder inner;
+	Service->Subscribe(File("Моделі/Спонза"), {}, inner.MakeCallback());
+	Service->Subscribe(Content, {}, Recorder.MakeCallback());
+	ASSERT_EQ(Service->GetStats().Roots, 2u) << "the inner directory keeps its own root";
+
+	// Flushing the inner directory tells the outer root's subscriber as well...
+	WriteText(File("Моделі/Спонза/a.frtmat.yml"), "a");
+	ASSERT_TRUE(Service->Flush(File("Моделі/Спонза")));
+	EXPECT_TRUE(inner.HasOnly("a.frtmat.yml", assets::EFileChange::Added)) << inner.Describe().CStr();
+	EXPECT_TRUE(Recorder.HasOnly("Моделі/Спонза/a.frtmat.yml", assets::EFileChange::Added)) << Recorder.Describe().CStr();
+
+	// ... and flushing the outer one tells the inner root's.
+	inner.Clear();
+	Recorder.Clear();
+	WriteText(File("Моделі/Спонза/b.frtmat.yml"), "b");
+	ASSERT_TRUE(Service->Flush(Content));
+	EXPECT_TRUE(inner.HasOnly("b.frtmat.yml", assets::EFileChange::Added)) << inner.Describe().CStr();
+	EXPECT_TRUE(Recorder.HasOnly("Моделі/Спонза/b.frtmat.yml", assets::EFileChange::Added)) << Recorder.Describe().CStr();
+
+	// No root ever tells a fence, its own or the other's.
+	inner.Clear();
+	Recorder.Clear();
+	ASSERT_TRUE(Service->Flush(Content));
+	ASSERT_TRUE(Service->Flush(File("Моделі/Спонза")));
+	EXPECT_TRUE(inner.Changes.empty()) << inner.Describe().CStr();
+	EXPECT_TRUE(Recorder.Changes.empty()) << Recorder.Describe().CStr();
+	EXPECT_EQ(Service->GetStats().PendingPaths, 0u);
 }
 
 TEST_F(FileWatcherServiceTest, AnExpectedWriteDiffsToNothingAndSomeoneElsesWriteIsStillTold)
@@ -813,6 +978,55 @@ TEST_F(FileWatcherServiceTest, ADisabledServiceWatchesNothingUntilItIsEnabled)
 	Service->SetEnabled(false);
 	EXPECT_EQ(Service->GetStats().Roots, 0u);
 	EXPECT_TRUE(Service->IsIdle());
+}
+
+TEST_F(FileWatcherServiceTest, EnabledForSomeDirectoriesOnlyTheRootsInOrAboveThemAreWatched)
+{
+	// A scripted step in the engine checkout watches its own directory, never the checkout's shaders
+	// or materials that a developer may be editing meanwhile.
+	assets::SFileWatcherSettings settings;
+	settings.bEnabled = false;
+	Service = std::make_unique<assets::CFileWatcherService>(settings);
+	Service->Subscribe(Content, {}, Recorder.MakeCallback());
+	SRecorder outside;
+	Service->Subscribe(Outside, {}, outside.MakeCallback());
+	EXPECT_EQ(Service->GetStats().Roots, 0u);
+
+	const std::filesystem::path onlyContent[] = { File("Підкаталог") };   // a root above it counts
+	Service->SetEnabled(true, onlyContent);
+	EXPECT_TRUE(Service->IsEnabled());
+	EXPECT_EQ(Service->GetStats().Roots, 1u);
+	WriteText(File("a.txt"), "a");
+	WriteText(Outside / "b.txt", "b");
+	ASSERT_TRUE(Service->Flush(Content));
+	EXPECT_FALSE(Service->Flush(Outside)) << "not watched";
+	EXPECT_TRUE(Recorder.HasOnly("a.txt", assets::EFileChange::Added)) << Recorder.Describe().CStr();
+
+	// A later subscription outside the scope is not watched either.
+	const std::filesystem::path later = Dir / FStringView("Пізніше").ToPath();
+	std::error_code ec;
+	ASSERT_TRUE(std::filesystem::create_directories(later, ec));
+	Service->Subscribe(later, {}, [] (std::span<const assets::SFileChange>) {});
+	EXPECT_EQ(Service->GetStats().Roots, 1u);
+
+	// Without a scope everything is watched, from now on; the root that was in scope kept watching.
+	Recorder.Clear();
+	WriteText(File("c.txt"), "c");
+	Service->SetEnabled(true);
+	EXPECT_EQ(Service->GetStats().Roots, 3u);
+	WriteText(Outside / "d.txt", "d");
+	ASSERT_TRUE(Service->Flush(Outside));
+	EXPECT_TRUE(outside.HasOnly("d.txt", assets::EFileChange::Added)) << outside.Describe().CStr();
+	EXPECT_TRUE(outside.Find("b.txt").empty()) << outside.Describe().CStr();
+	ASSERT_TRUE(Service->Flush(Content));
+	EXPECT_TRUE(Recorder.HasOnly("c.txt", assets::EFileChange::Added)) << "kept, not re-armed\n" << Recorder.Describe().CStr();
+
+	// Narrowed again: the roots that left the scope are disarmed.
+	const std::filesystem::path onlyOutside[] = { Outside };
+	Service->SetEnabled(true, onlyOutside);
+	EXPECT_EQ(Service->GetStats().Roots, 1u);
+	EXPECT_FALSE(Service->Flush(Content));
+	EXPECT_TRUE(Service->Flush(Outside));
 }
 
 TEST_F(FileWatcherServiceTest, SettingsComeFromTheConfig)

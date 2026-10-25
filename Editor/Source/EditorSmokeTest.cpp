@@ -154,12 +154,12 @@ void CEditorSmokeTest::TouchGameBuild (CEditor& Editor)
 	Editor.PollGameModuleNow();
 }
 
-void CEditorSmokeTest::WatchFiles (CEngine& Engine, bool bOn)
+void CEditorSmokeTest::WatchFiles (CEngine& Engine, bool bOn, std::initializer_list<std::filesystem::path> OnlyUnder)
 {
 	assets::CFileWatcherService* watcher = Engine.GetFileWatcher();
 	if (watcher)
 	{
-		watcher->SetEnabled(bOn);
+		watcher->SetEnabled(bOn, std::span<const std::filesystem::path>(OnlyUnder.begin(), OnlyUnder.size()));
 	}
 	Check(watcher != nullptr && watcher->IsEnabled() == bOn, bOn ? "the file watcher is on for the steps that need it" : "the file watcher is off again");
 }
@@ -203,7 +203,8 @@ void CEditorSmokeTest::BeginFileEdits (CEngine& Engine)
 		}
 	});
 	Check(EditedMaterial != nullptr, "the project has a material loaded from its Content/");
-	WatchFiles(Engine, true);
+	// The copies alone: the engine checkout's files (its Editor/Config, say) stay unwatched.
+	WatchFiles(Engine, true, { paths::GetProjectDir(), paths::GetShaderRootDir() });
 }
 
 void CEditorSmokeTest::EditMaterial (CEngine& Engine)
@@ -585,8 +586,12 @@ void CEditorSmokeTest::Update (CEditor& Editor, CEngine& Engine)
 			T.Check(input.GetShortcutText(EEditorCommand::TogglePlay) == "Ctrl+P" && input.GetShortcutText(EEditorCommand::ExitFullscreen) == "Escape",
 				"TogglePlay is Ctrl+P, ExitFullscreen is Escape");
 			T.InputGeneration = input.GetGeneration();
-			// Overrides are re-read when the file watcher reports them: on for these steps.
-			T.WatchFiles(G, true);
+			// Overrides are re-read when the file watcher reports them: on for these steps, and for the
+			// overrides' directory alone - the run may be in the engine checkout, whose shaders, materials
+			// and input a developer may be editing meanwhile.
+			T.WatchFiles(G, true, { T.OutputDir });
+			const assets::CFileWatcherService* watcher = G.GetFileWatcher();
+			T.Check(watcher != nullptr && watcher->GetStats().Roots == 1u, "... watching the overrides' directory and nothing else");
 			PostCtrlP(G, true);
 		} },
 		{ 335u, "Ctrl+P", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G)

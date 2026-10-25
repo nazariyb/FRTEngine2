@@ -47,7 +47,9 @@ class CConfig;
  *	  from the Recycle Bin) is enumerated with platform::EnumerateDirectory and every file in it is
  *	  Added; one renamed or moved within the root re-paths what is pending below it and is told as one
  *	  directory Moved; one removed or moved out is one directory Removed, which stands for everything
- *	  below it (UE's RemoveAssetPath leaves ghosts there).
+ *	  below it (UE's RemoveAssetPath leaves ghosts there), followed by the file's Added when a file took
+ *	  its place within the window. Where the platform gives no entry types, the disk is asked, and a
+ *	  directory's own Modified (its times, changed by an entry inside) is dropped.
  *	- Bursts. More than BurstEvents (256) events without a SettleMs pause is a VCS operation (a
  *	  checkout, a sync): everything is held until the whole tree has been quiet for VcsSettleMs
  *	  ([AssetsEditor] VcsSettleMs, 1500), then told at once, so no subscriber ever sees a half-updated
@@ -61,18 +63,20 @@ class CConfig;
  *	- Self-writes. ExpectWrite registers the hash and size a write of the caller's own will leave; when
  *	  the path settles with exactly those bytes, nothing is told. A different hash (someone else wrote
  *	  meanwhile) is told as usual.
- *	- Fences. Flush(Directory) creates ".frt-fence-<pid>-<n>" in the directory's root, waits for its
- *	  event - events of one root arrive in order, so everything before it has arrived - and tells
- *	  everything older at once, ignoring the windows (Bitsquid's fence, watchman's cookies). Tests,
- *	  commandlets that write then read, and bulk editor operations call it. Fence names are never told.
+ *	- Fences. Flush(Directory) creates ".frt-fence-<pid>-<n>" in each root that watches the directory,
+ *	  waits for each root's own fence event - events of one root arrive in order, so everything before
+ *	  it has arrived - and tells everything older at once, ignoring the windows (Bitsquid's fence,
+ *	  watchman's cookies). Tests, commandlets that write then read, and bulk editor operations call it.
+ *	  Fence names are never told.
  *
  * Subscriptions are explicit, keyed by directory and filter: Subscribe(Directory, {Prefix,
- * Extensions}, Callback). The service arms one platform root per directory that no armed root already
- * contains (a subscription inside an armed root shares it), disarms a root when its last subscription
- * goes, and looks every RootPollMs for a subscribed directory that does not exist yet (it is armed, and
- * told as a Rescan, when it appears). Callbacks run on the owner thread, inside Pump or Flush, at
- * most once per call each, with the subscription's changes sorted by path; a callback may subscribe,
- * unsubscribe (itself included) and register expected writes, but not Pump or Flush.
+ * Extensions}, Callback). The service arms one platform root per directory that no root already
+ * contains (a subscription inside one shares it; a directory subscribed before one above it keeps its
+ * own root, so roots may overlap, and Flush fences all of them), disarms a root when its last
+ * subscription goes, and looks every RootPollMs for a subscribed directory that does not exist yet (it
+ * is armed, and told as a Rescan, when it appears). Callbacks run on the owner thread, inside Pump or
+ * Flush, at most once per call each, with the subscription's changes sorted by path; a callback may
+ * subscribe, unsubscribe (itself included) and register expected writes, but not Pump or Flush.
  *
  * Owner thread: the thread that constructed the service (CEngine's main thread); every member asserts
  * it. Nothing here allocates from the engine's memory pool: std containers and FString, on the CRT
@@ -209,8 +213,11 @@ public:
 
 	// [Assets] Watch at run time. Off: every root is disarmed and everything pending is forgotten. On:
 	// the subscribed directories are armed again, watching from now (nothing that changed while it was
-	// off is told).
-	void SetEnabled (bool bEnabled);
+	// off is told). OnlyUnder, when not empty, limits watching to the roots that hold one of these
+	// directories or lie below one - also those of later subscriptions - until the next call: a scripted
+	// step that watches its own files, and nothing else of the checkout it runs in. Roots that leave
+	// the scope are disarmed; roots that stay in it keep watching.
+	void SetEnabled (bool bEnabled, std::span<const std::filesystem::path> OnlyUnder = {});
 	[[nodiscard]] bool IsEnabled () const noexcept;
 
 	// ---- the frame ----
@@ -219,10 +226,11 @@ public:
 	// settled. Once per frame (CEngine::BeginFrame); cheap when nothing happened.
 	void Pump ();
 
-	// The fence: creates a fence file in the root that watches Directory, waits for its event at most
-	// TimeoutSeconds, then tells everything of that root that arrived before it, whatever the windows
-	// (files a writer still holds stay pending). True when the fence was seen; false at once when
-	// Directory is not watched (no subscription, disabled, or not armed).
+	// The fence: creates a fence file in every armed root that watches some of Directory (one that
+	// holds it, or lies below it), waits for each root's fence event, all within TimeoutSeconds, then
+	// tells everything of those roots that arrived before their fences, whatever the windows (files a
+	// writer still holds stay pending). True when every fence was seen; false at once when Directory is
+	// not watched (no subscription, disabled, or not armed).
 	bool Flush (const std::filesystem::path& Directory, double TimeoutSeconds = 5.0);
 	template <platform::NarrowText T>
 	bool Flush (const T&, double = 5.0) = delete;

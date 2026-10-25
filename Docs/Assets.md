@@ -44,18 +44,19 @@ wrong answer.
 | Settling | a path is told after 200 ms without events, at most 2 s after its first; a removal waits 1 s longer |
 | Coalescing | `Removed` then `Added` is `Modified` (git's unlink and write, atomic saves), `Added` then `Removed` is nothing |
 | Moves | the two halves pair by identity within 150 ms into one `Moved`; a case-only rename is a `Moved` |
-| Directories | one moved or copied in is enumerated (every file `Added`); one renamed is one directory `Moved`; one removed is one directory `Removed` |
+| Directories | one moved or copied in is enumerated (every file `Added`); one renamed is one directory `Moved`; one removed is one directory `Removed` (then an `Added` if a file took its place); without entry types (FAT, ReFS, shares) the disk is asked, and a directory's own `Modified` is dropped |
 | Bursts | more than 256 events without a pause hold everything until `[AssetsEditor] VcsSettleMs` (1500) of quiet, then one batch; `SetVcsBusyQuery` is the seam for M4's VCS provider |
 | Overflow, lost root | one `Rescan` of the root: compare what you hold with the disk, reload only what differs |
 | Writers | a file a writer still holds waits (back-off up to 2 s, a warning after 10 s) |
 | Self-writes | `ExpectWrite(path, hash, size, deadline)`: an echo with exactly those bytes is not told |
 
 `Subscribe(directory, { Prefix, Extensions }, callback)` (the directory need not exist yet), `Unsubscribe`, `Pump()`
-(once per frame: `CEngine::BeginFrame`), `Flush(directory)` (a fence file `.frt-fence-<pid>-<n>`: everything older is
-told now; for tests and scripted steps), `SetEnabled`, `GetStats`. `IsFileAffected(change, file)` is the rule loaders
-share: a change of the file's path, or of a directory above it, and never a removal. `CEngine::GetFileWatcher()` owns
-one in Debug and Development (headless too; null in Release and in tool hosts). `[Assets] Watch` (default 1) turns it
-off.
+(once per frame: `CEngine::BeginFrame`), `Flush(directory)` (a fence file `.frt-fence-<pid>-<n>` in every root that
+watches the directory - roots overlap when a directory was subscribed before one above it: everything older is told
+now; for tests and scripted steps), `SetEnabled(on, onlyUnder)` (optionally for the roots in or above some directories
+only), `GetStats`. `IsFileAffected(change, file)` is the rule loaders share: a change of the file's path, or of a
+directory above it, and never a removal. `CEngine::GetFileWatcher()` owns one in Debug and Development (headless too;
+null in Release and in tool hosts). `[Assets] Watch` (default 1) turns it off.
 
 ### Subscribers
 
@@ -74,11 +75,12 @@ A removed file keeps what was loaded. The game module's DLL keeps its own exclus
 Automation runs (an `[Automation]` key that makes a run scripted) and the editor's smoke tests are scripted:
 `CEngine::StartUp` forces `[Assets] Watch=0` (nothing reloads behind a capture's back) and `[Assets] ReadOnly=1`
 (the asset system writes nothing; the switch is for M4) (`CAutomation::IsScriptedRun`, `ApplyScriptedRunRules`). A
-smoke step that needs the watcher turns it on for itself and flushes it after writing, so its result never depends on
-timing. With `-Editor:SmokeTestEdits=1` the smoke test also edits files - a material, which must reload, and a shader
-include, which must rebuild exactly the programs that read it - but only on a project outside the engine checkout and
-with the shaders read from a copy, `-Render:ShaderRoot=<dir>` (dev builds). `FRT.bat verify` runs it on a scratch copy
-of `Templates/Demo` made with `FRT.bat new` in `%TEMP%`.
+smoke step that needs the watcher turns it on for its own directories only (the input overrides' `Local/SmokeTest`; the
+scratch copy and its shader copy) and flushes it after writing, so its result never depends on timing and nothing of the
+checkout it runs in reloads behind its back. With `-Editor:SmokeTestEdits=1` the smoke test also edits files - a
+material, which must reload, and a shader include, which must rebuild exactly the programs that read it - but only on a
+project outside the engine checkout and with the shaders read from a copy, `-Render:ShaderRoot=<dir>` (dev builds).
+`FRT.bat verify` runs it on a scratch copy of `Templates/Demo` made with `FRT.bat new` in `%TEMP%`.
 
 ## Tool host, worker pool, derived-data cache, shader cache (M1)
 
