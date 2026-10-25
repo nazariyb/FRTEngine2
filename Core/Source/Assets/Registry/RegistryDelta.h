@@ -19,11 +19,28 @@
  * thread commits them in Sequence order.
  *
  * Semantics (CRegistryStore implements and tests them):
- *	- Removes apply first (FolderRemoves, FileRemoves, RecordRemoves, RuleFileRemoves), then upserts in the
- *	  order of the members below (Mounts, FolderUpserts, FileUpserts, RuleFileUpserts, RecordUpserts,
- *	  Problems). A delta is atomic: one revision, one change-ring entry per record touched; readers see all
- *	  of it or none of it. Every SRecordId, NameId and string offset is assigned at commit: no delta carries
- *	  one, so a worker never needs to know the store's state.
+ *	- Removes apply first (FolderRemoves, FileRemoves, RecordRemoves, RuleFileRemoves, ProblemClears), then
+ *	  upserts in the order of the members below (Mounts, FolderUpserts, FileUpserts, RuleFileUpserts,
+ *	  RecordUpserts, Problems). A delta is atomic: one revision, one change-ring entry per record touched;
+ *	  readers see all of it or none of it. Every SRecordId, NameId and string offset is assigned at commit:
+ *	  no delta carries one, so a worker never needs to know the store's state.
+ *	- MountIds are not the store's to choose: every SMountUpsert carries the id CMountTable assigned (the
+ *	  single source of truth, design MountId rule), and the store adopts it as given. Upserting a known name
+ *	  with a different id, or a known id with a different name, is a contract violation: a debug assert, a
+ *	  code-0 Registry problem on the mount root, and that mount upsert is ignored. So every MountId F3 hands
+ *	  to the store, a snapshot writer or an export (WriteSnapshot, ExportImage, DumpText) is a CMountTable id.
+ *	- Problems are lists per (Subject, Source). A producer that rescans or re-evaluates a subtree clears
+ *	  its source there first (ProblemClears: every list of that source whose Subject is the MountPath or
+ *	  lies below it), then sets what it found (Problems), so a problem that is no longer reported does not
+ *	  survive. Which source a diagnostic goes under:
+ *	    Scan     - the scan batch's PATH001-003, unlistable folders, skipped links (Subject: the file or
+ *	               folder);
+ *	    Rules    - RULE001 (always, also when the scan's oracle raised it) and the rules engine's other
+ *	               diagnostics, Subject = the folder of the rule file. A mount root holds two rule files
+ *	               (the mount's Config/Assets.yml and the content root's Assets.yml) under one Subject: the
+ *	               producer sends both files' diagnostics in that one list (File tells them apart);
+ *	    Analyze  - an importer's diagnostics for its file (Subject: the file, or file#label);
+ *	    Registry - what the store itself finds at commit (REF006, PATH001 on edges, contract violations).
  *	- An edge with an invalid Target resolves at commit by TargetPath, through the record path index under
  *	  the portable fold (§5.2). No match: the edge is kept with EDepFlags::Unresolved against an unresolved
  *	  slot keyed by the folded path (or by the GUID for a Target id nothing has), and is rebound - reverse
@@ -43,7 +60,7 @@
  */
 namespace frt::assets
 {
-struct SMountUpsert    { FString Name; bool bCaseSensitive = false; };   // "Engine", "Project", "Plugin.X"; idempotent
+struct SMountUpsert    { FString Name; bool bCaseSensitive = false; MountId Id = InvalidMountId; };   // "Engine", "Project", "Plugin.X"; idempotent; Id from CMountTable
 struct SFolderUpsert   { FString MountPath; };                           // a missing parent is created
 struct SFileUpsert
 {
@@ -73,6 +90,8 @@ struct SRecordUpsert     // replaces the whole record of FileMountPath: tags, la
 };
 enum class EProblemSource : uint8 { Scan, Rules, Analyze, Registry };
 struct SProblemsSet { FString Subject; EProblemSource Source = EProblemSource::Scan; std::vector<SDiagnostic> Diagnostics; };  // replaces that pair's list; empty clears
+// Clears every list of Source whose Subject equals MountPath or continues it with '/' or '#' (byte-exact).
+struct SProblemsClear { FString MountPath; EProblemSource Source = EProblemSource::Scan; };
 struct SRegistryDelta
 {
 	uint64 Sequence = 0;
@@ -81,6 +100,7 @@ struct SRegistryDelta
 	std::vector<FString> FileRemoves;                // removes the file's record too
 	std::vector<FString> RecordRemoves;
 	std::vector<SRuleFileUpsert> RuleFileRemoves;
+	std::vector<SProblemsClear> ProblemClears;       // after the other removes, before every upsert
 	std::vector<SFolderUpsert> FolderUpserts;
 	std::vector<SFileUpsert> FileUpserts;
 	std::vector<SRuleFileUpsert> RuleFileUpserts;
@@ -91,8 +111,16 @@ struct SRegistryDelta
 	[[nodiscard]] bool IsEmpty () const noexcept
 	{
 		return Mounts.empty() && FolderRemoves.empty() && FileRemoves.empty() && RecordRemoves.empty()
-			&& RuleFileRemoves.empty() && FolderUpserts.empty() && FileUpserts.empty() && RuleFileUpserts.empty()
-			&& RecordUpserts.empty() && Problems.empty();
+			&& RuleFileRemoves.empty() && ProblemClears.empty() && FolderUpserts.empty() && FileUpserts.empty()
+			&& RuleFileUpserts.empty() && RecordUpserts.empty() && Problems.empty();
 	}
 };
 }
+
+
+FRT_DECLARE_ENUM_REFLECTION(
+	frt::assets::EProblemSource,
+	FRT_ENUM_ENTRY(frt::assets::EProblemSource, Scan),
+	FRT_ENUM_ENTRY(frt::assets::EProblemSource, Rules),
+	FRT_ENUM_ENTRY(frt::assets::EProblemSource, Analyze),
+	FRT_ENUM_ENTRY(frt::assets::EProblemSource, Registry));

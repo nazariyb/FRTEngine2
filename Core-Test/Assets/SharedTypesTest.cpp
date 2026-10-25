@@ -135,13 +135,77 @@ TEST(SharedTypesTest, ParentAndLeafWalkTheSegments)
 	EXPECT_EQ(GetMountPathLeaf("/Project/A"), "A");
 	EXPECT_EQ(GetMountPathLeaf("/Project"), "Project");
 	EXPECT_EQ(GetMountPathLeaf("/Project/Текстури/Камінь 漢字.png"), "Камінь 漢字.png");
-	// A "#label" suffix is part of the leaf: callers split it off.
-	EXPECT_EQ(GetMountPathLeaf("/Project/Models/Box.gltf#mesh:Body"), "Box.gltf#mesh:Body");
-
 	// Parent + "/" + Leaf rebuilds every path below a mount root.
 	for (const FStringView path : { "/Project/A/b.png", "/Project/A", "/Engine/Fonts/Roboto.ttf" })
 	{
 		EXPECT_EQ(MakeChildMountPath(GetMountPathParent(path), GetMountPathLeaf(path)), path);
+	}
+}
+
+TEST(SharedTypesTest, MountPathHelpersTakeNoLabel)
+{
+	// A label may hold '/' (glTF names do) and '#', so the helpers would split inside it: unsupported input.
+	const FStringView labelled = "/Project/Models/Box.gltf#mesh:Armature/Body";
+	EXPECT_EQ(GetMountPathLeaf(labelled), "Body");
+	EXPECT_EQ(GetMountPathParent(labelled), "/Project/Models/Box.gltf#mesh:Armature");
+
+	// Callers split the label off at the end of the file's mount path, which they know from the record ('#'
+	// is legal in file names, so searching for it would cut "a#b.png" short).
+	const FStringView file = "/Project/Models/Box.gltf";
+	ASSERT_TRUE(labelled.StartsWith(file));
+	EXPECT_EQ(labelled.RightChop(file.Len() + 1u), "mesh:Armature/Body");
+	EXPECT_EQ(GetMountPathLeaf(labelled.Left(file.Len())), "Box.gltf");
+	EXPECT_EQ(GetMountPathParent(labelled.Left(file.Len())), "/Project/Models");
+	EXPECT_EQ(GetMountPathLeaf("/Project/a#b.png"), "a#b.png");
+}
+
+TEST(SharedTypesTest, ResolveMountPathCollapsesRelativeReferences)
+{
+	const auto resolve = [] (FStringView Folder, FStringView Reference) -> FString
+	{
+		const std::optional<FString> path = ResolveMountPath(Folder, Reference);
+		return path ? *path : FString("<none>");
+	};
+
+	EXPECT_EQ(resolve("/Project/Models", "Box.bin"), "/Project/Models/Box.bin");
+	EXPECT_EQ(resolve("/Project/Models", "./Box.bin"), "/Project/Models/Box.bin");
+	EXPECT_EQ(resolve("/Project/Models", "Textures/Rock.png"), "/Project/Models/Textures/Rock.png");
+	EXPECT_EQ(resolve("/Project/Models", "../Textures/Rock.png"), "/Project/Textures/Rock.png");
+	EXPECT_EQ(resolve("/Project/Models/Box", "../../Rock.png"), "/Project/Rock.png");
+	EXPECT_EQ(resolve("/Project/Models", "A/../B/./c.png"), "/Project/Models/B/c.png");
+	EXPECT_EQ(resolve("/Project/Models", "A//B/c.png"), "/Project/Models/A/B/c.png");
+	EXPECT_EQ(resolve("/Project/Models", "Textures\\Rock.png"), "/Project/Models/Textures/Rock.png");
+	EXPECT_EQ(resolve("/Project/Models", "..\\Rock.png"), "/Project/Rock.png");
+	EXPECT_EQ(resolve("/Project/Models", "Текстури/Камінь 漢字.png"), "/Project/Models/Текстури/Камінь 漢字.png");
+	EXPECT_EQ(resolve("/Project", "Rock.png"), "/Project/Rock.png");
+	EXPECT_EQ(resolve("/Project/Models", "Textures/"), "/Project/Models/Textures");
+	EXPECT_EQ(resolve("/Project/Models", "."), "/Project/Models");
+	EXPECT_EQ(resolve("/Project/Models", ".."), "/Project");
+	EXPECT_EQ(resolve("/Project/Models", "...png"), "/Project/Models/...png");
+
+	// A leading separator makes the reference absolute: its first segment is the mount name.
+	EXPECT_EQ(resolve("/Project/Models", "/Engine/Textures/White.png"), "/Engine/Textures/White.png");
+	EXPECT_EQ(resolve("/Project/Models", "\\Engine\\Textures\\White.png"), "/Engine/Textures/White.png");
+	EXPECT_EQ(resolve("/Project/Models", "/Project/A/../B.png"), "/Project/B.png");
+	EXPECT_EQ(resolve("/Project/Models", "/Project"), "/Project");
+	EXPECT_EQ(resolve("/Project/Models", "/Project/"), "/Project");
+
+	// Never above the mount root, never a malformed result.
+	for (const auto& [folder, reference] : std::initializer_list<std::pair<FStringView, FStringView>> {
+		{ "/Project", ".." }, { "/Project", "../Engine/x.png" }, { "/Project/Models", "../../x.png" },
+		{ "/Project/Models", "A/../../../x.png" }, { "/Project/Models", "/Project/../Engine/x.png" },
+		{ "/Project/Models", "" }, { "/Project/Models", "/" }, { "/Project/Models", "//Engine/x" },
+		{ "/Project/Models", "/../x" }, { "/Project/Models", "/./x" }, { "Project/Models", "x.png" },
+		{ "/Project/", "x.png" }, { "", "x.png" } })
+	{
+		EXPECT_EQ(resolve(folder, reference), "<none>") << folder << " + " << reference;
+	}
+
+	for (const FStringView reference : { "a", "a/b", "../a", "./a/./b/..", "/Engine/a/b", "\\x\\y" })
+	{
+		const std::optional<FString> path = ResolveMountPath("/Project/Models", reference);
+		ASSERT_TRUE(path.has_value()) << reference;
+		EXPECT_TRUE(IsWellFormedMountPath(*path)) << *path;
 	}
 }
 
@@ -486,10 +550,25 @@ TEST(SharedTypesTest, RecordIdsAndTagValuesHaveUsefulDefaults)
 	EXPECT_EQ(STagValue::FromInt64(7), STagValue::FromInt64(7));
 	EXPECT_NE(STagValue::FromInt64(7), STagValue::FromDouble(7.0));
 
+	// An untyped query literal: Compile types it per key; a quoted one stays text.
+	const STagValue literal = STagValue::FromLiteral("4096", false);
+	EXPECT_EQ(literal.Type, ETagType::None);
+	EXPECT_TRUE(literal.IsLiteral());
+	EXPECT_FALSE(literal.IsQuotedLiteral());
+	EXPECT_TRUE(STagValue::FromLiteral("1", true).IsQuotedLiteral());
+	EXPECT_TRUE(STagValue::FromLiteral("", true).IsLiteral());
+	EXPECT_FALSE(STagValue().IsLiteral());
+	EXPECT_FALSE(STagValue::FromName("Button").IsLiteral());
+	EXPECT_NE(STagValue::FromLiteral("1", true), STagValue::FromLiteral("1", false));
+
 	SRegistryDelta delta;
 	EXPECT_TRUE(delta.IsEmpty());
+	delta.ProblemClears.push_back(SProblemsClear { "/Project/A", EProblemSource::Scan });
+	EXPECT_FALSE(delta.IsEmpty());
+	delta.ProblemClears.clear();
 	delta.FileUpserts.push_back(SFileUpsert { "/Project/Rock.png" });
 	EXPECT_FALSE(delta.IsEmpty());
+	EXPECT_EQ(SMountUpsert().Id, InvalidMountId);
 	EXPECT_EQ(delta.FileUpserts[0].MetaState, EMetaState::PendingMeta);
 	EXPECT_EQ(delta.FileUpserts[0].Class, EFileClass::Unclaimed);
 	EXPECT_FALSE(delta.FileUpserts[0].ContentHash.has_value());
@@ -500,4 +579,72 @@ TEST(SharedTypesTest, RecordIdsAndTagValuesHaveUsefulDefaults)
 	const SScanBatch batch;
 	EXPECT_TRUE(batch.Folders.empty());
 	EXPECT_EQ(SScanFolder().Parent, ~0u);
+	EXPECT_EQ(SScanFolder().Scope, nullptr);
+}
+
+
+namespace
+{
+// Every name round-trips through TryParse and is the C++ identifier; values are unique. Plain enums list
+// every value from 0 in order; flag enums one single bit per entry.
+template <typename E>
+void ExpectNamesRoundTrip (bool bFlags, size_t ExpectedCount)
+{
+	const auto& entries = enum_::TEnumTraits<E>::Entries;
+	EXPECT_EQ(entries.size(), ExpectedCount);
+	std::set<FString> names;
+	std::set<uint64> values;
+	for (size_t i = 0u; i < entries.size(); ++i)
+	{
+		const auto& [value, name] = entries[i];
+		const uint64 bits = static_cast<uint64>(value);
+		EXPECT_FALSE(name.IsEmpty());
+		EXPECT_TRUE(names.insert(FString(name)).second) << name;
+		EXPECT_TRUE(values.insert(bits).second) << name;
+		EXPECT_EQ(enum_::ToString(value), name);
+		E parsed {};
+		EXPECT_TRUE(enum_::TryParse(name, &parsed)) << name;
+		EXPECT_EQ(parsed, value) << name;
+		if (bFlags)
+		{
+			EXPECT_TRUE(bits != 0u && (bits & (bits - 1u)) == 0u) << name;
+		}
+		else
+		{
+			EXPECT_EQ(bits, i) << name;
+		}
+	}
+}
+}
+
+TEST(SharedTypesTest, RegistryEnumsHaveTextNames)
+{
+	ExpectNamesRoundTrip<EFileClass>(false, 5u);
+	ExpectNamesRoundTrip<EMetaState>(false, 5u);
+	ExpectNamesRoundTrip<ETagType>(false, 9u);
+	ExpectNamesRoundTrip<ECookRule>(false, 5u);
+	ExpectNamesRoundTrip<EImportStatus>(false, 4u);
+	ExpectNamesRoundTrip<ECompare>(false, 12u);
+	ExpectNamesRoundTrip<EExists>(false, 3u);
+	ExpectNamesRoundTrip<ERecordScope>(false, 4u);
+	ExpectNamesRoundTrip<EProblemSource>(false, 4u);
+	ExpectNamesRoundTrip<EScanFileState>(false, 4u);
+	ExpectNamesRoundTrip<ERecordFlags>(true, 11u);
+	ExpectNamesRoundTrip<ETagFlags>(true, 5u);
+	ExpectNamesRoundTrip<EDepFlags>(true, 10u);
+
+	// The spellings every piece prints and parses.
+	EXPECT_EQ(enum_::ToString(ECookRule::Default), "Default");
+	EXPECT_EQ(enum_::ToString(EImportStatus::AnalyzeFailed), "AnalyzeFailed");
+	EXPECT_EQ(enum_::ToString(EFileClass::Unclaimed), "Unclaimed");
+	EXPECT_EQ(enum_::ToString(ERecordFlags::LegacyReferences), "LegacyReferences");
+	EXPECT_EQ(enum_::ToString(EDepFlags::Unresolved), "Unresolved");
+	EXPECT_EQ(enum_::ToString(ECompare::Match), "Match");
+	ECookRule rule = ECookRule::Always;
+	EXPECT_FALSE(enum_::TryParse("Auto", &rule));   // the rules engine's alias, not a name
+	EXPECT_EQ(rule, ECookRule::Always);
+	EXPECT_TRUE(enum_::TryParse("editoronly", &rule));
+	EXPECT_EQ(rule, ECookRule::EditorOnly);
+	// A combination has no single name: flags print bit by bit.
+	EXPECT_TRUE(enum_::ToString(EDepFlags::Build | EDepFlags::Path).IsEmpty());
 }
