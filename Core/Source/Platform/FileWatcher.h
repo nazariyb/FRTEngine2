@@ -88,7 +88,8 @@ struct SFileWatcherDesc
 	// Queued events beyond this, never taken, are dropped and replaced by one Overflow per root: a
 	// consumer that stopped taking events must rescan, not run out of memory.
 	uint32 MaxQueuedEvents = 256u * 1024u;
-	// The watcher thread's name (platform::ConfigureThread).
+	// The watcher thread's name (platform::ConfigureThread); the thread that looks for lost and renamed
+	// roots has the same with " Poll".
 	FString ThreadName = "FRT File Watcher";
 };
 

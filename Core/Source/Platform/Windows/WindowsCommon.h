@@ -5,6 +5,7 @@
 // Tools/Lint/CheckPlatform.py keeps Win32 out of the asset system's sources).
 
 #include <filesystem>
+#include <optional>
 #include <system_error>
 
 #include <Windows.h>
@@ -86,6 +87,54 @@ private:
 		return std::filesystem::path(L"\\\\?\\UNC" + full.substr(1u));   // \\server\share -> \\?\UNC\server\share
 	}
 	return std::filesystem::path(L"\\\\?\\" + full);
+}
+
+// Path without the extended-length prefix ToWin32Path gives a long one: "\\?\C:\a" is "C:\a",
+// "\\?\UNC\server\share\a" is "\\server\share\a". Any other path as it is. Two paths compare in one
+// form only: a Win32 call returns the form it was given, prefixed for a long path and not for a short
+// one, whatever the other path's length.
+[[nodiscard]] inline std::filesystem::path StripExtendedPrefix (const std::filesystem::path& Path)
+{
+	const std::filesystem::path::string_type& text = Path.native();
+	if (text.size() >= 8u && text.compare(0u, 8u, L"\\\\?\\UNC\\") == 0)
+	{
+		return std::filesystem::path(L"\\" + text.substr(7u));   // \\?\UNC\server\share -> \\server\share
+	}
+	if (text.size() >= 4u && text.compare(0u, 4u, L"\\\\?\\") == 0)
+	{
+		return std::filesystem::path(text.substr(4u));
+	}
+	return Path;
+}
+
+// The part of Path below Directory, '\' separated and without a leading separator ("" for Directory
+// itself), or nullopt when Path is not at or below it. Either may carry the extended-length prefix or
+// not, and a trailing separator or not; names compare ignoring case as NTFS does (ordinal, the OS's
+// upcase table).
+[[nodiscard]] inline std::optional<std::filesystem::path::string_type> GetPathBelow (const std::filesystem::path& Path,
+	const std::filesystem::path& Directory)
+{
+	const std::filesystem::path::string_type path = StripExtendedPrefix(Path).native();
+	std::filesystem::path::string_type directory = StripExtendedPrefix(Directory).native();
+	while (!directory.empty() && (directory.back() == L'\\' || directory.back() == L'/'))
+	{
+		directory.pop_back();
+	}
+	if (directory.empty() || path.size() < directory.size()
+		|| CompareStringOrdinal(path.c_str(), static_cast<int>(directory.size()), directory.c_str(), static_cast<int>(directory.size()), TRUE)
+			!= CSTR_EQUAL)
+	{
+		return std::nullopt;
+	}
+	if (path.size() == directory.size())
+	{
+		return std::filesystem::path::string_type();
+	}
+	if (path[directory.size()] != L'\\' && path[directory.size()] != L'/')
+	{
+		return std::nullopt;
+	}
+	return path.substr(directory.size() + 1u);
 }
 
 // "<What> '<Path>': <system message> (<code>)" into *OutError, when there is one.

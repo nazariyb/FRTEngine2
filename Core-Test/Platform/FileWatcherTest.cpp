@@ -4,7 +4,9 @@
 // identity; a move between directories is Removed then Added with one identity; a case-only rename
 // loses its leading Removed; a directory moved in is one event; a buffer too small for the burst is
 // one Overflow; a deleted or renamed root is RootLost and, once it is back, an Overflow; Disarm drops
-// what is queued; and the writer probe tells a held file from a free one. Everything runs in
+// what is queued; a one-character name that ends a read is not cut off; the 8.3 expansion compares
+// paths with and without the extended-length prefix alike; and the writer probe tells a held file
+// from a free one. Everything runs in
 // directories with non-ASCII names. The tests never assume an exact event list - other processes
 // (indexers, scanners) may touch files too - only the facts that matter.
 #include <gtest/gtest.h>
@@ -25,6 +27,7 @@
 #include "Platform/FileWatcher.h"
 #include "Platform/Platform.h"
 #include "Platform/Process.h"
+#include "Platform/Windows/WindowsCommon.h"
 
 #include <Windows.h>
 
@@ -281,6 +284,65 @@ TEST_F(FileWatcherTest, ACaseOnlyRenameLosesItsLeadingRemoved)
 	Log->Collect(100ms);
 	EXPECT_TRUE(Has(Log->Events, platform::EFileEventKind::RenamedOld, "текстура.png")) << Describe(Log->Events).CStr();
 	EXPECT_FALSE(Has(Log->Events, platform::EFileEventKind::Removed, "текстура.png")) << Describe(Log->Events).CStr();
+}
+
+TEST_F(FileWatcherTest, AOneCharacterNameThatEndsAReadIsReported)
+{
+	// The kernel's byte count ends right after the last record's name: a one-unit name ends the
+	// record before sizeof of the (padded) record struct does. A lone create always ends its read.
+	Start();
+	WriteText(File("x"), "x");
+	ASSERT_TRUE(Log->WaitFor([] (const auto& Events) { return Has(Events, platform::EFileEventKind::Added, "x"); }))
+		<< Describe(Log->Events).CStr();
+
+	std::error_code ec;
+	Log->Clear();
+	ASSERT_TRUE(std::filesystem::create_directory(File("D"), ec));
+	ASSERT_TRUE(Log->WaitFor([] (const auto& Events) { return Has(Events, platform::EFileEventKind::Added, "D"); }))
+		<< Describe(Log->Events).CStr();
+	EXPECT_EQ(Log->Events[static_cast<size_t>(Find(Log->Events, platform::EFileEventKind::Added, "D"))].EntryType,
+		platform::EFileEntryType::Directory);
+
+	// A rename onto a one-character name: without its RenamedNew the old name would look removed.
+	WriteText(File("abc"), "abc");
+	ASSERT_TRUE(Log->WaitFor([] (const auto& Events) { return Has(Events, platform::EFileEventKind::Added, "abc"); }));
+	Log->Clear();
+	std::filesystem::rename(File("abc"), File("b"), ec);
+	ASSERT_FALSE(ec);
+	ASSERT_TRUE(Log->WaitFor([] (const auto& Events) { return Has(Events, platform::EFileEventKind::RenamedNew, "b"); }))
+		<< Describe(Log->Events).CStr();
+	EXPECT_TRUE(Has(Log->Events, platform::EFileEventKind::RenamedOld, "abc")) << Describe(Log->Events).CStr();
+	EXPECT_FALSE(HasKind(Log->Events, platform::EFileEventKind::Overflow)) << Describe(Log->Events).CStr();
+}
+
+TEST(FileWatcherWindows, ALongNameBelowAShortRootIsFoundWithOrWithoutTheExtendedPrefix)
+{
+	// The 8.3 expansion asks GetLongPathNameW for the full path, which comes back with the
+	// extended-length prefix once it is MAX_PATH units long, whatever the root's length: the root's
+	// own long path is compared in the same form.
+	using platform::windows::GetPathBelow;
+	const std::filesystem::path root = L"C:\\proj";
+	EXPECT_EQ(GetPathBelow(L"C:\\proj\\VeryLongName\\x.txt", root), std::wstring(L"VeryLongName\\x.txt"));
+	EXPECT_EQ(GetPathBelow(L"\\\\?\\C:\\proj\\VeryLongName\\x.txt", root), std::wstring(L"VeryLongName\\x.txt"));
+	EXPECT_EQ(GetPathBelow(L"\\\\?\\c:\\PROJ\\a", L"\\\\?\\C:\\proj\\"), std::wstring(L"a")) << "ignoring case and a trailing separator";
+	EXPECT_EQ(GetPathBelow(L"\\\\?\\UNC\\server\\share\\proj\\a", L"\\\\server\\share\\proj"), std::wstring(L"a"));
+	EXPECT_EQ(GetPathBelow(L"C:\\proj", root), std::wstring());
+	EXPECT_FALSE(GetPathBelow(L"C:\\project\\a", root).has_value()) << "a name that starts like the root's is not below it";
+	EXPECT_FALSE(GetPathBelow(L"\\\\?\\D:\\proj\\a", root).has_value());
+
+	// Long for real: a deep path under a short root, through ToWin32Path and GetLongPathNameW.
+	const std::filesystem::path shortRoot = std::filesystem::temp_directory_path();
+	std::filesystem::path deep = shortRoot;
+	for (int i = 0; i < 30; ++i)
+	{
+		deep /= L"Глибоко";
+	}
+	ASSERT_GE(deep.native().size(), static_cast<size_t>(MAX_PATH));
+	const std::filesystem::path win32 = platform::windows::ToWin32Path(deep);
+	ASSERT_TRUE(win32.native().starts_with(L"\\\\?\\")) << "the form the expansion compares";
+	const std::optional<std::wstring> below = GetPathBelow(win32, shortRoot);
+	ASSERT_TRUE(below.has_value());
+	EXPECT_EQ(std::filesystem::path(*below), deep.lexically_relative(shortRoot).make_preferred());
 }
 
 TEST_F(FileWatcherTest, ADirectoryMovedInIsOneEventThatSaysItIsADirectory)
