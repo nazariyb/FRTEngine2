@@ -52,6 +52,13 @@ class CWorkerPool;
  * running one sees IsCancelled() and its result is discarded, and the steps it needed are released in
  * turn.
  *
+ * Epochs. The pool discards, unrun, the completion of a task submitted before its epoch moved on
+ * (CWorkerPool::BumpEpoch, CancelAllAndDrain: a game-module reload, §6.7), so a step running across a new
+ * epoch never reports back. Each Tick looks for such steps: it cancels the run (it may stop early; its
+ * result goes unused) and, once the run has let go of the step's callable - returned, or been dropped
+ * unstarted - queues the step again, so its requests still complete ("their work re-queued", §5.9) and the
+ * callable still never runs twice at once.
+ *
  * Commit order. Every request's OnComplete runs exactly once, in a Tick on the owner thread, with its
  * outcome - Succeeded, Failed or Cancelled - unless the scheduler is destroyed first. Interactively
  * (EBuildCommitOrder::Completion) each Tick commits every request that has finished, in sequence order;
@@ -185,8 +192,9 @@ struct SBuildSchedulerStats
 {
 	uint64 Requests = 0u;
 	uint64 StepsCreated = 0u;
-	uint64 Runs = 0u;          // step runs started, restarts included
+	uint64 Runs = 0u;          // step runs started, restarts and reruns included
 	uint64 Restarts = 0u;
+	uint64 Reruns = 0u;        // runs queued again: the pool's epoch moved on while they ran, discarding their results
 	uint64 Succeeded = 0u;     // steps
 	uint64 Failed = 0u;        // steps
 	uint64 Cancelled = 0u;     // steps
@@ -248,6 +256,9 @@ private:
 		FBuildStepFunction Run;
 	};
 
+	// One run of a step, shared by its work and its completion (BuildScheduler.cpp).
+	struct SRunState;
+
 	struct SNode
 	{
 		uint64 Id = 0u;
@@ -262,6 +273,9 @@ private:
 		uint32 PendingNeeds = 0u;          // of those, how many have not finished
 		std::vector<uint64> Waiters;       // steps waiting for this one to finish
 		uint64 CancelGroup = 0u;           // of its run on the pool, while Running
+		uint64 RunEpoch = 0u;              // the pool's epoch its run was submitted in, while Running
+		std::shared_ptr<SRunState> Run;    // its run, while Running
+		bool bRunStale = false;            // the epoch moved on while it ran: cancelled, a rerun waits for it
 		std::shared_ptr<const std::vector<uint8>> Output;
 		std::vector<FString> Diagnostics;
 	};
@@ -291,6 +305,9 @@ private:
 	void Enqueue (SNode& Node);
 	void Dequeue (SNode& Node);
 	void Admit ();
+	// Queues again every running step whose run the pool will discard (an older epoch), once that run has
+	// let go of the step's callable.
+	void RequeueStaleRuns ();
 	void OnRunFinished (uint64 Id, uint64 CancelGroup, SBuildStepResult&& Result);
 	void HandleNeed (SNode& Node, std::vector<FString>&& Keys);
 	// Final states: records it, wakes or fails what waits for it, releases what it needed.
@@ -313,6 +330,8 @@ private:
 	std::set<uint64> ReadyToCommit;              // requests whose outcome is known
 	std::set<SQueueEntry> Queue;
 	uint32 InFlight = 0u;
+	uint64 CheckedEpoch = 0u;                    // the pool's epoch when RequeueStaleRuns last looked
+	uint32 StaleRuns = 0u;                       // stale runs it found still holding their step's callable
 	uint64 NextNodeId = 1u;
 	uint64 NextRequest = 1u;
 	SBuildSchedulerStats Totals;

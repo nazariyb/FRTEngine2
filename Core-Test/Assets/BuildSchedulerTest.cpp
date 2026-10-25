@@ -5,7 +5,9 @@
 // forever; a failed or missing input fails its step without another run; cancelling a request cancels its
 // step only when nothing else needs it, a running step sees IsCancelled and its inputs nobody else needs go
 // too; every request's OnComplete runs exactly once, on the owner thread in a Tick, in request order with
-// EBuildCommitOrder::Sequence whatever finishes first; and a random graph of steps under random delays
+// EBuildCommitOrder::Sequence whatever finishes first; a step whose run the pool discards (a new epoch,
+// the module barrier) runs again, never beside its first run, and its request completes; and a random
+// graph of steps under random delays
 // always completes with the outputs a sequential build gives - an owner that waits by pumping never
 // deadlocks.
 #include <gtest/gtest.h>
@@ -731,6 +733,108 @@ TEST(BuildSchedulerTest, DestroyingTheSchedulerCancelsItsWorkWithoutCallingBack)
 	EXPECT_FALSE(bCalled);
 	EXPECT_TRUE(pool.IsIdle());
 	EXPECT_EQ(log.Count("Queued"), 0u);
+}
+
+// The pool discards, unrun, the completion of a task from an older epoch (a module reload, §6.7). A step
+// that was running when the epoch moved on runs again once its first run has returned - never beside it,
+// even when that run ignores the cancel - and one the pool had queued but not started is dropped and runs
+// once; both requests complete, with the outputs of the runs after the new epoch.
+TEST(BuildSchedulerTest, StepsCaughtByANewEpochRunAgainAndTheirRequestsComplete)
+{
+	std::atomic<uint32> longRuns = 0u;
+	std::atomic<uint32> longActive = 0u;
+	std::atomic<uint32> longMostActive = 0u;
+	std::atomic<bool> bRelease = false;
+	std::atomic<bool> bFirstSawCancel = false;
+	CRunLog log;
+	jobs::CWorkerPool pool(Threads(1));
+	SBuildSchedulerDesc desc;
+	desc.MaxInFlight = 2u;   // "Next" waits in the pool's queue behind "Long"
+	CBuildScheduler scheduler(pool, nullptr, desc);
+	SOutcomes outcomes;
+
+	const uint64 longRequest = scheduler.Request(MakeStep("Long", [&] (CBuildStepContext&)
+	{
+		const uint32 active = longActive.fetch_add(1u) + 1u;
+		uint32 most = longMostActive.load();
+		while (most < active && !longMostActive.compare_exchange_weak(most, active))
+		{
+		}
+		const uint32 run = longRuns.fetch_add(1u);
+		if (run == 0u)
+		{
+			// A long first run that never polls for cancellation: it ends when the test lets it.
+			const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+			while (!bRelease.load() && std::chrono::steady_clock::now() < deadline)
+			{
+				std::this_thread::sleep_for(std::chrono::microseconds(100));
+			}
+			bFirstSawCancel.store(CBuildStepContext::IsCancelled());
+		}
+		longActive.fetch_sub(1u);
+		return SBuildStepResult::Success(Bytes(run == 0u ? "first" : "rerun"));
+	}), EBuildPriority::Visible, outcomes.Collect());
+	const uint64 nextRequest = scheduler.Request(MakeStep("Next", QuickStep(log)), EBuildPriority::Visible, outcomes.Collect());
+	ASSERT_TRUE(test::WaitUntil([&] { return longRuns.load() == 1u; }, WorkerTimeout));
+	EXPECT_EQ(scheduler.GetStats().Running, 2u);
+
+	pool.BumpEpoch();
+	// The first run of "Long" still holds the step: nothing runs beside it, and nothing can commit.
+	EXPECT_FALSE(scheduler.PumpUntil([&] { return !outcomes.List.empty(); }, 0.2));
+	EXPECT_EQ(longRuns.load(), 1u);
+	EXPECT_EQ(scheduler.FindStepState("Long"), EBuildStepState::Running);
+	EXPECT_EQ(log.Count("Next"), 0u);
+	EXPECT_EQ(scheduler.GetStats().Reruns, 1u);   // "Next", dropped unstarted and submitted again
+
+	bRelease.store(true);
+	ASSERT_TRUE(scheduler.PumpUntil([&] { return outcomes.List.size() == 2u; }, TestTimeoutSeconds));
+	EXPECT_TRUE(bFirstSawCancel.load());
+	EXPECT_EQ(longRuns.load(), 2u);
+	EXPECT_EQ(longMostActive.load(), 1u);
+	EXPECT_EQ(log.Count("Next"), 1u);
+	const SBuildOutcome* longOutcome = outcomes.Find(longRequest);
+	ASSERT_NE(longOutcome, nullptr);
+	EXPECT_EQ(longOutcome->Outcome, EBuildOutcome::Succeeded);
+	ASSERT_NE(longOutcome->Output, nullptr);
+	EXPECT_EQ(*longOutcome->Output, Bytes("rerun"));
+	EXPECT_EQ(longOutcome->Restarts, 0u);
+	ASSERT_NE(outcomes.Find(nextRequest), nullptr);
+	EXPECT_EQ(outcomes.Find(nextRequest)->Outcome, EBuildOutcome::Succeeded);
+	const SBuildSchedulerStats stats = scheduler.GetStats();
+	EXPECT_EQ(stats.Runs, 4u);
+	EXPECT_EQ(stats.Reruns, 2u);
+	EXPECT_EQ(stats.Succeeded, 2u);
+	EXPECT_TRUE(scheduler.IsIdle());
+}
+
+// CancelAllAndDrain - the module barrier - cancels the running step, drops the queued one and starts a new
+// epoch, discarding both completions: the next Tick runs both again and their requests complete.
+TEST(BuildSchedulerTest, StepsTheModuleBarrierDrainedRunAgainAndTheirRequestsComplete)
+{
+	SGate gate;
+	CRunLog log;
+	jobs::CWorkerPool pool(Threads(1));
+	SBuildSchedulerDesc desc;
+	desc.MaxInFlight = 2u;
+	CBuildScheduler scheduler(pool, nullptr, desc);
+	SOutcomes outcomes;
+
+	scheduler.Request(MakeStep("Running", GatedStep(gate, log)), EBuildPriority::Visible, outcomes.Collect());
+	scheduler.Request(MakeStep("Queued", QuickStep(log)), EBuildPriority::Visible, outcomes.Collect());
+	ASSERT_TRUE(test::WaitUntil([&] { return gate.bReached.load(); }, WorkerTimeout));
+	pool.CancelAllAndDrain();   // the gated step sees the cancel and returns; the queued one never starts
+	EXPECT_EQ(log.Count("Queued"), 0u);
+	gate.Open();
+
+	ASSERT_TRUE(scheduler.PumpUntil([&] { return outcomes.List.size() == 2u; }, TestTimeoutSeconds));
+	for (const SBuildOutcome& outcome : outcomes.List)
+	{
+		EXPECT_EQ(outcome.Outcome, EBuildOutcome::Succeeded) << outcome.Key.CStr() << ": " << Join(outcome.Diagnostics).CStr();
+	}
+	EXPECT_EQ(log.Count("Running"), 2u);
+	EXPECT_EQ(log.Count("Queued"), 1u);
+	EXPECT_EQ(scheduler.GetStats().Reruns, 2u);
+	EXPECT_TRUE(scheduler.IsIdle());
 }
 
 // A random graph of steps - each needs a few earlier ones, discovers them all on its first run, sleeps a

@@ -1,6 +1,7 @@
 #include "Assets/BuildScheduler.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 
 #include "Jobs/WorkerPool.h"
@@ -38,12 +39,39 @@ bool IsMoreUrgent (EBuildPriority Priority, uint64 Sequence, EBuildPriority Othe
 	return Priority != OtherPriority ? Priority < OtherPriority : Sequence < OtherSequence;
 }
 
-// A run's result, filled on the worker, read by the completion on the owner thread.
-struct SRunSlot
+// Raises Flag when destroyed (not when moved from). A run's work callable holds one: the pool destroys
+// that callable once it has returned, or unrun when it drops the task, so the flag says the run no longer
+// uses the step's callable, whichever way the pool ended it - also when its completion is discarded.
+class CReleaseFlag
 {
-	SBuildStepResult Result;
+public:
+	explicit CReleaseFlag (std::shared_ptr<std::atomic<bool>> InFlag) noexcept : Flag(std::move(InFlag)) {}
+	CReleaseFlag (CReleaseFlag&&) noexcept = default;
+	CReleaseFlag& operator= (CReleaseFlag&&) = delete;
+	CReleaseFlag (const CReleaseFlag&) = delete;
+	CReleaseFlag& operator= (const CReleaseFlag&) = delete;
+
+	~CReleaseFlag ()
+	{
+		if (Flag)
+		{
+			Flag->store(true, std::memory_order_release);
+		}
+	}
+
+private:
+	std::shared_ptr<std::atomic<bool>> Flag;
 };
 }
+
+
+// A run's result, filled on the worker and read by the completion on the owner thread, and whether the
+// run has let go of the step's callable (CReleaseFlag).
+struct CBuildScheduler::SRunState
+{
+	SBuildStepResult Result;
+	std::shared_ptr<std::atomic<bool>> ReleasedFlag = std::make_shared<std::atomic<bool>>(false);
+};
 
 
 SBuildStepResult SBuildStepResult::Success (std::vector<uint8> Output)
@@ -365,18 +393,59 @@ void CBuildScheduler::Admit ()
 			}
 		}
 
-		// The work holds only what it reads (its definition and context) and the slot it writes: never
-		// the scheduler, which a cancelled run may outlive.
-		auto slot = std::make_shared<SRunSlot>();
+		// The work holds only what it reads (its definition and context), the state it writes and its
+		// release flag: never the scheduler, which a cancelled run may outlive.
+		auto run = std::make_shared<SRunState>();
+		node.Run = run;
+		node.RunEpoch = Pool.GetEpoch();   // the epoch Submit tags the task with: both on this thread
+		node.bRunStale = false;
+		CReleaseFlag release(run->ReleasedFlag);
 		Pool.Submit(ToWorkPriority(node.Priority), node.CancelGroup,
-			[definition = node.Definition, context = std::move(context), slot] () mutable
+			[definition = node.Definition, context = std::move(context), run, release = std::move(release)] () mutable
 			{
-				slot->Result = definition->Run(context);
+				run->Result = definition->Run(context);
 			},
-			[this, id, group = node.CancelGroup, slot] ()
+			[this, id, group = node.CancelGroup, run] ()
 			{
-				OnRunFinished(id, group, std::move(slot->Result));
+				OnRunFinished(id, group, std::move(run->Result));
 			});
+	}
+}
+
+void CBuildScheduler::RequeueStaleRuns ()
+{
+	// Epochs only grow, and only on this thread: a run submitted in an older one has a completion the
+	// pool will discard (or has discarded), so OnRunFinished never comes for it.
+	const uint64 epoch = Pool.GetEpoch();
+	if (epoch == CheckedEpoch && StaleRuns == 0u)
+	{
+		return;
+	}
+	CheckedEpoch = epoch;
+	StaleRuns = 0u;
+	for (auto& [id, node] : Nodes)
+	{
+		if (node.State != EBuildStepState::Running || node.RunEpoch >= epoch)
+		{
+			continue;
+		}
+		if (!node.bRunStale)
+		{
+			// Its result goes unused: let it stop early, or drop it if it has not started.
+			node.bRunStale = true;
+			Pool.Cancel(node.CancelGroup);
+		}
+		if (!node.Run->ReleasedFlag->load(std::memory_order_acquire))
+		{
+			++StaleRuns;   // still on a worker: the rerun waits, so the step's callable never runs twice at once
+			continue;
+		}
+		--InFlight;
+		node.CancelGroup = 0u;
+		node.Run.reset();
+		node.bRunStale = false;
+		++Totals.Reruns;
+		Enqueue(node);
 	}
 }
 
@@ -389,6 +458,7 @@ void CBuildScheduler::OnRunFinished (uint64 Id, uint64 CancelGroup, SBuildStepRe
 	}
 	--InFlight;
 	node->CancelGroup = 0u;
+	node->Run.reset();
 	switch (Result.Status)
 	{
 		case EBuildStepStatus::Succeeded:
@@ -647,6 +717,7 @@ SBuildOutcome CBuildScheduler::MakeOutcome (uint64 RequestId, const SRequestReco
 uint32 CBuildScheduler::Tick ()
 {
 	CheckOwnerThread();
+	RequeueStaleRuns();
 	Admit();
 
 	// Which requests commit now: every ready one (interactive), or the ready ones at the front of the
