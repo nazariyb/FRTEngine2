@@ -867,6 +867,22 @@ private:
 		return true;
 	}
 
+	// A value that names something (a type, label, table, target, order key): as ParseValue, and a quoted empty text
+	// ("" or '') is an error at its opening quote, since no name is empty.
+	bool ParseName (FString& Out, bool& bOutQuoted, uint32 ErrorAt, FStringView What)
+	{
+		const uint32 start = Position;
+		if (!ParseValue(Out, bOutQuoted, false, ErrorAt, What))
+		{
+			return false;
+		}
+		if (Out.IsEmpty())
+		{
+			return Fail(start, FString::Format("expected {}, not an empty quoted text", What));
+		}
+		return true;
+	}
+
 	bool ParseNegated (SAssetQuery& Into)
 	{
 		const uint32 start = Position;
@@ -886,7 +902,7 @@ private:
 		Position = keyEnd + opLength;
 		FString label;
 		bool bQuoted = false;
-		if (!ParseValue(label, bQuoted, false, keyEnd, "a label after '-label:'"))
+		if (!ParseName(label, bQuoted, keyEnd, "a label after '-label:'"))
 		{
 			return false;
 		}
@@ -981,7 +997,7 @@ private:
 
 		if (is("type") || is("t"))
 		{
-			if (!RequireOperator(Op, true, "type", OpPosition) || !ParseValue(value, bQuoted, false, OpPosition, "a type name"))
+			if (!RequireOperator(Op, true, "type", OpPosition) || !ParseName(value, bQuoted, OpPosition, "a type name"))
 			{
 				return false;
 			}
@@ -1008,7 +1024,7 @@ private:
 		}
 		if (is("label"))
 		{
-			if (!RequireOperator(Op, true, "label", OpPosition) || !ParseValue(value, bQuoted, false, OpPosition, "a label"))
+			if (!RequireOperator(Op, true, "label", OpPosition) || !ParseName(value, bQuoted, OpPosition, "a label"))
 			{
 				return false;
 			}
@@ -1017,7 +1033,7 @@ private:
 		}
 		if (is("table"))
 		{
-			if (!RequireOperator(Op, true, "table", OpPosition) || !ParseValue(value, bQuoted, false, OpPosition, "a table"))
+			if (!RequireOperator(Op, true, "table", OpPosition) || !ParseName(value, bQuoted, OpPosition, "a table"))
 			{
 				return false;
 			}
@@ -1036,7 +1052,7 @@ private:
 			{
 				++Position;
 			}
-			if (!ParseValue(value, bQuoted, false, OpPosition, "a target (a mount path or a name)"))
+			if (!ParseName(value, bQuoted, OpPosition, "a target (a mount path or a name)"))
 			{
 				return false;
 			}
@@ -1078,7 +1094,7 @@ private:
 			{
 				return Fail(Start, "order: is given twice");
 			}
-			if (!RequireOperator(Op, false, "order", OpPosition) || !ParseValue(value, bQuoted, false, OpPosition, "a key to order by"))
+			if (!RequireOperator(Op, false, "order", OpPosition) || !ParseName(value, bQuoted, OpPosition, "a key to order by"))
 			{
 				return false;
 			}

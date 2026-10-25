@@ -308,6 +308,31 @@ TEST(AssetQueryParseTest, ErrorsPointAtTheTermAtFault)
 
 	error = ErrorOf("\"\"");
 	EXPECT_TRUE(error.Message.Contains("empty")) << error.Message.CStr();
+
+	// A name is never empty, quoted or not: the error is at the opening quote.
+	error = ErrorOf("type:\"\"");
+	EXPECT_EQ(error.Column, 6u);
+	EXPECT_TRUE(error.Message.Contains("a type name")) << error.Message.CStr();
+	error = ErrorOf("rifle label:''");
+	EXPECT_EQ(error.Column, 13u);
+	EXPECT_TRUE(error.Message.Contains("a label")) << error.Message.CStr();
+	error = ErrorOf("-label:\"\"");
+	EXPECT_EQ(error.Column, 8u);
+	error = ErrorOf("t=''");
+	EXPECT_EQ(error.Column, 3u);
+	error = ErrorOf("table:''");
+	EXPECT_EQ(error.Column, 7u);
+	error = ErrorOf("ref:\"\"");
+	EXPECT_EQ(error.Column, 5u);
+	error = ErrorOf("dep:~''");
+	EXPECT_EQ(error.Column, 6u);
+	error = ErrorOf("order:\"\"");
+	EXPECT_EQ(error.Column, 7u);
+	ErrorOf("is:\"\"");
+	ErrorOf("dir:''");
+	// A tag compared with the empty text is a valid query.
+	EXPECT_EQ(Lower("Note=''"), "where:Note Eq ''");
+
 	error = ErrorOf("Name:\"x\"y");
 	EXPECT_EQ(error.Column, 9u);
 
