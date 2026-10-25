@@ -44,9 +44,9 @@ FString SLockOwner::Describe () const
 	return text;
 }
 
-std::filesystem::path GetOwnerLockPath (const std::filesystem::path& Root)
+std::filesystem::path GetOwnerLockPath (const std::filesystem::path& MountRoot)
 {
-	return Root / "Local" / "Assets" / "Owner.lock";
+	return GetMountAssetsLocalDir(MountRoot) / "Owner.lock";
 }
 
 SLockOwner GetThisProcessAsOwner ()

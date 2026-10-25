@@ -336,14 +336,14 @@ FString FormatUtcNow ()
 }
 
 
-std::filesystem::path GetBuildStatePath (const std::filesystem::path& LocalDir)
+std::filesystem::path GetBuildStatePath (const std::filesystem::path& MountRoot)
 {
-	return LocalDir / "Assets" / BuildStateFileName.ToPath();
+	return GetMountAssetsLocalDir(MountRoot) / BuildStateFileName.ToPath();
 }
 
-std::filesystem::path GetBuildJournalPath (const std::filesystem::path& LocalDir)
+std::filesystem::path GetBuildJournalPath (const std::filesystem::path& MountRoot)
 {
-	return LocalDir / "Assets" / BuildJournalFileName.ToPath();
+	return GetMountAssetsLocalDir(MountRoot) / BuildJournalFileName.ToPath();
 }
 
 FStringLiteral GetBuildStatusName (EBuildStatus Status) noexcept

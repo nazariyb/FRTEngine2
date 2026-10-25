@@ -684,7 +684,7 @@ TEST_F(AssetToolTest, DdcGcTrimsToTheBudgetKeepsTheBuildStateAndIsADryRunWithCi)
 		// The project's BuildState names the oldest record, which LRU order would evict first.
 		assets::CBuildStateLog log;
 		FString error;
-		ASSERT_TRUE(log.Open(assets::GetBuildStatePath(ProjectDir / "Local"), &error)) << error.CStr();
+		ASSERT_TRUE(log.Open(assets::GetBuildStatePath(ProjectDir), &error)) << error.CStr();
 		assets::SBuildStateEntry entry;
 		entry.Step = assets::SBuildStepId{ "Asset", "Test", "", "" };
 		entry.StaticKey = ScratchKey(100u);
@@ -727,7 +727,7 @@ TEST_F(AssetToolTest, DdcGcTrimsToTheBudgetKeepsTheBuildStateAndIsADryRunWithCi)
 	// Without the project (and with no recent projects) its BuildState is not known here: everything goes.
 	// The engine's own log, if this checkout has one, names none of the scratch keys.
 	const std::optional<std::vector<hash::SContentHash>> engineKeys =
-		assets::CBuildStateLog::ReadKeys(assets::GetBuildStatePath(paths::GetEngineDir() / "Local"));
+		assets::CBuildStateLog::ReadKeys(assets::GetBuildStatePath(paths::GetEngineDir()));
 	const test::SProcessResult all = Run({ "ddc", "gc", "--max-gb=0", "--json" });
 	EXPECT_EQ(all.ExitCode, 0) << all.Errors.CStr() << all.Output.CStr();
 	EXPECT_EQ(JsonUInt(all.Output, "pinnedKeys"), engineKeys ? engineKeys->size() : 0u) << all.Output.CStr();
@@ -748,7 +748,7 @@ TEST_F(AssetToolTest, DdcGcKeepsWhatEveryBuildStateOfTheMachineNames)
 	{
 		assets::CBuildStateLog log;
 		FString error;
-		ASSERT_TRUE(log.Open(assets::GetBuildStatePath(Project / "Local"), &error)) << error.CStr();
+		ASSERT_TRUE(log.Open(assets::GetBuildStatePath(Project), &error)) << error.CStr();
 		assets::SBuildStateEntry entry;
 		entry.Step = assets::SBuildStepId{ FString::Format("Asset{}", Number), "Test", "", "" };
 		entry.StaticKey = ScratchKey(100u + Number);
@@ -767,14 +767,14 @@ TEST_F(AssetToolTest, DdcGcKeepsWhatEveryBuildStateOfTheMachineNames)
 	project::AddRecentProject(other / "Other.frtproject");
 	project::AddRecentProject(ProjectFile);   // the mount itself in the list too: read once
 	// A recent project whose log is a foreign file, and one with no Local/ at all.
-	const std::filesystem::path foreign = assets::GetBuildStatePath(Dir / "Foreign" / "Local");
+	const std::filesystem::path foreign = assets::GetBuildStatePath(Dir / "Foreign");
 	ASSERT_TRUE(platform::WriteFileText(foreign, "not a build state log"));
 	project::AddRecentProject(Dir / "Foreign" / "Foreign.frtproject");
 	project::AddRecentProject(Dir / "Bare" / "Bare.frtproject");
 	ASSERT_EQ(project::GetRecentProjects().size(), 4u);
 
 	const std::optional<std::vector<hash::SContentHash>> engineKeys =
-		assets::CBuildStateLog::ReadKeys(assets::GetBuildStatePath(paths::GetEngineDir() / "Local"));
+		assets::CBuildStateLog::ReadKeys(assets::GetBuildStatePath(paths::GetEngineDir()));
 	const uint64 logs = 2u + (engineKeys ? 1u : 0u);
 	const uint64 pinnedKeys = 2u + (engineKeys ? engineKeys->size() : 0u);
 

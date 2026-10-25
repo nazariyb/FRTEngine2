@@ -5,6 +5,7 @@
 
 #include "Core.h"
 #include "CoreTypes.h"
+#include "Assets/MountPaths.h"
 #include "Containers/String.h"
 #include "Platform/FileLock.h"
 
@@ -45,9 +46,8 @@ struct SLockOwner
 	[[nodiscard]] bool operator== (const SLockOwner& Other) const = default;
 };
 
-// <Root>/Local/Assets/Owner.lock: Root is the mount's root (a project's directory for /Project, the
-// engine checkout for /Engine).
-[[nodiscard]] FRT_CORE_API std::filesystem::path GetOwnerLockPath (const std::filesystem::path& Root);
+// <MountRoot>/Local/Assets/Owner.lock (GetMountAssetsLocalDir).
+[[nodiscard]] FRT_CORE_API std::filesystem::path GetOwnerLockPath (const std::filesystem::path& MountRoot);
 
 // This process, as it describes itself in an Owner.lock it holds.
 [[nodiscard]] FRT_CORE_API SLockOwner GetThisProcessAsOwner ();

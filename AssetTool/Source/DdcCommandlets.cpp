@@ -101,35 +101,35 @@ struct SPinnedKeys
 // never started anew. The same log reached by two paths is read once.
 SPinnedKeys CollectPinnedKeys (const CCommandletContext& Context)
 {
-	std::vector<std::filesystem::path> localDirs;
+	std::vector<std::filesystem::path> mountRoots;
 	if (!Context.GetMountRoot().empty())
 	{
-		localDirs.push_back(Context.GetMountRoot() / "Local");
+		mountRoots.push_back(Context.GetMountRoot());
 	}
 	if (!Context.EngineRoot.empty())
 	{
-		localDirs.push_back(Context.EngineRoot / "Local");
+		mountRoots.push_back(Context.EngineRoot);
 	}
 	for (const std::pair<FString, std::filesystem::path>& engine : project::GetRegisteredEngines())
 	{
 		if (!engine.second.empty())
 		{
-			localDirs.push_back(engine.second / "Local");
+			mountRoots.push_back(engine.second);
 		}
 	}
 	for (const project::SRecentProject& recent : project::GetRecentProjects())
 	{
 		if (!recent.File.empty())
 		{
-			localDirs.push_back(recent.File.parent_path() / "Local");
+			mountRoots.push_back(recent.File.parent_path());
 		}
 	}
 
 	SPinnedKeys pinned;
 	std::vector<platform::SFileIdentity> seen;
-	for (const std::filesystem::path& localDir : localDirs)
+	for (const std::filesystem::path& mountRoot : mountRoots)
 	{
-		const std::filesystem::path file = assets::GetBuildStatePath(localDir);
+		const std::filesystem::path file = assets::GetBuildStatePath(mountRoot);
 		const std::optional<platform::SFileStat> stat = platform::Stat(file);
 		if (!stat || stat->bDirectory)
 		{

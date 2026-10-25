@@ -10,6 +10,7 @@
 #include "Core.h"
 #include "CoreTypes.h"
 #include "Assets/DerivedDataCache.h"
+#include "Assets/MountPaths.h"
 #include "Containers/String.h"
 #include "Functional/FunctionRef.h"
 #include "Hash/StableHash.h"
@@ -33,10 +34,10 @@ namespace frt::assets
 inline constexpr FStringLiteral BuildStateFileName = "BuildState.log";
 inline constexpr FStringLiteral BuildJournalFileName = "BuildJournal.log";
 
-// <LocalDir>/Assets/BuildState.log and <LocalDir>/Assets/BuildJournal.log, LocalDir being the
-// project's Local/ (paths::GetLocalDir()).
-[[nodiscard]] FRT_CORE_API std::filesystem::path GetBuildStatePath (const std::filesystem::path& LocalDir);
-[[nodiscard]] FRT_CORE_API std::filesystem::path GetBuildJournalPath (const std::filesystem::path& LocalDir);
+// <MountRoot>/Local/Assets/BuildState.log and <MountRoot>/Local/Assets/BuildJournal.log
+// (GetMountAssetsLocalDir).
+[[nodiscard]] FRT_CORE_API std::filesystem::path GetBuildStatePath (const std::filesystem::path& MountRoot);
+[[nodiscard]] FRT_CORE_API std::filesystem::path GetBuildJournalPath (const std::filesystem::path& MountRoot);
 
 
 // How a step's last build ended. Crashed: it took its process down (the journal saw it begin and

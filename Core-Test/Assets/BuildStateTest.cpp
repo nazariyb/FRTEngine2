@@ -126,8 +126,8 @@ protected:
 		std::error_code ec;
 		std::filesystem::remove_all(Dir, ec);
 		ASSERT_TRUE(std::filesystem::create_directories(Dir, ec)) << FString::FromUtf8Lossy(ec.message()).CStr();
-		LogPath = GetBuildStatePath(Dir / "Local");
-		JournalPath = GetBuildJournalPath(Dir / "Local");
+		LogPath = GetBuildStatePath(Dir);
+		JournalPath = GetBuildJournalPath(Dir);
 	}
 
 	void TearDown () override
@@ -428,7 +428,7 @@ TEST_F(BuildStateTest, ReadKeysReadsAnotherProcesssLogWithoutWritingIt)
 	EXPECT_EQ(CBuildStateLog::ReadKeys(LogPath)->size(), 3u);
 	owner.Close();
 
-	const std::filesystem::path missing = GetBuildStatePath(Dir / "Elsewhere" / "Local");
+	const std::filesystem::path missing = GetBuildStatePath(Dir / "Elsewhere");
 	EXPECT_FALSE(CBuildStateLog::ReadKeys(missing, &error).has_value());
 	EXPECT_FALSE(platform::Stat(missing).has_value());
 	EXPECT_FALSE(platform::Stat(missing.parent_path()).has_value());
