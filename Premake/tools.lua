@@ -19,6 +19,9 @@
 --              compared with recorded baselines (Tools/Verify/Verify.py says what and how)
 --   assets     the asset system's command line, AssetTool: FRT.bat assets <verb> [arguments]
 --              for the project, or for the engine's own content (Assets, below)
+--   check-builders
+--              BUILD003: every builder whose sources changed has a new version GUID; with
+--              --update, records the new source hashes (Builders, below; verify runs it)
 --
 -- A command for a project that uses another engine runs that engine's FRT.bat instead.
 
