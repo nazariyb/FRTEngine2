@@ -7,6 +7,7 @@
 #include "Asserts.h"
 #include "Assets/AssetDiagnosticCodes.h"
 #include "Assets/Discovery/BuiltinExcludes.h"
+#include "Containers/StringMap.h"
 #include "Jobs/WorkerPool.h"
 #include "Platform/FileSystem.h"
 #include "Platform/Timestamp.h"
@@ -89,6 +90,34 @@ void CheckEntryName (FStringView MountPath, FStringView Name, uint32 MountNameLe
 	}
 }
 
+// CON PRN AUX NUL COM1-COM9 LPT1-LPT9, in any case and with any extension ("con.txt", "Aux.tar.gz").
+bool IsReservedDeviceName (FStringView Name) noexcept
+{
+	const FStringView base = Name.SplitFirst('.').Left;
+	static constexpr FStringLiteral ReservedNames[] = { "CON", "PRN", "AUX", "NUL" };
+	for (const FStringLiteral reserved : ReservedNames)
+	{
+		if (base.Equals<ESearchCase::IgnoreCaseAscii>(reserved))
+		{
+			return true;
+		}
+	}
+	return base.Len() == 4u && base[3] >= '1' && base[3] <= '9'
+		&& (base.Left(3u).Equals<ESearchCase::IgnoreCaseAscii>("COM") || base.Left(3u).Equals<ESearchCase::IgnoreCaseAscii>("LPT"));
+}
+
+/**
+ * A folder name that Win32's path normalization (GetFullPathNameW, which the file layer applies to every
+ * path shorter than MAX_PATH) rewrites: a trailing dot or space is dropped, and a device name may become
+ * the device. Listing "<dir>/Textures." would list "<dir>/Textures", so such a folder is never listed:
+ * it is a failed folder (consumers keep what they knew) besides its PATH002. The same on every platform,
+ * so a batch does not depend on where it was made.
+ */
+bool IsFolderNameRewrittenByWin32 (FStringView Name) noexcept
+{
+	return Name.EndsWith('.') || Name.EndsWith(' ') || IsReservedDeviceName(Name);
+}
+
 SDiagnostic MakeCaseCollision (FStringView MountPath, FStringView Name, std::span<const FStringView> Others)
 {
 	FString others;
@@ -142,6 +171,16 @@ void RunFolder (const FScanStatePtr& State, SFolderNode& Node);
 void ScanFolder (SScanState& State, SFolderNode& Node)
 {
 	FRT_CPU_SCOPE("Assets.Scan.Folder");
+	const bool bMountRoot = Node.MountPath.Len() == 1u + State.Mount.Name.Len();
+	if (!bMountRoot && IsFolderNameRewrittenByWin32(GetMountPathLeaf(Node.MountPath)))
+	{
+		Node.bFailed = true;
+		Node.Scope = Node.ParentScope;
+		Node.Diagnostics.push_back(MakeDiagnostic(ESeverity::Warning, 0u, Node.MountPath, FString::Format("cannot scan the folder {}: Windows "
+			"drops a trailing dot or space from a name and may read a device name as the device, so its listing could be another "
+			"folder's; rename it", FString::FromPath(Node.Directory))));
+		return;
+	}
 	std::vector<SListedEntry> entries;
 	FString error;
 	const bool bListed = platform::EnumerateDirectory(Node.Directory, [&entries] (const platform::SDirectoryEntry& Entry)
@@ -388,39 +427,97 @@ void RunRoot (const FScanStatePtr& State)
 		directory.make_preferred();
 	}
 
-	const std::shared_ptr<const SScanScope> scopeAbove = state.Membership->OpenScope(rootPath, state.Batch.Diagnostics);
-	if (relative.IsEmpty())
+	// A folder above the root whose name Win32 rewrites would be read as another folder (ScanFolder
+	// handles the root's own name like every other folder's).
+	for (FStringView rest = relative; rest.Contains('/');)
 	{
-		// A mount whose content directory does not exist is empty (Resolve warned about it).
-		const std::optional<platform::SFileStat> stat = platform::Stat(directory);
-		const std::optional<platform::SFileStat> parent = platform::Stat(directory.parent_path());
-		if (!stat.has_value() && parent.has_value() && parent->bDirectory)
+		const SStringSplit split = rest.SplitFirst('/');
+		if (IsFolderNameRewrittenByWin32(split.Left))
 		{
+			state.Batch.FailedFolders.push_back(state.Batch.RootMountPath);
+			state.Batch.Diagnostics.push_back(MakeDiagnostic(ESeverity::Warning, 0u, rootPath, FString::Format("cannot scan the folder {}: "
+				"Windows drops a trailing dot or space from the name '{}' above it and may read a device name as the device, so its "
+				"listing could be another folder's; rename it", FString::FromPath(directory), ToDisplayText(split.Left))));
 			Deliver(state);
 			return;
+		}
+		rest = split.Right;
+	}
+
+	const std::shared_ptr<const SScanScope> scopeAbove = state.Membership->OpenScope(rootPath, state.Batch.Diagnostics);
+	if (scopeAbove == nullptr)
+	{
+		FailRoot(state, FString::Format("the membership oracle opened no scope for '{}' (IScanMembership::OpenScope returned null)",
+			ToDisplayText(rootPath)));
+		Deliver(state);
+		return;
+	}
+
+	// The root as its parent lists it. "Not there" is decided only from a listing that holds no entry the
+	// root's directory could open as - never from a failed stat or a byte-exact miss alone - because a
+	// consumer removes everything it knew at or below an absent root. Without the parent's listing, the
+	// root's own listing decides (and a failure puts the root in FailedFolders).
+	const FString rootName = relative.IsEmpty() ? FString::FromPath(directory.filename()) : FString(GetMountPathLeaf(rootPath));
+	if (relative.IsEmpty())
+	{
+		// A mount root: its name is looked up by its parent's rule, which nothing queried, so NTFS's (a
+		// match the content directory then cannot be listed under only fails the scan). A mount whose
+		// content directory is not there is empty (Resolve warned about it).
+		if (!rootName.IsEmpty())
+		{
+			const FString rootKey = MakePathKey(rootName);
+			bool bPresent = false;
+			const bool bParentListed = platform::EnumerateDirectory(directory.parent_path(), [&] (const platform::SDirectoryEntry& Entry)
+			{
+				bPresent = bPresent || Entry.Name == rootName.View() || MakePathKey(Entry.Name) == rootKey;
+			});
+			if (bParentListed && !bPresent)
+			{
+				Deliver(state);
+				return;
+			}
 		}
 	}
 	else
 	{
-		// The root as its parent lists it: a link is never followed, a root that is not there holds
-		// nothing, and its siblings decide PATH001 for it. Without the parent's listing, the root's own
-		// listing decides.
-		const FStringView rootName = GetMountPathLeaf(rootPath);
+		// A subtree root: a link is never followed, a root that is not there holds nothing, and its
+		// siblings decide PATH001 for it. On a case-insensitive mount, a folder the root's spelling opens
+		// under NTFS's rule but spelled otherwise on disk ("/Project/textures" for Textures, as a path typed
+		// or taken from an event can be) is there: the batch would key its files by a spelling the disk does
+		// not have, so the root fails instead, naming the on-disk spelling.
+		const bool bByRule = !state.Mount.Volume.bCaseSensitive;
+		const FString rootKey = bByRule ? MakePathKey(rootName) : FString();
 		std::vector<FString> collisions;
+		std::vector<FString> otherSpellings;
 		bool bFound = false;
 		bool bLink = false;
 		const bool bParentListed = platform::EnumerateDirectory(directory.parent_path(), [&] (const platform::SDirectoryEntry& Entry)
 		{
-			if (Entry.Name == rootName)
+			if (Entry.Name == rootName.View())
 			{
 				bFound = Entry.Stat.bDirectory || Entry.bNameSurrogate;
 				bLink = Entry.bNameSurrogate;
+				return;
 			}
-			else if (!Entry.bNameSurrogate && Entry.Name.Equals<ESearchCase::IgnoreCase>(rootName))
+			if (bByRule && (Entry.Stat.bDirectory || Entry.bNameSurrogate) && MakePathKey(Entry.Name) == rootKey)
+			{
+				otherSpellings.emplace_back(Entry.Name);
+			}
+			if (!Entry.bNameSurrogate && Entry.Name.Equals<ESearchCase::IgnoreCase>(rootName))
 			{
 				collisions.emplace_back(Entry.Name);
 			}
 		});
+		if (bParentListed && !bFound && !otherSpellings.empty())
+		{
+			std::sort(otherSpellings.begin(), otherSpellings.end(), [] (const FString& A, const FString& B) { return IsNameBefore(A, B); });
+			state.Batch.FailedFolders.push_back(state.Batch.RootMountPath);
+			state.Batch.Diagnostics.push_back(MakeDiagnostic(ESeverity::Warning, 0u, rootPath, FString::Format("not scanned: the folder is "
+				"spelled '{}' on disk, and a scan keys files by their on-disk spelling; scan it under that spelling",
+				ToDisplayText(otherSpellings.front()))));
+			Deliver(state);
+			return;
+		}
 		if (bParentListed && !bFound)
 		{
 			Deliver(state);
@@ -498,18 +595,7 @@ FStringView GetNonPortableNameReason (FStringView Name) noexcept
 		return "ends with a space";
 	}
 
-	// Device names, in any case and with any extension: "con", "Con.txt", "aux.tar.gz".
-	const FStringView base = Name.SplitFirst('.').Left;
-	static constexpr FStringLiteral ReservedNames[] = { "CON", "PRN", "AUX", "NUL" };
-	for (const FStringLiteral reserved : ReservedNames)
-	{
-		if (base.Equals<ESearchCase::IgnoreCaseAscii>(reserved))
-		{
-			return "is a reserved device name on Windows";
-		}
-	}
-	if (base.Len() == 4u && base[3] >= '1' && base[3] <= '9'
-		&& (base.Left(3u).Equals<ESearchCase::IgnoreCaseAscii>("COM") || base.Left(3u).Equals<ESearchCase::IgnoreCaseAscii>("LPT")))
+	if (IsReservedDeviceName(Name))
 	{
 		return "is a reserved device name on Windows";
 	}

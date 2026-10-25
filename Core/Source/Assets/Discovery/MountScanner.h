@@ -52,8 +52,16 @@ class CWorkerPool;
  *	  the mount path with every ill-formed sequence shown as U+FFFD (FString::FromUtf8Lossy).
  *	- Failures. A folder whose listing fails is in Folders (it exists: its parent listed it) with no files
  *	  or subfolders and its parent's scope, and in FailedFolders, with a warning (code 0); consumers keep
- *	  what they knew at or below it. A root that does not exist gives a batch with no folders and nothing
- *	  failed: nothing is there.
+ *	  what they knew at or below it. So is a folder whose name Win32's path normalization rewrites (a
+ *	  trailing dot or space, a device name: listing "Textures." would list "Textures"), which is never
+ *	  listed, on every platform; a subtree root below such a folder fails the same way, with no folders.
+ *	  A root that does not exist gives a batch with no folders and nothing failed: nothing is there. That
+ *	  is decided only from its parent's listing, never from a failed stat: the listing holds no entry the
+ *	  root could be opened as (for a mount root, none equal to its content directory's name under NTFS's
+ *	  rule; for a subtree root, none byte-exact). A subtree root of a case-insensitive mount that the
+ *	  listing holds only under another spelling equal by NTFS's rule ("/Project/textures" for Textures)
+ *	  is in FailedFolders with a warning naming the on-disk spelling, and nothing is scanned: a batch keys
+ *	  files by their on-disk spelling, so scan it under that one.
  *	- Removals are not here: known files at or below the root missing from the batch, outside
  *	  FailedFolders, are the consumer's to compute (F3), byte-exact like IKnownFiles::Find.
  *
@@ -108,9 +116,11 @@ public:
 	/**
 	 * Starts the scan and returns at once. OnDone receives the batch as a completion of Pool, so on its
 	 * owner thread, in a later PumpCompletions. An invalid RootMountPath (not well-formed, another mount's)
-	 * still completes: a batch with the root in FailedFolders and an error diagnostic. If the pool is
-	 * drained (CancelAllAndDrain) before the scan ends, OnDone is destroyed without running, possibly on a
-	 * worker: capture nothing whose destruction needs the owner thread.
+	 * still completes: a batch with the root in FailedFolders and an error diagnostic, and so does a
+	 * Membership whose OpenScope returns null (it must return a scope, an empty one when no rule applies:
+	 * nothing can be classified without one). If the pool is drained (CancelAllAndDrain) before the scan
+	 * ends, OnDone is destroyed without running, possibly on a worker: capture nothing whose destruction
+	 * needs the owner thread.
 	 */
 	static void ScanAsync (jobs::CWorkerPool& Pool, const SMount& Mount, FStringView RootMountPath, const IScanMembership& Membership,
 		const IKnownFiles* Known, TUniqueFunction<void (SScanBatch&&)> OnDone);

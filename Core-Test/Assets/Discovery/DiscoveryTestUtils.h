@@ -48,6 +48,13 @@ inline bool WriteVerbatimFile (const std::filesystem::path& Path, FStringView By
 	return bWritten && written == Bytes.Len();
 }
 
+// Creates one directory under its exact name ("Trailing.", "aux"), through the verbatim path; its parent
+// must exist. True when it exists afterwards.
+inline bool MakeVerbatimDirectory (const std::filesystem::path& Path)
+{
+	return CreateDirectoryW(ToVerbatim(Path).c_str(), nullptr) != 0 || GetLastError() == ERROR_ALREADY_EXISTS;
+}
+
 inline bool WriteText (const std::filesystem::path& Path, FStringView Text = "x")
 {
 	return platform::WriteFileBytes(Path, Text.AsBytes());
@@ -146,7 +153,8 @@ inline void RemoveTree (const std::filesystem::path& Root)
 		const std::filesystem::path directory = pending.back();
 		pending.pop_back();
 		directories.push_back(directory);
-		platform::EnumerateDirectory(directory, [&] (const platform::SDirectoryEntry& Entry)
+		// Listed verbatim too: "Trailing." listed as it is spelled would list "Trailing".
+		platform::EnumerateDirectory(ToVerbatim(directory), [&] (const platform::SDirectoryEntry& Entry)
 		{
 			const std::filesystem::path path = directory / Entry.Name.ToPath();
 			if (Entry.bReparsePoint && Entry.Stat.bDirectory)

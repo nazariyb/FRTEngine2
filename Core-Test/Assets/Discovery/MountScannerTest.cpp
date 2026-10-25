@@ -666,6 +666,104 @@ TEST(MountScannerTest, ARootThatIsNotThereHoldsNothingAndAnInvalidOneFails)
 }
 
 
+// A root is "not there" (an empty batch, nothing failed, which a consumer reads as "remove everything
+// below") only when its parent's listing has no entry it could be opened as. On a case-insensitive mount a
+// subtree root spelled otherwise than on disk exists: it fails, naming the on-disk spelling, and is never
+// an empty clean batch. A mount root matches its content directory's name by NTFS's rule.
+TEST(MountScannerTest, ARootSpelledOtherwiseOnDiskIsNeverAnEmptyCleanBatch)
+{
+	CDiscoveryTree tree("Root spelling");
+	const CMountTable table = ResolveTree(tree);
+	const SMount& project = *table.Find("Project");
+	ASSERT_FALSE(project.Volume.bCaseSensitive);
+	ASSERT_TRUE(WriteText(tree.ProjectContent() / "Textures" / "Rock.png"));
+	const auto pool = MakePool(2u);
+	const CDefaultScanMembership membership;
+
+	const SScanBatch batch = CMountScanner::ScanBlocking(*pool, project, "/Project/textures", membership, nullptr);
+	EXPECT_TRUE(batch.Folders.empty());
+	EXPECT_TRUE(batch.Files.empty());
+	ASSERT_EQ(batch.FailedFolders, std::vector<FString> { "/Project/textures" }) << DumpBatch(batch).CStr();
+	ASSERT_EQ(batch.Diagnostics.size(), 1u) << DumpBatch(batch).CStr();
+	EXPECT_EQ(batch.Diagnostics[0].Severity, ESeverity::Warning);
+	EXPECT_EQ(batch.Diagnostics[0].Subject, "/Project/textures");
+	EXPECT_TRUE(batch.Diagnostics[0].Message.View().Contains(FStringView("'Textures'")));
+
+	// Under its own spelling it scans.
+	const SScanBatch exact = CMountScanner::ScanBlocking(*pool, project, "/Project/Textures", membership, nullptr);
+	EXPECT_EQ(FilePaths(exact), std::vector<FString> { "/Project/Textures/Rock.png" });
+	EXPECT_TRUE(exact.FailedFolders.empty());
+
+	// A mount whose content directory is configured in another case still scans.
+	SMount otherCase = project;
+	otherCase.ContentDir = otherCase.ContentDir.parent_path() / "CONTENT";
+	const SScanBatch mount = CMountScanner::ScanBlocking(*pool, otherCase, "/Project", membership, nullptr);
+	EXPECT_EQ(FilePaths(mount), std::vector<FString> { "/Project/Textures/Rock.png" });
+	EXPECT_TRUE(mount.FailedFolders.empty());
+}
+
+// A content directory that its parent still lists but that cannot be opened (here: delete-pending, so
+// every open and stat fails) is a failed root, not an empty mount.
+TEST(MountScannerTest, AContentDirectoryThatCannotBeStattedIsAFailedRootNotAnEmptyMount)
+{
+	CDiscoveryTree tree("Unstattable root");
+	const CMountTable table = ResolveTree(tree);
+	const SMount& project = *table.Find("Project");
+	const HANDLE handle = CreateFileW(test::discovery::ToVerbatim(tree.ProjectContent()).c_str(), DELETE,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+	ASSERT_NE(handle, INVALID_HANDLE_VALUE);
+	FILE_DISPOSITION_INFO disposition = {};
+	disposition.DeleteFile = TRUE;
+	ASSERT_TRUE(SetFileInformationByHandle(handle, FileDispositionInfo, &disposition, sizeof(disposition)));
+	bool bListed = false;
+	platform::EnumerateDirectory(tree.ProjectDir(), [&bListed] (const platform::SDirectoryEntry& Entry) { bListed = bListed || Entry.Name == "Content"; });
+	const bool bStatted = platform::Stat(tree.ProjectContent()).has_value();
+
+	const auto pool = MakePool(2u);
+	const CDefaultScanMembership membership;
+	const SScanBatch batch = CMountScanner::ScanBlocking(*pool, project, "/Project", membership, nullptr);
+	CloseHandle(handle);
+	if (!bListed || bStatted)
+	{
+		GTEST_SKIP() << "a delete-pending directory is not listed-but-unopenable here";
+	}
+	EXPECT_EQ(FolderPaths(batch), std::vector<FString> { "/Project" }) << DumpBatch(batch).CStr();
+	EXPECT_EQ(batch.FailedFolders, std::vector<FString> { "/Project" });
+}
+
+// An oracle that breaks OpenScope's contract fails the root instead of crashing the worker.
+TEST(MountScannerTest, ANullScopeFromOpenScopeFailsTheRoot)
+{
+	class CNoScopeMembership final : public IScanMembership
+	{
+	public:
+		std::shared_ptr<const SScanScope> OpenScope (FStringView, std::vector<SDiagnostic>&) const override { return nullptr; }
+		std::shared_ptr<const SScanScope> EnterFolder (const std::shared_ptr<const SScanScope>& Parent, FStringView, const std::filesystem::path*,
+			uint64& OutRulesHash, std::vector<SDiagnostic>&) const override
+		{
+			OutRulesHash = 0u;
+			return Parent;
+		}
+		bool ShouldDescend (const SScanScope&, FStringView) const override { return true; }
+		std::optional<SFileVerdict> Classify (const SScanScope&, FStringView) const override { return SFileVerdict {}; }
+	};
+
+	CDiscoveryTree tree("Null scope");
+	const CMountTable table = ResolveTree(tree);
+	ASSERT_TRUE(WriteText(tree.ProjectContent() / "Sub" / "a.png"));
+	const auto pool = MakePool(2u);
+	const CNoScopeMembership membership;
+	for (const FStringView root : { FStringView("/Project"), FStringView("/Project/Sub") })
+	{
+		const SScanBatch batch = CMountScanner::ScanBlocking(*pool, *table.Find("Project"), root, membership, nullptr);
+		EXPECT_TRUE(batch.Folders.empty());
+		EXPECT_EQ(batch.FailedFolders, std::vector<FString> { FString(root) });
+		ASSERT_EQ(batch.Diagnostics.size(), 1u) << DumpBatch(batch).CStr();
+		EXPECT_EQ(batch.Diagnostics[0].Severity, ESeverity::Error);
+	}
+}
+
+
 // ---------------- Links ----------------
 
 // A junction is a name surrogate: listed as such, never followed - in a mount scan or as a subtree root.
@@ -835,6 +933,46 @@ TEST(MountScannerTest, NonPortableNamesAreRecordedUnderTheirSpellingAndReportedA
 	}
 	std::sort(subjects.begin(), subjects.end());
 	EXPECT_EQ(subjects, (std::vector<FString> { "/Project/Lone\xEF\xBF\xBD.png", "/Project/Space ", "/Project/Trailing.", "/Project/aux.txt" }));
+}
+
+// Win32's path normalization drops a trailing dot or space and may read a device name as the device, so
+// listing "Trailing." would list "Trailing": such a folder is failed (consumers keep what they knew), never
+// listed, and its PATH002 stands; a subtree root below one fails too. Beside a "Trailing" with other files.
+TEST(MountScannerTest, FoldersWhoseNamesWin32RewritesAreFailedNotListedAsAnotherFolder)
+{
+	CDiscoveryTree tree("Rewritten folders");
+	const CMountTable table = ResolveTree(tree);
+	const std::filesystem::path content = tree.ProjectContent();
+	ASSERT_TRUE(WriteText(content / "Trailing" / "inner.png"));
+	for (const FStringView name : { FStringView("Trailing."), FStringView("Space "), FStringView("aux") })
+	{
+		ASSERT_TRUE(test::discovery::MakeVerbatimDirectory(content / name.ToPath()));
+		ASSERT_TRUE(test::discovery::WriteVerbatimFile(content / name.ToPath() / "other.png"));
+	}
+	ASSERT_TRUE(test::discovery::MakeVerbatimDirectory(content / "Trailing." / "Sub"));
+	ASSERT_TRUE(test::discovery::WriteVerbatimFile(content / "Trailing." / "Sub" / "deep.png"));
+
+	const auto pool = MakePool(2u);
+	const CDefaultScanMembership membership;
+	const SMount& project = *table.Find("Project");
+	const SScanBatch batch = CMountScanner::ScanBlocking(*pool, project, "/Project", membership, nullptr);
+	EXPECT_EQ(FolderPaths(batch), (std::vector<FString> { "/Project", "/Project/aux", "/Project/Space ", "/Project/Trailing", "/Project/Trailing." }));
+	EXPECT_EQ(FilePaths(batch), std::vector<FString> { "/Project/Trailing/inner.png" }) << DumpBatch(batch).CStr();
+	EXPECT_EQ(batch.FailedFolders, (std::vector<FString> { "/Project/aux", "/Project/Space ", "/Project/Trailing." }));
+	EXPECT_EQ(FindDiagnostics(batch, Path002).size(), 3u) << DumpBatch(batch).CStr();
+	EXPECT_EQ(batch.FoldersListed, 2u);
+
+	// As a subtree root, and below one.
+	const SScanBatch rooted = CMountScanner::ScanBlocking(*pool, project, "/Project/Trailing.", membership, nullptr);
+	EXPECT_EQ(FolderPaths(rooted), std::vector<FString> { "/Project/Trailing." });
+	EXPECT_TRUE(rooted.Files.empty());
+	EXPECT_EQ(rooted.FailedFolders, std::vector<FString> { "/Project/Trailing." });
+	const SScanBatch below = CMountScanner::ScanBlocking(*pool, project, "/Project/Trailing./Sub", membership, nullptr);
+	EXPECT_TRUE(below.Folders.empty());
+	EXPECT_TRUE(below.Files.empty());
+	EXPECT_EQ(below.FailedFolders, std::vector<FString> { "/Project/Trailing./Sub" });
+	ASSERT_EQ(below.Diagnostics.size(), 1u) << DumpBatch(below).CStr();
+	EXPECT_EQ(below.Diagnostics[0].Severity, ESeverity::Warning);
 }
 
 TEST(MountScannerTest, LongRelativePathsAreReportedAsPath003)
