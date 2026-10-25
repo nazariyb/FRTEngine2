@@ -30,8 +30,10 @@ kind (`Added`, `Removed`, `Modified`, `RenamedOld`, `RenamedNew`, `Overflow`, `R
 (the bytes `platform::Stat` reports, for pairing moves). It decides nothing. Windows: one I/O completion port thread
 for all roots with `ReadDirectoryChangesExW` (extended information, 64 KiB double buffers), which only re-arms, parses
 and queues; a completion with 0 bytes is an `Overflow`, the leading `REMOVED` of a case-only rename is dropped, a
-deleted or renamed root is `RootLost` and is armed again once it is back. `platform::ProbeFileWriters` tells whether a
-writer still holds a file.
+deleted or renamed root is `RootLost` and is armed again once it is back. Opening directories and asking for a root's
+final path - calls that block on a share whose server is gone - run on a second, low-priority poll thread (and Arm's on
+the caller's thread), never on the completion thread. `platform::ProbeFileWriters` tells whether a writer still holds
+a file.
 
 ### `assets::CFileWatcherService` (`Assets/FileWatcherService.h`)
 
@@ -44,16 +46,19 @@ wrong answer.
 | Settling | a path is told after 200 ms without events, at most 2 s after its first; a removal waits 1 s longer |
 | Coalescing | `Removed` then `Added` is `Modified` (git's unlink and write, atomic saves), `Added` then `Removed` is nothing |
 | Moves | the two halves pair by identity within 150 ms into one `Moved`; a case-only rename is a `Moved` |
-| Directories | one moved or copied in is enumerated (every file `Added`); one renamed is one directory `Moved`; one removed is one directory `Removed` (then an `Added` if a file took its place); without entry types (FAT, ReFS, shares) the disk is asked, and a directory's own `Modified` is dropped |
+| Directories | one moved or copied in is enumerated once it settles (every file `Added`); one renamed is one directory `Moved` from where it was when the window began; one removed is one directory `Removed` (then an `Added` if a file took its place); without entry types (FAT, ReFS, shares) the disk is asked, a directory's own `Modified` is dropped, and a removal is told as a directory `Removed` |
 | Bursts | more than 256 events without a pause hold everything until `[AssetsEditor] VcsSettleMs` (1500) of quiet, then one batch; `SetVcsBusyQuery` is the seam for M4's VCS provider |
 | Overflow, lost root | one `Rescan` of the root: compare what you hold with the disk, reload only what differs |
 | Writers | a file a writer still holds waits (back-off up to 2 s, a warning after 10 s) |
 | Self-writes | `ExpectWrite(path, hash, size, deadline)`: an echo with exactly those bytes is not told |
 
+`AddMount(directory)` before anything subscribes: a subscription inside a mount is watched from one root at the mount
+(`CEngine` mounts the engine's `Content/` and the project's `Content/` and `Config/`), since an open directory handle
+keeps every folder above it from being renamed or moved, and a root per loaded file's folder would pin them all.
 `Subscribe(directory, { Prefix, Extensions }, callback)` (the directory need not exist yet), `Unsubscribe`, `Pump()`
 (once per frame: `CEngine::BeginFrame`), `Flush(directory)` (a fence file `.frt-fence-<pid>-<n>` in every root that
 watches the directory - roots overlap when a directory was subscribed before one above it: everything older is told
-now; for tests and scripted steps), `SetEnabled(on, onlyUnder)` (optionally for the roots in or above some directories
+now, and a root that loses events meanwhile is told its `Rescan` at once; for tests and scripted steps), `SetEnabled(on, onlyUnder)` (optionally for the roots in or above some directories
 only), `GetStats`. `IsFileAffected(change, file)` is the rule loaders share: a change of the file's path, or of a
 directory above it, and never a removal; `CAffectedFiles(changes).Contains(file)` answers the same for many files in
 one lookup each. Paths compare as NTFS compares names (`MakePathKey`, `Containers/StringMap.h`: its upcase table, not

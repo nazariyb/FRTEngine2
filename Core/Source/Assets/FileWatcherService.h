@@ -78,10 +78,14 @@ class CConfig;
  *	  Fence names are never told.
  *
  * Subscriptions are explicit, keyed by directory and filter: Subscribe(Directory, {Prefix,
- * Extensions}, Callback). The service arms one platform root per directory that no root already
- * contains (a subscription inside one shares it; a directory subscribed before one above it keeps its
- * own root, so roots may overlap, and Flush fences all of them), disarms a root when its last
- * subscription goes, and looks every RootPollMs for a subscribed directory that does not exist yet (it
+ * Extensions}, Callback). The service arms one platform root per mount (AddMount: the engine's and
+ * the project's Content, the project's Config) that holds a subscribed directory, and one per
+ * subscribed directory outside every mount that no root already contains (a subscription inside a
+ * root shares it; a directory subscribed before one above it keeps its own root, so roots may
+ * overlap, and Flush fences all of them). Mounts keep roots few and high: on Windows an open
+ * directory handle keeps every directory above it from being renamed or moved, so a root per loaded
+ * file's folder would pin the folders between it and the mount. A root is disarmed when its last
+ * subscription goes, and a root directory that does not exist yet is looked for every RootPollMs (it
  * is armed, and told as a Rescan, when it appears). Callbacks run on the owner thread, inside Pump or
  * Flush, at most once per call each, with the subscription's changes sorted by path; a callback may
  * subscribe, unsubscribe (itself included) and register expected writes, but not Pump or Flush.
@@ -226,6 +230,13 @@ public:
 	CFileWatcherService& operator= (const CFileWatcherService&) = delete;
 
 	// ---- subscriptions ----
+
+	// Directory becomes a mount: a later subscription at or below it is watched from a root armed at
+	// Directory itself, shared with every other one in it (see the class comment for why). Add mounts
+	// before subscribing: a root armed already keeps its place. Directory need not exist yet.
+	void AddMount (const std::filesystem::path& Directory);
+	template <platform::NarrowText T>
+	void AddMount (const T&) = delete;
 
 	// Tells Callback about changes at or below Directory that Filter matches, from now on. Directory need
 	// not exist yet. An invalid handle when Callback is empty. Changes made before the call are not told.

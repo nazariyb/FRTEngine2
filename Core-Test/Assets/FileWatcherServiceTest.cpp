@@ -5,15 +5,17 @@
 // directory renames, moves out (one record for the subtree) and moves in (the subtree enumerated:
 // a Recycle Bin restore and a folder drag-in, each directory walked once, none when a Rescan makes it
 // moot); directory renames that chain, end outside the root, change only the case, or follow a file
-// rename inside; a file moved into a directory that then goes, with no
-// event after it; a file taking a removed directory's place; a case-only rename; atomic saves of three
-// kinds, which change the identity and are still one Modified; a writer that holds the file (nothing is
-// told until it lets go); an overflow (a Rescan once the tree is quiet, and at once when a Flush
-// waits); Flush's fence, also over roots that overlap; self-writes that diff to nothing; a slow checkout of files arriving over seconds; and a
-// scripted git checkout of 300 files, told as one batch after the tree settles, with no callback in the
-// middle of it. Filters, the directory that does not exist yet, the VCS seam, the off switch and its
-// scope are covered too, and - through a scripted platform watcher - a file system without entry types,
-// whose directories report their own Modified. Everything runs in directories with non-ASCII names.
+// rename inside; a file moved into a directory that then goes, with no event after it; a file taking a
+// removed directory's place; a case-only rename; names NTFS keeps apart that Unicode folding merges;
+// atomic saves of three kinds, which change the identity and are still one Modified; a writer that
+// holds the file (nothing is told until it lets go); an overflow (a Rescan once the tree is quiet, and
+// at once when a Flush waits); Flush's fence, also over roots that overlap; self-writes that diff to
+// nothing; a slow checkout of files arriving over seconds; and a scripted git checkout of 300 files,
+// told as one batch after the tree settles, with no callback in the middle of it. Filters, mounts, the directory that does not exist
+// yet, the VCS seam, the off switch and its scope are covered too, and - through a scripted platform
+// watcher - a file system without entry types, whose directories report their own Modified and whose
+// removals and renames say nothing of what was there. Everything runs in directories with non-ASCII
+// names.
 #include <gtest/gtest.h>
 
 #include "TestCommon.h"
@@ -1123,6 +1125,41 @@ TEST_F(FileWatcherServiceTest, FiltersSelectByPrefixAndExtensionAndShareOneRoot)
 	EXPECT_EQ(ini.Changes.size(), 1u) << ini.Describe().CStr();
 	EXPECT_TRUE(ini.HasOnly("Input/EditorInput.ini", assets::EFileChange::Added)) << ini.Describe().CStr();
 	EXPECT_EQ(Recorder.Changes.size(), 4u) << Recorder.Describe().CStr();
+}
+
+TEST_F(FileWatcherServiceTest, AMountIsOneRootForTheFoldersInItAndLeavesThemFreeToRename)
+{
+	// Every model's materials live in its own folder: a root per folder would hold a directory handle
+	// on each, and Windows refuses to rename or move any folder above an open one.
+	std::error_code ec;
+	std::filesystem::create_directories(File("Моделі/Підлога"), ec);
+	std::filesystem::create_directories(File("Моделі/Колона"), ec);
+	WriteText(File("Моделі/Підлога/a.frtmat.yml"), "a");
+	WriteText(File("Моделі/Колона/b.frtmat.yml"), "b");
+	Service = std::make_unique<assets::CFileWatcherService>();
+	Service->AddMount(Content);
+	SRecorder floor;
+	SRecorder pillar;
+	Service->Subscribe(File("Моделі/Підлога"), {}, floor.MakeCallback());
+	Service->Subscribe(File("Моделі/Колона"), {}, pillar.MakeCallback());
+	EXPECT_EQ(Service->GetStats().Roots, 1u) << "one root, at the mount";
+
+	WriteText(File("Моделі/Підлога/a.frtmat.yml"), "a, changed");
+	ASSERT_TRUE(Service->Flush(File("Моделі/Підлога")));
+	EXPECT_TRUE(floor.HasOnly("a.frtmat.yml", assets::EFileChange::Modified)) << floor.Describe().CStr();
+	EXPECT_TRUE(pillar.Changes.empty()) << pillar.Describe().CStr();
+
+	// The folders' common parent can be renamed while both are watched; each is told it moved along.
+	floor.Clear();
+	std::filesystem::rename(File("Моделі"), File("Меблі"), ec);
+	ASSERT_FALSE(ec) << "a watched folder's parent is not held: " << FString::FromUtf8Lossy(ec.message()).CStr();
+	ASSERT_TRUE(Service->Flush(Content));
+	ASSERT_EQ(floor.Changes.size(), 1u) << floor.Describe().CStr();
+	EXPECT_EQ(floor.Changes[0].Kind, assets::EFileChange::Moved);
+	EXPECT_EQ(floor.Changes[0].Path, File("Меблі/Підлога"));
+	EXPECT_EQ(floor.Changes[0].OldPath, File("Моделі/Підлога"));
+	ASSERT_EQ(pillar.Changes.size(), 1u) << pillar.Describe().CStr();
+	EXPECT_EQ(pillar.Changes[0].Path, File("Меблі/Колона"));
 }
 
 TEST_F(FileWatcherServiceTest, ACallbackMayUnsubscribeItselfAndOthersAndTheLastOneDisarmsTheRoot)

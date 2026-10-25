@@ -120,6 +120,14 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 	//     handle - and nothing at all with [Assets] Watch=0 (scripted runs).
 #if FRT_WITH_DEV_TOOLS
 	FileWatcher = std::make_unique<assets::CFileWatcherService>(assets::SFileWatcherSettings::FromConfig(Config));
+	// The roots it watches from (gap-watch-meta §5 "Roots"), before anything subscribes: one handle per
+	// mount, so that the folders below stay free to rename while the editor runs.
+	FileWatcher->AddMount(paths::GetEngineContentDir());
+	if (paths::HasProject())
+	{
+		FileWatcher->AddMount(paths::GetProjectContentDir());
+		FileWatcher->AddMount(paths::GetProjectConfigPath().parent_path());
+	}
 	InputActions.SetFileWatcher(FileWatcher.get());
 #endif
 

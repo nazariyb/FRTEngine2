@@ -292,6 +292,7 @@ struct CFileWatcherService::SState
 	// SetEnabled's OnlyUnder (normalized): when not empty, only roots that hold one of these
 	// directories or lie below one are armed.
 	std::vector<std::filesystem::path> EnabledOnlyUnder;
+	std::vector<std::filesystem::path> Mounts;   // AddMount's, normalized
 
 	TUniqueFunction<bool ()> VcsBusy;
 	bool bVcsBusy = false;
@@ -347,6 +348,22 @@ struct CFileWatcherService::SState
 			if (relative && (best == nullptr || CountNames(*relative) < CountNames(*OutRelative)))
 			{
 				best = root.get();
+				*OutRelative = std::move(*relative);
+			}
+		}
+		return best;
+	}
+
+	// The outermost mount that holds Directory (normalized), with Directory relative to it, or null.
+	const std::filesystem::path* FindMount (const std::filesystem::path& Directory, FString* OutRelative) const
+	{
+		const std::filesystem::path* best = nullptr;
+		for (const std::filesystem::path& mount : Mounts)
+		{
+			std::optional<FString> relative = platform::GetRelativePath(Directory, mount);
+			if (relative && (best == nullptr || CountNames(*relative) > CountNames(*OutRelative)))
+			{
+				best = &mount;
 				*OutRelative = std::move(*relative);
 			}
 		}
@@ -1669,11 +1686,13 @@ SDelegateHandle CFileWatcherService::Subscribe (const std::filesystem::path& Dir
 	SState::SRoot* root = state.FindRoot(subscription.Directory, &relative);
 	if (root == nullptr)
 	{
+		// A new root: at the mount that holds the directory, else at the directory itself.
+		relative.Clear();
+		const std::filesystem::path* mount = state.FindMount(subscription.Directory, &relative);
 		auto newRoot = std::make_unique<SState::SRoot>();
-		newRoot->Path = subscription.Directory;
+		newRoot->Path = mount != nullptr ? *mount : subscription.Directory;
 		root = newRoot.get();
 		state.Roots.push_back(std::move(newRoot));
-		relative.Clear();
 	}
 	subscription.Root = root;
 	subscription.SubPath = std::move(relative);
@@ -1689,6 +1708,12 @@ SDelegateHandle CFileWatcherService::Subscribe (const std::filesystem::path& Dir
 		state.ArmRoot(*root, platform::ReadTimestamp());
 	}
 	return handle;
+}
+
+void CFileWatcherService::AddMount (const std::filesystem::path& Directory)
+{
+	State->CheckOwner();
+	State->Mounts.push_back(platform::NormalizePath(Directory));
 }
 
 bool CFileWatcherService::Unsubscribe (SDelegateHandle Handle)
