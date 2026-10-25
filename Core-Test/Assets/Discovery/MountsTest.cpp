@@ -6,6 +6,7 @@
 // paths::FromMountPath over an installed table. Every tree is generated, with non-ASCII names.
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -219,8 +220,10 @@ TEST(MountsTest, FromMountPathRejectsEverythingThatCouldLeaveTheMount)
 	}
 }
 
-// A case-sensitive content directory matches its root prefix byte-exact.
-TEST(MountsTest, ACaseSensitiveMountMatchesItsRootByteExact)
+// A case-sensitive content directory is the mount's rule below its root, not above it: the root prefix
+// (the drive, the ancestors, "Content" itself, all looked up by case-insensitive parents here) matches by
+// NTFS's rule, as Windows opens it.
+TEST(MountsTest, ACaseSensitiveMountMatchesItsRootPrefixByTheRuleAboveIt)
 {
 	CDiscoveryTree tree("Case-sensitive mount");
 	MakeStandardLayout(tree);
@@ -236,7 +239,96 @@ TEST(MountsTest, ACaseSensitiveMountMatchesItsRootByteExact)
 	EXPECT_EQ(table.ToMountPath(tree.ProjectContent() / "Rock.png"), std::optional<FString>("/Project/Rock.png"));
 	const FString text = FString::FromPath(tree.ProjectContent());
 	const FString otherCase = FString(text.View().LeftChop(7u)) + "CONTENT";
-	EXPECT_FALSE(table.ToMountPath(otherCase.ToPath() / "Rock.png").has_value());
+	EXPECT_EQ(table.ToMountPath(otherCase.ToPath() / "Rock.png"), std::optional<FString>("/Project/Rock.png"));
+	const FString upper = text.ToUpper();
+	EXPECT_EQ(table.ToMountPath(upper.ToPath() / "rock.PNG"), std::optional<FString>("/Project/rock.PNG"));   // the rest as spelled
+	EXPECT_EQ(table.FindContaining(otherCase.ToPath()), &project);
+}
+
+// Plugin folders equal under the portable fold are all mounted with PATH001 each; between their roots,
+// which NTFS's rule cannot tell apart in a case-sensitive Plugins folder, a byte-exact prefix wins.
+TEST(MountsTest, FoldEqualPluginFoldersAreMountedAndReportedAsPath001)
+{
+	CDiscoveryTree tree("Fold-equal plugins");
+	MakeStandardLayout(tree);
+	const std::filesystem::path plugins = tree.ProjectDir() / "Plugins";
+	MakeDirectories(plugins);
+	if (!test::discovery::MakeCaseSensitive(plugins))
+	{
+		GTEST_SKIP() << "cannot make a directory case-sensitive here";
+	}
+	MakeDirectories(plugins / "Foo" / "Content");
+	MakeDirectories(plugins / "foo" / "Content");
+	MakeDirectories(plugins / "Other" / "Content");
+
+	std::vector<SDiagnostic> diagnostics;
+	const CMountTable table = CMountTable::Resolve(MakeRoots(tree), &diagnostics);
+	ASSERT_EQ(table.GetMounts().size(), 5u);
+	EXPECT_EQ(table.GetMounts()[2].Name, "Plugin.Foo");
+	EXPECT_EQ(table.GetMounts()[3].Name, "Plugin.foo");
+	EXPECT_EQ(table.GetMounts()[4].Name, "Plugin.Other");
+	ASSERT_EQ(diagnostics.size(), 2u);
+	EXPECT_EQ(diagnostics[0].Code, Path001);
+	EXPECT_EQ(diagnostics[0].Subject, "/Plugin.Foo");
+	EXPECT_TRUE(diagnostics[0].Message.View().Contains(FStringView("'foo'")));
+	EXPECT_EQ(diagnostics[1].Code, Path001);
+	EXPECT_EQ(diagnostics[1].Subject, "/Plugin.foo");
+
+	EXPECT_EQ(table.ToMountPath(plugins / "Foo" / "Content" / "a.png"), std::optional<FString>("/Plugin.Foo/a.png"));
+	EXPECT_EQ(table.ToMountPath(plugins / "foo" / "Content" / "a.png"), std::optional<FString>("/Plugin.foo/a.png"));
+	EXPECT_EQ(table.Find("Plugin.foo"), &table.GetMounts()[3]);
+}
+
+// Plain NTFS keeps U+212A KELVIN SIGN and 'K' apart, the portable fold does not: PATH001. A plugin folder
+// whose name Win32 rewrites ("Foo." would be looked up as "Foo") or that is a device name is not mounted,
+// with PATH002, even beside a plugin of the rewritten name.
+TEST(MountsTest, NonPortablePluginFolderNamesAreReported)
+{
+	CDiscoveryTree tree("Non-portable plugins");
+	MakeStandardLayout(tree);
+	const std::filesystem::path plugins = tree.ProjectDir() / "Plugins";
+	const FStringView kelvinSign = "\xE2\x84\xAA" "elvin";
+	MakeDirectories(plugins / "Kelvin" / "Content");
+	MakeDirectories(plugins / kelvinSign.ToPath() / "Content");
+	MakeDirectories(plugins / "Foo" / "Content");
+	for (const FStringView name : { FStringView("Foo."), FStringView("aux") })
+	{
+		ASSERT_TRUE(test::discovery::MakeVerbatimDirectory(plugins / name.ToPath()));
+		ASSERT_TRUE(test::discovery::MakeVerbatimDirectory(plugins / name.ToPath() / "Content"));
+	}
+
+	std::vector<SDiagnostic> diagnostics;
+	const CMountTable table = CMountTable::Resolve(MakeRoots(tree), &diagnostics);
+	std::vector<FString> names;
+	for (const SMount& mount : table.GetMounts())
+	{
+		names.push_back(mount.Name);
+	}
+	const bool bKelvinApart = names.size() == 5u;
+	if (bKelvinApart)
+	{
+		EXPECT_EQ(names, (std::vector<FString> { "Engine", "Project", "Plugin.Foo", "Plugin.Kelvin", FString::Format("Plugin.{}", kelvinSign) }));
+	}
+	else
+	{
+		EXPECT_EQ(names.size(), 4u) << "this volume treats the two Kelvin names as one";
+	}
+
+	std::vector<FString> path001;
+	std::vector<FString> path002;
+	for (const SDiagnostic& diagnostic : diagnostics)
+	{
+		EXPECT_EQ(diagnostic.Severity, ESeverity::Warning);
+		(diagnostic.Code == Path001 ? path001 : path002).push_back(diagnostic.Subject);
+		EXPECT_TRUE(diagnostic.Code == Path001 || diagnostic.Code == Path002) << diagnostic.Message.CStr();
+	}
+	std::sort(path002.begin(), path002.end());
+	EXPECT_EQ(path002, (std::vector<FString> { "/Plugin.Foo.", "/Plugin.aux" }));
+	if (bKelvinApart)
+	{
+		EXPECT_EQ(path001, (std::vector<FString> { "/Plugin.Kelvin", FString::Format("/Plugin.{}", kelvinSign) }));
+	}
+	EXPECT_EQ(table.Find("Plugin.Foo")->ContentDir, platform::NormalizePath(plugins / "Foo" / "Content"));
 }
 
 // /Engine's owner root, when only its two directories are given: GetEngineDir for this engine's own

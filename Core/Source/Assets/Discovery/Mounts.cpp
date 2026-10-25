@@ -6,6 +6,7 @@
 #include "EnginePaths.h"
 #include "Assets/AssetDiagnosticCodes.h"
 #include "Assets/Discovery/BuiltinExcludes.h"
+#include "Assets/Discovery/MountScanner.h"
 
 
 namespace frt::assets
@@ -114,16 +115,19 @@ std::vector<FString> FindPlugins (const std::filesystem::path& PluginsDir, std::
 
 	for (FString& name : candidates)
 	{
-		if (!IsDirectory(PluginsDir / name.ToPath() / ContentDirName.ToPath()))
-		{
-			continue;
-		}
-		if (!name.View().IsValidUtf8())
+		// The name first: a name Win32 rewrites ("Foo.", "aux") would have its Content looked up as another
+		// folder's, so it is reported whether or not it looks like a plugin.
+		const FStringView reason = GetNonPortableNameReason(name);
+		if (!reason.IsEmpty())
 		{
 			const FString shown = ToDisplayText(name.View());
 			AddWarning(Out, Path002, JoinMountPath(FString(PluginMountPrefix) + shown, FStringView()),
-				FString::Format("the plugin folder name '{}' is not valid UTF-8 (it holds a lone UTF-16 surrogate): the plugin is not "
-					"mounted; rename the folder in {}", shown, FString::FromPath(PluginsDir)));
+				FString::Format("the plugin folder name '{}' is not portable: it {}; the folder is not mounted: rename it in {}", shown, reason,
+					FString::FromPath(PluginsDir)));
+			continue;
+		}
+		if (!IsDirectory(PluginsDir / name.ToPath() / ContentDirName.ToPath()))
+		{
 			continue;
 		}
 		names.push_back(std::move(name));
@@ -133,6 +137,34 @@ std::vector<FString> FindPlugins (const std::filesystem::path& PluginsDir, std::
 		const int32 folded = A.View().Compare<ESearchCase::IgnoreCase>(B.View());
 		return folded != 0 ? folded < 0 : A < B;
 	});
+
+	// Plugins equal under the portable fold (Foo and foo in a case-sensitive Plugins folder, U+212A KELVIN
+	// SIGN and 'K' anywhere) are both mounted, but Find by a typed name reaches only the first and their
+	// mount paths collide wherever lookups fold: PATH001 for each, as for sibling files. Adjacent after the
+	// sort.
+	for (size_t start = 0u; start < names.size();)
+	{
+		size_t end = start + 1u;
+		while (end < names.size() && names[end].View().Equals<ESearchCase::IgnoreCase>(names[start].View()))
+		{
+			++end;
+		}
+		for (size_t k = start; end - start > 1u && k < end; ++k)
+		{
+			FString others;
+			for (size_t o = start; o < end; ++o)
+			{
+				if (o != k)
+				{
+					others.AppendFormat("{}'{}'", others.IsEmpty() ? "" : ", ", names[o]);
+				}
+			}
+			AddWarning(Out, Path001, JoinMountPath(FString(PluginMountPrefix) + names[k], FStringView()), FString::Format("the plugin "
+				"folders '{}' and {} differ only in case: both are mounted, but a mount name typed in a query or rule file finds only "
+				"the first, and their mount paths collide wherever lookups fold case", names[k], others));
+		}
+		start = end;
+	}
 	return names;
 }
 }
@@ -242,15 +274,25 @@ const SMount* CMountTable::FindContaining (const std::filesystem::path& Absolute
 	const std::filesystem::path path = platform::NormalizePath(Absolute);
 	const SMount* best = nullptr;
 	size_t bestLength = 0u;
+	bool bBestExact = false;
 	for (const SMount& mount : Mounts)
 	{
-		// Mounts are disjoint by layout, but a project inside the engine checkout (Templates/) nests
-		// directories: the longest root wins, so nothing depends on that never nesting mount roots.
+		// The root prefix by NTFS's rule, whatever the mount's own: the directories that hold a mount root
+		// (and the root's own name) are looked up by their parents' rule, not by the root's. Mounts are
+		// disjoint by layout, but a project inside the engine checkout (Templates/) nests directories: the
+		// longest root wins, and between roots equal under the rule (plugins Foo and foo in a
+		// case-sensitive Plugins folder) the byte-exact one.
+		if (!platform::IsAtOrBelow(path, mount.ContentDir))
+		{
+			continue;
+		}
 		const size_t length = mount.ContentDir.native().size();
-		if ((best == nullptr || length > bestLength) && platform::IsAtOrBelow(path, mount.ContentDir, mount.Volume.bCaseSensitive))
+		const bool bExact = platform::IsAtOrBelow(path, mount.ContentDir, true);
+		if (best == nullptr || length > bestLength || (length == bestLength && bExact && !bBestExact))
 		{
 			best = &mount;
 			bestLength = length;
+			bBestExact = bExact;
 		}
 	}
 	return best;
@@ -264,7 +306,7 @@ std::optional<FString> CMountTable::ToMountPath (const std::filesystem::path& Ab
 	{
 		return std::nullopt;
 	}
-	const std::optional<FString> relative = platform::GetRelativePath(path, mount->ContentDir, mount->Volume.bCaseSensitive);
+	const std::optional<FString> relative = platform::GetRelativePath(path, mount->ContentDir);
 	if (!relative.has_value())
 	{
 		return std::nullopt;

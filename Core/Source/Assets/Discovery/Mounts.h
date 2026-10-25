@@ -22,9 +22,11 @@
  * and paths::FromMountPath in EnginePaths.h are thin wrappers over the table the registry installs).
  *
  * Case. Each mount root's volume facts are queried once, at Resolve (platform::QueryVolumeInfo): whether
- * its lookups are case-sensitive decides how a root prefix is matched (ToMountPath) and how the registry's
- * FILES index compares (§5.2); in M3 the rule is per mount root, not per directory. The remote and cloud
- * bits are recorded for the warning of §3.1, which nothing acts on yet.
+ * lookups inside it are case-sensitive decides how the registry's FILES index compares (§5.2) and how a
+ * scan matches names below the root; in M3 the rule is per mount root, not per directory. The root's own
+ * prefix (its ancestors and its own name, looked up by their parents' rule) always matches by NTFS's
+ * rule (ToMountPath). The remote and cloud bits are recorded for the warning of §3.1, which nothing acts
+ * on yet.
  *
  * Spelling. A mount path's relative part is the on-disk spelling (canonical WTF-8, '/' separated), never
  * folded: the registry folds for lookups and keeps the spelling for display and for the provisional id.
@@ -80,10 +82,15 @@ public:
 	 * then the plugins from 2 in SStringLessIgnoreCase order of their names, ties by bytes. /Engine is
 	 * always mounted and /Project whenever ProjectDir is given, even when their content directory does not
 	 * exist (a warning then: the mount is empty); a plugin only when <project>/Plugins/<Name>/Content is a
-	 * directory. Plugin folders with a dot-name are skipped, and so is one whose name is not valid UTF-8
-	 * (PATH002: a mount name must be text). Problems go to *Out (when given): warnings with code 0 for a
-	 * missing content directory or an unlistable Plugins folder; Subject is the mount's root mount path.
-	 * Reads the disk: one listing of Plugins/ and a stat and volume query per mount.
+	 * directory. Plugin folders with a dot-name are skipped. One whose name is not portable
+	 * (GetNonPortableNameReason: not valid UTF-8, a trailing dot or space, a device name, ...) is never
+	 * mounted, Content or not, and reported as PATH002: a mount name must be text, and Win32 would look up
+	 * "Foo./Content" as "Foo/Content". Plugin folders equal under the portable fold ("Foo" and "foo" in a
+	 * case-sensitive Plugins folder; "Kelvin" and U+212A KELVIN SIGN + "elvin" on plain NTFS) are all
+	 * mounted, each reported as PATH001: Find by a typed name reaches only the first. Problems go to *Out
+	 * (when given): those, and warnings with code 0 for a missing content directory or an unlistable
+	 * Plugins folder; Subject is the mount's root mount path. Reads the disk: one listing of Plugins/ and a
+	 * stat and volume query per mount.
 	 */
 	[[nodiscard]] static CMountTable Resolve (const SMountRoots& Roots, std::vector<SDiagnostic>* Out);
 	/**
@@ -104,9 +111,11 @@ public:
 	/**
 	 * The mount path of an absolute path at or below a mount root ("/Project/Textures/Rock.png"; a root
 	 * gives "/Project"), or nullopt when it is in no mount. The path is normalized first; the root prefix
-	 * matches by the mount volume's rule (NTFS's upcase comparison unless case-sensitive), and the
-	 * remainder keeps the path's own spelling - it is not looked up on disk, so pass a listed path when the
-	 * spelling matters (the registry keys by it). Lexical: links are not followed.
+	 * matches by NTFS's upcase comparison whatever the mount's own rule, since the directories above a
+	 * mount root are not the mount's ("p:\" against "P:\", or a case-sensitive Content under a
+	 * case-insensitive parent, still match); the remainder keeps the path's own spelling - it is not looked
+	 * up on disk, so pass a listed path when the spelling matters (the registry keys by it). Lexical: links
+	 * are not followed.
 	 */
 	[[nodiscard]] std::optional<FString> ToMountPath (const std::filesystem::path& Absolute) const;
 	/**
@@ -116,7 +125,8 @@ public:
 	 * canonical WTF-8. The mount name matches as Find does; the relative part is used as spelled.
 	 */
 	[[nodiscard]] std::optional<std::filesystem::path> FromMountPath (FStringView MountPath) const;
-	// The mount whose root is at or above Absolute (by its volume's rule); nullptr when none.
+	// The mount whose root is at or above Absolute (by NTFS's rule: the longest root, then a byte-exact
+	// one between roots equal under the rule); nullptr when none.
 	[[nodiscard]] const SMount* FindContaining (const std::filesystem::path& Absolute) const;
 
 	template <platform::NarrowText T>
