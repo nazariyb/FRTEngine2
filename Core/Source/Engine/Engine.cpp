@@ -65,7 +65,8 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 	//    library, and everything below may read settings. Layers, weakest first: engine,
 	//    project, user, then -Section:Key=Value launch arguments (never saved).
 	Config.LoadDefaultLayers();
-	if (const uint32 applied = Config.ApplyCommandLineArguments(platform::GetCommandLineArguments()); applied > 0u)
+	if (const uint32 applied = Config.ApplyCommandLineArguments(platform::GetCommandLineArguments()); applied > 0u
+		&& !Desc.bToolHost)
 	{
 		std::printf("[config] %u command-line override(s)\n", applied);
 	}
@@ -78,6 +79,12 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 	// 4. Worker threads, owned by this (the main) thread: the renderer's texture streaming decodes on
 	//    them, and BeginFrame pumps their completions.
 	WorkerPool = std::make_unique<jobs::CWorkerPool>();
+	if (Desc.bToolHost)
+	{
+		// A tool host has what it needs (SEngineDesc::bToolHost).
+		bStarted = true;
+		return true;
+	}
 
 	// 4b. The derived-data cache, for the renderer's shader cache - its only client - in dev builds
 	//     with a renderer: Release builds nothing at run time (shaders still compile there until the

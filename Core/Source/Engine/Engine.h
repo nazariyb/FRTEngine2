@@ -52,6 +52,13 @@ struct SEngineDesc
 	// The user's display settings may ask for DXGI exclusive fullscreen; false opens windowed
 	// instead (tools: exclusive mode minimises on every focus change).
 	bool bAllowExclusiveFullscreen = true;
+	// A tool host (AssetTool), which runs no frame: StartUp brings up components, config (+ command
+	// line, user settings), memory and the worker pool - the first steps, in the one order every host
+	// shares - and nothing after them: no derived-data cache (a tool opens the store it is pointed at,
+	// and must not create one to look), clock, window, renderer, materials or UI. It prints nothing on
+	// standard output, which is the tool's (a --json stream). The frame calls and the services those
+	// steps would have made are not for it.
+	bool bToolHost = false;
 };
 
 // One view to render this frame and the camera to render it from.
@@ -63,12 +70,13 @@ struct SViewToRender
 
 /**
  * The engine's services and the frame they share, for the hosts that drive them (the runtime
- * launcher and the editor).
+ * launcher and the editor; AssetTool starts its first steps only, SEngineDesc::bToolHost).
  *
  * Owns every subsystem and brings them up and down explicitly, in dependency order (Gregory,
  * GEA "Subsystem Start-Up and Shut-Down") - never through static construction order:
  *   StartUp:  components, config (+ command line, user settings), memory, worker pool, derived-data
- *             cache (dev builds), clock, window, renderer, input actions, UI.
+ *             cache (dev builds), clock, window, renderer, input actions, UI; a tool host stops after
+ *             the worker pool (SEngineDesc::bToolHost).
  *   ShutDown: the exact reverse, after the GPU is idle.
  * Headless builds skip the window, renderer and UI, and resolve materials through a library
  * of their own; the class layout is the same either way.

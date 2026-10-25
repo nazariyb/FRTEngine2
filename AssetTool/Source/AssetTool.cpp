@@ -9,10 +9,11 @@
  * as its owner with no project (§4.7). A verb that writes nothing (help, newguid) runs with no project
  * when the working directory's cannot be used, with a warning: where it is run does not break it.
  * Options that neither the host nor the verb reads are usage errors (FindUnknownOption).
- * It loads the config layers, makes a memory pool primary and starts a worker pool as the engine does
- * (CCommandletContext::GetWorkerPool), and opens no
- * window, renderer or game module: the game module joins with the game's types and importers (M5),
- * through SEngineDesc::GameModule. Release builds no AssetTool (it cannot load a game module).
+ * It starts the engine as a tool host (SEngineDesc::bToolHost): CEngine::StartUp's first steps - components,
+ * config layers and -Section:Key=Value, user settings, the memory pool, the worker pool
+ * (CCommandletContext::GetWorkerPool) - in the one order every host shares, and no window, renderer or
+ * game module: the game module joins with the game's types and importers (M5). Release builds no
+ * AssetTool (it cannot load a game module).
  *
  * A commandlet that writes what only the mount's owner may write (SCommandlet::bWritesProject) runs
  * only while this process holds the mount's writer lock, Local/Assets/Owner.lock (§5.9): if another
@@ -34,10 +35,8 @@
 #include "EnginePaths.h"
 #include "Precision.h"
 #include "Assets/OwnerLock.h"
-#include "Config/Config.h"
+#include "Engine/Engine.h"
 #include "Jobs/WorkerPool.h"
-#include "Memory/Memory.h"
-#include "Memory/MemoryPool.h"
 #include "Platform/FileLock.h"
 #include "Platform/Platform.h"
 #include "Platform/Process.h"
@@ -50,12 +49,6 @@ namespace frt::assettool
 {
 namespace
 {
-using namespace memory::literals;
-
-// The primary pool, as CEngine sizes it: reserved and committed whole, so pages cost nothing until
-// used. Nothing in AssetTool allocates through it yet; game types (M5) will.
-constexpr uint64 MemoryPoolBytes = 2_Gb;
-
 struct SVerbAndArguments
 {
 	FString Verb;
@@ -226,20 +219,20 @@ int32 RunAssetTool ()
 		return result;
 	}
 
-	// Config, then memory, in CEngine::StartUp's order: layers weakest first, then -Section:Key=Value.
-	config::CConfig config;
-	config.LoadDefaultLayers();
-	config.ApplyCommandLineArguments(context.CommandLine);
-	context.SetConfig(config);
-	context.bReadOnly = context.bCi || config.Get("Assets", "ReadOnly", false);
-
-	memory::CMemoryPool memoryPool(MemoryPoolBytes);
-	memoryPool.MakeThisPrimaryInstance();
-
-	// The worker pool, in CEngine::StartUp's order: after the memory pool, before the lock. Verbs run
-	// their heavy work on it (the ddc verbs' walks and hashing; builds later) and wait by pumping here.
-	jobs::CWorkerPool workerPool;
-	context.SetWorkerPool(workerPool);
+	// The engine's first steps (SEngineDesc::bToolHost), before the lock: config layers weakest first,
+	// then -Section:Key=Value, then memory and the worker pool. Verbs run their heavy work on the pool
+	// (the ddc verbs' walks and hashing; builds later) and wait by pumping here. It shuts down after
+	// the lock is gone.
+	SEngineDesc desc;
+	desc.bToolHost = true;
+	CEngine engine;
+	if (!engine.StartUp(desc))
+	{
+		return context.Fail(ExitInternalError, "the engine did not start");
+	}
+	context.SetConfig(engine.GetConfig());
+	context.bReadOnly = context.bCi || engine.GetConfig().Get("Assets", "ReadOnly", false);
+	context.SetWorkerPool(engine.GetWorkerPool());
 
 	// Held until the commandlet returns; the OS lets go of it if the process dies first.
 	std::optional<platform::CExclusiveFileLock> ownerLock;
@@ -262,7 +255,7 @@ int32 RunAssetTool ()
 
 	const int32 result = commandlet->Run(context);
 	// No work of the verb outlives it: what it wrote under the lock is finished before the lock goes.
-	workerPool.CancelAllAndDrain();
+	engine.GetWorkerPool().CancelAllAndDrain();
 	return result;
 }
 }
