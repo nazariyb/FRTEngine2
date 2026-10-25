@@ -29,7 +29,7 @@ struct SShaderCompileDesc
 	std::filesystem::path SourcePath;
 	FString EntryPoint;                // empty for libraries
 	FString Profile;                   // e.g. cs_6_6, lib_6_9, vs_6_6
-	std::vector<SShaderDefine> Defines;
+	std::vector<SShaderDefine> Defines;    // passed to DXC in name order, whatever their order here
 	std::vector<FString> ExtraArguments;   // passed to DXC after the fixed arguments
 };
 
@@ -56,8 +56,9 @@ struct SShaderBinary
 	FString Log;
 	bool bSuccess = false;
 	// False when the sources changed during the compile - one file read twice gave different bytes, or
-	// a place found empty was then found to hold a file: the output then belongs to no single version of
-	// the sources, and must not be cached.
+	// a place found empty was then found to hold a file - or when a place DXC looked at for an include
+	// held something it could not read (a directory, a file held without read sharing) and DXC looked on
+	// past it: the output then belongs to no single version of the sources, and must not be cached.
 	bool bInputsStable = true;
 
 	D3D12_SHADER_BYTECODE GetBytecode () const
@@ -86,7 +87,9 @@ struct SDxcIdentity
  * Fixed arguments: -HV 2021, -Zpc (column-major matrices; CPU uploads XMFLOAT4X4 as stored and
  * shaders use mul(M, v)), -enable-16bit-types where the profile allows it, -O3, all warnings.
  * With debug information (Debug and Development builds by default: FRT_SHADER_DEBUG_INFO) -Zi
- * -Qembed_debug; without, debug data and reflection are stripped.
+ * -Qembed_debug; without, debug data and reflection are stripped. The defines follow in name order,
+ * whatever order the description lists them in: the debug information embeds the command line, and
+ * one set of defines must give one program.
  */
 class FRT_CORE_API CShaderCompiler
 {

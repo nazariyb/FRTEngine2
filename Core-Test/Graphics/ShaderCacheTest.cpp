@@ -409,6 +409,90 @@ TEST_F(ShaderCacheTest, AHeaderCreatedWhereAnIncludeWasLookedForMisses)
 	EXPECT_EQ(cache.GetCounters().Hits, 1u);
 }
 
+/**
+ * Sub/Third.hlsl includes "B.hlsli", which DXC looks for under the root before Sub/. Something at the
+ * root that cannot be read - a directory, a file another process holds without read sharing (an
+ * editor saving it) - is passed over, and Sub/B.hlsli compiled instead; but it shadows Sub/B.hlsli as
+ * soon as it is a readable file. Such a compile is not stored: its input set would name Sub/B.hlsli
+ * alone and go on matching after the root's header can be read, serving DXIL a compile no longer gives.
+ */
+class ShaderCacheUnreadableIncludeTest : public ShaderCacheTest
+{
+protected:
+	void SetUp () override
+	{
+		ShaderCacheTest::SetUp();
+		if (HasFatalFailure())
+		{
+			return;
+		}
+		ASSERT_TRUE(platform::WriteFileText(Root / FStringView("Sub/B.hlsli").ToPath(),
+			"static const uint ValueB = 5u;\n"));
+		ASSERT_TRUE(platform::WriteFileText(Root / FStringView("Sub/Third.hlsl").ToPath(),
+			"#include \"B.hlsli\"\n"
+			"RWStructuredBuffer<uint> Output : register(u0);\n"
+			"[numthreads(1, 1, 1)]\n"
+			"void main () { Output[0] = ValueB; }\n"));
+		Shadow = Root / FStringView("B.hlsli").ToPath();
+		ASSERT_TRUE(Compiler.Init(Root));
+		InitCache(Cache, Compiler);
+	}
+
+	// Compiles Third while the root's B.hlsli cannot be read: Sub/B.hlsli's program, not stored.
+	std::vector<uint8> CompilePassingOver ()
+	{
+		Cache.ResetCounters();
+		const SShaderBinary passedOver = Cache.Compile(Third());
+		EXPECT_TRUE(passedOver.bSuccess) << passedOver.Log;
+		EXPECT_EQ(Cache.GetCounters().Misses, 1u);
+		EXPECT_EQ(Cache.GetCounters().NotStored, 1u);
+		EXPECT_FALSE(passedOver.bInputsStable);
+		return GetBytes(passedOver);
+	}
+
+	// With the root's B.hlsli readable at last: the program a compile gives now, never the stored one.
+	void ExpectTheShadowCompiled (const std::vector<uint8>& PassedOver)
+	{
+		ASSERT_TRUE(platform::WriteFileText(Shadow, "static const uint ValueB = 600u;\n"));
+		Cache.ResetCounters();
+		const SShaderBinary shadowed = Cache.Compile(Third());
+		ASSERT_TRUE(shadowed.bSuccess) << shadowed.Log;
+		EXPECT_EQ(Cache.GetCounters().Hits, 0u);
+		EXPECT_EQ(GetBytes(shadowed), GetBytes(Compiler.Compile(Third())));
+		EXPECT_NE(GetBytes(shadowed), PassedOver);
+	}
+
+	SShaderCompileDesc Third () const { return MakeDesc(Root, "Sub/Third.hlsl"); }
+
+	std::filesystem::path Shadow;
+	CShaderCompiler Compiler;
+	CShaderCache Cache;
+};
+
+TEST_F(ShaderCacheUnreadableIncludeTest, ADirectoryWhereAnIncludeWasLookedForKeepsTheCompileUncached)
+{
+	std::error_code ec;
+	ASSERT_TRUE(std::filesystem::create_directory(Shadow, ec));
+	const std::vector<uint8> passedOver = CompilePassingOver();
+	EXPECT_EQ(Ddc.GetStats().Records.Files, 0u);
+
+	ASSERT_TRUE(std::filesystem::remove(Shadow, ec));
+	ExpectTheShadowCompiled(passedOver);
+}
+
+TEST_F(ShaderCacheUnreadableIncludeTest, AnIncludeHeldWithoutReadSharingKeepsTheCompileUncached)
+{
+	// Held as an editor in the middle of a save may hold it: the file is there, and cannot be opened.
+	ASSERT_TRUE(platform::WriteFileText(Shadow, "static const uint ValueB = 600u;\n"));
+	const HANDLE held = CreateFileW(Shadow.c_str(), GENERIC_READ | GENERIC_WRITE, 0u, nullptr, OPEN_EXISTING,
+		FILE_ATTRIBUTE_NORMAL, nullptr);
+	ASSERT_NE(held, INVALID_HANDLE_VALUE);
+	const std::vector<uint8> passedOver = CompilePassingOver();
+	CloseHandle(held);
+
+	ExpectTheShadowCompiled(passedOver);
+}
+
 TEST_F(ShaderCacheTest, TheWorkingDirectoryNeverChangesWhatIsIncluded)
 {
 	CShaderCompiler compiler;
@@ -594,7 +678,7 @@ TEST_F(ShaderCacheTest, VerifyCompilesHitsAgainAndReportsDifferentBytesAsBuild00
 // (ShaderCache.cpp) and in ExpectedVersion below, or old records would be served under new meanings.
 TEST_F(ShaderCacheTest, TheShaderDxilKeySchemaIsFrozen)
 {
-	constexpr FStringLiteral ExpectedVersion = "a90efec4d59d4fdaa29bb9e00dd66384";
+	constexpr FStringLiteral ExpectedVersion = "25efada7f08f4343968370e13b8c50aa";
 	EXPECT_EQ(GetShaderDxilBuilderVersion().ToString(), ExpectedVersion);
 
 	// Every field present: an entry point, defines, extra arguments, debug information.
@@ -715,8 +799,10 @@ TEST_F(ShaderCacheTest, TheShaderDxilKeySchemaIsFrozen)
 
 TEST_F(ShaderCacheTest, DefinesInAnyOrderShareAKeyAndEveryKeyInputChangesIt)
 {
+	// With debug information, in every configuration: its DXIL embeds the command line, so it is the
+	// variant in which the order of the defines could show.
 	CShaderCompiler compiler;
-	ASSERT_TRUE(compiler.Init(Root));
+	ASSERT_TRUE(compiler.Init(Root, true));
 	CShaderCache cache;
 	InitCache(cache, compiler);
 	const auto staticKeyOf = [&cache] (const SShaderCompileDesc& Desc)
@@ -731,6 +817,13 @@ TEST_F(ShaderCacheTest, DefinesInAnyOrderShareAKeyAndEveryKeyInputChangesIt)
 	SShaderCompileDesc ba = First();
 	ba.Defines = { { "B", "2" }, { "A", "1" } };
 	EXPECT_EQ(staticKeyOf(ab), staticKeyOf(ba));
+	// One key, one program: the compiler passes the defines in name order, as the key records them,
+	// so DXC sees one command line for both orders and embeds the same one.
+	const SShaderBinary abCompiled = compiler.Compile(ab);
+	const SShaderBinary baCompiled = compiler.Compile(ba);
+	ASSERT_TRUE(abCompiled.bSuccess) << abCompiled.Log;
+	ASSERT_TRUE(baCompiled.bSuccess) << baCompiled.Log;
+	EXPECT_EQ(GetBytes(abCompiled), GetBytes(baCompiled));
 
 	SShaderCompileDesc otherValue = ab;
 	otherValue.Defines[1].Value = "3";
@@ -758,4 +851,30 @@ TEST_F(ShaderCacheTest, DefinesInAnyOrderShareAKeyAndEveryKeyInputChangesIt)
 	// The source's content is in the key: an edit of First.hlsl itself changes it.
 	ASSERT_TRUE(platform::WriteFileText(Root / FStringView("First.hlsl").ToPath(), FString(FirstText) + "// edited\n"));
 	EXPECT_NE(staticKeyOf(First()), base);
+}
+
+TEST_F(ShaderCacheTest, AHitForDefinesInAnotherOrderIsTheDxilACompileOfThatOrderGives)
+{
+	CShaderCompiler compiler;
+	ASSERT_TRUE(compiler.Init(Root, true));
+	SShaderCompileDesc ab = First();
+	ab.Defines = { { "A", "1" }, { "B", "2" } };
+	SShaderCompileDesc ba = First();
+	ba.Defines = { { "B", "2" }, { "A", "1" } };
+	{
+		CShaderCache cold;
+		InitCache(cold, compiler);
+		ASSERT_TRUE(cold.Compile(ab).bSuccess);
+	}
+
+	// The other order hits what the first stored, and -Ddc:Verify finds it identical to a compile.
+	CShaderCache verifying;
+	InitCache(verifying, compiler, 100.0f);
+	const SShaderBinary hit = verifying.Compile(ba);
+	ASSERT_TRUE(hit.bSuccess) << hit.Log;
+	const SShaderCacheCounters counters = verifying.GetCounters();
+	EXPECT_EQ(counters.Hits, 1u);
+	EXPECT_EQ(counters.VerifyCompiles, 1u);
+	EXPECT_EQ(counters.VerifyMismatches, 0u);
+	EXPECT_EQ(GetBytes(hit), GetBytes(compiler.Compile(ba)));
 }

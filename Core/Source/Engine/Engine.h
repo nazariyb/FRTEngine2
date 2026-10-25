@@ -121,8 +121,9 @@ public:
 	jobs::CWorkerPool& GetWorkerPool () { return *WorkerPool; }
 	// The machine's derived-data cache (Assets/DerivedDataCache.h; FRT_DDC_DIR, else [DerivedDataCache]
 	// Path=, else the per-user data directory), which the renderer's shader cache reads and fills. Null
-	// in Release, which builds nothing at run time, and when the store could not be opened (said once at
-	// start-up; everything is then built as if it were empty). Valid from StartUp to ShutDown.
+	// in Release, which builds nothing at run time, in headless builds, which have no shaders, and when
+	// the store could not be opened (said once at start-up; everything is then built as if it were
+	// empty). Valid from StartUp to ShutDown.
 	assets::CDerivedDataCache* GetDerivedDataCache () { return DerivedData.get(); }
 	// The renderer's library, or a standalone one when headless.
 	graphics::CMaterialLibrary& GetMaterials ();
@@ -159,7 +160,8 @@ private:
 	// stopped after the renderer.
 	std::unique_ptr<jobs::CWorkerPool> WorkerPool;
 	// Opened after the worker pool, closed after it: work in flight may still read or fill it until
-	// the pool's drain. A member in every build, so the layout does not depend on FRT_WITH_DEV_TOOLS.
+	// the pool's drain. A member in every build, so the layout does not depend on FRT_WITH_DEV_TOOLS
+	// or FRT_HEADLESS.
 	std::unique_ptr<assets::CDerivedDataCache> DerivedData;
 	std::unique_ptr<CTimer> Clock;
 	// Window, renderer, UI. One opaque block defined in Engine.cpp: headless builds compile none

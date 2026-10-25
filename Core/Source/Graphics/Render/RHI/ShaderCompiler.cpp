@@ -2,6 +2,7 @@
 
 #include <Windows.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <map>
 #include <optional>
@@ -53,7 +54,9 @@ HRESULT LoadSourceBlob (IDxcUtils* Utils, const std::filesystem::path& Path, IDx
  * working directory: what a program includes must not depend on where the process runs.
  *
  * The places that were missing matter as much as the file found: a header created at one of them
- * later would be included instead, so the shader cache keys on their absence too.
+ * later would be included instead, so the shader cache keys on their absence too. A place that holds
+ * something unreadable is passed over by DXC as if it were empty, but it is not absent - it becomes
+ * the include as soon as it can be read - so it marks the compile unstable instead (bUnreadable).
  */
 class CRecordingIncludeHandler final : public IDxcIncludeHandler
 {
@@ -96,6 +99,11 @@ public:
 		const HRESULT hr = LoadSourceBlob(Utils, resolved, &blob, read);
 		if (FAILED(hr))
 		{
+			// Something is here that cannot be read: a directory, a file held without read sharing (an
+			// editor in the middle of a save), text that does not decode. DXC looks on down the include
+			// path and may find a header of that name further along, which this place shadows once it
+			// can be read: the output depends on that moment, and is not cached.
+			bUnreadable = true;
 			return hr;
 		}
 		// A file opened again (include guards rather than #pragma once) must have kept its bytes.
@@ -128,6 +136,8 @@ public:
 	// Every place looked at and found empty (canonical).
 	std::set<std::filesystem::path> Missing;
 	bool bChangedWhileRead = false;
+	// A place held something, and it could not be read.
+	bool bUnreadable = false;
 
 private:
 	IDxcUtils* Utils = nullptr;
@@ -283,8 +293,23 @@ SShaderBinary CShaderCompiler::Compile (const SShaderCompileDesc& Desc)
 	// FWideString keeps its text inline, so the vector growing would move it.
 	//
 	//   <source name> [-E <entry>] -T <profile> <the other fixed arguments> (-D <name>=<value>)* <extra>*
+	//
+	// The defines go in name order (bytes, as the shader cache's key records them), whatever order Desc
+	// lists them in: with debug information DXC embeds its command line in the DXIL, so two orders of one
+	// set would give two programs under the one key the set has. A stable sort: a name given twice (which
+	// has no key, so is never cached) keeps its last value, as DXC applies its -D in order.
 	const std::vector<FString> fixed = MakeFixedArguments(FString::FromPath(sourcePath.filename()), Desc.Profile,
 		FString::FromPath(ShaderRoot), FString::FromPath(sourcePath.parent_path()));
+	std::vector<const SShaderDefine*> defines;
+	defines.reserve(Desc.Defines.size());
+	for (const SShaderDefine& define : Desc.Defines)
+	{
+		defines.push_back(&define);
+	}
+	std::stable_sort(defines.begin(), defines.end(), [] (const SShaderDefine* A, const SShaderDefine* B)
+	{
+		return A->Name.Compare(B->Name) < 0;
+	});
 	std::vector<FWideString> args;
 	args.reserve(fixed.size() + 4u + 2u * Desc.Defines.size() + Desc.ExtraArguments.size());
 	args.emplace_back(fixed.front());
@@ -299,10 +324,10 @@ SShaderBinary CShaderCompiler::Compile (const SShaderCompileDesc& Desc)
 	{
 		args.emplace_back(fixed[i]);
 	}
-	for (const SShaderDefine& define : Desc.Defines)
+	for (const SShaderDefine* define : defines)
 	{
 		args.emplace_back("-D");
-		args.emplace_back(FString::Format("{}={}", define.Name, define.Value));
+		args.emplace_back(FString::Format("{}={}", define->Name, define->Value));
 	}
 	for (const FString& extra : Desc.ExtraArguments)
 	{
@@ -330,7 +355,7 @@ SShaderBinary CShaderCompiler::Compile (const SShaderCompileDesc& Desc)
 
 	result.Dependencies.push_back(sourcePath);
 	result.FilesRead.push_back(sourceRead);
-	result.bInputsStable = !includeHandler.bChangedWhileRead;
+	result.bInputsStable = !includeHandler.bChangedWhileRead && !includeHandler.bUnreadable;
 	for (const auto& [dep, read] : includeHandler.Opened)
 	{
 		if (dep != sourcePath)

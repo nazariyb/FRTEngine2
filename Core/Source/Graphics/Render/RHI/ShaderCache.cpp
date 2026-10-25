@@ -77,8 +77,8 @@ assets::SGuid GetShaderDxilBuilderVersion () noexcept
 {
 	// A new GUID (FRT.bat assets newguid) whenever a change to ShaderCompiler.* or ShaderCache.* may
 	// change the DXIL of a key or what a record means: arguments, the reading of sources, the KeyBlob.
-	return assets::SGuid { { 0xa9, 0x0e, 0xfe, 0xc4, 0xd5, 0x9d, 0x4f, 0xda, 0xa2, 0x9b, 0xb9, 0xe0, 0x0d, 0xd6, 0x63,
-		0x84 } };
+	return assets::SGuid { { 0x25, 0xef, 0xad, 0xa7, 0xf0, 0x8f, 0x43, 0x43, 0x96, 0x83, 0x70, 0xe1, 0x3b, 0x8c, 0x50,
+		0xaa } };
 }
 
 
@@ -246,7 +246,8 @@ bool CShaderCache::Store (const SShaderCacheKey& Key, const SShaderBinary& Binar
 	{
 		Counters.NotStored.fetch_add(1u, std::memory_order_relaxed);
 		log::Info(LogCategory, "{}: not cached: {}", Label, !bSameSource || !Binary.bInputsStable
-			? "a source changed while it was compiled" : "it looks for an include outside the shader root");
+			? "a source changed, or could not be read, while it was compiled"
+			: "it looks for an include outside the shader root");
 		return false;
 	}
 

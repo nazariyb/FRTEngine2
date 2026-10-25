@@ -79,10 +79,12 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 	//    them, and BeginFrame pumps their completions.
 	WorkerPool = std::make_unique<jobs::CWorkerPool>();
 
-	// 4b. The derived-data cache, dev builds only: Release builds nothing at run time (shaders still
-	//     compile there until the cook ships DXIL, M12). A store that cannot be opened costs speed,
-	//     never correctness: everything is built as without one.
-#if FRT_WITH_DEV_TOOLS
+	// 4b. The derived-data cache, for the renderer's shader cache - its only client - in dev builds
+	//     with a renderer: Release builds nothing at run time (shaders still compile there until the
+	//     cook ships DXIL, M12), and headless builds have no shaders, so they neither resolve the
+	//     store nor create one. A store that cannot be opened costs speed, never correctness:
+	//     everything is built as without one.
+#if FRT_WITH_DEV_TOOLS && !defined(FRT_HEADLESS)
 	{
 		DerivedData = std::make_unique<assets::CDerivedDataCache>();
 		FString error;

@@ -47,14 +47,18 @@
  * FixedArguments is CShaderCompiler::MakeFixedArguments with the shader root and the source's
  * directory written as mount paths ("-I", "/Engine/Shaders/Scene"), so the key is the command line
  * Compile runs, with no absolute path in it (§7.4 "Never in a key"). Lists are records whose field
- * names are four-digit indices, so their order is kept. Defines are a record by name: their order does
- * not matter, and a name given twice is a key error, which compiles that program without the cache.
+ * names are four-digit indices, so their order is kept. Defines are a record by name, and Compile
+ * passes them to DXC in that same name order, so the record is the command line DXC sees (its debug
+ * information embeds it): their order in the description does not matter, and a name given twice is a
+ * key error, which compiles that program without the cache.
  *
  * Discovered inputs: Kind "File", Name the include's mount path ("/Engine/Shaders/Common/Math.hlsli"),
  * Hash and Size of the bytes the compile read (SShaderFileRead) - never re-read afterwards, so a file
  * saved during a compile cannot make its output pass for the new content; and Kind "Absent" (no hash,
  * size 0) for each place DXC looked for an include and found nothing (SShaderBinary::FilesMissing),
- * which must still be empty: a header created there would be included instead. The shader root is
+ * which must still be empty: a header created there would be included instead. A place that held
+ * something DXC could not read and looked past (a directory, a file held without read sharing) cannot
+ * be keyed either way, so such a compile is not stored (SShaderBinary::bInputsStable). The shader root is
  * mounted at RootMountPath; a source or include outside it has no path-free name, and such a program
  * is compiled without the cache.
  *
@@ -95,7 +99,8 @@ struct SShaderCacheCounters
 	uint64 Compiled = 0u;           // programs DXC compiled: the misses, and compiles without the cache
 	uint64 Uncached = 0u;           // ... of those, without the cache: none open, -Ddc:Shaders=0, no path-free key
 	uint64 Failed = 0u;             // compiles that failed (and wrote nothing)
-	uint64 NotStored = 0u;          // compiled after a miss, but not stored: a file changed meanwhile, a write failed
+	uint64 NotStored = 0u;          // compiled after a miss, but not stored: a file changed meanwhile or could not
+	                                // be read, a write failed
 	uint64 VerifyCompiles = 0u;     // hits compiled again by -Ddc:Verify
 	uint64 VerifyMismatches = 0u;   // ... whose DXIL differed from the cached bytes (BUILD002)
 	uint64 Microseconds = 0u;       // spent in Compile: lookups, reads and compiles alike
@@ -173,8 +178,8 @@ private:
 	// A compile after a miss, stored under Key when its inputs allow.
 	SShaderBinary CompileAndStore (const SShaderCompileDesc& Desc, const SShaderCacheKey& Key);
 	// Stores a successful compile of Key's program: false (and counted) when it read a source other
-	// than the one Key hashed, a file changed during it, an include lies outside the shader root, or
-	// the write failed.
+	// than the one Key hashed, a file changed during it, a place it looked at for an include could not
+	// be read, an include lies outside the shader root, or the write failed.
 	bool Store (const SShaderCacheKey& Key, const SShaderBinary& Binary, uint64 BuildMs, FStringView Label);
 	// A hit -Ddc:Verify chose: compiled again and compared; the fresh binary when the bytes differ.
 	SShaderBinary VerifyHit (const SShaderCompileDesc& Desc, const SShaderCacheKey& Key, SShaderBinary Hit,
