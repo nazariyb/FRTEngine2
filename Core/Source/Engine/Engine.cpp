@@ -8,10 +8,12 @@
 
 #include "BuildConfig.h"
 #include "EnginePaths.h"
+#include "Assets/DerivedDataCache.h"
 #include "ECS/CoreComponents.h"
 #include "Graphics/GraphicsComponents.h"
 #include "Graphics/Render/MaterialLibrary.h"
 #include "Jobs/WorkerPool.h"
+#include "Log/Log.h"
 #include "Memory/Memory.h"
 #include "Platform/Platform.h"
 #include "Profiler/CpuProfiler.h"
@@ -21,6 +23,7 @@
 #include "Window.h"
 #include "Graphics/Render/GraphicsUtility.h"
 #include "Graphics/Render/Renderer.h"
+#include "Graphics/Render/RHI/ShaderCache.h"
 #include "UI/ImGuiLayer.h"
 #endif
 
@@ -76,6 +79,21 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 	//    them, and BeginFrame pumps their completions.
 	WorkerPool = std::make_unique<jobs::CWorkerPool>();
 
+	// 4b. The derived-data cache, dev builds only: Release builds nothing at run time (shaders still
+	//     compile there until the cook ships DXIL, M12). A store that cannot be opened costs speed,
+	//     never correctness: everything is built as without one.
+#if FRT_WITH_DEV_TOOLS
+	{
+		DerivedData = std::make_unique<assets::CDerivedDataCache>();
+		FString error;
+		if (!DerivedData->OpenDefault(&Config, &error))
+		{
+			log::Warning("ddc", "no derived-data cache: {}", error);
+			DerivedData.reset();
+		}
+	}
+#endif
+
 	// 5. Real-time clock.
 	Clock = std::make_unique<CTimer>();
 	Clock->Reset();
@@ -109,8 +127,16 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 	Graphics->Window->PostRestoreFromMinimizeEvent += [this] () { OnRestoreFromMinimize(); };
 	Input.SetDefaultWindow(static_cast<input::WindowId>(reinterpret_cast<uintptr_t>(Graphics->Window->GetHandle())));
 
-	// 7. Renderer, and the display modes the adapter offers.
-	Graphics->Renderer = std::make_unique<graphics::CRenderer>(Graphics->Window.get(), *WorkerPool);
+	// 7. Renderer, and the display modes the adapter offers. Its programs come from the shader cache:
+	//    -Ddc:Shaders=0 compiles every one, as before the cache (until M2); -Ddc:Verify=<percent>
+	//    compiles that share of the hits again and compares the bytes (BUILD002 on a difference).
+	graphics::rhi::SShaderCacheSettings shaderCache;
+	if (DerivedData && Config.Get("Ddc", "Shaders", true))
+	{
+		shaderCache.Cache = DerivedData.get();
+	}
+	shaderCache.VerifyPercent = Config.Get("Ddc", "Verify", 0.0f);
+	Graphics->Renderer = std::make_unique<graphics::CRenderer>(Graphics->Window.get(), *WorkerPool, shaderCache);
 	Graphics->Renderer->Resize(display.FullscreenMode == EFullscreenMode::Fullscreen);
 	DisplayOptions = graphics::GetDisplayOptions(Graphics->Renderer->GetAdapter());
 	// Clamp the config's monitor index before anything indexes per-monitor data with it.
@@ -164,6 +190,8 @@ void CEngine::ShutDown ()
 	// After the renderer, whose decodes it may still be running: drains (drops what is queued, waits
 	// for what runs, destroys every completion left) and joins the threads.
 	WorkerPool.reset();
+	// After the pool's drain: nothing can be reading or filling it any more (DerivedDataCache.h).
+	DerivedData.reset();
 }
 
 bool CEngine::PumpMessages ()

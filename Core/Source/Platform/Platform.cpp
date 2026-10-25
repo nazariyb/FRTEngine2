@@ -442,6 +442,12 @@ std::filesystem::path GetExecutablePath ()
 	return GetModulePath(nullptr);
 }
 
+std::filesystem::path GetLoadedModulePath (FStringView Name)
+{
+	HMODULE module = Name.IsEmpty() ? nullptr : GetModuleHandleW(ToWide(Name).CStr());
+	return module ? GetModulePath(module) : std::filesystem::path();
+}
+
 FString DecodeToolOutput (FStringView Bytes)
 {
 	FString result;
@@ -491,12 +497,16 @@ std::optional<FString> ReadFileText (const std::filesystem::path& Path, ETextFil
 	{
 		return text;
 	}
+	return DecodeTextFile(std::move(text));
+}
 
-	if (text.RemoveFromStart(Utf8Bom))
+std::optional<FString> DecodeTextFile (FString Bytes)
+{
+	if (Bytes.RemoveFromStart(Utf8Bom))
 	{
-		return text;
+		return Bytes;
 	}
-	const FStringView bytes = text.View();
+	const FStringView bytes = Bytes.View();
 	if (bytes.StartsWith("\xFF\xFE"))
 	{
 		return DecodeUtf16File(bytes.RightChop(2u), false);
@@ -505,7 +515,7 @@ std::optional<FString> ReadFileText (const std::filesystem::path& Path, ETextFil
 	{
 		return DecodeUtf16File(bytes.RightChop(2u), true);
 	}
-	return text;
+	return Bytes;
 }
 
 std::optional<std::vector<uint8>> ReadFileBytes (const std::filesystem::path& Path)

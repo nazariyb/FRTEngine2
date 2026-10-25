@@ -15,6 +15,7 @@
 #include "Graphics/Camera.h"
 #include "Graphics/Render/GraphicsCoreTypes.h"
 #include "Graphics/Render/Renderer.h"
+#include "Graphics/Render/RHI/ShaderCache.h"
 #include "Graphics/Render/Scene/WorldExtraction.h"
 #include "Profiler/CpuProfiler.h"
 #include "Profiler/ProfilingExport.h"
@@ -191,6 +192,26 @@ void CDebugTools::DrawStatsPanel (const SContext& Context)
 
 	ImGui::Text("FPS: %.2f", StatFps);
 	ImGui::Text("MS/frame: %.2f", StatMsPerFrame);
+
+	// Where the programs came from since start-up: the DDC (hits) or DXC (compiled), hot reloads included.
+	{
+		const rhi::CShaderCache& shaderCache = renderer.GetShaderCache();
+		const rhi::SShaderCacheCounters shaders = shaderCache.GetCounters();
+		ImGui::Text("Shaders: %s%s", rhi::CShaderCache::FormatCounters(shaders).CStr(),
+			shaderCache.IsCaching() ? "" : ", no cache");
+		if (shaders.Misses > 0u || shaders.Failed > 0u || shaders.NotStored > 0u || shaders.VerifyCompiles > 0u)
+		{
+			ImGui::Text("  %llu misses, %llu failed, %llu not cached, %llu verified",
+				static_cast<unsigned long long>(shaders.Misses), static_cast<unsigned long long>(shaders.Failed),
+				static_cast<unsigned long long>(shaders.NotStored),
+				static_cast<unsigned long long>(shaders.VerifyCompiles));
+		}
+		if (shaders.VerifyMismatches > 0u)
+		{
+			ImGui::TextColored(ImVec4(1, 0.4f, 0.3f, 1), "  BUILD002: %llu cached programs differ from a fresh compile",
+				static_cast<unsigned long long>(shaders.VerifyMismatches));
+		}
+	}
 
 	// FRT_CPU_SCOPE timings of the last frame, every thread, the costliest names first.
 	ImGui::Separator();

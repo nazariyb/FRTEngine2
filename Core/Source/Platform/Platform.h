@@ -76,6 +76,9 @@ FRT_CORE_API void ShowErrorMessage (FStringView Title, FStringView Text) noexcep
 [[nodiscard]] FRT_CORE_API std::filesystem::path GetModulePath (void* Module = nullptr);
 // Its address range is GetModuleImage (Platform/ModuleImage.h, included above).
 [[nodiscard]] FRT_CORE_API std::filesystem::path GetExecutablePath ();
+// The file the loaded module of that name ("dxcompiler.dll") was loaded from. Empty if this process
+// has no module of that name loaded (never the executable's path, as GetModulePath(nullptr) is).
+[[nodiscard]] FRT_CORE_API std::filesystem::path GetLoadedModulePath (FStringView Name);
 
 // Output of a child tool (a compiler, a build) as UTF-8. Split on '\n' (terminators kept), each line
 // that is valid UTF-8 is kept as is; any other line is decoded with the system's OEM code page,
@@ -90,6 +93,9 @@ FRT_CORE_API void ShowErrorMessage (FStringView Title, FStringView Text) noexcep
 // anything else is returned unchanged - bytes are never validated or replaced here. Raw: the bytes
 // as stored. nullopt if the file cannot be read (missing, a directory, locked, over 2 GB).
 [[nodiscard]] FRT_CORE_API std::optional<FString> ReadFileText (const std::filesystem::path& Path, ETextFileEncoding Encoding = ETextFileEncoding::Detect);
+// What ReadFileText(Detect) makes of a file's bytes as stored (ReadFileText(Raw)): for a reader that
+// also hashes the stored bytes, so the hash and the text it uses come from one read.
+[[nodiscard]] FRT_CORE_API std::optional<FString> DecodeTextFile (FString Bytes);
 // A whole file as bytes (fonts, binary assets). A std::vector: usable before the memory pool
 // exists. nullopt as for ReadFileText.
 [[nodiscard]] FRT_CORE_API std::optional<std::vector<uint8>> ReadFileBytes (const std::filesystem::path& Path);

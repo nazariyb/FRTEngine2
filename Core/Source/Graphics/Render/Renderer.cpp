@@ -22,6 +22,7 @@
 #include "Graphics/Render/Passes/Upscaler.h"
 #include "Graphics/Render/RenderView.h"
 #include "Graphics/Render/Scene/GpuScene.h"
+#include "Log/Log.h"
 #include "Platform/Platform.h"
 #include "Profiler/Profiler.h"
 
@@ -188,7 +189,8 @@ uint64 HashBytes (uint64 Hash, const void* Data, size_t Size)
 }
 
 
-CRenderer::CRenderer (CWindow* InWindow, jobs::CWorkerPool& WorkerPool)
+CRenderer::CRenderer (CWindow* InWindow, jobs::CWorkerPool& WorkerPool,
+	const rhi::SShaderCacheSettings& ShaderCacheSettings)
 	: Window(InWindow)
 {
 	CreateDevice();
@@ -212,7 +214,8 @@ CRenderer::CRenderer (CWindow* InWindow, jobs::CWorkerPool& WorkerPool)
 	}
 
 	ShaderCompiler.Init(paths::GetShaderRootDir());
-	Pipelines.Init(Rhi, ShaderCompiler);
+	ShaderCache.Init(ShaderCompiler, ShaderCacheSettings);
+	Pipelines.Init(Rhi, ShaderCache);
 #if !FRT_WITH_DEV_TOOLS
 	Pipelines.SetHotReloadEnabled(false);
 #endif
@@ -1139,6 +1142,25 @@ void CRenderer::EndFrame ()
 	CommandQueue->Signal(Fence.Get(), FenceValue);
 	Frames[FrameSlot].FenceValue = FenceValue;
 	++FrameNumber;
+
+	// Once, after the first frame: by then the views exist and their passes have created their
+	// programs, so the line covers the whole start-up (verify reads it: a warm start compiles 0).
+	if (!bShaderCacheReported)
+	{
+		bShaderCacheReported = true;
+		const rhi::SShaderCacheCounters counters = ShaderCache.GetCounters();
+		FString line = "cache: " + rhi::CShaderCache::FormatCounters(counters);
+		if (!ShaderCache.IsCaching())
+		{
+			line << " (no cache: every program compiled)";
+		}
+		if (counters.VerifyCompiles > 0u)
+		{
+			line << FString::Format(", {} verified, {} differed (BUILD002)", counters.VerifyCompiles,
+				counters.VerifyMismatches);
+		}
+		log::Info("shader", "{}", line);
+	}
 }
 
 

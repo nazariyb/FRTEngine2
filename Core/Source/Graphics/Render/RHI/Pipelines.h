@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "Containers/StringMap.h"
+#include "Graphics/Render/RHI/ShaderCache.h"
 #include "Graphics/Render/RHI/ShaderCompiler.h"
 
 
@@ -55,7 +56,8 @@ struct SGraphicsPipelineDesc
 class FRT_CORE_API CPipelineLibrary
 {
 public:
-	void Init (CDevice& Device, CShaderCompiler& Compiler);
+	// Programs are compiled through Shaders (the shader cache: DXIL from the DDC when it has it).
+	void Init (CDevice& Device, CShaderCache& Shaders);
 	void Shutdown ();
 
 	ID3D12RootSignature* GetComputeRootSignature () const { return ComputeRootSignature.Get(); }
@@ -83,7 +85,7 @@ public:
 	// Every compile error since the last successful reload, for the UI.
 	const std::vector<FString>& GetErrors () const { return Errors; }
 
-	CShaderCompiler& GetCompiler () { return *Compiler; }
+	CShaderCache& GetShaderCache () { return *Shaders; }
 
 private:
 	enum class EKind : uint8 { Compute, Graphics, Library };
@@ -113,7 +115,7 @@ private:
 	bool IsStale (const SProgram& Program) const;
 
 	CDevice* Device = nullptr;
-	CShaderCompiler* Compiler = nullptr;
+	CShaderCache* Shaders = nullptr;
 	ComPtr<ID3D12RootSignature> ComputeRootSignature;
 	ComPtr<ID3D12RootSignature> GraphicsRootSignature;
 	std::vector<SProgram> Programs;

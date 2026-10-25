@@ -23,6 +23,11 @@ class CImGuiLayer;
 class CWindow;
 }
 
+namespace frt::assets
+{
+class CDerivedDataCache;
+}
+
 namespace frt::graphics
 {
 class CMaterialLibrary;
@@ -62,8 +67,8 @@ struct SViewToRender
  *
  * Owns every subsystem and brings them up and down explicitly, in dependency order (Gregory,
  * GEA "Subsystem Start-Up and Shut-Down") - never through static construction order:
- *   StartUp:  components, config (+ command line, user settings), memory, worker pool, clock,
- *             window, renderer, input actions, UI.
+ *   StartUp:  components, config (+ command line, user settings), memory, worker pool, derived-data
+ *             cache (dev builds), clock, window, renderer, input actions, UI.
  *   ShutDown: the exact reverse, after the GPU is idle.
  * Headless builds skip the window, renderer and UI, and resolve materials through a library
  * of their own; the class layout is the same either way.
@@ -114,6 +119,11 @@ public:
 	// The engine's worker threads (Jobs/WorkerPool.h), owned by the main thread: BeginFrame pumps
 	// their completions. Headless too. Valid from StartUp to ShutDown.
 	jobs::CWorkerPool& GetWorkerPool () { return *WorkerPool; }
+	// The machine's derived-data cache (Assets/DerivedDataCache.h; FRT_DDC_DIR, else [DerivedDataCache]
+	// Path=, else the per-user data directory), which the renderer's shader cache reads and fills. Null
+	// in Release, which builds nothing at run time, and when the store could not be opened (said once at
+	// start-up; everything is then built as if it were empty). Valid from StartUp to ShutDown.
+	assets::CDerivedDataCache* GetDerivedDataCache () { return DerivedData.get(); }
 	// The renderer's library, or a standalone one when headless.
 	graphics::CMaterialLibrary& GetMaterials ();
 
@@ -148,6 +158,9 @@ private:
 	// Started after the memory pool and before the renderer (whose texture streaming submits to it),
 	// stopped after the renderer.
 	std::unique_ptr<jobs::CWorkerPool> WorkerPool;
+	// Opened after the worker pool, closed after it: work in flight may still read or fill it until
+	// the pool's drain. A member in every build, so the layout does not depend on FRT_WITH_DEV_TOOLS.
+	std::unique_ptr<assets::CDerivedDataCache> DerivedData;
 	std::unique_ptr<CTimer> Clock;
 	// Window, renderer, UI. One opaque block defined in Engine.cpp: headless builds compile none
 	// of them, yet the class layout must not depend on FRT_HEADLESS.

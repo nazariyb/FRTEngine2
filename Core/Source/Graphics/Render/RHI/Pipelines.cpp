@@ -101,10 +101,10 @@ ComPtr<ID3D12RootSignature> CreateGlobalRootSignature (ID3D12Device* Device, boo
 }
 
 
-void CPipelineLibrary::Init (CDevice& InDevice, CShaderCompiler& InCompiler)
+void CPipelineLibrary::Init (CDevice& InDevice, CShaderCache& InShaders)
 {
 	Device = &InDevice;
-	Compiler = &InCompiler;
+	Shaders = &InShaders;
 	ComputeRootSignature = CreateGlobalRootSignature(Device->GetDevice(), false);
 	GraphicsRootSignature = CreateGlobalRootSignature(Device->GetDevice(), true);
 }
@@ -280,7 +280,7 @@ bool CPipelineLibrary::Build (SProgram& Program)
 
 	if (Program.Kind == EKind::Library)
 	{
-		SShaderBinary binary = Compiler->Compile(Program.Shader);
+		SShaderBinary binary = Shaders->Compile(Program.Shader);
 		Watch(Program, binary.Dependencies);
 		if (!binary.bSuccess)
 		{
@@ -294,7 +294,7 @@ bool CPipelineLibrary::Build (SProgram& Program)
 
 	if (Program.Kind == EKind::Compute)
 	{
-		SShaderBinary cs = Compiler->Compile(Program.Shader);
+		SShaderBinary cs = Shaders->Compile(Program.Shader);
 		Watch(Program, cs.Dependencies);
 		if (!cs.bSuccess)
 		{
@@ -325,8 +325,8 @@ bool CPipelineLibrary::Build (SProgram& Program)
 
 	// Graphics
 	const SGraphicsPipelineDesc& g = Program.Graphics;
-	SShaderBinary vs = Compiler->Compile(g.VertexShader);
-	SShaderBinary ps = Compiler->Compile(g.PixelShader);
+	SShaderBinary vs = Shaders->Compile(g.VertexShader);
+	SShaderBinary ps = Shaders->Compile(g.PixelShader);
 	Watch(Program, vs.Dependencies);
 	Watch(Program, ps.Dependencies);
 	if (!vs.bSuccess || !ps.bSuccess)
