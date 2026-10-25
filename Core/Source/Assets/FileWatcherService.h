@@ -45,7 +45,9 @@ class CConfig;
  *	  whose two paths differ in case only.
  *	- Directories: one event stands for a whole subtree. A directory moved in (or created, or restored
  *	  from the Recycle Bin) is enumerated with platform::EnumerateDirectory and every file in it is
- *	  Added; one renamed or moved within the root (a case-only rename included) re-paths what is
+ *	  Added - when its entry comes due, not when its event arrives (a burst may still be arriving, and a
+ *	  Rescan makes the walk moot), once with the directories below it, and only where a subscription
+ *	  watches; one renamed or moved within the root (a case-only rename included) re-paths what is
  *	  pending below it and is told as one directory Moved from where it was when the window began (a
  *	  chain a -> b -> c is one Moved from a); one removed or moved out is one directory Removed, which
  *	  stands for everything below it (UE's RemoveAssetPath leaves ghosts there) - at a, if it had moved
@@ -234,8 +236,10 @@ public:
 	// The fence: creates a fence file in every armed root that watches some of Directory (one that
 	// holds it, or lies below it), waits for each root's fence event, all within TimeoutSeconds, then
 	// tells everything of those roots that arrived before their fences, whatever the windows (files a
-	// writer still holds stay pending). True when every fence was seen; false at once when Directory is
-	// not watched (no subscription, disabled, or not armed).
+	// writer still holds stay pending). A root that reports a loss (Overflow, RootLost) after its fence
+	// was written may have lost the fence's event with the rest: the loss stands for it, and the Rescan
+	// it marked is told at once. True when every fence was seen or stood for so; false at once when
+	// Directory is not watched (no subscription, disabled, or not armed).
 	bool Flush (const std::filesystem::path& Directory, double TimeoutSeconds = 5.0);
 	template <platform::NarrowText T>
 	bool Flush (const T&, double = 5.0) = delete;

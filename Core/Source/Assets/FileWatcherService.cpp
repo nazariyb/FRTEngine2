@@ -25,6 +25,12 @@ constexpr FStringLiteral LogCategory = "watch";
 // Flush's fence files: never told to anyone, wherever they appear.
 constexpr FStringLiteral FencePrefix = ".frt-fence-";
 
+// A subscribed directory that does not exist is looked for every RootPollMs, on the owner thread; when
+// asking takes longer than this (a share whose server is gone answers after its timeout), the next
+// look waits twice as long, up to MaxMissingPollMs.
+constexpr uint32 SlowStatMs = 50u;
+constexpr uint32 MaxMissingPollMs = 30000u;
+
 uint64 MsToTicks (uint32 Ms) noexcept
 {
 	return platform::GetTimestampFrequency() * Ms / 1000u;
@@ -190,6 +196,7 @@ struct CFileWatcherService::SState
 		File,               // a file, or a path of unknown type
 		DirectoryRemoved,   // a directory removed or moved out (its subtree with it)
 		DirectoryMoved,     // a directory renamed or moved within the root, from MovedFrom
+		DirectoryAdded,     // a directory that appeared (created, moved or copied in): told through its files
 	};
 
 	struct SPending
@@ -209,6 +216,7 @@ struct CFileWatcherService::SState
 		bool bMaybeDirectory = false;   // removed without an entry type (no extended information)
 		bool bMovedAway = false;        // its file moved to another path, whose entry tells the move; kept so
 		                                // that a file landing here afterwards is a Modified (S4's backup rename)
+		bool bEnumerate = false;        // a directory appeared here: every file below it is Added when it comes due
 		bool bWarnedHeld = false;
 	};
 
@@ -240,8 +248,10 @@ struct CFileWatcherService::SState
 		ERootState State = ERootState::Unarmed;
 		uint32 WatcherId = 0u;
 		uint64 NextPoll = 0u;
+		uint64 MissingPollTicks = 0u;   // the wait before the next look while Missing (longer while asking is slow)
 		bool bRescanPending = false;
 		uint64 RescanSince = 0u;
+		uint64 LastLossTime = 0u;       // the latest Overflow or RootLost (Flush's fences may be among what it lost)
 		bool bArmFailureLogged = false;
 		uint32 SubscriptionCount = 0u;
 		std::unordered_map<FString, SPending, SStringHash, SStringEqual> Pending;   // by key
@@ -318,6 +328,8 @@ struct CFileWatcherService::SState
 	uint64 VcsPollTicks = 0u;
 	uint64 HeldWarningTicks = 0u;
 	uint64 RootPollTicks = 0u;
+	uint64 SlowStatTicks = 0u;
+	uint64 MaxMissingPollTicks = 0u;
 
 	std::vector<std::unique_ptr<SRoot>> Roots;
 	std::unordered_map<uint32, SRoot*> RootsByWatcherId;
@@ -360,6 +372,8 @@ struct CFileWatcherService::SState
 		VcsPollTicks = MsToTicks(Settings.VcsPollMs);
 		HeldWarningTicks = MsToTicks(Settings.HeldWarningMs);
 		RootPollTicks = MsToTicks(Settings.RootPollMs);
+		SlowStatTicks = MsToTicks(SlowStatMs);
+		MaxMissingPollTicks = MsToTicks(MaxMissingPollMs);
 	}
 
 	void CheckOwner () const
@@ -421,11 +435,15 @@ struct CFileWatcherService::SState
 			Root.State = ERootState::Unarmed;
 			return false;
 		}
+		const uint64 statStart = platform::ReadTimestamp();
 		const std::optional<platform::SFileStat> stat = platform::Stat(Root.Path);
 		if (!stat || !stat->bDirectory)
 		{
 			Root.State = ERootState::Missing;
-			Root.NextPoll = Now + RootPollTicks;
+			const bool bSlow = Elapsed(statStart, platform::ReadTimestamp()) >= SlowStatTicks;
+			const uint64 doubled = (Root.MissingPollTicks > RootPollTicks ? Root.MissingPollTicks : RootPollTicks) * 2u;
+			Root.MissingPollTicks = !bSlow ? RootPollTicks : doubled < MaxMissingPollTicks ? doubled : MaxMissingPollTicks;
+			Root.NextPoll = Now + Root.MissingPollTicks;
 			return false;
 		}
 		if (!Watcher)
@@ -691,6 +709,7 @@ struct CFileWatcherService::SState
 		case platform::EFileEventKind::Overflow:
 			++Stats.Overflows;
 			root.State = ERootState::Armed;
+			root.LastLossTime = time > root.LastLossTime ? time : root.LastLossTime;
 			if (!root.bRescanPending)
 			{
 				log::Info(LogCategory, "{}: changes were missed; rescanning it once the tree is quiet", FString::FromPath(root.Path));
@@ -700,6 +719,7 @@ struct CFileWatcherService::SState
 		case platform::EFileEventKind::RootLost:
 			++Stats.RootsLost;
 			root.State = ERootState::Lost;
+			root.LastLossTime = time > root.LastLossTime ? time : root.LastLossTime;
 			log::Warning(LogCategory, "{} went away; watching it again when it is back", FString::FromPath(root.Path));
 			MarkRescan(root, time, false);
 			return;
@@ -969,15 +989,26 @@ struct CFileWatcherService::SState
 			{
 				Root.LastRenamedOld = {};
 			}
-			// Created, moved in from outside, restored: its subtree reported nothing by itself.
-			const auto removed = Root.Pending.find(key);
-			if (removed != Root.Pending.end() && removed->second.Type == EEntry::DirectoryRemoved)
+			// Created, moved in from outside, restored: its subtree reported nothing by itself, and is
+			// enumerated when the entry comes due (EnumerateAppeared) - not now: a burst may still be
+			// arriving, and a Rescan may make it moot.
+			const auto existing = Root.Pending.find(key);
+			if (existing == Root.Pending.end())
+			{
+				SPending& entry = Touch(Root, key, Event.Path, false, Time);
+				entry.Type = EEntry::DirectoryAdded;
+				entry.bExistsNow = true;
+				entry.bEnumerate = true;
+				break;
+			}
+			SPending& entry = existing->second;
+			if (entry.Type == EEntry::DirectoryRemoved)
 			{
 				// Removed and back within the window: whatever was below it may differ (a Rescan).
-				removed->second.bExistsNow = true;
-				removed->second.LastSeen = Time > removed->second.LastSeen ? Time : removed->second.LastSeen;
+				entry.bExistsNow = true;
 			}
-			EnumerateInto(Root, Event.Path, Time);
+			entry.LastSeen = Time > entry.LastSeen ? Time : entry.LastSeen;
+			entry.bEnumerate = true;
 			break;
 		}
 		default:
@@ -992,6 +1023,7 @@ struct CFileWatcherService::SState
 	void MoveDirectory (SRoot& Root, SRemoval&& Source, FStringView Path, const FString& Key, uint64 Time)
 	{
 		FString from = Source.Path;
+		bool bEnumerate = false;   // it had appeared within the window and is not enumerated yet
 		const auto sourceIt = Root.Pending.find(Source.Key);
 		if (sourceIt != Root.Pending.end())
 		{
@@ -999,17 +1031,19 @@ struct CFileWatcherService::SState
 			{
 				from = sourceIt->second.MovedFrom;
 			}
+			bEnumerate = sourceIt->second.bEnumerate;
 			Root.Pending.erase(sourceIt);
 		}
 		RepathInto(Root, std::move(Source.Below), Source.Path, Key, Path);
-		if (from == Path)
+		if (from == Path && !bEnumerate)
 		{
 			return;
 		}
 		SPending& entry = Touch(Root, Key, Path, false, Time);
-		entry.Type = EEntry::DirectoryMoved;
-		entry.MovedFrom = std::move(from);
+		entry.Type = from == Path ? EEntry::DirectoryAdded : EEntry::DirectoryMoved;
+		entry.MovedFrom = from == Path ? FString() : std::move(from);
 		entry.bExistsNow = true;
+		entry.bEnumerate = bEnumerate;
 	}
 
 	// Takes what is pending below the directory at Key out of the root into OutBelow: the directory's own
@@ -1096,6 +1130,74 @@ struct CFileWatcherService::SState
 		}
 	}
 
+	// Some live subscription of the root watches at or below Key, or a region that holds it.
+	[[nodiscard]] bool IsWatched (const SRoot& Root, FStringView Key) const
+	{
+		return std::any_of(Subscriptions.begin(), Subscriptions.end(), [&Root, Key] (const SSubscription& Subscription)
+		{
+			return Subscription.Id != 0u && Subscription.Root == &Root
+				&& (IsAtOrBelow(Key, Subscription.RegionKey) || IsAtOrBelow(Subscription.RegionKey, Key));
+		});
+	}
+
+	// Directories that appeared, enumerated once their entries come due (by IsDue's rule), not when
+	// their events arrived: during a burst or a hold that would walk a tree that is still arriving, and
+	// walk it again for every directory below that reports itself. Each due directory is walked once;
+	// one below another that is walked goes with it, and so does what is pending below it with an
+	// enumeration of its own; directories no subscription watches are not walked at all. The files
+	// found are Added entries as old as the directory's, so they come due with it.
+	void EnumerateAppeared (SRoot& Root, uint64 Now, bool bHold, bool bReleaseAll, const SFence* Fence)
+	{
+		struct SDue
+		{
+			FString Key;
+			FString Path;
+			uint64 Time = 0u;
+		};
+		std::vector<SDue> due;
+		for (auto& [key, entry] : Root.Pending)
+		{
+			if (!entry.bEnumerate || !IsDue(entry, Now, bHold, bReleaseAll, Fence))
+			{
+				continue;
+			}
+			entry.bEnumerate = false;
+			if (entry.Type != EEntry::DirectoryRemoved || entry.bExistsNow)
+			{
+				due.push_back({ key, entry.Path, entry.LastSeen });
+			}
+		}
+		if (due.empty())
+		{
+			return;
+		}
+		std::sort(due.begin(), due.end(), [] (const SDue& A, const SDue& B) { return A.Key < B.Key; });
+		std::vector<SDue> walk;
+		for (SDue& directory : due)
+		{
+			// Sorted, the directories above one come before it.
+			const bool bBelowAnother = std::any_of(walk.begin(), walk.end(), [&directory] (const SDue& Above)
+			{
+				return IsAtOrBelow(directory.Key, Above.Key);
+			});
+			if (!bBelowAnother && IsWatched(Root, directory.Key))
+			{
+				walk.push_back(std::move(directory));
+			}
+		}
+		for (auto& [key, entry] : Root.Pending)
+		{
+			if (entry.bEnumerate && std::any_of(walk.begin(), walk.end(), [&key] (const SDue& Directory) { return IsAtOrBelow(key, Directory.Key); }))
+			{
+				entry.bEnumerate = false;
+			}
+		}
+		for (const SDue& directory : walk)
+		{
+			EnumerateInto(Root, directory.Path, directory.Time);
+		}
+	}
+
 	// ---------------- Settling ----------------
 
 	[[nodiscard]] bool IsSettled (const SPending& Entry, uint64 Now) const
@@ -1103,6 +1205,13 @@ struct CFileWatcherService::SState
 		const bool bGone = Entry.Type == EEntry::DirectoryRemoved ? !Entry.bExistsNow : Entry.bExistedBefore && !Entry.bExistsNow;
 		const uint64 needed = SettleTicks + (bGone ? RemoveGraceTicks : 0u);
 		return Elapsed(Entry.LastSeen, Now) >= needed || Elapsed(Entry.FirstSeen, Now) >= MaxLatencyTicks;
+	}
+
+	// The entry is resolved now: its fence covers it, or nothing is held and it settled (or the hold
+	// just ended).
+	[[nodiscard]] bool IsDue (const SPending& Entry, uint64 Now, bool bHold, bool bReleaseAll, const SFence* Fence) const
+	{
+		return (Fence != nullptr && Entry.LastSeen <= Fence->Time) || (!bHold && (bReleaseAll || IsSettled(Entry, Now)));
 	}
 
 	[[nodiscard]] bool HasPending () const
@@ -1195,6 +1304,10 @@ struct CFileWatcherService::SState
 				return EOutcome::TellAndResolveAgain;
 			}
 			return EOutcome::Tell;
+		}
+		if (Entry.Type == EEntry::DirectoryAdded)
+		{
+			return EOutcome::Drop;   // its files tell it (EnumerateAppeared made them entries)
 		}
 		if (Entry.Type == EEntry::DirectoryMoved)
 		{
@@ -1342,6 +1455,10 @@ struct CFileWatcherService::SState
 			const SFence* fence = fenceIt != Fences.end() ? &*fenceIt : nullptr;
 			const bool bFenced = fence != nullptr;
 			const size_t firstOfRoot = ready.size();
+			if (bHold && !bFenced)
+			{
+				continue;   // nothing of it is due: not even worth a walk
+			}
 
 			if (root.bRescanPending)
 			{
@@ -1362,11 +1479,12 @@ struct CFileWatcherService::SState
 				continue;
 			}
 
+			EnumerateAppeared(root, Now, bHold, bReleaseAll, fence);
 			for (auto it = root.Pending.begin(); it != root.Pending.end();)
 			{
 				SPending& entry = it->second;
 				const bool bForced = bFenced && entry.LastSeen <= fence->Time;
-				const bool bDue = bForced || (!bHold && (bReleaseAll || IsSettled(entry, Now)));
+				const bool bDue = IsDue(entry, Now, bHold, bReleaseAll, fence);
 				if (!bDue || (!bForced && Now < entry.NextProbe))
 				{
 					++it;
@@ -1739,7 +1857,9 @@ bool CFileWatcherService::Flush (const std::filesystem::path& Directory, double 
 		SState::SRoot* Root = nullptr;
 		FString Name;
 		std::filesystem::path File;
+		uint64 Written = 0u;   // before the fence was written
 		std::optional<uint64> Time;
+		bool bByLoss = false;  // the root lost events after the fence was written: its own may be among them
 	};
 	const std::filesystem::path directory = NormalizePath(Directory);
 	std::vector<SWaiting> waiting;
@@ -1755,6 +1875,7 @@ bool CFileWatcherService::Flush (const std::filesystem::path& Directory, double 
 		fence.Name = FString(FencePrefix);
 		fence.Name.AppendFormat("{}-{}", platform::GetCurrentProcessId(), ++state.FenceCounter);
 		fence.File = root->Path / fence.Name.ToPath();
+		fence.Written = platform::ReadTimestamp();
 		if (platform::WriteFileBytes(fence.File, {}, false))
 		{
 			waiting.push_back(std::move(fence));
@@ -1787,6 +1908,14 @@ bool CFileWatcherService::Flush (const std::filesystem::path& Directory, double 
 				{
 					fence.Time = seen->Time;
 				}
+				else if (fence.Root->LastLossTime >= fence.Written)
+				{
+					// An Overflow or a RootLost after the fence was written: the fence's own event may be
+					// lost with the rest, and the Rescan the loss marked stands for everything pending in
+					// the root - due at once, below, as of the loss.
+					fence.Time = fence.Root->LastLossTime;
+					fence.bByLoss = true;
+				}
 			}
 			bAllSeen = bAllSeen && fence.Time.has_value();
 			bAnyArmed = bAnyArmed || (!fence.Time && fence.Root->State == SState::ERootState::Armed);
@@ -1803,10 +1932,14 @@ bool CFileWatcherService::Flush (const std::filesystem::path& Directory, double 
 	const uint64 now = platform::ReadTimestamp();
 	std::vector<SState::SFence> settled;
 	bool bAllFenced = bAllWritten;
-	for (const SWaiting& fence : waiting)
+	for (SWaiting& fence : waiting)
 	{
 		if (fence.Time)
 		{
+			if (fence.bByLoss && fence.Root->LastLossTime > *fence.Time)
+			{
+				fence.Time = fence.Root->LastLossTime;   // lost more while the others were awaited
+			}
 			// Both halves of a move arrive together: a removal older than the fence will not pair any more.
 			state.ExpireRemovals(*fence.Time, fence.Root);
 			settled.push_back({ fence.Root, *fence.Time, {} });

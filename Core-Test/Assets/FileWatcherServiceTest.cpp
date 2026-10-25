@@ -3,11 +3,13 @@
 // the measured scenarios (gap-watch-meta §1.3, S1-S19 and G1-G5) as far as a test can produce them:
 // create, write and delete; a rename in one directory and a move between two (paired by identity);
 // directory renames, moves out (one record for the subtree) and moves in (the subtree enumerated:
-// a Recycle Bin restore and a folder drag-in); a file moved into a directory that then goes, with no
+// a Recycle Bin restore and a folder drag-in, each directory walked once, none when a Rescan makes it
+// moot); directory renames that chain, end outside the root, change only the case, or follow a file
+// rename inside; a file moved into a directory that then goes, with no
 // event after it; a file taking a removed directory's place; a case-only rename; atomic saves of three
 // kinds, which change the identity and are still one Modified; a writer that holds the file (nothing is
-// told until it lets go); an overflow (a Rescan once the tree is quiet); Flush's fence, also over roots
-// that overlap; self-writes that diff to nothing; a slow checkout of files arriving over seconds; and a
+// told until it lets go); an overflow (a Rescan once the tree is quiet, and at once when a Flush
+// waits); Flush's fence, also over roots that overlap; self-writes that diff to nothing; a slow checkout of files arriving over seconds; and a
 // scripted git checkout of 300 files, told as one batch after the tree settles, with no callback in the
 // middle of it. Filters, the directory that does not exist yet, the VCS seam, the off switch and its
 // scope are covered too, and - through a scripted platform watcher - a file system without entry types,
@@ -498,6 +500,28 @@ TEST_F(FileWatcherServiceTest, ADirectoryMovedInHasItsSubtreeEnumerated)
 	EXPECT_EQ(Recorder.Changes.size(), 2u) << Recorder.Describe().CStr();
 }
 
+TEST_F(FileWatcherServiceTest, ADirectoryCopiedInIsWalkedOnceWithTheDirectoriesBelowIt)
+{
+	// Every directory of a copied tree reports itself: walking each one's subtree when its event
+	// arrives walked the deeper ones again and again.
+	std::error_code ec;
+	const std::filesystem::path tree = Outside / FStringView("Дерево").ToPath();
+	std::filesystem::create_directories(tree / FStringView("Гілка/Лист").ToPath(), ec);
+	WriteText(tree / "a.txt", "a");
+	WriteText(tree / FStringView("Гілка/b.txt").ToPath(), "b");
+	WriteText(tree / FStringView("Гілка/Лист/c.txt").ToPath(), "c");
+	Start();
+
+	std::filesystem::copy(tree, File("Дерево"), std::filesystem::copy_options::recursive, ec);
+	ASSERT_FALSE(ec);
+	Flush();
+	EXPECT_TRUE(Recorder.HasOnly("Дерево/a.txt", assets::EFileChange::Added)) << Recorder.Describe().CStr();
+	EXPECT_TRUE(Recorder.HasOnly("Дерево/Гілка/b.txt", assets::EFileChange::Added)) << Recorder.Describe().CStr();
+	EXPECT_TRUE(Recorder.HasOnly("Дерево/Гілка/Лист/c.txt", assets::EFileChange::Added)) << Recorder.Describe().CStr();
+	EXPECT_EQ(Recorder.Changes.size(), 3u) << Recorder.Describe().CStr();
+	EXPECT_EQ(Service->GetStats().DirectoriesEnumerated, 3u) << "each directory walked once";
+}
+
 TEST_F(FileWatcherServiceTest, AFileMovedIntoADirectoryThatThenGoesIsRemovedWhereItCameFromWithNoLaterEvent)
 {
 	std::error_code ec;
@@ -756,6 +780,44 @@ TEST_F(FileWatcherServiceTest, AnOverflowBecomesOneRescanOnceTheTreeIsQuiet)
 	// Nothing else follows: the rescan stood for everything that was pending.
 	PumpUntil([] { return false; }, 400ms);
 	EXPECT_EQ(Recorder.Calls.size(), 1u) << Recorder.Describe().CStr();
+}
+
+TEST_F(FileWatcherServiceTest, ARescanMakesTheWalkOfADirectoryThatAppearedMoot)
+{
+	std::error_code ec;
+	std::filesystem::create_directories(File("Нова"), ec);
+	WriteText(File("Нова/x.txt"), "x");
+	const auto queue = std::make_shared<CScriptedWatcher::SQueue>();
+	assets::SFileWatcherSettings settings;
+	settings.SettleMs = 20u;
+	settings.VcsSettleMs = 50u;
+	Service = std::make_unique<assets::CFileWatcherService>(settings, std::make_unique<CScriptedWatcher>(queue));
+	Service->Subscribe(Content, {}, Recorder.MakeCallback());
+
+	queue->Push(platform::EFileEventKind::Added, "Нова");
+	queue->Push(platform::EFileEventKind::Overflow, "");
+	ASSERT_TRUE(PumpUntil([this] { return !Recorder.Changes.empty() && Service->IsIdle(); })) << Recorder.Describe().CStr();
+	ASSERT_EQ(Recorder.Changes.size(), 1u) << Recorder.Describe().CStr();
+	EXPECT_EQ(Recorder.Changes[0].Kind, assets::EFileChange::Rescan);
+	EXPECT_EQ(Service->GetStats().DirectoriesEnumerated, 0u) << "the Rescan stands for the directory: nothing walked it";
+}
+
+TEST_F(FileWatcherServiceTest, FlushOnARootThatOverflowsTellsItsRescanAtOnce)
+{
+	assets::SFileWatcherSettings settings;
+	settings.Watcher.BufferBytes = 64u;   // every report overflows, the fence's own too
+	Start(settings);
+
+	for (uint32 i = 0u; i < 5u; ++i)
+	{
+		WriteText(File(FString::Format("Потоп {:02}.txt", i)), "x");
+	}
+	const auto start = std::chrono::steady_clock::now();
+	EXPECT_TRUE(Service->Flush(Content)) << "the loss stands for the fence";
+	EXPECT_LT(std::chrono::steady_clock::now() - start, 2s) << "not the whole timeout";
+	ASSERT_EQ(Recorder.Changes.size(), 1u) << "told within the Flush, not after the overflow's hold\n" << Recorder.Describe().CStr();
+	EXPECT_EQ(Recorder.Changes[0].Kind, assets::EFileChange::Rescan);
+	EXPECT_EQ(Recorder.Changes[0].Path, Content);
 }
 
 TEST_F(FileWatcherServiceTest, ALostRootIsARescanAndSoIsItsReturn)
