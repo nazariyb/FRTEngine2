@@ -10,8 +10,9 @@
 // atomic saves of three kinds, which change the identity and are still one Modified; a writer that
 // holds the file (nothing is told until it lets go); an overflow (a Rescan once the tree is quiet, and
 // at once when a Flush waits); Flush's fence, also over roots that overlap; self-writes that diff to
-// nothing; a slow checkout of files arriving over seconds; and a scripted git checkout of 300 files,
-// told as one batch after the tree settles, with no callback in the middle of it. Filters, mounts, the directory that does not exist
+// nothing; a slow checkout of files arriving over seconds, a removal's grace, the latest a busy path is
+// told, and the pair window; and a scripted git checkout of 300 files, told as one batch after the tree
+// settles, with no callback in the middle of it. Filters, mounts, the directory that does not exist
 // yet, the VCS seam, the off switch and its scope are covered too, and - through a scripted platform
 // watcher - a file system without entry types, whose directories report their own Modified and whose
 // removals and renames say nothing of what was there. Everything runs in directories with non-ASCII
@@ -1006,6 +1007,101 @@ TEST_F(FileWatcherServiceTest, ASlowCheckoutTellsEveryFileOnceAsModified)
 	{
 		EXPECT_TRUE(Recorder.HasOnly(FString::Format("Повільний {:02}.yml", i), assets::EFileChange::Modified)) << Recorder.Describe().CStr();
 	}
+}
+
+TEST_F(FileWatcherServiceTest, ARemovalWaitsItsGraceForAFileThatLandsLater)
+{
+	// §5.4: unlink and create bursts, some files landing seconds later. A file written again after the
+	// settle window but within the removal's grace is one Modified; one written after the grace is a
+	// Removed, then an Added.
+	WriteText(File("Пізній.yml"), "old\n");
+	WriteText(File("Запізнілий.yml"), "old\n");
+	Start();   // SettleMs 200, RemoveGraceMs 1000
+
+	const auto start = std::chrono::steady_clock::now();
+	ASSERT_TRUE(platform::RemoveFile(File("Пізній.yml")));
+	ASSERT_TRUE(platform::RemoveFile(File("Запізнілий.yml")));
+	PumpUntil([] { return false; }, 700ms);
+	EXPECT_TRUE(Recorder.Changes.empty()) << "nothing told within the grace\n" << Recorder.Describe().CStr();
+	WriteText(File("Пізній.yml"), "new\n");
+	ASSERT_TRUE(PumpUntil([this] { return !Recorder.Find("Запізнілий.yml").empty(); }, 3s)) << Recorder.Describe().CStr();
+	EXPECT_GE(std::chrono::steady_clock::now() - start, 1100ms) << "the removal waited SettleMs + RemoveGraceMs";
+	WriteText(File("Запізнілий.yml"), "new\n");
+	ASSERT_TRUE(PumpUntil([this] { return Recorder.Find("Запізнілий.yml").size() >= 2u && Service->IsIdle(); })) << Recorder.Describe().CStr();
+
+	EXPECT_TRUE(Recorder.HasOnly("Пізній.yml", assets::EFileChange::Modified)) << Recorder.Describe().CStr();
+	const std::vector<const assets::SFileChange*> late = Recorder.Find("Запізнілий.yml");
+	ASSERT_EQ(late.size(), 2u) << Recorder.Describe().CStr();
+	EXPECT_EQ(late[0]->Kind, assets::EFileChange::Removed) << Recorder.Describe().CStr();
+	EXPECT_EQ(late[1]->Kind, assets::EFileChange::Added) << Recorder.Describe().CStr();
+}
+
+TEST_F(FileWatcherServiceTest, AFileWrittenWithoutPauseIsToldByMaxLatency)
+{
+	// A path whose events never pause for SettleMs is still told MaxLatencyMs after its first one.
+	WriteText(File("Безперервний.log"), "0\n");
+	Start();   // SettleMs 200, MaxLatencyMs 2000
+
+	const auto start = std::chrono::steady_clock::now();
+	std::optional<std::chrono::steady_clock::duration> told;
+	uint32 writes = 0u;
+	while (std::chrono::steady_clock::now() - start < 3s)
+	{
+		WriteText(File("Безперервний.log"), FString::Format("{}\n", ++writes));
+		const auto next = std::chrono::steady_clock::now() + 100ms;
+		while (std::chrono::steady_clock::now() < next)
+		{
+			Service->Pump();
+			if (!told && !Recorder.Changes.empty())
+			{
+				told = std::chrono::steady_clock::now() - start;
+			}
+			std::this_thread::sleep_for(5ms);
+		}
+	}
+	ASSERT_TRUE(told.has_value()) << "never told while it kept changing";
+	EXPECT_GE(*told, 1500ms);
+	EXPECT_LT(*told, 2700ms) << "told by about MaxLatencyMs";
+	EXPECT_EQ(Recorder.Changes[0].Kind, assets::EFileChange::Modified) << Recorder.Describe().CStr();
+}
+
+TEST_F(FileWatcherServiceTest, HalvesOfAMoveFartherApartThanThePairWindowAreARemovedAndAnAdded)
+{
+	std::error_code ec;
+	std::filesystem::create_directories(File("Куди"), ec);
+	WriteText(File("Куди/далеко.txt"), "x");
+	WriteText(File("Куди/близько.txt"), "y");
+	const auto queue = std::make_shared<CScriptedWatcher::SQueue>();
+	assets::SFileWatcherSettings settings;
+	settings.SettleMs = 20u;
+	settings.RemoveGraceMs = 20u;
+	Service = std::make_unique<assets::CFileWatcherService>(settings, std::make_unique<CScriptedWatcher>(queue));
+	Service->Subscribe(Content, {}, Recorder.MakeCallback());
+
+	// Removed and Added with one identity, as Windows reports a move between directories: 300 ms apart
+	// (more than PairWindowMs, 150) they are two changes; 50 ms apart, one Moved.
+	const uint64 now = platform::ReadTimestamp();
+	const auto push = [&] (platform::EFileEventKind Kind, FStringView Path, FStringView IdentityOf, uint64 Timestamp)
+	{
+		platform::SFileEvent event;
+		event.RootId = queue->LastRootId;
+		event.Kind = Kind;
+		event.EntryType = platform::EFileEntryType::File;
+		event.Path = FString(Path);
+		event.Identity = platform::Stat(File(IdentityOf))->Identity;
+		event.Timestamp = Timestamp;
+		queue->Events.push_back(std::move(event));
+	};
+	push(platform::EFileEventKind::Removed, "Звідки/далеко.txt", "Куди/далеко.txt", now - platform::MillisecondsToTimestamp(400u));
+	push(platform::EFileEventKind::Added, "Куди/далеко.txt", "Куди/далеко.txt", now - platform::MillisecondsToTimestamp(100u));
+	push(platform::EFileEventKind::Removed, "Звідки/близько.txt", "Куди/близько.txt", now - platform::MillisecondsToTimestamp(60u));
+	push(platform::EFileEventKind::Added, "Куди/близько.txt", "Куди/близько.txt", now - platform::MillisecondsToTimestamp(10u));
+	ASSERT_TRUE(PumpUntil([this] { return Recorder.Changes.size() >= 3u && Service->IsIdle(); })) << Recorder.Describe().CStr();
+	EXPECT_TRUE(Recorder.HasOnly("Звідки/далеко.txt", assets::EFileChange::Removed)) << Recorder.Describe().CStr();
+	EXPECT_TRUE(Recorder.HasOnly("Куди/далеко.txt", assets::EFileChange::Added)) << Recorder.Describe().CStr();
+	ASSERT_TRUE(Recorder.HasOnly("Куди/близько.txt", assets::EFileChange::Moved)) << Recorder.Describe().CStr();
+	EXPECT_EQ(Recorder.Find("Куди/близько.txt")[0]->OldPath, File("Звідки/близько.txt"));
+	EXPECT_EQ(Recorder.Changes.size(), 3u) << Recorder.Describe().CStr();
 }
 
 TEST_F(FileWatcherServiceTest, AGitCheckoutOf300FilesIsOneBatchAfterTheTreeSettles)
