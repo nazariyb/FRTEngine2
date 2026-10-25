@@ -73,7 +73,7 @@ TEST(GltfParseTest, EveryDemoModelParses)
 		}
 		for (const auto& file : std::filesystem::directory_iterator(folder.path(), ec))
 		{
-			if (file.path().extension() == L".gltf")
+			if (file.path().extension() == ".gltf")
 			{
 				files.push_back(file.path());
 			}
@@ -192,7 +192,7 @@ protected:
 TEST_F(GltfFileTest, ReadGlbJsonChunkReadsOnlyTheJson)
 {
 	const std::vector<uint8> glb = MakeGlb(MinimalGltf, 4096u);
-	const std::filesystem::path path = Dir / L"Модель.glb";
+	const std::filesystem::path path = Dir / FStringView("Модель.glb").ToPath();
 	ASSERT_TRUE(platform::WriteFileBytes(path, glb));
 
 	FString error;
@@ -215,12 +215,12 @@ TEST_F(GltfFileTest, ReadGlbJsonChunkReadsOnlyTheJson)
 	EXPECT_EQ(counts.Buffers, 1u);
 
 	// A file too short, or missing, fails with a reason.
-	const std::filesystem::path shortFile = Dir / L"short.glb";
+	const std::filesystem::path shortFile = Dir / "short.glb";
 	ASSERT_TRUE(platform::WriteFileBytes(shortFile, std::span<const uint8>(glb.data(), 10u)));
 	EXPECT_FALSE(ReadGlbJsonChunk(shortFile, &error).has_value());
 	EXPECT_FALSE(error.IsEmpty());
 	error.Clear();
-	EXPECT_FALSE(ReadGlbJsonChunk(Dir / L"missing.glb", &error).has_value());
+	EXPECT_FALSE(ReadGlbJsonChunk(Dir / "missing.glb", &error).has_value());
 	EXPECT_FALSE(error.IsEmpty());
 }
 

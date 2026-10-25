@@ -45,15 +45,12 @@ struct SAbortParse
 	return Mark.column >= 0 ? static_cast<uint32>(Mark.column) + 1u : 0u;
 }
 
-[[nodiscard]] FStringView ToView (const std::string& Text) noexcept
-{
-	return FStringView(Text.data(), Text.size());
-}
-
 /**
  * yaml-cpp's events -> CDataTreeBuilder. The builder tracks where keys are due (IsExpectingKey), so a scalar event
  * becomes a Key or a value without a second state machine here. Every rule of FRT's subset that yaml-cpp does not
  * enforce itself (one document, no anchors/aliases/tags, scalar keys) is checked here, at the event's mark.
+ * The overrides' std::string parameters are yaml-cpp's EventHandler interface, the file's only std text: each is
+ * viewed as FStringView at once.
  */
 class CTreeEventHandler final : public YAML::EventHandler
 {
@@ -101,11 +98,11 @@ public:
 		}
 		if (Builder.IsExpectingKey())
 		{
-			Check(Builder.Key(ToView(Value), ToLine(Mark), ToColumn(Mark)));
+			Check(Builder.Key(FStringView(Value), ToLine(Mark), ToColumn(Mark)));
 		}
 		else
 		{
-			Check(Builder.Scalar(ToView(Value), style, ToLine(Mark), ToColumn(Mark)));
+			Check(Builder.Scalar(FStringView(Value), style, ToLine(Mark), ToColumn(Mark)));
 		}
 	}
 
@@ -168,10 +165,10 @@ private:
 		return Mark.pos >= 0 && static_cast<uint32>(Mark.pos) < Source.Len() ? Source[static_cast<uint32>(Mark.pos)] : '\0';
 	}
 
-	void CheckCollection (const YAML::Mark& Mark, const std::string& Tag, YAML::anchor_t Anchor, FStringLiteral What)
+	void CheckCollection (const YAML::Mark& Mark, FStringView Tag, YAML::anchor_t Anchor, FStringLiteral What)
 	{
 		CheckAnchor(Anchor, Mark);
-		if (Tag != "?" && !Tag.empty())
+		if (Tag != "?" && !Tag.IsEmpty())
 		{
 			Abort("tags (!name, !!type) are not supported", Mark);
 		}
@@ -183,7 +180,7 @@ private:
 
 	// '?' is yaml-cpp's non-specific tag of a plain scalar, '!' that of a quoted or block one; which of those is in
 	// the source at the scalar's mark (its first byte). An explicit tag also arrives here: refused.
-	EScalarStyle GetStyle (const YAML::Mark& Mark, const std::string& Tag)
+	EScalarStyle GetStyle (const YAML::Mark& Mark, FStringView Tag)
 	{
 		if (Tag == "?")
 		{
@@ -295,7 +292,7 @@ bool ParseYaml (FStringView Text, CDataTree& Out, SDiagnostic* OutError)
 		}
 		catch (const YAML::Exception& exception)
 		{
-			builder.Fail(FString::FromUtf8Lossy(ToView(exception.msg)), ToLine(exception.mark), ToColumn(exception.mark));
+			builder.Fail(FString::FromUtf8Lossy(FStringView(exception.msg)), ToLine(exception.mark), ToColumn(exception.mark));
 		}
 		catch (const std::exception& exception)
 		{
