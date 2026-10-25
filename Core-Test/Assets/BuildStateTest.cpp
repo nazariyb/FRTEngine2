@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 
 #include "TestCommon.h"
+#include "TestProcess.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -22,13 +23,11 @@
 #include "Assets/KeyWriter.h"
 #include "BuildConfig.h"
 #include "Containers/String.h"
-#include "Containers/WideString.h"
 #include "Hash/StableHash.h"
 #include "Platform/FileSystem.h"
 #include "Platform/Platform.h"
+#include "Platform/Process.h"
 #include "Platform/Timestamp.h"
-
-#include <Windows.h>
 
 using namespace frt;
 using namespace frt::assets;
@@ -121,7 +120,7 @@ protected:
 	void SetUp () override
 	{
 		const ::testing::TestInfo* test = ::testing::UnitTest::GetInstance()->current_test_info();
-		Dir = std::filesystem::temp_directory_path() / FString::Format("FRT Стан збірки 构建 😀 {}", GetCurrentProcessId()).ToPath()
+		Dir = std::filesystem::temp_directory_path() / FString::Format("FRT Стан збірки 构建 😀 {}", platform::GetCurrentProcessId()).ToPath()
 			/ FStringView(test->name()).ToPath();
 		std::error_code ec;
 		std::filesystem::remove_all(Dir, ec);
@@ -662,21 +661,10 @@ TEST_F(BuildStateTest, ATornJournalLineIsIgnored)
 TEST_F(BuildStateTest, AProcessThatDiesInAStepLeavesItCrashed)
 {
 	const SBuildStepId step{ "9fc0d4010bbf28b4594072e72b8655ab", "Translate:Model.Gltf", "mesh:Body 01", "" };
-	const FString commandLine = FString::Format("\"{}\" {}journal-crash \"{}\" \"{}\"", FString::FromPath(platform::GetExecutablePath()),
-		test::ChildModeSwitch, FString::FromPath(JournalPath), step.ToString());
-	FWideString mutableLine(commandLine.View());
-	STARTUPINFOW startup = {};
-	startup.cb = sizeof(startup);
-	PROCESS_INFORMATION process = {};
-	ASSERT_TRUE(CreateProcessW(nullptr, mutableLine.GetData(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process))
-		<< platform::GetSystemErrorMessage(GetLastError()).CStr();
-	const DWORD waited = WaitForSingleObject(process.hProcess, 60'000u);
-	DWORD exitCode = 0u;
-	GetExitCodeProcess(process.hProcess, &exitCode);
-	CloseHandle(process.hThread);
-	CloseHandle(process.hProcess);
-	ASSERT_EQ(waited, WAIT_OBJECT_0);
-	ASSERT_EQ(exitCode, 7u);
+	const std::vector<FString> arguments = { FString(test::ChildModeSwitch) + "journal-crash", FString::FromPath(JournalPath),
+		step.ToString() };
+	const test::SProcessResult child = test::RunProcess(platform::GetExecutablePath(), arguments);
+	ASSERT_EQ(child.ExitCode, 7) << child.Errors.CStr();
 
 	FString error;
 	CBuildJournal journal;

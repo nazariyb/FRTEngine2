@@ -12,6 +12,7 @@
 #include <gtest/gtest.h>
 
 #include "TestCommon.h"
+#include "TestProcess.h"
 
 #include <algorithm>
 #include <atomic>
@@ -28,7 +29,6 @@
 #include "Assets/DerivedDataCache.h"
 #include "Config/Config.h"
 #include "Containers/String.h"
-#include "Containers/WideString.h"
 #include "Hash/StableHash.h"
 #include "Platform/FileSystem.h"
 #include "Platform/Platform.h"
@@ -222,12 +222,16 @@ SDdcRecord SharedRecord (uint32 I)
 	return MakeRecord({ MakeValue("Small", RandomBytes(100u + I, I)), MakeValue("Large", RandomBytes(200u * 1024u + I * 7u, 500u + I)) });
 }
 
-// "Core-Test --frt-test-child=ddc-writer <root> <rounds>": writes the shared keys again and again.
+// "Core-Test --frt-test-child=ddc-writer <root> <rounds>": writes the shared keys again and again, from
+// the moment its input ends (so that two of them start writing together).
 int RunDdcWriter (std::span<const FString> Arguments)
 {
 	if (Arguments.size() < 2u)
 	{
 		return 2;
+	}
+	while (std::fgetc(stdin) != EOF)
+	{
 	}
 	CDerivedDataCache ddc;
 	FString error;
@@ -920,36 +924,27 @@ TEST_F(DerivedDataCacheTest, ADamagedManifestIsAMissAndIsDeleted)
 TEST_F(DerivedDataCacheTest, TwoProcessesWritingTheSameKeysEndWithOneValidRecord)
 {
 	Ddc.Close();
-	const FString commandLine = FString::Format("\"{}\" {}ddc-writer \"{}\" 6", FString::FromPath(platform::GetExecutablePath()),
-		test::ChildModeSwitch, FString::FromPath(Root));
+	const std::vector<FString> arguments = { FString(test::ChildModeSwitch) + "ddc-writer", FString::FromPath(Root), "6" };
 
-	PROCESS_INFORMATION processes[2] = {};
-	for (PROCESS_INFORMATION& process : processes)
+	// Both wait for their input to end, so they start writing at the same moment.
+	test::CTestProcess processes[2];
+	for (test::CTestProcess& process : processes)
 	{
-		STARTUPINFOW startup = {};
-		startup.cb = sizeof(startup);
-		FWideString mutableLine(commandLine.View());   // CreateProcessW may write to it
-		ASSERT_TRUE(CreateProcessW(nullptr, mutableLine.GetData(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW | CREATE_SUSPENDED, nullptr,
-			nullptr, &startup, &process)) << platform::GetSystemErrorMessage(GetLastError()).CStr();
+		FString error;
+		ASSERT_TRUE(process.Start(platform::GetExecutablePath(), arguments, true, {}, &error)) << error.CStr();
 	}
-	for (PROCESS_INFORMATION& process : processes)
+	for (test::CTestProcess& process : processes)
 	{
-		ResumeThread(process.hThread);
+		process.CloseInput();
 	}
-	for (PROCESS_INFORMATION& process : processes)
+	for (test::CTestProcess& process : processes)
 	{
-		const DWORD waited = WaitForSingleObject(process.hProcess, 120'000u);
-		if (waited != WAIT_OBJECT_0)
+		const int32 exitCode = process.Wait(std::chrono::seconds(120));
+		EXPECT_EQ(exitCode, 0) << process.ReadErrors().CStr();
+		if (exitCode == -1)
 		{
-			TerminateProcess(process.hProcess, 9u);
-			WaitForSingleObject(process.hProcess, 10'000u);
+			process.Kill();
 		}
-		DWORD exitCode = 99u;
-		GetExitCodeProcess(process.hProcess, &exitCode);
-		CloseHandle(process.hThread);
-		CloseHandle(process.hProcess);
-		EXPECT_EQ(waited, WAIT_OBJECT_0);
-		EXPECT_EQ(exitCode, 0u);
 	}
 
 	FString error;
