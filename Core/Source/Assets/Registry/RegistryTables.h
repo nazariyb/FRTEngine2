@@ -1,0 +1,662 @@
+#pragma once
+
+#include <memory>
+#include <optional>
+#include <span>
+#include <vector>
+
+#include "Core.h"
+#include "CoreTypes.h"
+#include "Assets/AssetId.h"
+#include "Assets/AssetTypes.h"
+#include "Assets/Registry/PagedColumn.h"
+#include "Assets/Registry/RegistryDelta.h"
+#include "Assets/Registry/RegistryTypes.h"
+#include "Containers/String.h"
+#include "Containers/StringMap.h"
+#include "Diagnostics/Diagnostics.h"
+#include "Hash/StableHash.h"
+#include "Platform/FileSystem.h"
+
+
+/**
+ * The registry's tables as they are stored (design §5.2), for code inside Core/Source/Assets/Registry: the
+ * query engine, snapshots and journals read a view through GetTables() instead of growing the view's
+ * public API, and never edit the store's files. Everything here is const access to one immutable view;
+ * only CRegistryStore writes, on the owner thread, through the same structures.
+ *
+ * Row numbers are stable for the life of a store: a removed row is tombstoned (FILES/ASSETS: File or
+ * Folder = InvalidRow; FOLDERS/RULEFILES: Mount = InvalidMountId; SUBENTRY: Owner = InvalidRow; type
+ * tables: the Dead bit) and new rows append. An SRecordId's Value is an ASSETS row, or SubEntryBit | a
+ * SUBENTRY row.
+ *
+ * Indices are CPagedHashIndex tables of row numbers keyed by in-memory hashes; the caller compares the
+ * candidates it is handed against the columns (the Find* helpers below do). They are never persisted:
+ * AdoptImage rebuilds them.
+ */
+namespace frt::assets
+{
+class CRegistryView;
+
+inline constexpr uint32 InvalidRow = ~0u;
+inline constexpr uint32 SubEntryBit = 1u << 31u;
+inline constexpr uint16 InvalidImporter = 0xFFFFu;
+
+
+// ---------------- Hashes and comparisons (in memory only) ----------------
+
+// The portable fold (§5.2): lookups, Path edges, companions, PATH001.
+[[nodiscard]] inline uint64 HashPortable (FStringView Text) noexcept { return SStringHashIgnoreCase {}(Text); }
+[[nodiscard]] inline bool EqualPortable (FStringView A, FStringView B) noexcept { return SStringEqualIgnoreCase {}(A, B); }
+[[nodiscard]] inline uint64 HashExact (FStringView Text) noexcept { return SStringHash {}(Text); }
+
+// The mount root's file-system rule (§5.2 "File-system entries follow the volume"): NTFS's upcase table on a
+// case-insensitive mount (TPathMap's rule), byte-exact on a case-sensitive one.
+[[nodiscard]] inline uint64 HashMountRule (FStringView Path, bool bCaseSensitive) noexcept
+{
+	return bCaseSensitive ? SStringHash {}(Path) : SPathHash {}(Path);
+}
+[[nodiscard]] inline bool EqualMountRule (FStringView A, FStringView B, bool bCaseSensitive) noexcept
+{
+	return bCaseSensitive ? A == B : SPathEqual {}(A, B);
+}
+
+[[nodiscard]] inline uint64 HashGuid (const SGuid& Guid) noexcept
+{
+	uint64 low = 0u;
+	uint64 high = 0u;
+	std::memcpy(&low, Guid.Bytes, 8u);
+	std::memcpy(&high, Guid.Bytes + 8u, 8u);
+	return MixRegistryKey(low ^ (high * 0x9E3779B97F4A7C15ull));
+}
+
+// Records first ordered by the portable fold, then by bytes (§5.3 dump order, FOLDERS sibling order).
+[[nodiscard]] inline bool LessPortableThenBytes (FStringView A, FStringView B) noexcept
+{
+	const int32 folded = A.Compare<ESearchCase::IgnoreCase>(B);
+	return folded != 0 ? folded < 0 : A < B;
+}
+
+
+// ---------------- Pools ----------------
+
+/**
+ * NAMES (§5.2): interned UTF-8 names - path segments, labels, tag keys, importer and type names, Name tag
+ * values - each with its folded shadow (FString::FoldCase) for caseless search. Interning is byte-exact.
+ */
+class CNamePool
+{
+public:
+	[[nodiscard]] uint32 Size () const noexcept { return Pool.Size(); }
+	[[nodiscard]] FStringView Get (uint32 Id) const noexcept { return Pool.Get(Id); }
+	[[nodiscard]] FStringView GetFolded (uint32 Id) const noexcept { return Pool.Resolve(Folded[Id]); }
+
+	[[nodiscard]] std::optional<uint32> Find (FStringView Name) const
+	{
+		std::optional<uint32> found;
+		Index.ForEach(HashExact(Name), [&] (uint32 Id)
+		{
+			if (Pool.Get(Id) == Name)
+			{
+				found = Id;
+				return false;
+			}
+			return true;
+		});
+		return found;
+	}
+
+	uint32 Intern (FStringView Name, uint64 Epoch)
+	{
+		if (const std::optional<uint32> existing = Find(Name))
+		{
+			return *existing;
+		}
+		const uint32 id = Pool.Add(Name, Epoch);
+		const FString folded = FString(Name).FoldCase();
+		Folded.Append(folded.View() == Name ? Pool.GetRef(id) : Pool.Store(folded.View()), Epoch);
+		Index.Insert(HashExact(Name), id, Epoch);
+		return id;
+	}
+
+	[[nodiscard]] uint64 GetResidentBytes () const noexcept
+	{
+		return Pool.GetResidentBytes() + Folded.GetResidentBytes() + Index.GetResidentBytes();
+	}
+
+private:
+	CStringPool Pool;
+	CPagedColumn<CStringPool::SRef> Folded;
+	CPagedHashIndex Index;
+};
+
+/**
+ * STRINGS (§5.2): free-text tag values (DisplayName), each with its folded shadow; not interned.
+ */
+class CTextPool
+{
+public:
+	[[nodiscard]] uint32 Size () const noexcept { return Pool.Size(); }
+	[[nodiscard]] FStringView Get (uint32 Id) const noexcept { return Pool.Get(Id); }
+	[[nodiscard]] FStringView GetFolded (uint32 Id) const noexcept { return Pool.Resolve(Folded[Id]); }
+
+	uint32 Add (FStringView Text, uint64 Epoch)
+	{
+		const uint32 id = Pool.Add(Text, Epoch);
+		Folded.Append(Pool.Store(FString(Text).FoldCase().View()), Epoch);
+		return id;
+	}
+
+	[[nodiscard]] uint64 GetResidentBytes () const noexcept { return Pool.GetResidentBytes() + Folded.GetResidentBytes(); }
+
+private:
+	CStringPool Pool;
+	CPagedColumn<CStringPool::SRef> Folded;
+};
+
+
+// ---------------- Tables (§5.2) ----------------
+
+// A mount, indexed by its MountId (CMountTable's). Name empty: no mount has that id.
+struct SMountRow
+{
+	FString Name;                       // "Engine", "Project", "Plugin.X"
+	MountId Id = InvalidMountId;
+	bool bCaseSensitive = false;        // the mount root's volume rule for the FILES and FOLDERS path indices
+	uint32 RootFolder = InvalidRow;     // the FOLDERS row of "/<Name>"
+	uint32 ConfigRuleFile = InvalidRow; // the RULEFILES row of the mount's Config/Assets.yml
+};
+
+// FILES. Folder = InvalidRow: a removed row. Path is the full mount path in on-disk spelling (PATHS).
+struct SFilesTable
+{
+	CPagedColumn<uint32> Folder;
+	CPagedColumn<uint32> LeafName;                        // NAMES
+	CPagedColumn<uint32> Path;                            // PATHS
+	CPagedColumn<MountId> Mount;
+	CPagedColumn<uint64> Size;
+	CPagedColumn<int64> MTime;
+	CPagedColumn<platform::SFileIdentity> Identity;       // 24 B, as platform::Stat reports it
+	CPagedColumn<hash::SContentHash> ContentHash;         // zero = not hashed
+	CPagedColumn<uint64> MetaHash;
+	CPagedColumn<EFileClass> Class;                       // effective: Companion while a record names the file
+	CPagedColumn<EFileClass> BaseClass;                   // as the last SFileUpsert gave it
+	CPagedColumn<EMetaState> MetaState;
+	CPagedColumn<uint32> Record;                          // ASSETS row or InvalidRow
+};
+
+// FOLDERS, pre-order numbered per mount: a folder's subtree is the folders whose PreorderBegin lies in
+// [PreorderBegin, PreorderEnd) of the same mount. Mount = InvalidMountId: a removed row.
+struct SFoldersTable
+{
+	CPagedColumn<uint32> Parent;                          // InvalidRow for a mount root
+	CPagedColumn<uint32> Name;                            // NAMES (a mount root: the mount name)
+	CPagedColumn<uint32> PreorderBegin;
+	CPagedColumn<uint32> PreorderEnd;
+	CPagedColumn<uint32> RuleFile;                        // RULEFILES row of its Assets.yml, InvalidRow = none
+	CPagedColumn<uint32> Path;                            // PATHS
+	CPagedColumn<MountId> Mount;
+};
+
+// RULEFILES. Folder = InvalidRow: the mount's Config/Assets.yml. Mount = InvalidMountId: a removed row.
+struct SRuleFilesTable
+{
+	CPagedColumn<MountId> Mount;
+	CPagedColumn<uint32> Folder;
+	CPagedColumn<uint64> RulesHash;
+};
+
+// ASSETS. File = InvalidRow: a removed record. Flags hold the producer's flags plus HasProblems, which the
+// store derives from the problem lists.
+struct SAssetsTable
+{
+	CPagedColumn<SGuid> Guid;
+	CPagedColumn<uint64> AssetId64;
+	CPagedColumn<uint32> File;
+	CPagedColumn<reflect::TypeId> Type;
+	CPagedColumn<uint16> AssetType;                       // M3: equal to Type
+	CPagedColumn<uint16> Importer;                        // index into SRegistryTables::Importers
+	CPagedColumn<ERecordFlags> Flags;
+	CPagedColumn<ECookRule> CookRule;
+	CPagedColumn<uint16> Chunk;
+	CPagedColumn<uint32> PrimaryName;                     // NAMES, InvalidRow = none
+	CPagedColumn<SPoolRange> Labels;                      // in SRegistryTables::Labels
+	CPagedColumn<uint32> FirstSub;
+	CPagedColumn<uint32> NumSubs;
+	CPagedColumn<uint32> TypeRow;                         // row in Types[Type]
+	CPagedColumn<EImportStatus> ImportStatus;
+	CPagedColumn<uint16> Problems;                        // diagnostics of the record's subjects (clamped)
+	CPagedColumn<uint64> AnalyzeStamp;
+	CPagedColumn<uint32> Name;                            // NAMES: the stem ($Name)
+	CPagedColumn<uint64> ChangedRevision;                 // the revision that last changed the record
+	CPagedColumn<SPoolRange> Companions;                  // in SRegistryTables::Companions (PATHS ids)
+	CPagedColumn<SPoolRange> BaseEdges;                   // the record's slice of SGraphTables::BaseEdges
+	CPagedBitmap BaseEdgesMasked;                         // the slice is superseded (or the record removed)
+	CPagedColumn<SPoolRange> OverflowEdges;               // the record's edges since the last compaction
+};
+
+// SUBENTRY. Owner = InvalidRow: a removed row. A record's sub-entries are FirstSub .. FirstSub + NumSubs.
+struct SSubEntryTable
+{
+	CPagedColumn<uint32> Owner;                           // ASSETS row
+	CPagedColumn<uint64> SubId;
+	CPagedColumn<uint32> Key;                             // NAMES: the label or row key
+	CPagedColumn<reflect::TypeId> Type;
+	CPagedColumn<ERecordFlags> Flags;
+	CPagedColumn<uint32> TypeRow;
+	CPagedColumn<uint64> AssetId64;
+};
+
+
+// ---------------- Dependency graph (§5.2 DEPS) ----------------
+
+/**
+ * Edges point at a TARGETS row, never at a record: a target is what the source named - a mount path
+ * (optionally with "#label") or an SAssetId - and is resolved to a record by the store, at every commit
+ * that changes the records its key can match. So an unresolved edge is kept and rebound in place, and the
+ * graph never depends on Analyze or commit order. The edge's target record and TargetSub are the target
+ * row's (Resolved, TargetSub); its effective flags carry Unresolved unless the target is Resolved.
+ */
+enum class ETargetKind : uint8 { Path, Guid };
+enum class ETargetState : uint8 { Unresolved, Resolved, Ambiguous };   // Ambiguous: PATH001, two records match
+
+struct STargetRow
+{
+	SGuid Guid;                         // Guid targets
+	uint64 TargetSub = 0u;              // Guid targets: the id's SubId; Path targets: MakeSubId(label) once resolved
+	uint32 Text = InvalidRow;           // PATHS: the path as the source wrote it ("#label" included); a Guid target's hint
+	uint32 Resolved = InvalidRow;       // ASSETS row
+	uint32 FilePartLength = 0u;         // Path targets, resolved: bytes of Text naming the file (the label follows a '#')
+	ETargetKind Kind = ETargetKind::Path;
+	ETargetState State = ETargetState::Unresolved;
+	bool bSpellingDiffers = false;      // resolved under the fold with a spelling other than the file's (REF006)
+};
+
+struct SEdgeRow
+{
+	uint64 FromSub = 0u;                // 0 = the record; else one of its SubIds
+	uint32 Target = InvalidRow;         // TARGETS row
+	uint32 FieldPath = InvalidRow;      // NAMES
+	EDepFlags Flags {};                 // as declared, without Unresolved
+};
+
+// A reverse entry: Source is the ASSETS row whose edge Edge (OverflowEdgeBit | an OverflowEdges index, else a
+// BaseEdges index) names the target. It is live while that edge is still one of Source's live edges.
+inline constexpr uint32 OverflowEdgeBit = 1u << 31u;
+struct SReverseEdge
+{
+	uint32 Source = InvalidRow;
+	uint32 Edge = InvalidRow;
+	uint32 Next = InvalidRow;           // overflow lists: the next older entry of the same target
+};
+
+/**
+ * The persisted CSR (BaseEdges, sliced per record by SAssetsTable::BaseEdges; BaseReverseEdges, sliced per
+ * target by BaseReverse) plus per-record overflow lists for edges added since the last compaction. A record
+ * upsert masks its base slice and appends its new edges; a removed edge is never edited, only masked. The
+ * reverse side grows one overflow entry per new edge, linked per target; entries of masked edges stay until
+ * a compaction rebuilds both CSRs (never per edit).
+ */
+struct SGraphTables
+{
+	CPagedColumn<SEdgeRow> BaseEdges;
+	CPagedColumn<SEdgeRow> OverflowEdges;
+	CPagedColumn<STargetRow> Targets;
+	CPagedColumn<SPoolRange> BaseReverse;                 // per target row
+	CPagedColumn<SReverseEdge> BaseReverseEdges;
+	CPagedColumn<uint32> OverflowReverseHead;             // per target row: newest entry, InvalidRow = none
+	CPagedColumn<SReverseEdge> OverflowReverseEdges;
+	CPagedHashIndex TargetsByKey;                         // Path: HashExact(Text); Guid: HashGuid ^ TargetSub
+	CPagedHashIndex TargetsByResolved;                    // MixRegistryKey(ASSETS row) -> target rows resolved to it
+	uint32 LiveEdges = 0u;
+	uint32 GarbageEdges = 0u;                             // masked base and superseded overflow edges
+};
+
+
+// ---------------- Type tables (§5.2) ----------------
+
+// A tag key as the registry stores it: every name interned (NAMES).
+struct STagKeyDesc
+{
+	uint32 NameId = InvalidRow;
+	ETagType Type = ETagType::None;
+	ETagFlags Flags = ETagFlags::None;
+	uint32 EnumTable = InvalidRow;
+	uint32 UnitNameId = InvalidRow;
+};
+
+// One key's column: Values (int64 | double bits | bool | NameId | STRINGS id | AssetId64 | row key), Present
+// (absent = no value, never zero), MultiValue keys' per-row lists in Multi.
+struct STagColumn
+{
+	CPagedColumn<uint64> Values;
+	CPagedBitmap PresentBits;
+	CPagedColumn<SPoolRange> MultiRanges;
+	CPagedPool<uint64> Multi;
+};
+
+/**
+ * The rows of every record of one type (an asset or a sub-entry), one column per tag key. Records[r] is the
+ * row's SRecordId value (a view stamps its revision); Dead marks tombstoned rows, which queries skip.
+ */
+class CTypeTable
+{
+public:
+	reflect::TypeId Type = 0u;
+	uint64 TagSchemaHash = 0u;
+	CPagedColumn<uint32> Records;
+	CPagedBitmap Dead;
+	std::vector<STagKeyDesc> Keys;
+	std::vector<STagColumn> Columns;      // Columns[k] belongs to Keys[k]
+	uint32 LiveRows = 0u;
+};
+
+// XXH3 of the type's hand-written key list (name, type, flags per key): M3's TagSchemaHash (§5.3).
+[[nodiscard]] FRT_CORE_API uint64 ComputeTagSchemaHash (const SAssetTypeInfo& Type) noexcept;
+
+
+// ---------------- Problems ----------------
+
+using FProblemList = std::shared_ptr<const std::vector<SDiagnostic>>;
+inline constexpr uint32 ProblemSourceCount = 4u;   // EProblemSource
+
+// Per (subject, source) lists (RegistryDelta.h). A subject row is never removed; its lists empty instead.
+struct SProblemTables
+{
+	CPagedColumn<uint32> Subject;                          // PATHS
+	CPagedColumn<FProblemList> Lists[ProblemSourceCount];  // null = empty
+	CPagedHashIndex BySubject;                             // HashExact(subject)
+};
+
+
+// ---------------- Indices ----------------
+
+struct SRegistryIndices
+{
+	CPagedHashIndex FilesByPath;              // FILES, the mount's rule (HashMountRule); equal rows coexist
+	CPagedHashIndex FilesByPortablePath;      // FILES, HashPortable (companions, PATH001 checks)
+	CPagedHashIndex FoldersByPath;            // FOLDERS, the mount's rule
+	CPagedHashIndex FoldersByPortablePath;    // FOLDERS, HashPortable (queries' dir:)
+	CPagedHashIndex RecordsByPortablePath;    // ASSETS, HashPortable of the file path; several records per key
+	CPagedHashIndex RecordsByGuid;            // ASSETS, HashGuid
+	CPagedHashIndex RecordsById64;            // ASSETS and SUBENTRY: AssetId64 -> SRecordId value
+	CPagedHashIndex Aliases;                  // non-canonical SAssetId -> ASSETS row (§5.2; empty in M3)
+};
+
+
+// ---------------- The view's tables ----------------
+
+struct SRegistryTables
+{
+	uint64 Revision = 0u;
+	std::shared_ptr<const std::vector<SMountRow>> Mounts;        // indexed by MountId
+	std::shared_ptr<const std::vector<FString>> Importers;       // the importer-name table (ASSETS::Importer)
+
+	CNamePool Names;
+	CTextPool Strings;
+	CStringPool Paths;                                           // file, folder, target, subject and companion paths
+
+	SFilesTable Files;
+	SFoldersTable Folders;
+	SRuleFilesTable RuleFiles;
+	SAssetsTable Assets;
+	SSubEntryTable SubEntries;
+	CPagedPool<uint32> Labels;                                   // NameId | RuleLabelBit
+	CPagedPool<uint32> Companions;                               // PATHS ids
+	SGraphTables Graph;
+	std::vector<CTypeTable> Types;                               // indexed by TypeId (CAssetTypeRegistry)
+	SProblemTables Problems;
+	SRegistryIndices Indices;
+
+	uint32 LiveFiles = 0u;
+	uint32 LiveFolders = 0u;
+	uint32 LiveRuleFiles = 0u;
+	uint32 LiveRecords = 0u;
+	uint32 LiveSubEntries = 0u;
+};
+
+inline constexpr uint32 RuleLabelBit = 1u << 31u;   // SRegistryTables::Labels: a rule label (Assets.yml), else authored
+
+// The tables of a view (a free function so the view's public API stays §5.7's).
+[[nodiscard]] FRT_CORE_API const SRegistryTables& GetTables (const CRegistryView& View) noexcept;
+
+
+// ---------------- Lookups over the tables (no allocation) ----------------
+
+// The mount with that name (exact bytes), or null.
+[[nodiscard]] FRT_CORE_API const SMountRow* FindMountRow (const SRegistryTables& Tables, FStringView Name) noexcept;
+// The mount a mount path names (its first segment), or null.
+[[nodiscard]] FRT_CORE_API const SMountRow* FindMountRowForPath (const SRegistryTables& Tables, FStringView MountPath) noexcept;
+
+// The FILES row spelled exactly so (byte-exact), or InvalidRow.
+[[nodiscard]] FRT_CORE_API uint32 FindFileRowExact (const SRegistryTables& Tables, FStringView MountPath) noexcept;
+// The FILES row the OS means: byte-exact first, else the single row equal under the mount's rule; InvalidRow
+// when none or several (a case-sensitive directory inside a case-insensitive mount holds both spellings).
+[[nodiscard]] FRT_CORE_API uint32 FindFileRow (const SRegistryTables& Tables, FStringView MountPath) noexcept;
+// The same for FOLDERS (a mount root included).
+[[nodiscard]] FRT_CORE_API uint32 FindFolderRowExact (const SRegistryTables& Tables, FStringView MountPath) noexcept;
+[[nodiscard]] FRT_CORE_API uint32 FindFolderRow (const SRegistryTables& Tables, FStringView MountPath) noexcept;
+// Folders equal to MountPath under the portable fold (queries' dir:); returns how many, the first in OutRow.
+FRT_CORE_API uint32 FindFolderRowsPortable (const SRegistryTables& Tables, FStringView MountPath, uint32& OutRow) noexcept;
+
+// Live records whose file path equals FileMountPath under the portable fold: how many there are, and the
+// one with the lowest row in OutRow (InvalidRow when none).
+FRT_CORE_API uint32 FindRecordRowsPortable (const SRegistryTables& Tables, FStringView FileMountPath, uint32& OutRow) noexcept;
+// The SRecordId value with that AssetId64 (asset or sub-entry), or InvalidRow.
+[[nodiscard]] FRT_CORE_API uint32 FindRecordValueById64 (const SRegistryTables& Tables, uint64 AssetId64) noexcept;
+// The sub-entry row of an ASSETS row with that SubId, or InvalidRow.
+[[nodiscard]] FRT_CORE_API uint32 FindSubEntryRow (const SRegistryTables& Tables, uint32 AssetRow, uint64 SubId) noexcept;
+
+// The subject row of a problem subject, or InvalidRow.
+[[nodiscard]] FRT_CORE_API uint32 FindProblemSubject (const SRegistryTables& Tables, FStringView Subject) noexcept;
+
+// True when the edge Edge (OverflowEdgeBit | index, or a base index) is still one of Source's live edges.
+[[nodiscard]] FRT_CORE_API bool IsEdgeLive (const SRegistryTables& Tables, uint32 Source, uint32 Edge) noexcept;
+[[nodiscard]] FRT_CORE_API const SEdgeRow& GetEdgeRow (const SRegistryTables& Tables, uint32 Edge) noexcept;
+
+// Visit(uint32 EdgeRef) for every live edge of an ASSETS row, in declaration order (EdgeRef as in IsEdgeLive).
+template <typename TVisit>
+void ForEachLiveEdge (const SRegistryTables& Tables, uint32 AssetRow, TVisit&& Visit)
+{
+	const SAssetsTable& assets = Tables.Assets;
+	if (!assets.BaseEdgesMasked.Test(AssetRow))
+	{
+		const SPoolRange base = assets.BaseEdges[AssetRow];
+		for (uint32 i = 0u; i < base.Count; ++i)
+		{
+			Visit(base.Begin + i);
+		}
+	}
+	const SPoolRange overflow = assets.OverflowEdges[AssetRow];
+	for (uint32 i = 0u; i < overflow.Count; ++i)
+	{
+		Visit(OverflowEdgeBit | (overflow.Begin + i));
+	}
+}
+
+// Visit(const SReverseEdge&) for every live reverse entry of a TARGETS row.
+template <typename TVisit>
+void ForEachLiveReverseEdge (const SRegistryTables& Tables, uint32 TargetRow, TVisit&& Visit)
+{
+	const SGraphTables& graph = Tables.Graph;
+	if (TargetRow < graph.BaseReverse.Size())
+	{
+		const SPoolRange range = graph.BaseReverse[TargetRow];
+		for (uint32 i = 0u; i < range.Count; ++i)
+		{
+			const SReverseEdge& entry = graph.BaseReverseEdges[range.Begin + i];
+			if (IsEdgeLive(Tables, entry.Source, entry.Edge))
+			{
+				Visit(entry);
+			}
+		}
+	}
+	for (uint32 node = graph.OverflowReverseHead[TargetRow]; node != InvalidRow; node = graph.OverflowReverseEdges[node].Next)
+	{
+		const SReverseEdge& entry = graph.OverflowReverseEdges[node];
+		if (IsEdgeLive(Tables, entry.Source, entry.Edge))
+		{
+			Visit(entry);
+		}
+	}
+}
+
+
+// ---------------- Memory ----------------
+
+// Resident bytes of a view (every page, pool and index it keeps alive), per table (§5.11).
+struct SRegistryMemoryStats
+{
+	uint64 Files = 0u;
+	uint64 Folders = 0u;
+	uint64 RuleFiles = 0u;
+	uint64 Assets = 0u;
+	uint64 SubEntries = 0u;
+	uint64 TypeTables = 0u;
+	uint64 Graph = 0u;
+	uint64 Names = 0u;
+	uint64 Strings = 0u;          // STRINGS and the path pool
+	uint64 Labels = 0u;           // labels and companions
+	uint64 Problems = 0u;
+	uint64 Indices = 0u;
+	uint64 Total = 0u;
+};
+
+[[nodiscard]] FRT_CORE_API SRegistryMemoryStats ComputeMemoryStats (const SRegistryTables& Tables);
+
+
+// ---------------- Images (snapshots, AdoptImage / ExportImage) ----------------
+
+/**
+ * Every table of a set of mounts as plain vectors, with its own string pools and name tables, so a
+ * snapshot writer serializes it and a loader rebuilds a store from it (CRegistryStore::AdoptImage) without
+ * knowing the paged layout. Indices into Names / Strings are image-local; ~0u is none. Mount, type and
+ * importer references go through the image's own tables by name, so ids of another process never leak in.
+ *
+ *  - Folders: every folder of the image's mounts, each mount's root included (Parent ~0u, Name = the mount
+ *    name). A parent precedes its children.
+ *  - Files: Class is the base class (what the scan said); the store derives Companion again.
+ *  - Records: Flags without HasProblems (derived again). Type indexes TypeNames; Importer indexes
+ *    ImporterNames (~0 none). Ranges index Labels, SubEntries, Tags, Edges and Companions.
+ *  - Edges: a Path target keeps the path the source wrote; a Guid target keeps its id - unless it resolved
+ *    to a record outside the image's mounts, which is exported by that record's mount path (§5.3).
+ */
+struct SImageMount
+{
+	FString Name;
+	MountId Id = InvalidMountId;      // the id AdoptImage gives the mount (the loader remaps it by name first)
+	bool bCaseSensitive = false;
+};
+
+struct SImageFolder
+{
+	uint16 Mount = 0u;                // index into SRegistryImage::Mounts
+	uint32 Parent = ~0u;              // index into Folders; ~0u for a mount root
+	uint32 Name = ~0u;                // Names
+};
+
+struct SImageFile
+{
+	uint32 Folder = ~0u;
+	uint32 LeafName = ~0u;            // Names
+	uint64 Size = 0u;
+	int64 MTime = 0;
+	platform::SFileIdentity Identity;
+	hash::SContentHash ContentHash;
+	uint64 MetaHash = 0u;
+	EFileClass Class = EFileClass::Unclaimed;
+	EMetaState MetaState = EMetaState::PendingMeta;
+};
+
+struct SImageRuleFile
+{
+	uint16 Mount = 0u;
+	uint32 Folder = ~0u;              // ~0u: the mount's Config/Assets.yml
+	uint64 RulesHash = 0u;
+};
+
+struct SImageTag
+{
+	uint32 Key = ~0u;                 // Names
+	ETagType Type = ETagType::None;
+	uint64 Bits = 0u;
+	uint32 Text = ~0u;                // Name: Names; String: Strings
+};
+
+struct SImageSubEntry
+{
+	uint32 Label = ~0u;               // Names
+	uint64 SubId = 0u;
+	uint16 Type = 0u;                 // TypeNames
+	ERecordFlags Flags {};
+	SPoolRange Tags;
+};
+
+struct SImageEdge
+{
+	uint64 FromSub = 0u;
+	SAssetId Target;                  // valid: a Guid target
+	uint32 TargetPath = ~0u;          // Strings: a Path target's text, or a Guid target's hint
+	EDepFlags Flags {};
+	uint32 FieldPath = ~0u;           // Names
+};
+
+struct SImageRecord
+{
+	uint32 File = ~0u;
+	SGuid Guid;
+	uint16 Type = 0u;                 // TypeNames
+	uint16 Importer = 0xFFFFu;        // ImporterNames
+	ERecordFlags Flags {};
+	ECookRule CookRule = ECookRule::Default;
+	uint16 Chunk = 0u;
+	uint32 PrimaryName = ~0u;         // Names
+	EImportStatus ImportStatus = EImportStatus::NotAnalyzed;
+	uint64 AnalyzeStamp = 0u;
+	SPoolRange Labels;                // into Labels: Names ids | RuleLabelBit
+	SPoolRange SubEntries;
+	SPoolRange Tags;
+	SPoolRange Edges;
+	SPoolRange Companions;            // into Companions: Strings ids
+};
+
+struct SImageProblems
+{
+	uint32 Subject = ~0u;             // Strings
+	EProblemSource Source = EProblemSource::Scan;
+	std::vector<SDiagnostic> Diagnostics;
+};
+
+struct SRegistryImage
+{
+	std::vector<SImageMount> Mounts;
+	std::vector<FString> Names;
+	std::vector<FString> Strings;
+	std::vector<FString> TypeNames;       // stable type names ("frt.Texture")
+	std::vector<FString> ImporterNames;
+	std::vector<SImageFolder> Folders;
+	std::vector<SImageFile> Files;
+	std::vector<SImageRuleFile> RuleFiles;
+	std::vector<SImageRecord> Records;
+	std::vector<uint32> Labels;
+	std::vector<SImageSubEntry> SubEntries;
+	std::vector<SImageTag> Tags;
+	std::vector<SImageEdge> Edges;
+	std::vector<uint32> Companions;
+	std::vector<SImageProblems> Problems;
+};
+
+/**
+ * The delta that recreates an image's contents (what CRegistryStore::AdoptImage commits). A record whose type
+ * name CAssetTypeRegistry does not know becomes frt.Unknown with Schemaless | StaleTags and no tags (a
+ * sub-entry likewise, flagging its record). Out-of-range indices drop the item they appear in.
+ */
+[[nodiscard]] FRT_CORE_API SRegistryDelta MakeImageDelta (SRegistryImage&& Image);
+}
+
+
+FRT_DECLARE_ENUM_REFLECTION(
+	frt::assets::ETargetState,
+	FRT_ENUM_ENTRY(frt::assets::ETargetState, Unresolved),
+	FRT_ENUM_ENTRY(frt::assets::ETargetState, Resolved),
+	FRT_ENUM_ENTRY(frt::assets::ETargetState, Ambiguous));
