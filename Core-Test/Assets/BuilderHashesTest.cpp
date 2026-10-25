@@ -7,7 +7,9 @@
 // truncated file and one that holds the file open only delays the write; a CRLF and an LF copy of a
 // source hash alike; check-builders passes while every builder's sources match the hash
 // committed with its version, fails with BUILD003 for one that changed with HEAD's GUID, and --update
-// records new hashes only when every changed builder has a GUID HEAD does not, writing nothing otherwise.
+// records new hashes only when every changed builder has a GUID HEAD does not, writing nothing otherwise;
+// a GUID is recorded with one hash only, so a second --update of it and a hash written by hand beside it
+// are BUILD003 too, committed or not.
 // The table parser ignores rows in comments and joins adjacent literals. Paths are non-ASCII. Skipped
 // without git on PATH.
 #include <gtest/gtest.h>
@@ -371,4 +373,76 @@ TEST_F(BuilderHashesTest, CheckBuildersWantsANewGuidForChangedSourcesAndUpdateRe
 	EXPECT_TRUE(edited.Output.Contains("BUILD003 Test.Beta")) << edited.Output.CStr();
 	EXPECT_FALSE(edited.Output.Contains("Test.Alpha")) << edited.Output.CStr();
 	EXPECT_TRUE((edited.Errors + edited.Output).Contains("1 of 2 builder(s) changed")) << edited.Errors.CStr();
+}
+
+// One GUID, one hash: outputs built while the table paired a GUID with one hash are keyed by the GUID
+// alone, so --update records a GUID once. Iterating on a builder before a commit - bump, --update, edit
+// again - needs another new GUID, which plain check-builders says, and a second --update refuses, until
+// the GUID is new again.
+TEST_F(BuilderHashesTest, UpdateRecordsAGuidOnceSoALaterChangeNeedsAnotherNewGuid)
+{
+	WriteTable(MakeTable(AlphaGuid, AlphaHash(), BetaGuid, BetaHash()));
+	RunGit({ "init", "-q" });
+	CommitAll("Builders");
+	ASSERT_EQ(RunPremake({ "check-builders" }).ExitCode, 0);
+
+	// Edited, then a new GUID beside the old hash, then --update.
+	const FString committedAlpha = AlphaHash();
+	Write("Core/Source/Alpha/A.cpp", "int Alpha () { return 10; }\n");
+	const FString firstHash = AlphaHash();
+	WriteTable(MakeTable(AlphaGuid2, committedAlpha, BetaGuid, BetaHash()));
+	const test::SProcessResult first = RunPremake({ "check-builders", "--update" });
+	ASSERT_EQ(first.ExitCode, 0) << first.Errors.CStr() << first.Output.CStr();
+	EXPECT_EQ(ReadTable(), MakeTable(AlphaGuid2, firstHash, BetaGuid, BetaHash()));
+	EXPECT_EQ(RunPremake({ "check-builders" }).ExitCode, 0);
+
+	// Edited again, uncommitted: the GUID is not HEAD's, but it was recorded.
+	Write("Core/Source/Alpha/A.cpp", "int Alpha () { return 11; }\n");
+	const test::SProcessResult again = RunPremake({ "check-builders" });
+	EXPECT_EQ(again.ExitCode, 1);
+	EXPECT_TRUE(again.Output.Contains("BUILD003 Test.Alpha")) << again.Output.CStr();
+	EXPECT_TRUE(again.Output.Contains("its sources changed after its version GUID was recorded")) << again.Output.CStr();
+	const test::SProcessResult refused = RunPremake({ "check-builders", "--update" });
+	EXPECT_EQ(refused.ExitCode, 1);
+	EXPECT_TRUE(refused.Output.Contains("this GUID was already recorded with hash " + firstHash)) << refused.Output.CStr();
+	EXPECT_TRUE((refused.Errors + refused.Output).Contains("nothing written")) << refused.Errors.CStr();
+	EXPECT_EQ(ReadTable(), MakeTable(AlphaGuid2, firstHash, BetaGuid, BetaHash()));
+
+	// Another new GUID: recorded, and the check passes.
+	constexpr FStringLiteral AlphaGuid3 = "a05b5d4c6e704f91c2d34e5f60718293";
+	WriteTable(MakeTable(AlphaGuid3, firstHash, BetaGuid, BetaHash()));
+	const test::SProcessResult second = RunPremake({ "check-builders", "--update" });
+	ASSERT_EQ(second.ExitCode, 0) << second.Errors.CStr() << second.Output.CStr();
+	EXPECT_EQ(ReadTable(), MakeTable(AlphaGuid3, AlphaHash(), BetaGuid, BetaHash()));
+	EXPECT_EQ(RunPremake({ "check-builders" }).ExitCode, 0);
+	CommitAll("Alpha, twice");
+	EXPECT_EQ(RunPremake({ "check-builders" }).ExitCode, 0);
+}
+
+// A new hash written by hand next to the GUID it had - the hash check-builders prints, pasted in - is
+// BUILD003 at once and stays so once committed: every commit git has records the GUID's first hash.
+TEST_F(BuilderHashesTest, AHashWrittenByHandBesideAnOldGuidIsBuild003EvenCommitted)
+{
+	WriteTable(MakeTable(AlphaGuid, AlphaHash(), BetaGuid, BetaHash()));
+	RunGit({ "init", "-q" });
+	CommitAll("Builders");
+	const FString committedBeta = BetaHash();
+
+	Write("Core/Source/Beta/Top.h", "#pragma once // beta, edited\n");
+	WriteTable(MakeTable(AlphaGuid, AlphaHash(), BetaGuid, BetaHash()));
+	const FString table = ReadTable();
+	const test::SProcessResult pasted = RunPremake({ "check-builders" });
+	EXPECT_EQ(pasted.ExitCode, 1);
+	EXPECT_TRUE(pasted.Output.Contains("BUILD003 Test.Beta")) << pasted.Output.CStr();
+	EXPECT_TRUE(pasted.Output.Contains("its version GUID was recorded with another source hash before, " + committedBeta))
+		<< pasted.Output.CStr();
+	EXPECT_FALSE(pasted.Output.Contains("Test.Alpha")) << pasted.Output.CStr();
+	EXPECT_EQ(RunPremake({ "check-builders", "--update" }).ExitCode, 1);
+	EXPECT_EQ(ReadTable(), table);
+
+	CommitAll("Beta, its hash pasted");
+	const test::SProcessResult committed = RunPremake({ "check-builders" });
+	EXPECT_EQ(committed.ExitCode, 1);
+	EXPECT_TRUE(committed.Output.Contains("BUILD003 Test.Beta")) << committed.Output.CStr();
+	EXPECT_TRUE((committed.Errors + committed.Output).Contains("1 without a new version GUID (BUILD003)")) << committed.Errors.CStr();
 }

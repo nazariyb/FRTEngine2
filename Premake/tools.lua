@@ -743,10 +743,21 @@ end
 --                    Each file is written only when its content changes, so an unchanged hash
 --                    recompiles nothing.
 --   check-builders   BUILD003: fails, naming them, when a builder's sources no longer match its
---                    committed hash while its version GUID is the one HEAD has. With --update it
---                    records the current hashes instead - only when every changed builder has a GUID
---                    that differs from HEAD's (a new builder counts as one), and refuses otherwise,
---                    writing nothing. FRT.bat verify runs it, in --quick too.
+--                    committed hash while its version GUID is the one HEAD has, and when a version
+--                    GUID was ever recorded with another source hash than the table now pairs it with.
+--                    With --update it records the current hashes instead - only when every changed
+--                    builder has a GUID that differs from HEAD's (a new builder counts as one) and was
+--                    never recorded with another hash, and refuses otherwise, writing nothing. FRT.bat
+--                    verify runs it, in --quick too.
+--
+-- One GUID, one hash: a GUID stands for one version of its builder's code. Outputs built while the
+-- table paired it with hash X are keyed by that GUID alone, in a store every worktree of the machine
+-- shares; pairing it with hash Y later would serve them for Y's code. So a GUID is recorded once:
+-- --update notes every pair it writes in Local/Build/BuilderVersionHashes.txt (this checkout's record
+-- of what it recorded, committed or not), and every commit git knows, on any branch, is a record too
+-- (git log --all -S<guid> of the table: the commits that added or removed the GUID, each read whole).
+-- A hash written by hand, a GUID run through --update twice, or a merge that keeps another branch's
+-- GUID for different code all pair a recorded GUID with a second hash: BUILD003.
 --
 -- The source hash of a builder: 64-bit FNV-1a, as 16 lowercase hex digits, over every file its globs
 -- match, in byte order of their engine-relative paths ('/'-separated), each as
@@ -758,6 +769,7 @@ end
 local builderTableFile = "Core/Source/Assets/BuilderVersions.inl"
 local builderHashesFile = "Intermediate/Generated/BuilderSourceHashes.gen.h"
 local pipelineSourcesFile = "Local/Build/PipelineSources.txt"
+local builderRecordFile = "Local/Build/BuilderVersionHashes.txt"
 
 -- Text with its // and /* */ comments replaced by spaces (line breaks kept), so every byte stays
 -- where it was: string literals stay, a "//" inside one included.
@@ -1023,6 +1035,47 @@ local function headBuilderTable(action)
 		byName[row.Name] = row
 	end
 	return byName
+end
+
+-- Every source hash a version GUID of Rows was ever recorded with (One GUID, one hash, above), as
+-- { [guid] = { [hash] = where } }, where naming the record: this checkout's record file or a commit.
+-- Outside a git checkout only the file counts. Each table git has is read once, and a table that does
+-- not parse is skipped: it records nothing.
+local function recordedBuilderHashes(rows)
+	local recorded = {}
+	local function note(guid, hash, where)
+		recorded[guid] = recorded[guid] or {}
+		recorded[guid][hash] = recorded[guid][hash] or where
+	end
+	for guid, hash in (readBinary(rootpath(builderRecordFile)) or ""):gmatch("(%x+) (%x+)[^\n]*") do
+		note(guid:lower(), hash:lower(), builderRecordFile)
+	end
+	local tables = {}
+	for _, row in ipairs(rows) do
+		local commits = outputOf(git("log --all --format=%H -S" .. row.Guid .. " -- " .. quoted(builderTableFile)) .. " 2>nul")
+		for commit in (commits or ""):gmatch("%x+") do
+			if tables[commit] == nil then
+				local text, code = os.outputof(git("show " .. commit .. ":./" .. builderTableFile) .. " 2>nul")
+				tables[commit] = code == 0 and text and parseBuilderTable(text, commit) or false
+			end
+			for _, committed in ipairs(tables[commit] or {}) do
+				note(committed.Guid, committed.Hash, "commit " .. commit:sub(1, 10))
+			end
+		end
+	end
+	return recorded
+end
+
+-- The hashes other than Hash that Guid was recorded with, as "hash (where)" texts, sorted.
+local function otherRecordedHashes(recorded, guid, hash)
+	local others = {}
+	for other, where in pairs(recorded[guid] or {}) do
+		if other ~= hash then
+			table.insert(others, other .. " (" .. where .. ")")
+		end
+	end
+	table.sort(others)
+	return others
 end
 
 -- Actions that run inside a build print nothing unless they change something: Premake's own
@@ -1641,15 +1694,23 @@ newaction
 	description = "Check that every builder whose sources changed has a new version GUID (BUILD003, run by verify): [--update]",
 	execute     = function ()
 		local text, rows = readBuilderTable("check-builders")
-		local changed = {}
+		local recorded = recordedBuilderHashes(rows)
+		local changed, reused = {}, {}
 		for _, row in ipairs(rows) do
 			row.Files = builderSources(row)
 			row.Current = hashBuilderSources("check-builders", row.Files)
+			-- The table pairs the GUID with a hash it was not recorded with: one written by hand, or a GUID
+			-- used again.
+			row.Others = otherRecordedHashes(recorded, row.Guid, row.Hash)
+			row.bRecorded = recorded[row.Guid] ~= nil
 			if row.Current ~= row.Hash then
 				table.insert(changed, row)
 			end
+			if #row.Others > 0 then
+				table.insert(reused, row)
+			end
 		end
-		if #changed == 0 then
+		if #changed == 0 and #reused == 0 then
 			print("Builders: " .. #rows .. " checked, every one's sources match the hash committed with its version.")
 			return
 		end
@@ -1664,24 +1725,41 @@ newaction
 				builderTableFile, row.Line, row.Current, row.Hash, #row.Files, #row.Files == 1 and "" or "s",
 				table.concat(row.Files, ", "))
 		end
+		local function printReused(row)
+			print("BUILD003 " .. describe(row))
+			print("  its version GUID was recorded with another source hash before, " .. table.concat(row.Others, ", ") ..
+				": a hash written by hand, or a GUID used again. Give it a new GUID (FRT.bat assets newguid), then run " ..
+				"FRT.bat check-builders --update")
+		end
 
 		if _OPTIONS["update"] then
 			if not head then
 				fail("check-builders --update: there is no HEAD to compare the version GUIDs with (is this engine a git " ..
 					"checkout with a commit?): nothing written")
 			end
-			local refused = {}
+			local refused = 0
+			for _, row in ipairs(reused) do
+				printReused(row)
+				refused = refused + 1
+			end
 			for _, row in ipairs(changed) do
-				if not isBumped(row) then
-					table.insert(refused, row)
+				local others = otherRecordedHashes(recorded, row.Guid, row.Current)
+				if #row.Others > 0 then
+					-- Said above.
+				elseif not isBumped(row) then
+					print("BUILD003 " .. describe(row))
+					print("  its version GUID is HEAD's: give it a new GUID first (FRT.bat assets newguid)")
+					refused = refused + 1
+				elseif #others > 0 then
+					print("BUILD003 " .. describe(row))
+					print("  this GUID was already recorded with hash " .. table.concat(others, ", ") .. ": run FRT.bat assets " ..
+						"newguid again")
+					refused = refused + 1
 				end
 			end
-			if #refused > 0 then
-				for _, row in ipairs(refused) do
-					print("BUILD003 " .. describe(row))
-				end
-				fail("check-builders --update: " .. #refused .. " builder(s) changed with the version GUID HEAD has: give each a new " ..
-					"GUID first (FRT.bat assets newguid); nothing written")
+			if refused > 0 then
+				fail("check-builders --update: " .. refused .. " builder(s) need a new version GUID first (FRT.bat assets " ..
+					"newguid); nothing written")
 			end
 			-- From the last row back, so the byte ranges of the earlier ones stay valid.
 			table.sort(changed, function (a, b) return a.HashFirst > b.HashFirst end)
@@ -1691,26 +1769,43 @@ newaction
 			if not writeBinary(rootpath(builderTableFile), text) then
 				fail("check-builders --update: cannot write " .. builderTableFile)
 			end
+			-- The pairs, so that a later --update or check here refuses a second hash for these GUIDs.
+			local record = readBinary(rootpath(builderRecordFile)) or ""
 			for _, row in ipairs(changed) do
+				record = record .. row.Guid .. " " .. row.Current .. " " .. row.Name .. "\n"
 				print("Recorded " .. row.Name .. "'s source hash " .. row.Current .. " in " .. builderTableFile .. ".")
+			end
+			if not writeBinary(rootpath(builderRecordFile), record) then
+				print("check-builders --update: warning: cannot write " .. builderRecordFile .. ", so a later --update cannot " ..
+					"tell that these GUIDs were recorded until they are committed")
 			end
 			return
 		end
 
-		local notBumped = 0
+		local needGuid = 0
+		for _, row in ipairs(reused) do
+			printReused(row)
+			needGuid = needGuid + 1
+		end
 		for _, row in ipairs(changed) do
-			if isBumped(row) then
+			if #row.Others > 0 then
+				-- Said above.
+			elseif isBumped(row) and not row.bRecorded then
 				print(describe(row))
-				print("  its version GUID is new: record the new hash with FRT.bat check-builders --update")
+				print("  its version GUID is new: record the new hash with FRT.bat check-builders --update, once, right after " ..
+					"FRT.bat assets newguid (a later change needs another new GUID)")
 			else
-				notBumped = notBumped + 1
+				needGuid = needGuid + 1
 				print("BUILD003 " .. describe(row))
-				print("  its sources changed while its version GUID did not: bump the GUID (FRT.bat assets newguid), then run " ..
-					"FRT.bat check-builders --update")
+				print(isBumped(row)
+					and "  its sources changed after its version GUID was recorded: give it a new GUID (FRT.bat assets newguid), " ..
+						"then run FRT.bat check-builders --update"
+					or "  its sources changed while its version GUID did not: bump the GUID (FRT.bat assets newguid), then run " ..
+						"FRT.bat check-builders --update")
 			end
 		end
 		fail("check-builders: " .. #changed .. " of " .. #rows .. " builder(s) changed since their hash was committed" ..
-			(notBumped > 0 and (", " .. notBumped .. " without a new version GUID (BUILD003)") or ""))
+			(needGuid > 0 and (", " .. needGuid .. " without a new version GUID (BUILD003)") or ""))
 	end
 }
 
