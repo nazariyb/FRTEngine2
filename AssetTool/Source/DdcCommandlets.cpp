@@ -10,26 +10,29 @@
  *
  *   stats    files and bytes of each kind of file
  *   gc       trims the content (manifests, records, values) to --max-gb (default [DerivedDataCache] MaxGB,
- *            else 20) GiB, least recently used first, never evicting a record the mount's BuildState
- *            names or a value such a record uses; with --ci a dry run that deletes nothing and says what
- *            it would. Exit 1 when the content stays over the budget or the collection could not finish.
+ *            else 20) GiB, least recently used first, never evicting a record that a BuildState of this
+ *            machine names (the mount's, the engines', the recent projects': CollectPinnedKeys) or a value
+ *            such a record uses; with --ci a dry run that deletes nothing and says what it would. Exit 1
+ *            when the content stays over the budget or the collection could not finish.
  *   verify   re-checks every file and deletes the corrupt ones, as any read of them would. Exit 1 when it
  *            found any.
  *
  * --json prints one object per verb with stable field names (counts and byte sizes as numbers).
  */
+#include <algorithm>
 #include <filesystem>
 #include <optional>
 #include <span>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #include "Assets/BuildState.h"
 #include "Assets/DerivedDataCache.h"
 #include "Config/Config.h"
 #include "Jobs/WorkerPool.h"
-#include "Platform/BlockingFileReader.h"
 #include "Platform/FileSystem.h"
+#include "Project/UserRegistry.h"
 
 #include "Commandlet.h"
 
@@ -81,38 +84,78 @@ void RunOnWorker (CCommandletContext& Context, F&& Work)
 	pool.PumpUntil([&bDone] () { return bDone; });
 }
 
-// The keys the mount's BuildState names: what garbage collection must keep (§7.4 "GC"). Only from a log
-// that exists and is one - opening anything else would start it anew, a write - and none without a
-// mount. OutNote says where they came from, or why there are none.
-std::vector<hash::SContentHash> CollectPinnedKeys (const CCommandletContext& Context, FString& OutNote)
+// What garbage collection must keep (§7.4 "GC": never a value that any open project's BuildState points
+// at), and from how many logs.
+struct SPinnedKeys
 {
-	if (Context.GetMountRoot().empty())
-	{
-		OutNote = "no mount, so no BuildState to keep";
-		return {};
-	}
-	const std::filesystem::path file = assets::GetBuildStatePath(Context.GetMountRoot() / "Local");
-	constexpr FStringLiteral Header = "FRTBSLG1";   // BuildState.h: File = "FRTBSLG1", Record*
-	std::vector<uint8> header(Header.Len());
-	platform::CBlockingFileReader reader;
-	if (!reader.Open(file) || reader.GetSize() < header.size() || !reader.ReadExactAt(0u, header)
-		|| FStringView(reinterpret_cast<const char*>(header.data()), header.size()) != FStringView(Header))
-	{
-		OutNote = FString::Format("{} has no BuildState to keep", Context.GetMountName());
-		return {};
-	}
-	reader.Close();
+	std::vector<hash::SContentHash> Keys;
+	uint32 LogsRead = 0u;
+	std::vector<FString> Unreadable;   // "<file> (<why>)" of each log that is there but could not be read
+};
 
-	assets::CBuildStateLog log;
-	FString error;
-	if (!log.Open(file, &error))
+// The keys every BuildState log this machine knows of names. The store is machine-wide, so not only the
+// mount's own log: the engine's (its /Engine content), every engine FRT.bat setup registered, and the log of
+// every project in the user's recent list, to which the project manager and the editor add each project
+// they open (project::GetRecentProjects). A log is read once and never opened for writing
+// (CBuildStateLog::ReadKeys): another process may own it, and a missing or foreign file is left as it is,
+// never started anew. The same log reached by two paths is read once.
+SPinnedKeys CollectPinnedKeys (const CCommandletContext& Context)
+{
+	std::vector<std::filesystem::path> localDirs;
+	if (!Context.GetMountRoot().empty())
 	{
-		OutNote = FString::Format("{}'s BuildState cannot be read ({}): nothing of it is kept", Context.GetMountName(), error);
-		return {};
+		localDirs.push_back(Context.GetMountRoot() / "Local");
 	}
-	std::vector<hash::SContentHash> keys = log.CollectKeys();
-	OutNote = FString::Format("{} key(s) of {}'s BuildState kept", keys.size(), Context.GetMountName());
-	return keys;
+	if (!Context.EngineRoot.empty())
+	{
+		localDirs.push_back(Context.EngineRoot / "Local");
+	}
+	for (const std::pair<FString, std::filesystem::path>& engine : project::GetRegisteredEngines())
+	{
+		if (!engine.second.empty())
+		{
+			localDirs.push_back(engine.second / "Local");
+		}
+	}
+	for (const project::SRecentProject& recent : project::GetRecentProjects())
+	{
+		if (!recent.File.empty())
+		{
+			localDirs.push_back(recent.File.parent_path() / "Local");
+		}
+	}
+
+	SPinnedKeys pinned;
+	std::vector<platform::SFileIdentity> seen;
+	for (const std::filesystem::path& localDir : localDirs)
+	{
+		const std::filesystem::path file = assets::GetBuildStatePath(localDir);
+		const std::optional<platform::SFileStat> stat = platform::Stat(file);
+		if (!stat || stat->bDirectory)
+		{
+			continue;   // no BuildState there: nothing to keep
+		}
+		if (stat->Identity.IsValid())
+		{
+			if (std::find(seen.begin(), seen.end(), stat->Identity) != seen.end())
+			{
+				continue;
+			}
+			seen.push_back(stat->Identity);
+		}
+		FString error;
+		const std::optional<std::vector<hash::SContentHash>> keys = assets::CBuildStateLog::ReadKeys(file, &error);
+		if (!keys)
+		{
+			pinned.Unreadable.push_back(FString::Format("{} ({})", FString::FromPath(file), error));
+			continue;
+		}
+		++pinned.LogsRead;
+		pinned.Keys.insert(pinned.Keys.end(), keys->begin(), keys->end());
+	}
+	std::sort(pinned.Keys.begin(), pinned.Keys.end());
+	pinned.Keys.erase(std::unique(pinned.Keys.begin(), pinned.Keys.end()), pinned.Keys.end());
+	return pinned;
 }
 
 int32 RunStats (CCommandletContext& Context, assets::CDerivedDataCache& Ddc, const FString& Root)
@@ -152,11 +195,17 @@ int32 RunStats (CCommandletContext& Context, assets::CDerivedDataCache& Ddc, con
 
 int32 RunGc (CCommandletContext& Context, assets::CDerivedDataCache& Ddc, const FString& Root, uint64 MaxBytes)
 {
-	FString pinNote;
-	const std::vector<hash::SContentHash> pinned = CollectPinnedKeys(Context, pinNote);
+	const SPinnedKeys pinned = CollectPinnedKeys(Context);
+	for (const FString& unreadable : pinned.Unreadable)
+	{
+		Context.PrintError(FString::Format("warning: the BuildState log {} cannot be read: nothing of it is kept",
+			unreadable));
+	}
+	const FString pinNote = FString::Format("{} key(s) of {} BuildState log(s) kept", pinned.Keys.size(),
+		pinned.LogsRead);
 	const assets::EDdcGcMode mode = Context.bReadOnly ? assets::EDdcGcMode::DryRun : assets::EDdcGcMode::Delete;
 	assets::SDdcGcResult result;
-	RunOnWorker(Context, [&] () { result = Ddc.CollectGarbage(MaxBytes, pinned, mode); });
+	RunOnWorker(Context, [&] () { result = Ddc.CollectGarbage(MaxBytes, pinned.Keys, mode); });
 
 	const FStringView verb = result.bDryRun ? FStringView("would evict") : FStringView("evicted");
 	Context.Print(FString::Format("Derived-data cache: {}{}", Root, result.bDryRun ? " (read-only: a dry run, nothing deleted)" : ""));
@@ -167,7 +216,8 @@ int32 RunGc (CCommandletContext& Context, assets::CDerivedDataCache& Ddc, const 
 		result.TmpFilesDeleted, result.AccessLogsDeleted));
 	Context.PrintJson(CJsonObject().AddString("ddc", Root).AddBool("exists", true).AddBool("dryRun", result.bDryRun)
 		.AddUInt("maxBytes", MaxBytes).AddUInt("contentBytesBefore", result.ContentBytesBefore)
-		.AddUInt("contentBytesAfter", result.ContentBytesAfter).AddUInt("pinnedKeys", pinned.size())
+		.AddUInt("contentBytesAfter", result.ContentBytesAfter).AddUInt("pinnedKeys", pinned.Keys.size())
+		.AddUInt("buildStateLogs", pinned.LogsRead).AddUInt("buildStateLogsUnreadable", pinned.Unreadable.size())
 		.AddUInt("pinnedBytes", result.PinnedBytes).AddUInt("recordsEvicted", result.RecordsEvicted)
 		.AddUInt("valuesEvicted", result.ValuesEvicted).AddUInt("manifestsEvicted", result.ManifestsEvicted)
 		.AddUInt("tmpFilesDeleted", result.TmpFilesDeleted).AddUInt("accessLogsDeleted", result.AccessLogsDeleted)
@@ -182,7 +232,7 @@ int32 RunGc (CCommandletContext& Context, assets::CDerivedDataCache& Ddc, const 
 	}
 	if (!result.bWithinBudget)
 	{
-		Context.PrintError(FString::Format("ddc gc: the content stays over the budget of {}: what the BuildState keeps is {}",
+		Context.PrintError(FString::Format("ddc gc: the content stays over the budget of {}: what the BuildState logs keep is {}",
 			FormatBytes(MaxBytes), FormatBytes(result.PinnedBytes)));
 		return ExitProblems;
 	}

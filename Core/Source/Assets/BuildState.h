@@ -169,6 +169,12 @@ public:
 	void ForEachStep (TFunctionRef<void (const SBuildStateEntry&)> Visit);
 	// The DDC keys of every step's latest record: what garbage collection must not evict (§7.4).
 	[[nodiscard]] std::vector<hash::SContentHash> CollectKeys ();
+	// CollectKeys of the log at File, read once and never opened for writing: for another mount's log,
+	// which its owner process may be appending to (ddc gc keeps what every known project's log names).
+	// A file that is missing or not a log of this format is left as it is - nullopt, OutError saying
+	// why - where Open would start it anew.
+	[[nodiscard]] static std::optional<std::vector<hash::SContentHash>> ReadKeys (const std::filesystem::path& File,
+		FString* OutError = nullptr);
 
 	// Rewrites the log with only the latest record of each step and the KeyBlobs those name.
 	bool Compact (FString* OutError = nullptr);

@@ -5,10 +5,10 @@
 // writer lock of /Project and, with --engine, of /Engine: a read-only run never takes it, and AssetTool's
 // own lock verb keeps every other writer out until its input ends. A verb that writes nothing runs beside a
 // working directory's project it cannot use. The ddc verbs (§7.4, §13.2) count, trim and check the store
-// FRT_DDC_DIR or --ddc names, never create one, keep what the project's BuildState names, and with --ci trim
-// nothing. Runs the AssetTool executable beside Core-Test on a scratch project in a directory with a
-// non-ASCII name, and a copy of it in a scratch engine checkout for /Engine. Release builds no AssetTool:
-// skipped there.
+// FRT_DDC_DIR or --ddc names, never create one, keep what every BuildState log of the machine names (the
+// project's, the engine's, the recent projects') without writing any of them, and with --ci trim nothing.
+// Runs the AssetTool executable beside Core-Test on a scratch project in a directory with a non-ASCII name,
+// and a copy of it in a scratch engine checkout for /Engine. Release builds no AssetTool: skipped there.
 #include <gtest/gtest.h>
 
 #include "TestCommon.h"
@@ -33,6 +33,7 @@
 #include "Platform/Platform.h"
 #include "Platform/Process.h"
 #include "Project/Project.h"
+#include "Project/UserRegistry.h"
 
 using namespace frt;
 
@@ -723,11 +724,83 @@ TEST_F(AssetToolTest, DdcGcTrimsToTheBudgetKeepsTheBuildStateAndIsADryRunWithCi)
 	EXPECT_EQ(fits.ExitCode, 0) << fits.Errors.CStr();
 	EXPECT_TRUE(fits.Output.Contains("evicted 0 record(s)")) << fits.Output.CStr();
 
-	// Without the project nothing is pinned: everything goes.
+	// Without the project (and with no recent projects) its BuildState is not known here: everything goes.
+	// The engine's own log, if this checkout has one, names none of the scratch keys.
+	const std::optional<std::vector<hash::SContentHash>> engineKeys =
+		assets::CBuildStateLog::ReadKeys(assets::GetBuildStatePath(paths::GetEngineDir() / "Local"));
 	const test::SProcessResult all = Run({ "ddc", "gc", "--max-gb=0", "--json" });
 	EXPECT_EQ(all.ExitCode, 0) << all.Errors.CStr() << all.Output.CStr();
-	EXPECT_EQ(JsonUInt(all.Output, "pinnedKeys"), 0u) << all.Output.CStr();
+	EXPECT_EQ(JsonUInt(all.Output, "pinnedKeys"), engineKeys ? engineKeys->size() : 0u) << all.Output.CStr();
+	EXPECT_EQ(JsonUInt(all.Output, "buildStateLogs"), engineKeys ? 1u : 0u) << all.Output.CStr();
 	EXPECT_EQ(ddc.GetStats().GetContentBytes(), 0u);
+}
+
+// The store is machine-wide, so ddc gc keeps what every BuildState log of the machine names, not only the
+// mount's: the engine's and those of the user's recent projects (the editor adds each project it opens),
+// so an editor open on another project keeps its values. Each log is read once and none is written: a
+// recent project without a log gets none, and a foreign file is left as it is (and reported). Run from
+// anywhere, even without a project, the same records stay. The note and the JSON count the logs read.
+TEST_F(AssetToolTest, DdcGcKeepsWhatEveryBuildStateOfTheMachineNames)
+{
+	const std::vector<hash::SContentHash> keys = FillDdc(DdcDir, 4u);
+	ASSERT_FALSE(HasFailure());
+	const auto writeBuildState = [] (const std::filesystem::path& Project, const hash::SContentHash& Key, uint32 Number)
+	{
+		assets::CBuildStateLog log;
+		FString error;
+		ASSERT_TRUE(log.Open(assets::GetBuildStatePath(Project / "Local"), &error)) << error.CStr();
+		assets::SBuildStateEntry entry;
+		entry.Step = assets::SBuildStepId{ FString::Format("Asset{}", Number), "Test", "", "" };
+		entry.StaticKey = ScratchKey(100u + Number);
+		entry.Key = Key;
+		ASSERT_TRUE(log.Append(entry, &error)) << error.CStr();
+	};
+	std::error_code ec;
+	ASSERT_TRUE(std::filesystem::create_directories(Dir / "UserData", ec)) << FString::FromUtf8Lossy(ec.message()).CStr();
+
+	// This project's log names the oldest record, another recent project's the next: LRU order would
+	// evict both first.
+	writeBuildState(ProjectDir, keys[0], 1u);
+	const std::filesystem::path other = Dir / FStringView("Інша гра 另一个").ToPath();
+	writeBuildState(other, keys[1], 2u);
+	ASSERT_FALSE(HasFailure());
+	project::AddRecentProject(other / "Other.frtproject");
+	project::AddRecentProject(ProjectFile);   // the mount itself in the list too: read once
+	// A recent project whose log is a foreign file, and one with no Local/ at all.
+	const std::filesystem::path foreign = assets::GetBuildStatePath(Dir / "Foreign" / "Local");
+	ASSERT_TRUE(platform::WriteFileText(foreign, "not a build state log"));
+	project::AddRecentProject(Dir / "Foreign" / "Foreign.frtproject");
+	project::AddRecentProject(Dir / "Bare" / "Bare.frtproject");
+	ASSERT_EQ(project::GetRecentProjects().size(), 4u);
+
+	const std::optional<std::vector<hash::SContentHash>> engineKeys =
+		assets::CBuildStateLog::ReadKeys(assets::GetBuildStatePath(paths::GetEngineDir() / "Local"));
+	const uint64 logs = 2u + (engineKeys ? 1u : 0u);
+	const uint64 pinnedKeys = 2u + (engineKeys ? engineKeys->size() : 0u);
+
+	// Read-only from outside any project: the same logs, nothing deleted.
+	const test::SProcessResult dry = Run({ "ddc", "gc", "--max-gb=0", "--ci" });
+	EXPECT_EQ(dry.ExitCode, 1) << dry.Errors.CStr();   // the kept records stay over a budget of nothing
+	EXPECT_TRUE(dry.Output.Contains(FString::Format("{} key(s) of {} BuildState log(s) kept", pinnedKeys, logs))) << dry.Output.CStr();
+	EXPECT_TRUE(dry.Output.Contains("would evict 2 record(s)")) << dry.Output.CStr();
+	EXPECT_TRUE(dry.Errors.Contains("warning: the BuildState log " + FString::FromPath(foreign))) << dry.Errors.CStr();
+
+	const test::SProcessResult gc = Run({ ProjectArgument(), "ddc", "gc", "--max-gb=0", "--json" });
+	EXPECT_EQ(gc.ExitCode, 1) << gc.Errors.CStr();
+	EXPECT_EQ(JsonUInt(gc.Output, "buildStateLogs"), logs) << gc.Output.CStr();
+	EXPECT_EQ(JsonUInt(gc.Output, "buildStateLogsUnreadable"), 1u) << gc.Output.CStr();
+	EXPECT_EQ(JsonUInt(gc.Output, "pinnedKeys"), pinnedKeys) << gc.Output.CStr();
+	EXPECT_EQ(JsonUInt(gc.Output, "recordsEvicted"), 2u) << gc.Output.CStr();
+	assets::CDerivedDataCache ddc;
+	ASSERT_TRUE(ddc.Open(DdcDir));
+	EXPECT_TRUE(ddc.GetRecord("Test", keys[0]).has_value());
+	EXPECT_TRUE(ddc.GetRecord("Test", keys[1]).has_value());
+	EXPECT_FALSE(std::filesystem::exists(ddc.GetRecordPath("Test", keys[2])));
+	EXPECT_FALSE(std::filesystem::exists(ddc.GetRecordPath("Test", keys[3])));
+
+	// Nothing written where it read: the foreign file as it was, no log (or Local/) for the bare project.
+	EXPECT_EQ(platform::ReadFileText(foreign), FString("not a build state log"));
+	EXPECT_FALSE(std::filesystem::exists(Dir / "Bare"));
 }
 
 // ddc verify re-checks every file, deletes the corrupt ones and exits with 1 when it found any.

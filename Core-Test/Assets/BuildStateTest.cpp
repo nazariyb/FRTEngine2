@@ -397,6 +397,50 @@ TEST_F(BuildStateTest, AFileOfAnotherKindIsStartedAnew)
 	EXPECT_TRUE(log.Find(MakeStep(1u)).has_value());
 }
 
+// ReadKeys, for ddc gc reading the logs of other projects: the keys CollectKeys gives, read while the
+// owner still holds its log open and appends to it, and nothing written - a missing file stays missing and
+// a foreign one stays as it is, where Open would start both anew.
+TEST_F(BuildStateTest, ReadKeysReadsAnotherProcesssLogWithoutWritingIt)
+{
+	FString error;
+	CBuildStateLog owner;
+	ASSERT_TRUE(owner.Open(LogPath, &error)) << error.CStr();
+	const SBuildStateEntry first = MakeEntry(MakeStep(1u), 1u, 1u);
+	const SBuildStateEntry second = MakeEntry(MakeStep(2u), 2u, 1u);
+	const SBuildStateEntry newer = MakeEntry(MakeStep(1u), 3u, 2u);
+	ASSERT_TRUE(owner.Append(first, &error)) << error.CStr();
+	ASSERT_TRUE(owner.Append(second, &error)) << error.CStr();
+	ASSERT_TRUE(owner.Append(newer, &error)) << error.CStr();
+
+	const std::optional<platform::SFileStat> before = platform::Stat(LogPath);
+	ASSERT_TRUE(before.has_value());
+	const std::optional<std::vector<hash::SContentHash>> keys = CBuildStateLog::ReadKeys(LogPath, &error);
+	ASSERT_TRUE(keys.has_value()) << error.CStr();
+	EXPECT_EQ(*keys, owner.CollectKeys());   // the latest record of each step: newer's key, not first's
+	EXPECT_EQ(keys->size(), 2u);
+	EXPECT_EQ(std::count(keys->begin(), keys->end(), first.Key), 0);
+	const std::optional<platform::SFileStat> after = platform::Stat(LogPath);
+	ASSERT_TRUE(after.has_value());
+	EXPECT_EQ(after->Size, before->Size);
+	EXPECT_EQ(after->LastWriteTime, before->LastWriteTime);
+	// The owner goes on appending: nothing of the read is in its way.
+	ASSERT_TRUE(owner.Append(MakeEntry(MakeStep(3u), 4u, 1u), &error)) << error.CStr();
+	EXPECT_EQ(CBuildStateLog::ReadKeys(LogPath)->size(), 3u);
+	owner.Close();
+
+	const std::filesystem::path missing = GetBuildStatePath(Dir / "Elsewhere" / "Local");
+	EXPECT_FALSE(CBuildStateLog::ReadKeys(missing, &error).has_value());
+	EXPECT_FALSE(platform::Stat(missing).has_value());
+	EXPECT_FALSE(platform::Stat(missing.parent_path()).has_value());
+
+	const std::filesystem::path foreign = Dir / "Foreign.log";
+	ASSERT_TRUE(platform::WriteFileText(foreign, "not a build state log at all"));
+	error.Clear();
+	EXPECT_FALSE(CBuildStateLog::ReadKeys(foreign, &error).has_value());
+	EXPECT_TRUE(error.Contains("not a build state log")) << error.CStr();
+	EXPECT_EQ(platform::ReadFileText(foreign), FString("not a build state log at all"));
+}
+
 // A reader takes a record past 16 MiB for garbage, so Append never writes one: a step whose
 // diagnostics run past it keeps its first lines and a note of how many went - and stays a hit, here
 // and after a reopen - while a KeyBlob or discovered inputs that large are refused with nothing

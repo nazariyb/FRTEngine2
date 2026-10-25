@@ -788,6 +788,44 @@ std::vector<hash::SContentHash> CBuildStateLog::CollectKeys ()
 	return keys;
 }
 
+std::optional<std::vector<hash::SContentHash>> CBuildStateLog::ReadKeys (const std::filesystem::path& File,
+	FString* OutError)
+{
+	const std::optional<std::vector<uint8>> bytes = ReadWholeFile(File, OutError);
+	if (!bytes)
+	{
+		return std::nullopt;
+	}
+	if (!IsHeaderValid(*bytes))
+	{
+		if (OutError != nullptr)
+		{
+			*OutError = "not a build state log of this format";
+		}
+		return std::nullopt;
+	}
+	// An index of the bytes in memory, as LoadIndex builds one: the latest record of each step. The log
+	// object opens no file.
+	CBuildStateLog index;
+	index.IndexBytes(*bytes);
+	std::vector<hash::SContentHash> keys;
+	keys.reserve(index.Steps.size());
+	for (const auto& [stepHash, location] : index.Steps)
+	{
+		const std::optional<SFrame> frame = ReadFrame(*bytes, location.Offset);
+		if (frame && frame->Kind == KindStep)
+		{
+			if (const std::optional<SBuildStateEntry> entry = DecodeStepPayload(frame->Payload))
+			{
+				keys.push_back(entry->Key);
+			}
+		}
+	}
+	std::sort(keys.begin(), keys.end());
+	keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+	return keys;
+}
+
 bool CBuildStateLog::Compact (FString* OutError)
 {
 	FRT_CPU_SCOPE("Assets.BuildState.Compact");
