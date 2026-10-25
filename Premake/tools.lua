@@ -964,12 +964,40 @@ local function hashBuilderSources(action, files)
 	return string.format("%016x", hash)
 end
 
--- Writes Text to the engine-relative File unless it already holds exactly that. True when written.
+-- Replaces the file at Target with Data in one step, so a reader sees the old content or the new and
+-- never a truncated file: every solution that builds Core runs the builder-hashes prebuild step in the
+-- same engine, and another build's cl.exe may be reading the header, or the pipeline lint the list,
+-- while one of them writes. Data goes to a file of its own beside Target, which then takes Target's
+-- place in one rename: cmd's move /y (MoveFileEx with MOVEFILE_REPLACE_EXISTING), as Lua's os.rename
+-- refuses an existing target. A reader that holds Target open without delete sharing (cl.exe does)
+-- makes the rename fail until it lets go: retried for a few seconds. False when it never succeeds.
+local function replaceBinary(target, data)
+	local temporary = target .. "." .. os.uuid() .. ".tmp"
+	if not writeBinary(temporary, data) then
+		return false
+	end
+	local move = "move /y " .. quoted(temporary) .. " " .. quoted(target) .. " >nul 2>&1"
+	-- os.clock is the time since the process started (the Windows C library's clock()).
+	local deadline = os.clock() + 5
+	while not runCommand(move) do
+		if os.clock() >= deadline then
+			os.remove(temporary)
+			return false
+		end
+		local resume = os.clock() + 0.05
+		while os.clock() < resume do
+		end
+	end
+	return true
+end
+
+-- Writes Text to the engine-relative File unless it already holds exactly that, replacing it in one
+-- step (replaceBinary). True when written.
 local function writeIfChanged(action, file, text)
 	if readBinary(rootpath(file)) == text then
 		return false
 	end
-	if not writeBinary(rootpath(file), text) then
+	if not replaceBinary(rootpath(file), text) then
 		fail(action .. ": cannot write " .. file)
 	end
 	return true

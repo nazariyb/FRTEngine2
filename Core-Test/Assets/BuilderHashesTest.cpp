@@ -2,8 +2,10 @@
 // runs it - the engine's vendored premake5.exe on a scratch copy of premake5.lua and Premake/, with a
 // builder table of its own and a git repository: builder-hashes writes each builder's source hash - FNV-1a
 // 64 over its files in byte order of their paths, carriage returns removed, exactly as the Lua documents
-// it - and the matched files for the pipeline lint, rewriting neither when nothing changed; a CRLF and an
-// LF copy of a source hash alike; check-builders passes while every builder's sources match the hash
+// it - and the matched files for the pipeline lint, rewriting neither when nothing changed and replacing
+// each in one rename when something did, so a reader (another solution's build, the lint) never sees a
+// truncated file and one that holds the file open only delays the write; a CRLF and an LF copy of a
+// source hash alike; check-builders passes while every builder's sources match the hash
 // committed with its version, fails with BUILD003 for one that changed with HEAD's GUID, and --update
 // records new hashes only when every changed builder has a GUID HEAD does not, writing nothing otherwise.
 // The table parser ignores rows in comments and joins adjacent literals. Paths are non-ASCII. Skipped
@@ -14,9 +16,11 @@
 #include "TestProcess.h"
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <optional>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 #include "EnginePaths.h"
@@ -24,6 +28,8 @@
 #include "Platform/FileSystem.h"
 #include "Platform/Platform.h"
 #include "Platform/Process.h"
+
+#include <Windows.h>
 
 using namespace frt;
 
@@ -182,6 +188,21 @@ protected:
 		RunGit({ "commit", "-q", "-m", FString(Message) });
 	}
 
+	// Files named *.tmp under Relative: what a write that replaces its target may leave behind.
+	[[nodiscard]] std::vector<FString> FindTemporaryFiles (FStringView Relative) const
+	{
+		std::vector<FString> found;
+		std::error_code ec;
+		for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(Engine / Relative.ToPath(), ec))
+		{
+			if (entry.path().extension() == ".tmp")
+			{
+				found.push_back(FString::FromPath(entry.path().filename()));
+			}
+		}
+		return found;
+	}
+
 	std::filesystem::path Git;
 	std::filesystem::path Premake;
 	std::filesystem::path Dir;
@@ -218,6 +239,7 @@ TEST_F(BuilderHashesTest, BuilderHashesWritesTheDocumentedHashesAndThePipelineLi
 	ASSERT_EQ(again.ExitCode, 0) << again.Errors.CStr();
 	EXPECT_TRUE(again.Output.IsEmpty()) << again.Output.CStr();
 	EXPECT_EQ(platform::Stat(header)->LastWriteTime, before->LastWriteTime);
+	EXPECT_EQ(platform::Stat(header)->Identity, before->Identity);
 
 	// CRLF in a source is the same source.
 	Write("Core/Source/Alpha/A.cpp", "int Alpha () { return 1; }\r\n");
@@ -233,6 +255,49 @@ TEST_F(BuilderHashesTest, BuilderHashesWritesTheDocumentedHashesAndThePipelineLi
 	EXPECT_TRUE(changed.Output.Contains("BuilderSourceHashes.gen.h updated")) << changed.Output.CStr();
 	EXPECT_TRUE(platform::ReadFileText(header)->Contains(FString::Format("\"Test.Alpha\", \"{}\"", AlphaHash())));
 	EXPECT_NE(AlphaHash(), alphaWithCrlf);
+	// Replaced by another file, not rewritten in place, and nothing left beside it.
+	EXPECT_NE(platform::Stat(header)->Identity, before->Identity);
+	EXPECT_TRUE(FindTemporaryFiles("Intermediate/Generated").empty());
+	EXPECT_TRUE(FindTemporaryFiles("Local/Build").empty());
+}
+
+// A reader that holds the header open while a build changes it - another solution's cl.exe, which opens
+// it without delete sharing, as the C library does - keeps reading the old content to the end and only
+// delays the write, which lands once it lets go: never a truncated or half-written header. (The handle is
+// not inherited: builder-hashes, a child of this process, would otherwise hold it too.)
+TEST_F(BuilderHashesTest, AReaderHoldingTheHeaderKeepsTheOldContentAndOnlyDelaysTheWrite)
+{
+	ASSERT_EQ(RunPremake({ "builder-hashes" }).ExitCode, 0);
+	const std::filesystem::path header = Engine / "Intermediate" / "Generated" / "BuilderSourceHashes.gen.h";
+	const std::optional<FString> old = platform::ReadFileText(header, ETextFileEncoding::Raw);
+	ASSERT_TRUE(old.has_value());
+
+	Write("Core/Source/Beta/Top.h", "#pragma once // beta, changed\n");
+	const HANDLE reader = CreateFileW(header.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+		FILE_ATTRIBUTE_NORMAL, nullptr);
+	ASSERT_NE(reader, INVALID_HANDLE_VALUE);
+	std::vector<uint8> seen;
+	std::thread holder([reader, &seen] ()
+	{
+		// Long enough for builder-hashes to start and try; then the whole file, through this handle.
+		std::this_thread::sleep_for(std::chrono::milliseconds(700));
+		uint8 buffer[4096];
+		DWORD read = 0;
+		while (ReadFile(reader, buffer, sizeof(buffer), &read, nullptr) && read > 0)
+		{
+			seen.insert(seen.end(), buffer, buffer + read);
+		}
+		CloseHandle(reader);
+	});
+	const test::SProcessResult changed = RunPremake({ "builder-hashes" });
+	holder.join();
+
+	ASSERT_EQ(changed.ExitCode, 0) << changed.Errors.CStr() << changed.Output.CStr();
+	EXPECT_EQ(seen, std::vector<uint8>(old->View().begin(), old->View().end()));
+	const std::optional<FString> now = platform::ReadFileText(header);
+	ASSERT_TRUE(now.has_value());
+	EXPECT_TRUE(now->Contains(FString::Format("FRT_BUILDER_SOURCE_HASH(\"Test.Beta\", \"{}\")\n", BetaHash()))) << now->CStr();
+	EXPECT_TRUE(FindTemporaryFiles("Intermediate/Generated").empty());
 }
 
 TEST_F(BuilderHashesTest, ABrokenTableFailsTheBuildStepWithItsLine)
