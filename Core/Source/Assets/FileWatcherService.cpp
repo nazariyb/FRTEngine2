@@ -7,6 +7,7 @@
 #include <utility>
 
 #include "Asserts.h"
+#include "Assets/FileHash.h"
 #include "Config/Config.h"
 #include "Containers/StringMap.h"
 #include "Log/Log.h"
@@ -105,16 +106,6 @@ FString MakeExpectedKey (const std::filesystem::path& Path)
 	return MakePathKey(FString::FromPath(platform::NormalizePath(Path), EPathStyle::Generic));
 }
 
-std::optional<hash::SContentHash> HashFileStable (const std::filesystem::path& Path)
-{
-	hash::CContentHasher hasher;
-	const platform::EStableRead read = platform::ReadFileChunksStable(Path, [&hasher] (std::span<const uint8> Bytes) { hasher.Update(Bytes); });
-	if (read != platform::EStableRead::Stable)
-	{
-		return std::nullopt;
-	}
-	return hasher.Finalize();
-}
 }
 
 

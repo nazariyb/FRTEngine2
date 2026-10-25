@@ -474,6 +474,8 @@ bool EnumerateDirectory (const std::filesystem::path& Directory, TFunctionRef<bo
 				entry.Stat.CreationTime = windows::ToFileTime(record->CreationTime);
 				entry.Stat.Identity = MakeIdentity(directoryIds.VolumeSerial, record->FileId.Identifier);
 				entry.bReparsePoint = (record->FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0u;
+				// The record's ReparsePointTag means something only when the attribute is set.
+				entry.bNameSurrogate = entry.bReparsePoint && IsReparseTagNameSurrogate(record->ReparsePointTag);
 				if (!OnEntry(entry))
 				{
 					return true;

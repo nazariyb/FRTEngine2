@@ -130,12 +130,23 @@ std::optional<SFileIdentity> GetFileIdentity (const T&, FString* = nullptr) = de
  * process closes it (NTFS updates directory entries lazily); identities always agree. A symbolic
  * link or junction is reported as itself (bReparsePoint), not followed: Stat() of its path
  * describes the target instead, and a scanner must not descend into one blindly (cycles).
+ *
+ * bNameSurrogate tells the links apart from every other reparse point: the entry stands for
+ * another file or directory (a symbolic link, a junction or mount point, an app-execution alias),
+ * so walking into it walks somewhere else - possibly up into its own ancestors. The asset scan
+ * never descends into one and records nothing below it (design §5.4). Every other reparse point
+ * is the entry itself with extra behaviour attached - a OneDrive placeholder, a deduplicated or
+ * tiered file, a WSL special file - and is listed and walked like an ordinary entry; its size and
+ * times come from the listing, so it is not opened (reading a cloud placeholder downloads it).
+ * Windows: IsReparseTagNameSurrogate of the listing record's ReparsePointTag (the tag's
+ * name-surrogate bit, set by Microsoft's tags for exactly the link kinds).
  */
 struct SDirectoryEntry
 {
 	FStringView Name;
 	SFileStat Stat;
 	bool bReparsePoint = false;
+	bool bNameSurrogate = false;   // implies bReparsePoint
 };
 
 /**
