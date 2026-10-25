@@ -586,10 +586,13 @@ TEST(DataTreeYamlTest, FiveThousandRowTableParsesAtTheBudgetRate)
 
 	const FString table = MakeDataTable(rows);
 	SParseRate rate = MeasureParse(table, rows, bOptimized ? 3u : 1u);
-	if (bOptimized && rate.MegabytesPerSecond * slack < 8.0)
+	if constexpr (bOptimized)
 	{
-		const SParseRate retry = MeasureParse(table, rows, 5u, 8.0 / slack);
-		rate = retry.MegabytesPerSecond > rate.MegabytesPerSecond ? retry : rate;
+		if (rate.MegabytesPerSecond * slack < 8.0)
+		{
+			const SParseRate retry = MeasureParse(table, rows, 5u, 8.0 / slack);
+			rate = retry.MegabytesPerSecond > rate.MegabytesPerSecond ? retry : rate;
+		}
 	}
 	std::printf("[ perf     ] 5k-row table: %.2f MB in %.1f ms = %.2f MB/s (%u nodes; budget 8 MB/s per thread)\n",
 		static_cast<double>(table.Len()) / 1e6, rate.BestMilliseconds, rate.MegabytesPerSecond, rate.Nodes);
