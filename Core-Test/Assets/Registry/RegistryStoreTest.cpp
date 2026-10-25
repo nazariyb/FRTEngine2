@@ -1334,6 +1334,175 @@ TEST(RegistryStoreTest, AnExportedImageAdoptedByAFreshStoreDumpsIdentically)
 	EXPECT_EQ(Dump(merged.Live()), original);
 }
 
+namespace
+{
+// A store with everything an image carries: three mounts (one case-sensitive), nested folders, rule files,
+// problems, companions, rule labels, sub-entries with tags, MultiValue tags, an unknown importer name,
+// edges from sub-entries, by id, unresolved, spelled in another case (REF006) and ambiguous (PATH001).
+SRegistryDelta MakeRichContent ()
+{
+	SRegistryDelta delta = MakeMountsDelta();
+	delta.Mounts.push_back(MakeMount("Plugin.Trees", FirstPluginMountId, true));
+	AddTexture(delta, "/Engine/Textures/White.png", 4, 4);
+	AddTexture(delta, "/Project/T/Rock.png", 1, 1);
+	AddTexture(delta, "/Project/T/rock.png", 2, 2);
+	AddTexture(delta, "/Project/T/Deep/Er/Grass.png", 8, 8);
+	AddMaterial(delta, "/Project/M/m.frtmat.yml", { "/Engine/textures/white.png", "/Project/T/ROCK.png", "/Project/T/gone.png" });
+	AddMaterial(delta, "/Plugin.Trees/Oak.frtmat.yml", { "/Project/T/Deep/Er/Grass.png", "/Plugin.Trees/Bark.png" });
+	AddTexture(delta, "/Plugin.Trees/Bark.png");
+	delta.FileUpserts.push_back(MakeFile("/Project/Hero.gltf"));
+	delta.FileUpserts.push_back(MakeFile("/Project/Hero.bin", 5u, EFileClass::Unclaimed));
+	delta.FileUpserts.push_back(MakeFile("/Project/notes.txt", 7u, EFileClass::Unclaimed));
+	SRecordUpsert model = MakeRecord("/Project/Hero.gltf", asset_types::Model, "Model.Gltf");
+	model.Companions.push_back("/Project/Hero.bin");
+	model.RuleLabels = { "Hero", "Characters" };
+	model.AnalyzeStamp = 0x1234u;
+	model.Tags = { MakeIntTag("MeshCount", 1) };
+	model.SubEntries.push_back(SSubEntryDecl { "mesh:Body", 0u, asset_types::Mesh, ERecordFlags::None, { MakeIntTag("VertexCount", 9) } });
+	model.SubEntries.push_back(SSubEntryDecl { "material:Skin", 0u, asset_types::Material, ERecordFlags::None, {} });
+	model.Edges.push_back(MakePathEdge("/Project/Hero.bin", EDepFlags::Build | EDepFlags::Path | EDepFlags::Declared, "buffers[0].uri"));
+	SEdgeDecl skin = MakePathEdge("/Project/M/m.frtmat.yml", EDepFlags::Hard, "materials[0]");
+	skin.FromSub = MakeSubId("material:Skin");
+	model.Edges.push_back(skin);
+	SEdgeDecl byId;
+	byId.Target = SAssetId { MakeProvisionalGuid("/Plugin.Trees/Oak.frtmat.yml"), 0u };
+	byId.Flags = EDepFlags::Hard | EDepFlags::Declared;
+	model.Edges.push_back(byId);
+	SEdgeDecl missingId;
+	missingId.Target = SAssetId { MakeProvisionalGuid("/Project/Nowhere.png"), 0u };
+	missingId.TargetPath = "/Project/Nowhere.png";
+	model.Edges.push_back(missingId);
+	delta.RecordUpserts.push_back(std::move(model));
+	delta.FileUpserts.push_back(MakeFile("/Project/Input/Map.frtinputmap"));
+	SRecordUpsert map = MakeRecord("/Project/Input/Map.frtinputmap", asset_types::InputActionMap, "Input.Legacy");
+	map.Tags = { STagDecl { "Actions", STagValue::FromName("Jump") }, STagDecl { "Actions", STagValue::FromName("Fire") } };
+	map.Flags = ERecordFlags::Primary;
+	map.PrimaryName = "Map";
+	delta.RecordUpserts.push_back(std::move(map));
+	delta.FileUpserts.push_back(MakeFile("/Project/Future.frt"));
+	SRecordUpsert future = MakeRecord("/Project/Future.frt", asset_types::Raw, "Document");
+	future.ImportStatus = EImportStatus::ImporterUnavailable;
+	delta.RecordUpserts.push_back(std::move(future));
+	delta.RuleFileUpserts.push_back(SRuleFileUpsert { "Project", "", 11u });
+	delta.RuleFileUpserts.push_back(SRuleFileUpsert { "Project", "/Project/T", 12u });
+	delta.FolderUpserts.push_back(SFolderUpsert { "/Project/Empty/Inner" });
+	delta.Problems.push_back(SProblemsSet { "/Project/T/Rock.png", EProblemSource::Scan, { MakeScanWarning("/Project/T/Rock.png", "long") } });
+	delta.Problems.push_back(SProblemsSet { "/Project/Hero.gltf#mesh:Body", EProblemSource::Analyze,
+		{ MakeScanWarning("/Project/Hero.gltf#mesh:Body", "degenerate") } });
+	return delta;
+}
+
+// What a dump does not show: lookups under each mount's rule, referencers, folded paths, file classes.
+void ExpectSameAnswers (const CRegistryView& A, const CRegistryView& B)
+{
+	EXPECT_EQ(Dump(A), Dump(B));
+	EXPECT_EQ(A.GetRecordCount(), B.GetRecordCount());
+	EXPECT_EQ(A.GetSubEntryCount(), B.GetSubEntryCount());
+	EXPECT_EQ(A.GetFileCount(), B.GetFileCount());
+	EXPECT_EQ(A.GetFolderCount(), B.GetFolderCount());
+	A.ForEachFile([&] (uint32 Row)
+	{
+		SFileData fileA;
+		SFileData fileB;
+		ASSERT_TRUE(A.GetFile(Row, fileA));
+		const std::optional<uint32> rowB = B.FindFileExact(fileA.MountPath);
+		ASSERT_TRUE(rowB.has_value()) << FString(fileA.MountPath).CStr();
+		ASSERT_TRUE(B.GetFile(*rowB, fileB));
+		EXPECT_EQ(fileA.Class, fileB.Class);
+		EXPECT_EQ(GetFoldedFilePath(GetTables(A), Row), GetFoldedFilePath(GetTables(B), *rowB));
+		FString upper(fileA.MountPath);
+		upper = upper.ToUpper();
+		EXPECT_EQ(A.FindFile(upper).has_value(), B.FindFile(upper).has_value()) << upper.CStr();
+	});
+	A.ForEachRecord([&] (SRecordId Record)
+	{
+		SAssetData data;
+		ASSERT_TRUE(A.GetRecord(Record, data));
+		const SRecordId other = B.FindByPath(data.MountPath).value_or(SRecordId {});
+		if (!other.IsValid())
+		{
+			EXPECT_FALSE(A.FindByPath(data.MountPath).has_value());   // PATH001: neither finds it
+			return;
+		}
+		EXPECT_EQ(GetReferencers(A, Record).size(), GetReferencers(B, other).size()) << data.MountPath.CStr();
+		EXPECT_EQ(B.Find(data.Id), other);
+		EXPECT_EQ(B.Find(data.Id64), other);
+		std::vector<SRecordId> closureA;
+		std::vector<SRecordId> closureB;
+		const SRecordId rootA[] = { Record };
+		const SRecordId rootB[] = { other };
+		A.GetReferencerClosure(rootA, EDepFlags {}, closureA);
+		B.GetReferencerClosure(rootB, EDepFlags {}, closureB);
+		EXPECT_EQ(closureA.size(), closureB.size()) << data.MountPath.CStr();
+	});
+}
+}
+
+TEST(RegistryStoreTest, AFreshStoreAdoptsAnImageInBulkWithTheReplaysResult)
+{
+	CRegistryStore original;
+	original.Commit(MakeRichContent());
+
+	CRegistryStore bulk;
+	bulk.AdoptImage(original.Live().ExportImage({}), 9u);
+	EXPECT_FALSE(bulk.GetLastCommitStats().bReplayedImage);
+	EXPECT_EQ(bulk.GetRevision(), 9u);
+
+	// A store that holds the mounts already replays the image as a delta.
+	CRegistryStore replayed;
+	SRegistryDelta mounts = MakeMountsDelta();
+	mounts.Mounts.push_back(MakeMount("Plugin.Trees", FirstPluginMountId, true));
+	replayed.Commit(std::move(mounts));
+	replayed.AdoptImage(original.Live().ExportImage({}), 9u);
+	EXPECT_TRUE(replayed.GetLastCommitStats().bReplayedImage);
+
+	ExpectSameAnswers(bulk.Live(), original.Live());
+	ExpectSameAnswers(bulk.Live(), replayed.Live());
+	EXPECT_FALSE(bulk.NeedsCompaction());
+	EXPECT_EQ(GetTables(bulk.Live()).Graph.GarbageEdges, 0u);
+	EXPECT_EQ(GetTables(bulk.Live()).Graph.LiveEdges, GetTables(replayed.Live()).Graph.LiveEdges);
+
+	// Both go on the same way: a missing target arrives, a record changes its sub-entries, a folder goes.
+	const auto edit = [] (CRegistryStore& Store)
+	{
+		SRegistryDelta delta;
+		AddTexture(delta, "/Project/T/gone.png");
+		AddTexture(delta, "/Project/Nowhere.png");
+		SRecordUpsert model = MakeRecord("/Project/Hero.gltf", asset_types::Model, "Model.Gltf");
+		model.SubEntries.push_back(SSubEntryDecl { "mesh:Head", 0u, asset_types::Mesh, ERecordFlags::None, { MakeIntTag("VertexCount", 3) } });
+		delta.RecordUpserts.push_back(std::move(model));
+		delta.FolderRemoves.push_back("/Project/T/Deep");
+		Store.Commit(std::move(delta));
+	};
+	edit(bulk);
+	edit(replayed);
+	edit(original);
+	ExpectSameAnswers(bulk.Live(), replayed.Live());
+	ExpectSameAnswers(bulk.Live(), original.Live());
+	bulk.CompactTables();
+	ExpectSameAnswers(bulk.Live(), original.Live());
+}
+
+TEST(RegistryStoreTest, AnImageTheBulkPathDoesNotTakeIsReplayedAndReported)
+{
+	CRegistryStore original;
+	SRegistryDelta delta = MakeMountsDelta();
+	AddTexture(delta, "/Project/a.png", 3, 4);
+	original.Commit(std::move(delta));
+	SRegistryImage image = original.Live().ExportImage({});
+	ASSERT_EQ(image.Tags.size(), 2u);
+	image.Tags[1].Type = ETagType::Bool;   // Height as a Bool: the replay drops it with a contract problem
+
+	CRegistryStore adopted;
+	adopted.AdoptImage(std::move(image), 1u);
+	EXPECT_TRUE(adopted.GetLastCommitStats().bReplayedImage);
+	const SRecordId a = FindRecord(adopted.Live(), "/Project/a.png");
+	STagValue value;
+	EXPECT_TRUE(adopted.Live().GetTag(a, "Width", value));
+	EXPECT_FALSE(adopted.Live().GetTag(a, "Height", value));
+	EXPECT_EQ(GetDiagnostics(adopted.Live(), a, 0u).size(), 1u);
+}
+
 TEST(RegistryStoreTest, EdgesByIdResolveInEitherOrderAndLeaveAnImageByPath)
 {
 	// An edge that names its target by SAssetId (a .meta reference from M4 on) waits unresolved until a

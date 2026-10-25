@@ -61,6 +61,7 @@ struct SRegistryCommitStats
 	uint32 RecordsChanged = 0u;
 	bool bCompactedGraph = false;
 	bool bCompactedTables = false;
+	bool bReplayedImage = false;        // AdoptImage replayed the image as a delta instead of taking it in bulk
 };
 
 
@@ -91,7 +92,9 @@ public:
 	/**
 	 * Commits an image (a snapshot's tables, RegistryTables.h) as one delta over the current state - on an
 	 * empty store, a load - rebuilding every index and re-resolving every target, then compacts the graph,
-	 * sets the revision to Revision and publishes. Images of different mounts can be adopted one after the
+	 * sets the revision to Revision and publishes. A fresh store takes the image in bulk (its tables filled
+	 * straight from the vectors, the CSR built once); a store that holds anything already, or an image with
+	 * an item the delta contract rejects, gets the image replayed as a delta, with the same result. Images of different mounts can be adopted one after the
 	 * other (Engine.snapshot, then AssetRegistry.snapshot). The change ring reports nothing for an image:
 	 * readers refresh everything (ForEachChangeSince returns false for older revisions). A type name the
 	 * table does not know leaves its records frt.Unknown with Schemaless | StaleTags and no tags. Labels
