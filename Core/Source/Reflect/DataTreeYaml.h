@@ -53,7 +53,9 @@ enum class EYamlFailure : uint8
  * Parses Text into Out (replacing it). On failure Out is empty and OutError gets Severity Error, Line, Column (from 1;
  * 0 when yaml-cpp gives no position) and Message; the caller fills File, Subject and Code. OutFailure gets the kind
  * (None on success). After a subset violation the parse reads on to the end of the document without building, so
- * Subset means the rest is YAML too; when it is not, the result is Syntax with yaml-cpp's error. Never throws.
+ * Subset means the rest is YAML too; when it is not, the result is Syntax with yaml-cpp's error. The one exception is
+ * nesting deeper than CDataTreeBuilder::DefaultMaxDepth: the parse stops there (yaml-cpp's recursive descent would
+ * overflow the stack in Debug first) and the result is Subset without the rest being read. Never throws.
  */
 FRT_CORE_API bool ParseYaml (FStringView Text, CDataTree& Out, SDiagnostic* OutError = nullptr, EYamlFailure* OutFailure = nullptr);
 }

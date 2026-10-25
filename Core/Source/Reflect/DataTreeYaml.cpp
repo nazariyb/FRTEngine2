@@ -156,6 +156,7 @@ public:
 
 	void OnSequenceStart (const YAML::Mark& Mark, const std::string& Tag, YAML::anchor_t Anchor, YAML::EmitterStyle::value Style) override
 	{
+		EnterCollection();
 		Guard([&] {
 			CheckCollection(Mark, FStringView(Tag), Anchor, "a sequence");
 			Check(Builder.BeginSequence(ToLine(Mark), ToColumn(Mark), Style == YAML::EmitterStyle::Flow ? ECollectionStyle::Flow : ECollectionStyle::Block));
@@ -164,11 +165,13 @@ public:
 
 	void OnSequenceEnd () override
 	{
+		--Depth;
 		Guard([&] { Check(Builder.End()); });
 	}
 
 	void OnMapStart (const YAML::Mark& Mark, const std::string& Tag, YAML::anchor_t Anchor, YAML::EmitterStyle::value Style) override
 	{
+		EnterCollection();
 		Guard([&] {
 			CheckCollection(Mark, FStringView(Tag), Anchor, "a map");
 			Check(Builder.BeginMap(ToLine(Mark), ToColumn(Mark), Style == YAML::EmitterStyle::Flow ? ECollectionStyle::Flow : ECollectionStyle::Block));
@@ -177,6 +180,7 @@ public:
 
 	void OnMapEnd () override
 	{
+		--Depth;
 		Guard([&] { Check(Builder.End()); });
 	}
 
@@ -191,6 +195,19 @@ private:
 	bool bDocumentSeen = false;
 	bool bDraining = false;
 	int LastMarkPosition = -1;   // Mark.pos of the last scalar, null or collection start
+	uint32 Depth = 0u;           // open maps and sequences, drained ones included
+
+	// Draining never follows yaml-cpp deeper than the builder's limit: its recursive descent (500 levels before its own
+	// guard) overflows a 1 MB stack in Debug, so hostile nesting stops the parse there. Before the handler drains, the
+	// builder fails at the limit itself.
+	void EnterCollection ()
+	{
+		++Depth;
+		if (bDraining && Depth > CDataTreeBuilder::DefaultMaxDepth)
+		{
+			throw SAbortParse();
+		}
+	}
 
 	// Runs one event's work unless the handler drains; an SAbortParse from it (the builder failed) starts draining.
 	template <typename TBody>

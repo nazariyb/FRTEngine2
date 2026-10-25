@@ -364,6 +364,19 @@ TEST(DataTreeYamlTest, FailuresTellSubsetViolationsFromSyntaxErrors)
 	EXPECT_EQ(failureOf(balanced.View(), &error), EYamlFailure::Subset);
 	EXPECT_TRUE(error.Message.Contains("deeper")) << error.Message.CStr();
 
+	// Hostile nesting stops the parse at the depth limit, also after an earlier violation (yaml-cpp's own recursion
+	// would overflow Debug's stack first): Subset, the rest unread.
+	FString deep;
+	for (uint32 i = 0u; i < 10'000u; ++i)
+	{
+		deep += '[';
+	}
+	EXPECT_EQ(failureOf(deep.View(), &error), EYamlFailure::Subset);
+	FString deepAfterAnchor("a: &x 1\nb: ");
+	deepAfterAnchor += deep;
+	EXPECT_EQ(failureOf(deepAfterAnchor.View(), &error), EYamlFailure::Subset);
+	EXPECT_TRUE(error.Message.Contains("anchor")) << error.Message.CStr();
+
 	// Not YAML: yaml-cpp's own error.
 	EXPECT_EQ(failureOf("a: [1, 2\nb: 3\n"), EYamlFailure::Syntax);
 	EXPECT_EQ(failureOf("b: *nowhere\n"), EYamlFailure::Syntax);
