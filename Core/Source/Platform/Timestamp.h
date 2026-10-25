@@ -31,4 +31,18 @@ namespace frt::platform
 {
 	return static_cast<double>(Ticks) / static_cast<double>(GetTimestampFrequency());
 }
+
+// The other way: a duration in milliseconds as ticks.
+[[nodiscard]] inline uint64 MillisecondsToTimestamp (uint64 Milliseconds) noexcept
+{
+	return GetTimestampFrequency() * Milliseconds / 1000u;
+}
+
+// ReadTimestamp() SecondsFromNow from now (now itself for a negative count): a deadline to compare
+// later reads with.
+[[nodiscard]] inline uint64 MakeDeadline (double SecondsFromNow) noexcept
+{
+	const double ticks = SecondsFromNow * static_cast<double>(GetTimestampFrequency());
+	return ReadTimestamp() + (ticks > 0.0 ? static_cast<uint64>(ticks) : 0u);
+}
 }

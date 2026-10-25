@@ -46,6 +46,12 @@ using TStringMapIgnoreCase = std::unordered_map<FString, TValue, SStringHashIgno
 template <typename TValue>
 using TPathMap = std::unordered_map<FString, TValue, SPathHash, SPathEqual>;
 
+// A path's key (SPathHash and SPathEqual's rule) as a string of its own, for what a hash map does not
+// do: prefix tests, sorting. Paths NTFS takes for one name have byte-equal keys, and '/' stays '/', so a
+// key's names are the path's names in the same places. Each well-formed BMP unit is the OS table's
+// upper case in UTF-8; anything else is kept as it is.
+[[nodiscard]] FRT_CORE_API FString MakePathKey (FStringView Path);
+
 using FStringSet = std::unordered_set<FString, SStringHash, SStringEqual>;
 using FStringSetIgnoreCase = std::unordered_set<FString, SStringHashIgnoreCase, SStringEqualIgnoreCase>;
 }

@@ -1486,6 +1486,24 @@ TEST(StringMap, PathMapComparesTheNtfsWay)
 	EXPECT_EQ(greek.find("λογος.png")->second, 1);
 }
 
+// MakePathKey is the same rule as a string: byte-equal for names NTFS takes for one, '/' where it was,
+// and names Unicode folding would merge kept apart.
+TEST(StringMap, PathKeysAsStringsCompareAndContainAsTheMapDoes)
+{
+	EXPECT_EQ(MakePathKey("Матеріали/Цегла.frtmat.yml"), MakePathKey("МАТЕРІАЛИ/цегла.FRTMAT.YML"));
+	EXPECT_NE(MakePathKey("s.txt"), MakePathKey("\u017f.txt")) << "U+017F LONG S is a name of its own on NTFS";
+	EXPECT_NE(MakePathKey("k"), MakePathKey("\u212a")) << "nor is KELVIN SIGN 'k'";
+	EXPECT_EQ(MakePathKey("a/b/c").CountOccurrences("/"), 2u);
+	EXPECT_TRUE(MakePathKey("Корінь/Під/x").View().StartsWith(MakePathKey("корінь/під")));
+	for (const FStringView text : { FStringView("Ab/Ω/ß/ǅ"), FStringView("\u017f/\u03c2/\u0131"), FStringView("😀/Deseret \U00010400") })
+	{
+		FString upper(text);
+		upper.ToUpperInline();
+		EXPECT_EQ(MakePathKey(text) == MakePathKey(upper), SPathEqual{}(text, upper)) << text;
+		EXPECT_EQ(MakePathKey(text), MakePathKey(MakePathKey(text))) << "a key is its own key";
+	}
+}
+
 // Path keys against the OS itself, for every BMP unit and every case partner either side knows (Unicode's
 // upper, lower and folded forms, the OS's upper case): one key exactly when CompareStringOrdinal(..., TRUE),
 // the comparison NTFS makes, calls the two one-unit names equal. Unicode's simple uppercase alone would

@@ -4,6 +4,7 @@
 #include <cstdio>
 
 #include "Assets/FileWatcherService.h"
+#include "Platform/FileSystem.h"
 #include "Graphics/Render/RHI/Device.h"
 
 
@@ -285,22 +286,17 @@ void CPipelineLibrary::WatchDirectory (const std::filesystem::path& Directory)
 	{
 		return;
 	}
-	// A directory change stands for everything below it, so IsFileAffected answers "is Directory
-	// at or below this watched one" the way the watcher compares paths.
-	assets::SFileChange inside;
-	inside.Kind = assets::EFileChange::Rescan;
-	inside.bDirectory = true;
+	const std::filesystem::path directory = platform::NormalizePath(Directory);
 	for (const auto& [watched, handle] : WatchedDirectories)
 	{
-		inside.Path = watched;
-		if (assets::IsFileAffected(inside, Directory))
+		if (platform::IsAtOrBelow(directory, watched))
 		{
 			return;
 		}
 	}
 	const SDelegateHandle handle = FileWatcher->Subscribe(Directory, {},
 		[this] (std::span<const assets::SFileChange> Changes) { OnFilesChanged(Changes); });
-	WatchedDirectories.emplace_back(Directory, handle);
+	WatchedDirectories.emplace_back(directory, handle);
 }
 
 void CPipelineLibrary::OnFilesChanged (std::span<const assets::SFileChange> Changes)
@@ -308,6 +304,11 @@ void CPipelineLibrary::OnFilesChanged (std::span<const assets::SFileChange> Chan
 	// Level-triggered: a change only says where to look. A program is rebuilt when a file it read
 	// has another write time than its last build saw, the comparison the per-frame poll before the
 	// watcher made. A file that is gone keeps the program as it is.
+	const assets::CAffectedFiles affected(Changes);
+	if (affected.IsEmpty())
+	{
+		return;
+	}
 	for (SProgram& program : Programs)
 	{
 		if (program.bChanged)
@@ -316,9 +317,7 @@ void CPipelineLibrary::OnFilesChanged (std::span<const assets::SFileChange> Chan
 		}
 		for (const SWatchedFile& file : program.Watched)
 		{
-			const bool bAffected = std::any_of(Changes.begin(), Changes.end(),
-				[&file] (const assets::SFileChange& Change) { return assets::IsFileAffected(Change, file.Path); });
-			if (!bAffected)
+			if (!affected.Contains(file.Path))
 			{
 				continue;
 			}

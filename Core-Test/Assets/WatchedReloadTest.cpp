@@ -186,6 +186,66 @@ TEST_F(WatchedReloadTest, AMaterialIsReadAgainWhenTheWatcherReportsItsFileChange
 	EXPECT_EQ(service.GetStats().Subscriptions, 0u) << "no watcher, no subscriptions";
 }
 
+TEST(FileChangeRule, AnIndexOfChangesAnswersAsTheRuleDoes)
+{
+	const std::filesystem::path root = std::filesystem::temp_directory_path() / FStringView("Корінь").ToPath();
+	std::vector<assets::SFileChange> changes(4u);
+	changes[0].Kind = assets::EFileChange::Modified;
+	changes[0].Path = root / FStringView("Матеріали/Цегла.frtmat.yml").ToPath();
+	changes[1].Kind = assets::EFileChange::Rescan;
+	changes[1].bDirectory = true;
+	changes[1].Path = root / FStringView("Шейдери").ToPath();
+	changes[2].Kind = assets::EFileChange::Removed;
+	changes[2].Path = root / FStringView("Старе.frtmat.yml").ToPath();
+	changes[3].Kind = assets::EFileChange::Moved;
+	changes[3].Path = root / FStringView("s.ini").ToPath();
+	changes[3].OldPath = root / FStringView("Було.ini").ToPath();
+	const assets::CAffectedFiles affected(changes);
+
+	const std::filesystem::path files[] = {
+		root / FStringView("матеріали/ЦЕГЛА.frtmat.yml").ToPath(), root / FStringView("Шейдери/Common.hlsli").ToPath(),
+		root / FStringView("Шейдери/Глибше/x.hlsli").ToPath(), root / FStringView("Старе.frtmat.yml").ToPath(), root / FStringView("s.ini").ToPath(),
+		root / FStringView("\u017f.ini").ToPath(), root / FStringView("Було.ini").ToPath(), root / FStringView("Шейдери2/x.hlsli").ToPath(),
+		root / FStringView("Матеріали/../Шейдери/y.hlsli").ToPath() };
+	for (const std::filesystem::path& file : files)
+	{
+		bool bAny = false;
+		for (const assets::SFileChange& change : changes)
+		{
+			bAny = bAny || assets::IsFileAffected(change, file);
+		}
+		EXPECT_EQ(affected.Contains(file), bAny) << FString::FromPath(file).CStr();
+	}
+	EXPECT_TRUE(affected.Contains(files[0]));
+	EXPECT_TRUE(affected.Contains(files[2])) << "below a rescanned directory";
+	EXPECT_TRUE(affected.Contains(files[8])) << "spelled with '..'";
+	EXPECT_FALSE(affected.Contains(files[3])) << "a removal affects nothing loaded";
+	EXPECT_FALSE(affected.Contains(files[5])) << "U+017F is not 's' on NTFS";
+	EXPECT_FALSE(affected.Contains(files[7]));
+	EXPECT_TRUE(assets::CAffectedFiles(std::span(changes).subspan(2u, 1u)).IsEmpty());
+}
+
+TEST_F(WatchedReloadTest, AMaterialReadFromAFileOfAnyNameIsReadAgain)
+{
+	// The serializers choose a reader by content, not by name; the watcher must not choose by name either.
+	FRT_TEST_MEMORY_POOL();
+	const std::filesystem::path path = Dir / FStringView("Цегла.матеріал").ToPath();
+	ASSERT_TRUE(platform::WriteFileText(path, MaterialText(0.1f)));
+
+	assets::CFileWatcherService service;
+	graphics::CMaterialLibrary library;
+	library.SetFileWatcher(&service);
+	const memory::TRefShared<graphics::SMaterial> material = library.LoadOrCreateMaterial(path, {});
+	ASSERT_TRUE(material);
+	EXPECT_FLOAT_EQ(material->Roughness, 0.1f);
+
+	Rewrite(path, MaterialText(0.7f));
+	ASSERT_TRUE(service.Flush(Dir));
+	EXPECT_TRUE(library.ReloadModifiedMaterials());
+	EXPECT_FLOAT_EQ(material->Roughness, 0.7f);
+	library.SetFileWatcher(nullptr);
+}
+
 TEST_F(WatchedReloadTest, ARescanReadsOnlyTheMaterialsWhoseFilesChanged)
 {
 	FRT_TEST_MEMORY_POOL();

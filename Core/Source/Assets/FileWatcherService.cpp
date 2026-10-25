@@ -8,6 +8,7 @@
 
 #include "Asserts.h"
 #include "Config/Config.h"
+#include "Containers/StringMap.h"
 #include "Log/Log.h"
 #include "Platform/FileSystem.h"
 #include "Platform/Process.h"
@@ -30,11 +31,6 @@ constexpr FStringLiteral FencePrefix = ".frt-fence-";
 // look waits twice as long, up to MaxMissingPollMs.
 constexpr uint32 SlowStatMs = 50u;
 constexpr uint32 MaxMissingPollMs = 30000u;
-
-uint64 MsToTicks (uint32 Ms) noexcept
-{
-	return platform::GetTimestampFrequency() * Ms / 1000u;
-}
 
 // Ticks from Earlier to Later; 0 when Later is not after it (timestamps of events taken in a batch may
 // be older than the pump's "now", never the other way round, but nothing here may underflow).
@@ -103,62 +99,10 @@ bool IsFence (FStringView Path)
 	return GetName(Path).StartsWith(FStringView(FencePrefix));
 }
 
-// Absolute and lexically normal, without a trailing separator (a volume root keeps its own).
-std::filesystem::path NormalizePath (const std::filesystem::path& Path)
-{
-	std::error_code ec;
-	std::filesystem::path path = std::filesystem::absolute(Path, ec);
-	if (ec)
-	{
-		path = Path;
-	}
-	path = path.lexically_normal();
-	if (!path.has_filename() && path.has_relative_path())
-	{
-		path = path.parent_path();
-	}
-	return path;
-}
-
-// The names of Path below Root, '/' separated ("" for Root itself), or nullopt when Path is not at or
-// below Root. Both normalized; names compare ignoring case unless the root's directory is
-// case-sensitive.
-std::optional<FString> GetRelativePath (const std::filesystem::path& Path, const std::filesystem::path& Root, bool bCaseSensitive)
-{
-	auto pathIt = Path.begin();
-	for (auto rootIt = Root.begin(); rootIt != Root.end(); ++rootIt, ++pathIt)
-	{
-		if (pathIt == Path.end())
-		{
-			return std::nullopt;
-		}
-		const FString a = FString::FromPath(*pathIt);
-		const FString b = FString::FromPath(*rootIt);
-		if (bCaseSensitive ? a != b : !a.Equals<ESearchCase::IgnoreCase>(b))
-		{
-			return std::nullopt;
-		}
-	}
-	FString relative;
-	for (; pathIt != Path.end(); ++pathIt)
-	{
-		const FString name = FString::FromPath(*pathIt);
-		if (!name.IsEmpty())
-		{
-			if (!relative.IsEmpty())
-			{
-				relative.AppendChar('/');
-			}
-			relative.Append(name);
-		}
-	}
-	return relative;
-}
-
-// The expected-write table's key: the absolute path, generic, folded (NTFS compares names so).
+// The expected-write table's key: the absolute path, generic, as NTFS compares names (MakePathKey).
 FString MakeExpectedKey (const std::filesystem::path& Path)
 {
-	return FString::FromPath(NormalizePath(Path), EPathStyle::Generic).FoldCase();
+	return MakePathKey(FString::FromPath(platform::NormalizePath(Path), EPathStyle::Generic));
 }
 
 std::optional<hash::SContentHash> HashFileStable (const std::filesystem::path& Path)
@@ -185,8 +129,9 @@ SFileWatcherSettings SFileWatcherSettings::FromConfig (const config::CConfig& Co
 
 /**
  * The service's state. Paths inside are relative to their root, '/' separated, spelled as the OS
- * reported them; keys are the same paths folded (FString::FoldCase) on case-insensitive directories,
- * which is what pending entries, pairing and filters compare.
+ * reported them; keys are the same paths as NTFS compares names (MakePathKey: its upcase table, not
+ * Unicode folding, which merges names NTFS keeps apart) on case-insensitive directories, which is
+ * what pending entries, pairing and filters compare.
  */
 struct CFileWatcherService::SState
 {
@@ -364,16 +309,16 @@ struct CFileWatcherService::SState
 		, Watcher(std::move(InWatcher))
 		, OwnerThread(platform::GetCurrentThreadId())
 	{
-		SettleTicks = MsToTicks(Settings.SettleMs);
-		MaxLatencyTicks = MsToTicks(Settings.MaxLatencyMs);
-		RemoveGraceTicks = MsToTicks(Settings.RemoveGraceMs);
-		PairTicks = MsToTicks(Settings.PairWindowMs);
-		VcsSettleTicks = MsToTicks(Settings.VcsSettleMs);
-		VcsPollTicks = MsToTicks(Settings.VcsPollMs);
-		HeldWarningTicks = MsToTicks(Settings.HeldWarningMs);
-		RootPollTicks = MsToTicks(Settings.RootPollMs);
-		SlowStatTicks = MsToTicks(SlowStatMs);
-		MaxMissingPollTicks = MsToTicks(MaxMissingPollMs);
+		SettleTicks = platform::MillisecondsToTimestamp(Settings.SettleMs);
+		MaxLatencyTicks = platform::MillisecondsToTimestamp(Settings.MaxLatencyMs);
+		RemoveGraceTicks = platform::MillisecondsToTimestamp(Settings.RemoveGraceMs);
+		PairTicks = platform::MillisecondsToTimestamp(Settings.PairWindowMs);
+		VcsSettleTicks = platform::MillisecondsToTimestamp(Settings.VcsSettleMs);
+		VcsPollTicks = platform::MillisecondsToTimestamp(Settings.VcsPollMs);
+		HeldWarningTicks = platform::MillisecondsToTimestamp(Settings.HeldWarningMs);
+		RootPollTicks = platform::MillisecondsToTimestamp(Settings.RootPollMs);
+		SlowStatTicks = platform::MillisecondsToTimestamp(SlowStatMs);
+		MaxMissingPollTicks = platform::MillisecondsToTimestamp(MaxMissingPollMs);
 	}
 
 	void CheckOwner () const
@@ -383,7 +328,7 @@ struct CFileWatcherService::SState
 
 	[[nodiscard]] FString MakeKey (const SRoot& Root, FStringView Path) const
 	{
-		return Root.bCaseSensitive ? FString(Path) : FString(Path).FoldCase();
+		return Root.bCaseSensitive ? FString(Path) : MakePathKey(Path);
 	}
 
 	[[nodiscard]] std::filesystem::path MakeFullPath (const SRoot& Root, FStringView Path) const
@@ -398,7 +343,7 @@ struct CFileWatcherService::SState
 		SRoot* best = nullptr;
 		for (const std::unique_ptr<SRoot>& root : Roots)
 		{
-			std::optional<FString> relative = GetRelativePath(Directory, root->Path, root->bCaseSensitive);
+			std::optional<FString> relative = platform::GetRelativePath(Directory, root->Path, root->bCaseSensitive);
 			if (relative && (best == nullptr || CountNames(*relative) < CountNames(*OutRelative)))
 			{
 				best = root.get();
@@ -411,8 +356,8 @@ struct CFileWatcherService::SState
 	// Root and Directory overlap: one holds the other (both normalized).
 	[[nodiscard]] static bool Overlaps (const SRoot& Root, const std::filesystem::path& Directory)
 	{
-		return GetRelativePath(Directory, Root.Path, Root.bCaseSensitive).has_value()
-			|| GetRelativePath(Root.Path, Directory, Root.bCaseSensitive).has_value();
+		return platform::GetRelativePath(Directory, Root.Path, Root.bCaseSensitive).has_value()
+			|| platform::GetRelativePath(Root.Path, Directory, Root.bCaseSensitive).has_value();
 	}
 
 	// Watching is on for Root: on, and Root within SetEnabled's OnlyUnder when it named directories.
@@ -1433,7 +1378,7 @@ struct CFileWatcherService::SState
 		const uint32 shift = Entry.ProbeFailures - 1u < 16u ? Entry.ProbeFailures - 1u : 16u;
 		const uint64 backoffMs = static_cast<uint64>(Settings.ProbeBackoffMs) << shift;
 		const uint32 waitMs = static_cast<uint32>(backoffMs < Settings.MaxProbeBackoffMs ? backoffMs : Settings.MaxProbeBackoffMs);
-		Entry.NextProbe = Now + MsToTicks(waitMs);
+		Entry.NextProbe = Now + platform::MillisecondsToTimestamp(waitMs);
 		if (!Entry.bWarnedHeld && Elapsed(Entry.HeldSince, Now) >= HeldWarningTicks)
 		{
 			log::Warning(LogCategory, "{} is still open for writing in another process; waiting for it to finish", FString::FromPath(Full));
@@ -1716,7 +1661,7 @@ SDelegateHandle CFileWatcherService::Subscribe (const std::filesystem::path& Dir
 
 	SState::SSubscription subscription;
 	subscription.Id = detail::NewDelegateHandleId();
-	subscription.Directory = NormalizePath(Directory);
+	subscription.Directory = platform::NormalizePath(Directory);
 	subscription.Extensions = Filter.Extensions;
 	subscription.Callback = std::move(Callback);
 
@@ -1806,7 +1751,7 @@ void CFileWatcherService::SetEnabled (bool bEnabled, std::span<const std::filesy
 	}
 	for (const std::filesystem::path& directory : OnlyUnder)
 	{
-		state.EnabledOnlyUnder.push_back(NormalizePath(directory));
+		state.EnabledOnlyUnder.push_back(platform::NormalizePath(directory));
 	}
 	// Roots armed already stay armed (watching them did not stop); the others are armed when they are
 	// in scope now, and disarmed when they left it.
@@ -1861,7 +1806,7 @@ bool CFileWatcherService::Flush (const std::filesystem::path& Directory, double 
 		std::optional<uint64> Time;
 		bool bByLoss = false;  // the root lost events after the fence was written: its own may be among them
 	};
-	const std::filesystem::path directory = NormalizePath(Directory);
+	const std::filesystem::path directory = platform::NormalizePath(Directory);
 	std::vector<SWaiting> waiting;
 	bool bAllWritten = true;
 	for (const std::unique_ptr<SState::SRoot>& root : state.Roots)
@@ -1892,7 +1837,7 @@ bool CFileWatcherService::Flush (const std::filesystem::path& Directory, double 
 
 	// Events of one root arrive in order: once its fence's has, everything before it has too.
 	const uint64 frequency = platform::GetTimestampFrequency();
-	const uint64 deadline = platform::ReadTimestamp() + static_cast<uint64>(TimeoutSeconds * static_cast<double>(frequency));
+	const uint64 deadline = platform::MakeDeadline(TimeoutSeconds);
 	while (true)
 	{
 		state.PumpEvents();
@@ -1964,13 +1909,7 @@ void CFileWatcherService::ExpectWrite (const std::filesystem::path& Path, const 
 
 void CFileWatcherService::ExpectWrite (const std::filesystem::path& Path, std::span<const uint8> Bytes, double TimeoutSeconds)
 {
-	ExpectWrite(Path, hash::HashContent(Bytes), Bytes.size(), MakeDeadline(TimeoutSeconds));
-}
-
-uint64 CFileWatcherService::MakeDeadline (double SecondsFromNow) noexcept
-{
-	const double ticks = SecondsFromNow * static_cast<double>(platform::GetTimestampFrequency());
-	return platform::ReadTimestamp() + (ticks > 0.0 ? static_cast<uint64>(ticks) : 0u);
+	ExpectWrite(Path, hash::HashContent(Bytes), Bytes.size(), platform::MakeDeadline(TimeoutSeconds));
 }
 
 void CFileWatcherService::SetVcsBusyQuery (TUniqueFunction<bool ()> IsBusy)
@@ -2009,13 +1948,62 @@ const SFileWatcherSettings& CFileWatcherService::GetSettings () const noexcept
 	return State->Settings;
 }
 
+namespace
+{
+// A loaded file's path in the form changes are spelled (absolute, normal), made so only when it is not
+// absolute already; then its key.
+FString MakeFileKey (const std::filesystem::path& File)
+{
+	const std::filesystem::path path = File.is_absolute() ? File.lexically_normal() : platform::NormalizePath(File);
+	return MakePathKey(FString::FromPath(path, EPathStyle::Generic));
+}
+}
+
 bool IsFileAffected (const SFileChange& Change, const std::filesystem::path& File)
 {
 	if (Change.Kind == EFileChange::Removed)
 	{
 		return false;
 	}
-	const std::optional<FString> relative = GetRelativePath(NormalizePath(File), NormalizePath(Change.Path), false);
-	return relative.has_value() && (Change.bDirectory || relative->IsEmpty());
+	// Change.Path is absolute and normal already: the service spells it so.
+	const FString fileKey = MakeFileKey(File);
+	const FString changeKey = MakePathKey(FString::FromPath(Change.Path, EPathStyle::Generic));
+	return Change.bDirectory ? IsAtOrBelow(fileKey, changeKey) : fileKey == changeKey;
+}
+
+CAffectedFiles::CAffectedFiles (std::span<const SFileChange> Changes)
+{
+	for (const SFileChange& change : Changes)
+	{
+		if (change.Kind == EFileChange::Removed)
+		{
+			continue;
+		}
+		FString key = MakePathKey(FString::FromPath(change.Path, EPathStyle::Generic));
+		if (change.bDirectory)
+		{
+			Directories.push_back(std::move(key));
+		}
+		else
+		{
+			Files.insert(std::move(key));
+		}
+	}
+}
+
+bool CAffectedFiles::Contains (const std::filesystem::path& File) const
+{
+	if (IsEmpty())
+	{
+		return false;
+	}
+	const FString key = MakeFileKey(File);
+	return Files.contains(key)
+		|| std::any_of(Directories.begin(), Directories.end(), [&key] (const FString& Directory) { return IsAtOrBelow(key, Directory); });
+}
+
+bool CAffectedFiles::IsEmpty () const noexcept
+{
+	return Files.empty() && Directories.empty();
 }
 }

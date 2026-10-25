@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 
+#include "Containers/StringMap.h"
 #include "Containers/WideString.h"
 #include "Platform/Windows/WindowsCommon.h"
 
@@ -333,6 +334,45 @@ std::filesystem::path GetVolumeRoot (const std::filesystem::path& Path)
 
 
 // ---------------- Stat ----------------
+
+std::filesystem::path NormalizePath (const std::filesystem::path& Path)
+{
+	std::error_code ec;
+	std::filesystem::path path = std::filesystem::absolute(Path, ec);
+	if (ec)
+	{
+		path = Path;
+	}
+	path = path.lexically_normal();
+	if (!path.has_filename() && path.has_relative_path())
+	{
+		path = path.parent_path();
+	}
+	return path;
+}
+
+std::optional<FString> GetRelativePath (const std::filesystem::path& Path, const std::filesystem::path& Directory, bool bCaseSensitive)
+{
+	// Generic text, compared by key: the keys of equal names are byte-equal and keep every '/' where it
+	// was, so Directory's names are a prefix of Path's exactly when its key is a prefix of Path's key
+	// ending at a '/', and what follows is Path's own names after as many as Directory has.
+	const FString path = FString::FromPath(Path, EPathStyle::Generic);
+	const FString directoryFull = FString::FromPath(Directory, EPathStyle::Generic);
+	const FString directoryText(directoryFull.View().TrimEnd("/"));
+	const FString pathKey = bCaseSensitive ? path : MakePathKey(path);
+	const FString directoryKey = bCaseSensitive ? directoryText : MakePathKey(directoryText);
+	if (!pathKey.View().StartsWith(directoryKey) || (pathKey.Len() > directoryKey.Len() && pathKey.View()[directoryKey.Len()] != '/'))
+	{
+		return std::nullopt;
+	}
+	FStringView below = path.View();
+	for (uint32 names = directoryText.CountOccurrences("/") + 1u; names > 0u; --names)
+	{
+		const uint32 slash = below.Find('/');
+		below = slash == FStringView::NotFound ? FStringView() : below.RightChop(slash + 1u);
+	}
+	return FString(below.TrimStart("/"));
+}
 
 std::optional<SFileStat> Stat (const std::filesystem::path& Path, FString* OutError)
 {

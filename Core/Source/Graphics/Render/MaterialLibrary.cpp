@@ -71,9 +71,9 @@ void CMaterialLibrary::Watch (const std::filesystem::path& MaterialPath)
 	{
 		return;
 	}
-	assets::SWatchFilter filter;
-	filter.Extensions.push_back(".frtmat.yml");
-	const SDelegateHandle handle = FileWatcher->Subscribe(directory, filter,
+	// No extension filter: a material may be read from a file of any name (the serializers choose by
+	// content), and OnFilesChanged matches each change against the files loaded anyway.
+	const SDelegateHandle handle = FileWatcher->Subscribe(directory, {},
 		[this] (std::span<const assets::SFileChange> Changes) { OnFilesChanged(Changes); });
 	WatchedDirectories.try_emplace(key, handle);
 }
@@ -96,6 +96,11 @@ void CMaterialLibrary::OnFilesChanged (std::span<const assets::SFileChange> Chan
 	// Level-triggered: a change only says where to look. A material is read again when its file's
 	// write time differs from the one it was read with, so the library's own writes (create, upgrade)
 	// and repeated reports of one edit read nothing twice.
+	const assets::CAffectedFiles affected(Changes);
+	if (affected.IsEmpty())
+	{
+		return;
+	}
 	for (auto& entry : Materials)
 	{
 		SMaterialRecord& record = entry.second;
@@ -104,20 +109,16 @@ void CMaterialLibrary::OnFilesChanged (std::span<const assets::SFileChange> Chan
 			continue;
 		}
 		const std::filesystem::path& path = record.Material->SourcePath;
-		for (const assets::SFileChange& change : Changes)
+		if (!affected.Contains(path))
 		{
-			if (!assets::IsFileAffected(change, path))
-			{
-				continue;
-			}
-			std::error_code ec;
-			const std::filesystem::file_time_type writeTime = std::filesystem::last_write_time(path, ec);
-			if (!ec && writeTime != record.Material->LastWriteTime)
-			{
-				record.bChanged = true;
-				bAnyChanged = true;
-			}
-			break;
+			continue;
+		}
+		std::error_code ec;
+		const std::filesystem::file_time_type writeTime = std::filesystem::last_write_time(path, ec);
+		if (!ec && writeTime != record.Material->LastWriteTime)
+		{
+			record.bChanged = true;
+			bAnyChanged = true;
 		}
 	}
 }

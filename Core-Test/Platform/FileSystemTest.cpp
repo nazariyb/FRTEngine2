@@ -393,6 +393,27 @@ TEST_F(FileSystemTest, AtomicWritesGiveANewIdentityInPlaceWritesKeepIt)
 	EXPECT_NE(*replaced, *first);
 }
 
+TEST(PathContainment, NamesBelowADirectoryCompareAsNtfsDoesAndKeepTheirSpelling)
+{
+	const std::filesystem::path root = std::filesystem::temp_directory_path() / FStringView("Корінь 根").ToPath();
+	EXPECT_EQ(platform::NormalizePath(root / "a" / ".." / "b" / ""), root / "b") << "absolute, normal, no trailing separator";
+	EXPECT_EQ(platform::NormalizePath(L"C:\\"), std::filesystem::path(L"C:\\")) << "a volume root keeps its own";
+
+	EXPECT_EQ(platform::GetRelativePath(root / FStringView("Під/Файл.txt").ToPath(), root), std::optional<FString>("Під/Файл.txt"));
+	EXPECT_EQ(platform::GetRelativePath(root / FStringView("ПІД/файл.TXT").ToPath(), root / FStringView("під").ToPath()),
+		std::optional<FString>("файл.TXT")) << "ignoring case, in the path's own spelling";
+	EXPECT_EQ(platform::GetRelativePath(root, root / ""), std::optional<FString>(""));
+	EXPECT_FALSE(platform::GetRelativePath(root / FStringView("Під").ToPath(), root / FStringView("Пі").ToPath()).has_value())
+		<< "a name that starts like the directory's is not below it";
+	EXPECT_FALSE(platform::GetRelativePath(root / FStringView("s/x").ToPath(), root / FStringView("\u017f").ToPath()).has_value())
+		<< "'s' and U+017F are two names on NTFS";
+	EXPECT_FALSE(platform::GetRelativePath(root / FStringView("Під/x").ToPath(), root / FStringView("під").ToPath(), true).has_value())
+		<< "case-sensitive when asked";
+	EXPECT_EQ(platform::GetRelativePath(L"C:\\x\\y", L"C:\\"), std::optional<FString>("x/y"));
+	EXPECT_TRUE(platform::IsAtOrBelow(root / "a", root));
+	EXPECT_FALSE(platform::IsAtOrBelow(root, root / "a"));
+}
+
 TEST_F(FileSystemTest, StatDescribesFilesAndDirectories)
 {
 	const std::filesystem::path file = File("Стат 統計.bin");

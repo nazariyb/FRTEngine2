@@ -55,15 +55,17 @@ wrong answer.
 watches the directory - roots overlap when a directory was subscribed before one above it: everything older is told
 now; for tests and scripted steps), `SetEnabled(on, onlyUnder)` (optionally for the roots in or above some directories
 only), `GetStats`. `IsFileAffected(change, file)` is the rule loaders share: a change of the file's path, or of a
-directory above it, and never a removal. `CEngine::GetFileWatcher()` owns one in Debug and Development (headless too;
+directory above it, and never a removal; `CAffectedFiles(changes).Contains(file)` answers the same for many files in
+one lookup each. Paths compare as NTFS compares names (`MakePathKey`, `Containers/StringMap.h`: its upcase table, not
+Unicode folding), through `platform::NormalizePath` and `platform::GetRelativePath` (`Platform/FileSystem.h`). `CEngine::GetFileWatcher()` owns one in Debug and Development (headless too;
 null in Release and in tool hosts). `[Assets] Watch` (default 1) turns it off.
 
 ### Subscribers
 
 | Subscriber | Watches | On a change |
 |---|---|---|
-| `CMaterialLibrary` | the directory of every material it loaded (`.frtmat.yml`) | marks the material if its write time differs; `ReloadModifiedMaterials` (the renderer, once per frame) reads it again, `Version` goes up |
-| `CInputActionLibrary` | the directories of the actions and maps it loaded (`.frtinputaction`, `.frtinputmap`) | reads them again inside `Pump`, before the frame's maps are evaluated |
+| `CMaterialLibrary` | the directory of every material it loaded (any name: the serializers read by content) | marks the material if its write time differs; `ReloadModifiedMaterials` (the renderer, once per frame) reads it again, `Version` goes up |
+| `CInputActionLibrary` | the directories of the actions and maps it loaded | reads them again inside `Pump`, before the frame's maps are evaluated |
 | `CPipelineLibrary` | the shader root, and the directory of any file a build read outside it | marks every program that read the file; `RebuildChangedPrograms` (the renderer) builds them again |
 | `CEditorInput` | `Editor/Config/EditorInput.ini` and `Local/Editor/EditorInput.ini` | both read again on the next frame |
 

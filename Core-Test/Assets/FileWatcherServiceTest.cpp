@@ -362,6 +362,26 @@ TEST_F(FileWatcherServiceTest, ACaseOnlyRenameIsAMovedWhosePathsDifferInCaseOnly
 	EXPECT_EQ(change.OldPath, File("текстура.png"));
 }
 
+TEST_F(FileWatcherServiceTest, NamesNtfsKeepsApartArePendingApart)
+{
+	// Unicode case folding merges 's' and U+017F LONG S; NTFS's upcase table does not: two files.
+	Start();
+	WriteText(File("s.txt"), "s");
+	WriteText(File("\u017f.txt"), "long s");
+	Flush();
+	EXPECT_TRUE(Recorder.HasOnly("s.txt", assets::EFileChange::Added)) << Recorder.Describe().CStr();
+	EXPECT_TRUE(Recorder.HasOnly("\u017f.txt", assets::EFileChange::Added)) << Recorder.Describe().CStr();
+	EXPECT_EQ(Recorder.Changes.size(), 2u) << Recorder.Describe().CStr();
+
+	// Nor does a write the caller expects at one of them silence the other.
+	Recorder.Clear();
+	const FStringView bytes = "same bytes";
+	Service->ExpectWrite(File("\u017f.txt"), bytes.AsBytes());
+	WriteText(File("s.txt"), bytes);
+	Flush();
+	EXPECT_TRUE(Recorder.HasOnly("s.txt", assets::EFileChange::Modified)) << Recorder.Describe().CStr();
+}
+
 TEST_F(FileWatcherServiceTest, AtomicSavesChangeTheIdentityAndAreStillOneModified)
 {
 	WriteText(File("Документ.yml"), "v: 0\n");

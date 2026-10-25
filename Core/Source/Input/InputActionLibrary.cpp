@@ -2,6 +2,7 @@
 
 #include "EnginePaths.h"
 #include "Assets/FileWatcherService.h"
+#include "Platform/FileSystem.h"
 
 
 namespace frt::input
@@ -16,17 +17,6 @@ namespace
 	std::filesystem::path ResolveInputContentRoot ()
 	{
 		return (paths::HasProject() ? paths::GetProjectContentDir() : paths::GetEngineContentDir()) / "Input";
-	}
-
-	std::filesystem::path NormalizePath (const std::filesystem::path& Path)
-	{
-		std::error_code ec;
-		std::filesystem::path absolute = std::filesystem::absolute(Path, ec);
-		if (ec)
-		{
-			return Path.lexically_normal();
-		}
-		return absolute.lexically_normal();
 	}
 }
 
@@ -68,7 +58,7 @@ SInputActionDefinitionAsset* CInputActionLibrary::LoadOrCreateAction (FStringVie
 
 SInputActionMapAsset* CInputActionLibrary::LoadOrCreateActionMap (const std::filesystem::path& Path)
 {
-	const std::filesystem::path resolvedPath = NormalizePath(Path);
+	const std::filesystem::path resolvedPath = platform::NormalizePath(Path);
 	const FString key = MakeKey(resolvedPath);
 	auto it = ActionMaps.find(key);
 	if (it != ActionMaps.end())
@@ -136,10 +126,9 @@ void CInputActionLibrary::Watch (const std::filesystem::path& Path)
 	{
 		return;
 	}
-	assets::SWatchFilter filter;
-	filter.Extensions.push_back(InputActionExtension);
-	filter.Extensions.push_back(InputActionMapExtension);
-	const SDelegateHandle handle = FileWatcher->Subscribe(directory, filter,
+	// No extension filter: a map may be loaded from a file of any name, and OnFilesChanged matches each
+	// change against the files loaded anyway.
+	const SDelegateHandle handle = FileWatcher->Subscribe(directory, {},
 		[this] (std::span<const assets::SFileChange> Changes) { OnFilesChanged(Changes); });
 	WatchedDirectories.try_emplace(key, handle);
 }
@@ -163,23 +152,17 @@ void CInputActionLibrary::OnFilesChanged (std::span<const assets::SFileChange> C
 	// differs from the one it was read with - the time taken before the content, so a write that
 	// lands while it is read leaves a newer time behind, and its own report reads it again. A read
 	// that fails keeps the old time: the next save tries again.
-	const auto changedSince = [Changes] (const std::filesystem::path& Path, std::filesystem::file_time_type LastWriteTime,
+	const assets::CAffectedFiles affected(Changes);
+	const auto changedSince = [&affected] (const std::filesystem::path& Path, std::filesystem::file_time_type LastWriteTime,
 		std::filesystem::file_time_type& OutWriteTime)
 	{
-		if (Path.empty())
+		if (Path.empty() || !affected.Contains(Path))
 		{
 			return false;
 		}
-		for (const assets::SFileChange& change : Changes)
-		{
-			if (assets::IsFileAffected(change, Path))
-			{
-				std::error_code ec;
-				OutWriteTime = std::filesystem::last_write_time(Path, ec);
-				return !ec && OutWriteTime != LastWriteTime;
-			}
-		}
-		return false;
+		std::error_code ec;
+		OutWriteTime = std::filesystem::last_write_time(Path, ec);
+		return !ec && OutWriteTime != LastWriteTime;
 	};
 
 	for (auto& entry : ActionDefinitions)
@@ -273,7 +256,7 @@ std::filesystem::path CInputActionLibrary::MakeActionPath (FStringView Name)
 FString CInputActionLibrary::MakeKey (const std::filesystem::path& Path)
 {
 	// A TPathMap key: case-insensitive as NTFS is, so "IAM_Editor" and "iam_editor" load once.
-	return FString::FromPath(NormalizePath(Path), EPathStyle::Generic);
+	return FString::FromPath(platform::NormalizePath(Path), EPathStyle::Generic);
 }
 
 FStringView CInputActionLibrary::MakeActionKey (FStringView Name)

@@ -603,7 +603,7 @@ private:
 	{
 		ConfigureThread(Desc.ThreadName, EThreadPriority::AboveNormal);
 		const uint64 frequency = GetTimestampFrequency();
-		const uint64 heldTicks = frequency * HeldRemovedMs / 1000u;
+		const uint64 heldTicks = MillisecondsToTimestamp(HeldRemovedMs);
 
 		bool bQuit = false;
 		while (!bQuit)
@@ -1151,7 +1151,7 @@ private:
 			}
 		}
 		const uint64 frequency = GetTimestampFrequency();
-		const uint64 deadline = ReadTimestamp() + frequency * ShutdownDrainMs / 1000u;
+		const uint64 deadline = ReadTimestamp() + MillisecondsToTimestamp(ShutdownDrainMs);
 		while (true)
 		{
 			bool bPending = false;

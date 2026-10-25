@@ -94,6 +94,27 @@ struct SFileStat
 // Stat(Path)->Identity, for callers that need nothing else (watcher pairing, §5.4).
 [[nodiscard]] FRT_CORE_API std::optional<SFileIdentity> GetFileIdentity (const std::filesystem::path& Path, FString* OutError = nullptr);
 
+/**
+ * The one way paths are compared and contained (the watcher's subscriptions and changes, the loaders
+ * that ask whether a change is about one of their files, the shader root override). NormalizePath:
+ * absolute (against the current directory) and lexically normal, without a trailing separator (a
+ * volume root keeps its own). GetRelativePath: the names of Path below Directory, '/' separated (""
+ * for Directory itself), or nullopt when Path is not at or below it - both normalized; names compare
+ * as NTFS compares them (MakePathKey, Containers/StringMap.h) unless bCaseSensitive, in their own
+ * spelling. Lexical only: links are not followed, and an 8.3 name is not its long name.
+ */
+[[nodiscard]] FRT_CORE_API std::filesystem::path NormalizePath (const std::filesystem::path& Path);
+[[nodiscard]] FRT_CORE_API std::optional<FString> GetRelativePath (const std::filesystem::path& Path, const std::filesystem::path& Directory,
+	bool bCaseSensitive = false);
+
+[[nodiscard]] inline bool IsAtOrBelow (const std::filesystem::path& Path, const std::filesystem::path& Directory, bool bCaseSensitive = false)
+{
+	return GetRelativePath(Path, Directory, bCaseSensitive).has_value();
+}
+
+template <NarrowText T>
+std::filesystem::path NormalizePath (const T&) = delete;
+
 template <NarrowText T>
 std::optional<SFileStat> Stat (const T&, FString* = nullptr) = delete;
 template <NarrowText T>

@@ -8,6 +8,7 @@
 #include "Core.h"
 #include "CoreTypes.h"
 #include "Containers/String.h"
+#include "Containers/StringMap.h"
 #include "Functional/MulticastDelegate.h"
 #include "Functional/UniqueFunction.h"
 #include "Hash/StableHash.h"
@@ -173,6 +174,25 @@ using FFileChangesCallback = TUniqueFunction<void (std::span<const SFileChange>)
  */
 [[nodiscard]] FRT_CORE_API bool IsFileAffected (const SFileChange& Change, const std::filesystem::path& File);
 
+/**
+ * IsFileAffected for many files at once: a subscriber that keeps many files indexes a callback's
+ * changes once and asks for each of its files in one hash lookup (and a prefix test per directory
+ * change), instead of comparing every file with every change. The same answers as IsFileAffected.
+ */
+class FRT_CORE_API CAffectedFiles
+{
+public:
+	explicit CAffectedFiles (std::span<const SFileChange> Changes);
+
+	[[nodiscard]] bool Contains (const std::filesystem::path& File) const;
+	// No change could affect a file (all of them removals).
+	[[nodiscard]] bool IsEmpty () const noexcept;
+
+private:
+	FStringSet Files;                    // path keys (MakePathKey) of the files changed
+	std::vector<FString> Directories;    // path keys of the directories changed: Rescan, a directory Moved
+};
+
 // Counts at the moment of the call; the totals count since construction.
 struct SFileWatcherStats
 {
@@ -248,7 +268,7 @@ public:
 
 	// The caller is about to write Path with bytes of this hash and size (hash::HashContent): when Path
 	// settles holding exactly them, its change is not told. Forgotten at Deadline (a platform::
-	// ReadTimestamp value, MakeDeadline) or when the path settles, whichever comes first. A second call
+	// ReadTimestamp value, platform::MakeDeadline) or when the path settles, whichever comes first. A second call
 	// for the same path replaces the first.
 	void ExpectWrite (const std::filesystem::path& Path, const hash::SContentHash& Hash, uint64 Size, uint64 Deadline);
 	// The same, hashing Bytes, forgotten after TimeoutSeconds.
@@ -257,9 +277,6 @@ public:
 	void ExpectWrite (const T&, const hash::SContentHash&, uint64, uint64) = delete;
 	template <platform::NarrowText T>
 	void ExpectWrite (const T&, std::span<const uint8>, double = 10.0) = delete;
-
-	// platform::ReadTimestamp() SecondsFromNow from now.
-	[[nodiscard]] static uint64 MakeDeadline (double SecondsFromNow) noexcept;
 
 	// ---- the VCS seam (M4) ----
 

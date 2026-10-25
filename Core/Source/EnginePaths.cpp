@@ -6,6 +6,7 @@
 #include <Windows.h>
 #endif
 
+#include "Platform/FileSystem.h"
 #include "Platform/Platform.h"
 #include "Project/Project.h"
 #include "Project/UserRegistry.h"
@@ -141,9 +142,7 @@ std::filesystem::path GetShaderRootDir ()
 
 void SetShaderRootOverride (const std::filesystem::path& Directory)
 {
-	std::error_code ec;
-	const std::filesystem::path absolute = std::filesystem::absolute(Directory, ec);
-	ShaderRootOverride = Directory.empty() ? std::filesystem::path() : (ec ? Directory : absolute).lexically_normal();
+	ShaderRootOverride = Directory.empty() ? std::filesystem::path() : platform::NormalizePath(Directory);
 }
 
 std::filesystem::path GetProjectContentDir ()
