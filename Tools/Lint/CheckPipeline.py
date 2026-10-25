@@ -31,7 +31,11 @@ DEFAULT_LIST = os.path.join(ROOT, 'Local', 'Build', 'PipelineSources.txt')
 
 # (name, pattern, why): line patterns, matched on code with comments and literals blanked.
 LINE_GATES = [
-    ('platform-read', r'\bplatform::Read\w*', 'a file read the key does not record: inputs come through the build context'),
+    ('platform-file', r'\bplatform::(?:Read\w*|Stat|GetFileIdentity|EnumerateDirectory|Write\w*|CAppendFile|RemoveFile|TouchFile'
+     r'|MoveToTrash|ReplaceFileAtomic|GetLoadedModulePath)\b',
+     'file access the key does not record - a read, a probe, a listing, a write: inputs come through the build context'),
+    ('raw-file', r'\bstd::[io]?fstream\b|\b_?w?fopen\b|\bCreateFile(?:2|[AW])?\b',
+     'file access past the platform layer: the C and C++ libraries, Win32'),
     ('std-filesystem', r'\bstd::filesystem\b', 'paths and file access: a key never holds a path, a builder never opens files'),
     ('config', r'\bCConfig\b', 'config values are inputs only when recorded (GetConfig), never read directly'),
     ('paths', r'\bpaths::', "the engine's and project's directories differ per machine and checkout"),
@@ -62,7 +66,7 @@ ALLOWED = [
      r'\bstd::filesystem::weakly_canonical\(\s*(?:InShaderRoot|Desc\.SourcePath|resolved)\s*,\s*ec\s*\)',
      'one name for the shader root, the main file and an include that was opened, for the cache to make '
      'mount paths of', None),
-    (SHADER_COMPILER, 'platform-read', r'\bplatform::ReadFileText\(\s*Path\b',
+    (SHADER_COMPILER, 'platform-file', r'\bplatform::ReadFileText\(\s*Path\b',
      "LoadSourceBlob: the one read of the main file and of each include, every one recorded", None),
     # The include probes: a candidate that exists is read through LoadSourceBlob and recorded with its hash,
     # and one that does not is recorded too, as an "Absent" input (SShaderBinary::FilesMissing), so a header
@@ -71,8 +75,10 @@ ALLOWED = [
      'include probe whose outcome, found or absent, the cache records as a discovered input', None),
     (SHADER_COMPILER, 'std-filesystem', r'\bstd::filesystem::weakly_canonical\(\s*candidate\s*,\s*ec\s*\)',
      'the one name of an absent candidate, recorded as an "Absent" input', None),
-    (SHADER_COMPILER, 'platform-read', r'\bplatform::ReadFileChunksStable\(\s*Path\s*,',
+    (SHADER_COMPILER, 'platform-file', r'\bplatform::ReadFileChunksStable\(\s*Path\s*,',
      'hashes what the key records: the bytes of a file DXC read, and the DXC binaries of its identity', None),
+    (SHADER_COMPILER, 'platform-file', r'\bplatform::GetLoadedModulePath\(\s*"\s*"\s*\)',
+     'GetDxcIdentity: which DXC modules this process loaded, to hash them into the key (the compiler identity)', None),
     (SHADER_COMPILER, 'paths', r'\bpaths::GetEngineDir\(\)',
      "where ThirdParty/Dxc/VERSION.txt is; only its content hash enters the key (the compiler identity)", None),
     # The shader cache: its file access is the build context's bookkeeping - turning paths into mount paths
@@ -82,9 +88,14 @@ ALLOWED = [
      None),
     (SHADER_CACHE, 'std-filesystem', r'\bstd::filesystem::weakly_canonical\(\s*Desc\.SourcePath\s*,\s*ec\s*\)',
      'one name for the main file, for ToMountPath', None),
-    (SHADER_CACHE, 'platform-read', r'\bplatform::ReadFileChunksStable\(\s*Path\s*,',
+    (SHADER_CACHE, 'platform-file', r'\bplatform::ReadFileChunksStable\(\s*Path\s*,',
      'HashCurrentFile: the race-free re-hash of a recorded input or the main file, to match manifest sets',
      None),
+    (SHADER_CACHE, 'platform-file', r'\bplatform::Stat\(\s*Path\s*\)',
+     "HashCurrentFile's stats around that re-hash: whether the file is the one a remembered hash was taken of",
+     None),
+    (SHADER_CACHE, 'platform-file', r'\bplatform::Stat\(\s*\*path\s*\)',
+     'IsInputCurrent: whether a recorded "Absent" input is still absent, to match manifest sets', None),
 ]
 
 EXTENSIONS = ('.h', '.hpp', '.cpp', '.inl', '.c', '.cc', '.cxx')
@@ -409,7 +420,17 @@ def check_allowed(allowed):
 # Self-test: what each computed gate must flag (first) and must leave alone (second)
 
 SELF_TEST = [
-    ('platform-read', 'auto Text = platform::ReadFileText(Path);', 'auto Text = Context.ReadFile(Name); // platform::ReadFileText'),
+    ('platform-file', 'auto Text = platform::ReadFileText(Path);', 'auto Text = Context.ReadFile(Name); // platform::ReadFileText'),
+    ('platform-file', 'if (platform::Stat(Probe)) {}', 'const platform::SFileStat Stat = Recorded.Stat;'),
+    ('platform-file', 'platform::EnumerateDirectory(Dir, OnEntry);', 'platform::EStableRead Read = Result;'),
+    ('platform-file', 'platform::WriteFileAtomic(Path, Bytes);', 'platform::OutputDebugText(Log);'),
+    ('platform-file', 'platform::CAppendFile Log;', 'CAppendFileLike Log;'),
+    ('platform-file', 'platform::RemoveFile(Path);', 'RemoveFileFrom(List);'),
+    ('platform-file', 'auto Id = platform::GetFileIdentity(Path);', 'platform::SFileIdentity Id;'),
+    ('platform-file', 'auto Dll = platform::GetLoadedModulePath("x.dll");', 'auto Dll = Context.ModulePath;'),
+    ('raw-file', 'std::ifstream In(Path);', 'std::stringstream Text;'),
+    ('raw-file', 'FILE* F = _wfopen(Name, L"rb");', 'const char* Doc = "fopen";'),
+    ('raw-file', 'HANDLE H = CreateFileW(Name, 0, 0, nullptr, 0, 0, nullptr);', 'CreateFileLike(Name);'),
     ('std-filesystem', 'std::filesystem::path P;', 'const char* Doc = "std::filesystem";'),
     ('config', 'const CConfig& C = GetConfig();', 'CConfigLike X;'),
     ('paths', 'auto Dir = paths::GetEngineDir();', 'auto Dir = mypaths::Get();'),
@@ -453,7 +474,7 @@ SELF_TEST_EXEMPTIONS = [
     ('Src/Bridge.cpp', 'std-filesystem', 'if (std::filesystem::exists(probe))', [], True),
     ('Src/Bridge.cpp', 'std-filesystem', 'if (std::filesystem::exists(probe))', ['Src/Cache.cpp'], False),
     ('Src/Bridge.cpp', 'std-filesystem', 'if (std::filesystem::exists(other))', [], False),
-    ('Src/Bridge.cpp', 'platform-read', 'std::filesystem::path P = platform::ReadFileText(Q);', [], False),
+    ('Src/Bridge.cpp', 'platform-file', 'std::filesystem::path P = platform::ReadFileText(Q);', [], False),
     ('Src/Other.cpp', 'std-filesystem', 'std::filesystem::path P;', [], False),
     ('Src/Bridge.cpp', 'mutable-global', 'static int Calls = 0', [], True),
     ('Src/Bridge.cpp', 'mutable-global', 'static int Runs = 0', [], False),
