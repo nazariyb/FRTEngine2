@@ -13,9 +13,10 @@ shared conversion code included, wherever it lives, and every build of Core writ
 
 Prints every hit, then a count per gate; exit code 1 when there is any, when the list is missing (build the
 engine, or run FRT.bat builder-hashes, first) or names a file that is gone. Comments and string literals are
-not checked. ALLOWED holds the few legitimate exemptions, each with its reason. Before it looks at the
-sources it checks itself against SELF_TEST (code each gate must and must not flag), so a regex that stopped
-matching fails the lint instead of passing everything. Standard library only.
+not checked. ALLOWED holds the few legitimate exemptions, each one use in one file with its reason, never a
+whole file. Before it looks at the sources it checks itself against SELF_TEST (code each gate must and must
+not flag) and SELF_TEST_EXEMPTIONS, so a regex that stopped matching fails the lint instead of passing
+everything. Standard library only.
 
 What the gates cannot see: a mutable global reached through a function of a file outside the list, a hash
 table iterated through a reference or a function's result, a file opened by a library the builder calls.
@@ -43,14 +44,34 @@ UNORDERED_GATE = ('unordered-iteration', 'iteration order of a hash table is not
 GLOBAL_GATE = ('mutable-global', 'state kept between runs is an input no key records')
 GATE_NAMES = [name for name, _, _ in LINE_GATES] + [UNORDERED_GATE[0], GLOBAL_GATE[0]]
 
-# (path fragment, gate, line pattern or None for every line of the file, reason)
+# The exemptions, one use each: (path fragment, gate, pattern, reason, while_unlisted). A line of a file
+# whose path contains the fragment is exempt from a line gate when nothing of the gate's match is left
+# once every exempt use is cut out of it, so a line that mixes an exempt use with another one is still
+# flagged; a hit of a computed gate is exempt when the pattern matches its text. while_unlisted, when
+# set, is a path fragment: the exemption lapses as soon as a listed file contains it. Never a whole file:
+# a read or a probe added later to an exempt file is flagged like any other.
+SHADER_COMPILER = 'Core/Source/Graphics/Render/RHI/ShaderCompiler.'
+SHADER_CACHE = 'Core/Source/Graphics/Render/RHI/ShaderCache.'
 ALLOWED = [
     # The DXC bridge is the shader step's file access: its include handler plays the build context's
-    # ReadFile, recording every file DXC opens, and the shader cache keys those by mount path and content
-    # hash (§14.5) and normalises the -I arguments, so no path it resolves reaches a key or an output.
-    # Shaders stay path-addressed engine code, not registry assets.
-    ('Core/Source/Graphics/Render/RHI/ShaderCompiler.', 'platform-read', None, 'the DXC bridge reads include files'),
-    ('Core/Source/Graphics/Render/RHI/ShaderCompiler.', 'std-filesystem', None, 'the DXC bridge resolves include paths'),
+    # ReadFile, and every file it opens is recorded (SShaderBinary::Dependencies), which the shader cache
+    # keys by mount path and content hash (§14.5). Shaders stay path-addressed engine code.
+    (SHADER_COMPILER, 'std-filesystem', r'\bstd::filesystem::path\b',
+     'the path type (parameters, members, path arithmetic): naming a file opens nothing', None),
+    (SHADER_COMPILER, 'std-filesystem',
+     r'\bstd::filesystem::weakly_canonical\(\s*(?:InShaderRoot|Desc\.SourcePath|resolved)\s*,\s*ec\s*\)',
+     'one name for the shader root, the main file and an include that was opened, for the cache to make '
+     'mount paths of', None),
+    (SHADER_COMPILER, 'platform-read', r'\bplatform::ReadFileText\(\s*Path\b',
+     "LoadSourceBlob: the one read of the main file and of each include, every one recorded", None),
+    # The include probes of the compiler as it is before the shader cache: a candidate that does not exist
+    # is not recorded, so a file appearing later at a higher-priority candidate (the DXC path, which may be
+    # relative to the working directory, before the shader root) would not change a cached key and the
+    # cache would serve DXIL built from the old include. Harmless while nothing caches the output, so the
+    # exemption lapses once the cache is listed: its probes must then record a candidate that does not
+    # exist as an absent input, or resolve from the shader root alone, before they may be exempt.
+    (SHADER_COMPILER, 'std-filesystem', r'\bstd::filesystem::exists\(\s*(?:requested|underRoot|byName)\s*,\s*ec\s*\)',
+     'include probes whose outcome nothing caches yet', SHADER_CACHE),
 ]
 
 EXTENSIONS = ('.h', '.hpp', '.cpp', '.inl', '.c', '.cc', '.cxx')
@@ -328,11 +349,47 @@ def check_text(text):
     return hits
 
 
-def is_allowed(relative, gate, line):
-    for fragment, allowed_gate, pattern, _ in ALLOWED:
-        if fragment in relative and gate == allowed_gate and (pattern is None or re.search(pattern, line)):
-            return True
-    return False
+LINE_GATE_PATTERNS = {name: pattern for name, pattern, _ in LINE_GATES}
+
+
+def is_allowed(relative, gate, line, listed, allowed=None):
+    """Whether the hit of Gate on Line (of the file Relative; Listed: every listed path) is exempt."""
+    patterns = []
+    for fragment, allowed_gate, pattern, _, unlisted in ALLOWED if allowed is None else allowed:
+        lapsed = unlisted is not None and any(unlisted in other for other in listed)
+        if fragment in relative and gate == allowed_gate and not lapsed:
+            patterns.append(pattern)
+    if not patterns:
+        return False
+    if gate not in LINE_GATE_PATTERNS:
+        return any(re.search(pattern, line) for pattern in patterns)
+    rest = line
+    for pattern in patterns:
+        rest = re.sub(pattern, ' ', rest)
+    return not re.search(LINE_GATE_PATTERNS[gate], rest)
+
+
+def check_allowed(allowed):
+    """Problems with an exemption list, as text lines: an unknown gate, a pattern that is empty or does not
+    compile, or no reason."""
+    problems = []
+    for entry in allowed:
+        if len(entry) != 5:
+            problems.append(f'not (fragment, gate, pattern, reason, while_unlisted): {entry!r}')
+            continue
+        fragment, gate, pattern, reason, _ = entry
+        if gate not in GATE_NAMES:
+            problems.append(f'unknown gate {gate!r} for {fragment}')
+        if not pattern:
+            problems.append(f'{fragment} {gate}: no pattern (an exemption names one use, never a whole file)')
+        else:
+            try:
+                re.compile(pattern)
+            except re.error as error:
+                problems.append(f'{fragment} {gate}: {pattern!r} does not compile: {error}')
+        if not reason:
+            problems.append(f'{fragment} {gate}: no reason')
+    return problems
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -370,8 +427,29 @@ SELF_TEST = [
 ]
 
 
+# The exemption rules (is_allowed), against an exemption list of their own: (file, gate, line, other listed
+# files, whether exempt).
+SELF_TEST_ALLOWED = [
+    ('Bridge.', 'std-filesystem', r'\bstd::filesystem::path\b', 'the type', None),
+    ('Bridge.', 'std-filesystem', r'\bstd::filesystem::exists\(\s*probe\s*\)', 'a probe', 'Cache.'),
+    ('Bridge.', 'mutable-global', r'\bCalls\b', 'a counter', None),
+]
+SELF_TEST_EXEMPTIONS = [
+    ('Src/Bridge.cpp', 'std-filesystem', 'void F (const std::filesystem::path& P);', [], True),
+    ('Src/Bridge.cpp', 'std-filesystem', 'std::filesystem::path P = std::filesystem::current_path();', [], False),
+    ('Src/Bridge.cpp', 'std-filesystem', 'if (std::filesystem::exists(probe))', [], True),
+    ('Src/Bridge.cpp', 'std-filesystem', 'if (std::filesystem::exists(probe))', ['Src/Cache.cpp'], False),
+    ('Src/Bridge.cpp', 'std-filesystem', 'if (std::filesystem::exists(other))', [], False),
+    ('Src/Bridge.cpp', 'platform-read', 'std::filesystem::path P = platform::ReadFileText(Q);', [], False),
+    ('Src/Other.cpp', 'std-filesystem', 'std::filesystem::path P;', [], False),
+    ('Src/Bridge.cpp', 'mutable-global', 'static int Calls = 0', [], True),
+    ('Src/Bridge.cpp', 'mutable-global', 'static int Runs = 0', [], False),
+]
+
+
 def self_test():
-    """Failures of the gates against SELF_TEST, as text lines; empty when every case behaves."""
+    """Failures of the gates against SELF_TEST, of the exemption rules and of ALLOWED itself, as text
+    lines; empty when every case behaves."""
     failures = []
     for gate, flagged, clean in SELF_TEST:
         if not check_text(flagged)[gate]:
@@ -379,6 +457,11 @@ def self_test():
         found = check_text(clean)[gate]
         if found:
             failures.append(f'{gate} wrongly flags {found} in: {clean!r}')
+    for relative, gate, line, listed, expected in SELF_TEST_EXEMPTIONS:
+        if is_allowed(relative, gate, line, [relative] + listed, SELF_TEST_ALLOWED) != expected:
+            failures.append(f'exemption: {gate} on {line!r} in {relative} (listed with {listed}) should be '
+                            f'{"exempt" if expected else "flagged"}')
+    failures += [f'ALLOWED: {problem}' for problem in check_allowed(SELF_TEST_ALLOWED + ALLOWED)]
     return failures
 
 
@@ -421,7 +504,7 @@ def main():
             found = check_text(source.read())
         for gate in GATE_NAMES:
             for number, line in found[gate]:
-                if is_allowed(relative, gate, line):
+                if is_allowed(relative, gate, line, files):
                     exempt += 1
                     continue
                 hits[gate] += 1
