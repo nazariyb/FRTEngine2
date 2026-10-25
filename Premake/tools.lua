@@ -1065,6 +1065,10 @@ local assetToolConfiguration = "Development-Default"
 --   - it refuses --options that no newoption declared, and AssetTool's verbs have their own (--json,
 --     --ci, --engine, more with every verb): those are taken out of _OPTIONS before Premake checks
 --     them, and forwarded from _ARGV (assetToolArguments);
+--   - its own --help and --version print Premake's usage or version and end the run before the action
+--     does (with exit code 1 for --help, which is AssetTool's "problems found"): AssetTool reads --help
+--     itself (<verb> --help is help <verb>) and refuses --version, so both are taken out of _OPTIONS
+--     too and reach it the same way;
 --   - it prints "Running action 'assets'..." on standard output, which would be the first line of
 --     every --json stream: its step (premake.main.preAction, in the steps premake.main.elements
 --     runs one after the other) is replaced with one that prints nothing.
@@ -1073,7 +1077,8 @@ function prepareAssetsAction()
 		return
 	end
 	for name in pairs(_OPTIONS) do
-		if not (premake.option.get(name) or premake.option.get(name:lower())) then
+		if not (premake.option.get(name) or premake.option.get(name:lower())) or name:lower() == "help" or
+			name:lower() == "version" then
 			_OPTIONS[name] = nil
 		end
 	end
@@ -1106,10 +1111,44 @@ local function argumentsText(arguments, layers)
 	return table.concat(texts, " ")
 end
 
+-- Whether the command line asks for --json, as AssetTool reads the switch (HasCommandLineSwitch:
+-- --json, -json or /json, the name in any case).
+local function isJsonRequested()
+	for _, argument in ipairs(_ARGV or {}) do
+		local name = argument:match("^%-%-(.*)$") or argument:match("^[%-/](.*)$")
+		if name and name:lower() == "json" then
+			return true
+		end
+	end
+	return false
+end
+
+-- Text as a JSON string: quotes, backslashes and control characters escaped, other bytes as they are
+-- (the UTF-8 Premake has).
+local function jsonString(text)
+	return '"' .. text:gsub('[%c"\\]', function (c)
+		if c == '"' or c == "\\" then
+			return "\\" .. c
+		end
+		return string.format("\\u%04x", c:byte())
+	end) .. '"'
+end
+
+-- Ends a run that failed before AssetTool did, with Code, AssetTool's way: the message on standard
+-- error and, with --json, AssetTool's error object on standard output, so that a script reading the
+-- stream sees why it ended (AssetTool/Source/Commandlet.h, CCommandletContext::Fail).
+local function assetsFail(code, message)
+	io.stderr:write("assets: " .. message .. "\n")
+	if isJsonRequested() then
+		io.stdout:write('{"error":' .. jsonString(message) .. ',"exitCode":' .. code .. '}\n')
+		io.stdout:flush()
+	end
+	os.exit(code)
+end
+
 -- A usage error before AssetTool runs ends with AssetTool's code for one.
 local function assetsUsageError(message)
-	io.stderr:write("assets: " .. message .. "\n")
-	os.exit(2)
+	assetsFail(2, message)
 end
 
 -- The value of an argument that names the project as AssetTool reads one (FindCommandLineValue):
@@ -1191,17 +1230,24 @@ end
 
 local assetToolExe = rootpath("Binaries/Win64/AssetTool-" .. assetToolConfiguration .. ".exe")
 local assetToolCore = rootpath("Binaries/Win64/Core-" .. assetToolConfiguration .. ".dll")
+-- Written after every successful build of AssetTool here: the time that build saw the sources.
+local assetToolStamp = rootpath("Local/Build/AssetTool-" .. assetToolConfiguration .. ".stamp")
 
--- Missing, or older than a source of its own or of Core's (Core is a DLL it loads: the build
--- relinks the executable only when the DLL's exports change, so each is compared with its own
--- sources). Times are whole seconds: a file saved within the second of a link counts as built.
+-- Missing, or not built here since a source of its own or of Core's changed, or since Core's DLL did.
+-- Not the executable's own time: other builds rebuild Core without AssetTool (the editor's, a
+-- project's FRT.bat build), and the build relinks the executable only when something it compiles
+-- changed, so an executable older than Core may be current - or compiled against Core headers that
+-- are not there any more, which only a build of AssetTool can tell (an unrelated Core change costs one
+-- incremental build that does nothing, once). Times are whole seconds: a file saved within the second
+-- of a build counts as built.
 local function isAssetToolStale()
-	local exeTime = fileTime(assetToolExe)
+	local stampTime = fileTime(assetToolStamp)
 	local coreTime = fileTime(assetToolCore)
-	if not exeTime or not coreTime then
+	if not fileTime(assetToolExe) or not coreTime or not stampTime then
 		return true
 	end
-	return newestFileTime(rootpath("AssetTool/Source/**")) > exeTime or newestFileTime(rootpath("Core/Source/**")) > coreTime
+	return coreTime > stampTime or newestFileTime(rootpath("AssetTool/Source/**")) > stampTime or
+		newestFileTime(rootpath("Core/Source/**")) > stampTime
 end
 
 -- The engine's solution, generated again first if it predates the AssetTool project, then
@@ -1224,12 +1270,13 @@ local function buildAssetTool()
 		build(nil, assetToolConfiguration, "AssetTool", true)
 	end)
 	if ok then
+		writeBinary(assetToolStamp, os.date("!%Y-%m-%dT%H:%M:%SZ") .. "\n")
 		return
 	end
-	io.stderr:write("assets: " .. tostring(err) .. "\n")
 	if not (os.isfile(assetToolExe) and os.isfile(assetToolCore)) then
-		os.exit(3)
+		assetsFail(3, tostring(err))
 	end
+	io.stderr:write("assets: " .. tostring(err) .. "\n")
 	io.stderr:write("assets: warning: AssetTool could not be built again (does an editor or another AssetTool have it or " ..
 		"Core in use?): running the build that is there, which may not have the latest changes\n")
 end
