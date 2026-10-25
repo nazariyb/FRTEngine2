@@ -16,6 +16,11 @@ namespace frt::config
 class CConfig;
 }
 
+namespace frt::jobs
+{
+class CWorkerPool;
+}
+
 
 namespace frt::assettool
 {
@@ -71,6 +76,12 @@ public:
 	[[nodiscard]] const config::CConfig& GetConfig () const { return *Config; }
 	void SetConfig (const config::CConfig& InConfig) { Config = &InConfig; }
 
+	// The host's worker pool, made after the memory pool as CEngine makes the engine's: a verb runs its
+	// heavy work there and waits on this (the owner) thread with PumpUntil (Jobs/WorkerPool.h), which
+	// keeps the thread free to report progress and is how every later verb builds and verifies.
+	[[nodiscard]] jobs::CWorkerPool& GetWorkerPool () const { return *WorkerPool; }
+	void SetWorkerPool (jobs::CWorkerPool& Pool) { WorkerPool = &Pool; }
+
 	// The value of the last -Name= / --Name= option, IgnoreCaseAscii; nullopt without one.
 	[[nodiscard]] std::optional<FString> FindOption (FStringView Name) const;
 	// -Name / --Name is on the command line.
@@ -90,6 +101,7 @@ public:
 
 private:
 	const config::CConfig* Config = nullptr;
+	jobs::CWorkerPool* WorkerPool = nullptr;
 };
 
 
@@ -122,6 +134,10 @@ struct SCommandlet
 	bool bWritesProject = false;
 	std::span<const FStringLiteral> Options;
 };
+
+// Verbs with a file of their own (their table rows, options included, are in Commandlets.cpp).
+// DdcCommandlets.cpp: ddc stats|gc|verify.
+int32 RunDdc (CCommandletContext& Context);
 
 // The table, in the order help lists it.
 [[nodiscard]] std::span<const SCommandlet> GetCommandlets ();

@@ -107,6 +107,18 @@ inline constexpr uint64 DdcMaxRecordBytes = 256u * 1024u;
 // A manifest keeps this many input sets, the most recent first. Readers refuse more: part of FORMAT.
 inline constexpr uint32 DdcMaxManifestSets = 4u;
 
+// The size garbage collection trims the store to unless [DerivedDataCache] MaxGB says otherwise (GiB of
+// content: manifests, records, values). From the size model (§7.4 "GC", §11.7): it holds the projects of
+// the Demo template with RGBA8 textures; revisited with BCn (M13).
+inline constexpr double DdcDefaultMaxGB = 20.0;
+
+// Whether CollectGarbage deletes, or only says what it would delete (`assets ddc gc --ci`).
+enum class EDdcGcMode : uint8
+{
+	Delete,
+	DryRun,
+};
+
 
 // One discovered input of a build step (§7.6): a file a step read through ReadFile, a file an
 // external tool reported, an undeclared upstream output, a config value, a legacy path resolution.
@@ -217,6 +229,8 @@ struct SDdcGcResult
 	// are referenced is unknown, and only Tmp/ leftovers, old access logs and corrupt files were deleted.
 	// A later collection does the rest.
 	bool bComplete = true;
+	// EDdcGcMode::DryRun: the counts and sizes say what a collection would have deleted; nothing was.
+	bool bDryRun = false;
 };
 
 struct SDdcVerifyResult
@@ -356,8 +370,12 @@ public:
 	 * when every record was read: if one could not be (a scanner holding it) or the records could not
 	 * all be listed, nothing but leftovers in Tmp/ goes (bComplete false). Access logs older than 30
 	 * days are deleted.
+	 *
+	 * EDdcGcMode::DryRun deletes nothing - not even a corrupt file it meets - and reports what the same
+	 * collection would delete now: for a read-only run (`assets ddc gc --ci`).
 	 */
-	SDdcGcResult CollectGarbage (uint64 MaxBytes, std::span<const hash::SContentHash> PinnedKeys = {});
+	SDdcGcResult CollectGarbage (uint64 MaxBytes, std::span<const hash::SContentHash> PinnedKeys = {},
+		EDdcGcMode Mode = EDdcGcMode::Delete);
 
 	// Re-checks every manifest, record and value (checksums, raw hashes, and that every external
 	// value a record references is there and intact), deleting what fails. Values are checked here

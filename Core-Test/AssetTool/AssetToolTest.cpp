@@ -4,23 +4,29 @@
 // the --json lines (one object per line, stable field names), help's list of verbs, newguid's GUIDs, the
 // writer lock of /Project and, with --engine, of /Engine: a read-only run never takes it, and AssetTool's
 // own lock verb keeps every other writer out until its input ends. A verb that writes nothing runs beside a
-// working directory's project it cannot use. Runs the AssetTool executable beside Core-Test on a scratch
-// project in a directory with a non-ASCII name, and a copy of it in a scratch engine checkout for /Engine.
-// Release builds no AssetTool: skipped there.
+// working directory's project it cannot use. The ddc verbs (§7.4, §13.2) count, trim and check the store
+// FRT_DDC_DIR or --ddc names, never create one, keep what the project's BuildState names, and with --ci trim
+// nothing. Runs the AssetTool executable beside Core-Test on a scratch project in a directory with a
+// non-ASCII name, and a copy of it in a scratch engine checkout for /Engine. Release builds no AssetTool:
+// skipped there.
 #include <gtest/gtest.h>
 
 #include "TestCommon.h"
 #include "TestProcess.h"
 
+#include <chrono>
 #include <filesystem>
 #include <optional>
 #include <set>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 #include "BuildConfig.h"
 #include "EnginePaths.h"
 #include "Assets/AssetId.h"
+#include "Assets/BuildState.h"
+#include "Assets/DerivedDataCache.h"
 #include "Assets/OwnerLock.h"
 #include "Containers/String.h"
 #include "Platform/FileLock.h"
@@ -98,6 +104,69 @@ std::optional<assets::SGuid> ParseInitializer (FStringView Text)
 	return count == assets::SGuid::Size ? std::optional<assets::SGuid>(guid) : std::nullopt;
 }
 
+// The number after "Field": in a --json line; nullopt without one.
+std::optional<uint64> JsonUInt (FStringView Line, FStringView Field)
+{
+	const FString prefix = "\"" + Field + "\":";
+	const uint32 at = Line.Find(prefix);
+	if (at == FStringView::NotFound)
+	{
+		return std::nullopt;
+	}
+	const FStringView rest = Line.RightChop(at + prefix.Len());
+	uint32 digits = 0u;
+	while (digits < rest.Len() && rest[digits] >= '0' && rest[digits] <= '9')
+	{
+		++digits;
+	}
+	return rest.Left(digits).ToUInt64();
+}
+
+// Bytes no compressor shrinks, different for each seed: values the DDC keeps as files of their own.
+std::vector<uint8> NoiseBytes (size_t Size, uint32 Seed)
+{
+	std::vector<uint8> bytes(Size);
+	uint64 state = 0x9e3779b97f4a7c15ull * (Seed + 1u);
+	for (uint8& byte : bytes)
+	{
+		state ^= state << 13u;
+		state ^= state >> 7u;
+		state ^= state << 17u;
+		byte = static_cast<uint8>(state >> 32u);
+	}
+	return bytes;
+}
+
+// A record key of the scratch store, from its number.
+hash::SContentHash ScratchKey (uint32 Number)
+{
+	const uint8 bytes[] = { static_cast<uint8>(Number), static_cast<uint8>(Number >> 8u), 'k', 'e', 'y' };
+	return hash::HashContent(bytes);
+}
+
+// Count records at Root, each with a 100 KiB value of its own (stored as a file of its own), written in
+// order with time between them, so the oldest is the least recently used. Their keys, in that order.
+std::vector<hash::SContentHash> FillDdc (const std::filesystem::path& Root, uint32 Count)
+{
+	assets::CDerivedDataCache ddc;
+	FString error;
+	EXPECT_TRUE(ddc.Open(Root, &error)) << error.CStr();
+	std::vector<hash::SContentHash> keys;
+	for (uint32 i = 0u; i < Count; ++i)
+	{
+		assets::SDdcRecord record;
+		record.Builder = "Test";
+		record.Version = assets::SGuid { { 0x9f, 0xc0, 0xd4, 0x01, 0x0b, 0xbf, 0x48, 0xb4, 0x99, 0x40, 0x72, 0xe7, 0x2b, 0x86, 0x55, 0xab } };
+		assets::SDdcValue& value = record.Values.emplace_back();
+		value.Name = "V";
+		value.Bytes = NoiseBytes(100u * 1024u, i);
+		keys.push_back(ScratchKey(i));
+		EXPECT_TRUE(ddc.PutRecord("Test", keys.back(), record, &error)) << error.CStr();
+		std::this_thread::sleep_for(std::chrono::milliseconds(5));
+	}
+	return keys;
+}
+
 // A newguid GUID: 32 lowercase hex digits that parse, version 4 with the RFC variant.
 void ExpectFreshGuid (FStringView Text)
 {
@@ -132,9 +201,13 @@ protected:
 		ASSERT_TRUE(platform::WriteFileText(ProjectFile, FString::Format("[Project]\nName=AssetToolTest\nEngine={}\n",
 			FString::FromPath(paths::GetEngineDir()))));
 
-		// Nothing AssetTool or the hosts write per user lands in the user's own directory.
+		// Nothing AssetTool or the hosts write per user lands in the user's own directory, and the ddc verbs
+		// find the machine's store in a scratch directory (whatever FRT_DDC_DIR a verify run set).
 		PreviousUserDataDir = platform::GetEnvironmentPath("FRT_USER_DATA_DIR");
 		ASSERT_TRUE(platform::SetEnvironmentPath("FRT_USER_DATA_DIR", Dir / "UserData"));
+		PreviousDdcDir = platform::GetEnvironmentPath("FRT_DDC_DIR");
+		DdcDir = Dir / FStringView("Кеш DDC").ToPath();
+		ASSERT_TRUE(platform::SetEnvironmentPath("FRT_DDC_DIR", DdcDir));
 #endif
 	}
 
@@ -147,6 +220,7 @@ protected:
 		if (!Dir.empty())
 		{
 			platform::SetEnvironmentPath("FRT_USER_DATA_DIR", PreviousUserDataDir);
+			platform::SetEnvironmentPath("FRT_DDC_DIR", PreviousDdcDir);
 			std::error_code ec;
 			std::filesystem::remove_all(Dir, ec);
 		}
@@ -196,6 +270,8 @@ protected:
 	std::filesystem::path ProjectDir;
 	std::filesystem::path ProjectFile;
 	std::filesystem::path PreviousUserDataDir;
+	std::filesystem::path DdcDir;
+	std::filesystem::path PreviousDdcDir;
 	std::filesystem::path PreviousPath;
 	bool bPathChanged = false;
 };
@@ -209,6 +285,7 @@ TEST_F(AssetToolTest, HelpListsEveryVerb)
 	EXPECT_TRUE(help.Output.Contains("help [verb]:")) << help.Output.CStr();
 	EXPECT_TRUE(help.Output.Contains("newguid [n]:")) << help.Output.CStr();
 	EXPECT_TRUE(help.Output.Contains("lock:")) << help.Output.CStr();
+	EXPECT_TRUE(help.Output.Contains("ddc stats|gc [--max-gb=<n>]|verify [--ddc=<dir>]:")) << help.Output.CStr();
 	EXPECT_TRUE(help.Output.Contains("Exit codes: 0 success, 1 problems found, 2 usage error, 3 internal error or crash, 4 the mount"))
 		<< help.Output.CStr();
 	EXPECT_EQ(Run({ "--help" }).Output, help.Output);
@@ -217,12 +294,14 @@ TEST_F(AssetToolTest, HelpListsEveryVerb)
 	const test::SProcessResult json = Run({ "help", "--json" });
 	ASSERT_EQ(json.ExitCode, 0) << json.Errors.CStr();
 	const std::vector<FStringView> lines = SplitLines(json.Output);
-	ASSERT_EQ(lines.size(), 3u) << json.Output.CStr();
+	ASSERT_EQ(lines.size(), 4u) << json.Output.CStr();
 	EXPECT_TRUE(lines[0].StartsWith("{\"verb\":\"help\",\"usage\":\"help [verb]: ")) << json.Output.CStr();
 	EXPECT_TRUE(lines[0].EndsWith("\",\"writes\":false}")) << json.Output.CStr();
 	EXPECT_TRUE(lines[1].StartsWith("{\"verb\":\"newguid\",\"usage\":\"newguid [n]: ")) << json.Output.CStr();
 	EXPECT_TRUE(lines[2].StartsWith("{\"verb\":\"lock\",")) << json.Output.CStr();
 	EXPECT_TRUE(lines[2].EndsWith("\",\"writes\":true}")) << json.Output.CStr();
+	EXPECT_TRUE(lines[3].StartsWith("{\"verb\":\"ddc\",")) << json.Output.CStr();
+	EXPECT_TRUE(lines[3].EndsWith("\",\"writes\":false}")) << json.Output.CStr();
 
 	const test::SProcessResult one = Run({ "help", "NewGuid" });
 	ASSERT_EQ(one.ExitCode, 0) << one.Errors.CStr();
@@ -285,6 +364,8 @@ TEST_F(AssetToolTest, UsageErrorsExitWithTwo)
 	{
 		{ "newguid", "abc" }, { "newguid", "0" }, { "newguid", "10001" }, { "newguid", "1", "2" }, { "help", "nosuch" },
 		{ "help", "a", "b" }, { ProjectArgument(), "lock", "extra" },
+		{ "ddc" }, { "ddc", "frob" }, { "ddc", "stats", "extra" }, { "ddc", "stats", "--max-gb=1" }, { "ddc", "gc", "--max-gb=abc" },
+		{ "ddc", "gc", "--max-gb=-1" }, { "ddc", "verify", "--ddc=" }, { "ddc", "stats", "--max-size=1" },
 		// Options nobody reads: a typo, a negative number, a host option in the wrong form.
 		{ "newguid", "--jsno" }, { "--cii", ProjectArgument(), "lock" }, { "newguid", "-3" }, { "newguid", "--json=1" },
 		{ "-Run", "newguid" }, { "newguid", "-Assets:ReadOnly" }, { "help", "-" },
@@ -525,4 +606,148 @@ TEST_F(AssetToolTest, AKilledLockHolderLeavesTheProjectFree)
 
 	const test::SProcessResult next = Run({ ProjectArgument(), "lock" });
 	EXPECT_EQ(next.ExitCode, 0) << next.Errors.CStr();
+}
+
+// Where there is no store, the ddc verbs say so and succeed - and create none to find that out.
+TEST_F(AssetToolTest, DdcVerbsFindNoStoreWhereThereIsNoneAndCreateNone)
+{
+	constexpr FStringLiteral Actions[] = { "stats", "gc", "verify" };
+	for (const FStringLiteral action : Actions)
+	{
+		SCOPED_TRACE(action.CStr());
+		const test::SProcessResult text = Run({ "ddc", FString(action) });
+		EXPECT_EQ(text.ExitCode, 0) << text.Errors.CStr();
+		EXPECT_TRUE(text.Output.StartsWith("No derived-data cache at " + FString::FromPath(DdcDir) + ": nothing to ")) << text.Output.CStr();
+
+		const test::SProcessResult json = Run({ "ddc", FString(action), "--json" });
+		EXPECT_EQ(json.ExitCode, 0) << json.Errors.CStr();
+		const std::vector<FStringView> lines = SplitLines(json.Output);
+		ASSERT_EQ(lines.size(), 1u) << json.Output.CStr();
+		EXPECT_TRUE(lines[0].StartsWith("{\"ddc\":\"")) << json.Output.CStr();
+		EXPECT_TRUE(lines[0].EndsWith("\",\"exists\":false}")) << json.Output.CStr();
+	}
+	EXPECT_FALSE(std::filesystem::exists(DdcDir));
+}
+
+// ddc stats counts what the store holds, per kind - FRT_DDC_DIR's store, or the one --ddc names - and, like
+// every ddc verb, runs beside a process that owns the project: the store needs no writer lock.
+TEST_F(AssetToolTest, DdcStatsCountsTheStoreItIsPointedAt)
+{
+	const std::vector<hash::SContentHash> keys = FillDdc(DdcDir, 2u);
+	ASSERT_FALSE(HasFailure());
+	assets::CDerivedDataCache ddc;
+	ASSERT_TRUE(ddc.Open(DdcDir));
+	const assets::SDdcStats stats = ddc.GetStats();
+	ddc.Close();
+
+	FString error;
+	const std::optional<platform::CExclusiveFileLock> owned = assets::TryTakeOwnerLock(ProjectDir, nullptr, &error);
+	ASSERT_TRUE(owned.has_value()) << error.CStr();
+
+	const test::SProcessResult json = Run({ ProjectArgument(), "ddc", "stats", "--json" });
+	ASSERT_EQ(json.ExitCode, 0) << json.Errors.CStr();
+	const std::vector<FStringView> lines = SplitLines(json.Output);
+	ASSERT_EQ(lines.size(), 1u) << json.Output.CStr();
+	EXPECT_TRUE(lines[0].Contains("\"exists\":true")) << json.Output.CStr();
+	EXPECT_EQ(JsonUInt(lines[0], "recordFiles"), 2u) << json.Output.CStr();
+	EXPECT_EQ(JsonUInt(lines[0], "valueFiles"), 2u) << json.Output.CStr();
+	EXPECT_EQ(JsonUInt(lines[0], "recordBytes"), stats.Records.Bytes) << json.Output.CStr();
+	EXPECT_EQ(JsonUInt(lines[0], "valueBytes"), stats.Values.Bytes) << json.Output.CStr();
+	EXPECT_EQ(JsonUInt(lines[0], "contentBytes"), stats.GetContentBytes()) << json.Output.CStr();
+	EXPECT_EQ(JsonUInt(lines[0], "manifestFiles"), 0u) << json.Output.CStr();
+
+	const test::SProcessResult text = Run({ "ddc", "stats" });
+	ASSERT_EQ(text.ExitCode, 0) << text.Errors.CStr();
+	const std::vector<FStringView> textLines = SplitLines(text.Output);
+	ASSERT_FALSE(textLines.empty());
+	EXPECT_EQ(textLines[0], "Derived-data cache: " + FString::FromPath(DdcDir));
+	EXPECT_TRUE(text.Output.Contains(FString::Format("  {:<12} {:>8} file(s)", "records", 2))) << text.Output.CStr();
+
+	// --ddc wins over FRT_DDC_DIR.
+	const std::filesystem::path other = Dir / FStringView("Інший кеш").ToPath();
+	const test::SProcessResult elsewhere = Run({ "ddc", "stats", "--json", "--ddc=" + FString::FromPath(other) });
+	EXPECT_EQ(elsewhere.ExitCode, 0) << elsewhere.Errors.CStr();
+	EXPECT_TRUE(elsewhere.Output.Contains("\"exists\":false")) << elsewhere.Output.CStr();
+	FillDdc(other, 1u);
+	const test::SProcessResult filled = Run({ "ddc", "stats", "--json", "--ddc=" + FString::FromPath(other) });
+	EXPECT_EQ(JsonUInt(filled.Output, "recordFiles"), 1u) << filled.Output.CStr();
+}
+
+// ddc gc trims the content to the budget, least recently used first, keeping every record the project's
+// BuildState names (and its value); with --ci it is a dry run that reports the same and deletes nothing.
+TEST_F(AssetToolTest, DdcGcTrimsToTheBudgetKeepsTheBuildStateAndIsADryRunWithCi)
+{
+	const std::vector<hash::SContentHash> keys = FillDdc(DdcDir, 3u);
+	ASSERT_FALSE(HasFailure());
+	{
+		// The project's BuildState names the oldest record, which LRU order would evict first.
+		assets::CBuildStateLog log;
+		FString error;
+		ASSERT_TRUE(log.Open(assets::GetBuildStatePath(ProjectDir / "Local"), &error)) << error.CStr();
+		assets::SBuildStateEntry entry;
+		entry.Step = assets::SBuildStepId{ "Asset", "Test", "", "" };
+		entry.StaticKey = ScratchKey(100u);
+		entry.Key = keys[0];
+		ASSERT_TRUE(log.Append(entry, &error)) << error.CStr();
+	}
+	assets::CDerivedDataCache ddc;
+	ASSERT_TRUE(ddc.Open(DdcDir));
+	const uint64 before = ddc.GetStats().GetContentBytes();
+
+	// A budget of nothing, read-only: what would go, and nothing goes. The pinned record keeps the content
+	// over the budget: a problem, exit 1.
+	const test::SProcessResult dry = Run({ ProjectArgument(), "ddc", "gc", "--max-gb=0", "--ci", "--json" });
+	EXPECT_EQ(dry.ExitCode, 1) << dry.Errors.CStr();
+	EXPECT_TRUE(dry.Output.Contains("\"dryRun\":true")) << dry.Output.CStr();
+	EXPECT_EQ(JsonUInt(dry.Output, "recordsEvicted"), 2u) << dry.Output.CStr();
+	EXPECT_EQ(JsonUInt(dry.Output, "valuesEvicted"), 2u) << dry.Output.CStr();
+	EXPECT_EQ(JsonUInt(dry.Output, "pinnedKeys"), 1u) << dry.Output.CStr();
+	EXPECT_EQ(JsonUInt(dry.Output, "contentBytesBefore"), before) << dry.Output.CStr();
+	EXPECT_TRUE(dry.Output.Contains("\"withinBudget\":false")) << dry.Output.CStr();
+	EXPECT_TRUE(dry.Errors.Contains("stays over the budget")) << dry.Errors.CStr();
+	EXPECT_EQ(ddc.GetStats().GetContentBytes(), before);
+	EXPECT_EQ(Run({ ProjectArgument(), "ddc", "gc", "--max-gb=0", "-Assets:ReadOnly=1" }).ExitCode, 1);
+	EXPECT_EQ(ddc.GetStats().GetContentBytes(), before);
+
+	// For real: the same two go; the pinned record and its value stay.
+	const test::SProcessResult real = Run({ ProjectArgument(), "ddc", "gc", "--max-gb=0", "--json" });
+	EXPECT_EQ(real.ExitCode, 1) << real.Errors.CStr();
+	EXPECT_TRUE(real.Output.Contains("\"dryRun\":false")) << real.Output.CStr();
+	EXPECT_EQ(JsonUInt(real.Output, "recordsEvicted"), 2u) << real.Output.CStr();
+	EXPECT_TRUE(ddc.GetRecord("Test", keys[0]).has_value());
+	EXPECT_FALSE(std::filesystem::exists(ddc.GetRecordPath("Test", keys[1])));
+	EXPECT_FALSE(std::filesystem::exists(ddc.GetRecordPath("Test", keys[2])));
+
+	// Within the budget: nothing to do, exit 0.
+	const test::SProcessResult fits = Run({ ProjectArgument(), "ddc", "gc", "--max-gb=1" });
+	EXPECT_EQ(fits.ExitCode, 0) << fits.Errors.CStr();
+	EXPECT_TRUE(fits.Output.Contains("evicted 0 record(s)")) << fits.Output.CStr();
+
+	// Without the project nothing is pinned: everything goes.
+	const test::SProcessResult all = Run({ "ddc", "gc", "--max-gb=0", "--json" });
+	EXPECT_EQ(all.ExitCode, 0) << all.Errors.CStr() << all.Output.CStr();
+	EXPECT_EQ(JsonUInt(all.Output, "pinnedKeys"), 0u) << all.Output.CStr();
+	EXPECT_EQ(ddc.GetStats().GetContentBytes(), 0u);
+}
+
+// ddc verify re-checks every file, deletes the corrupt ones and exits with 1 when it found any.
+TEST_F(AssetToolTest, DdcVerifyDeletesCorruptFilesAndSaysSo)
+{
+	const std::vector<hash::SContentHash> keys = FillDdc(DdcDir, 2u);
+	ASSERT_FALSE(HasFailure());
+	assets::CDerivedDataCache ddc;
+	ASSERT_TRUE(ddc.Open(DdcDir));
+	const std::filesystem::path record = ddc.GetRecordPath("Test", keys[1]);
+	ASSERT_TRUE(platform::WriteFileBytes(record, std::vector<uint8>(std::filesystem::file_size(record), 0u)));
+
+	const test::SProcessResult damaged = Run({ "ddc", "verify", "--json" });
+	EXPECT_EQ(damaged.ExitCode, 1) << damaged.Errors.CStr();
+	EXPECT_EQ(JsonUInt(damaged.Output, "recordsChecked"), 2u) << damaged.Output.CStr();
+	EXPECT_EQ(JsonUInt(damaged.Output, "corruptRecords"), 1u) << damaged.Output.CStr();
+	EXPECT_EQ(JsonUInt(damaged.Output, "valuesChecked"), 2u) << damaged.Output.CStr();
+	EXPECT_FALSE(std::filesystem::exists(record));
+
+	const test::SProcessResult clean = Run({ "ddc", "verify" });
+	EXPECT_EQ(clean.ExitCode, 0) << clean.Errors.CStr();
+	EXPECT_TRUE(clean.Output.Contains("every file is intact")) << clean.Output.CStr();
 }

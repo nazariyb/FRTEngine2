@@ -9,7 +9,8 @@
  * as its owner with no project (§4.7). A verb that writes nothing (help, newguid) runs with no project
  * when the working directory's cannot be used, with a warning: where it is run does not break it.
  * Options that neither the host nor the verb reads are usage errors (FindUnknownOption).
- * It loads the config layers and makes a memory pool primary as the other hosts do, and opens no
+ * It loads the config layers, makes a memory pool primary and starts a worker pool as the engine does
+ * (CCommandletContext::GetWorkerPool), and opens no
  * window, renderer or game module: the game module joins with the game's types and importers (M5),
  * through SEngineDesc::GameModule. Release builds no AssetTool (it cannot load a game module).
  *
@@ -34,6 +35,7 @@
 #include "Precision.h"
 #include "Assets/OwnerLock.h"
 #include "Config/Config.h"
+#include "Jobs/WorkerPool.h"
 #include "Memory/Memory.h"
 #include "Memory/MemoryPool.h"
 #include "Platform/FileLock.h"
@@ -234,10 +236,10 @@ int32 RunAssetTool ()
 	memory::CMemoryPool memoryPool(MemoryPoolBytes);
 	memoryPool.MakeThisPrimaryInstance();
 
-	// TODO(M1 integration): the engine's worker pool (jobs::CWorkerPool, piece A1) goes here, in
-	// CEngine::StartUp's order - after the memory pool, before the lock - for the ddc verbs, which
-	// build and verify values on it: CCommandletContext::GetWorkerPool(), and CancelAllAndDrain()
-	// before the lock and the pools go out of scope.
+	// The worker pool, in CEngine::StartUp's order: after the memory pool, before the lock. Verbs run
+	// their heavy work on it (the ddc verbs' walks and hashing; builds later) and wait by pumping here.
+	jobs::CWorkerPool workerPool;
+	context.SetWorkerPool(workerPool);
 
 	// Held until the commandlet returns; the OS lets go of it if the process dies first.
 	std::optional<platform::CExclusiveFileLock> ownerLock;
@@ -258,7 +260,10 @@ int32 RunAssetTool ()
 		}
 	}
 
-	return commandlet->Run(context);
+	const int32 result = commandlet->Run(context);
+	// No work of the verb outlives it: what it wrote under the lock is finished before the lock goes.
+	workerPool.CancelAllAndDrain();
+	return result;
 }
 }
 }

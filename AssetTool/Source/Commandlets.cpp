@@ -19,6 +19,8 @@ int32 RunHelp (CCommandletContext& Context);
 int32 RunNewGuid (CCommandletContext& Context);
 int32 RunLock (CCommandletContext& Context);
 
+constexpr FStringLiteral DdcOptions[] = { "max-gb", "ddc" };
+
 /**
  * Every verb, in the order help lists them. A new verb is a function and a line here (§13.1: no
  * registration framework); a verb with a file of its own declares its Run function in Commandlet.h.
@@ -30,6 +32,12 @@ constexpr SCommandlet Commandlets[] =
 		"text and as a C++ initializer", false },
 	{ "lock", &RunLock, "lock: takes the writer lock of the project (with --engine, of /Engine) and holds it until Enter or "
 		"the end of input, so no other process that writes the mount can run meanwhile", true },
+	// The DDC is shared by every process on the machine and safe without locks (§7.4): no writer lock.
+	{ "ddc", &RunDdc, "ddc stats|gc [--max-gb=<n>]|verify [--ddc=<dir>]: the derived-data cache (default: FRT_DDC_DIR, "
+		"[DerivedDataCache] Path, the user's own): stats counts its files and bytes; gc trims its content to n GiB "
+		"([DerivedDataCache] MaxGB, default 20), least recently used first, keeping what the mount's BuildState names - "
+		"with --ci a dry run that deletes nothing; verify re-checks every file and deletes the corrupt ones", false,
+		DdcOptions },
 };
 
 // What help says beyond the verbs: the options every verb takes (FindUnknownOption knows the same

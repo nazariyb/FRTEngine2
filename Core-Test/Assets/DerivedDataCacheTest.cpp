@@ -1078,6 +1078,53 @@ TEST_F(DerivedDataCacheTest, GarbageCollectionDeletesOnlyOldLeftovers)
 	EXPECT_TRUE(std::filesystem::exists(Ddc.GetValuePath(hash::HashContent(newValue))));
 }
 
+// `assets ddc gc --ci`: a dry run deletes nothing - no record, value, leftover or even a corrupt file - and
+// reports exactly what the same collection then deletes.
+TEST_F(DerivedDataCacheTest, ADryRunReportsWhatACollectionWouldDeleteAndDeletesNothing)
+{
+	FString error;
+	for (uint32 i = 1u; i <= 3u; ++i)
+	{
+		ASSERT_TRUE(Ddc.PutRecord("Test", MakeStaticKey(i), MakeRecord({ MakeValue("V", RandomBytes(100u * 1024u, i)) }), &error))
+			<< error.CStr();
+		std::this_thread::sleep_for(2ms);
+	}
+	ASSERT_TRUE(platform::WriteFileBytes(Ddc.GetTmpDir() / "old.tmp", RandomBytes(10u, 1u)));
+	AgeFile(Ddc.GetTmpDir() / "old.tmp", 2h);
+	const std::filesystem::path corrupt = Ddc.GetRecordPath("Test", MakeStaticKey(9u));
+	ASSERT_TRUE(platform::WriteFileBytes(corrupt, std::vector<uint8>(64u, 0u)));
+
+	const uint64 each = std::filesystem::file_size(Ddc.GetRecordPath("Test", MakeStaticKey(1u)))
+		+ std::filesystem::file_size(Ddc.GetValuePath(hash::HashContent(RandomBytes(100u * 1024u, 1u))));
+	const SDdcStats before = Ddc.GetStats();
+	const SDdcGcResult dry = Ddc.CollectGarbage(each, {}, EDdcGcMode::DryRun);
+	EXPECT_TRUE(dry.bDryRun);
+	EXPECT_EQ(dry.RecordsEvicted, 2u);
+	EXPECT_EQ(dry.ValuesEvicted, 2u);
+	EXPECT_EQ(dry.TmpFilesDeleted, 1u);
+	EXPECT_EQ(dry.ContentBytesAfter, each);
+	EXPECT_TRUE(dry.bWithinBudget);
+
+	const SDdcStats after = Ddc.GetStats();
+	EXPECT_EQ(after.GetContentBytes(), before.GetContentBytes());
+	EXPECT_EQ(after.Records.Files, before.Records.Files);
+	EXPECT_EQ(after.Values.Files, before.Values.Files);
+	EXPECT_EQ(after.Tmp.Files, before.Tmp.Files);
+	EXPECT_TRUE(std::filesystem::exists(corrupt));
+	EXPECT_EQ(Ddc.GetCounters().CorruptFilesDeleted, 0u);
+
+	const SDdcGcResult real = Ddc.CollectGarbage(each);
+	EXPECT_FALSE(real.bDryRun);
+	EXPECT_EQ(real.RecordsEvicted, dry.RecordsEvicted);
+	EXPECT_EQ(real.ValuesEvicted, dry.ValuesEvicted);
+	EXPECT_EQ(real.TmpFilesDeleted, dry.TmpFilesDeleted);
+	EXPECT_EQ(real.ContentBytesBefore, dry.ContentBytesBefore);
+	EXPECT_EQ(real.ContentBytesAfter, dry.ContentBytesAfter);
+	EXPECT_EQ(Ddc.GetStats().GetContentBytes(), each);
+	EXPECT_FALSE(std::filesystem::exists(corrupt));
+	EXPECT_TRUE(Ddc.GetRecord("Test", MakeStaticKey(3u)).has_value());
+}
+
 // A writer that finds a value already there - an old leftover of a record since lost - writes the
 // record naming it without rewriting it. It marks the value as just written first: a collection in
 // another process that found it unreferenced and an hour old a moment ago keeps it (the time moved

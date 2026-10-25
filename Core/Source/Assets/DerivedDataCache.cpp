@@ -1309,22 +1309,32 @@ struct SLastUse
 };
 }
 
-SDdcGcResult CDerivedDataCache::CollectGarbage (uint64 MaxBytes, std::span<const hash::SContentHash> PinnedKeys)
+SDdcGcResult CDerivedDataCache::CollectGarbage (uint64 MaxBytes, std::span<const hash::SContentHash> PinnedKeys, EDdcGcMode Mode)
 {
 	FRT_CPU_SCOPE("Assets.Ddc.CollectGarbage");
 	const SCallScope call(*this);
 	SDdcGcResult result;
+	result.bDryRun = Mode == EDdcGcMode::DryRun;
 	if (!IsOpen())
 	{
 		return result;
 	}
 	const int64 now = NowFileTime();
 	const auto isLeftoverAge = [now] (int64 WriteTime) { return now - WriteTime > LeftoverAgeFileTicks; };
+	// Every deletion goes through these: a dry run counts what it would delete and deletes nothing.
+	const auto removeFile = [&result] (const std::filesystem::path& Path) { return result.bDryRun || platform::RemoveFile(Path); };
+	const auto deleteCorrupt = [this, &result] (const std::filesystem::path& Path)
+	{
+		if (!result.bDryRun)
+		{
+			DeleteCorrupt(Path);
+		}
+	};
 
 	// Tmp/: what crashed writers left.
 	WalkFiles(GetTmpDir(), [&] (const std::filesystem::path& Path, const platform::SFileStat& Stat)
 	{
-		if (isLeftoverAge(Stat.LastWriteTime) && platform::RemoveFile(Path))
+		if (isLeftoverAge(Stat.LastWriteTime) && removeFile(Path))
 		{
 			++result.TmpFilesDeleted;
 		}
@@ -1369,7 +1379,7 @@ SDdcGcResult CDerivedDataCache::CollectGarbage (uint64 MaxBytes, std::span<const
 					}
 				}
 			}
-			if (today - day > AccessLogMaxAgeDays && platform::RemoveFile(path))
+			if (today - day > AccessLogMaxAgeDays && removeFile(path))
 			{
 				++result.AccessLogsDeleted;
 			}
@@ -1434,7 +1444,7 @@ SDdcGcResult CDerivedDataCache::CollectGarbage (uint64 MaxBytes, std::span<const
 		const std::optional<std::vector<SDdcManifestMatch>> sets = ParseManifest(bytes, *staticKey);
 		if (!sets)
 		{
-			DeleteCorrupt(Path);
+			deleteCorrupt(Path);
 			return;
 		}
 		SManifestFile& manifest = manifests.emplace_back();
@@ -1467,7 +1477,7 @@ SDdcGcResult CDerivedDataCache::CollectGarbage (uint64 MaxBytes, std::span<const
 		const std::optional<SParsedRecord> parsed = ParseRecord(bytes, Record.Key);
 		if (!parsed)
 		{
-			DeleteCorrupt(Record.Path);
+			deleteCorrupt(Record.Path);
 			return true;
 		}
 		for (const SParsedValue& value : parsed->Values)
@@ -1558,7 +1568,7 @@ SDdcGcResult CDerivedDataCache::CollectGarbage (uint64 MaxBytes, std::span<const
 		{
 			return;
 		}
-		if (platform::RemoveFile(file->second.Path))
+		if (removeFile(file->second.Path))
 		{
 			total -= file->second.Size;
 			++result.ValuesEvicted;
@@ -1611,7 +1621,7 @@ SDdcGcResult CDerivedDataCache::CollectGarbage (uint64 MaxBytes, std::span<const
 			{
 				break;
 			}
-			if (!platform::RemoveFile(record->Path))
+			if (!removeFile(record->Path))
 			{
 				continue;
 			}
@@ -1649,7 +1659,7 @@ SDdcGcResult CDerivedDataCache::CollectGarbage (uint64 MaxBytes, std::span<const
 		{
 			return evictedKeys.contains(Key);
 		});
-		if (!bAnyLive && (bAnyEvicted || isLeftoverAge(manifest.WriteTime)) && platform::RemoveFile(manifest.Path))
+		if (!bAnyLive && (bAnyEvicted || isLeftoverAge(manifest.WriteTime)) && removeFile(manifest.Path))
 		{
 			total -= manifest.Size;
 			++result.ManifestsEvicted;
