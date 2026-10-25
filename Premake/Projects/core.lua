@@ -94,6 +94,8 @@ project "Core"
 		-- C++/HLSL shared structs live with the shaders (Shared/*.h is compiled by both).
 		rootpath("%{prj.name}/Content/Shaders"),
 		path.join(thirdPartyDir, "Dxc/inc"),
+		-- What the prebuild step below generates (BuilderSourceHashes.gen.h).
+		rootpath("Intermediate/Generated"),
 	}
 
 	----------------
@@ -137,3 +139,13 @@ project "Core"
 	copyRuntimeFiles()
 
 	copyPrebuiltThirdPartyBinaries()
+
+	-- The builder source guard (Core/Source/Assets/BuilderVersions.inl): the current hash of every
+	-- builder's sources, written before every build - not only at FRT.bat generate - so a development
+	-- build compares the sources it is built from with the committed table. By the vendored Premake,
+	-- which needs nothing else installed; it rewrites its outputs only when they change.
+	prebuildcommands
+	{
+		string.format("%%[%s] --file=%%[%s] builder-hashes || exit /b 1",
+			rootpath("ThirdParty/premake-5.0.0-beta2-windows/premake5.exe"), rootpath("premake5.lua")),
+	}

@@ -115,6 +115,12 @@ newoption
 	description = "verify: the relative RMSE a path-traced capture may differ from its baseline by (default: 1e-4)"
 }
 
+newoption
+{
+	trigger     = "update",
+	description = "check-builders: record the current source hash of every changed builder whose version GUID is new since HEAD"
+}
+
 -----------------------------------------
 ---------------  Helpers  ---------------
 -----------------------------------------
@@ -718,6 +724,292 @@ local function countLfFiles(entries)
 end
 
 -----------------------------------------
+---------------  Builders  --------------
+-----------------------------------------
+-- The builder source guard (design 7.3; the table and its rule: Core/Source/Assets/BuilderVersions.inl).
+-- A builder's version GUID promises that equal keys mean equal outputs, so whoever changes a
+-- builder's sources must give it a new one. Two commands keep that promise, here because they must
+-- run where no Python is (every build) and need nothing but Premake:
+--
+--   builder-hashes   hashes each builder's sources into Intermediate/Generated/BuilderSourceHashes.gen.h
+--                    (FRT_BUILDER_SOURCE_HASH(Name, "hex") per builder), which development builds
+--                    compare with the committed hashes (Core/Source/Assets/BuilderGuard.h), and lists
+--                    every matched file in Local/Build/PipelineSources.txt for the pipeline lint
+--                    (Tools/Lint/CheckPipeline.py). Core's prebuild step runs it before every build,
+--                    not only at FRT.bat generate, so the hashes are those of the sources being built.
+--                    Each file is written only when its content changes, so an unchanged hash
+--                    recompiles nothing.
+--   check-builders   BUILD003: fails, naming them, when a builder's sources no longer match its
+--                    committed hash while its version GUID is the one HEAD has. With --update it
+--                    records the current hashes instead - only when every changed builder has a GUID
+--                    that differs from HEAD's (a new builder counts as one), and refuses otherwise,
+--                    writing nothing. FRT.bat verify runs it, in --quick too.
+--
+-- The source hash of a builder: 64-bit FNV-1a, as 16 lowercase hex digits, over every file its globs
+-- match, in byte order of their engine-relative paths ('/'-separated), each as
+--     path, NUL, decimal length of its content, NUL, its content
+-- with every carriage return removed from the content first, so a CRLF checkout and an LF one agree.
+-- Paths are part of it: a rename changes it. It only detects change: no key ever contains it, except
+-- as the local-only discriminator of the builder whose sources changed.
+
+local builderTableFile = "Core/Source/Assets/BuilderVersions.inl"
+local builderHashesFile = "Intermediate/Generated/BuilderSourceHashes.gen.h"
+local pipelineSourcesFile = "Local/Build/PipelineSources.txt"
+
+-- Text with its // and /* */ comments replaced by spaces (line breaks kept), so every byte stays
+-- where it was: string literals stay, a "//" inside one included.
+local function blankComments(text)
+	local parts = {}
+	local i, n = 1, #text
+	local plainStart = 1
+	while i <= n do
+		local c = text:byte(i)
+		if c == 34 then   -- "
+			local j = i + 1
+			while j <= n do
+				local d = text:byte(j)
+				if d == 92 then       -- a backslash escapes the next byte
+					j = j + 2
+				elseif d == 34 or d == 10 then
+					break
+				else
+					j = j + 1
+				end
+			end
+			i = j + 1
+		elseif c == 47 and text:byte(i + 1) == 47 then   -- //
+			local j = (text:find("\n", i, true) or (n + 1)) - 1
+			table.insert(parts, text:sub(plainStart, i - 1))
+			table.insert(parts, string.rep(" ", j - i + 1))
+			i = j + 1
+			plainStart = i
+		elseif c == 47 and text:byte(i + 1) == 42 then   -- /*
+			local close = text:find("*/", i + 2, true)
+			local j = close and close + 1 or n
+			table.insert(parts, text:sub(plainStart, i - 1))
+			table.insert(parts, (text:sub(i, j):gsub("[^\n]", " ")))
+			i = j + 1
+			plainStart = i
+		else
+			i = i + 1
+		end
+	end
+	table.insert(parts, text:sub(plainStart))
+	return table.concat(parts)
+end
+
+local function lineOf(text, position)
+	local _, count = text:sub(1, position):gsub("\n", "")
+	return count + 1
+end
+
+-- The builder table's rows from Text (the .inl file's content): { Name, Guid, Hash, Globs (a list),
+-- HashFirst, HashLast (the byte range of the committed hash's digits in Text), Line }, in table order.
+-- Nil and the reason when a row is not as the table's header comment says. Where names the file in
+-- messages.
+local function parseBuilderTable(text, where)
+	local code = blankComments(text)
+	local rows = {}
+	local names = {}
+	local position = 1
+	while true do
+		local first, last = code:find("FRT_BUILDER%s*%(", position)
+		if not first then
+			break
+		end
+		local line = lineOf(text, first)
+		local function rowError(why)
+			return nil, string.format("%s:%d: %s", where, line, why)
+		end
+		-- The arguments: groups of adjacent string literals, separated by commas, up to ')'.
+		local arguments = {}
+		local cursor = last + 1
+		while true do
+			local literals = {}
+			while true do
+				local quote = code:find("^%s*\"", cursor)
+				if not quote then
+					break
+				end
+				local open = code:find("\"", cursor, true)
+				local close = code:find("[\"\n\\]", open + 1)
+				if not close or code:byte(close) ~= 34 then
+					return rowError("a string literal that does not end on its line, or has an escape (none are allowed)")
+				end
+				table.insert(literals, { Text = code:sub(open + 1, close - 1), First = open + 1, Last = close - 1 })
+				cursor = close + 1
+			end
+			if #literals == 0 then
+				return rowError("every argument of FRT_BUILDER is a string literal")
+			end
+			table.insert(arguments, literals)
+			local separator = code:match("^%s*([,%)])", cursor)
+			if not separator then
+				return rowError("expected ',' or ')' after argument " .. #arguments)
+			end
+			cursor = code:find(separator, cursor, true) + 1
+			if separator == ")" then
+				break
+			end
+		end
+		position = cursor
+		if #arguments ~= 4 then
+			return rowError("FRT_BUILDER takes 4 arguments (Name, VersionGuid, CommittedSourceHash, globs), not " .. #arguments)
+		end
+		local function joined(literals)
+			local texts = {}
+			for _, literal in ipairs(literals) do
+				table.insert(texts, literal.Text)
+			end
+			return table.concat(texts)
+		end
+		local row =
+		{
+			Name = joined(arguments[1]),
+			Guid = joined(arguments[2]):lower(),
+			Hash = joined(arguments[3]):lower(),
+			Globs = {},
+			Line = line,
+		}
+		if row.Name == "" then
+			return rowError("a builder without a name")
+		end
+		if names[row.Name] then
+			return rowError("builder " .. row.Name .. " twice")
+		end
+		names[row.Name] = true
+		if not row.Guid:match("^" .. string.rep("%x", 32) .. "$") or row.Guid == string.rep("0", 32) then
+			return rowError(row.Name .. ": the version GUID is not 32 hex digits, not all zero (FRT.bat assets newguid)")
+		end
+		if #arguments[3] ~= 1 or not row.Hash:match("^" .. string.rep("%x", 16) .. "$") then
+			return rowError(row.Name .. ": the committed source hash is not one literal of 16 hex digits")
+		end
+		row.HashFirst, row.HashLast = arguments[3][1].First, arguments[3][1].Last
+		for glob in joined(arguments[4]):gmatch("[^;]+") do
+			glob = glob:match("^%s*(.-)%s*$")
+			if glob ~= "" then
+				if path.isabsolute(glob) or glob:find("..", 1, true) then
+					return rowError(row.Name .. ": a glob outside the engine: " .. glob)
+				end
+				table.insert(row.Globs, glob)
+			end
+		end
+		if #row.Globs == 0 then
+			return rowError(row.Name .. ": no globs, so no sources to guard")
+		end
+		table.insert(rows, row)
+	end
+	if #rows == 0 then
+		return nil, where .. ": no FRT_BUILDER rows"
+	end
+	return rows
+end
+
+-- The engine's builder table: its text and rows. Fails the command when it cannot be read or parsed.
+local function readBuilderTable(action)
+	local text = readBinary(rootpath(builderTableFile)) or fail(action .. ": cannot read " .. builderTableFile)
+	local rows, err = parseBuilderTable(text, builderTableFile)
+	if not rows then
+		fail(action .. ": " .. err)
+	end
+	return text, rows
+end
+
+-- Byte order (memcmp), whatever the C library's collation: Lua compares strings with strcoll.
+local function isBytewiseLess(a, b)
+	for i = 1, math.min(#a, #b) do
+		local x, y = a:byte(i), b:byte(i)
+		if x ~= y then
+			return x < y
+		end
+	end
+	return #a < #b
+end
+
+-- The engine-relative paths of the files a builder's globs match, each once, in byte order.
+local function builderSources(row)
+	local files, seen = {}, {}
+	for _, glob in ipairs(row.Globs) do
+		for _, file in ipairs(os.matchfiles(rootpath(glob))) do
+			local relative = path.getrelative(ROOT_DIR, file)
+			if not seen[relative] then
+				seen[relative] = true
+				table.insert(files, relative)
+			end
+		end
+	end
+	table.sort(files, isBytewiseLess)
+	return files
+end
+
+local function fnv1a64(hash, text)
+	for i = 1, #text do
+		hash = (hash ~ text:byte(i)) * 0x100000001b3
+	end
+	return hash
+end
+
+-- The source hash of Files (engine-relative paths in byte order; see the section's comment).
+local function hashBuilderSources(action, files)
+	local hash = 0xcbf29ce484222325
+	for _, file in ipairs(files) do
+		local content = readBinary(rootpath(file)) or fail(action .. ": cannot read " .. file)
+		content = content:gsub("\r", "")
+		hash = fnv1a64(hash, file .. "\0" .. tostring(#content) .. "\0")
+		hash = fnv1a64(hash, content)
+	end
+	return string.format("%016x", hash)
+end
+
+-- Writes Text to the engine-relative File unless it already holds exactly that. True when written.
+local function writeIfChanged(action, file, text)
+	if readBinary(rootpath(file)) == text then
+		return false
+	end
+	if not writeBinary(rootpath(file), text) then
+		fail(action .. ": cannot write " .. file)
+	end
+	return true
+end
+
+-- The builder table as HEAD has it: its rows by name; an empty table when HEAD has no table (every
+-- builder is new); nil when there is no HEAD to ask (not a git checkout, no commit yet). "HEAD:./"
+-- names the file relative to the engine, wherever the engine is in its work tree.
+local function headBuilderTable(action)
+	if not outputOf(git("rev-parse --verify --quiet HEAD") .. " 2>nul") then
+		return nil
+	end
+	local text, code = os.outputof(git("show HEAD:./" .. builderTableFile) .. " 2>nul")
+	if code ~= 0 or not text then
+		return {}
+	end
+	local rows, err = parseBuilderTable(text, "HEAD:" .. builderTableFile)
+	if not rows then
+		fail(action .. ": " .. err)
+	end
+	local byName = {}
+	for _, row in ipairs(rows) do
+		byName[row.Name] = row
+	end
+	return byName
+end
+
+-- Actions that run inside a build print nothing unless they change something: Premake's own
+-- "Running action '...'" line (its premake.main.preAction step) is replaced with one that prints nothing.
+local function silencePreAction()
+	local main = premake.main
+	for i, step in ipairs(main and main.elements or {}) do
+		if step == main.preAction then
+			main.elements[i] = function () end
+		end
+	end
+end
+
+if _ACTION == "builder-hashes" then
+	silencePreAction()
+end
+
+-----------------------------------------
 ---------------  Assets  ----------------
 -----------------------------------------
 -- FRT.bat assets <verb> [arguments] [options]: AssetTool (AssetTool/Source/AssetTool.cpp says what
@@ -754,12 +1046,7 @@ function prepareAssetsAction()
 			_OPTIONS[name] = nil
 		end
 	end
-	local main = premake.main
-	for i, step in ipairs(main and main.elements or {}) do
-		if step == main.preAction then
-			main.elements[i] = function () end
-		end
-	end
+	silencePreAction()
 end
 
 -- One argument as a program started by runCommand reads it back, with the same text. runCommand
@@ -1234,6 +1521,118 @@ newaction
 				" committed with CRLF")
 		end
 		print("Line endings: " .. countLfFiles(entries) .. " LF files, all LF in the index and the working tree.")
+	end
+}
+
+-- The current source hash of every builder, for development builds to compare with the committed
+-- ones, and the pipeline lint's file list (Builders, above). Core's prebuild step runs it.
+newaction
+{
+	trigger     = "builder-hashes",
+	description = "Hash each builder's sources into " .. builderHashesFile .. " (run by Core's prebuild step)",
+	execute     = function ()
+		local _, rows = readBuilderTable("builder-hashes")
+		local lines =
+		{
+			"// Generated by FRT.bat builder-hashes (Premake/tools.lua) before every build of Core, from the builder table",
+			"// " .. builderTableFile .. ": the hash of each builder's sources as they are now. Do not edit.",
+		}
+		local pipeline, listed = {}, {}
+		for _, row in ipairs(rows) do
+			local files = builderSources(row)
+			table.insert(lines, string.format('FRT_BUILDER_SOURCE_HASH("%s", "%s")', row.Name, hashBuilderSources("builder-hashes", files)))
+			for _, file in ipairs(files) do
+				if not listed[file] then
+					listed[file] = true
+					table.insert(pipeline, file)
+				end
+			end
+		end
+		table.sort(pipeline, isBytewiseLess)
+		if writeIfChanged("builder-hashes", builderHashesFile, table.concat(lines, "\n") .. "\n") then
+			print("builder-hashes: " .. builderHashesFile .. " updated")
+		end
+		writeIfChanged("builder-hashes", pipelineSourcesFile, #pipeline > 0 and table.concat(pipeline, "\n") .. "\n" or "")
+	end
+}
+
+-- BUILD003 (Builders, above): run by FRT.bat verify, and with --update by whoever bumped a GUID.
+newaction
+{
+	trigger     = "check-builders",
+	description = "Check that every builder whose sources changed has a new version GUID (BUILD003, run by verify): [--update]",
+	execute     = function ()
+		local text, rows = readBuilderTable("check-builders")
+		local changed = {}
+		for _, row in ipairs(rows) do
+			row.Files = builderSources(row)
+			row.Current = hashBuilderSources("check-builders", row.Files)
+			if row.Current ~= row.Hash then
+				table.insert(changed, row)
+			end
+		end
+		if #changed == 0 then
+			print("Builders: " .. #rows .. " checked, every one's sources match the hash committed with its version.")
+			return
+		end
+
+		local head = headBuilderTable("check-builders")
+		-- Whether the row's version GUID is not HEAD's: a bump, or a builder HEAD does not have.
+		local function isBumped(row)
+			return head ~= nil and (head[row.Name] == nil or head[row.Name].Guid ~= row.Guid)
+		end
+		local function describe(row)
+			return string.format("%s (%s:%d): sources %s, committed with its version %s (%d file%s: %s)", row.Name,
+				builderTableFile, row.Line, row.Current, row.Hash, #row.Files, #row.Files == 1 and "" or "s",
+				table.concat(row.Files, ", "))
+		end
+
+		if _OPTIONS["update"] then
+			if not head then
+				fail("check-builders --update: there is no HEAD to compare the version GUIDs with (is this engine a git " ..
+					"checkout with a commit?): nothing written")
+			end
+			local refused = {}
+			for _, row in ipairs(changed) do
+				if not isBumped(row) then
+					table.insert(refused, row)
+				end
+			end
+			if #refused > 0 then
+				for _, row in ipairs(refused) do
+					print("BUILD003 " .. describe(row))
+				end
+				fail("check-builders --update: " .. #refused .. " builder(s) changed with the version GUID HEAD has: give each a new " ..
+					"GUID first (FRT.bat assets newguid); nothing written")
+			end
+			-- From the last row back, so the byte ranges of the earlier ones stay valid.
+			table.sort(changed, function (a, b) return a.HashFirst > b.HashFirst end)
+			for _, row in ipairs(changed) do
+				text = text:sub(1, row.HashFirst - 1) .. row.Current .. text:sub(row.HashLast + 1)
+			end
+			if not writeBinary(rootpath(builderTableFile), text) then
+				fail("check-builders --update: cannot write " .. builderTableFile)
+			end
+			for _, row in ipairs(changed) do
+				print("Recorded " .. row.Name .. "'s source hash " .. row.Current .. " in " .. builderTableFile .. ".")
+			end
+			return
+		end
+
+		local notBumped = 0
+		for _, row in ipairs(changed) do
+			if isBumped(row) then
+				print(describe(row))
+				print("  its version GUID is new: record the new hash with FRT.bat check-builders --update")
+			else
+				notBumped = notBumped + 1
+				print("BUILD003 " .. describe(row))
+				print("  its sources changed while its version GUID did not: bump the GUID (FRT.bat assets newguid), then run " ..
+					"FRT.bat check-builders --update")
+			end
+		end
+		fail("check-builders: " .. #changed .. " of " .. #rows .. " builder(s) changed since their hash was committed" ..
+			(notBumped > 0 and (", " .. notBumped .. " without a new version GUID (BUILD003)") or ""))
 	end
 }
 
