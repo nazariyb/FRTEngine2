@@ -94,7 +94,7 @@ GATES = [
     ('std-string', r'std::(w?string|w?string_view|u8string)\b',
      ['Containers/StringFwd.h', 'Containers/StringView.', 'Containers/String.', 'Containers/WideString.',
       'Platform/Platform.cpp', 'Platform/Platform.h', 'Platform/TextDecoding.cpp', 'Assets/Yaml/YamlString.h',
-      'Assets/Yaml/YamlArchive.cpp',
+      'Assets/Yaml/YamlArchive.cpp', 'Reflect/DataTreeYaml.cpp',
       'Graphics/AssimpWideIO.', 'Core-Test/Containers/String', 'Core-Test/Unicode/', 'Core-Test/Platform/',
       'Core-Test/Assets/ArchiveTest.cpp']),
     # path.string() narrows through the code page: FString::FromPath(Path) instead.
