@@ -752,9 +752,22 @@ TEST_F(FileSystemTest, WriteFileAtomicSurvivesAKilledWriter)
 	std::mt19937 random(seed);
 	std::uniform_int_distribution<uint32> extraMs(0u, 40u);
 
-	constexpr uint32 Rounds = 16u;
+	// At least MinRounds kills, and more until one has landed mid-write (a temporary file is left), so the
+	// test proves what it claims however the scheduler times the kills: random 0-40 ms delays usually hit
+	// a write in progress within a few rounds, but not always within a fixed count.
+	constexpr uint32 MinRounds = 16u;
+	constexpr uint32 MaxRounds = 64u;
+	const auto countTemporaryFiles = [this, &target] ()
+	{
+		uint32 count = 0u;
+		for (const FString& name : ListNames(Dir))
+		{
+			count += name != FString::FromPath(target.filename()) && IsTemporaryName(name) ? 1u : 0u;
+		}
+		return count;
+	};
 	uint32 version = 0u;
-	for (uint32 round = 0u; round < Rounds; ++round)
+	for (uint32 round = 0u; round < MaxRounds && (round < MinRounds || countTemporaryFiles() == 0u); ++round)
 	{
 		const std::optional<platform::SFileIdentity> identityBefore = platform::GetFileIdentity(target);
 		ASSERT_TRUE(identityBefore.has_value());

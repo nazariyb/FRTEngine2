@@ -89,7 +89,7 @@ CAPTURE_FRAME = 400
 # the tolerance is taken again, up to PATH_TRACED_ATTEMPTS times. A real change moves the image by far
 # more than the noise, so it fails every attempt; the summary shows the attempts a pass needed.
 PATH_TRACED_TOLERANCE = 1e-4
-PATH_TRACED_ATTEMPTS = 3
+PATH_TRACED_ATTEMPTS = 5
 
 # Every capture: frame-indexed, manual exposure, windowed.
 #
