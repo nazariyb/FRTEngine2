@@ -21,7 +21,7 @@
 /**
  * The importers' Analyze step (design §5.5, §7.2, §7.11): per file, the facts the registry records without
  * building anything - the record's type, typed tags, sub-entries (glTF meshes, materials, images; table rows),
- * declared edges (glTF URIs, legacy texture paths, input actions, $asset references), companions (glTF buffers)
+ * declared edges (glTF URIs, legacy texture paths, input actions, $asset references), companions (glTF buffers and unclaimed images: no edge, no record of their own)
  * and diagnostics. One importer per available row of ImporterTable: Texture, Model.Gltf, Material.Legacy,
  * Input.Legacy, Raw.
  *

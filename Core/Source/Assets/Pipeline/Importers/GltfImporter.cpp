@@ -295,8 +295,10 @@ void AddPathEdge (SAnalyzeResult& Out, uint64 FromSub, FString TargetPath, FStri
  * (no extra default material, no split meshes): sub-entries mesh: (frt.Mesh, with VertexCount and TriangleCount),
  * material: (frt.Material) and image: (frt.Texture); on the record MeshCount, MaterialCount, ImageCount and the
  * vertex and triangle counts - vertices summed over distinct POSITION accessors, triangles over primitives.
- * External buffer and image URIs are Build | Path | Declared edges (an image's from its sub-entry); buffer
- * files, and image files no available importer claims, are also Companions. The
+ * An external image URI whose file an importer claims is a Build | Path | Declared edge from the image's sub-entry
+ * to that file's Texture record. A file with no record of its own - every buffer, and an image no available
+ * importer claims (.ktx2, .webp, .dds) - is a Companion only, never an edge: the store gives a companion FILES row
+ * no record (§5.2), so a path edge to it would name nothing, and the record names it through Companions. The
  * `<stem>_mat<N>.frtmat.yml` files beside a model follow Assimp's material index and are not linked here.
  */
 class CGltfImporter final : public IAssetImporter
@@ -415,7 +417,10 @@ public:
 				{
 					addCompanion(*target);
 				}
-				AddPathEdge(Out, sub != nullptr ? sub->SubId : 0u, std::move(*target), fieldPath);
+				else
+				{
+					AddPathEdge(Out, sub != nullptr ? sub->SubId : 0u, std::move(*target), fieldPath);
+				}
 			}
 		}
 		for (cgltf_size i = 0u; i < data.buffers_count; ++i)
@@ -429,7 +434,6 @@ public:
 			if (std::optional<FString> target = ResolveUri(In, DecodeJsonString(buffer.uri, In, fieldPath, Out), fieldPath, Out))
 			{
 				addCompanion(*target);
-				AddPathEdge(Out, 0u, std::move(*target), fieldPath);
 			}
 		}
 

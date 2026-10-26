@@ -1,7 +1,8 @@
 // The Model.Gltf importer's Analyze (E3, design §7.11, §3.2, §4.3, §4.4): glTF-native facts through cgltf on the JSON
 // alone - counts summed over accessors, mesh:/material:/image: sub-entries labelled by name, index and document-order
-// duplicate suffix (a SubId collision is an error, never a silent merge), external buffer and image URIs as
-// Build | Path | Declared edges resolved as Translate's Assimp I/O will open them, buffers as companions - for every
+// duplicate suffix (a SubId collision is an error, never a silent merge), external image URIs as Build | Path |
+// Declared edges resolved as Translate's Assimp I/O will open them, buffers (and images no importer claims) as
+// companions only, never edges, since a companion has no record an edge could name - for every
 // Demo model, a .gltf hashed in its one read, and a .glb whose BIN chunk is never read.
 #include <gtest/gtest.h>
 
@@ -114,18 +115,15 @@ TEST(GltfImporterTest, DuckGivesItsNativeFacts)
 	ASSERT_NE(image, nullptr);
 	EXPECT_EQ(image->Type, asset_types::Texture);
 
-	ASSERT_EQ(result.Edges.size(), 2u);
+	ASSERT_EQ(result.Edges.size(), 1u);
 	const SEdgeDecl* texture = FindEdgeTo(result, "/Project/Models/Duck/DuckCM.png");
 	ASSERT_NE(texture, nullptr);
 	EXPECT_EQ(texture->FromSub, image->SubId);
 	EXPECT_EQ(texture->Flags, UriEdgeFlags);
 	EXPECT_EQ(texture->FieldPath, "images.0.uri");
 	EXPECT_FALSE(texture->Target.IsValid());
-	const SEdgeDecl* buffer = FindEdgeTo(result, "/Project/Models/Duck/Duck0.bin");
-	ASSERT_NE(buffer, nullptr);
-	EXPECT_EQ(buffer->FromSub, 0u);
-	EXPECT_EQ(buffer->Flags, UriEdgeFlags);
-	EXPECT_EQ(buffer->FieldPath, "buffers.0.uri");
+	// The buffer is a companion only: it has no record, so no edge names it.
+	EXPECT_EQ(FindEdgeTo(result, "/Project/Models/Duck/Duck0.bin"), nullptr);
 	EXPECT_EQ(result.Companions, (std::vector<FString> { "/Project/Models/Duck/Duck0.bin" }));
 
 	// Hashed in the same read: the registry's content hash of the file.
@@ -152,8 +150,8 @@ TEST(GltfImporterTest, EveryDemoModelAnalyzesCleanly)
 		EXPECT_EQ(GetIntTag(result.Tags, "TriangleCount"), model.Triangles);
 		EXPECT_EQ(result.SubEntries.size(), static_cast<size_t>(model.Meshes + model.Materials + model.Images));
 		EXPECT_EQ(result.Companions, (std::vector<FString> { FString(model.Buffer) }));
-		// One edge per external image plus the buffer; never a link to the _mat<N> files beside the model.
-		EXPECT_EQ(result.Edges.size(), static_cast<size_t>(model.Images + 1));
+		// One edge per external image, none to the buffer; never a link to the _mat<N> files beside the model.
+		EXPECT_EQ(result.Edges.size(), static_cast<size_t>(model.Images));
 		for (const SEdgeDecl& edge : result.Edges)
 		{
 			EXPECT_FALSE(edge.TargetPath.View().EndsWith(".frtmat.yml")) << edge.TargetPath.CStr();
@@ -270,7 +268,7 @@ TEST(GltfImporterTest, EscapedSurrogatePairsAreOneCharacter)
 }
 
 // An image no available importer claims (KHR_texture_basisu's .ktx2, EXT_texture_webp's .webp, MSFT_texture_dds's
-// .dds) has no record: the model names it as a companion, like a buffer, and keeps the edge to it.
+// .dds) has no record: the model names it as a companion, like a buffer, and no edge names it.
 TEST(GltfImporterTest, UnclaimedImagesAreCompanions)
 {
 	const CImporterTree tree("ImageCompanions");
@@ -281,12 +279,12 @@ TEST(GltfImporterTest, UnclaimedImagesAreCompanions)
 	ASSERT_EQ(result.Status, EImportStatus::Analyzed) << DescribeDiagnostics(result).CStr();
 	EXPECT_EQ(result.Companions, (std::vector<FString> { "/Project/M/albedo.ktx2", "/Project/M/normal.webp", "/Project/M/rough.dds",
 		"/Project/M/model.bin" }));
-	EXPECT_EQ(result.Edges.size(), 6u);
-	const SEdgeDecl* ktx = FindEdgeTo(result, "/Project/M/albedo.ktx2");
-	ASSERT_NE(ktx, nullptr);
-	EXPECT_EQ(ktx->FromSub, MakeSubId("image:#0"));
-	EXPECT_EQ(ktx->Flags, UriEdgeFlags);
-	EXPECT_NE(FindEdgeTo(result, "/Project/M/base.png"), nullptr);
+	ASSERT_EQ(result.Edges.size(), 1u);
+	EXPECT_EQ(FindEdgeTo(result, "/Project/M/albedo.ktx2"), nullptr);
+	const SEdgeDecl* png = FindEdgeTo(result, "/Project/M/base.png");
+	ASSERT_NE(png, nullptr);
+	EXPECT_EQ(png->FromSub, MakeSubId("image:#4"));
+	EXPECT_EQ(png->Flags, UriEdgeFlags);
 }
 
 TEST(GltfImporterTest, UrisResolveAsTranslateWillOpenThem)
@@ -333,15 +331,10 @@ TEST(GltfImporterTest, UrisResolveAsTranslateWillOpenThem)
 	EXPECT_NE(FindDiagnostic(result, "/rooted.png"), nullptr);
 	EXPECT_NE(FindDiagnostic(result, "https://example.com/y.png"), nullptr);
 
-	// Two buffers naming one file: two edges, one companion.
+	// Two buffers naming one file: one companion and no edge.
 	EXPECT_EQ(result.Companions, (std::vector<FString> { "/Project/M/data.bin" }));
-	uint32 bufferEdges = 0u;
-	for (const SEdgeDecl& edge : result.Edges)
-	{
-		bufferEdges += edge.TargetPath == "/Project/M/data.bin" ? 1u : 0u;
-	}
-	EXPECT_EQ(bufferEdges, 2u);
-	EXPECT_EQ(result.Edges.size(), 5u + 2u);
+	EXPECT_EQ(FindEdgeTo(result, "/Project/M/data.bin"), nullptr);
+	EXPECT_EQ(result.Edges.size(), 5u);
 }
 
 TEST(GltfImporterTest, GlbReadsOnlyTheJsonChunk)
