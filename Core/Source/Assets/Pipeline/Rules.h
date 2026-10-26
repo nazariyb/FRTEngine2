@@ -347,6 +347,15 @@ public:
 	[[nodiscard]] bool IsTypeIncluded (const SScanScope& Scope, reflect::TypeId Type) const;
 	// Applies the chain's `Validation:` override for Diagnostic.Code (the deepest file that lists it wins).
 	void ApplyValidation (const SScanScope& Scope, SDiagnostic& Diagnostic) const;
+	/**
+	 * What the two filters above make of Analyze's results under Scope: XXH3 of the engine's types the chain leaves
+	 * out (by name) and of its effective Validation overrides (code, severity, by code); 0 when the chain filters
+	 * nothing. The registry folds it into a record's AnalyzeStamp, because a stored record holds its sub-entries and
+	 * Analyze problems already filtered: a Types or Validation edit that changes it must analyze that scope's files
+	 * again, while an edit with the same effect (a comment, a list in another order) analyzes nothing. Stable across
+	 * builds and machines (persisted through the stamp).
+	 */
+	[[nodiscard]] uint64 GetAnalyzeFilterHash (const SScanScope& Scope) const;
 	// The `explain <file>` data.
 	[[nodiscard]] SRuleExplanation Explain (const SScanScope& Scope, FStringView FileMountPath, const SFileFacts& Facts = {}) const;
 

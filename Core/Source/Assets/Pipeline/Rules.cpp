@@ -3250,6 +3250,47 @@ void CRulesEngine::ApplyValidation (const SScanScope& Scope, SDiagnostic& Diagno
 	}
 }
 
+uint64 CRulesEngine::GetAnalyzeFilterHash (const SScanScope& Scope) const
+{
+	const SScope& scope = AsScope(Scope);
+	const bool bAnyFilter = std::any_of(scope.Chain.begin(), scope.Chain.end(), [] (const std::shared_ptr<const CRuleFile>& File)
+	{
+		const CRuleFile::SData& data = File->GetData();
+		return !data.TypeIncludes.empty() || !data.TypeExcludes.empty() || !data.Validation.empty();
+	});
+	if (!bAnyFilter)
+	{
+		return 0u;   // the common case, and every file's on a warm start: no text built
+	}
+	FString text;
+	const std::span<const SAssetTypeInfo> types = CAssetTypeRegistry::GetTypes();
+	for (uint32 type = 0u; type < types.size(); ++type)
+	{
+		if (!IsTypeIncluded(Scope, static_cast<reflect::TypeId>(type)))
+		{
+			text.AppendFormat("type {}\n", types[type].Name);
+		}
+	}
+	// The deepest file that lists a code wins (ApplyValidation), so the first sighting along the chain counts.
+	std::vector<std::pair<uint32, ESeverity>> overrides;
+	for (const std::shared_ptr<const CRuleFile>& file : scope.Chain)
+	{
+		for (const SValidationDef& validation : file->GetData().Validation)
+		{
+			if (std::none_of(overrides.begin(), overrides.end(), [&] (const auto& Override) { return Override.first == validation.Code; }))
+			{
+				overrides.emplace_back(validation.Code, validation.Severity);
+			}
+		}
+	}
+	std::sort(overrides.begin(), overrides.end());
+	for (const auto& [code, severity] : overrides)
+	{
+		text.AppendFormat("validation {:08x} {}\n", code, static_cast<uint32>(severity));
+	}
+	return text.IsEmpty() ? 0u : hash::Xxh3_64(text.View());
+}
+
 SRuleExplanation CRulesEngine::Explain (const SScanScope& Scope, FStringView FileMountPath, const SFileFacts& Facts) const
 {
 	const SScope& scope = AsScope(Scope);

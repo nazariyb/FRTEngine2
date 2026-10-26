@@ -259,6 +259,7 @@ SAnalyzeOutcome RunAnalyze (std::vector<SAnalyzeRequest>& Requests, const CRules
 		{
 			settings = request.Settings;
 		}
+		settings.Settings.AnalyzeHash = request.Settings.Settings.AnalyzeHash;   // with the filter hash ConvertBatch folded in
 		const bool bTypeIncluded = Rules.IsTypeIncluded(scope, result.Type);
 		RemoveSubEntries(result, request.Path, [&] (reflect::TypeId Type) { return Rules.IsTypeIncluded(scope, Type); });
 		for (SDiagnostic& diagnostic : result.Diagnostics)
@@ -538,6 +539,10 @@ SConversion ConvertBatch (SConvertInput& In)
 			const SScanScope& scope = *folder.Scope;
 			const SFileFacts facts { bHasRecord ? stored->Type : reflect::InvalidTypeId, {} };
 			SEffectiveFileSettings settings = rules.ResolveFile(scope, path, facts, false);
+			// The stamp covers what filters Analyze's result too (the Types filter of its sub-entries, Validation of its
+			// problems: GetAnalyzeFilterHash), so an edit of either analyzes the scope's files again rather than leaving
+			// their records filtered by the old lists. Nothing filtered: 0, the stamp of the settings alone.
+			settings.Settings.AnalyzeHash ^= rules.GetAnalyzeFilterHash(scope);
 			const bool bTypeIncluded = !bHasRecord || rules.IsTypeIncluded(scope, stored->Type);
 			const EFileClass fileClass = bTypeIncluded ? settings.Class : EFileClass::Excluded;
 			const bool bRowChanged = !stored.has_value() || bStatChanged || stored->BaseClass != fileClass;
@@ -740,6 +745,7 @@ struct CAssetRegistry::SImpl
 		FString Root;
 		bool bReEvaluateAll = false;
 		bool bInitial = false;
+		bool bUnclaimed = false;         // RULE002 recomputed whatever the pass finds (RequestCompanionFolderScans)
 	};
 
 	struct SMountQueue
@@ -754,6 +760,7 @@ struct CAssetRegistry::SImpl
 		FString Root;
 		bool bInitial = false;
 		bool bReEvaluateAll = false;
+		bool bUnclaimed = false;                       // SScanRequest::bUnclaimed
 		std::shared_ptr<const CRegistryView> View;     // what the conversion compares the batch with
 		std::optional<SScanBatch> Batch;               // scanned while the snapshots loaded: converted once they are
 		std::optional<uint64> MountRulesHash;
@@ -1174,8 +1181,9 @@ struct CAssetRegistry::SImpl
 		WriteRulesCache();
 	}
 
-	// Queues a scan of Root in its mount, merged with a queued one that covers it (or that it covers).
-	void RequestScan (uint32 MountIndex, FStringView Root, bool bReEvaluateAll)
+	// Queues a scan of Root in its mount, merged with a queued one that covers it (or that it covers). bUnclaimed: its
+	// RULE002 is recomputed even when none of its own files changed (RequestCompanionFolderScans).
+	void RequestScan (uint32 MountIndex, FStringView Root, bool bReEvaluateAll, bool bUnclaimed = false)
 	{
 		std::deque<SScanRequest>& requests = MountQueues[MountIndex].Requests;
 		for (SScanRequest& request : requests)
@@ -1183,11 +1191,13 @@ struct CAssetRegistry::SImpl
 			if (IsAtOrBelow(Root, request.Root.View()))
 			{
 				request.bReEvaluateAll = request.bReEvaluateAll || bReEvaluateAll;
+				request.bUnclaimed = request.bUnclaimed || bUnclaimed;
 				return;
 			}
 		}
 		bool bMerged = bReEvaluateAll;
 		bool bInitial = false;
+		bool bMergedUnclaimed = bUnclaimed;
 		std::erase_if(requests, [&] (const SScanRequest& Request)
 		{
 			if (!IsAtOrBelow(Request.Root.View(), Root))
@@ -1196,9 +1206,10 @@ struct CAssetRegistry::SImpl
 			}
 			bMerged = bMerged || Request.bReEvaluateAll;
 			bInitial = bInitial || Request.bInitial;
+			bMergedUnclaimed = bMergedUnclaimed || Request.bUnclaimed;
 			return true;
 		});
-		requests.push_back(SScanRequest { FString(Root), bMerged, bInitial });
+		requests.push_back(SScanRequest { FString(Root), bMerged, bInitial, bMergedUnclaimed });
 	}
 
 	// ---- passes ----
@@ -1224,6 +1235,7 @@ struct CAssetRegistry::SImpl
 			pass.Root = std::move(request.Root);
 			pass.bInitial = request.bInitial;
 			pass.bReEvaluateAll = request.bReEvaluateAll;
+			pass.bUnclaimed = request.bUnclaimed;
 			pass.View = Store->Acquire();   // the published view (the empty one while loading: refreshed by OnLoaded)
 			const SMount& mount = Mounts->GetMounts()[index];
 			if (pass.Root == mount.GetRootMountPath())
@@ -1454,10 +1466,11 @@ struct CAssetRegistry::SImpl
 		{
 			return;
 		}
-		// RULE002 can only differ when files or records changed, or the rules did (a Validation: severity, Scan.Quiet).
-		// It is recomputed on a worker from the view every delta of the pass is in (a whole mount's folders take
-		// milliseconds), then goes into the pass's last delta.
-		const bool bUnclaimedMayDiffer = pass.bFilesChanged || pass.bRuleFilesChanged || pass.bReEvaluateAll;
+		// RULE002 can only differ when files or records changed, or the rules did (a Validation: severity, Scan.Quiet),
+		// or a record elsewhere switched a file's companion status (bUnclaimed). It is recomputed on a worker from the
+		// view every delta of the pass is in (a whole mount's folders take milliseconds), then goes into the pass's last
+		// delta.
+		const bool bUnclaimedMayDiffer = pass.bFilesChanged || pass.bRuleFilesChanged || pass.bReEvaluateAll || pass.bUnclaimed;
 		if (!pass.bUnclaimedDone && !pass.bLost && bUnclaimedMayDiffer)
 		{
 			pass.bUnclaimedDone = true;
@@ -1612,6 +1625,7 @@ struct CAssetRegistry::SImpl
 			SQueuedDelta item = std::move(Queue.front());
 			Queue.pop_front();
 			CommitDelta(std::move(item.Delta));
+			RequestCompanionFolderScans(item.Pass);
 			if (item.Pass != 0u)
 			{
 				--Passes.at(item.Pass).PendingDeltas;
@@ -1627,6 +1641,35 @@ struct CAssetRegistry::SImpl
 			else if (MillisecondsSince(start) >= Desc.FrameBudgetMs)
 			{
 				break;
+			}
+		}
+	}
+
+	/**
+	 * RULE002 of a folder depends on its files' classes, and a record elsewhere can switch one (a glTF that stops naming
+	 * a buffer in another folder makes it Unclaimed). A folder the committing pass does not cover gets a subtree pass of
+	 * its own, queued behind this one, which recomputes its RULE002 from a view that holds this pass's records.
+	 */
+	void RequestCompanionFolderScans (uint64 PassId)
+	{
+		const std::vector<FString>& changed = Store->GetLastCommitStats().CompanionClassChanges;
+		if (changed.empty())
+		{
+			return;
+		}
+		const auto pass = Passes.find(PassId);
+		for (const FString& file : changed)
+		{
+			const FStringView folder = GetMountPathParent(file);
+			FStringView mountName;
+			FStringView relative;
+			if ((pass != Passes.end() && IsAtOrBelow(folder, pass->second.Root.View())) || !SplitMountPath(file, mountName, relative))
+			{
+				continue;
+			}
+			if (const SMount* mount = Mounts->Find(mountName); mount != nullptr)
+			{
+				RequestScan(mount->Id, folder, false, true);
 			}
 		}
 	}

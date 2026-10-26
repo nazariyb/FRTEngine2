@@ -76,7 +76,10 @@ rules ever apply. Per field, the deepest file that sets it wins, and within a fi
   `Unclaimed` and raises `RULE002` unless quiet; `Type`/`Label` rules may not set the importer or an Analyze-relevant
   setting; `Validation.Naming`, `Cook`, `PrimaryAssetTypes` and `Safety` are validated and listed, never acted on;
   type names outside `frt.` are kept and match nothing until reflection (M5). No setting is Analyze-relevant in M3, so
-  a settings edit never re-analyzes; an `Importer:` or `Scan.Raw` change does.
+  a settings edit never re-analyzes; an `Importer:` or `Scan.Raw` change does. So does a `Types` or `Validation:` edit
+  that changes what they filter, for the files under it: a record keeps its sub-entries and Analyze problems as they
+  were filtered, so each record's `AnalyzeStamp` covers the effective type filter and Validation overrides of its
+  folder (`CRulesEngine::GetAnalyzeFilterHash`; nothing filtered leaves the stamp of the settings alone).
 - **Hashes.** A rule file's `RulesHash` covers its normalised entries (comments and formatting change nothing; 0 = no
   file). The *semantics hash* covers what turns those texts into results - the importer table, the rules engine's
   version, the target - and the registry always resolves with an empty target, so every host agrees. A snapshot's
@@ -162,7 +165,8 @@ while every mount is stat-scanned, and turns each scan into one delta on a worke
 changed, has no record or a `StaleTags` one, or its `AnalyzeStamp` or importer changed; a file whose rule chain changed
 (its folder's or an ancestor's `Assets.yml`, its mount's `Config/Assets.yml`, the engine's for every other mount, or a
 snapshot whose `RulesBasis` differs) is re-evaluated in memory; anything else costs a stat. `RULE002` is computed per
-folder once companions are known. The editor and the dev Launcher wait for the initial scan before their first
+folder once companions are known; a record that starts or stops naming a companion in a folder its scan did not cover
+queues a scan of that folder, which recomputes its `RULE002`. The editor and the dev Launcher wait for the initial scan before their first
 `BuildWorld` and log `[assets] initial scan: <files> files, <records> records, <ms> ms; BuildWorld waited <ms> ms
 (analyzed <a>, hashed <h>)`. `Pump` (in `BeginFrame`, right after the worker completions) commits at most 2 ms of
 deltas per frame; panels poll `GetRevision()`, engine systems may subscribe to `OnAssetsChanged`.

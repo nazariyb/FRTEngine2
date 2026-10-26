@@ -460,6 +460,168 @@ TEST(AssetRegistry, AFolderRuleEditReAnalyzesOnlyChangedStampsAndReEvaluatesOnly
 	EXPECT_EQ(removed.Dump, FreshDump(pool, tree.Project()));
 }
 
+namespace
+{
+// A glTF with a mesh and a material (sub-entries the Types filter can leave out) beside the tree's Box.
+void WriteCube (const CServiceTree& Tree)
+{
+	Tree.WriteProjectContent("Models/Куб/Куб.gltf", "{\"asset\":{\"version\":\"2.0\"},\"buffers\":[{\"uri\":\"Куб.bin\",\"byteLength\":4}],"
+		"\"meshes\":[{\"name\":\"Сітка\",\"primitives\":[]}],\"materials\":[{\"name\":\"Метал\"}]}");
+	Tree.WriteProjectContent("Models/Куб/Куб.bin", "abcd");
+}
+
+constexpr FStringLiteral CubeMesh = "/Project/Models/Куб/Куб.gltf#mesh:Сітка";
+constexpr FStringLiteral CubeMaterial = "/Project/Models/Куб/Куб.gltf#material:Метал";
+
+// The severity every REF007 of View has (the legacy material's reference); nullopt when there is none or they differ.
+std::optional<ESeverity> Ref007Severity (const CRegistryView& View)
+{
+	const std::vector<SDiagnostic> found = ProblemsOf(View, Ref007);
+	if (found.empty() || std::any_of(found.begin(), found.end(), [&] (const SDiagnostic& Diagnostic) { return Diagnostic.Severity != found[0].Severity; }))
+	{
+		return std::nullopt;
+	}
+	return found[0].Severity;
+}
+
+// The Types and Validation edits both filter tests make, in order: (rule file, its text or none, the mesh then
+// registered, REF007's severity then, files analyzed again).
+struct SFilterStep
+{
+	const char* Name;
+	FStringView Folder;
+	std::optional<FStringView> Rules;
+	bool bMesh;
+	ESeverity Ref007;
+	uint64 Analyzed;
+};
+
+constexpr FStringView ModelsFolder = "Models";
+constexpr FStringView MaterialsFolder = "Materials";
+
+// Each edit analyzes the scope's records again: Models holds Box and Куб, Materials one legacy material.
+const SFilterStep FilterSteps[] = {
+	{ "a Types exclude of a sub-asset type", ModelsFolder, "FormatVersion: 1\nTypes: { Exclude: [ frt.Mesh ] }\n", false, ESeverity::Info, 2u },
+	{ "the exclude lifted", ModelsFolder, std::nullopt, true, ESeverity::Info, 2u },
+	{ "a Types include without the type", ModelsFolder, "FormatVersion: 1\nTypes: { Include: [ frt.Model, frt.Material ] }\n", false, ESeverity::Info, 2u },
+	{ "the include removed", ModelsFolder, std::nullopt, true, ESeverity::Info, 2u },
+	{ "a Validation override of an Analyze problem", MaterialsFolder, "FormatVersion: 1\nValidation: { REF007: Warning }\n", true, ESeverity::Warning, 1u },
+	{ "the override removed", MaterialsFolder, std::nullopt, true, ESeverity::Info, 1u },
+};
+
+void ApplyFilterStep (const CServiceTree& Tree, const SFilterStep& Step)
+{
+	const std::filesystem::path file = Tree.ProjectContent(Step.Folder) / "Assets.yml";
+	if (Step.Rules.has_value())
+	{
+		frt::test::rules::WriteFile(file, *Step.Rules);
+	}
+	else
+	{
+		std::error_code ec;
+		std::filesystem::remove(file, ec);
+	}
+}
+}
+
+
+TEST(AssetRegistry, TypesAndValidationEditsReachTheSubEntriesAndProblemsOfStoredRecordsAtARestart)
+{
+	const CServiceTree tree("Filters Offline");
+	WriteCube(tree);
+	jobs::CWorkerPool pool(MakePoolDesc(4u));
+	(void)WriteBothSnapshots(pool, tree);
+	SOpen writer;
+	writer.bWriter = true;
+	for (const SFilterStep& step : FilterSteps)
+	{
+		ApplyFilterStep(tree, step);
+		std::unique_ptr<CAssetRegistry> registry = Open(pool, tree.Project(), writer);
+		const CRegistryView& view = registry->Live();
+		EXPECT_EQ(view.FindByPath(CubeMesh).has_value(), step.bMesh) << step.Name;
+		EXPECT_TRUE(view.FindByPath(CubeMaterial).has_value()) << step.Name;
+		EXPECT_EQ(Ref007Severity(view), std::optional<ESeverity>(step.Ref007)) << step.Name;
+		EXPECT_EQ(registry->GetCounters().Analyzed, step.Analyzed) << step.Name;
+		const SRun run = Close(registry);
+		EXPECT_EQ(run.Dump, FreshDump(pool, tree.Project())) << step.Name;
+		// The restart after it has nothing left to do.
+		EXPECT_EQ(RunOnce(pool, tree.Project(), writer).Counters.Analyzed, 0u) << step.Name;
+	}
+}
+
+TEST(AssetRegistry, TypesAndValidationEditsReachTheSubEntriesAndProblemsOfStoredRecordsThroughTheWatcher)
+{
+	const CServiceTree tree("Filters Watched");
+	WriteCube(tree);
+	jobs::CWorkerPool pool(MakePoolDesc(4u));
+	jobs::CWorkerPool freshPool(MakePoolDesc(2u));   // the fresh scans, apart from the watched registry's work
+	SFileWatcherSettings settings;
+	settings.SettleMs = 50u;
+	CFileWatcherService watcher(settings);
+	const std::shared_ptr<const CMountTable> mounts = tree.Project();
+	for (const SMount& mount : mounts->GetMounts())
+	{
+		watcher.AddMount(mount.ContentDir);
+		watcher.AddMount(mount.RulesFile.parent_path());
+	}
+	SOpen writer;
+	writer.bWriter = true;
+	writer.bLoadSnapshots = false;
+	writer.Watcher = &watcher;
+	std::unique_ptr<CAssetRegistry> registry = Open(pool, mounts, writer);
+	for (const SFilterStep& step : FilterSteps)
+	{
+		const uint64 analyzed = registry->GetCounters().Analyzed;
+		ApplyFilterStep(tree, step);
+		ASSERT_TRUE(registry->Flush(30.0)) << step.Name;
+		const CRegistryView& view = registry->Live();
+		EXPECT_EQ(view.FindByPath(CubeMesh).has_value(), step.bMesh) << step.Name;
+		EXPECT_EQ(Ref007Severity(view), std::optional<ESeverity>(step.Ref007)) << step.Name;
+		EXPECT_EQ(registry->GetCounters().Analyzed - analyzed, step.Analyzed) << step.Name;
+		EXPECT_EQ(DumpOf(view), FreshDump(freshPool, tree.Project())) << step.Name;
+	}
+	(void)Close(registry);
+}
+
+TEST(AssetRegistry, AFileInAnotherFolderGetsItsRule002WhenNoRecordNamesItAsACompanionAndLosesItWhenOneDoes)
+{
+	const CServiceTree tree("Companions Elsewhere");
+	tree.WriteProjectContent("Models/Буфери/Спільний.bin", "abcd");
+	const auto writeModel = [&] (bool bNamesBuffer)
+	{
+		tree.WriteProjectContent("Models/Кулі/Куля.gltf", bNamesBuffer
+			? FStringView("{\"asset\":{\"version\":\"2.0\"},\"buffers\":[{\"uri\":\"../Буфери/Спільний.bin\",\"byteLength\":4}]}")
+			: FStringView("{\"asset\":{\"version\":\"2.0\"}}"));
+	};
+	const auto rule002At = [] (const CRegistryView& View, FStringView Folder)
+	{
+		const std::vector<SDiagnostic> found = ProblemsOf(View, Rule002);
+		return std::count_if(found.begin(), found.end(), [&] (const SDiagnostic& Diagnostic) { return Diagnostic.Subject == Folder; });
+	};
+	constexpr FStringView buffers = "/Project/Models/Буфери";
+	const FString model[] = { "/Project/Models/Кулі/Куля.gltf" };
+	writeModel(true);
+	jobs::CWorkerPool pool(MakePoolDesc(4u));
+	jobs::CWorkerPool freshPool(MakePoolDesc(2u));
+	SOpen reader;
+	reader.bLoadSnapshots = false;
+	std::unique_ptr<CAssetRegistry> registry = Open(pool, tree.Project(), reader);
+	EXPECT_EQ(rule002At(registry->Live(), buffers), 0) << "a companion is claimed";
+
+	// The model no longer names the buffer: only the model's folder is scanned, and the buffer's folder gets its RULE002.
+	writeModel(false);
+	ASSERT_TRUE(registry->ScanPathsSynchronous(model, 30.0));
+	EXPECT_EQ(rule002At(registry->Live(), buffers), 1);
+	EXPECT_EQ(DumpOf(registry->Live()), FreshDump(freshPool, tree.Project()));
+
+	// And names it again: the RULE002 goes.
+	writeModel(true);
+	ASSERT_TRUE(registry->ScanPathsSynchronous(model, 30.0));
+	EXPECT_EQ(rule002At(registry->Live(), buffers), 0);
+	EXPECT_EQ(DumpOf(registry->Live()), FreshDump(freshPool, tree.Project()));
+	(void)Close(registry);
+}
+
 TEST(AssetRegistry, PluginRulesReachOnlyThePluginAndProjectRulesOnlyTheProject)
 {
 	const CServiceTree tree("Plugin Rules");

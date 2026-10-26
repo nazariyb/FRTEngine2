@@ -67,6 +67,10 @@ struct SRegistryCommitStats
 {
 	double Milliseconds = 0.0;          // the last Commit, AdoptImage or compaction, publication included
 	uint32 RecordsChanged = 0u;
+	// The files (as spelled on disk) whose class the companion rule switched in the last Commit: named by a record
+	// for the first time (now Companion), or by none any more (back to their own class). What RULE002 of their
+	// folders depends on besides the folders' own files; empty after AdoptImage and a compaction.
+	std::vector<FString> CompanionClassChanges;
 	bool bCompactedGraph = false;
 	bool bCompactedTables = false;
 	bool bReplayedImage = false;        // AdoptImage replayed the image as a delta instead of taking it in bulk

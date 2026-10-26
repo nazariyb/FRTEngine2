@@ -951,7 +951,12 @@ private:
 		{
 			if (T.Files.Folder[Row] != InvalidRow && EqualPortable(T.Paths.Get(T.Files.Path[Row]), Path))
 			{
-				T.Files.Class.SetIfChanged(Row, bCompanion ? EFileClass::Companion : T.Files.BaseClass[Row], Epoch);
+				const EFileClass fileClass = bCompanion ? EFileClass::Companion : T.Files.BaseClass[Row];
+				if (!bBulk && T.Files.Class[Row] != fileClass)
+				{
+					CompanionClassChanges.emplace_back(T.Paths.Get(T.Files.Path[Row]));
+				}
+				T.Files.Class.SetIfChanged(Row, fileClass, Epoch);
 			}
 			return true;
 		});
@@ -3099,6 +3104,10 @@ private:
 	FStringSetIgnoreCase TouchedRecordPaths;
 	TStringMap<std::vector<SDiagnostic>> PendingViolations;
 	std::vector<uint8> DirtyIntervals;
+
+public:
+	// SRegistryCommitStats::CompanionClassChanges (UpdateCompanionClass collects them).
+	std::vector<FString> CompanionClassChanges;
 };
 
 
@@ -3196,6 +3205,7 @@ void CRegistryStore::Commit (SRegistryDelta&& Delta)
 
 	LastStats = SRegistryCommitStats {};
 	LastStats.RecordsChanged = static_cast<uint32>(changes.size());
+	LastStats.CompanionClassChanges = std::move(writer.CompanionClassChanges);
 	SWriterState& state = *Writer;
 	for (const SRingEntry& change : changes)
 	{
