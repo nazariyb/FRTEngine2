@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -27,6 +28,7 @@
 #include "Assets/OwnerLock.h"
 #include "Assets/Registry/Journal.h"
 #include "Assets/Registry/QueryEngine.h"
+#include "Assets/Registry/Snapshot.h"
 #include "Jobs/WorkerPool.h"
 #include "Platform/FileSystem.h"
 #include "Platform/Timestamp.h"
@@ -509,6 +511,44 @@ TEST(AssetRegistry, ATornSnapshotSectionOrJournalTailCostsARescanNeverAWrongRegi
 	EXPECT_TRUE(!report->DroppedSections.empty() || !report->DroppedTypeTables.empty() || report->State == ESnapshotFileState::Rejected)
 		<< report->Message.CStr();
 	(void)first;
+
+	// One bad section of Analyze outputs (DEPS: edges and companions) costs only the records that had them: they are
+	// flagged StaleTags at load and analyzed again, nothing else.
+	SOpen writer;
+	writer.bWriter = true;
+	(void)RunOnce(pool, tree.Project(), writer);
+	{
+		std::optional<std::vector<uint8>> bytes = platform::ReadFileBytes(snapshot);
+		ASSERT_TRUE(bytes.has_value() && bytes->size() > SnapshotHeaderBytes);
+		uint32 sections = 0u;
+		std::memcpy(&sections, bytes->data() + 12u, sizeof(sections));
+		bool bFlipped = false;
+		for (uint32 i = 0u; i < sections; ++i)
+		{
+			const uint8* entry = bytes->data() + SnapshotHeaderBytes + i * SnapshotSectionEntryBytes;
+			uint32 id = 0u;
+			uint64 offset = 0u;
+			uint64 size = 0u;
+			std::memcpy(&id, entry, sizeof(id));
+			std::memcpy(&offset, entry + 8u, sizeof(offset));
+			std::memcpy(&size, entry + 16u, sizeof(size));
+			if (id == static_cast<uint32>(ESnapshotSection::Deps) && size > 0u)
+			{
+				(*bytes)[offset + size / 2u] ^= 0xA5u;
+				bFlipped = true;
+			}
+		}
+		ASSERT_TRUE(bFlipped);
+		ASSERT_TRUE(platform::WriteFileBytes(snapshot, *bytes));
+	}
+	const SRun stale = RunOnce(pool, tree.Project(), reader);
+	EXPECT_EQ(stale.Dump, expected);
+	report = FindReport(stale, "AssetRegistry.snapshot");
+	ASSERT_NE(report, nullptr);
+	EXPECT_EQ(report->State, ESnapshotFileState::Loaded) << report->Message.CStr();
+	EXPECT_NE(std::find(report->DroppedSections.begin(), report->DroppedSections.end(), ESnapshotSection::Deps), report->DroppedSections.end());
+	EXPECT_GT(report->StaleRecords, 0u);
+	EXPECT_EQ(stale.Counters.Analyzed, report->StaleRecords) << "exactly the records that lost their edges";
 }
 
 TEST(AssetRegistry, AWatcherSequenceEndsInTheDumpOfAFreshScan)
@@ -557,8 +597,16 @@ TEST(AssetRegistry, AWatcherSequenceEndsInTheDumpOfAFreshScan)
 		tree.WriteProjectPng(FString::Format("Пакет/Файл_{:03}.png", i));
 	}
 	settle("burst");
-	frt::test::rules::WriteFile(tree.FolderRules(), "FormatVersion: 1\nRules:\n  - { Match: \"*.png\", Importer: Raw }\n");   // a folder rule
+	const uint64 analyzed = registry->GetCounters().Analyzed;
+	frt::test::rules::WriteFile(tree.FolderRules(),                             // a folder rule that changes no stamp
+		"FormatVersion: 1\nRules:\n  - { Match: \"*.png\", For: Texture, Settings: { ColorSpace: Linear } }\n");
+	settle("folder settings");
+	EXPECT_EQ(registry->GetCounters().Analyzed, analyzed);
+	frt::test::rules::WriteFile(tree.FolderRules(), "FormatVersion: 1\nRules:\n  - { Match: \"*.png\", Importer: Raw }\n");   // one that does
 	settle("folder rule");
+	// "*.png" floats (gitignore): the folder's two PNGs and the one in the subfolder moved into it, nothing else.
+	EXPECT_EQ(registry->GetCounters().Analyzed - analyzed, 3u);
+	EXPECT_EQ(TypeOf(registry->Live(), FString::Format("/Project/{}/Дерева/Дуб.png", Foliage)), asset_types::Raw);
 	EXPECT_EQ(TypeOf(registry->Live(), FString::Format("/Project/{}/Кора.png", Foliage)), asset_types::Raw);
 	tree.WriteProjectRules("FormatVersion: 1\nScan:\n  Quiet: [ \"license.txt\" ]\n  Exclude: [ \"Notes/**\" ]\n");   // a mount rule (membership)
 	settle("mount rule");
