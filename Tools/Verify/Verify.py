@@ -679,8 +679,14 @@ class Gate:
 
     @staticmethod
     def golden_sources(template):
-        """What a golden dump reads: the engine's content and rule file, and a template's."""
-        return ['Core/Content', 'Core/Config'] + ([f'Templates/{template}/Content', f'Templates/{template}/Config'] if template else [])
+        """What a golden dump reads, and nothing else (an edit of Game.ini or Engine.ini changes no dump): the engine's
+        content and rule file, and a template's, with its plugins' content and rule files (mounted when they exist)."""
+        sources = ['Core/Content', 'Core/Config/Assets.yml']
+        if template:
+            root = f'Templates/{template}'
+            sources += [f'{root}/Content', f'{root}/Config/Assets.yml',
+                        f':(glob){root}/Plugins/*/Content/**', f':(glob){root}/Plugins/*/Config/Assets.yml']
+        return sources
 
     # A dump line that breaks design 1.1 G11 (the engine and the templates are clean of portable-path and rule
     # problems) or that reports an error.
