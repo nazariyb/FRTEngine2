@@ -375,7 +375,9 @@ TEST(MountScannerTest, ScanAsyncCompletesOnTheOwnerThread)
 	ASSERT_TRUE(pool->PumpUntil([&] { return result.has_value(); }, 30.0));
 	EXPECT_EQ(completionThread, platform::GetCurrentThreadId());
 	EXPECT_EQ(result->Files.size(), 2u);
-	EXPECT_TRUE(pool->IsIdle());
+	// The worker that posted the completion may still be returning from its task, so the pool is
+	// idle soon after OnDone, not necessarily at once.
+	EXPECT_TRUE(pool->PumpUntil([&] { return pool->IsIdle(); }, 30.0));
 }
 
 TEST(MountScannerTest, TheBatchIsTheSameWhateverTheThreadCount)
