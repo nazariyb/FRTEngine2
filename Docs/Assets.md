@@ -35,7 +35,8 @@ and writes only its own files under `Local/`.
 
 A mount path is `/<Mount>/<relative path>` in the on-disk spelling; a sub-asset is `<file>#<label>`
 (`/Project/Models/Box.gltf#mesh:Body`). `CMountTable` (`Assets/Discovery/Mounts.h`) is the one place that turns disk
-paths into mount paths and back (`paths::ToMountPath`, `paths::FromMountPath` while the engine runs).
+paths into mount paths and back; `paths::ToMountPath` and `paths::FromMountPath` answer from the table a Debug or
+Development `CEngine` installs (nullopt in tool hosts, which resolve their own table, and in Release).
 
 - **FILES** has a row per file a scan kept: class (`Asset` claimed by an importer, `Raw`, `Unclaimed`, `Companion`,
   `Excluded`), size, mtime, file identity, a content hash once something read the bytes. A file excluded by a rule is
@@ -161,7 +162,7 @@ project manager and with `[Assets] Registry=0`); game code never reaches it. Sta
 the mounts once (`CMountTable`: `/Engine`, `/Project`, `/Plugin.<Name>`), adds every mount's content and rule-file
 directory to the watcher and installs the table for `paths::ToMountPath`; the registry reads the mount rule files,
 subscribes to the watcher (changes are buffered until the initial scan is complete), loads the snapshots on a worker
-while every mount is stat-scanned, and turns each scan into one delta on a worker. A file is analyzed when it is new or
+while every mount is stat-scanned, and turns each scan into deltas of at most 256 files on a worker. A file is analyzed when it is new or
 changed, has no record or a `StaleTags` one, or its `AnalyzeStamp` or importer changed; a file whose rule chain changed
 (its folder's or an ancestor's `Assets.yml`, its mount's `Config/Assets.yml`, the engine's for every other mount, or a
 snapshot whose `RulesBasis` differs) is re-evaluated in memory; anything else costs a stat. `RULE002` is computed per

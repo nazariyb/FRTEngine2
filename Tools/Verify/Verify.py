@@ -122,6 +122,7 @@ SMOKE_TEXTURES = ('Demo',)
 # Core-Test's tests the gate relies on: they must exist and not be disabled (each Core-Test step runs them).
 REGISTRY_GATE_TESTS = (
     'RegistryGoldenTest.*', 'AssetQueryParseTest.RandomTokenStreamsNeverCrashAndEveryErrorHasAPosition',
+    'QueryEngineTest.RandomQueriesNeverCrashAndEveryErrorHasAPosition',
     'RegistryBenchmarkTest.TheStoreMeetsItsBudgetsAt10kAssets', 'QueryBenchmarkTest.TheQueryEngineMeetsItsBudgetsAt10kAssets',
     'SnapshotTest.SnapshotAndJournalMeetTheirBudgetsAt10kAssets',
     'AssetRegistryBudget.TwentyThousandFilesWarmStartWithinTheirBudgetAlsoAfterAMountRuleEdit',

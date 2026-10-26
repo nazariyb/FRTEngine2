@@ -20,7 +20,8 @@
  * from a configured search path, and they are disjoint: no search order, no overlay, so a mount path names
  * at most one file. CMountTable is resolved once at start-up and immutable afterwards, so any thread may
  * read it; it is the one place that turns an absolute path into a mount path and back (paths::ToMountPath
- * and paths::FromMountPath in EnginePaths.h are thin wrappers over the table the registry installs).
+ * and paths::FromMountPath in EnginePaths.h are thin wrappers over the table a dev CEngine installs; tool hosts and
+ * Release install none).
  *
  * Case. Each mount root's volume facts are queried once, at Resolve (platform::QueryVolumeInfo): whether
  * lookups inside it are case-sensitive decides how the registry's FILES index compares (§5.2) and how a
