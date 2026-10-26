@@ -67,27 +67,54 @@ EValueForm GetValueForm (ETagType Type) noexcept
 
 // ---------------- Encoding ----------------
 
-void AppendTextTable (std::vector<uint8>& Out, const std::vector<FString>& Texts)
+void AppendTextTable (CFastByteWriter& Out, const std::vector<FString>& Texts)
 {
-	AppendVarint(Out, Texts.size());
+	Out.Varint(Texts.size());
 	for (const FString& text : Texts)
 	{
-		AppendText(Out, text);
+		Out.Text(text);
 	}
 }
 
-std::vector<uint8> EncodeSection (const SRegistryImage& Image, ESnapshotSection Section)
+// A generous estimate of a section's bytes, so its writer grows once.
+size_t EstimateSectionBytes (const SRegistryImage& Image, ESnapshotSection Section) noexcept
 {
-	std::vector<uint8> out;
+	const auto textBytes = [] (const std::vector<FString>& Texts)
+	{
+		size_t bytes = 10u;
+		for (const FString& text : Texts)
+		{
+			bytes += text.Len() + 5u;
+		}
+		return bytes;
+	};
+	switch (Section)
+	{
+	case ESnapshotSection::Strings: return textBytes(Image.Strings);
+	case ESnapshotSection::Names: return textBytes(Image.Names);
+	case ESnapshotSection::Folders: return 16u + Image.Folders.size() * 13u;
+	case ESnapshotSection::Files: return 16u + Image.Files.size() * 96u;
+	case ESnapshotSection::Assets: return textBytes(Image.ImporterNames) + Image.Records.size() * 80u;
+	case ESnapshotSection::SubEntry: return 16u + Image.SubEntries.size() * 26u;
+	case ESnapshotSection::Labels: return 16u + Image.Labels.size() * 5u;
+	case ESnapshotSection::Deps: return 32u + Image.Edges.size() * 48u + Image.Companions.size() * 5u;
+	case ESnapshotSection::TypeTables: return 64u + Image.Tags.size() * 15u + (Image.Records.size() + Image.SubEntries.size()) * 6u;
+	default: return 256u;
+	}
+}
+
+void EncodeSection (const SRegistryImage& Image, ESnapshotSection Section, CFastByteWriter& out)
+{
+	out.Reserve(EstimateSectionBytes(Image, Section));
 	switch (Section)
 	{
 	case ESnapshotSection::Mounts:
-		AppendVarint(out, Image.Mounts.size());
+		out.Varint(Image.Mounts.size());
 		for (const SImageMount& mount : Image.Mounts)
 		{
-			AppendText(out, mount.Name);
-			AppendVarint(out, mount.Id);
-			out.push_back(mount.bCaseSensitive ? 1u : 0u);
+			out.Text(mount.Name);
+			out.Varint(mount.Id);
+			out.U8(mount.bCaseSensitive ? 1u : 0u);
 		}
 		break;
 	case ESnapshotSection::Strings:
@@ -97,109 +124,109 @@ std::vector<uint8> EncodeSection (const SRegistryImage& Image, ESnapshotSection 
 		AppendTextTable(out, Image.Names);
 		break;
 	case ESnapshotSection::Folders:
-		AppendVarint(out, Image.Folders.size());
+		out.Varint(Image.Folders.size());
 		for (const SImageFolder& folder : Image.Folders)
 		{
-			AppendVarint(out, folder.Mount);
-			AppendOptionalIndex(out, folder.Parent);
-			AppendVarint(out, folder.Name);
+			out.Varint(folder.Mount);
+			out.OptionalIndex(folder.Parent);
+			out.Varint(folder.Name);
 		}
 		break;
 	case ESnapshotSection::Files:
-		AppendVarint(out, Image.Files.size());
+		out.Varint(Image.Files.size());
 		for (const SImageFile& file : Image.Files)
 		{
-			AppendVarint(out, file.Folder);
-			AppendVarint(out, file.LeafName);
-			AppendVarint(out, file.Size);
-			AppendSignedVarint(out, file.MTime);
-			AppendIdentity(out, file.Identity);
-			binary::AppendHash(out, file.ContentHash);
-			AppendLittleEndian(out, file.MetaHash, 8u);
-			AppendEnum(out, file.Class);
-			AppendEnum(out, file.MetaState);
+			out.Varint(file.Folder);
+			out.Varint(file.LeafName);
+			out.Varint(file.Size);
+			out.SignedVarint(file.MTime);
+			out.Identity(file.Identity);
+			out.Hash(file.ContentHash);
+			out.LittleEndian(file.MetaHash, 8u);
+			out.Enum(file.Class);
+			out.Enum(file.MetaState);
 		}
 		break;
 	case ESnapshotSection::RuleFiles:
-		AppendVarint(out, Image.RuleFiles.size());
+		out.Varint(Image.RuleFiles.size());
 		for (const SImageRuleFile& ruleFile : Image.RuleFiles)
 		{
-			AppendVarint(out, ruleFile.Mount);
-			AppendOptionalIndex(out, ruleFile.Folder);
-			AppendLittleEndian(out, ruleFile.RulesHash, 8u);
+			out.Varint(ruleFile.Mount);
+			out.OptionalIndex(ruleFile.Folder);
+			out.LittleEndian(ruleFile.RulesHash, 8u);
 		}
 		break;
 	case ESnapshotSection::Assets:
 		// The importer-name table first (only ASSETS refers to it), then the records. A record's labels,
 		// sub-entries, edges and companions follow its predecessor's in their sections: counts only.
 		AppendTextTable(out, Image.ImporterNames);
-		AppendVarint(out, Image.Records.size());
+		out.Varint(Image.Records.size());
 		for (const SImageRecord& record : Image.Records)
 		{
-			AppendVarint(out, record.File);
-			AppendGuid(out, record.Guid);
-			AppendVarint(out, record.Type);
-			AppendOptionalIndex(out, record.Importer == 0xFFFFu ? ~0u : record.Importer);
-			AppendFlags(out, record.Flags);
-			AppendEnum(out, record.CookRule);
-			AppendVarint(out, record.Chunk);
-			AppendOptionalIndex(out, record.PrimaryName);
-			AppendEnum(out, record.ImportStatus);
-			AppendLittleEndian(out, record.AnalyzeStamp, 8u);
-			AppendVarint(out, record.Labels.Count);
-			AppendVarint(out, record.SubEntries.Count);
-			AppendVarint(out, record.Edges.Count);
-			AppendVarint(out, record.Companions.Count);
+			out.Varint(record.File);
+			out.Guid(record.Guid);
+			out.Varint(record.Type);
+			out.OptionalIndex(record.Importer == 0xFFFFu ? ~0u : record.Importer);
+			out.Flags(record.Flags);
+			out.Enum(record.CookRule);
+			out.Varint(record.Chunk);
+			out.OptionalIndex(record.PrimaryName);
+			out.Enum(record.ImportStatus);
+			out.LittleEndian(record.AnalyzeStamp, 8u);
+			out.Varint(record.Labels.Count);
+			out.Varint(record.SubEntries.Count);
+			out.Varint(record.Edges.Count);
+			out.Varint(record.Companions.Count);
 		}
 		break;
 	case ESnapshotSection::SubEntry:
-		AppendVarint(out, Image.SubEntries.size());
+		out.Varint(Image.SubEntries.size());
 		for (const SImageSubEntry& sub : Image.SubEntries)
 		{
-			AppendVarint(out, sub.Label);
-			AppendLittleEndian(out, sub.SubId, 8u);
-			AppendVarint(out, sub.Type);
-			AppendFlags(out, sub.Flags);
+			out.Varint(sub.Label);
+			out.LittleEndian(sub.SubId, 8u);
+			out.Varint(sub.Type);
+			out.Flags(sub.Flags);
 		}
 		break;
 	case ESnapshotSection::Labels:
-		AppendVarint(out, Image.Labels.size());
+		out.Varint(Image.Labels.size());
 		for (const uint32 label : Image.Labels)
 		{
-			AppendVarint(out, (static_cast<uint64>(label & ~RuleLabelBit) << 1u) | ((label & RuleLabelBit) != 0u ? 1u : 0u));
+			out.Varint((static_cast<uint64>(label & ~RuleLabelBit) << 1u) | ((label & RuleLabelBit) != 0u ? 1u : 0u));
 		}
 		break;
 	case ESnapshotSection::Types:
 		AppendTextTable(out, Image.TypeNames);
 		break;
 	case ESnapshotSection::Deps:
-		AppendVarint(out, Image.Edges.size());
+		out.Varint(Image.Edges.size());
 		for (const SImageEdge& edge : Image.Edges)
 		{
-			AppendLittleEndian(out, edge.FromSub, 8u);
-			out.push_back(edge.Target.IsValid() ? 1u : 0u);
+			out.LittleEndian(edge.FromSub, 8u);
+			out.U8(edge.Target.IsValid() ? 1u : 0u);
 			if (edge.Target.IsValid())
 			{
-				AppendGuid(out, edge.Target.Guid);
-				AppendLittleEndian(out, edge.Target.SubId, 8u);
+				out.Guid(edge.Target.Guid);
+				out.LittleEndian(edge.Target.SubId, 8u);
 			}
-			AppendOptionalIndex(out, edge.TargetPath);
-			AppendFlags(out, edge.Flags);
-			AppendOptionalIndex(out, edge.FieldPath);
+			out.OptionalIndex(edge.TargetPath);
+			out.Flags(edge.Flags);
+			out.OptionalIndex(edge.FieldPath);
 		}
-		AppendVarint(out, Image.Companions.size());
+		out.Varint(Image.Companions.size());
 		for (const uint32 companion : Image.Companions)
 		{
-			AppendVarint(out, companion);
+			out.Varint(companion);
 		}
 		break;
 	case ESnapshotSection::Problems:
-		AppendVarint(out, Image.Problems.size());
+		out.Varint(Image.Problems.size());
 		for (const SImageProblems& problems : Image.Problems)
 		{
-			AppendVarint(out, problems.Subject);
-			AppendEnum(out, problems.Source);
-			AppendDiagnostics(out, problems.Diagnostics);
+			out.Varint(problems.Subject);
+			out.Enum(problems.Source);
+			out.Append([&] (std::vector<uint8>& Bytes) { AppendDiagnostics(Bytes, problems.Diagnostics); });
 		}
 		break;
 	case ESnapshotSection::TypeTables:
@@ -243,6 +270,7 @@ std::vector<uint8> EncodeSection (const SRegistryImage& Image, ESnapshotSection 
 		std::vector<uint8> payload;
 		std::vector<int32> keyOfTag(Image.Tags.size(), -1);   // per image tag: its key in its owner's type, -1 none
 		std::vector<std::pair<uint32, int32>> keyOfName;      // per type: image name -> key (a type has a few keys)
+		CFastByteWriter tableWriter(tables);
 		for (uint32 t = 0u; t < Image.TypeNames.size(); ++t)
 		{
 			const std::optional<reflect::TypeId> type = CAssetTypeRegistry::FindExact(Image.TypeNames[t]);
@@ -254,6 +282,7 @@ std::vector<uint8> EncodeSection (const SRegistryImage& Image, ESnapshotSection 
 			const std::vector<SRow>& rows = rowsByType[t];
 			// Each tag's key, by name and type, once: the columns below compare key indices.
 			keyOfName.clear();
+			size_t tagCount = 0u;
 			for (const SRow& row : rows)
 			{
 				for (uint32 i = row.Tags.Begin; i < row.Tags.Begin + row.Tags.Count && i < Image.Tags.size(); ++i)
@@ -278,69 +307,74 @@ std::vector<uint8> EncodeSection (const SRegistryImage& Image, ESnapshotSection 
 						keyOfName.emplace_back(tag.Key, key);
 					}
 					keyOfTag[i] = key >= 0 && tag.Type == info.Keys[key].Type ? key : -1;
+					++tagCount;
 				}
 			}
 			payload.clear();
-			AppendVarint(payload, info.Keys.size());
-			for (const SStaticTagKey& key : info.Keys)
 			{
-				AppendText(payload, key.Name);
-				AppendEnum(payload, key.Type);
-				AppendFlags(payload, key.Flags);
-			}
-			AppendVarint(payload, rows.size());
-			for (const SRow& row : rows)
-			{
-				AppendVarint(payload, row.Owner);
-			}
-			for (uint32 k = 0u; k < info.Keys.size(); ++k)
-			{
-				const EValueForm form = GetValueForm(info.Keys[k].Type);
+				CFastByteWriter writer(payload);
+				writer.Reserve(64u + rows.size() * (5u + info.Keys.size()) + tagCount * 10u);
+				writer.Varint(info.Keys.size());
+				for (const SStaticTagKey& key : info.Keys)
+				{
+					writer.Text(key.Name);
+					writer.Enum(key.Type);
+					writer.Flags(key.Flags);
+				}
+				writer.Varint(rows.size());
 				for (const SRow& row : rows)
 				{
-					const uint32 end = (std::min)(row.Tags.Begin + row.Tags.Count, static_cast<uint32>(Image.Tags.size()));
-					uint32 count = 0u;
-					for (uint32 i = row.Tags.Begin; i < end; ++i)
+					writer.Varint(row.Owner);
+				}
+				for (uint32 k = 0u; k < info.Keys.size(); ++k)
+				{
+					const EValueForm form = GetValueForm(info.Keys[k].Type);
+					for (const SRow& row : rows)
 					{
-						count += keyOfTag[i] == static_cast<int32>(k) ? 1u : 0u;
-					}
-					AppendVarint(payload, count);
-					for (uint32 i = row.Tags.Begin; count > 0u && i < end; ++i)
-					{
-						const SImageTag& tag = Image.Tags[i];
-						if (keyOfTag[i] != static_cast<int32>(k))
+						const uint32 end = (std::min)(row.Tags.Begin + row.Tags.Count, static_cast<uint32>(Image.Tags.size()));
+						uint32 count = 0u;
+						for (uint32 i = row.Tags.Begin; i < end; ++i)
 						{
-							continue;
+							count += keyOfTag[i] == static_cast<int32>(k) ? 1u : 0u;
 						}
-						switch (form)
+						writer.Varint(count);
+						for (uint32 i = row.Tags.Begin; count > 0u && i < end; ++i)
 						{
-						case EValueForm::Fixed: AppendLittleEndian(payload, tag.Bits, 8u); break;
-						case EValueForm::Varint: AppendVarint(payload, tag.Bits); break;
-						case EValueForm::Name:
-						case EValueForm::String: AppendVarint(payload, tag.Text); break;
+							const SImageTag& tag = Image.Tags[i];
+							if (keyOfTag[i] != static_cast<int32>(k))
+							{
+								continue;
+							}
+							switch (form)
+							{
+							case EValueForm::Fixed: writer.LittleEndian(tag.Bits, 8u); break;
+							case EValueForm::Varint: writer.Varint(tag.Bits); break;
+							case EValueForm::Name:
+							case EValueForm::String: writer.Varint(tag.Text); break;
+							}
 						}
 					}
 				}
 			}
-			AppendText(tables, info.Name);
-			AppendLittleEndian(tables, ComputeTagSchemaHash(info), 8u);
-			AppendVarint(tables, payload.size());
-			AppendLittleEndian(tables, hash::Xxh3_64(payload), 8u);
-			binary::AppendRaw(tables, payload);
+			tableWriter.Text(info.Name);
+			tableWriter.LittleEndian(ComputeTagSchemaHash(info), 8u);
+			tableWriter.Varint(payload.size());
+			tableWriter.LittleEndian(hash::Xxh3_64(payload), 8u);
+			tableWriter.Raw(payload);
 			++tableCount;
 		}
-		AppendVarint(out, tableCount);
-		binary::AppendRaw(out, tables);
+		tableWriter.Finish();
+		out.Varint(tableCount);
+		out.Raw(tables);
 		break;
 	}
 	case ESnapshotSection::Aliases:
 	case ESnapshotSection::FormerPaths:
 	case ESnapshotSection::Metas:
 	case ESnapshotSection::Tombstones:
-		AppendVarint(out, 0u);   // M4 fills them
+		out.Varint(0u);   // M4 fills them
 		break;
 	}
-	return out;
 }
 
 
@@ -1355,16 +1389,15 @@ std::filesystem::path GetJournalPath (const std::filesystem::path& SnapshotPath)
 std::vector<uint8> EncodeSnapshot (const SRegistryImage& Image, const SGuid& ProjectId, uint64 JournalBase, uint64 RulesBasis)
 {
 	FRT_CPU_SCOPE("Assets.Snapshot.Encode");
-	std::array<std::vector<uint8>, SectionOrder.size()> sections;
-	size_t total = AlignUp16(SnapshotHeaderBytes + SectionOrder.size() * SnapshotSectionEntryBytes);
-	for (size_t i = 0u; i < SectionOrder.size(); ++i)
+	// The sections are written in place after the header and the section table (each 16-byte aligned), into one
+	// buffer sized ahead, and checksummed where they lie.
+	size_t estimate = AlignUp16(SnapshotHeaderBytes + SectionOrder.size() * SnapshotSectionEntryBytes);
+	for (const ESnapshotSection section : SectionOrder)
 	{
-		sections[i] = EncodeSection(Image, SectionOrder[i]);
-		total = AlignUp16(total + sections[i].size());
+		estimate += EstimateSectionBytes(Image, section) + 16u;
 	}
-
 	std::vector<uint8> bytes;
-	bytes.reserve(total);
+	bytes.reserve(estimate);
 	binary::AppendRaw(bytes, SnapshotMagic);
 	AppendLittleEndian(bytes, SnapshotFormatVersion, 4u);
 	AppendLittleEndian(bytes, SectionOrder.size(), 4u);
@@ -1376,13 +1409,17 @@ std::vector<uint8> EncodeSnapshot (const SRegistryImage& Image, const SGuid& Pro
 	for (size_t i = 0u; i < SectionOrder.size(); ++i)
 	{
 		const size_t offset = bytes.size();
-		binary::AppendRaw(bytes, sections[i]);
+		{
+			CFastByteWriter out(bytes);
+			EncodeSection(Image, SectionOrder[i], out);
+		}
+		const size_t size = bytes.size() - offset;
 		const size_t entry = table + i * SnapshotSectionEntryBytes;
 		binary::WriteLittleEndianAt(bytes, entry, static_cast<uint32>(SectionOrder[i]), 4u);
 		binary::WriteLittleEndianAt(bytes, entry + 4u, SectionLayoutVersion, 4u);
 		binary::WriteLittleEndianAt(bytes, entry + 8u, offset, 8u);
-		binary::WriteLittleEndianAt(bytes, entry + 16u, sections[i].size(), 8u);
-		binary::WriteLittleEndianAt(bytes, entry + 24u, hash::Xxh3_64(sections[i]), 8u);
+		binary::WriteLittleEndianAt(bytes, entry + 16u, size, 8u);
+		binary::WriteLittleEndianAt(bytes, entry + 24u, hash::Xxh3_64(std::span<const uint8>(bytes.data() + offset, size)), 8u);
 		bytes.resize(AlignUp16(bytes.size()), 0u);
 	}
 	return bytes;

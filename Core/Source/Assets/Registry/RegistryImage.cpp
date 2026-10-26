@@ -232,6 +232,17 @@ SRegistryImage CRegistryView::ExportImage (std::span<const MountId> Mounts) cons
 	const SSubEntryTable& subs = tables.SubEntries;
 	const uint32 assetRows = assets.File.Size();
 	image.Records.reserve(tables.LiveRecords);
+	image.SubEntries.reserve(tables.LiveSubEntries);
+	image.Edges.reserve(tables.Graph.LiveEdges);
+	image.Labels.reserve(tables.Labels.Size());
+	image.Companions.reserve(tables.Companions.Size());
+	image.Names.reserve(tables.Names.Size());
+	size_t tagRows = 0u;
+	for (const CTypeTable& table : tables.Types)
+	{
+		tagRows += static_cast<size_t>(table.LiveRows) * table.Keys.size();
+	}
+	image.Tags.reserve(tagRows);
 	for (uint32 row = 0u; row < assetRows; ++row)
 	{
 		const uint32 fileRow = assets.File[row];

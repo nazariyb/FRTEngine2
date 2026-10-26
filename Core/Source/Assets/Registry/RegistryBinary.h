@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstring>
 #include <optional>
 #include <span>
 #include <vector>
@@ -12,6 +13,7 @@
 #include "Assets/Registry/RegistryTypes.h"
 #include "Containers/String.h"
 #include "Diagnostics/Diagnostics.h"
+#include "Hash/StableHash.h"
 #include "Platform/FileSystem.h"
 
 
@@ -219,4 +221,104 @@ inline bool ReadCount (CByteReader& Reader, uint64 MinItemBytes, uint32& Out) no
 	return true;
 }
 
+
+/**
+ * The encodings above written through a pointer into a vector grown ahead (snapshot sections run to tens of
+ * megabytes: a push_back and a capacity check per byte were most of the encode). Each write makes room for its
+ * largest size once; Finish trims the vector to what was written. Byte for byte what the vector helpers write.
+ */
+class CFastByteWriter
+{
+public:
+	explicit CFastByteWriter (std::vector<uint8>& InOut) noexcept
+		: Out(InOut)
+		, Used(InOut.size())
+	{}
+
+	~CFastByteWriter () { Finish(); }
+	CFastByteWriter (const CFastByteWriter&) = delete;
+	CFastByteWriter& operator= (const CFastByteWriter&) = delete;
+
+	// Grows the vector for about Bytes more, at once (an estimate; writes grow it further when needed).
+	void Reserve (size_t Bytes) { Room(Bytes); }
+	[[nodiscard]] size_t GetSize () const noexcept { return Used; }
+
+	void Varint (uint64 Value)
+	{
+		uint8* at = Room(10u);
+		while (Value >= 0x80u)
+		{
+			*at++ = static_cast<uint8>(Value | 0x80u);
+			Value >>= 7u;
+		}
+		*at++ = static_cast<uint8>(Value);
+		Used = static_cast<size_t>(at - Out.data());
+	}
+
+	void SignedVarint (int64 Value) { Varint((static_cast<uint64>(Value) << 1u) ^ static_cast<uint64>(Value >> 63)); }
+	void OptionalIndex (uint32 Index) { Varint(Index == ~0u ? 0u : static_cast<uint64>(Index) + 1u); }
+
+	void U8 (uint8 Value)
+	{
+		*Room(1u) = Value;
+		++Used;
+	}
+
+	template <typename TEnum>
+	void Enum (TEnum Value) { U8(static_cast<uint8>(Value)); }
+
+	template <typename TEnum>
+	void Flags (TEnum Value) { Varint(static_cast<uint64>(Value)); }
+
+	void LittleEndian (uint64 Value, uint32 ByteCount)
+	{
+		uint8* at = Room(ByteCount);
+		for (uint32 i = 0u; i < ByteCount; ++i)
+		{
+			at[i] = static_cast<uint8>(Value >> (8u * i));
+		}
+		Used += ByteCount;
+	}
+
+	void Raw (const void* Bytes, size_t Count)
+	{
+		if (Count > 0u)
+		{
+			std::memcpy(Room(Count), Bytes, Count);
+			Used += Count;
+		}
+	}
+
+	void Raw (std::span<const uint8> Bytes) { Raw(Bytes.data(), Bytes.size()); }
+	void Text (FStringView Text) { Varint(Text.Len()); Raw(Text.GetData(), Text.Len()); }
+	void Guid (const SGuid& Guid) { Raw(Guid.Bytes, SGuid::Size); }
+	void Identity (const platform::SFileIdentity& Identity) { Raw(Identity.Bytes, sizeof(Identity.Bytes)); }
+	void Hash (const hash::SContentHash& Hash) { Raw(Hash.AsBytes()); }
+
+	// The vector, trimmed to what was written, for a helper that appends to it; the writer goes on after it.
+	template <typename TAppend>
+	void Append (TAppend&& AppendTo)
+	{
+		Finish();
+		AppendTo(Out);
+		Used = Out.size();
+	}
+
+	void Finish () { Out.resize(Used); }
+
+private:
+	uint8* Room (size_t Bytes)
+	{
+		if (Out.size() - Used < Bytes)
+		{
+			// Grows the size by what is asked or 64 KiB (resize zero-fills what it adds); the capacity grows
+			// geometrically as std::vector's does.
+			Out.resize(Used + (std::max)(Bytes, size_t(64u * 1024u)));
+		}
+		return Out.data() + Used;
+	}
+
+	std::vector<uint8>& Out;
+	size_t Used = 0u;
+};
 }
