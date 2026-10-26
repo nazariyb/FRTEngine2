@@ -217,7 +217,8 @@ void RunSuite (uint32 Assets, uint32 Rows, EBudgetColumn Column)
 	std::printf("[query] resident memory %.1f MB (type tables %.1f, sub-entries %.1f, graph %.1f, names %.1f, strings %.1f, indices %.1f); "
 		"§5.11: 15 MB at 10k assets, 150 MB at 100k + 500k rows (B3's row)\n", memory.Total / 1048576.0, memory.TypeTables / 1048576.0,
 		memory.SubEntries / 1048576.0, memory.Graph / 1048576.0, memory.Names / 1048576.0, memory.Strings / 1048576.0, memory.Indices / 1048576.0);
-	::testing::Test::RecordProperty("ResidentMemoryMB", FString::Format("{:.1f}", memory.Total / 1048576.0).CStr());
+	const double residentMB = memory.Total / 1048576.0;
+	::testing::Test::RecordProperty("ResidentMemoryMB", FString::Format("{:.1f}", residentMB).CStr());
 }
 }
 
