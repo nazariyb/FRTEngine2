@@ -371,6 +371,58 @@ private:
 
 
 /**
+ * Sorts Items ascending by a 64-bit key with a stable LSD radix sort over 11-bit digits, skipping the digits that
+ * every key shares (ranks and row numbers leave most of them constant), through Scratch; small lists take a
+ * stable comparison sort. KeyOf(const TItem&) -> uint64.
+ */
+template <typename TItem, typename TKeyOf>
+void RadixSortByKey (std::vector<TItem>& Items, std::vector<TItem>& Scratch, TKeyOf&& KeyOf)
+{
+	const size_t count = Items.size();
+	if (count < 256u)
+	{
+		std::stable_sort(Items.begin(), Items.end(), [&] (const TItem& A, const TItem& B) { return KeyOf(A) < KeyOf(B); });
+		return;
+	}
+	uint64 any = 0u;
+	uint64 all = ~uint64(0u);
+	for (const TItem& item : Items)
+	{
+		const uint64 key = KeyOf(item);
+		any |= key;
+		all &= key;
+	}
+	const uint64 varying = any ^ all;
+	Scratch.resize(count);
+	std::vector<uint32> counts(2048u);
+	for (uint32 shift = 0u; shift < 64u; shift += 11u)
+	{
+		if (((varying >> shift) & 0x7FFu) == 0u)
+		{
+			continue;
+		}
+		std::fill(counts.begin(), counts.end(), 0u);
+		for (const TItem& item : Items)
+		{
+			++counts[(KeyOf(item) >> shift) & 0x7FFu];
+		}
+		uint32 sum = 0u;
+		for (uint32& bucket : counts)
+		{
+			const uint32 size = bucket;
+			bucket = sum;
+			sum += size;
+		}
+		for (const TItem& item : Items)
+		{
+			Scratch[counts[(KeyOf(item) >> shift) & 0x7FFu]++] = item;
+		}
+		Items.swap(Scratch);
+	}
+}
+
+
+/**
  * An open-addressing hash index from a 64-bit hash to uint32 values (row numbers), with linear probing over
  * a paged slot column, so an insert copies one page of a published view, never the table. It stores no
  * keys: the caller compares candidates against its own columns. Several entries may share a hash or a key
@@ -470,6 +522,27 @@ public:
 		Tombstones = 0u;
 	}
 
+	/**
+	 * Inserts many (hash, value) entries at once (a bulk load): the table is sized once, then the entries go in
+	 * the order of their home slots, so the probes walk the table front to back instead of a cache miss each.
+	 * Entries is reordered.
+	 */
+	void InsertBulk (std::vector<std::pair<uint64, uint32>>& Entries, uint64 Epoch)
+	{
+		if (Entries.empty())
+		{
+			return;
+		}
+		Reserve(Used + static_cast<uint32>(Entries.size()), Epoch);
+		const uint32 mask = Capacity - 1u;
+		std::vector<std::pair<uint64, uint32>> scratch;
+		RadixSortByKey(Entries, scratch, [mask] (const std::pair<uint64, uint32>& Entry) { return static_cast<uint64>(MakeTag(Entry.first) & mask); });
+		for (const auto& [hash, value] : Entries)
+		{
+			Insert(hash, value, Epoch);
+		}
+	}
+
 	// Sizes the table for Count entries up front (a bulk load): the smallest table that holds them within the
 	// maximum load.
 	void Reserve (uint32 Count, uint64 Epoch)
@@ -482,6 +555,8 @@ public:
 
 	[[nodiscard]] uint32 GetCount () const noexcept { return Used; }
 	[[nodiscard]] uint32 GetCapacity () const noexcept { return Capacity; }
+	// The slot a hash's probe starts at (for callers that order their lookups by it).
+	[[nodiscard]] uint32 GetHomeSlot (uint64 Hash) const noexcept { return Capacity == 0u ? 0u : MakeTag(Hash) & (Capacity - 1u); }
 	[[nodiscard]] uint64 GetResidentBytes () const noexcept { return Slots.GetResidentBytes(); }
 
 private:

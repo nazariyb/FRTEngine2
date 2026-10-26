@@ -1,10 +1,12 @@
 #include "Assets/Registry/RegistryView.h"
 
 #include <algorithm>
+#include <cstring>
 #include <unordered_map>
 
 #include "Assets/AssetDiagnosticCodes.h"
 #include "Assets/AssetTypes.h"
+#include "Assets/Pipeline/ImporterTable.h"
 
 
 namespace frt::assets
@@ -14,6 +16,72 @@ namespace frt::assets
 const SRegistryTables& GetTables (const CRegistryView& View) noexcept
 {
 	return View.Tables;
+}
+
+namespace
+{
+// Every extension an importer of the table claims (available or not), lowered, longest first; empty when one is
+// not ASCII (then every name goes to GetAssetStem).
+struct SStemExtensions
+{
+	static constexpr uint32 MaxBytes = 64u;
+
+	SStemExtensions () noexcept
+	{
+		for (const SImporterDesc& importer : GetImporters())
+		{
+			for (const FStringLiteral extension : importer.Extensions)
+			{
+				const FStringView text = extension;
+				char lowered[MaxBytes];
+				if (text.Len() == 0u || text.Len() > MaxBytes || (registry_detail::LowerAscii(text, lowered) & 0x80u) != 0u)
+				{
+					bUsable = false;
+					return;
+				}
+				FString value(FStringView(lowered, text.Len()));
+				if (std::find(Lowered.begin(), Lowered.end(), value) == Lowered.end())
+				{
+					Lowered.push_back(std::move(value));
+				}
+				Longest = (std::max)(Longest, text.Len());
+			}
+		}
+		std::stable_sort(Lowered.begin(), Lowered.end(), [] (const FString& A, const FString& B) { return A.Len() > B.Len(); });
+	}
+
+	std::vector<FString> Lowered;
+	uint32 Longest = 0u;
+	bool bUsable = true;
+};
+}
+
+FStringView GetRecordStem (FStringView LeafName) noexcept
+{
+	static const SStemExtensions extensions;
+	if (!extensions.bUsable)
+	{
+		return GetAssetStem(LeafName);
+	}
+	// The suffix GetAssetStem's folded compare matches lies in the last bytes: when they are ASCII, a match is a
+	// byte compare of the lowered tail (each ASCII byte is one key of the fold), and it removes exactly the
+	// extension's bytes, with at least one byte before it.
+	const uint32 tail = (std::min)(LeafName.Len(), extensions.Longest);
+	char lowered[SStemExtensions::MaxBytes];
+	if ((registry_detail::LowerAscii(LeafName.Right(tail), lowered) & 0x80u) != 0u || LeafName.Contains('/'))
+	{
+		return GetAssetStem(LeafName);
+	}
+	for (const FString& extension : extensions.Lowered)
+	{
+		const uint32 length = extension.Len();
+		if (length < LeafName.Len() && std::memcmp(lowered + (tail - length), extension.GetData(), length) == 0)
+		{
+			return LeafName.LeftChop(length);
+		}
+	}
+	const uint32 dot = LeafName.FindLast('.');
+	return dot == FStringView::NotFound || dot == 0u ? LeafName : LeafName.Left(dot);
 }
 
 uint64 ComputeTagSchemaHash (const SAssetTypeInfo& Type) noexcept

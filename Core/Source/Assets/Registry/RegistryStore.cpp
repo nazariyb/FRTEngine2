@@ -841,6 +841,7 @@ private:
 		uint64 MetaHash = 0u;
 		EFileClass Class = EFileClass::Asset;
 		EMetaState MetaState = EMetaState::PendingMeta;
+		bool bIndexLater = false;                   // the caller lists the row in the path indices (bulk adoption)
 	};
 
 	// A new FILES row in Folder, listed in the path indices.
@@ -873,8 +874,11 @@ private:
 		files.Record.Append(InvalidRow, Epoch);
 		files.PathRank.Append(0u, Epoch);   // UpdateFileOrder ranks it at the end of the commit
 		NewFiles.push_back(row);
-		T.Indices.FilesByPath.Insert(File.MountRuleHash != 0u ? File.MountRuleHash : HashMountRule(Path, Mount.bCaseSensitive), row, Epoch);
-		T.Indices.FilesByPortablePath.Insert(File.PortableHash, row, Epoch);
+		if (!File.bIndexLater)
+		{
+			T.Indices.FilesByPath.Insert(File.MountRuleHash != 0u ? File.MountRuleHash : HashMountRule(Path, Mount.bCaseSensitive), row, Epoch);
+			T.Indices.FilesByPortablePath.Insert(File.PortableHash, row, Epoch);
+		}
 		W.FileSlot.resize(row + 1u);
 		W.FileSlot[row] = static_cast<uint32>(W.FolderFiles[Folder].size());
 		W.FolderFiles[Folder].push_back(row);
@@ -1352,7 +1356,7 @@ private:
 		assets.PrimaryName.SetIfChanged(row, Upsert.PrimaryName.IsEmpty() ? InvalidRow : T.Names.Intern(Upsert.PrimaryName, Epoch), Epoch);
 		assets.ImportStatus.SetIfChanged(row, Upsert.ImportStatus, Epoch);
 		assets.AnalyzeStamp.SetIfChanged(row, Upsert.AnalyzeStamp, Epoch);
-		assets.Name.SetIfChanged(row, T.Names.Intern(GetAssetStem(GetMountPathLeaf(path)), Epoch), Epoch);
+		assets.Name.SetIfChanged(row, T.Names.Intern(GetRecordStem(GetMountPathLeaf(path)), Epoch), Epoch);
 		assets.ChangedRevision.SetIfChanged(row, Revision, Epoch);
 
 		std::vector<uint32> labels;
@@ -1582,8 +1586,9 @@ private:
 
 	/**
 	 * Keeps FileOrder and PathRank in step with the commit's files: removed ones leave the order (their ranks stay
-	 * with their dead rows), added ones take a rank between their neighbours'. Many added at once - a scan's batch, a
-	 * load - are sorted and merged, and everything is renumbered once.
+	 * with their dead rows); added ones are sorted, each found from the previous one's place (a binary search over
+	 * what remains), and the order rebuilt in one pass; a run of new files between two old ones takes ranks evenly
+	 * spread over the gap between theirs. Only when some gap is too narrow is everything renumbered.
 	 */
 	void UpdateFileOrder ()
 	{
@@ -1600,30 +1605,45 @@ private:
 		}
 		const auto less = [&] (uint32 A, uint32 B) { return CompareFileOrder(T, A, B) < 0; };
 		std::sort(NewFiles.begin(), NewFiles.end(), less);
-		if (NewFiles.size() * 8u > order.size())
-		{
-			std::vector<uint32> merged(order.size() + NewFiles.size());
-			std::merge(order.begin(), order.end(), NewFiles.begin(), NewFiles.end(), merged.begin(), less);
-			order.swap(merged);
-			RenumberFiles();
-			NewFiles.clear();
-			return;
-		}
+		std::vector<uint32> merged;
+		merged.reserve(order.size() + NewFiles.size());
+		std::vector<uint32> added;   // positions of the new files in merged
+		added.reserve(NewFiles.size());
+		auto from = order.begin();
 		for (const uint32 row : NewFiles)
 		{
-			const auto at = std::lower_bound(order.begin(), order.end(), row, less);
-			const size_t position = static_cast<size_t>(at - order.begin());
-			const uint64 low = position > 0u ? T.Files.PathRank[order[position - 1u]] : 0u;
-			const uint64 high = position < order.size() ? T.Files.PathRank[order[position]] : RankLimit;
-			order.insert(at, row);
-			if (high - low >= 2u)
+			const auto at = std::lower_bound(from, order.end(), row, less);
+			merged.insert(merged.end(), from, at);
+			added.push_back(static_cast<uint32>(merged.size()));
+			merged.push_back(row);
+			from = at;
+		}
+		merged.insert(merged.end(), from, order.end());
+		order.swap(merged);
+
+		// Ranks for each run of new files from the gap its old neighbours leave.
+		for (size_t first = 0u; first < added.size();)
+		{
+			size_t last = first;
+			while (last + 1u < added.size() && added[last + 1u] == added[last] + 1u)
 			{
-				T.Files.PathRank.Set(row, static_cast<uint32>(low + (high - low) / 2u), Epoch);
+				++last;
 			}
-			else
+			const uint32 before = added[first];
+			const uint32 after = added[last] + 1u;
+			const uint64 low = before > 0u ? T.Files.PathRank[order[before - 1u]] : 0u;
+			const uint64 high = after < order.size() ? T.Files.PathRank[order[after]] : RankLimit;
+			const uint64 run = last - first + 1u;
+			if (high <= low || high - low <= run)
 			{
 				RenumberFiles();
+				break;
 			}
+			for (uint64 i = 0u; i < run; ++i)
+			{
+				T.Files.PathRank.Set(order[before + i], static_cast<uint32>(low + (high - low) * (i + 1u) / (run + 1u)), Epoch);
+			}
+			first = last + 1u;
 		}
 		NewFiles.clear();
 	}
@@ -1981,6 +2001,7 @@ public:
 		}
 
 		std::vector<uint32> nameIds;
+		T.Names.Reserve(static_cast<uint32>(Image.Names.size() + Image.Records.size()), Epoch);   // and the stems below: one rehash
 		T.Names.InternAll(Image.Names, nameIds, Epoch);
 		const uint32 emptyName = T.Names.Intern(FStringView(), Epoch);
 		const auto nameIdOf = [&] (uint32 Index) { return Index < nameIds.size() ? nameIds[Index] : emptyName; };
@@ -2014,14 +2035,14 @@ public:
 		// Files, each path written into PATHS once, from its folder's path and its leaf.
 		const uint32 fileCount = static_cast<uint32>(Image.Files.size());
 		const uint32 recordCount = static_cast<uint32>(Image.Records.size());
-		T.Indices.FilesByPath.Reserve(fileCount, Epoch);
-		T.Indices.FilesByPortablePath.Reserve(fileCount, Epoch);
-		T.Indices.RecordsByPortablePath.Reserve(recordCount, Epoch);
-		T.Indices.RecordsByGuid.Reserve(recordCount, Epoch);
-		T.Indices.RecordsById64.Reserve(recordCount + static_cast<uint32>(Image.SubEntries.size()), Epoch);
-		T.Names.Reserve(recordCount, Epoch);   // the records' stems
 		std::vector<uint32> fileRows(fileCount, InvalidRow);
 		std::vector<uint64> portableHashes(fileCount, 0u);
+		// The hash indices are filled once everything of a kind is known (InsertBulk: in slot order, not a cache
+		// miss each), as soon as anything later reads them.
+		std::vector<std::pair<uint64, uint32>> byPath;
+		std::vector<std::pair<uint64, uint32>> byPortablePath;
+		byPath.reserve(fileCount);
+		byPortablePath.reserve(fileCount);
 		for (uint32 i = 0u; i < fileCount; ++i)
 		{
 			const SImageFile& image = Image.Files[i];
@@ -2035,16 +2056,7 @@ public:
 			file.PathId = T.Paths.AddJoined(folderPaths[image.Folder], leaf, Epoch);
 			const FStringView path = T.Paths.Get(file.PathId);
 			file.MountRuleHash = HashMountRule(path, mount.bCaseSensitive);
-			bool bRepeated = false;
-			T.Indices.FilesByPath.ForEach(file.MountRuleHash, [&] (uint32 Row)
-			{
-				bRepeated = T.Paths.Get(T.Files.Path[Row]) == path;
-				return !bRepeated;
-			});
-			if (bRepeated)
-			{
-				return false;   // two rows of one path: the replay makes them one
-			}
+			file.bIndexLater = true;
 			file.LeafName = nameIdOf(image.LeafName);
 			file.Size = image.Size;
 			file.MTime = image.MTime;
@@ -2055,9 +2067,12 @@ public:
 			file.MetaState = image.MetaState;
 			fileRows[i] = CreateFileRow(folderRows[image.Folder], path, mount, file);
 			portableHashes[i] = file.PortableHash;
+			byPath.emplace_back(file.MountRuleHash, fileRows[i]);
+			byPortablePath.emplace_back(file.PortableHash, fileRows[i]);
 		}
 		// The file order: an image written from a store lists its files in it (ExportImage), so checking each
-		// neighbour is all it takes; any other image is sorted.
+		// neighbour is all it takes; any other image is sorted. Neighbours of one spelling are two rows of one
+		// path, which the replay makes one.
 		{
 			W.FileOrder = fileRows;
 			const auto less = [&] (uint32 A, uint32 B) { return CompareFileOrder(T, A, B) < 0; };
@@ -2065,9 +2080,35 @@ public:
 			{
 				std::sort(W.FileOrder.begin(), W.FileOrder.end(), less);
 			}
+			for (size_t i = 1u; i < W.FileOrder.size(); ++i)
+			{
+				if (T.Paths.Get(T.Files.Path[W.FileOrder[i - 1u]]) == T.Paths.Get(T.Files.Path[W.FileOrder[i]]))
+				{
+					return false;
+				}
+			}
 			RenumberFiles();
 			NewFiles.clear();
 		}
+		T.Indices.FilesByPath.InsertBulk(byPath, Epoch);
+		T.Indices.FilesByPortablePath.InsertBulk(byPortablePath, Epoch);
+		// The records' stems ($Name), interned at once (InternBulk); a record whose file index is bad stops below.
+		std::vector<uint32> stemIds;
+		{
+			std::vector<FStringView> stems(recordCount);
+			for (uint32 r = 0u; r < recordCount; ++r)
+			{
+				const uint32 file = Image.Records[r].File;
+				stems[r] = file < fileCount ? GetRecordStem(GetMountPathLeaf(T.Paths.Get(T.Files.Path[fileRows[file]]))) : FStringView();
+			}
+			T.Names.InternBulk(stems, stemIds, Epoch);
+		}
+		std::vector<std::pair<uint64, uint32>> recordsByPortablePath;
+		std::vector<std::pair<uint64, uint32>> recordsByGuid;
+		std::vector<std::pair<uint64, uint32>> recordsById64;
+		recordsByPortablePath.reserve(recordCount);
+		recordsByGuid.reserve(recordCount);
+		recordsById64.reserve(recordCount + Image.SubEntries.size());
 
 		// Types by exact dotted name, as MakeImageDelta resolves them; each type table sized for its rows at once.
 		std::vector<int32> typeOf(Image.TypeNames.size(), -1);
@@ -2126,15 +2167,15 @@ public:
 			const FStringView path = T.Paths.Get(T.Files.Path[file]);
 			const uint32 row = r;
 			++T.LiveRecords;
-			T.Indices.RecordsByPortablePath.Insert(portableHashes[image.File], row, Epoch);
+			recordsByPortablePath.emplace_back(portableHashes[image.File], row);
 			const SGuid guid = image.Guid.IsValid() ? image.Guid : MakeProvisionalGuid(path);
 			const uint64 id64 = MakeAssetId64(SAssetId { guid, 0u }).Value;
 			assets.Guid.Set(row, guid, Epoch);
 			assets.AssetId64.Set(row, id64, Epoch);
 			assets.File.Set(row, file, Epoch);
 			T.Files.Record.Set(file, row, Epoch);
-			T.Indices.RecordsByGuid.Insert(HashGuid(guid), row, Epoch);
-			T.Indices.RecordsById64.Insert(MixRegistryKey(id64), row, Epoch);
+			recordsByGuid.emplace_back(HashGuid(guid), row);
+			recordsById64.emplace_back(MixRegistryKey(id64), row);
 
 			const reflect::TypeId type = typeIdOf(image.Type);
 			const bool bTyped = typeOf[image.Type] >= 0;
@@ -2175,7 +2216,7 @@ public:
 			assets.PrimaryName.Set(row, primaryName.IsEmpty() ? InvalidRow : nameIds[image.PrimaryName], Epoch);
 			assets.ImportStatus.Set(row, image.ImportStatus, Epoch);
 			assets.AnalyzeStamp.Set(row, image.AnalyzeStamp, Epoch);
-			assets.Name.Set(row, T.Names.Intern(GetAssetStem(GetMountPathLeaf(path)), Epoch), Epoch);
+			assets.Name.Set(row, stemIds[r], Epoch);
 			assets.ChangedRevision.Set(row, Revision, Epoch);
 
 			labels.clear();
@@ -2220,7 +2261,7 @@ public:
 				subs.TypeRow.Set(sub, TakeTypeRow(subType, SubEntryBit | sub), Epoch);
 				const uint64 subId64 = MakeAssetId64(SAssetId { guid, subId }).Value;
 				subs.AssetId64.Set(sub, subId64, Epoch);
-				T.Indices.RecordsById64.Insert(MixRegistryKey(subId64), SubEntryBit | sub, Epoch);
+				recordsById64.emplace_back(MixRegistryKey(subId64), SubEntryBit | sub);
 				if (bSubTyped && !WriteImageTags(subType, subs.TypeRow[sub], Image, entry.Tags, nameIdOf, keys))
 				{
 					return false;
@@ -2308,6 +2349,14 @@ public:
 			}
 		}
 		Store.InstallGraphTables(edges, edgeRanges);
+		T.Indices.RecordsByPortablePath.InsertBulk(recordsByPortablePath, Epoch);
+		T.Indices.RecordsByGuid.InsertBulk(recordsByGuid, Epoch);
+		T.Indices.RecordsById64.InsertBulk(recordsById64, Epoch);
+		W.PathTargetCandidates.InsertBulk(TargetCandidates, WriterEpoch);
+		if (!ListPathTargets())
+		{
+			return false;
+		}
 
 		// Rule files and problems as the replay applies them (they are few, and may report violations).
 		for (const SImageRuleFile& ruleFile : Image.RuleFiles)
@@ -2512,44 +2561,47 @@ private:
 		subs.LabelRank.Grow(size, Epoch);
 	}
 
-	// The path target of an image string met for the first time: new, unless another string of the image spells the
-	// same path (an image need not deduplicate its strings).
+	// The path target of an image string met for the first time. Its TargetsByKey entry waits in TargetKeys for one
+	// InsertBulk (ListPathTargets), which also finds two strings of one path - an image written by ExportImage
+	// never has them; any other image then goes to the replay.
 	uint32 CreatePathTarget (FStringView TargetPath)
 	{
 		SGraphTables& graph = T.Graph;
 		const uint64 exact = HashExact(TargetPath);
-		uint32 existing = InvalidRow;
-		graph.TargetsByKey.ForEach(exact, [&] (uint32 Row)
-		{
-			const STargetRow& other = graph.Targets[Row];
-			if (other.Kind == ETargetKind::Path && T.Paths.Get(other.Text) == TargetPath)
-			{
-				existing = Row;
-				return false;
-			}
-			return true;
-		});
-		if (existing != InvalidRow)
-		{
-			return existing;
-		}
 		STargetRow target;
 		target.Kind = ETargetKind::Path;
 		const uint32 file = FindFileRowExact(T, TargetPath);   // most references spell a file's path exactly
 		target.Text = file != InvalidRow ? T.Files.Path[file] : T.Paths.Add(TargetPath, Epoch);
 		const uint32 row = graph.Targets.Append(target, Epoch);
 		graph.OverflowReverseHead.Append(InvalidRow, Epoch);
-		graph.TargetsByKey.Insert(exact, row, Epoch);
+		TargetKeys.emplace_back(exact, row);
 		const uint64 portable = HashPortable(TargetPath);
-		W.PathTargetCandidates.Insert(portable, row, WriterEpoch);
+		TargetCandidates.emplace_back(portable, row);
 		ForEachLabelSplit(TargetPath, [&] (uint32 Split)
 		{
-			W.PathTargetCandidates.Insert(HashPortable(TargetPath.Left(Split)), row, WriterEpoch);
+			TargetCandidates.emplace_back(HashPortable(TargetPath.Left(Split)), row);
 			return true;
 		});
 		TargetPortableHashes.resize(row + 1u, 0u);
 		TargetPortableHashes[row] = portable;
 		return row;
+	}
+
+	// TargetsByKey for the path targets the image made; false when two of them spell one path.
+	bool ListPathTargets ()
+	{
+		std::vector<std::pair<uint64, uint32>> scratch;
+		RadixSortByKey(TargetKeys, scratch, [] (const std::pair<uint64, uint32>& Entry) { return Entry.first; });
+		for (size_t i = 1u; i < TargetKeys.size(); ++i)
+		{
+			if (TargetKeys[i].first == TargetKeys[i - 1u].first
+				&& T.Paths.Get(T.Graph.Targets[TargetKeys[i].second].Text) == T.Paths.Get(T.Graph.Targets[TargetKeys[i - 1u].second].Text))
+			{
+				return false;
+			}
+		}
+		T.Graph.TargetsByKey.InsertBulk(TargetKeys, Epoch);
+		return true;
 	}
 
 	// The key index of an image tag key for Type, or -1.
@@ -2662,6 +2714,8 @@ private:
 	{
 		const uint32 targetRows = T.Graph.Targets.Size();
 		std::vector<uint32> sources;
+		std::vector<std::pair<uint64, uint32>> byResolved;
+		byResolved.reserve(targetRows);
 		for (uint32 target = 0u; target < targetRows; ++target)
 		{
 			const STargetRow current = T.Graph.Targets[target];
@@ -2669,7 +2723,7 @@ private:
 			const STargetRow resolved = current.Kind == ETargetKind::Path && portable != 0u ? ResolveTarget(current, portable) : ResolveTarget(current);
 			if (resolved.Resolved != InvalidRow)
 			{
-				T.Graph.TargetsByResolved.Insert(MixRegistryKey(resolved.Resolved), target, Epoch);
+				byResolved.emplace_back(MixRegistryKey(resolved.Resolved), target);
 			}
 			T.Graph.Targets.Set(target, resolved, Epoch);
 			if (resolved.State == ETargetState::Ambiguous || (resolved.State == ETargetState::Resolved && resolved.bSpellingDiffers))
@@ -2677,6 +2731,7 @@ private:
 				ForEachLiveReverseEdge(T, target, [&] (const SReverseEdge& Entry) { sources.push_back(Entry.Source); });
 			}
 		}
+		T.Graph.TargetsByResolved.InsertBulk(byResolved, Epoch);
 		std::sort(sources.begin(), sources.end());
 		sources.erase(std::unique(sources.begin(), sources.end()), sources.end());
 		for (const uint32 source : sources)
@@ -2715,6 +2770,8 @@ private:
 	bool bBulk = false;                              // AdoptIntoFreshStore: targets resolve at the end, all at once
 	std::vector<uint32> TypeCursor;                  // per type: the next row GrowTypeTables made
 	std::vector<uint64> TargetPortableHashes;        // per target row: HashPortable of its whole text (bulk)
+	std::vector<std::pair<uint64, uint32>> TargetCandidates;   // bulk: PathTargetCandidates' entries, inserted at once
+	std::vector<std::pair<uint64, uint32>> TargetKeys;         // bulk: the path targets' TargetsByKey entries
 
 	// ---------------- Derived state ----------------
 

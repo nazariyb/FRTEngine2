@@ -222,21 +222,87 @@ public:
 		return Add(Name, hash, Epoch);
 	}
 
-	/**
-	 * Interns names in bulk (a snapshot's NAMES into a store): OutIds[i] is Names[i]'s id, the index sized once
-	 * for all of them.
-	 */
+	// InternBulk over a snapshot's NAMES table.
 	void InternAll (std::span<const FString> Names, std::vector<uint32>& OutIds, uint64 Epoch)
 	{
-		OutIds.resize(Names.size());
-		Index.Reserve(Size() + static_cast<uint32>(Names.size()), Epoch);
+		std::vector<FStringView> views(Names.size());
 		for (size_t i = 0u; i < Names.size(); ++i)
 		{
-			const FStringView name = Names[i].View();
-			const uint64 hash = HashExact(name);
-			const std::optional<uint32> existing = FindHashed(name, hash);
-			OutIds[i] = existing ? *existing : Add(name, hash, Epoch);
+			views[i] = Names[i].View();
 		}
+		InternBulk(views, OutIds, Epoch);
+	}
+
+	/**
+	 * Interns many names at once (a load): OutIds[i] is Names[i]'s id; names may repeat. The index is sized once
+	 * and the lookups run in the order of the names' home slots, so the probes walk the index front to back
+	 * instead of missing the cache each; the new names are added in the order given - a load lays them out as
+	 * the records list them, which keeps later scans over them sequential - and listed in the index at the end,
+	 * again in slot order. The views must stay valid until it returns.
+	 */
+	void InternBulk (std::span<const FStringView> Names, std::vector<uint32>& OutIds, uint64 Epoch)
+	{
+		const uint32 count = static_cast<uint32>(Names.size());
+		OutIds.assign(count, InvalidId);
+		if (count == 0u)
+		{
+			return;
+		}
+		Index.Reserve(Size() + count, Epoch);
+		std::vector<uint64> hashes(count);
+		std::vector<std::pair<uint64, uint32>> order(count);   // (hash, index) in home-slot order
+		for (uint32 i = 0u; i < count; ++i)
+		{
+			hashes[i] = HashExact(Names[i]);
+			order[i] = { hashes[i], i };
+		}
+		{
+			std::vector<std::pair<uint64, uint32>> scratch;
+			RadixSortByKey(order, scratch, [this] (const std::pair<uint64, uint32>& Entry) { return static_cast<uint64>(Index.GetHomeSlot(Entry.first)); });
+		}
+		// A name the index lacks takes, as its representative, the first entry of its spelling within its home
+		// slot's group (a repeat always shares the slot).
+		std::vector<uint32> representative(count, InvalidId);
+		uint32 group = 0u;
+		for (uint32 k = 0u; k < count; ++k)
+		{
+			const auto [hash, index] = order[k];
+			if (k > 0u && Index.GetHomeSlot(hash) != Index.GetHomeSlot(order[k - 1u].first))
+			{
+				group = k;
+			}
+			if (const std::optional<uint32> existing = FindHashed(Names[index], hash))
+			{
+				OutIds[index] = *existing;
+				continue;
+			}
+			for (uint32 j = group; j < k; ++j)
+			{
+				const uint32 other = order[j].second;
+				if (order[j].first == hash && OutIds[other] == InvalidId && representative[other] == InvalidId && Names[other] == Names[index])
+				{
+					representative[index] = other;
+					break;
+				}
+			}
+		}
+		std::vector<std::pair<uint64, uint32>> added;
+		for (uint32 i = 0u; i < count; ++i)
+		{
+			if (OutIds[i] == InvalidId && representative[i] == InvalidId)
+			{
+				OutIds[i] = AddUnlisted(Names[i], Epoch);
+				added.emplace_back(hashes[i], OutIds[i]);
+			}
+		}
+		for (uint32 i = 0u; i < count; ++i)
+		{
+			if (representative[i] != InvalidId)
+			{
+				OutIds[i] = OutIds[representative[i]];
+			}
+		}
+		Index.InsertBulk(added, Epoch);
 	}
 
 	// Room in the index for Count more names (a bulk load).
@@ -268,14 +334,23 @@ private:
 
 	uint32 Add (FStringView Name, uint64 Hash, uint64 Epoch)
 	{
+		const uint32 id = AddUnlisted(Name, Epoch);
+		Index.Insert(Hash, id, Epoch);
+		return id;
+	}
+
+	// The name and its folded shadow, not yet in the index.
+	uint32 AddUnlisted (FStringView Name, uint64 Epoch)
+	{
 		const uint32 id = Pool.Add(Name, Epoch);
 		char buffer[registry_detail::FastCaseBytes];
 		FString heap;
 		const FStringView folded = FoldPortable(Name, buffer, heap);
 		Folded.Append(folded == Name ? Pool.GetRef(id) : Pool.Store(folded), Epoch);
-		Index.Insert(Hash, id, Epoch);
 		return id;
 	}
+
+	static constexpr uint32 InvalidId = ~0u;
 
 public:
 
@@ -611,6 +686,11 @@ inline constexpr uint32 RuleLabelBit = 1u << 31u;   // SRegistryTables::Labels: 
 // The tables of a view (a free function so the view's public API stays §5.7's).
 [[nodiscard]] FRT_CORE_API const SRegistryTables& GetTables (const CRegistryView& View) noexcept;
 
+// GetAssetStem (ImporterTable.h: the record's $Name) of a file's leaf name, the same answer for every name: an ASCII
+// name compares its lowered tail with the importers' extensions, lowered once, instead of folding a compare per
+// extension (about 200 ns a name, most of what interning the stems cost a load); any other name asks GetAssetStem.
+[[nodiscard]] FRT_CORE_API FStringView GetRecordStem (FStringView LeafName) noexcept;
+
 // The order SFilesTable::PathRank keeps: folded path bytes, then path bytes, then the row (two live files never
 // share a path; the row only makes the order total). < 0, 0, > 0.
 [[nodiscard]] inline int32 CompareFileOrder (const SRegistryTables& Tables, uint32 A, uint32 B) noexcept;
@@ -653,56 +733,7 @@ inline int32 CompareFileOrder (const SRegistryTables& Tables, uint32 A, uint32 B
 	return A < B;
 }
 
-/**
- * Sorts Items ascending by a 64-bit key with a stable LSD radix sort over 11-bit digits, skipping the digits that
- * every key shares (ranks and row numbers leave most of them constant), through Scratch; small lists take a
- * stable comparison sort. KeyOf(const TItem&) -> uint64.
- */
-template <typename TItem, typename TKeyOf>
-void RadixSortByKey (std::vector<TItem>& Items, std::vector<TItem>& Scratch, TKeyOf&& KeyOf)
-{
-	const size_t count = Items.size();
-	if (count < 256u)
-	{
-		std::stable_sort(Items.begin(), Items.end(), [&] (const TItem& A, const TItem& B) { return KeyOf(A) < KeyOf(B); });
-		return;
-	}
-	uint64 any = 0u;
-	uint64 all = ~uint64(0u);
-	for (const TItem& item : Items)
-	{
-		const uint64 key = KeyOf(item);
-		any |= key;
-		all &= key;
-	}
-	const uint64 varying = any ^ all;
-	Scratch.resize(count);
-	std::vector<uint32> counts(2048u);
-	for (uint32 shift = 0u; shift < 64u; shift += 11u)
-	{
-		if (((varying >> shift) & 0x7FFu) == 0u)
-		{
-			continue;
-		}
-		std::fill(counts.begin(), counts.end(), 0u);
-		for (const TItem& item : Items)
-		{
-			++counts[(KeyOf(item) >> shift) & 0x7FFu];
-		}
-		uint32 sum = 0u;
-		for (uint32& bucket : counts)
-		{
-			const uint32 size = bucket;
-			bucket = sum;
-			sum += size;
-		}
-		for (const TItem& item : Items)
-		{
-			Scratch[counts[(KeyOf(item) >> shift) & 0x7FFu]++] = item;
-		}
-		Items.swap(Scratch);
-	}
-}
+
 
 
 // ---------------- Lookups over the tables (no allocation) ----------------

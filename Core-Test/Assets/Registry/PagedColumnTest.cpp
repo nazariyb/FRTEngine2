@@ -1,11 +1,13 @@
 // The registry's storage primitives (Registry/PagedColumn.h): a write to a page of an older epoch copies the
 // page and leaves the old one to whoever shares it; the paged hash index keeps duplicates, survives erases
-// and rehashes; the string pool never moves a string, oversized ones included.
+// and rehashes; the string pool never moves a string, oversized ones included. And the fast paths of
+// RegistryTables.h answer as the general functions they stand in for: the caseless hashes, the fold, the stem.
 #include <gtest/gtest.h>
 
 #include <set>
 #include <vector>
 
+#include "Assets/Pipeline/ImporterTable.h"
 #include "Assets/Registry/PagedColumn.h"
 #include "Assets/Registry/RegistryTables.h"
 #include "Containers/String.h"
@@ -171,5 +173,29 @@ TEST(PagedColumnTest, TheRegistrysFastCaseHashesAreTheContainersHashes)
 			EXPECT_EQ(EqualPortable(a, b), SStringEqualIgnoreCase {}(a, b)) << a.CStr() << " / " << b.CStr();
 			EXPECT_EQ(EqualMountRule(a, b, false), SPathEqual {}(a, b)) << a.CStr() << " / " << b.CStr();
 		}
+	}
+}
+
+TEST(PagedColumnTest, TheRecordStemIsTheImporterTablesStem)
+{
+	// GetRecordStem takes a byte path for ASCII names; it must answer as GetAssetStem does for every name: every
+	// claimed extension in any case, multi-dot claims, unclaimed extensions, dot-names, non-ASCII and bare names.
+	std::vector<FString> names = { "", "a", ".gitkeep", "README", "a.b.c", "Wood.FRTMAT.YML", "Wood.frtmat.yml", "x.frtmat", "Rock.PNG",
+		"Тека.png", "\xE2\x84\xAA.png", "rock.\xE2\x84\xAA", "name.\xC5\xBF" "vg", "trailing.", "..", "a..png", "map.frtinputmap" };
+	for (const SImporterDesc& importer : GetImporters())
+	{
+		for (const FStringLiteral extension : importer.Extensions)
+		{
+			const FString text(static_cast<FStringView>(extension));
+			names.push_back(text);                              // the extension alone: nothing before it
+			names.push_back("Asset" + text);
+			names.push_back("Asset" + FString(text).ToUpper());
+			names.push_back("Asset.v2" + text);
+			names.push_back("Ä" + text);
+		}
+	}
+	for (const FString& name : names)
+	{
+		EXPECT_EQ(GetRecordStem(name), GetAssetStem(name)) << name.CStr();
 	}
 }
