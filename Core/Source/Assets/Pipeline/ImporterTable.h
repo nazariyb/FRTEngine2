@@ -76,6 +76,11 @@ struct SImporterDesc
 // a bare name or a path; only its end is read.
 [[nodiscard]] FRT_CORE_API const SImporterDesc* FindImporterForFile (FStringView FileName) noexcept;
 
+// The stem of a file name, the record's $Name and an input map's PrimaryName: without the longest extension any
+// importer of the table claims, available or not ("Wood.frtmat.yml" -> "Wood"), else without its last extension;
+// a dot-name keeps its dot (".gitkeep"). Views LeafName.
+[[nodiscard]] FRT_CORE_API FStringView GetAssetStem (FStringView LeafName) noexcept;
+
 // The index of the settings field named Name in Table (portable fold), or -1.
 [[nodiscard]] FRT_CORE_API int32 FindSettingsField (const SSettingsTable& Table, FStringView Name) noexcept;
 

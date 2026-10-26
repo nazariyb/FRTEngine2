@@ -219,32 +219,4 @@ inline bool ReadCount (CByteReader& Reader, uint64 MinItemBytes, uint32& Out) no
 	return true;
 }
 
-// A type by its exact dotted name, as snapshots and journals store it: a short name that happens to match is
-// not the same type (AdoptImage's rule). nullopt: this build does not know the type.
-[[nodiscard]] inline std::optional<reflect::TypeId> FindTypeExact (FStringView Name) noexcept
-{
-	const std::optional<reflect::TypeId> type = CAssetTypeRegistry::Find(Name);
-	if (type && FStringView(CAssetTypeRegistry::Get(*type).Name) == Name)
-	{
-		return type;
-	}
-	return std::nullopt;
-}
-
-/**
- * The mount a mount path, or a problem subject, belongs to: its first segment, which ends at the first '/'
- * or '#' (a subject may be "/Mount#label" in principle; mount names never hold '#'). Empty when Path names
- * no mount.
- */
-[[nodiscard]] inline FStringView GetMountNameOf (FStringView Path) noexcept
-{
-	FStringView mountName;
-	FStringView relative;
-	if (!SplitMountPath(Path, mountName, relative))
-	{
-		return FStringView();
-	}
-	const uint32 hash = mountName.Find('#');
-	return hash == FStringView::NotFound ? mountName : mountName.Left(hash);
-}
 }

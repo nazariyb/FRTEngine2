@@ -1,5 +1,6 @@
 #include "Assets/Pipeline/ImporterTable.h"
 
+#include <algorithm>
 #include <iterator>
 
 #include "Assets/AssetTypes.h"
@@ -185,6 +186,25 @@ const SImporterDesc* FindImporterForFile (FStringView FileName) noexcept
 		}
 	}
 	return best;
+}
+
+FStringView GetAssetStem (FStringView LeafName) noexcept
+{
+	uint32 bestLength = 0u;
+	for (const SImporterDesc& importer : Importers)
+	{
+		const int32 extension = FindClaimedExtension(importer.Extensions, LeafName);
+		if (extension >= 0)
+		{
+			bestLength = (std::max)(bestLength, importer.Extensions[static_cast<uint32>(extension)].Len());
+		}
+	}
+	if (bestLength > 0u)
+	{
+		return LeafName.LeftChop(bestLength);
+	}
+	const uint32 dot = LeafName.FindLast('.');
+	return dot == FStringView::NotFound || dot == 0u ? LeafName : LeafName.Left(dot);
 }
 
 int32 FindSettingsField (const SSettingsTable& Table, FStringView Name) noexcept

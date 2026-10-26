@@ -364,6 +364,22 @@ struct STagValue
 	return Path.Left(1u + split.Left.Len());
 }
 
+/**
+ * The mount a mount path, or a problem subject, belongs to: its first segment, which ends at the first '/' or '#'
+ * ("/Project#x" names /Project; mount names never hold '#'). Empty when Path names no mount. Views Path.
+ */
+[[nodiscard]] inline FStringView GetMountNameOf (FStringView Path) noexcept
+{
+	FStringView mountName;
+	FStringView relative;
+	if (!SplitMountPath(Path, mountName, relative))
+	{
+		return FStringView();
+	}
+	const uint32 hash = mountName.Find('#');
+	return hash == FStringView::NotFound ? mountName : mountName.Left(hash);
+}
+
 // The last segment: "/Project/A/b.png" -> "b.png"; a mount root "/Project" -> "Project". Views Path.
 [[nodiscard]] inline FStringView GetMountPathLeaf (FStringView Path) noexcept
 {

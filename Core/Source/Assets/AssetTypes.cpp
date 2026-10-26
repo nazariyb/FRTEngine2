@@ -87,6 +87,18 @@ std::optional<reflect::TypeId> CAssetTypeRegistry::Find (FStringView Name) noexc
 	return found;
 }
 
+std::optional<reflect::TypeId> CAssetTypeRegistry::FindExact (FStringView Name) noexcept
+{
+	for (uint32 i = 0u; i < std::size(Types); ++i)
+	{
+		if (Name == FStringView(Types[i].Name))
+		{
+			return static_cast<reflect::TypeId>(i);
+		}
+	}
+	return std::nullopt;
+}
+
 std::optional<uint32> CAssetTypeRegistry::FindKey (reflect::TypeId Type, FStringView KeyName) noexcept
 {
 	const SStringEqualIgnoreCase equal;

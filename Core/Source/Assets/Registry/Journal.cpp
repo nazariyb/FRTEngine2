@@ -172,7 +172,7 @@ bool ReadTypeNames (CByteReader& Reader, TDecodedTypes& Out)
 		{
 			return false;
 		}
-		Out.push_back(FindTypeExact(name));
+		Out.push_back(CAssetTypeRegistry::FindExact(name));
 	}
 	return true;
 }

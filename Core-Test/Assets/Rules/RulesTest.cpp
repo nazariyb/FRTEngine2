@@ -14,8 +14,10 @@
 #include "RulesTestUtils.h"
 
 #include "Assets/AssetTypes.h"
+#include "Assets/Discovery/MountScanner.h"
 #include "Assets/MountPaths.h"
 #include "Assets/Pipeline/ImporterTable.h"
+#include "Jobs/WorkerPool.h"
 #include "Platform/Platform.h"
 
 using namespace frt;
@@ -1324,4 +1326,22 @@ TEST(RulesEngine, OnACaseSensitiveFolderTheAncestorWalkTakesAnySpellingAndPrefer
 	const auto entry = std::find_if(listing.Files.begin(), listing.Files.end(), [] (const SRuleFileListing& File) { return File.Origin.FolderMountPath == "/Project/Art"; });
 	ASSERT_NE(entry, listing.Files.end());
 	EXPECT_EQ(entry->Origin.File, "Content/Art/Assets.yml");
+
+	// Two spellings, neither reserved: the walk binds what the scanner binds (the first under the fold, then bytes,
+	// "ASSETS.YML"), whatever order the folder lists them in.
+	std::filesystem::remove(art / "Assets.yml");
+	frt::test::rules::WriteFile(art / "ASSETS.YML", "FormatVersion: 1\nRules: [ { Match: \"**\", Chunk: 7 } ]\n");
+	const auto two = fixture.Open("/Project/Art/Rocks");
+	EXPECT_EQ(engine.ResolveFile(*two, "/Project/Art/Rocks/A.png").Chunk, 7u);
+	jobs::SWorkerPoolDesc poolDesc;
+	poolDesc.ThreadCount = 2u;
+	poolDesc.Name = "Rules Test";
+	jobs::CWorkerPool pool(poolDesc);
+	const SScanBatch batch = CMountScanner::ScanBlocking(pool, *fixture.Mounts.Find("Project"), "/Project/Art", engine, nullptr);
+	ASSERT_FALSE(batch.Folders.empty());
+	EXPECT_TRUE(batch.Folders[0].bHasRuleFile);
+	const SRulesListing after = engine.GetListing();
+	const auto bound = std::find_if(after.Files.begin(), after.Files.end(), [] (const SRuleFileListing& File) { return File.Origin.FolderMountPath == "/Project/Art"; });
+	ASSERT_NE(bound, after.Files.end());
+	EXPECT_EQ(bound->Origin.File, "Content/Art/ASSETS.YML");
 }

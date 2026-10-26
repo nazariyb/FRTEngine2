@@ -301,6 +301,31 @@ TEST(SharedTypesTest, AssetTypeLookupTakesDottedThenShortNamesUnderTheFold)
 	EXPECT_FALSE(CAssetTypeRegistry::Find("frt.Texture.Psd").has_value());
 }
 
+TEST(SharedTypesTest, ExactTypeLookupTakesTheStoredDottedNameOnly)
+{
+	// What a snapshot, journal or image stored: the dotted name byte for byte, never a short name or another case.
+	EXPECT_EQ(CAssetTypeRegistry::FindExact("frt.Texture"), asset_types::Texture);
+	EXPECT_EQ(CAssetTypeRegistry::FindExact("frt.Unknown"), asset_types::Unknown);
+	EXPECT_FALSE(CAssetTypeRegistry::FindExact("Texture").has_value());
+	EXPECT_FALSE(CAssetTypeRegistry::FindExact("frt.texture").has_value());
+	EXPECT_FALSE(CAssetTypeRegistry::FindExact("game.Hero").has_value());
+}
+
+TEST(SharedTypesTest, TheAssetStemDropsTheLongestClaimedExtension)
+{
+	EXPECT_EQ(GetAssetStem("Wood.frtmat.yml"), "Wood");
+	EXPECT_EQ(GetAssetStem("IAM_Editor.frtinputmap"), "IAM_Editor");
+	EXPECT_EQ(GetAssetStem("Rock.Albedo.PNG"), "Rock.Albedo");
+	EXPECT_EQ(GetAssetStem("Level.frt"), "Level");                 // an unavailable importer's claim counts too
+	EXPECT_EQ(GetAssetStem("notes.v2.txt"), "notes.v2");           // no claim: the last extension
+	EXPECT_EQ(GetAssetStem("Makefile"), "Makefile");
+	EXPECT_EQ(GetAssetStem(".gitkeep"), ".gitkeep");               // a dot-name keeps its dot
+	EXPECT_EQ(GetAssetStem(".png"), ".png");                        // nothing before the claim: no claim
+	EXPECT_EQ(GetMountNameOf("/Project/A/b.png"), "Project");
+	EXPECT_EQ(GetMountNameOf("/Project#x"), "Project");
+	EXPECT_EQ(GetMountNameOf("Project/A"), "");
+}
+
 
 // ---------------- Importers ----------------
 

@@ -55,4 +55,22 @@ bool IsBuiltinExcludedName (FStringView Name, bool bDirectory) noexcept
 		|| Name.Equals<ESearchCase::IgnoreCase>("desktop.ini")
 		|| IsRuleFileName(Name);
 }
+
+bool IsPreferredRuleFileName (FStringView Candidate, FStringView Current) noexcept
+{
+	if (Current.IsEmpty())
+	{
+		return true;
+	}
+	if (Current == RuleFileName || Candidate == Current)
+	{
+		return false;
+	}
+	if (Candidate == RuleFileName)
+	{
+		return true;
+	}
+	const int32 folded = Candidate.Compare<ESearchCase::IgnoreCase>(Current);
+	return folded != 0 ? folded < 0 : Candidate < Current;
+}
 }

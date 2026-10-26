@@ -40,7 +40,7 @@ constexpr size_t SectionSlot (ESnapshotSection Section) noexcept { return static
 
 bool HasKeys (FStringView TypeName) noexcept
 {
-	const std::optional<reflect::TypeId> type = FindTypeExact(TypeName);
+	const std::optional<reflect::TypeId> type = CAssetTypeRegistry::FindExact(TypeName);
 	return type && !CAssetTypeRegistry::Get(*type).Keys.empty();
 }
 
@@ -243,7 +243,7 @@ std::vector<uint8> EncodeSection (const SRegistryImage& Image, ESnapshotSection 
 		std::vector<uint8> payload;
 		for (uint32 t = 0u; t < Image.TypeNames.size(); ++t)
 		{
-			const std::optional<reflect::TypeId> type = FindTypeExact(Image.TypeNames[t]);
+			const std::optional<reflect::TypeId> type = CAssetTypeRegistry::FindExact(Image.TypeNames[t]);
 			if (used[t] == 0u || !type || CAssetTypeRegistry::Get(*type).Keys.empty())
 			{
 				continue;
@@ -939,7 +939,7 @@ private:
 				break;
 			}
 			const int32 typeIndex = findTypeIndex(name);
-			const std::optional<reflect::TypeId> type = FindTypeExact(name);
+			const std::optional<reflect::TypeId> type = CAssetTypeRegistry::FindExact(name);
 			if (typeIndex < 0 || !type)
 			{
 				continue;   // a type this build does not know: its records are frt.Unknown anyway

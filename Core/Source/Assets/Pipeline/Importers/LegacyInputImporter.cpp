@@ -17,19 +17,6 @@ using reflect::HDataNode;
 
 constexpr FStringLiteral InputFolder = "Input";
 constexpr FStringLiteral ActionExtension = ".frtinputaction";
-constexpr FStringLiteral MapExtension = ".frtinputmap";
-
-// The file name without the importer's extension (the last extension for a file a rule gave this importer).
-FStringView GetStem (FStringView FileMountPath) noexcept
-{
-	FStringView leaf = GetMountPathLeaf(FileMountPath);
-	if (leaf.RemoveFromEnd<ESearchCase::IgnoreCase>(MapExtension) || leaf.RemoveFromEnd<ESearchCase::IgnoreCase>(ActionExtension))
-	{
-		return leaf;
-	}
-	const SStringSplit split = leaf.SplitLast('.');
-	return split.bFound && !split.Left.IsEmpty() ? split.Left : leaf;
-}
 
 /**
  * The action file an input map's action name loads, as CInputActionLibrary::MakeActionPath builds it: the
@@ -180,7 +167,7 @@ private:
 			edge.FieldPath = fieldPath;
 		}
 		Out.Flags |= ERecordFlags::Primary;
-		Out.PrimaryName = FString(GetStem(In.FileMountPath));
+		Out.PrimaryName = FString(GetAssetStem(GetMountPathLeaf(In.FileMountPath)));
 		GatherSchemaFree(tree, In, Out);
 	}
 };

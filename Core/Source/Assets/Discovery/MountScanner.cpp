@@ -201,11 +201,12 @@ void ScanFolder (SScanState& State, SFolderNode& Node)
 	std::sort(entries.begin(), entries.end(), [] (const SListedEntry& A, const SListedEntry& B) { return IsNameBefore(A.Name, B.Name); });
 
 	// The folder's rule file goes to the oracle before anything is classified. Under the portable fold;
-	// a case-sensitive folder can hold two spellings, and the reserved one wins.
+	// a case-sensitive folder can hold two spellings (IsPreferredRuleFileName picks, as the rules engine does).
 	const SListedEntry* ruleFile = nullptr;
 	for (const SListedEntry& entry : entries)
 	{
-		if (!entry.Stat.bDirectory && !entry.bNameSurrogate && IsRuleFileName(entry.Name) && (ruleFile == nullptr || entry.Name == RuleFileName))
+		if (!entry.Stat.bDirectory && !entry.bNameSurrogate && IsRuleFileName(entry.Name)
+			&& IsPreferredRuleFileName(entry.Name, ruleFile != nullptr ? FStringView(ruleFile->Name) : FStringView()))
 		{
 			ruleFile = &entry;
 		}

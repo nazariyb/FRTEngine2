@@ -73,30 +73,6 @@ SDiagnostic MakeRegistryDiagnostic (ESeverity Severity, uint32 Code, FStringView
 	return diagnostic;
 }
 
-// The stem of a file name ($Name): without the longest extension an importer knows ("Wood.frtmat.yml" ->
-// "Wood"), else without its last extension; a dot-name keeps its dot.
-FStringView GetStem (FStringView LeafName) noexcept
-{
-	uint32 bestLength = 0u;
-	for (const SImporterDesc& importer : GetImporters())
-	{
-		for (const FStringLiteral extension : importer.Extensions)
-		{
-			const FStringView ext(extension);
-			if (ext.Len() > bestLength && LeafName.Len() > ext.Len() && LeafName.EndsWith<ESearchCase::IgnoreCase>(ext))
-			{
-				bestLength = ext.Len();
-			}
-		}
-	}
-	if (bestLength > 0u)
-	{
-		return LeafName.LeftChop(bestLength);
-	}
-	const uint32 dot = LeafName.FindLast('.');
-	return dot == FStringView::NotFound || dot == 0u ? LeafName : LeafName.Left(dot);
-}
-
 bool HasRelativePart (FStringView MountPath) noexcept
 {
 	FStringView mountName;
@@ -1214,7 +1190,7 @@ private:
 		assets.PrimaryName.SetIfChanged(row, Upsert.PrimaryName.IsEmpty() ? InvalidRow : T.Names.Intern(Upsert.PrimaryName, Epoch), Epoch);
 		assets.ImportStatus.SetIfChanged(row, Upsert.ImportStatus, Epoch);
 		assets.AnalyzeStamp.SetIfChanged(row, Upsert.AnalyzeStamp, Epoch);
-		assets.Name.SetIfChanged(row, T.Names.Intern(GetStem(GetMountPathLeaf(path)), Epoch), Epoch);
+		assets.Name.SetIfChanged(row, T.Names.Intern(GetAssetStem(GetMountPathLeaf(path)), Epoch), Epoch);
 		assets.ChangedRevision.SetIfChanged(row, Revision, Epoch);
 
 		std::vector<uint32> labels;
@@ -1802,7 +1778,7 @@ public:
 			assets.PrimaryName.Set(row, primaryName.IsEmpty() ? InvalidRow : nameIds[image.PrimaryName], Epoch);
 			assets.ImportStatus.Set(row, image.ImportStatus, Epoch);
 			assets.AnalyzeStamp.Set(row, image.AnalyzeStamp, Epoch);
-			assets.Name.Set(row, T.Names.Intern(GetStem(GetMountPathLeaf(path)), Epoch), Epoch);
+			assets.Name.Set(row, T.Names.Intern(GetAssetStem(GetMountPathLeaf(path)), Epoch), Epoch);
 			assets.ChangedRevision.Set(row, Revision, Epoch);
 
 			labels.clear();
@@ -2105,8 +2081,7 @@ private:
 		Plan.TypeOf.assign(Image.TypeNames.size(), -1);
 		for (uint32 i = 0u; i < Image.TypeNames.size(); ++i)
 		{
-			const std::optional<reflect::TypeId> type = CAssetTypeRegistry::Find(Image.TypeNames[i]);
-			if (type && FStringView(CAssetTypeRegistry::Get(*type).Name) == Image.TypeNames[i].View())
+			if (const std::optional<reflect::TypeId> type = CAssetTypeRegistry::FindExact(Image.TypeNames[i]))
 			{
 				Plan.TypeOf[i] = *type;
 			}

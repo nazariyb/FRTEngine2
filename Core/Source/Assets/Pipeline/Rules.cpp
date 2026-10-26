@@ -2506,12 +2506,11 @@ std::shared_ptr<const SScanScope> CRulesEngine::OpenScopeImpl (FStringView Folde
 			FString listError;
 			const bool bListed = platform::EnumerateDirectory(*directory, [&fileName] (const platform::SDirectoryEntry& Entry)
 			{
-				if (!Entry.Stat.bDirectory && !Entry.bNameSurrogate && IsRuleFileName(Entry.Name))
+				if (!Entry.Stat.bDirectory && !Entry.bNameSurrogate && IsRuleFileName(Entry.Name) && IsPreferredRuleFileName(Entry.Name, fileName))
 				{
 					fileName = FString(Entry.Name);
-					return Entry.Name != RuleFileName;   // the reserved spelling ends the search
 				}
-				return true;
+				return fileName != RuleFileName;   // the reserved spelling ends the search
 			}, &listError);
 			if (!bListed)
 			{

@@ -1059,6 +1059,38 @@ TEST(MountScannerTest, BuiltinExcludesFollowTheSpecList)
 	EXPECT_FALSE(IsRuleFileName("Assets.yaml"));
 }
 
+TEST(MountScannerTest, TheRuleFilePickIsTheSameInEveryListingOrder)
+{
+	// A case-sensitive folder may hold several spellings: the reserved one wins, else the first under the fold, then
+	// bytes - whatever order the listing gives, so the scanner and the rules engine's ancestor walk agree.
+	const auto pick = [] (std::vector<FStringView> Names)
+	{
+		FString chosen;
+		for (const FStringView name : Names)
+		{
+			if (IsPreferredRuleFileName(name, chosen))
+			{
+				chosen = FString(name);
+			}
+		}
+		return chosen;
+	};
+	std::vector<FStringView> names { "assets.yml", "ASSETS.YML", "Assets.YML" };
+	std::sort(names.begin(), names.end());
+	do
+	{
+		EXPECT_EQ(pick(names), "ASSETS.YML");
+	}
+	while (std::next_permutation(names.begin(), names.end()));
+	names = { "assets.yml", "Assets.yml", "ASSETS.YML" };
+	std::sort(names.begin(), names.end());
+	do
+	{
+		EXPECT_EQ(pick(names), "Assets.yml");
+	}
+	while (std::next_permutation(names.begin(), names.end()));
+}
+
 
 // ---------------- The lazy hash ----------------
 

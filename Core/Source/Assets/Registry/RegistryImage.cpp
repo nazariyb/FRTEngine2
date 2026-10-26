@@ -245,14 +245,10 @@ SRegistryImage CRegistryView::ExportImage (std::span<const MountId> Mounts) cons
 	for (uint32 subject = 0u; subject < subjects; ++subject)
 	{
 		const FStringView text = tables.Paths.Get(tables.Problems.Subject[subject]);
-		FStringView mountName;
-		FStringView relative;
 		bool bExported = false;
-		if (SplitMountPath(text, mountName, relative))
+		if (const FStringView mountName = GetMountNameOf(text); !mountName.IsEmpty())
 		{
-			// The mount name ends at the first '/' or '#'.
-			const uint32 hash = mountName.Find('#');
-			const SMountRow* mount = FindMountRow(tables, hash == FStringView::NotFound ? mountName : mountName.Left(hash));
+			const SMountRow* mount = FindMountRow(tables, mountName);
 			bExported = mount != nullptr && isExported(mount->Id);
 		}
 		if (!bExported)
@@ -384,13 +380,8 @@ SRegistryDelta MakeImageDelta (SRegistryImage&& Image)
 		{
 			return std::nullopt;
 		}
-		const std::optional<reflect::TypeId> type = CAssetTypeRegistry::Find(Image.TypeNames[Index]);
 		// Only the exact dotted name: a short name that happens to match is not the same type.
-		if (type && FStringView(CAssetTypeRegistry::Get(*type).Name) == Image.TypeNames[Index].View())
-		{
-			return type;
-		}
-		return std::nullopt;
+		return CAssetTypeRegistry::FindExact(Image.TypeNames[Index]);
 	};
 	const auto makeTags = [&] (SPoolRange Range, std::vector<STagDecl>& Out)
 	{

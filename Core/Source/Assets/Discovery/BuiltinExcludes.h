@@ -38,4 +38,13 @@ inline constexpr FStringLiteral RuleFileName = "Assets.yml";
 {
 	return Name.Equals<ESearchCase::IgnoreCase>(RuleFileName);
 }
+
+/**
+ * Which of a folder's rule-file spellings is its rule file (a case-sensitive folder may hold "ASSETS.YML" and
+ * "assets.yml"): whether Candidate (an IsRuleFileName entry of the listing) replaces Current (the pick so far;
+ * empty: none yet). The reserved spelling always wins; otherwise the first under SStringLessIgnoreCase, ties by
+ * bytes. Any listing order gives the same pick, so the scanner and the rules engine's ancestor walk, which both
+ * decide with this, always bind the same file.
+ */
+[[nodiscard]] FRT_CORE_API bool IsPreferredRuleFileName (FStringView Candidate, FStringView Current) noexcept;
 }

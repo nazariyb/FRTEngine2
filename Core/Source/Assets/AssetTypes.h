@@ -69,6 +69,9 @@ public:
 	// By the exact dotted name ("frt.Texture"), else by a short name that names exactly one type ("Texture");
 	// both under the portable fold (SStringEqualIgnoreCase). nullopt when nothing or more than one matches.
 	[[nodiscard]] static std::optional<reflect::TypeId> Find (FStringView Name) noexcept;
+	// By the exact dotted name only, byte for byte ("frt.Texture"), as snapshots, journals and images store a type:
+	// a short name or another case that happens to match is not the stored type. nullopt: this build has no such type.
+	[[nodiscard]] static std::optional<reflect::TypeId> FindExact (FStringView Name) noexcept;
 
 	// The index of the key in Get(Type).Keys (under the portable fold), nullopt when the type has no such key.
 	[[nodiscard]] static std::optional<uint32> FindKey (reflect::TypeId Type, FStringView KeyName) noexcept;
