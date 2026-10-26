@@ -759,7 +759,7 @@ TEST_F(QueryEngineTest, ColumnValuesReadSystemColumnsAndTags)
 	EXPECT_EQ(read("$Folder")[0], STagValue::FromName("/Project/Textures/Hero"));
 	EXPECT_EQ(read("$Labels")[0], STagValue::FromName("Hero"));
 	EXPECT_EQ(read("width")[0], STagValue::FromInt64(4096));
-	EXPECT_EQ(read("$CookRule")[0], STagValue::FromName("Default"));
+	EXPECT_EQ(read("$CookRule")[0], STagValue::FromName("Auto"));
 	EXPECT_EQ(read("$Referencers")[0], STagValue::FromInt64(1));
 	EXPECT_TRUE(read("$PrimaryName").empty());
 	EXPECT_TRUE(read("$Nope").empty());

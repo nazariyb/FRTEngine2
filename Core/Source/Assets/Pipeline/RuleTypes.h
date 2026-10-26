@@ -21,7 +21,7 @@ struct SEffectiveFileSettings
 	const SImporterDesc* Importer = nullptr;   // null: no importer (Unclaimed or Excluded)
 	EFileClass Class = EFileClass::Unclaimed;
 	bool bQuiet = false;                       // listed in Scan.Quiet: an Unclaimed file raises no RULE002
-	ECookRule CookRule = ECookRule::Default;
+	ECookRule CookRule = ECookRule::Auto;
 	uint16 Chunk = 0;
 	std::vector<FString> RuleLabels;
 	SResolvedSettings Settings;

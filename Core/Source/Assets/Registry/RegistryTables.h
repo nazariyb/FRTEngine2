@@ -633,7 +633,7 @@ struct SImageRecord
 	uint16 Type = 0u;                 // TypeNames
 	uint16 Importer = 0xFFFFu;        // ImporterNames
 	ERecordFlags Flags {};
-	ECookRule CookRule = ECookRule::Default;
+	ECookRule CookRule = ECookRule::Auto;
 	uint16 Chunk = 0u;
 	uint32 PrimaryName = ~0u;         // Names
 	EImportStatus ImportStatus = EImportStatus::NotAnalyzed;

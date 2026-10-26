@@ -230,33 +230,6 @@ constexpr FStringLiteral SafetyKeys[] = {
 	"AutoRepairMetas", "DerivedAutoGuids", "AutoResolveDuplicates", "OrphanPairing", "BuilderSourceGuard", "IdLedger", "GuestProcesses",
 };
 
-// The `Cook:` values: Auto is ECookRule::Default.
-struct SCookName
-{
-	FStringLiteral Name;
-	ECookRule Rule;
-};
-
-constexpr SCookName CookNames[] = {
-	{ "Auto", ECookRule::Default },
-	{ "Always", ECookRule::Always },
-	{ "Never", ECookRule::Never },
-	{ "EditorOnly", ECookRule::EditorOnly },
-	{ "DevelopmentOnly", ECookRule::DevelopmentOnly },
-};
-
-FStringLiteral GetCookName (ECookRule Rule) noexcept
-{
-	for (const SCookName& name : CookNames)
-	{
-		if (name.Rule == Rule)
-		{
-			return name.Name;
-		}
-	}
-	return "Auto";
-}
-
 const SImporterDesc* GetRawImporter () noexcept
 {
 	static const SImporterDesc* const raw = FindImporter("Raw");
@@ -671,12 +644,10 @@ private:
 		{
 			return std::nullopt;
 		}
-		for (const SCookName& name : CookNames)
+		ECookRule rule = ECookRule::Auto;
+		if (enum_::TryParse(*text, &rule))
 		{
-			if (text->Equals<ESearchCase::IgnoreCase>(name.Name))
-			{
-				return name.Rule;
-			}
+			return rule;
 		}
 		ErrorAt(Node, FString::Format("'{}' is not a cook rule (Auto, Always, Never, EditorOnly, DevelopmentOnly)", *text));
 		return std::nullopt;
@@ -1358,7 +1329,7 @@ private:
 		if (Rule.Cook.has_value())
 		{
 			key("Cook");
-			text += GetCookName(*Rule.Cook);
+			text += enum_::ToString(*Rule.Cook);
 		}
 		if (Rule.Chunk.has_value())
 		{
@@ -1392,7 +1363,7 @@ private:
 				if (block.Cook.has_value())
 				{
 					field("Cook");
-					text += GetCookName(*block.Cook);
+					text += enum_::ToString(*block.Cook);
 				}
 				if (block.Chunk.has_value())
 				{
@@ -1753,7 +1724,7 @@ private:
 			if (cook.has_value())
 			{
 				text += ", Cook: ";
-				text += GetCookName(*cook);
+				text += enum_::ToString(*cook);
 			}
 			text += " }";
 			AddEntry("PrimaryAssetTypes", std::move(text), item.Value.GetLine());

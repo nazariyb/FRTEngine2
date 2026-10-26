@@ -575,7 +575,7 @@ TEST(SharedTypesTest, RecordIdsAndTagValuesHaveUsefulDefaults)
 
 	const SEffectiveFileSettings effective;
 	EXPECT_EQ(effective.Importer, nullptr);
-	EXPECT_EQ(effective.CookRule, ECookRule::Default);
+	EXPECT_EQ(effective.CookRule, ECookRule::Auto);
 	const SScanBatch batch;
 	EXPECT_TRUE(batch.Folders.empty());
 	EXPECT_EQ(SScanFolder().Parent, ~0u);
@@ -634,14 +634,14 @@ TEST(SharedTypesTest, RegistryEnumsHaveTextNames)
 	ExpectNamesRoundTrip<EDepFlags>(true, 10u);
 
 	// The spellings every piece prints and parses.
-	EXPECT_EQ(enum_::ToString(ECookRule::Default), "Default");
+	EXPECT_EQ(enum_::ToString(ECookRule::Auto), "Auto");   // the rule files' spelling, everywhere
 	EXPECT_EQ(enum_::ToString(EImportStatus::AnalyzeFailed), "AnalyzeFailed");
 	EXPECT_EQ(enum_::ToString(EFileClass::Unclaimed), "Unclaimed");
 	EXPECT_EQ(enum_::ToString(ERecordFlags::LegacyReferences), "LegacyReferences");
 	EXPECT_EQ(enum_::ToString(EDepFlags::Unresolved), "Unresolved");
 	EXPECT_EQ(enum_::ToString(ECompare::Match), "Match");
 	ECookRule rule = ECookRule::Always;
-	EXPECT_FALSE(enum_::TryParse("Auto", &rule));   // the rules engine's alias, not a name
+	EXPECT_FALSE(enum_::TryParse("Default", &rule));   // no alias: one name per value
 	EXPECT_EQ(rule, ECookRule::Always);
 	EXPECT_TRUE(enum_::TryParse("editoronly", &rule));
 	EXPECT_EQ(rule, ECookRule::EditorOnly);

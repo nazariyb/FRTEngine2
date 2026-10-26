@@ -88,7 +88,7 @@ struct SRecordUpsert     // replaces the whole record of FileMountPath: tags, la
 {
 	FString FileMountPath; SGuid Guid;               // M3: MakeProvisionalGuid(FileMountPath)
 	reflect::TypeId Type = 0; FString Importer;      // the store interns importer names into its own u16 table
-	ERecordFlags Flags{}; ECookRule CookRule = ECookRule::Default; uint16 Chunk = 0; std::vector<FString> RuleLabels;
+	ERecordFlags Flags{}; ECookRule CookRule = ECookRule::Auto; uint16 Chunk = 0; std::vector<FString> RuleLabels;
 	FString PrimaryName;                             // empty unless ERecordFlags::Primary
 	EImportStatus ImportStatus = EImportStatus::NotAnalyzed; uint64 AnalyzeStamp = 0;
 	std::vector<STagDecl> Tags; std::vector<SSubEntryDecl> SubEntries; std::vector<SEdgeDecl> Edges;

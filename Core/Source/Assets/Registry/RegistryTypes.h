@@ -148,13 +148,13 @@ template <RegistryFlagEnum E>
 
 
 /**
- * Fixed for M3 where §5.2 names a column but not its values. ECookRule is the rule files' `Cook:` value
- * (`Auto` there is the rules engine's alias for Default: the cook decides by reachability and mode, §10;
- * the dump and explain print "Default"). EImportStatus says how far
+ * Fixed for M3 where §5.2 names a column but not its values. ECookRule is the rule files' `Cook:` value,
+ * spelled as they spell it (Auto: the cook decides by reachability and mode, §10), so rule files, explain,
+ * list-rules, the dump and queries share one name per value through the enum reflection. EImportStatus says how far
  * the importer got with the file: Analyze ran and succeeded, failed (the record is kept, with a diagnostic),
  * or the file's importer is known but not available in this build or on this machine (§3.5.3, IMP010).
  */
-enum class ECookRule : uint8 { Default, Always, Never, EditorOnly, DevelopmentOnly };
+enum class ECookRule : uint8 { Auto, Always, Never, EditorOnly, DevelopmentOnly };
 enum class EImportStatus : uint8 { NotAnalyzed, Analyzed, AnalyzeFailed, ImporterUnavailable };
 
 
@@ -513,10 +513,9 @@ FRT_DECLARE_ENUM_REFLECTION(
 	FRT_ENUM_ENTRY(frt::assets::EDepFlags, Path),
 	FRT_ENUM_ENTRY(frt::assets::EDepFlags, Code));
 
-// "Default", never the rule files' "Auto" (the rules engine maps Auto to Default).
 FRT_DECLARE_ENUM_REFLECTION(
 	frt::assets::ECookRule,
-	FRT_ENUM_ENTRY(frt::assets::ECookRule, Default),
+	FRT_ENUM_ENTRY(frt::assets::ECookRule, Auto),
 	FRT_ENUM_ENTRY(frt::assets::ECookRule, Always),
 	FRT_ENUM_ENTRY(frt::assets::ECookRule, Never),
 	FRT_ENUM_ENTRY(frt::assets::ECookRule, EditorOnly),

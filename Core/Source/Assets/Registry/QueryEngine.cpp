@@ -845,13 +845,13 @@ private:
 		const FStringView text = Value.Text.View();
 		if (Column == ESystemColumn::CookRule)
 		{
-			ECookRule rule = ECookRule::Default;
-			if (text.Equals<ESearchCase::IgnoreCaseAscii>("Auto") || enum_::TryParse(text, &rule))
+			ECookRule rule = ECookRule::Auto;
+			if (enum_::TryParse(text, &rule))
 			{
 				Out.Bits.push_back(static_cast<uint64>(rule));
 				return true;
 			}
-			return Fail(Predicate.Column, FString::Format("$CookRule takes Default (Auto), Always, Never, EditorOnly or DevelopmentOnly, not '{}'", text));
+			return Fail(Predicate.Column, FString::Format("$CookRule takes Auto, Always, Never, EditorOnly or DevelopmentOnly, not '{}'", text));
 		}
 		EImportStatus status = EImportStatus::NotAnalyzed;
 		if (enum_::TryParse(text, &status))

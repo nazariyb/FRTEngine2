@@ -550,7 +550,7 @@ TEST(RulesEngine, FieldsTakeTheFirstMatchingRuleDeepestFileFirstWithProvenance)
 	const SProvenance* cook = FindProvenance(bark, "Cook");
 	ASSERT_NE(cook, nullptr);
 	EXPECT_TRUE(cook->File.IsEmpty()) << "no rule set it";
-	EXPECT_EQ(bark.CookRule, ECookRule::Default);
+	EXPECT_EQ(bark.CookRule, ECookRule::Auto);
 
 	// Outside the folder file's subtree only the outer files apply.
 	const SEffectiveFileSettings ground = engine.ResolveFile(*project, "/Project/Environment/Ground.png");
@@ -710,14 +710,14 @@ TEST(RulesEngine, TypeAndLabelSelectorsWaitForAnalyzeAndNeverChangeTheImporter)
 	const SEffectiveFileSettings typed = engine.ResolveFile(*project, "/Project/A.png", facts);
 	EXPECT_EQ(typed.Class, EFileClass::Raw) << "a Type rule's Final never stops the importer";
 	EXPECT_EQ(typed.Chunk, 4u);
-	EXPECT_EQ(typed.CookRule, ECookRule::Default) << "no authored label Prototype";
+	EXPECT_EQ(typed.CookRule, ECookRule::Auto) << "no authored label Prototype";
 	EXPECT_TRUE(typed.RuleLabels.empty()) << "the Final stops the labels of later rules";
 
 	const FString prototype = "prototype";
 	facts.AuthoredLabels = std::span<const FString>(&prototype, 1u);
 	EXPECT_EQ(engine.ResolveFile(*project, "/Project/A.png", facts).CookRule, ECookRule::DevelopmentOnly);
 	facts.Type = asset_types::Model;
-	EXPECT_EQ(engine.ResolveFile(*project, "/Project/A.png", facts).CookRule, ECookRule::Default);
+	EXPECT_EQ(engine.ResolveFile(*project, "/Project/A.png", facts).CookRule, ECookRule::Auto);
 }
 
 TEST(RulesEngine, ProjectPluginAndEngineRulesStayInTheirMounts)
@@ -734,7 +734,7 @@ TEST(RulesEngine, ProjectPluginAndEngineRulesStayInTheirMounts)
 
 	const SEffectiveFileSettings pluginFile = engine.ResolveFile(*plugin, "/Plugin.Ворота/Secret/A.png");
 	EXPECT_EQ(pluginFile.Class, EFileClass::Asset) << "the project's Exclude never reaches a plugin";
-	EXPECT_EQ(pluginFile.CookRule, ECookRule::Default);
+	EXPECT_EQ(pluginFile.CookRule, ECookRule::Auto);
 	EXPECT_EQ(pluginFile.Chunk, 9u);
 	EXPECT_EQ(pluginFile.RuleLabels, (std::vector<FString> { "PluginRule", "EngineFallback" }));
 	EXPECT_EQ(FindProvenance(pluginFile, "Chunk")->File, "Plugins/Ворота/Config/Assets.yml");
@@ -746,7 +746,7 @@ TEST(RulesEngine, ProjectPluginAndEngineRulesStayInTheirMounts)
 
 	const SEffectiveFileSettings engineFile = engine.ResolveFile(*engineRoot, "/Engine/A.png");
 	EXPECT_EQ(engineFile.RuleLabels, (std::vector<FString> { "EngineFallback" })) << "no other mount's rules reach /Engine";
-	EXPECT_EQ(engineFile.CookRule, ECookRule::Default);
+	EXPECT_EQ(engineFile.CookRule, ECookRule::Auto);
 }
 
 TEST(RulesEngine, AMalformedFileKeepsTheLastGoodRulesAndAColdOneContributesNothing)
@@ -1143,6 +1143,34 @@ TEST(RulesEngine, EveryResultForAMountRootHoldsBothOfItsRuleFilesDiagnostics)
 	EXPECT_TRUE(below.empty()) << DescribeDiagnostics(below).CStr();
 }
 
+TEST(RulesEngine, AListingsRuleFilesMapToTheRegistrysRuleFileRows)
+{
+	// The mount file and the content root's Assets.yml share the mount root in an origin; RULEFILES spells the
+	// mount file with an empty folder, so ToRuleFileUpsert is the one translation.
+	SEngineFixture fixture("RuleFileRows");
+	fixture.Tree.WriteProjectRules("FormatVersion: 1\n");
+	CRulesEngine& engine = fixture.Start();
+	uint64 hash = 0u;
+	std::vector<SDiagnostic> diagnostics;
+	const auto above = engine.OpenScope("/Project", diagnostics);
+	(void)engine.EnterFolderFromText(above, "/Project", FStringView("FormatVersion: 1\n"), hash, diagnostics);
+	std::vector<SRuleFileUpsert> rows;
+	for (const SRuleFileListing& file : engine.GetListing().Files)
+	{
+		if (file.Origin.MountName == "Project")
+		{
+			rows.push_back(ToRuleFileUpsert(file.Origin, file.RulesHash));
+			EXPECT_EQ(file.Origin.FolderMountPath, "/Project");
+		}
+	}
+	ASSERT_EQ(rows.size(), 2u);
+	const auto find = [&] (FStringView Folder) { return std::find_if(rows.begin(), rows.end(), [&] (const SRuleFileUpsert& R) { return R.FolderMountPath == Folder; }); };
+	ASSERT_NE(find(""), rows.end());
+	EXPECT_EQ(find("")->RulesHash, engine.GetMountRulesHash("Project"));
+	ASSERT_NE(find("/Project"), rows.end());
+	EXPECT_EQ(find("/Project")->RulesHash, hash);
+}
+
 TEST(RulesEngine, TheRulesBasisOfAProjectSnapshotFollowsTheEngineFile)
 {
 	// /Project and the plugins fall back to the engine's file, whose RULEFILES row only Engine.snapshot holds: the
@@ -1271,7 +1299,7 @@ TEST(RulesEngine, TheAncestorWalkFindsTheRuleFileAsTheScannerDoes)
 	std::error_code ec;
 	std::filesystem::remove(ruleFile, ec);
 	const auto bare = fixture.Open("/Project/Art/Rocks");
-	EXPECT_EQ(engine.ResolveFile(*bare, "/Project/Art/Rocks/A.png").CookRule, ECookRule::Default);
+	EXPECT_EQ(engine.ResolveFile(*bare, "/Project/Art/Rocks/A.png").CookRule, ECookRule::Auto);
 	EXPECT_EQ(listedFile(), "(not listed)");
 }
 

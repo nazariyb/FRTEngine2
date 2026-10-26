@@ -13,6 +13,7 @@
 #include "Assets/Discovery/Mounts.h"
 #include "Assets/Discovery/ScanTypes.h"
 #include "Assets/Pipeline/RuleTypes.h"
+#include "Assets/Registry/RegistryDelta.h"
 #include "Assets/Registry/RegistryTypes.h"
 #include "Containers/String.h"
 #include "Containers/StringMap.h"
@@ -102,6 +103,16 @@ struct SRuleFileOrigin
 
 	bool operator== (const SRuleFileOrigin&) const = default;
 };
+
+/**
+ * The registry's RULEFILES row of a rule file (RegistryDelta.h's spelling): a mount's Config/Assets.yml has an empty
+ * FolderMountPath there, while an origin, a chain entry and Rules.cache name it by the mount root, as they name the
+ * content root's Assets.yml (Level tells the two apart). Every RULEFILES write and lookup goes through this.
+ */
+[[nodiscard]] inline SRuleFileUpsert ToRuleFileUpsert (const SRuleFileOrigin& Origin, uint64 RulesHash)
+{
+	return SRuleFileUpsert { Origin.MountName, Origin.Level == ERuleFileLevel::Mount ? FString() : Origin.FolderMountPath, RulesHash };
+}
 
 /**
  * One normalised entry of a rule file, as `list-rules` and `Rules.cache` show it. Kind names the section
@@ -263,7 +274,7 @@ public:
 	/**
 	 * What a file's class, importer, settings, cook rule and chunk depend on besides the rule texts, which RulesHash
 	 * alone covers: XXH3 of RulesEngineVersion (bumped when this engine's own semantics change - precedence, the
-	 * `Auto` alias, IsBuiltinExcludedName's list), every ImporterTable row (name, extensions, availability, main
+	 * meaning of a Cook: value, IsBuiltinExcludedName's list), every ImporterTable row (name, extensions, availability, main
 	 * type, settings table with each field's name, kind, default, enum values and Analyze relevance), the targets
 	 * and their platforms, and Options.Target. Never 0; fixed for the engine's lifetime.
 	 *

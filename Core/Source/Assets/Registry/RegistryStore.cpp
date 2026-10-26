@@ -1071,7 +1071,7 @@ private:
 		assets.AssetType.Append(0u, Epoch);
 		assets.Importer.Append(InvalidImporter, Epoch);
 		assets.Flags.Append(ERecordFlags::None, Epoch);
-		assets.CookRule.Append(ECookRule::Default, Epoch);
+		assets.CookRule.Append(ECookRule::Auto, Epoch);
 		assets.Chunk.Append(0u, Epoch);
 		assets.PrimaryName.Append(InvalidRow, Epoch);
 		assets.Labels.Append(SPoolRange {}, Epoch);
