@@ -32,6 +32,7 @@
 #include "Assets/OwnerLock.h"
 #include "Assets/Registry/Journal.h"
 #include "Assets/Registry/QueryEngine.h"
+#include "Assets/Registry/RegistryRecords.h"
 #include "Assets/Registry/Snapshot.h"
 #include "Jobs/WorkerPool.h"
 #include "Platform/FileSystem.h"
@@ -46,10 +47,11 @@ using frt::test::rules::DescribeDiagnostics;
 
 namespace frt::assets
 {
-// CAssetRegistry's test seam (a friend): its journal, to break it as a failed write would.
+// CAssetRegistry's test seam (a friend): its journal, to break it as a failed write would; a file that keeps changing.
 struct SAssetRegistryTestAccess
 {
 	static CRegistryJournal* GetJournal (CAssetRegistry& Registry) { return Registry.GetJournal(); }
+	static void SetSourceChanged (CAssetRegistry& Registry, FStringView MountPath) { Registry.SetSourceChangedForTest(FString(MountPath)); }
 };
 }
 
@@ -906,6 +908,40 @@ TEST(AssetRegistry, ExistsIsUnknownUntilTheInitialScanAndTheChangeSetSaysItCompl
 	EXPECT_TRUE(report.bComplete);
 	EXPECT_EQ(report.Records, registry.Live().GetRecordCount());
 	registry.OnAssetsChanged().Remove(handle);
+	registry.ShutDown();
+}
+
+TEST(AssetRegistry, AFileThatKeepsChangingIsCommittedAnalyzeFailedAfterItsRetriesSoTheInitialScanEnds)
+{
+	const CServiceTree tree("Keeps Changing");
+	jobs::CWorkerPool pool(MakePoolDesc(4u));
+	(void)WriteBothSnapshots(pool, tree);
+	constexpr FStringView path = "/Project/Textures/Трава.png";
+	tree.WriteProjectPng("Textures/Трава.png", 8u);   // the one file the warm start analyzes
+	SAssetRegistryDesc desc;
+	desc.Mounts = tree.Project();
+	desc.Pool = &pool;
+	desc.RetryDelayMs = 50u;
+	const uint32 retries = desc.SourceChangedRetries;
+	CAssetRegistry registry(std::move(desc));
+	SAssetRegistryTestAccess::SetSourceChanged(registry, path);
+	const uint64 start = platform::ReadTimestamp();
+	registry.Start();
+	// The hosts' wait before BuildWorld has no timeout: it must end by itself.
+	ASSERT_TRUE(registry.WaitForInitialScan(60.0)) << "the initial scan never completed";
+	const double milliseconds = platform::TimestampToMilliseconds(platform::ReadTimestamp() - start);
+	EXPECT_EQ(registry.GetCounters().Analyzed, retries + 1u) << "the first attempt and its retries, nothing else";
+	EXPECT_GE(milliseconds, retries * 50.0) << "each retry waits for the settle window";
+	const std::optional<SStoredFile> stored = FindStoredFile(registry.Live(), path);
+	ASSERT_TRUE(stored.has_value() && stored->Record.IsValid());
+	EXPECT_EQ(stored->ImportStatus, EImportStatus::AnalyzeFailed);
+	bool bProblem = false;
+	registry.Live().ForEachProblem([&] (FStringView Subject, EProblemSource Source, const SDiagnostic& Diagnostic)
+	{
+		bProblem = bProblem || (Subject == path && Source == EProblemSource::Analyze && Diagnostic.Code == 0u
+			&& Diagnostic.Severity == ESeverity::Error && Diagnostic.Message.Contains("kept changing"));
+	});
+	EXPECT_TRUE(bProblem) << "a code-0 error says why";
 	registry.ShutDown();
 }
 

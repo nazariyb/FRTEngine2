@@ -299,9 +299,13 @@ public:
 	struct SImpl;
 
 private:
-	friend struct SAssetRegistryTestAccess;   // Core-Test: breaks the journal as a failed write would
+	// Core-Test: breaks the journal as a failed write would; makes a file keep changing while it is analyzed.
+	friend struct SAssetRegistryTestAccess;
 	// The writer's journal while it is open (null for a reader, and before the snapshots loaded or after ShutDown).
 	[[nodiscard]] CRegistryJournal* GetJournal () noexcept;
+	// Every Analyze of the file at MountPath reports bSourceChanged, as for a file written to without pause (the
+	// retry cap that ends every wait). Owner thread, before Start.
+	void SetSourceChangedForTest (FString MountPath);
 
 	std::unique_ptr<SImpl> Impl;
 };

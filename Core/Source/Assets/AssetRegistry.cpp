@@ -212,7 +212,10 @@ struct SAnalyzeOutcome
 	uint32 EngineAnalyzed = 0u;
 };
 
-SAnalyzeOutcome RunAnalyze (std::vector<SAnalyzeRequest>& Requests, const CRulesEngine& Rules, const CMountTable& Mounts, uint32 MaxRetries)
+// KeepsChanging: a file whose every Analyze reports bSourceChanged (CAssetRegistry::SetSourceChangedForTest; empty:
+// none).
+SAnalyzeOutcome RunAnalyze (std::vector<SAnalyzeRequest>& Requests, const CRulesEngine& Rules, const CMountTable& Mounts, uint32 MaxRetries,
+	FStringView KeepsChanging)
 {
 	SAnalyzeOutcome outcome;
 	for (SAnalyzeRequest& request : Requests)
@@ -229,6 +232,7 @@ SAnalyzeOutcome RunAnalyze (std::vector<SAnalyzeRequest>& Requests, const CRules
 		}
 		SAnalyzeResult result;
 		(void)AnalyzeFile(*input, request.Settings, result);
+		result.bSourceChanged = result.bSourceChanged || (!KeepsChanging.IsEmpty() && request.Path == KeepsChanging);
 		++outcome.Analyzed;
 		outcome.EngineAnalyzed += mount.Kind == EMountKind::Engine ? 1u : 0u;
 		if (result.bSourceChanged && request.Retries < MaxRetries)
@@ -1363,9 +1367,9 @@ struct CAssetRegistry::SImpl
 		auto job = std::make_shared<std::pair<std::vector<SAnalyzeRequest>, SAnalyzeOutcome>>();
 		job->first = std::move(Requests);
 		Pool.Submit(jobs::EWorkPriority::Normal, CancelGroup,
-			[job, rules = Rules.get(), mounts = Mounts.get(), retries = Desc.SourceChangedRetries] ()
+			[job, rules = Rules.get(), mounts = Mounts.get(), retries = Desc.SourceChangedRetries, changing = SourceChangedForTest] ()
 			{
-				job->second = RunAnalyze(job->first, *rules, *mounts, retries);
+				job->second = RunAnalyze(job->first, *rules, *mounts, retries, changing);
 			},
 			[this, PassId, job, guard = CLostGuard([this, PassId] { OnAnalyzeLost(PassId); })] () mutable
 			{
@@ -1984,6 +1988,7 @@ struct CAssetRegistry::SImpl
 	std::vector<SDelegateHandle> Subscriptions;
 	std::vector<SWatchEvent> WatchEvents;
 	bool bMountRulesChanged = false;
+	FString SourceChangedForTest;    // CAssetRegistry::SetSourceChangedForTest
 
 	SAssetRegistryCounters Counters;
 	SInitialScanReport Initial;
@@ -2237,5 +2242,11 @@ const std::filesystem::path& CAssetRegistry::GetSnapshotPath () const noexcept
 CRegistryJournal* CAssetRegistry::GetJournal () noexcept
 {
 	return Impl->Journal.has_value() ? &*Impl->Journal : nullptr;
+}
+
+void CAssetRegistry::SetSourceChangedForTest (FString MountPath)
+{
+	frt_assert(Impl->State == EScanState::NotStarted);
+	Impl->SourceChangedForTest = std::move(MountPath);
 }
 }
