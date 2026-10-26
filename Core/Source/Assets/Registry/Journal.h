@@ -107,6 +107,7 @@ struct SJournalStats
 	double LastAppendMs = 0.0;        // the last Append that wrote: filter, encode and write
 	uint32 Restarts = 0u;
 	double LastRestartMs = 0.0;       // the last Restart that succeeded (owner thread)
+	double LastRestartFileMs = 0.0;   // ... of which replacing the file: closing, writing, reopening (file system time)
 	uint32 FailedAppends = 0u;        // appends that broke the journal
 };
 

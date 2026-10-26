@@ -869,6 +869,7 @@ bool CRegistryJournal::Restart (uint64 Base, FString* OutError)
 			binary::AppendRaw(kept, std::span<const uint8>(OwnFrames).subspan(Commit.Begin, Commit.End - Commit.Begin));
 		}
 	});
+	const uint64 written = platform::ReadTimestamp();
 	if (!StartNew(Base, kept, OutError))
 	{
 		// The commits stay in memory; the next full write tries again.
@@ -878,7 +879,9 @@ bool CRegistryJournal::Restart (uint64 Base, FString* OutError)
 	OwnFrames = std::move(kept);
 	bBroken = false;
 	++Stats.Restarts;
-	Stats.LastRestartMs = platform::TimestampToMilliseconds(platform::ReadTimestamp() - start);
+	const uint64 end = platform::ReadTimestamp();
+	Stats.LastRestartMs = platform::TimestampToMilliseconds(end - start);
+	Stats.LastRestartFileMs = platform::TimestampToMilliseconds(end - written);
 	return true;
 }
 }
