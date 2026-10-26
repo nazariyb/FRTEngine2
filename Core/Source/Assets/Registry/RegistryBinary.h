@@ -1,10 +1,13 @@
 #pragma once
 
+#include <algorithm>
+#include <optional>
 #include <span>
 #include <vector>
 
 #include "CoreTypes.h"
 #include "Assets/AssetId.h"
+#include "Assets/AssetTypes.h"
 #include "Assets/ByteStream.h"
 #include "Assets/Registry/RegistryTypes.h"
 #include "Containers/String.h"
@@ -15,7 +18,7 @@
 /**
  * The few encodings the registry snapshot (Snapshot.cpp) and journal (Journal.cpp) share, over
  * assets::binary (ByteStream.h): diagnostics, GUIDs, file identities, signed varints and range-checked
- * enums. Internal to Core/Source/Assets/Registry. Every Read checks what it reads - an enum past its last
+ * enums, and the lookup both use to map a stored type name back to this build's TypeId. Internal to Core/Source/Assets/Registry. Every Read checks what it reads - an enum past its last
  * value fails like a short read - so a damaged file makes a decode fail, never produce a value the store
  * would trip over. std::vector and FString only (both run on workers).
  */
@@ -174,7 +177,8 @@ inline bool ReadDiagnostic (CByteReader& Reader, SDiagnostic& Out)
 		&& Reader.ReadText(Out.FieldPath) && Reader.ReadText(Out.Message);
 }
 
-// A diagnostic list: a count, then the diagnostics. Each takes at least 8 bytes, which bounds the count.
+// A diagnostic list: a count, then the diagnostics. Each takes at least 8 bytes, which bounds the count; they
+// are added as they are read, so a forged count allocates nothing it does not also find in the bytes.
 inline void AppendDiagnostics (std::vector<uint8>& Out, std::span<const SDiagnostic> Diagnostics)
 {
 	binary::AppendVarint(Out, Diagnostics.size());
@@ -191,10 +195,11 @@ inline bool ReadDiagnostics (CByteReader& Reader, std::vector<SDiagnostic>& Out)
 	{
 		return false;
 	}
-	Out.resize(static_cast<size_t>(count));
-	for (SDiagnostic& diagnostic : Out)
+	Out.clear();
+	Out.reserve(static_cast<size_t>((std::min)(count, uint64(16u))));
+	for (uint64 i = 0u; i < count; ++i)
 	{
-		if (!ReadDiagnostic(Reader, diagnostic))
+		if (!ReadDiagnostic(Reader, Out.emplace_back()))
 		{
 			return false;
 		}
@@ -212,6 +217,18 @@ inline bool ReadCount (CByteReader& Reader, uint64 MinItemBytes, uint32& Out) no
 	}
 	Out = static_cast<uint32>(count);
 	return true;
+}
+
+// A type by its exact dotted name, as snapshots and journals store it: a short name that happens to match is
+// not the same type (AdoptImage's rule). nullopt: this build does not know the type.
+[[nodiscard]] inline std::optional<reflect::TypeId> FindTypeExact (FStringView Name) noexcept
+{
+	const std::optional<reflect::TypeId> type = CAssetTypeRegistry::Find(Name);
+	if (type && FStringView(CAssetTypeRegistry::Get(*type).Name) == Name)
+	{
+		return type;
+	}
+	return std::nullopt;
 }
 
 /**

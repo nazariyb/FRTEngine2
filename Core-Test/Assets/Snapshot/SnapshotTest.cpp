@@ -25,10 +25,11 @@ namespace
 const MountId EngineMounts[] = { EngineMountId };
 const MountId ProjectMounts[] = { ProjectMountId, FirstPluginMountId };
 
+// An invalid ProjectId takes the file whatever project it names (bAnyProject: the test inspects a given file).
 SSnapshotLoadResult Load (CRegistryStore& Store, const std::filesystem::path& Path, const SGuid& ProjectId = SGuid {},
 	std::span<const SMountUpsert> Mounts = {})
 {
-	const SSnapshotSource sources[] = { SSnapshotSource { Path, ProjectId } };
+	const SSnapshotSource sources[] = { SSnapshotSource { Path, ProjectId, !ProjectId.IsValid() } };
 	return LoadSnapshots(Store, sources, Mounts);
 }
 
@@ -451,7 +452,7 @@ TEST_F(SnapshotTest, ADamagedFileLeavesTheOtherFileIntact)
 	const std::filesystem::path project = Dir / "AssetRegistry.snapshot";
 	ASSERT_TRUE(WriteSnapshot(original.Live(), EngineMounts, engine, SGuid {}));
 	ASSERT_TRUE(WriteSnapshot(original.Live(), ProjectMounts, project, SGuid {}));
-	const SSnapshotSource sources[] = { SSnapshotSource { engine, SGuid {} }, SSnapshotSource { project, SGuid {} } };
+	const SSnapshotSource sources[] = { SSnapshotSource { engine, SGuid {}, true }, SSnapshotSource { project, SGuid {}, true } };
 
 	DamageSection(engine, ESnapshotSection::Files);
 	{
@@ -523,16 +524,21 @@ TEST_F(SnapshotTest, AFileOfAnotherProjectFormatOrKindIsNotTaken)
 	const SGuid writer = SGuid::NewRandom();
 	ASSERT_TRUE(WriteSnapshot(original.Live(), {}, path, writer));
 
-	const auto loadState = [&] (const SGuid& Expected)
+	const auto loadState = [&] (const SGuid& Expected, bool bAnyProject = false)
 	{
 		CRegistryStore loaded;
-		const SSnapshotLoadResult result = Load(loaded, path, Expected);
+		const SSnapshotSource sources[] = { SSnapshotSource { path, Expected, bAnyProject } };
+		const SSnapshotLoadResult result = LoadSnapshots(loaded, sources);
 		EXPECT_EQ(loaded.Live().GetRecordCount(), result.AnyLoaded() ? original.Live().GetRecordCount() : 0u);
 		return result.Files[0].State;
 	};
 	EXPECT_EQ(loadState(writer), ESnapshotFileState::Loaded);
-	EXPECT_EQ(loadState(SGuid {}), ESnapshotFileState::Loaded);
 	EXPECT_EQ(loadState(SGuid::NewRandom()), ESnapshotFileState::Rejected);
+	// A process without a ProjectId file (ReadProjectId gave nullopt) takes no snapshot of its root; a tool that
+	// inspects the file asks for any project.
+	EXPECT_EQ(loadState(SGuid {}), ESnapshotFileState::Rejected);
+	EXPECT_EQ(loadState(SGuid {}, true), ESnapshotFileState::Loaded);
+	EXPECT_EQ(loadState(SGuid::NewRandom(), true), ESnapshotFileState::Loaded);
 
 	std::vector<uint8> bytes = ReadBytes(path);
 	std::vector<uint8> version = bytes;

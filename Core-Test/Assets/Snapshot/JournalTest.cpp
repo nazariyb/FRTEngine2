@@ -1,19 +1,33 @@
 // The registry journal (Assets/Registry/Journal.h, design §5.3). Every member of a delta survives its encoding;
 // a snapshot plus its journal loads the latest committed state; a journal keeps only its snapshot's mounts; a
-// torn tail is dropped at load and cut off before the next append; a journal that continues another snapshot is
-// ignored; after a full write, Restart keeps exactly the commits the snapshot's view did not hold; a delta larger
-// than one frame is split and joined again.
+// torn tail is dropped at load and cut off before the next append, and so is a commit whose delta does not decode;
+// a journal that continues another snapshot is ignored; after a full write, Restart keeps exactly the commits the
+// snapshot's view did not hold; a failed append breaks the journal until a full write, and loses no commit; a delta
+// larger than one frame is split and joined again; types are stored by name, and a name this build does not know
+// waits Schemaless; a snapshot that lost its rule outputs replays no rule hashes.
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <filesystem>
 
 #include "Assets/AssetTypes.h"
+#include "Assets/RecordFrames.h"
 #include "SnapshotTestUtils.h"
 
 using namespace frt;
 using namespace frt::assets;
 using namespace frt::assets::snapshot_test;
+
+
+namespace frt::assets
+{
+// CRegistryJournal's test seam (a friend): the next Append writes only Bytes of its frames and fails, as a full
+// disk cuts a write short.
+struct SRegistryJournalTestAccess
+{
+	static void FailNextAppendAfter (CRegistryJournal& Journal, size_t Bytes) { Journal.FailAppendAfterBytes = Bytes; }
+};
+}
 
 
 namespace
@@ -126,6 +140,71 @@ TEST(JournalEncodingTest, EveryMemberOfADeltaSurvivesItsEncoding)
 	{
 		EXPECT_FALSE(DecodeRegistryDelta(std::span<const uint8>(bytes).first(cut)).has_value()) << cut;
 	}
+}
+
+namespace
+{
+// Replaces a length-prefixed text in encoded bytes by another of the same length.
+void ReplaceText (std::vector<uint8>& Bytes, FStringView From, FStringView To)
+{
+	ASSERT_EQ(From.Len(), To.Len());
+	std::vector<uint8> needle { static_cast<uint8>(From.Len()) };
+	needle.insert(needle.end(), From.AsBytes().begin(), From.AsBytes().end());
+	const auto found = std::search(Bytes.begin(), Bytes.end(), needle.begin(), needle.end());
+	ASSERT_NE(found, Bytes.end());
+	std::copy(To.AsBytes().begin(), To.AsBytes().end(), found + 1);
+	EXPECT_EQ(std::search(found + 1, Bytes.end(), needle.begin(), needle.end()), Bytes.end()) << "stored once per delta";
+}
+
+const SRecordUpsert& FindUpsert (const SRegistryDelta& Delta, FStringView Path)
+{
+	const auto found = std::find_if(Delta.RecordUpserts.begin(), Delta.RecordUpserts.end(), [&] (const SRecordUpsert& Record)
+	{
+		return Record.FileMountPath.View() == Path;
+	});
+	EXPECT_NE(found, Delta.RecordUpserts.end());
+	return found != Delta.RecordUpserts.end() ? *found : Delta.RecordUpserts.front();
+}
+}
+
+TEST(JournalEncodingTest, TypesAreStoredByNameAndAnUnknownNameWaitsSchemaless)
+{
+	// The bytes name the types (never a TypeId, which another build numbers differently). Another build's names:
+	// the action's type and the model's mesh sub-entry type are unknown here.
+	std::vector<uint8> bytes = Encode(MakeContent());
+	ReplaceText(bytes, "frt.InputAction", "Game.WeaponType");
+	ReplaceText(bytes, "frt.Mesh", "Game.Gun");
+	const std::optional<SRegistryDelta> decoded = DecodeRegistryDelta(bytes);
+	ASSERT_TRUE(decoded.has_value());
+
+	const SRecordUpsert& action = FindUpsert(*decoded, "/Project/Input/Jump.frtinputaction");
+	EXPECT_EQ(action.Type, asset_types::Unknown);
+	EXPECT_TRUE(HasAllFlags(action.Flags, ERecordFlags::Schemaless | ERecordFlags::StaleTags));
+	EXPECT_TRUE(action.Tags.empty());
+	const SRecordUpsert& map = FindUpsert(*decoded, "/Project/Input/Map.frtinputmap");
+	EXPECT_EQ(map.Type, asset_types::InputActionMap);
+	EXPECT_FALSE(HasAnyFlags(map.Flags, ERecordFlags::Schemaless | ERecordFlags::StaleTags));
+	EXPECT_EQ(map.Tags.size(), 2u);
+
+	// A sub-entry of an unknown type waits too, and its owner is analyzed again; its other sub-entries keep theirs.
+	const SRecordUpsert& model = FindUpsert(*decoded, "/Project/Hero.gltf");
+	EXPECT_EQ(model.Type, asset_types::Model);
+	EXPECT_TRUE(HasAnyFlags(model.Flags, ERecordFlags::StaleTags));
+	EXPECT_FALSE(HasAnyFlags(model.Flags, ERecordFlags::Schemaless));
+	EXPECT_EQ(model.Tags.size(), 2u);
+	ASSERT_EQ(model.SubEntries.size(), 3u);
+	EXPECT_EQ(model.SubEntries[0].Type, asset_types::Unknown);
+	EXPECT_TRUE(HasAllFlags(model.SubEntries[0].Flags, ERecordFlags::Schemaless | ERecordFlags::StaleTags));
+	EXPECT_TRUE(model.SubEntries[0].Tags.empty());
+	EXPECT_EQ(model.SubEntries[2].Type, asset_types::Texture);
+	EXPECT_EQ(model.SubEntries[2].Tags.size(), 1u);
+
+	// The store takes the decoded delta: the action waits for its type.
+	CRegistryStore store;
+	store.Commit(SRegistryDelta(*decoded));
+	const SAssetData data = GetData(store.Live(), "/Project/Input/Jump.frtinputaction");
+	EXPECT_EQ(data.Type, asset_types::Unknown);
+	EXPECT_TRUE(HasAllFlags(data.Flags, ERecordFlags::Schemaless | ERecordFlags::StaleTags));
 }
 
 TEST(JournalEncodingTest, ADeltaSplitByMountKeepsEachPartWhole)
@@ -318,6 +397,143 @@ TEST_F(JournalTest, RestartKeepsExactlyTheCommitsTheSnapshotDoesNotHold)
 	EXPECT_TRUE(report.bJournalUsed) << report.JournalMessage.CStr();
 	EXPECT_EQ(report.JournalCommits, 2u);
 	ExpectSameContent(store.Live(), loaded.Live());
+}
+
+TEST_F(JournalTest, ACommitWhoseDeltaDoesNotDecodeIsCutOffBeforeTheNextAppend)
+{
+	{
+		CRegistryJournal journal;
+		ASSERT_TRUE(journal.Open(Journal, ProjectId, Store.GetRevision(), {}));
+		CommitJournaled(Store, journal, MakeEdit(1u));
+	}
+	// A commit whose frame passes its check but whose delta does not decode: the load stops before it.
+	std::vector<uint8> bytes = ReadBytes(Journal);
+	std::vector<uint8> payload;
+	binary::AppendLittleEndian(payload, Store.GetRevision() + 1u, 8u);
+	binary::AppendVarint(payload, 0u);
+	binary::AppendVarint(payload, 1u);
+	payload.insert(payload.end(), { uint8(0x05u), uint8(0xFFu), uint8(0xFFu), uint8(0xFFu) });
+	record_frames::AppendFrame(bytes, 1u, payload);
+	WriteBytes(Journal, bytes);
+	const SJournalContents contents = ReadJournal(Journal);
+	EXPECT_EQ(contents.Deltas.size(), 1u);
+	EXPECT_TRUE(contents.bTornTail);
+	EXPECT_FALSE(contents.Message.IsEmpty());
+
+	// The next process continues the journal: that commit is cut off first, so its own commit is read back.
+	CRegistryStore next;
+	const SSnapshotLoadResult result = Load(next);
+	ASSERT_EQ(result.Files[0].JournalCommits, 1u);
+	CRegistryJournal continued;
+	ASSERT_TRUE(continued.Open(Journal, ProjectId, result.Files[0].JournalBase, {}));
+	CommitJournaled(next, continued, MakeEdit(2u));
+	continued.Close();
+	CRegistryStore loaded;
+	const SSnapshotFileReport report = Load(loaded).Files[0];
+	EXPECT_FALSE(report.bJournalTornTail) << report.JournalMessage.CStr();
+	EXPECT_EQ(report.JournalCommits, 2u);
+	ExpectSameContent(next.Live(), loaded.Live());
+}
+
+TEST_F(JournalTest, AFailedAppendBreaksTheJournalUntilAFullWriteAndLosesNoCommit)
+{
+	CRegistryJournal journal;
+	ASSERT_TRUE(journal.Open(Journal, ProjectId, Store.GetRevision(), {}));
+	CommitJournaled(Store, journal, MakeEdit(1u));
+	const FString afterOne = Dump(Store.Live());
+
+	// The disk fills in the middle of the second append: part of its frame reaches the file. The commit goes ahead.
+	SRegistryJournalTestAccess::FailNextAppendAfter(journal, 20u);
+	FString error;
+	SRegistryDelta second = MakeEdit(2u);
+	EXPECT_FALSE(journal.Append(second, Store.GetRevision() + 1u, &error));
+	EXPECT_FALSE(error.IsEmpty());
+	Store.Commit(std::move(second));
+	EXPECT_TRUE(journal.IsBroken());
+	EXPECT_FALSE(journal.IsOpen());
+	EXPECT_EQ(journal.GetStats().FailedAppends, 1u);
+
+	// Nothing is written after the torn bytes: a later append fails too and the file is unchanged.
+	const uintmax_t tornSize = std::filesystem::file_size(Journal);
+	SRegistryDelta third = MakeEdit(3u);
+	FString refused;
+	EXPECT_FALSE(journal.Append(third, Store.GetRevision() + 1u, &refused));
+	EXPECT_FALSE(refused.IsEmpty());
+	Store.Commit(std::move(third));
+	EXPECT_EQ(std::filesystem::file_size(Journal), tornSize);
+	{
+		// A crash now: the load replays the commit before the tear (the scan finds the rest).
+		CRegistryStore loaded;
+		const SSnapshotFileReport report = Load(loaded).Files[0];
+		EXPECT_TRUE(report.bJournalUsed);
+		EXPECT_TRUE(report.bJournalTornTail);
+		EXPECT_EQ(report.JournalCommits, 1u);
+		EXPECT_EQ(Dump(loaded.Live()), afterOne);
+	}
+
+	// The full write F3 schedules: a view on the worker while the owner commits once more (still refused).
+	const std::shared_ptr<const CRegistryView> view = Store.Acquire();
+	SRegistryDelta fourth = MakeEdit(4u);
+	EXPECT_FALSE(journal.Append(fourth, Store.GetRevision() + 1u));
+	Store.Commit(std::move(fourth));
+	ASSERT_TRUE(WriteSnapshot(*view, {}, Snapshot, ProjectId));
+	ASSERT_TRUE(journal.Restart(view->GetRevision(), &error)) << error.CStr();
+	EXPECT_FALSE(journal.IsBroken());
+	EXPECT_TRUE(journal.IsOpen());
+	// The commit after the view never reached the file; Restart wrote it from memory.
+	const SJournalContents contents = ReadJournal(Journal);
+	ASSERT_EQ(contents.Deltas.size(), 1u);
+	EXPECT_EQ(contents.Revisions[0], view->GetRevision() + 1u);
+	EXPECT_FALSE(contents.bTornTail);
+	CommitJournaled(Store, journal, MakeEdit(5u));
+	journal.Close();
+
+	CRegistryStore loaded;
+	const SSnapshotFileReport report = Load(loaded).Files[0];
+	EXPECT_TRUE(report.bJournalUsed) << report.JournalMessage.CStr();
+	EXPECT_FALSE(report.bJournalTornTail);
+	EXPECT_EQ(report.JournalCommits, 2u);
+	ExpectSameContent(Store.Live(), loaded.Live());
+}
+
+TEST_F(JournalTest, ASnapshotThatLostItsRuleOutputsReplaysNoRuleHashes)
+{
+	// The journal holds rule-file hashes written after the snapshot, and an edit.
+	CRegistryJournal journal;
+	ASSERT_TRUE(journal.Open(Journal, ProjectId, Store.GetRevision(), {}));
+	SRegistryDelta rules;
+	rules.RuleFileUpserts.push_back(SRuleFileUpsert { "Project", "/Project/T", 99u });
+	rules.RuleFileUpserts.push_back(SRuleFileUpsert { "Project", "", 98u });
+	CommitJournaled(Store, journal, std::move(rules));
+	CommitJournaled(Store, journal, MakeEdit(1u));
+	journal.Close();
+
+	// LABELS is lost: the rule labels of records the journal never touched are gone, so no folder may look current.
+	DamageSection(Snapshot, ESnapshotSection::Labels);
+	CRegistryStore loaded;
+	const SSnapshotFileReport report = Load(loaded).Files[0];
+	EXPECT_TRUE(report.bRuleFilesDropped);
+	EXPECT_TRUE(report.bJournalUsed) << report.JournalMessage.CStr();
+	EXPECT_EQ(report.JournalCommits, 2u);
+	EXPECT_FALSE(loaded.Live().FindRuleFile("Project", "/Project/T").has_value());
+	EXPECT_FALSE(loaded.Live().FindRuleFile("Project", "").has_value());
+	EXPECT_TRUE(FindRecord(loaded.Live(), "/Project/T/New1.png").IsValid());   // the rest of the journal is replayed
+
+	// An intact snapshot keeps the journal's hashes.
+	ASSERT_TRUE(WriteSnapshot(Store.Live(), {}, Snapshot, ProjectId));
+	CRegistryJournal fresh;
+	ASSERT_TRUE(fresh.Open(Journal, ProjectId, Store.GetRevision(), {}));
+	SRegistryDelta again;
+	again.RuleFileUpserts.push_back(SRuleFileUpsert { "Project", "/Project/T", 97u });
+	CommitJournaled(Store, fresh, std::move(again));
+	fresh.Close();
+	CRegistryStore intact;
+	ASSERT_TRUE(Load(intact).AnyLoaded());
+	const std::optional<uint32> row = intact.Live().FindRuleFile("Project", "/Project/T");
+	ASSERT_TRUE(row.has_value());
+	SRuleFileData ruleFile;
+	ASSERT_TRUE(intact.Live().GetRuleFile(*row, ruleFile));
+	EXPECT_EQ(ruleFile.RulesHash, 97u);
 }
 
 TEST_F(JournalTest, ADeltaLargerThanAFrameIsSplitAndJoined)

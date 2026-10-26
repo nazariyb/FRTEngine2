@@ -29,7 +29,10 @@
  *
  * Validity is per section, never all-or-nothing (§5.3): a section whose LayoutVersion differs or whose
  * checksum fails is dropped with what depends on it, and what was lost is what the start-up rebuilds:
- *	- MOUNTS, NAMES, FOLDERS or FILES lost: the file is not used (its mounts start cold).
+ *	- MOUNTS, NAMES, FOLDERS or FILES lost: the file is not used (its mounts start cold, every file hashed
+ *	  again). FILES names its files by FOLDERS and NAMES indices, as §5.2's layout does, so it cannot outlive
+ *	  them; §5.3's "FILES survives everything except a FILES layout change" holds for code and config changes,
+ *	  which leave those sections alone, not for a layout change or damage in NAMES or FOLDERS.
  *	- ASSETS lost: files keep their stat and hashes (no re-hash) but have no records: F3 analyzes them.
  *	- Analyze outputs lost - SUBENTRY, DEPS (edges and companions), a type table (TYPETABLES, per type: one
  *	  bad table drops only its type; a TagSchemaHash that differs from this build's drops it too), TYPES or
@@ -38,7 +41,8 @@
  *	  this build does not know at all leaves its records frt.Unknown with Schemaless | StaleTags and their
  *	  stamps: they wait for their type, AdoptImage's rule.)
  *	- Rule outputs lost - LABELS or PROBLEMS: the RULEFILES rows are dropped too, so no stored RulesHash
- *	  matches and every record of those mounts is re-evaluated.
+ *	  matches and every record of those mounts is re-evaluated (the file's journal is replayed without its
+ *	  rule-file upserts and removes, which would make some folders look current again).
  *	- STRINGS lost: DEPS and PROBLEMS go with it (and type tables with a String key).
  *	- RULEFILES lost alone: its rule files' subtrees are re-evaluated.
  *
@@ -127,10 +131,17 @@ FRT_CORE_API bool WriteSnapshot (const CRegistryView& View, std::span<const Moun
 
 // ---------------- Loading ----------------
 
+/**
+ * ProjectId is the owner root's id (ReadProjectId). A process that has none - ReadProjectId returned nullopt:
+ * no <root>/Local/Assets/ProjectId yet, or an unreadable one - passes an invalid id and loads no snapshot of
+ * that root (a cold start): a file it cannot tie to the root may be another project's or checkout's.
+ * bAnyProject takes the file whatever project it names: tests and tools inspecting a given file only.
+ */
 struct SSnapshotSource
 {
 	std::filesystem::path Path;   // the snapshot; its journal is GetJournalPath(Path)
-	SGuid ProjectId;              // the owner root's id; invalid: accept any (tests, tools inspecting a file)
+	SGuid ProjectId;
+	bool bAnyProject = false;
 };
 
 enum class ESnapshotFileState : uint8

@@ -50,6 +50,10 @@ struct SBudgetCheck
 		{
 			std::printf("[snapshot] %-22s %10.3f %s (budget %.3f %s) %s\n", Name, Measured, Unit, Spec, Unit, Note);
 		}
+		else if (Judged >= 0.0)
+		{
+			std::printf("[snapshot] %-22s %10.3f %s (not in 5.11; M3 check %.3f %s) %s\n", Name, Measured, Unit, Judged, Unit, Note);
+		}
 		else
 		{
 			std::printf("[snapshot] %-22s %10.3f %s (not budgeted) %s\n", Name, Measured, Unit, Note);
@@ -74,6 +78,7 @@ struct SBudgets
 	SBudget Load;          // snapshot + journal load, all indices
 	SBudget Write;         // full snapshot write from a view (worker): export + encode
 	SBudget Append;        // journal append per commit
+	SBudget Restart { -1.0, 1.0 };   // journal restart after a full write (owner thread); not in §5.11
 };
 
 void MeasureSnapshot (const std::filesystem::path& Dir, uint32 Assets, uint32 Rows, const SBudgets& Budgets, bool bJudge)
@@ -149,6 +154,25 @@ void MeasureSnapshot (const std::filesystem::path& Dir, uint32 Assets, uint32 Ro
 	std::printf("[snapshot] load: read %.2f ms, decode %.2f ms, adopt %.2f ms (%s), journal replay %.2f ms\n", best.ReadMs, best.DecodeMs,
 		best.AdoptMs, best.bAdoptedInBulk ? "bulk" : "replayed", best.ReplayMs);
 	budget.Check("SnapshotLoadMs", best.TotalMs, Budgets.Load.Spec, Budgets.Load.Judged, "ms", "(read + checksum + decode + adopt + replay)");
+
+	// Restart after a full write, on the owner thread (§5.3: writing never stalls it): 101 commits appended, the
+	// view held all but the last 5. A journal file of its own, so the snapshot's stays as the load read it.
+	double restartMs = 1e30;
+	for (uint32 round = 0u; round < 3u; ++round)
+	{
+		CRegistryJournal restarted;
+		ASSERT_TRUE(restarted.Open(Dir / "Restart.journal", projectId, std::nullopt, {}, &error)) << error.CStr();
+		for (uint32 i = 0u; i < 101u; ++i)
+		{
+			SRegistryDelta edit;
+			AddMaterial(edit, query_bench::GetMaterialPath(7u), { query_bench::GetTexturePath(i), query_bench::GetTexturePath(i + 1u) });
+			ASSERT_TRUE(restarted.Append(edit, 1000u + i, &error)) << error.CStr();
+		}
+		ASSERT_TRUE(restarted.Restart(1000u + 95u, &error)) << error.CStr();
+		restartMs = (std::min)(restartMs, restarted.GetStats().LastRestartMs);
+	}
+	EXPECT_EQ(ReadJournal(Dir / "Restart.journal").Deltas.size(), 5u);
+	budget.Check("JournalRestartMs", restartMs, -1.0, Budgets.Restart.Judged, "ms", "(owner thread, 5 commits kept; best of 3)");
 }
 }
 

@@ -38,17 +38,6 @@ constexpr size_t SectionSlot (ESnapshotSection Section) noexcept { return static
 
 [[nodiscard]] size_t AlignUp16 (size_t Value) noexcept { return (Value + 15u) & ~size_t(15u); }
 
-// A type by its exact dotted name: a short name that happens to match is not the same type (AdoptImage's rule).
-std::optional<reflect::TypeId> FindTypeExact (FStringView Name) noexcept
-{
-	const std::optional<reflect::TypeId> type = CAssetTypeRegistry::Find(Name);
-	if (type && FStringView(CAssetTypeRegistry::Get(*type).Name) == Name)
-	{
-		return type;
-	}
-	return std::nullopt;
-}
-
 bool HasKeys (FStringView TypeName) noexcept
 {
 	const std::optional<reflect::TypeId> type = FindTypeExact(TypeName);
@@ -379,9 +368,9 @@ public:
 	[[nodiscard]] const SGuid& GetProjectId () const noexcept { return ProjectId; }
 
 	// False: the file is rejected (Report says why).
-	bool Decode (const SGuid& ExpectedProjectId, SRegistryImage& Out)
+	bool Decode (const SGuid& ExpectedProjectId, bool bAnyProject, SRegistryImage& Out)
 	{
-		if (!ReadHeader(ExpectedProjectId))
+		if (!ReadHeader(ExpectedProjectId, bAnyProject))
 		{
 			return false;
 		}
@@ -415,7 +404,7 @@ private:
 		return false;
 	}
 
-	bool ReadHeader (const SGuid& ExpectedProjectId)
+	bool ReadHeader (const SGuid& ExpectedProjectId, bool bAnyProject)
 	{
 		CByteReader reader(Bytes);
 		uint64 version = 0u;
@@ -435,7 +424,11 @@ private:
 		{
 			return Reject(FString::Format("snapshot format {} (this build reads {})", version, SnapshotFormatVersion));
 		}
-		if (ExpectedProjectId.IsValid() && projectId != ExpectedProjectId)
+		if (!bAnyProject && !ExpectedProjectId.IsValid())
+		{
+			return Reject("this process has no ProjectId for its root, so no snapshot of it is taken");
+		}
+		if (!bAnyProject && projectId != ExpectedProjectId)
 		{
 			return Reject(FString::Format("it belongs to project {}, not {}", projectId.ToString(), ExpectedProjectId.ToString()));
 		}
@@ -1001,8 +994,10 @@ private:
 			keyNames[k] = static_cast<uint32>(image.Names.size());
 			image.Names.push_back(std::move(keyName));
 		}
+		// A row costs at least its owner varint and one count varint per key: that bounds the count, so a forged
+		// one cannot make the tables below many times the payload's size.
 		uint32 rowCount = 0u;
-		if (!ReadCount(reader, 1u, rowCount))
+		if (!ReadCount(reader, 1u + uint64(keyCount), rowCount))
 		{
 			return false;
 		}
@@ -1021,8 +1016,9 @@ private:
 				: (index < image.Records.size() && image.Records[index].Type == TypeIndex);
 		}
 		// Column by column into per-key value lists, then row by row into the image's tag pool (key order).
+		// counts: key-major, one per key and row (keyCount * rowCount, bounded above); values are added as read.
 		struct SValue { uint64 Bits = 0u; uint32 Text = ~0u; };
-		std::vector<std::vector<uint32>> counts(keyCount, std::vector<uint32>(rowCount));
+		std::vector<uint32> counts(static_cast<size_t>(keyCount) * rowCount);
 		std::vector<std::vector<SValue>> values(keyCount);
 		for (uint32 k = 0u; k < keyCount; ++k)
 		{
@@ -1033,7 +1029,7 @@ private:
 				{
 					return false;
 				}
-				counts[k][r] = count;
+				counts[static_cast<size_t>(k) * rowCount + r] = count;
 				for (uint32 v = 0u; v < count; ++v)
 				{
 					SValue value;
@@ -1078,7 +1074,7 @@ private:
 			SPoolRange range { static_cast<uint32>(image.Tags.size()), 0u };
 			for (uint32 k = 0u; k < keyCount; ++k)
 			{
-				for (uint32 v = 0u; v < counts[k][r]; ++v)
+				for (uint32 v = 0u; v < counts[static_cast<size_t>(k) * rowCount + r]; ++v)
 				{
 					const SValue& value = values[k][cursor[k]++];
 					if (ownerOk[r] != 0u)
@@ -1420,7 +1416,7 @@ SLoadedSnapshots ReadSnapshots (std::span<const SSnapshotSource> Sources, std::s
 		start = platform::ReadTimestamp();
 		SRegistryImage image;
 		CSnapshotDecoder decoder(*bytes, report);
-		if (!decoder.Decode(source.ProjectId, image))
+		if (!decoder.Decode(source.ProjectId, source.bAnyProject, image))
 		{
 			loaded.DecodeMs += platform::TimestampToMilliseconds(platform::ReadTimestamp() - start);
 			continue;
@@ -1524,6 +1520,13 @@ SLoadedSnapshots ReadSnapshots (std::span<const SSnapshotSource> Sources, std::s
 						return std::any_of(report.Mounts.begin(), report.Mounts.end(), [&] (const FString& Name) { return Name.View() == MountName; });
 					});
 					part.Mounts.clear();   // the image made them, with this process's ids
+					if (report.bRuleFilesDropped)
+					{
+						// The snapshot lost its rule outputs, so every record of its mounts is re-evaluated: a
+						// journal's RulesHash would mark a folder current whose records' labels are gone.
+						part.RuleFileUpserts.clear();
+						part.RuleFileRemoves.clear();
+					}
 					if (!part.IsEmpty())
 					{
 						loaded.JournalDeltas.push_back(std::move(part));

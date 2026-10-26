@@ -108,11 +108,91 @@ bool ReadRuleFile (CByteReader& Reader, SRuleFileUpsert& Out)
 	return Reader.ReadText(Out.MountName) && Reader.ReadText(Out.FolderMountPath) && ReadU64(Reader, Out.RulesHash);
 }
 
-void AppendRecord (std::vector<uint8>& Out, const SRecordUpsert& Record)
+/**
+ * Types are stored by their stable name, never by TypeId (a runtime index that another build numbers
+ * differently, AssetTypes.h): each delta carries the names its records and sub-entries use, in first-use order,
+ * and they refer to them by index. Decoding maps each name with the snapshot's exact-name lookup.
+ */
+class CDeltaTypeNames
+{
+public:
+	explicit CDeltaTypeNames (std::span<const SRecordUpsert> Records)
+	{
+		for (const SRecordUpsert& record : Records)
+		{
+			Add(record.Type);
+			for (const SSubEntryDecl& sub : record.SubEntries)
+			{
+				Add(sub.Type);
+			}
+		}
+	}
+
+	void Write (std::vector<uint8>& Out) const
+	{
+		AppendVarint(Out, Types.size());
+		for (const reflect::TypeId type : Types)
+		{
+			AppendText(Out, FStringView(CAssetTypeRegistry::Get(type).Name));
+		}
+	}
+
+	[[nodiscard]] uint64 IndexOf (reflect::TypeId Type) const noexcept
+	{
+		return static_cast<uint64>(std::find(Types.begin(), Types.end(), Type) - Types.begin());
+	}
+
+private:
+	std::vector<reflect::TypeId> Types;
+
+	void Add (reflect::TypeId Type)
+	{
+		if (std::find(Types.begin(), Types.end(), Type) == Types.end())
+		{
+			Types.push_back(Type);
+		}
+	}
+};
+
+// A delta's type names as this build knows them: nullopt for a name it does not know.
+using TDecodedTypes = std::vector<std::optional<reflect::TypeId>>;
+
+bool ReadTypeNames (CByteReader& Reader, TDecodedTypes& Out)
+{
+	uint32 count = 0u;
+	if (!ReadCount(Reader, 1u, count))
+	{
+		return false;
+	}
+	Out.clear();
+	for (uint32 i = 0u; i < count; ++i)
+	{
+		FString name;
+		if (!Reader.ReadText(name))
+		{
+			return false;
+		}
+		Out.push_back(FindTypeExact(name));
+	}
+	return true;
+}
+
+bool ReadTypeIndex (CByteReader& Reader, const TDecodedTypes& Types, std::optional<reflect::TypeId>& Out)
+{
+	uint32 index = 0u;
+	if (!ReadU32Varint(Reader, index) || index >= Types.size())
+	{
+		return false;
+	}
+	Out = Types[index];
+	return true;
+}
+
+void AppendRecord (std::vector<uint8>& Out, const SRecordUpsert& Record, const CDeltaTypeNames& Types)
 {
 	AppendText(Out, Record.FileMountPath);
 	AppendGuid(Out, Record.Guid);
-	AppendVarint(Out, Record.Type);
+	AppendVarint(Out, Types.IndexOf(Record.Type));
 	AppendText(Out, Record.Importer);
 	AppendFlags(Out, Record.Flags);
 	AppendEnum(Out, Record.CookRule);
@@ -127,7 +207,7 @@ void AppendRecord (std::vector<uint8>& Out, const SRecordUpsert& Record)
 	{
 		AppendText(Out, sub.Label);
 		AppendLittleEndian(Out, sub.SubId, 8u);
-		AppendVarint(Out, sub.Type);
+		AppendVarint(Out, Types.IndexOf(sub.Type));
 		AppendFlags(Out, sub.Flags);
 		AppendTags(Out, sub.Tags);
 	}
@@ -144,10 +224,16 @@ void AppendRecord (std::vector<uint8>& Out, const SRecordUpsert& Record)
 	AppendTexts(Out, Record.Companions);
 }
 
-bool ReadRecord (CByteReader& Reader, SRecordUpsert& Out)
+/**
+ * A record whose type (or a sub-entry whose type) this build does not know becomes frt.Unknown with Schemaless |
+ * StaleTags and no tags, AdoptImage's rule for a snapshot's unknown type name: it waits for its type. A
+ * sub-entry's unknown type makes its owner StaleTags too.
+ */
+bool ReadRecord (CByteReader& Reader, const TDecodedTypes& Types, SRecordUpsert& Out)
 {
 	uint32 subCount = 0u;
-	if (!Reader.ReadText(Out.FileMountPath) || !ReadGuid(Reader, Out.Guid) || !ReadU16Varint(Reader, Out.Type) || !Reader.ReadText(Out.Importer)
+	std::optional<reflect::TypeId> type;
+	if (!Reader.ReadText(Out.FileMountPath) || !ReadGuid(Reader, Out.Guid) || !ReadTypeIndex(Reader, Types, type) || !Reader.ReadText(Out.Importer)
 		|| !ReadFlags(Reader, Out.Flags) || !ReadEnum(Reader, ECookRule::DevelopmentOnly, Out.CookRule) || !ReadU16Varint(Reader, Out.Chunk)
 		|| !ReadTexts(Reader, Out.RuleLabels) || !Reader.ReadText(Out.PrimaryName)
 		|| !ReadEnum(Reader, EImportStatus::ImporterUnavailable, Out.ImportStatus) || !ReadU64(Reader, Out.AnalyzeStamp)
@@ -155,13 +241,27 @@ bool ReadRecord (CByteReader& Reader, SRecordUpsert& Out)
 	{
 		return false;
 	}
+	Out.Type = type.value_or(asset_types::Unknown);
+	if (!type)
+	{
+		Out.Flags |= ERecordFlags::Schemaless | ERecordFlags::StaleTags;
+		Out.Tags.clear();
+	}
 	Out.SubEntries.resize(subCount);
 	for (SSubEntryDecl& sub : Out.SubEntries)
 	{
-		if (!Reader.ReadText(sub.Label) || !ReadU64(Reader, sub.SubId) || !ReadU16Varint(Reader, sub.Type) || !ReadFlags(Reader, sub.Flags)
+		std::optional<reflect::TypeId> subType;
+		if (!Reader.ReadText(sub.Label) || !ReadU64(Reader, sub.SubId) || !ReadTypeIndex(Reader, Types, subType) || !ReadFlags(Reader, sub.Flags)
 			|| !ReadTags(Reader, sub.Tags))
 		{
 			return false;
+		}
+		sub.Type = subType.value_or(asset_types::Unknown);
+		if (!subType)
+		{
+			sub.Flags |= ERecordFlags::Schemaless | ERecordFlags::StaleTags;
+			sub.Tags.clear();
+			Out.Flags |= ERecordFlags::StaleTags;
 		}
 	}
 	uint32 edgeCount = 0u;
@@ -328,10 +428,12 @@ void EncodeRegistryDelta (const SRegistryDelta& Delta, std::vector<uint8>& Out)
 	{
 		AppendRuleFile(Out, ruleFile);
 	}
+	const CDeltaTypeNames types(Delta.RecordUpserts);
+	types.Write(Out);
 	AppendVarint(Out, Delta.RecordUpserts.size());
 	for (const SRecordUpsert& record : Delta.RecordUpserts)
 	{
-		AppendRecord(Out, record);
+		AppendRecord(Out, record, types);
 	}
 	AppendVarint(Out, Delta.Problems.size());
 	for (const SProblemsSet& problems : Delta.Problems)
@@ -438,14 +540,15 @@ std::optional<SRegistryDelta> DecodeRegistryDelta (std::span<const uint8> Bytes)
 			return std::nullopt;
 		}
 	}
-	if (!ReadCount(reader, 37u, count))
+	TDecodedTypes types;
+	if (!ReadTypeNames(reader, types) || !ReadCount(reader, 37u, count))
 	{
 		return std::nullopt;
 	}
 	delta.RecordUpserts.resize(count);
 	for (SRecordUpsert& record : delta.RecordUpserts)
 	{
-		if (!ReadRecord(reader, record))
+		if (!ReadRecord(reader, types, record))
 		{
 			return std::nullopt;
 		}
@@ -628,7 +731,9 @@ bool CRegistryJournal::Open (const std::filesystem::path& InPath, const SGuid& I
 
 	if (ContinueFrom)
 	{
-		const SJournalContents contents = ReadJournal(Path, false);
+		// Decoded, so its valid end is where the load stops too: a commit whose frames pass but whose delta does
+		// not decode is cut off with everything after it, or this process's appends would never be replayed.
+		const SJournalContents contents = ReadJournal(Path, true);
 		if (contents.bHeaderValid && contents.ProjectId == ProjectId && contents.JournalBase == *ContinueFrom)
 		{
 			JournalBase = *ContinueFrom;
@@ -642,12 +747,7 @@ bool CRegistryJournal::Open (const std::filesystem::path& InPath, const SGuid& I
 					return false;
 				}
 			}
-			if (!File.Open(Path, true, OutError))
-			{
-				return false;
-			}
-			AppendStart = contents.ValidBytes;
-			return true;
+			return File.Open(Path, true, OutError);
 		}
 	}
 	return StartNew(ContinueFrom.value_or(0u), {}, OutError);
@@ -656,6 +756,8 @@ bool CRegistryJournal::Open (const std::filesystem::path& InPath, const SGuid& I
 void CRegistryJournal::Close () noexcept
 {
 	File.Close();
+	std::vector<uint8>().swap(OwnFrames);
+	bBroken = false;
 }
 
 bool CRegistryJournal::StartNew (uint64 Base, std::span<const uint8> Frames, FString* OutError)
@@ -663,12 +765,16 @@ bool CRegistryJournal::StartNew (uint64 Base, std::span<const uint8> Frames, FSt
 	File.Close();
 	std::vector<uint8> bytes = MakeHeader(ProjectId, Base);
 	binary::AppendRaw(bytes, Frames);
-	if (!platform::WriteFileAtomic(Path, bytes, true, OutError) || !File.Open(Path, true, OutError))
+	// In place and unflushed (WriteFileBytes, not WriteFileAtomic): the journal never survives a power loss
+	// anyway (its appends are not flushed either), and a write cut short leaves an empty file, a foreign header
+	// or a torn tail - a journal the load ignores or shortens, which costs a rescan, never a wrong load. It keeps
+	// Restart, which runs on the owner thread after every full write, free of a flush.
+	if (!platform::WriteFileBytes(Path, bytes, true, OutError) || !File.Open(Path, true, OutError))
 	{
+		File.Close();
 		return false;
 	}
 	JournalBase = Base;
-	AppendStart = JournalHeaderBytes;
 	return true;
 }
 
@@ -681,7 +787,7 @@ bool CRegistryJournal::Append (const SRegistryDelta& Delta, uint64 Revision, FSt
 {
 	FRT_CPU_SCOPE("Assets.Journal.Append");
 	const uint64 start = platform::ReadTimestamp();
-	if (!File.IsOpen())
+	if (!File.IsOpen() && !bBroken)
 	{
 		if (OutError != nullptr)
 		{
@@ -710,8 +816,37 @@ bool CRegistryJournal::Append (const SRegistryDelta& Delta, uint64 Revision, FSt
 	std::vector<uint8> frames;
 	frames.reserve(encoded.size() + 64u);
 	AppendCommitFrames(frames, encoded, Revision);
-	if (!File.Append(frames, OutError))
+	// Kept in memory whether or not it reaches the file: Restart writes the next journal from these.
+	binary::AppendRaw(OwnFrames, frames);
+	if (bBroken)
 	{
+		if (OutError != nullptr)
+		{
+			*OutError = "the registry journal is broken by an earlier failed append; the commit is kept in memory until the next full write";
+		}
+		return false;
+	}
+	bool bWritten = false;
+	if (FailAppendAfterBytes < frames.size())
+	{
+		(void)File.Append(std::span<const uint8>(frames).first(FailAppendAfterBytes), nullptr);
+		FailAppendAfterBytes = ~size_t(0);
+		if (OutError != nullptr)
+		{
+			*OutError = "the write was cut short (injected)";
+		}
+	}
+	else
+	{
+		bWritten = File.Append(frames, OutError);
+	}
+	if (!bWritten)
+	{
+		// Part of the frames may be in the file: whatever is appended after them would never be read (the reader
+		// stops at the first bad frame), so nothing more is written until a full write starts a new journal.
+		File.Close();
+		bBroken = true;
+		++Stats.FailedAppends;
 		return false;
 	}
 	++Stats.Commits;
@@ -723,26 +858,27 @@ bool CRegistryJournal::Append (const SRegistryDelta& Delta, uint64 Revision, FSt
 bool CRegistryJournal::Restart (uint64 Base, FString* OutError)
 {
 	FRT_CPU_SCOPE("Assets.Journal.Restart");
-	File.Close();
-	// This process's commits after the snapshot's view: the worker wrote it while the owner kept committing.
+	const uint64 start = platform::ReadTimestamp();
+	// This process's commits after the snapshot's view (the worker wrote it while the owner kept committing),
+	// from memory: nothing is read back, and a commit that never reached the file (a broken journal) is kept.
 	std::vector<uint8> kept;
-	const std::optional<std::vector<uint8>> bytes = platform::ReadFileBytes(Path);
-	if (bytes && bytes->size() >= AppendStart)
+	ForEachCommit(OwnFrames, 0u, false, [&] (SCommitSpan&& Commit)
 	{
-		const std::span<const uint8> all(*bytes);
-		ForEachCommit(all, static_cast<size_t>(AppendStart), false, [&] (SCommitSpan&& Commit)
+		if (Commit.Revision > Base)
 		{
-			if (Commit.Revision > Base)
-			{
-				binary::AppendRaw(kept, all.subspan(Commit.Begin, Commit.End - Commit.Begin));
-			}
-		});
-	}
+			binary::AppendRaw(kept, std::span<const uint8>(OwnFrames).subspan(Commit.Begin, Commit.End - Commit.Begin));
+		}
+	});
 	if (!StartNew(Base, kept, OutError))
 	{
+		// The commits stay in memory; the next full write tries again.
+		bBroken = true;
 		return false;
 	}
+	OwnFrames = std::move(kept);
+	bBroken = false;
 	++Stats.Restarts;
+	Stats.LastRestartMs = platform::TimestampToMilliseconds(platform::ReadTimestamp() - start);
 	return true;
 }
 }
