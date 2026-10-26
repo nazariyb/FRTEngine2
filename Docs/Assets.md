@@ -277,7 +277,7 @@ runs it (building it first when it is missing or stale) for the current project,
 | `ddc stats`, `ddc gc [--max-gb=<n>]`, `ddc verify [--ddc=<dir>]` | the derived-data cache: counts, LRU trim (a dry run with `--ci`), re-check and delete corrupt files |
 | `scan [--engine]` | scans the mounts into the registry and, under the writer lock, writes the snapshot (`--engine`: `Engine.snapshot`, the M3 subset of M4's engine-owner mode); with `--ci` writes nothing. Exit 1 on an error-severity problem |
 | `status` | problems by code, severity and source; unclaimed files by folder and extension; the scan state; the DDC's size. Exit 1 on an error-severity problem |
-| `query "<text>" [--columns=a,b] [--limit=<n>] [--rows]` | the records a query matches (default columns `$Name,$Type,$Path,$Size,$Problems`; several arguments are one text; `--rows` notes that rows arrive with M5) |
+| `query "<text>" [--columns=a,b] [--limit=<n>] [--rows]` | the records a query matches (default columns `$Name,$Type,$Path,$Size,$Problems`; several arguments are one text; a term with one dash is text, so `query -label:Debug` and `query "-label:Debug type:Model"` work, and after `--` every argument is; `--rows` notes that rows arrive with M5) |
 | `refs <asset>` | the edges an asset declares, with flags and field paths (`<asset>`: a mount path, `#label` for a sub-asset, or a unique name, resolved as `dep:` resolves it) |
 | `referencers <asset> [--transitive]` | the edges that reach an asset; with `--transitive` every record that reaches it (`ref:~X`) |
 | `explain <file>` | a file's importer, class, settings, cook rule, chunk and labels, each with the rule file and line that set it (`Content/Art/Assets.yml:4 (rule 2)`), the rule files consulted, notes; `<file>` is a mount path or a disk path (absolute or relative to the working directory) |
@@ -297,10 +297,12 @@ not parse or compile, and an `<asset>` that names no record or several, exit wit
 | `refs`, `referencers` | one per edge: `from`, `target` (as written), `resolved` (the record reached, else ""), `flags` (array), `field`, `state` (`Resolved`, `Unresolved`, `Ambiguous`, `Companion`); `referencers --transitive`: one per record, `path`, `type` |
 | `explain` | one: `path`, `excluded`, `excludedBy`, `importer`, `class`, `quiet`, `cook`, `chunk`, each source as `{"file","line","rule"}` (`importerSource`, `cookSource`, `chunkSource`), `labels` and `settings` (with `source`), `settingsTable`, `typeIncluded`, `chain`, `notes`, `record`, `recordType` |
 | `list-rules` | Rules.cache's lines (see Rules above) |
-| `dump registry` | one per mount, rule file, folder, file, record and problem, `kind` first: `mount`; `rules` (`file`, `hash`); `folder` (`path`); `file` (`path`, `class`, `size`); `record` (`path`, `type`, `importer`, `status`, `stamp`, `cook`, `chunk`, `flags`, `primary`, `labels`, `tags`, `subEntries`, `edges`, `companions`); `problem` (`code`, `severity`, `source`, `subject`, `file`, `line`, `column`, `field`, `message`) |
+| `dump registry` | one per mount, rule file, folder, file, record and problem, `kind` first: `mount`; `rules` (`folder`, `level`, `hash`: the file named by folder and level as Rules.cache names it - a mount's `Config/Assets.yml` is the mount root with level `Mount` - since the registry knows no disk layout; `list-rules` gives its `file`); `folder` (`path`); `file` (`path`, `class`, `size`); `record` (`path`, `type`, `importer`, `status`, `stamp`, `cook`, `chunk`, `flags`, `primary`, `labels`, `tags`, `subEntries`, `edges`, `companions`); `problem` (`code`, `severity`, `source`, `subject`, `file`, `line`, `column`, `field`, `message`) |
 
 Options: `--json` (one object per line), `--ci` or `-Assets:ReadOnly=1` (read-only, never takes the writer lock),
-`--project=<file>`, `--engine`. Exit codes: 0 success, 1 problems found, 2 usage error, 3 internal error, 4 the mount is
+`--project=<file>`, `--engine`, and the verb's own; any other argument that starts with `-` is a usage error, except a
+`query` term with one dash (`-label:Debug`). `--` ends the options: every argument after it is the verb's, whatever it
+starts with (`refs -- -Odd`, `query -- -json`). Exit codes: 0 success, 1 problems found, 2 usage error, 3 internal error, 4 the mount is
 owned by another process. **One writer per mount**: a writing run takes `<mount>/Local/Assets/Owner.lock` (an exclusive
 handle the OS releases when the process dies; its text names the holder), and a second writer exits with code 4 naming
 the owner. The editor takes the same lock from M3, for the registry's files (see Registry service above).

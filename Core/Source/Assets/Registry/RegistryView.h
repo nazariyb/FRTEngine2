@@ -254,7 +254,9 @@ public:
 	/**
 	 * The same content as JSON lines (Text/JsonWriter.h), in DumpText's order: one object per mount, rule file,
 	 * folder, file, record (its labels, tags, sub-entries, edges and companions as arrays) and problem, each with a
-	 * "kind" field ("mount", "rules", "folder", "file", "record", "problem"). Paths are the stored spellings (the
+	 * "kind" field ("mount", "rules", "folder", "file", "record", "problem"). A "rules" line names its file by
+	 * "folder" and "level" as Rules.cache does (the mount root and "Mount" for a mount's Config/Assets.yml), never by
+	 * a file name: the view knows no disk layout. Paths are the stored spellings (the
 	 * JSON writer escapes an unpaired surrogate). Emit gets each line without a line break.
 	 */
 	void DumpJson (TFunctionRef<void (FStringView Line)> Emit, EDumpFlags Flags = EDumpFlags::None, std::span<const MountId> Mounts = {}) const;

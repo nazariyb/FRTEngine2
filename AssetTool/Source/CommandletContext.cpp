@@ -5,6 +5,7 @@
 #include <span>
 
 #include "Platform/Platform.h"
+#include "Project/Project.h"
 
 
 namespace frt::assettool
@@ -47,6 +48,15 @@ bool IsKnownOption (FStringView Body, const SCommandlet* Commandlet)
 	{
 		return false;
 	}
+	// No option's name, section or key holds whitespace: such an argument is text ("-label:Debug Width=5", one
+	// quoted query), never a config override.
+	for (const char ch : name)
+	{
+		if (ch == ' ' || ch == '\t')
+		{
+			return false;
+		}
+	}
 	// -Section:Key=Value, a config override (CConfig::ApplyCommandLineArguments): the first ':' ends
 	// the section. Without a value, a section or a key, it would be ignored there.
 	if (const SStringSplit sectionAndKey = name.SplitFirst(':'))
@@ -72,14 +82,95 @@ bool IsKnownOption (FStringView Body, const SCommandlet* Commandlet)
 	}
 	return false;
 }
+
+// Argument, one before "--", is text of Commandlet's (a negated query term), not an option: the verb takes text,
+// it has one dash, and it is no option of the host or the verb.
+bool IsText (const FString& Argument, const SCommandlet* Commandlet)
+{
+	return Commandlet != nullptr && Commandlet->bTakesText && Argument.StartsWith('-') && !Argument.StartsWith("--")
+		&& !IsKnownOption(Argument.View().RightChop(1u), Commandlet);
+}
+
+/**
+ * Visits the positional arguments in order (GetOptionArguments' rules), with bVerbCandidate false for the text
+ * IsText keeps (an argument with a dash before "--" is never a verb).
+ */
+template <typename TVisit>
+void ForEachPositional (std::span<const FString> CommandLine, const SCommandlet* Commandlet, TVisit&& Visit)
+{
+	const size_t optionCount = GetOptionArguments(CommandLine).size();
+	for (size_t i = 0u; i < CommandLine.size(); ++i)
+	{
+		const FString& argument = CommandLine[i];
+		if (i == optionCount || project::HasProjectFileExtension(argument.ToPath()))
+		{
+			continue;   // the "--" itself, or the project
+		}
+		if (i < optionCount && argument.StartsWith('-'))
+		{
+			if (IsText(argument, Commandlet))
+			{
+				Visit(argument, false);
+			}
+			continue;
+		}
+		Visit(argument, true);
+	}
+}
 }
 
 
+std::span<const FString> GetOptionArguments (std::span<const FString> CommandLine)
+{
+	for (size_t i = 0u; i < CommandLine.size(); ++i)
+	{
+		if (CommandLine[i].View() == "--")
+		{
+			return CommandLine.first(i);
+		}
+	}
+	return CommandLine;
+}
+
+std::optional<FString> FindVerb (std::span<const FString> CommandLine)
+{
+	if (std::optional<FString> run = platform::FindCommandLineValue(GetOptionArguments(CommandLine), "Run"))
+	{
+		return run;
+	}
+	std::optional<FString> verb;
+	ForEachPositional(CommandLine, nullptr, [&] (const FString& Argument, bool)
+	{
+		if (!verb.has_value())
+		{
+			verb = Argument;
+		}
+	});
+	return verb;
+}
+
+std::vector<FString> GetPositionalArguments (std::span<const FString> CommandLine, const SCommandlet* Commandlet)
+{
+	bool bVerbTaken = platform::FindCommandLineValue(GetOptionArguments(CommandLine), "Run").has_value();
+	std::vector<FString> arguments;
+	ForEachPositional(CommandLine, Commandlet, [&] (const FString& Argument, bool bVerbCandidate)
+	{
+		if (!bVerbTaken && bVerbCandidate)
+		{
+			bVerbTaken = true;
+			return;
+		}
+		arguments.push_back(Argument);
+	});
+	return arguments;
+}
+
 std::optional<FString> FindUnknownOption (std::span<const FString> CommandLine, const SCommandlet* Commandlet)
 {
-	for (const FString& argument : CommandLine)
+	for (const FString& argument : GetOptionArguments(CommandLine))
 	{
-		if (argument.StartsWith('-') && !IsKnownOption(argument.View().RightChop(argument.StartsWith("--") ? 2u : 1u), Commandlet))
+		if (argument.StartsWith('-') && !IsText(argument, Commandlet)
+			&& !IsKnownOption(argument.View().RightChop(argument.StartsWith("--") ? 2u : 1u), Commandlet))
 		{
 			return argument;
 		}
@@ -104,12 +195,12 @@ const std::filesystem::path& CCommandletContext::GetMountRoot () const
 
 std::optional<FString> CCommandletContext::FindOption (FStringView Name) const
 {
-	return platform::FindCommandLineValue(CommandLine, Name);
+	return platform::FindCommandLineValue(GetOptionArguments(CommandLine), Name);
 }
 
 bool CCommandletContext::HasOption (FStringView Name) const
 {
-	return platform::HasCommandLineSwitch(CommandLine, Name);
+	return platform::HasCommandLineSwitch(GetOptionArguments(CommandLine), Name);
 }
 
 void CCommandletContext::Print (FStringView Line) const

@@ -8,7 +8,8 @@
  * argument, else the working directory's; project::FindProjectToRun), or with --engine acts on /Engine
  * as its owner with no project (§4.7). A verb that writes nothing (help, newguid) runs with no project
  * when the working directory's cannot be used, with a warning: where it is run does not break it.
- * Options that neither the host nor the verb reads are usage errors (FindUnknownOption).
+ * Options that neither the host nor the verb reads are usage errors (FindUnknownOption); "--" ends the
+ * options, and a query's negated term (-label:Debug) is text (Commandlet.h, GetPositionalArguments).
  * It starts the engine as a tool host (SEngineDesc::bToolHost): CEngine::StartUp's first steps - components,
  * config layers and -Section:Key=Value, user settings, the memory pool, the worker pool
  * (CCommandletContext::GetWorkerPool) - in the one order every host shares, and no window, renderer or
@@ -49,45 +50,6 @@ namespace frt::assettool
 {
 namespace
 {
-struct SVerbAndArguments
-{
-	FString Verb;
-	std::vector<FString> Arguments;
-};
-
-/**
- * The verb and its positional arguments. Options start with '-' (-Run=, -Project=, --json,
- * -Section:Key=Value); a '/' starts no option here, so arguments that are mount paths
- * ("/Project/Content/Rock.png") stay arguments. -Run=<Verb> names the verb, else the first positional
- * argument does. A bare *.frtproject argument names the project (FindProjectToRun reads it), never a
- * verb or an argument.
- */
-SVerbAndArguments SplitVerbAndArguments (std::span<const FString> CommandLine)
-{
-	SVerbAndArguments result;
-	const std::optional<FString> run = platform::FindCommandLineValue(CommandLine, "Run");
-	bool bVerbFound = run.has_value();
-	if (bVerbFound)
-	{
-		result.Verb = *run;
-	}
-	for (const FString& argument : CommandLine)
-	{
-		if (argument.StartsWith('-') || project::HasProjectFileExtension(argument.ToPath()))
-		{
-			continue;
-		}
-		if (!bVerbFound)
-		{
-			result.Verb = argument;
-			bVerbFound = true;
-			continue;
-		}
-		result.Arguments.push_back(argument);
-	}
-	return result;
-}
-
 // The command line names the project, the ways FindProjectToRun reads one: -Project= with a value, or
 // an argument naming a *.frtproject file.
 bool NamesProject (std::span<const FString> CommandLine)
@@ -179,32 +141,33 @@ int32 RunAssetTool ()
 {
 	CCommandletContext context;
 	context.CommandLine = platform::GetCommandLineArguments();
-	context.bJson = platform::HasCommandLineSwitch(context.CommandLine, "json");
-	context.bCi = platform::HasCommandLineSwitch(context.CommandLine, "ci");
-	context.bEngineOwner = platform::HasCommandLineSwitch(context.CommandLine, "engine");
+	// Options end at "--" (Commandlet.h, GetOptionArguments): what follows is the verb's text.
+	const std::span<const FString> options = GetOptionArguments(context.CommandLine);
+	context.bJson = platform::HasCommandLineSwitch(options, "json");
+	context.bCi = platform::HasCommandLineSwitch(options, "ci");
+	context.bEngineOwner = platform::HasCommandLineSwitch(options, "engine");
 
-	SVerbAndArguments verb = SplitVerbAndArguments(context.CommandLine);
-	const bool bHelpSwitch = platform::HasCommandLineSwitch(context.CommandLine, "help")
-		|| platform::HasCommandLineSwitch(context.CommandLine, "?");
-	if (verb.Verb.IsEmpty() && bHelpSwitch)
+	FString verb = FindVerb(context.CommandLine).value_or(FString());
+	const bool bHelpSwitch = platform::HasCommandLineSwitch(options, "help") || platform::HasCommandLineSwitch(options, "?");
+	if (verb.IsEmpty() && bHelpSwitch)
 	{
-		verb.Verb = "help";
+		verb = "help";
 	}
-	if (verb.Verb.IsEmpty())
+	if (verb.IsEmpty())
 	{
 		return context.Fail(ExitUsage, "No verb: FRT.bat assets <verb> [arguments]. FRT.bat assets help lists the verbs.");
 	}
-	const SCommandlet* commandlet = FindCommandlet(verb.Verb);
+	const SCommandlet* commandlet = FindCommandlet(verb);
 	if (commandlet == nullptr)
 	{
-		return context.Fail(ExitUsage, FString::Format("No verb '{}': FRT.bat assets help lists the verbs.", verb.Verb));
+		return context.Fail(ExitUsage, FString::Format("No verb '{}': FRT.bat assets help lists the verbs.", verb));
 	}
 	if (const std::optional<FString> unknown = FindUnknownOption(context.CommandLine, commandlet); unknown.has_value())
 	{
 		return context.Fail(ExitUsage, FString::Format("{}: no option '{}' (FRT.bat assets help {} says what it takes; the options "
-			"of every verb are in FRT.bat assets help)", commandlet->Name, *unknown, commandlet->Name));
+			"of every verb are in FRT.bat assets help; after -- every argument is the verb's)", commandlet->Name, *unknown, commandlet->Name));
 	}
-	context.Arguments = std::move(verb.Arguments);
+	context.Arguments = GetPositionalArguments(context.CommandLine, commandlet);
 	// <verb> --help is help <verb>: the verb itself does not run.
 	if (bHelpSwitch && commandlet != FindCommandlet("help"))
 	{

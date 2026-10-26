@@ -298,7 +298,14 @@ TEST(RegistryDumpTest, TheJsonLinesCarryTheTextDumpsContentInItsOrder)
 		}
 		else if (kind == "rules")
 		{
-			key = FString(tree.Find("file").AsText().value_or(FStringView()));
+			// By folder and level as Rules.cache names a rule file (the text's "Config/Assets.yml" is the mount root's
+			// Mount-level file), never by a file name.
+			EXPECT_FALSE(tree.Find("file").IsValid()) << FString(Line).CStr();
+			const FString folder(tree.Find("folder").AsText().value_or(FStringView()));
+			const FString level(tree.Find("level").AsText().value_or(FStringView()));
+			EXPECT_TRUE(level == "Mount" ? folder == FString(tree.Find("mount").AsText().value_or(FStringView())) : level == "Folder")
+				<< FString(Line).CStr();
+			key = level == "Mount" ? FString("Config/Assets.yml") : folder + "/Assets.yml";
 		}
 		else if (kind == "problem")
 		{

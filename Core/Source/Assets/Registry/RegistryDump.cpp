@@ -653,9 +653,13 @@ void EmitMountJson (const SDumpMount& Mount, TEmit&& Emit)
 {
 	const FStringView mount = Mount.Root;
 	Emit(CJsonObject().AddString("kind", "mount").AddString("mount", mount));
+	// A rule file by its folder and level, as Rules.cache and `list-rules --json` name it (a mount's Config/Assets.yml by
+	// the mount root, level Mount): the view knows no disk layout, so it never writes a file name that could differ
+	// from theirs, which are relative to the mount's owner root (Core/Config/Assets.yml for /Engine).
 	for (const SDumpRuleFile& rule : Mount.RuleFiles)
 	{
-		Emit(CJsonObject().AddString("kind", "rules").AddString("mount", mount).AddString("file", rule.File).AddString("hash", Hex64(rule.RulesHash)));
+		Emit(CJsonObject().AddString("kind", "rules").AddString("mount", mount).AddString("folder", rule.bConfig ? mount : rule.Folder)
+			.AddString("level", rule.bConfig ? "Mount" : "Folder").AddString("hash", Hex64(rule.RulesHash)));
 	}
 	for (const FStringView folder : Mount.Folders)
 	{

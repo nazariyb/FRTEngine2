@@ -49,7 +49,8 @@ constexpr SCommandlet Commandlets[] =
 	{ "status", &RunStatus, "status: the registry's problems by code and source, unclaimed files by folder and extension, the scan state "
 		"and the derived-data cache's size", false },
 	{ "query", &RunQuery, "query \"<text>\" [--columns=a,b] [--limit=<n>] [--rows]: the registry records a query matches, in the search "
-		"syntax (type:Texture Width>=1024 dir:/Project/Textures label:Hero ref:X is:broken-ref order:Width desc ...)", false, QueryOptions },
+		"syntax (type:Texture Width>=1024 dir:/Project/Textures label:Hero -label:Debug ref:X is:broken-ref order:Width desc ...); a term "
+		"may start with one dash, and every argument after -- is text", false, QueryOptions, true },
 	{ "refs", &RunRefs, "refs <asset>: the edges an asset declares (a mount path, #label for a sub-asset, or a unique name), with flags "
 		"and field paths", false },
 	{ "referencers", &RunReferencers, "referencers <asset> [--transitive]: the edges that reach an asset, or with --transitive every record "
@@ -76,6 +77,8 @@ constexpr FStringLiteral HelpOptions[] =
 	"  --ci                read-only: writes nothing the mount's owner writes, never takes the writer lock",
 	"  -Assets:ReadOnly=1  read-only, as with --ci",
 	"  -Section:Key=Value  a config override, as for every host",
+	"  --                  ends the options: every argument after it is the verb's, whatever it starts with "
+		"(refs -- -Odd, query -- -json)",
 	"Exit codes: 0 success, 1 problems found, 2 usage error, 3 internal error or crash, 4 the mount is owned by "
 		"another process",
 };

@@ -1027,6 +1027,26 @@ TEST_F(AssetToolRegistryTest, QueryPrintsTheMatchingRecordsAndPositionsItsErrors
 	EXPECT_EQ(RunOnProject({ "query", "type:Texture", "--columns=Nope" }).ExitCode, 2);
 	EXPECT_EQ(RunOnProject({ "query", "type:Texture", "--limit=0" }).ExitCode, 2);
 
+	// A negated term is text, not an unknown option: as an argument of its own, at the start of one quoted text, or after --,
+	// which ends the options. Of /Project's records only the material has no Stone label.
+	for (const std::vector<FString>& negated : std::vector<std::vector<FString>> { { "query", "-label:Stone", "dir:/Project" },
+		{ "query", "-label:Stone dir:/Project" }, { "query", "--ci", "--", "-label:Stone", "dir:/Project" }, { "-label:Stone", "query", "dir:/Project" } })
+	{
+		const test::SProcessResult result = RunOnProject(negated);
+		ASSERT_EQ(result.ExitCode, 0) << negated[1].CStr() << ": " << result.Errors.CStr();
+		EXPECT_TRUE(result.Output.Contains("/Project/Materials/Камінь.frtmat.yml")) << result.Output.CStr();
+		EXPECT_TRUE(result.Output.Contains("1 of 1 record(s)")) << result.Output.CStr();
+	}
+	// After --, even a host option's spelling is the query's text.
+	const test::SProcessResult text = RunOnProject({ "query", "--", "--json" });
+	EXPECT_EQ(text.ExitCode, 2) << text.Output.CStr();
+	EXPECT_TRUE(text.Errors.Contains("query: column ")) << text.Errors.CStr();
+	EXPECT_FALSE(text.Output.StartsWith("{")) << text.Output.CStr();
+	// Two dashes still make an option, so a typo of one is refused.
+	const test::SProcessResult typo = RunOnProject({ "query", "type:Texture", "--limt=1" });
+	EXPECT_EQ(typo.ExitCode, 2);
+	EXPECT_TRUE(typo.Errors.Contains("query: no option '--limt=1'")) << typo.Errors.CStr();
+
 	const test::SProcessResult rows = RunOnProject({ "query", "type:Texture", "--rows" });
 	EXPECT_EQ(rows.ExitCode, 0) << rows.Errors.CStr();
 	EXPECT_TRUE(rows.Errors.Contains("M5")) << rows.Errors.CStr();
@@ -1137,6 +1157,35 @@ TEST_F(AssetToolRegistryTest, StatusListRulesAndDumpReportWhatTheRegistryHolds)
 	}
 	EXPECT_EQ(jsonRecords, textRecords);
 	EXPECT_GE(textRecords, 3u);
+
+	// The two machine-readable listings of the rule files name each the same way: a dump's rules line by the folder and
+	// level list-rules (Rules.cache) gives, with no file name of a different spelling. Of every mount, /Engine included,
+	// whose file is Core/Config/Assets.yml.
+	const test::SProcessResult dumpAll = RunOnProject({ "dump", "registry", "--json" });
+	ASSERT_EQ(dumpAll.ExitCode, 0) << dumpAll.Errors.CStr();
+	std::set<std::pair<FString, FString>> listed;
+	for (const reflect::CDataTree& line : ruleLines)
+	{
+		if (JsonText(line, "kind") == "file")
+		{
+			listed.emplace(JsonText(line, "folder"), JsonText(line, "level"));
+		}
+	}
+	uint32 dumpedRuleFiles = 0u;
+	for (const reflect::CDataTree& line : ParseJsonLines(dumpAll.Output))
+	{
+		if (JsonText(line, "kind") != "rules")
+		{
+			continue;
+		}
+		++dumpedRuleFiles;
+		EXPECT_FALSE(line.Find("file").IsValid()) << dumpAll.Output.CStr();
+		EXPECT_TRUE(listed.contains({ JsonText(line, "folder"), JsonText(line, "level") }))
+			<< JsonText(line, "folder").CStr() << " " << JsonText(line, "level").CStr() << ": " << rules.Output.CStr();
+	}
+	EXPECT_EQ(dumpedRuleFiles, listed.size()) << dumpAll.Output.CStr();
+	EXPECT_TRUE(listed.contains({ "/Engine", "Mount" })) << rules.Output.CStr();
+	EXPECT_TRUE(listed.contains({ "/Project/Textures", "Folder" })) << rules.Output.CStr();
 	EXPECT_EQ(RunOnProject({ "dump", "registry", "--mount=Nope" }).ExitCode, 2);
 	EXPECT_EQ(RunOnProject({ "dump", "asset" }).ExitCode, 2);
 

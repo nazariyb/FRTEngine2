@@ -55,6 +55,7 @@ public:
 	// The positional arguments after the verb: "newguid 3" -> { "3" }. Options (-Name, --Name,
 	// -Name=Value, -Section:Key=Value) are not among them: FindOption and HasOption read those, and
 	// the host has refused every option that neither it nor the commandlet reads (FindUnknownOption).
+	// Every argument after "--" is one, and so is a query's negated term (GetPositionalArguments).
 	std::vector<FString> Arguments;
 	// Every argument of the command line, as given.
 	std::vector<FString> CommandLine;
@@ -86,9 +87,9 @@ public:
 	[[nodiscard]] jobs::CWorkerPool& GetWorkerPool () const { return *WorkerPool; }
 	void SetWorkerPool (jobs::CWorkerPool& Pool) { WorkerPool = &Pool; }
 
-	// The value of the last -Name= / --Name= option, IgnoreCaseAscii; nullopt without one.
+	// The value of the last -Name= / --Name= option before any "--", IgnoreCaseAscii; nullopt without one.
 	[[nodiscard]] std::optional<FString> FindOption (FStringView Name) const;
-	// -Name / --Name is on the command line.
+	// -Name / --Name is on the command line, before any "--".
 	[[nodiscard]] bool HasOption (FStringView Name) const;
 
 	// A line of human text on stdout; nothing with --json.
@@ -133,6 +134,10 @@ private:
  *                   them with FindOption / HasOption and checks their values itself. Any other option
  *                   that the host does not read is a usage error, so a typo (--jsno) or a negative
  *                   number (newguid -3) never runs a verb in a mode nobody asked for. Empty: none.
+ *   bTakesText      its arguments are text in a syntax where a term may start with '-' (query's
+ *                   -label:Debug): an argument with one dash that is no option of the host or the verb
+ *                   is one of its arguments, not an unknown option. Two dashes still make an option, so
+ *                   a typo of one (--limt=3) is still refused.
  */
 struct SCommandlet
 {
@@ -141,6 +146,7 @@ struct SCommandlet
 	FStringLiteral Usage;
 	bool bWritesProject = false;
 	std::span<const FStringLiteral> Options;
+	bool bTakesText = false;
 };
 
 // Verbs with a file of their own (their table rows, options included, are in Commandlets.cpp).
@@ -178,14 +184,37 @@ struct SDdcSummary
 [[nodiscard]] const SCommandlet* FindCommandlet (FStringView Name);
 
 /**
- * The first argument of CommandLine that is an option (it starts with '-') and that neither the host
+ * The parts of AssetTool's command line (design §13.1):
+ *
+ *     AssetTool <verb> [arguments] [options] [-- arguments]       AssetTool -Run=<Verb> ...
+ *
+ * An option starts with '-' (-Run=, -Project=, --json, -Section:Key=Value, a verb's own). "--" ends the
+ * options: every argument after it is positional whatever it starts with, so a verb's text or name may
+ * start with '-' (query -- -json). A '/' starts no option, so mount paths ("/Project/Content/Rock.png")
+ * stay arguments. A bare *.frtproject argument names the project wherever it is (FindProjectToRun reads
+ * it), never a verb or an argument. For a verb with bTakesText, an argument with one dash before "--"
+ * that is no option of the host or the verb is one of its arguments (query -label:Debug).
+ */
+// The arguments that can be options: those before the first "--" (all of them without one).
+[[nodiscard]] std::span<const FString> GetOptionArguments (std::span<const FString> CommandLine);
+// The verb: -Run=<Verb>, else the first positional argument (an argument with a dash before "--" is
+// never one). nullopt when there is none.
+[[nodiscard]] std::optional<FString> FindVerb (std::span<const FString> CommandLine);
+// Commandlet's positional arguments in order, the verb left out when FindVerb took it from them.
+// Commandlet null: no verb's text is known (an argument with a dash before "--" is never one).
+[[nodiscard]] std::vector<FString> GetPositionalArguments (std::span<const FString> CommandLine, const SCommandlet* Commandlet);
+
+/**
+ * The first argument before any "--" that is an option (it starts with '-') and that neither the host
  * nor Commandlet reads; nullopt when there is none. The host reads, for every verb:
  *   -Run=<Verb>, -Project=<file or directory>             with a value
  *   --json, --ci, --engine, --help, -?                    without one
- *   -Section:Key=Value                                    a config override (-Assets:ReadOnly=1)
+ *   -Section:Key=Value                                    a config override (-Assets:ReadOnly=1); its
+ *                                                         section and key hold no whitespace
  * each with one dash or two, the name in any case (platform::FindCommandLineValue's rules). A host
  * option in the wrong form (--json=1, -Project) is unknown too: it would be ignored otherwise. With no
- * Commandlet (no verb yet), only the host's options are known.
+ * Commandlet (no verb yet), only the host's options are known. A bTakesText verb's text with one dash
+ * is never unknown (GetPositionalArguments).
  */
 [[nodiscard]] std::optional<FString> FindUnknownOption (std::span<const FString> CommandLine, const SCommandlet* Commandlet);
 }
