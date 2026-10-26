@@ -130,14 +130,14 @@ void RunSuite (uint32 Assets, uint32 Rows, EBudgetColumn Column)
 			EXPECT_EQ(compiled, Batch);
 			bestUs = (std::min)(bestUs, platform::TimestampToMilliseconds(platform::ReadTimestamp() - start) * 1000.0 / Batch);
 		}
-		budget.Check("ParseAndCompileUs", bestUs, SBudget { 50.0, -1.0, 10.0, 10.0 }, SBudget { 50.0, -1.0, 10.0, 20.0 }, "us");
+		budget.Check("ParseAndCompileUs", bestUs, SBudget { 50.0, -1.0, 10.0, 12.0 }, SBudget { 50.0, -1.0, 10.0, 20.0 }, "us");
 	}
 
 	// An unindexed predicate over one type: one column scan of the texture table (1 in 8 widths match).
 	{
 		const STimedRun run = TimeQuery(*view, "type:Texture Width>=8192");
 		EXPECT_GT(run.Matched, 0u);
-		budget.Check("UnindexedPredicateMs", run.TotalMs, SBudget { 0.1, -1.0, 0.03, 0.035 }, SBudget { 0.5, -1.0, 0.3, 0.6 }, "ms", Detail(run).CStr());
+		budget.Check("UnindexedPredicateMs", run.TotalMs, SBudget { 0.1, -1.0, 0.04, 0.05 }, SBudget { 0.5, -1.0, 0.3, 0.6 }, "ms", Detail(run).CStr());
 	}
 
 	// Three predicates over the rows of one row type (three column bitmasks).
@@ -148,7 +148,7 @@ void RunSuite (uint32 Assets, uint32 Rows, EBudgetColumn Column)
 		// §5.11 budgets 3 ms over 500k rows; the 10k column's 50k rows are judged pro rata (0.3 ms: a reading of
 		// §5.11, which has no 10k figure for this row).
 		const double rowBudget = 3.0 * static_cast<double>(Rows) / 500000.0;
-		budget.Check("ThreePredicateRowMs", run.TotalMs, SBudget { rowBudget, -1.0, 0.25, 0.29 }, SBudget { rowBudget, -1.0, 3.5, 7.0 }, "ms",
+		budget.Check("ThreePredicateRowMs", run.TotalMs, SBudget { rowBudget, -1.0, 0.46, 0.55 }, SBudget { rowBudget, -1.0, 3.5, 7.0 }, "ms",
 			FString::Format("{} over {} rows", Detail(run), Rows).CStr());
 		const STimedRun limited = TimeQuery(*view, "rows type:Model MeshCount>=4 VertexCount<50000 TriangleCount>=100000 limit:50");
 		budget.Check("ThreePredicateRowLimit50Ms", limited.TotalMs, SBudget {}, SBudget {}, "ms", Detail(limited).CStr());
@@ -158,7 +158,7 @@ void RunSuite (uint32 Assets, uint32 Rows, EBudgetColumn Column)
 	{
 		const STimedRun run = TimeQuery(*view, "order:$Size desc limit:50");
 		EXPECT_EQ(run.Matched, Assets);
-		budget.Check("OrderByLimit50Ms", run.TotalMs, SBudget { 0.5, -1.0, 0.2, 0.3 }, SBudget { 2.0, -1.0, 1.5, 3.0 }, "ms", Detail(run).CStr());
+		budget.Check("OrderByLimit50Ms", run.TotalMs, SBudget { 0.5, -1.0, 0.28, 0.4 }, SBudget { 2.0, -1.0, 1.5, 3.0 }, "ms", Detail(run).CStr());
 		const STimedRun tag = TimeQuery(*view, "type:Texture order:Width desc limit:50");
 		budget.Check("OrderByTagLimit50Ms", tag.TotalMs, SBudget {}, SBudget {}, "ms", Detail(tag).CStr());
 	}
@@ -168,7 +168,7 @@ void RunSuite (uint32 Assets, uint32 Rows, EBudgetColumn Column)
 		SAssetQuery names;
 		names.Where("$Name", ECompare::Contains, STagValue::FromName("rock_detail_1"));
 		const STimedRun run = TimeQuery(*view, names);
-		budget.Check("NameSubstringMs", run.TotalMs, SBudget { 0.2, -1.0, 0.15, 0.18 }, SBudget { 2.0, -1.0, 1.8, 3.6 }, "ms", Detail(run).CStr());
+		budget.Check("NameSubstringMs", run.TotalMs, SBudget { 0.2, -1.0, 0.22, 0.3 }, SBudget { 2.0, -1.0, 1.8, 3.6 }, "ms", Detail(run).CStr());
 		const STimedRun text = TimeQuery(*view, "rock_detail_1");
 		budget.Check("TextTermMs", text.TotalMs, SBudget {}, SBudget {}, "ms", Detail(text).CStr());
 		// The same search as a bare loop over ASSETS (no engine): the floor the engine's overhead is measured from.
@@ -195,7 +195,7 @@ void RunSuite (uint32 Assets, uint32 Rows, EBudgetColumn Column)
 		referencers.References(GetTexturePath(0u), true);
 		const STimedRun run = TimeQuery(*view, referencers);
 		EXPECT_GT(run.Matched, 10u);
-		budget.Check("TransitiveReferencersMs", run.TotalMs, SBudget { 0.3, -1.0, 0.12, 0.2 }, SBudget { 5.0, -1.0, 2.0, 4.0 }, "ms", Detail(run).CStr());
+		budget.Check("TransitiveReferencersMs", run.TotalMs, SBudget { 0.3, -1.0, 0.18, 0.32 }, SBudget { 5.0, -1.0, 2.0, 4.0 }, "ms", Detail(run).CStr());
 		const STimedRun deps = TimeQuery(*view, FString::Format("dep:~{}", GetModelPath(0u)).View());
 		budget.Check("TransitiveDependenciesMs", deps.TotalMs, SBudget {}, SBudget {}, "ms", Detail(deps).CStr());
 	}

@@ -6,10 +6,12 @@
 // schema cannot meet it, the figure proposed for §5.11's written revision. What a run judges depends on the build:
 //	- Debug prints only.
 //	- Release and Development (FRT.bat verify runs Core-Test in Development): a regression guard per row and build,
-//	  set from what M3 measured - Release run alone, Development inside a whole Core-Test run, which is slower
-//	  (assertions, less inlining, a heap that other tests have used) - with headroom for a busy machine, and below
-//	  the row's pre-P3 figure wherever P3 improved it, so losing an optimization fails the run where machine noise
-//	  does not. A guard is a regression check, not §5.11's figure: the printed status says whether that is met.
+//	  set from what M3 measured inside a whole Core-Test run of that build, with headroom for a busy machine. Inside
+//	  the whole suite a row takes up to about twice what it takes run alone, in either build (the 10k load 26 ms
+//	  against 12-14 ms alone in Release), so some guards sit above §5.11's figures; each lies below the row's pre-P3
+//	  figure measured the same way wherever P3 improved it, so losing an optimization fails the run where machine
+//	  noise does not. A guard is a regression check, not §5.11's figure: the printed status says whether that is
+//	  met. The DISABLED_ suites (100k assets and more) run alone, and their guards are set from runs alone.
 //	- FRT_PERF_STRICT=1 holds §5.11's figure (or the proposed revision) exactly instead: for a Release run alone.
 // Figures are for this project's machine (i7-13700K, processor affinity 0xFFFFFC), as §5.11's are.
 
@@ -58,10 +60,14 @@ inline void CheckBudget (const char* Prefix, const char* Name, double Measured, 
 	{
 		limits.AppendFormat("{}proposed revision {:.3f}: {}", limits.IsEmpty() ? "" : "; ", Budget.Revision, Measured <= Budget.Revision ? "met" : "MISSED");
 	}
+	constexpr bool bOptimized = !FRT_BUILD_DEBUG;
 	const double guard = Budget.GetGuard();
-	if (guard >= 0.0 && !FRT_BUILD_DEBUG)
+	if constexpr (bOptimized)
 	{
-		limits.AppendFormat("{}guard {:.3f}", limits.IsEmpty() ? "" : "; ", guard);
+		if (guard >= 0.0)
+		{
+			limits.AppendFormat("{}guard {:.3f}", limits.IsEmpty() ? "" : "; ", guard);
+		}
 	}
 	line.AppendFormat(" ({})", limits.IsEmpty() ? FStringView("not budgeted") : limits.View());
 	if (Note != nullptr && Note[0] != '\0')
@@ -70,20 +76,27 @@ inline void CheckBudget (const char* Prefix, const char* Name, double Measured, 
 	}
 	std::printf("%s\n", line.CStr());
 	::testing::Test::RecordProperty(Name, FString::Format("{:.4f}", Measured).CStr());
-	if (FRT_BUILD_DEBUG || !bJudge)
+	if constexpr (bOptimized)
 	{
-		return;
-	}
-	if (IsPerfStrict())
-	{
-		if (Budget.GetJudged() >= 0.0)
+		if (!bJudge)
 		{
-			EXPECT_LE(Measured, Budget.GetJudged()) << Name << " (FRT_PERF_STRICT: 5.11 or the proposed revision)";
+			return;
+		}
+		if (IsPerfStrict())
+		{
+			if (Budget.GetJudged() >= 0.0)
+			{
+				EXPECT_LE(Measured, Budget.GetJudged()) << Name << " (FRT_PERF_STRICT: 5.11 or the proposed revision)";
+			}
+		}
+		else if (guard >= 0.0)
+		{
+			EXPECT_LE(Measured, guard) << Name << " (regression guard)";
 		}
 	}
-	else if (guard >= 0.0)
+	else
 	{
-		EXPECT_LE(Measured, guard) << Name << " (regression guard)";
+		(void)bJudge;
 	}
 }
 }

@@ -329,10 +329,10 @@ TEST(RegistryBenchmarkTest, TheStoreMeetsItsBudgetsAt10kAssets)
 	std::shuffle(paths.begin(), paths.end(), random);
 
 	const uint32 count = static_cast<uint32>(ids.size());
-	Check("GuidLookupNs", TimeLookups(count, [&] (uint32 I) { return view->Find(ids[I]).has_value(); }), SBudget { 50.0, -1.0, 30.0, 40.0 }, "ns");
-	Check("AssetId64LookupNs", TimeLookups(count, [&] (uint32 I) { return view->Find(ids64[I]).has_value(); }), SBudget { 50.0, -1.0, 15.0, 25.0 }, "ns");
+	Check("GuidLookupNs", TimeLookups(count, [&] (uint32 I) { return view->Find(ids[I]).has_value(); }), SBudget { 50.0, -1.0, 55.0, 60.0 }, "ns");
+	Check("AssetId64LookupNs", TimeLookups(count, [&] (uint32 I) { return view->Find(ids64[I]).has_value(); }), SBudget { 50.0, -1.0, 20.0, 30.0 }, "ns");
 	Check("PathLookupUs", TimeLookups(count, [&] (uint32 I) { return view->FindByPath(paths[I]).has_value(); }) / 1000.0,
-		SBudget { 0.5, -1.0, 0.25, 0.3 }, "us");
+		SBudget { 0.5, -1.0, 0.34, 0.46 }, "us");
 
 	// Transitive referencers of the most used texture: its materials, and the models that use those.
 	const SRecordId texture = view->FindByPath(TexturePath(0u)).value_or(SRecordId {});
@@ -347,7 +347,7 @@ TEST(RegistryBenchmarkTest, TheStoreMeetsItsBudgetsAt10kAssets)
 	}
 	EXPECT_GT(referencers.size(), 100u);
 	std::printf("[registry] transitive referencers of a shared texture: %zu records\n", referencers.size());
-	Check("TransitiveReferencersMs", referencersMs, SBudget { 0.3, -1.0, 0.05, 0.06 }, "ms");
+	Check("TransitiveReferencersMs", referencersMs, SBudget { 0.3, -1.0, 0.035, 0.07 }, "ms");
 
 	// A substring over every record's name, through the folded shadows of NAMES (what a query's Text does).
 	const SRegistryTables& tables = GetTables(*view);
@@ -368,7 +368,7 @@ TEST(RegistryBenchmarkTest, TheStoreMeetsItsBudgetsAt10kAssets)
 		substringMs = (std::min)(substringMs, platform::TimestampToMilliseconds(platform::ReadTimestamp() - begin));
 	}
 	EXPECT_GT(hits, 0u);
-	Check("NameSubstringMs", substringMs, SBudget { 0.2, -1.0, 0.1, 0.15 }, "ms", "(a bare loop over the folded names; the engine's: QueryBenchmarkTest)");
+	Check("NameSubstringMs", substringMs, SBudget { 0.2, -1.0, 0.17, 0.26 }, "ms", "(a bare loop over the folded names; the engine's: QueryBenchmarkTest)");
 
 	const SRegistryMemoryStats memory = store.GetMemoryStats();
 	PrintMemory(memory);
@@ -437,7 +437,7 @@ void MeasureLookupsAtFullLoad (std::initializer_list<uint32> AssetCounts, const 
 
 TEST(RegistryBenchmarkTest, TheLookupsMeetTheirBudgetsWithTheIndicesAtTheirFullest)
 {
-	MeasureLookupsAtFullLoad({ 8150u, 12250u }, SBudget { 50.0, -1.0, 35.0, 45.0 }, SBudget { 50.0, -1.0, 20.0, 30.0 }, SBudget { 0.5, -1.0, 0.3, 0.35 });
+	MeasureLookupsAtFullLoad({ 8150u, 12250u }, SBudget { 50.0, -1.0, 60.0, 75.0 }, SBudget { 50.0, -1.0, 24.0, 36.0 }, SBudget { 0.5, -1.0, 0.38, 0.46 });
 }
 
 TEST(RegistryBenchmarkTest, DISABLED_TheLookupsAt100kScaleWithTheIndicesAtTheirFullest)
@@ -453,9 +453,9 @@ TEST(RegistryBenchmarkTest, TheStoreMeetsItsBudgetsAt10kGeneratedAssets)
 	budgets.OneEditCommit = SBudget { 2.0, -1.0, 0.1, 0.1 };
 	budgets.NewFileCommit = SBudget { 2.0, -1.0, 0.75, 0.75 };
 	budgets.RenumberCommit = SBudget { 2.0, -1.0, 2.0, 2.0 };
-	budgets.GuidLookup = SBudget { 50.0, -1.0, 30.0, 40.0 };
-	budgets.AssetId64Lookup = SBudget { 50.0, -1.0, 15.0, 25.0 };
-	budgets.PathLookup = SBudget { 0.5, -1.0, 0.25, 0.3 };
+	budgets.GuidLookup = SBudget { 50.0, -1.0, 55.0, 60.0 };
+	budgets.AssetId64Lookup = SBudget { 50.0, -1.0, 20.0, 30.0 };
+	budgets.PathLookup = SBudget { 0.5, -1.0, 0.34, 0.46 };
 	budgets.ResidentMemory = SBudget { 15.0, -1.0, 13.0, 13.0 };
 	MeasureStoreAtScale(10000u, 0u, budgets);
 }

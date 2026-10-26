@@ -288,11 +288,11 @@ void MeasureSnapshot (const std::filesystem::path& Dir, uint32 Assets, uint32 Ro
 TEST_F(SnapshotTest, SnapshotAndJournalMeetTheirBudgetsAt10kAssets)
 {
 	SSnapshotBudgets budgets;
-	budgets.Load = SBudget { 5.0, 20.0, 20.0, 50.0 };
-	budgets.WriteCpu = SBudget { 10.0, -1.0, 9.0, 22.0 };
+	budgets.Load = SBudget { 5.0, 20.0, 36.0, 40.0 };
+	budgets.WriteCpu = SBudget { 10.0, -1.0, 14.5, 15.0 };
 	budgets.WriteTotal = SBudget { 10.0 };
 	budgets.Append = SBudget { 0.1, -1.0, 0.05, 0.1 };
-	budgets.Restart = SBudget { -1.0, 1.0, 1.0, 2.0 };
+	budgets.Restart = SBudget { -1.0, 1.0, 1.5, 2.0 };
 	budgets.Memory = SBudget { 15.0, -1.0, 14.0, 14.0 };
 	MeasureSnapshot(Dir, 10000u, 0u, budgets);
 }
@@ -304,7 +304,7 @@ TEST_F(SnapshotTest, DISABLED_SnapshotAndJournalAt100kAssets)
 	budgets.WriteCpu = SBudget { 80.0, -1.0, 90.0, 180.0 };
 	budgets.WriteTotal = SBudget { 80.0 };
 	budgets.Append = SBudget { 0.1, -1.0, 0.05, 0.1 };
-	budgets.Restart = SBudget { -1.0, 1.0, 1.0, 2.0 };
+	budgets.Restart = SBudget { -1.0, 1.0, 1.5, 2.0 };
 	MeasureSnapshot(Dir, 100000u, 0u, budgets);
 }
 
@@ -314,7 +314,7 @@ TEST_F(SnapshotTest, DISABLED_SnapshotAndJournalAt100kAssetsAnd500kRows)
 	budgets.Load = SBudget { 120.0, 450.0, 520.0, 1000.0 };
 	budgets.WriteCpu = SBudget { -1.0, -1.0, 300.0, 600.0 };
 	budgets.Append = SBudget { 0.1, -1.0, 0.05, 0.1 };
-	budgets.Restart = SBudget { -1.0, 1.0, 1.0, 2.0 };
+	budgets.Restart = SBudget { -1.0, 1.0, 1.5, 2.0 };
 	budgets.Memory = SBudget { 150.0, -1.0, 155.0, 155.0 };
 	MeasureSnapshot(Dir, 100000u, 500000u, budgets);
 }
