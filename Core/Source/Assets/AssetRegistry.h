@@ -74,8 +74,9 @@ class CWorkerPool;
  * from config. A writer writes its snapshot file and journal (Project: AssetRegistry.snapshot of /Project and its
  * plugins; Engine: Engine.snapshot of /Engine), Rules.cache and ProjectId under its owner root; a reader writes
  * nothing at all - no journal (opening one writes), no ProjectId (ReadProjectId: a root without one starts cold), no
- * Rules.cache, no watcher fences (Flush writes fence files into Content/). The editor never writes /Engine in M3: engine
- * files changed since the last `FRT.bat assets scan --engine` are analyzed in memory at every start (logged once).
+ * Rules.cache, no watcher fences (a writer's Flush writes fence files into its own mounts). The editor never writes
+ * /Engine in M3, fences included: engine files changed since the last `FRT.bat assets scan --engine` are analyzed
+ * in memory at every start (logged once).
  * Snapshots are written from an acquired view on a worker after a batch of SnapshotBatchRecords records, after
  * SnapshotIdleSeconds without a commit, and at ShutDown (clean exit).
  *
@@ -259,8 +260,10 @@ public:
 	bool ScanPathsSynchronous (std::span<const FString> MountPaths, double TimeoutSeconds = -1.0);
 	/**
 	 * Everything the disk did before the call is in the registry when it returns true: a writer fences the watcher
-	 * (CFileWatcherService::Flush of every mount, which writes fence files into Content/), then every registry waits
-	 * until nothing is pending. A reader cannot fence: it only waits for what was reported already.
+	 * for the mounts it owns (CFileWatcherService::Flush of their content and rule-file directories, which writes
+	 * fence files there: /Project and its plugins for a Project owner, never /Engine; /Engine for an Engine owner),
+	 * then every registry waits until nothing is pending. Of the mounts it does not fence - all of them for a reader -
+	 * a registry only waits for what the watcher reported already.
 	 */
 	bool Flush (double TimeoutSeconds = 30.0);
 	// Nothing queued, scanning, analyzing, retrying or buffered: everything reported has been committed.

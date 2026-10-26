@@ -2086,6 +2086,12 @@ bool CAssetRegistry::Flush (double TimeoutSeconds)
 	{
 		for (const SMount& mount : impl.Mounts->GetMounts())
 		{
+			// Only the mounts this writer owns get fence files (a Project owner never writes into /Engine, which may
+			// be read-only); of the others, what the watcher reported already is waited for below.
+			if (std::find(impl.SnapshotMounts.begin(), impl.SnapshotMounts.end(), mount.Id) == impl.SnapshotMounts.end())
+			{
+				continue;
+			}
 			std::error_code ec;
 			if (std::filesystem::is_directory(mount.ContentDir, ec))
 			{

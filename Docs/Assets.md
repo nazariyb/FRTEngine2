@@ -41,6 +41,8 @@ plugins) with its journal, `Rules.cache` and `ProjectId`, the snapshot after 100
 exit. A second editor logs the holder and writes nothing (an M3 deviation: the spec's default is to exit). Without the
 lock nothing is written at all. `/Engine` lives in `<engine>/Local/Registry/Engine.snapshot`, written only by an
 engine-owner registry; an editor analyzes engine files changed since then in memory at every start and says so once.
+A writer's `Flush` fences the watcher only in the mounts it owns, so the editor writes no fence file into `/Engine`
+either; of `/Engine` it waits only for what the watcher reported already.
 
 ## One file watcher (M2)
 
@@ -136,7 +138,7 @@ Options: `--json` (one object per line), `--ci` or `-Assets:ReadOnly=1` (read-on
 `--project=<file>`, `--engine`. Exit codes: 0 success, 1 problems found, 2 usage error, 3 internal error, 4 the mount is
 owned by another process. **One writer per mount**: a writing run takes `<mount>/Local/Assets/Owner.lock` (an exclusive
 handle the OS releases when the process dies; its text names the holder), and a second writer exits with code 4 naming
-the owner. The editor takes the same lock from M3, for the registry's files (below).
+the owner. The editor takes the same lock from M3, for the registry's files (see Registry service above).
 
 ### Worker pool (`Jobs/WorkerPool.h`)
 

@@ -7,8 +7,8 @@
 // writer lock writes nothing; Validation: reaches the scan's and RULE002's severities; the tri-state Exists and the
 // change notification; a pass cut short after its conversion (a clean exit while Analyze is pending, a crash) persists
 // nothing that claims work it did not do; a broken journal is mended by the full write its break triggers, and loses no
-// commit; a mount-rule edit over many files is committed in deltas of bounded size. Every tree has non-ASCII names and
-// lives in the temp directory.
+// commit; a mount-rule edit over many files is committed in deltas of bounded size; a project writer's Flush fences only
+// its own mounts. Every tree has non-ASCII names and lives in the temp directory.
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -941,4 +941,37 @@ TEST(AssetRegistry, AMountRuleEditOverManyFilesCommitsInDeltasOfBoundedSize)
 	const FString dump = DumpOf(registry.Live());
 	registry.ShutDown();
 	EXPECT_EQ(dump, FreshDump(pool, tree.Project()));
+}
+
+TEST(AssetRegistry, AProjectWriterFencesOnlyItsOwnMounts)
+{
+	const CServiceTree tree("Own Fences");
+	// The fence files this process's watcher would write into /Engine's roots are taken by directories there, so a
+	// fence of /Engine fails as it would in a read-only engine checkout.
+	for (const std::filesystem::path& root : { tree.Tree.EngineContent(), tree.Tree.EngineConfig() })
+	{
+		for (uint32 n = 1u; n <= 64u; ++n)
+		{
+			frt::test::rules::MakeDirectories(root / FString::Format(".frt-fence-{}-{}", platform::GetCurrentProcessId(), n).ToPath());
+		}
+	}
+	jobs::CWorkerPool pool(MakePoolDesc(4u));
+	SFileWatcherSettings settings;
+	settings.SettleMs = 50u;
+	CFileWatcherService watcher(settings);
+	const std::shared_ptr<const CMountTable> mounts = tree.Project();
+	for (const SMount& mount : mounts->GetMounts())
+	{
+		watcher.AddMount(mount.ContentDir);
+		watcher.AddMount(mount.RulesFile.parent_path());
+	}
+	SOpen writer;
+	writer.bWriter = true;
+	writer.bLoadSnapshots = false;
+	writer.Watcher = &watcher;
+	std::unique_ptr<CAssetRegistry> registry = Open(pool, mounts, writer);
+	tree.WriteProjectPng("Textures/Нова.png");
+	EXPECT_TRUE(registry->Flush(30.0)) << "only /Project and its plugins are fenced";
+	EXPECT_EQ(TypeOf(registry->Live(), "/Project/Textures/Нова.png"), asset_types::Texture);
+	(void)Close(registry);
 }
