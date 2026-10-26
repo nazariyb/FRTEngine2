@@ -37,7 +37,11 @@ struct SBudgetCheck
 	 */
 	void Check (const char* Name, double Measured, double Spec, double Judged, const char* Unit, const char* Note = "")
 	{
-		if (Spec >= 0.0 && Judged != Spec)
+		if (Spec >= 0.0 && Judged < 0.0)
+		{
+			std::printf("[snapshot] %-22s %10.3f %s (budget %.3f %s; reported only) %s\n", Name, Measured, Unit, Spec, Unit, Note);
+		}
+		else if (Spec >= 0.0 && Judged != Spec)
 		{
 			std::printf("[snapshot] %-22s %10.3f %s (budget %.3f %s; M3 revision %.3f %s) %s\n", Name, Measured, Unit, Spec, Unit,
 				Judged, Unit, Note);
@@ -152,6 +156,9 @@ void MeasureSnapshot (const std::filesystem::path& Dir, uint32 Assets, uint32 Ro
  * 10k: the load is AdoptImage's bulk path for most of its time (B3's, every index rebuilt, every target resolved,
  * the CSR built) and the write ExportImage's, so the real schema misses §5.11's thin-schema figures (5 ms, 10 ms);
  * the checks hold the measured M3 figures proposed for the written revision. The append meets its budget.
+ * Measured at M3 (Release, i7-13700K, warm): 10k load 33.5 ms (adopt 27.0, decode 3.4, read 1.0, replay of 101
+ * commits 1.5), write 15.7 ms CPU (export 12.5) + 5.0 ms flushed to disk; 100k load 410 ms (adopt 359), write
+ * 254 ms CPU; 100k + 500k rows load 812 ms (adopt 650), write 613 ms CPU; append 0.002-0.004 ms throughout.
  */
 TEST_F(SnapshotTest, SnapshotAndJournalMeetTheirBudgetsAt10kAssets)
 {
@@ -162,15 +169,19 @@ TEST_F(SnapshotTest, SnapshotAndJournalMeetTheirBudgetsAt10kAssets)
 	MeasureSnapshot(Dir, 10000u, 0u, budgets, true);
 }
 
+TEST_F(SnapshotTest, DISABLED_SnapshotAndJournalAt100kAssets)
+{
+	SBudgets budgets;
+	budgets.Load = SBudget { 30.0, -1.0 };
+	budgets.Write = SBudget { 80.0, -1.0 };
+	budgets.Append = SBudget { 0.1, 0.1 };
+	MeasureSnapshot(Dir, 100000u, 0u, budgets, true);
+}
+
 TEST_F(SnapshotTest, DISABLED_SnapshotAndJournalAt100kAssetsAnd500kRows)
 {
-	SBudgets assets;
-	assets.Load = SBudget { 30.0, -1.0 };
-	assets.Write = SBudget { 80.0, -1.0 };
-	assets.Append = SBudget { 0.1, 0.1 };
-	MeasureSnapshot(Dir, 100000u, 0u, assets, true);
-	SBudgets rows;
-	rows.Load = SBudget { 120.0, -1.0 };
-	rows.Append = SBudget { 0.1, 0.1 };
-	MeasureSnapshot(Dir, 100000u, 500000u, rows, true);
+	SBudgets budgets;
+	budgets.Load = SBudget { 120.0, -1.0 };
+	budgets.Append = SBudget { 0.1, 0.1 };
+	MeasureSnapshot(Dir, 100000u, 500000u, budgets, true);
 }
