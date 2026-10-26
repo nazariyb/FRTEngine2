@@ -139,8 +139,9 @@ struct SSnapshotWriteStats
  * Writes the given mounts of a view (every mount when empty) to Path through WriteFileAtomic, with
  * JournalBase = the view's revision. RulesBasis: CRulesEngine::GetRulesBasis of the engine the records were
  * evaluated with (false for Engine.snapshot, true for AssetRegistry.snapshot); 0 writes "unknown". Callable on
- * any thread (it only reads the view). The caller then starts the snapshot's journal again at that revision
- * (CRegistryJournal::Restart), on the store's owner thread.
+ * any thread (it only reads the view). The caller then starts the snapshot's journal again at that revision:
+ * CRegistryJournal::BeginRestart where the view is taken, CJournalRestart::Prepare on the same worker right
+ * after this returns true, FinishRestart back on the store's owner thread (Journal.h, protocol step 3).
  */
 FRT_CORE_API bool WriteSnapshot (const CRegistryView& View, std::span<const MountId> Mounts, const std::filesystem::path& Path,
 	const SGuid& ProjectId, uint64 RulesBasis, FString* OutError = nullptr, SSnapshotWriteStats* OutStats = nullptr);

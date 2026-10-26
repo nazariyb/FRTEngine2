@@ -1,8 +1,8 @@
 // The registry journal (Assets/Registry/Journal.h, design §5.3). Every member of a delta survives its encoding;
 // a snapshot plus its journal loads the latest committed state; a journal keeps only its snapshot's mounts; a
 // torn tail is dropped at load and cut off before the next append, and so is a commit whose delta does not decode;
-// a journal that continues another snapshot is ignored; after a full write, Restart keeps exactly the commits the
-// snapshot's view did not hold; a failed append breaks the journal until a full write, and loses no commit; a delta
+// a journal that continues another snapshot is ignored; after a full write, Restart - or the restart a worker
+// prepares - keeps exactly the commits the snapshot's view did not hold; a failed append breaks the journal until a full write, and loses no commit; a delta
 // larger than one frame is split and joined again; types are stored by name, and a name this build does not know
 // waits Schemaless; a snapshot that lost its rule outputs replays no rule hashes.
 #include <gtest/gtest.h>
@@ -493,6 +493,135 @@ TEST_F(JournalTest, AFailedAppendBreaksTheJournalUntilAFullWriteAndLosesNoCommit
 	const SSnapshotFileReport report = Load(loaded).Files[0];
 	EXPECT_TRUE(report.bJournalUsed) << report.JournalMessage.CStr();
 	EXPECT_FALSE(report.bJournalTornTail);
+	EXPECT_EQ(report.JournalCommits, 2u);
+	ExpectSameContent(Store.Live(), loaded.Live());
+}
+
+TEST_F(JournalTest, ARestartPreparedOnTheWorkerKeepsTheCommitsTheSnapshotDoesNotHold)
+{
+	// Protocol step 3 as F3 runs it: BeginRestart where the view is taken, the snapshot written and the new
+	// journal prepared (written, renamed over the old one, opened) on the worker, FinishRestart in the job's
+	// completion. The owner commits throughout: before the rename (into the old file, which the new one already
+	// holds or not), after it (into the old file, unlinked: FinishRestart writes them again).
+	CRegistryJournal journal;
+	ASSERT_TRUE(journal.Open(Journal, ProjectId, Store.GetRevision(), {}));
+	CommitJournaled(Store, journal, MakeEdit(1u));
+	const std::shared_ptr<const CRegistryView> view = Store.Acquire();
+	CJournalRestart restart = journal.BeginRestart(view->GetRevision());
+	EXPECT_EQ(restart.GetJournalBase(), view->GetRevision());
+	CommitJournaled(Store, journal, MakeEdit(2u));
+	ASSERT_TRUE(WriteSnapshot(*view, {}, Snapshot, ProjectId, 0u));
+	FString error;
+	ASSERT_TRUE(restart.Prepare(&error)) << error.CStr();
+	EXPECT_TRUE(restart.IsPrepared());
+	EXPECT_FALSE(std::filesystem::exists(GetJournalPath(Snapshot).concat(".next")));
+	// The renamed journal holds the header only (the view was the current revision at BeginRestart).
+	EXPECT_TRUE(ReadJournal(Journal).Deltas.empty());
+	CommitJournaled(Store, journal, MakeEdit(3u));
+	ASSERT_TRUE(journal.FinishRestart(std::move(restart), &error)) << error.CStr();
+	EXPECT_EQ(journal.GetJournalBase(), view->GetRevision());
+	EXPECT_FALSE(journal.IsBroken());
+	EXPECT_EQ(journal.GetStats().Restarts, 1u);
+	EXPECT_GT(journal.GetStats().LastRestartWorkerMs, 0.0);
+	const SJournalContents contents = ReadJournal(Journal);
+	ASSERT_EQ(contents.Deltas.size(), 2u);   // the two commits after the view
+	EXPECT_EQ(contents.Revisions[0], view->GetRevision() + 1u);
+	EXPECT_EQ(contents.Revisions[1], view->GetRevision() + 2u);
+	CommitJournaled(Store, journal, MakeEdit(4u));
+	journal.Close();
+
+	CRegistryStore loaded;
+	const SSnapshotFileReport report = Load(loaded).Files[0];
+	EXPECT_TRUE(report.bJournalUsed) << report.JournalMessage.CStr();
+	EXPECT_EQ(report.JournalCommits, 3u);
+	ExpectSameContent(Store.Live(), loaded.Live());
+
+	// A view older than the current revision: BeginRestart takes the commits after it along to the worker.
+	CRegistryJournal again;
+	ASSERT_TRUE(again.Open(Journal, ProjectId, report.JournalBase, {}));
+	const std::shared_ptr<const CRegistryView> older = loaded.Acquire();
+	CommitJournaled(loaded, again, MakeEdit(5u));
+	CJournalRestart late = again.BeginRestart(older->GetRevision());
+	ASSERT_TRUE(WriteSnapshot(*older, {}, Snapshot, ProjectId, 0u));
+	ASSERT_TRUE(late.Prepare(&error)) << error.CStr();
+	EXPECT_EQ(ReadJournal(Journal).Deltas.size(), 1u);
+	ASSERT_TRUE(again.FinishRestart(std::move(late), &error)) << error.CStr();
+	again.Close();
+	CRegistryStore reloaded;
+	EXPECT_EQ(Load(reloaded).Files[0].JournalCommits, 1u);
+	ExpectSameContent(loaded.Live(), reloaded.Live());
+}
+
+TEST_F(JournalTest, ARestartTheWorkerCouldNotPrepareIsDoneOnTheOwnerThreadAndAStaleOneChangesNothing)
+{
+	CRegistryJournal journal;
+	ASSERT_TRUE(journal.Open(Journal, ProjectId, Store.GetRevision(), {}));
+	CommitJournaled(Store, journal, MakeEdit(1u));
+
+	// The side file cannot be written (a directory holds its name): Prepare fails, the old journal stays, and
+	// FinishRestart restarts on the owner thread.
+	std::filesystem::path side = Journal;
+	side += ".next";
+	ASSERT_TRUE(std::filesystem::create_directory(side));
+	const std::shared_ptr<const CRegistryView> view = Store.Acquire();
+	CJournalRestart restart = journal.BeginRestart(view->GetRevision());
+	ASSERT_TRUE(WriteSnapshot(*view, {}, Snapshot, ProjectId, 0u));
+	FString error;
+	EXPECT_FALSE(restart.Prepare(&error));
+	EXPECT_FALSE(error.IsEmpty());
+	EXPECT_FALSE(restart.IsPrepared());
+	EXPECT_EQ(ReadJournal(Journal).Deltas.size(), 1u);
+	CommitJournaled(Store, journal, MakeEdit(2u));
+	ASSERT_TRUE(journal.FinishRestart(std::move(restart), &error)) << error.CStr();
+	EXPECT_EQ(journal.GetJournalBase(), view->GetRevision());
+	EXPECT_EQ(ReadJournal(Journal).Deltas.size(), 1u);   // the commit after the view
+	std::filesystem::remove(side);
+
+	// A restart begun before the journal was reopened is stale: FinishRestart changes nothing.
+	const std::shared_ptr<const CRegistryView> next = Store.Acquire();
+	CJournalRestart stale = journal.BeginRestart(next->GetRevision());
+	journal.Close();
+	ASSERT_TRUE(journal.Open(Journal, ProjectId, view->GetRevision(), {}));
+	CommitJournaled(Store, journal, MakeEdit(3u));
+	EXPECT_FALSE(journal.FinishRestart(std::move(stale), &error));
+	EXPECT_FALSE(error.IsEmpty());
+	EXPECT_EQ(journal.GetJournalBase(), view->GetRevision());
+	EXPECT_EQ(ReadJournal(Journal).Deltas.size(), 2u);
+	journal.Close();
+	CRegistryStore loaded;
+	EXPECT_EQ(Load(loaded).Files[0].JournalCommits, 2u);
+	ExpectSameContent(Store.Live(), loaded.Live());
+}
+
+TEST_F(JournalTest, APreparedRestartMendsABrokenJournalAndLosesNoCommit)
+{
+	CRegistryJournal journal;
+	ASSERT_TRUE(journal.Open(Journal, ProjectId, Store.GetRevision(), {}));
+	CommitJournaled(Store, journal, MakeEdit(1u));
+	SRegistryJournalTestAccess::FailNextAppendAfter(journal, 20u);
+	SRegistryDelta second = MakeEdit(2u);
+	EXPECT_FALSE(journal.Append(second, Store.GetRevision() + 1u));
+	Store.Commit(std::move(second));
+	ASSERT_TRUE(journal.IsBroken());
+
+	const std::shared_ptr<const CRegistryView> view = Store.Acquire();
+	CJournalRestart restart = journal.BeginRestart(view->GetRevision());
+	SRegistryDelta third = MakeEdit(3u);
+	EXPECT_FALSE(journal.Append(third, Store.GetRevision() + 1u));   // still broken: kept in memory
+	Store.Commit(std::move(third));
+	ASSERT_TRUE(WriteSnapshot(*view, {}, Snapshot, ProjectId, 0u));
+	FString error;
+	ASSERT_TRUE(restart.Prepare(&error)) << error.CStr();
+	ASSERT_TRUE(journal.FinishRestart(std::move(restart), &error)) << error.CStr();
+	EXPECT_FALSE(journal.IsBroken());
+	EXPECT_TRUE(journal.IsOpen());
+	const SJournalContents contents = ReadJournal(Journal);
+	ASSERT_EQ(contents.Deltas.size(), 1u);
+	EXPECT_FALSE(contents.bTornTail);
+	CommitJournaled(Store, journal, MakeEdit(4u));
+	journal.Close();
+	CRegistryStore loaded;
+	const SSnapshotFileReport report = Load(loaded).Files[0];
 	EXPECT_EQ(report.JournalCommits, 2u);
 	ExpectSameContent(Store.Live(), loaded.Live());
 }

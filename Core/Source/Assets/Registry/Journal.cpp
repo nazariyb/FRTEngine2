@@ -728,6 +728,7 @@ bool CRegistryJournal::Open (const std::filesystem::path& InPath, const SGuid& I
 	ProjectId = InProjectId;
 	MountNames = std::move(InMountNames);
 	Stats = SJournalStats {};
+	++Generation;
 
 	if (ContinueFrom)
 	{
@@ -758,6 +759,7 @@ void CRegistryJournal::Close () noexcept
 	File.Close();
 	std::vector<uint8>().swap(OwnFrames);
 	bBroken = false;
+	++Generation;
 }
 
 bool CRegistryJournal::StartNew (uint64 Base, std::span<const uint8> Frames, FString* OutError)
@@ -870,6 +872,7 @@ bool CRegistryJournal::Restart (uint64 Base, FString* OutError)
 		}
 	});
 	const uint64 written = platform::ReadTimestamp();
+	++Generation;
 	if (!StartNew(Base, kept, OutError))
 	{
 		// The commits stay in memory; the next full write tries again.
@@ -882,6 +885,103 @@ bool CRegistryJournal::Restart (uint64 Base, FString* OutError)
 	const uint64 end = platform::ReadTimestamp();
 	Stats.LastRestartMs = platform::TimestampToMilliseconds(end - start);
 	Stats.LastRestartFileMs = platform::TimestampToMilliseconds(end - written);
+	Stats.LastRestartWorkerMs = 0.0;
+	return true;
+}
+
+CJournalRestart CRegistryJournal::BeginRestart (uint64 Base)
+{
+	const uint64 start = platform::ReadTimestamp();
+	CJournalRestart restart;
+	restart.Path = Path;
+	restart.ProjectId = ProjectId;
+	restart.Base = Base;
+	restart.Generation = Generation;
+	restart.CoveredBytes = OwnFrames.size();
+	ForEachCommit(OwnFrames, 0u, false, [&] (SCommitSpan&& Commit)
+	{
+		if (Commit.Revision > Base)
+		{
+			binary::AppendRaw(restart.Frames, std::span<const uint8>(OwnFrames).subspan(Commit.Begin, Commit.End - Commit.Begin));
+		}
+	});
+	BeginRestartMs = platform::TimestampToMilliseconds(platform::ReadTimestamp() - start);
+	return restart;
+}
+
+bool CJournalRestart::Prepare (FString* OutError)
+{
+	FRT_CPU_SCOPE("Assets.Journal.PrepareRestart");
+	const uint64 start = platform::ReadTimestamp();
+	bPrepared = false;
+	std::filesystem::path side = Path;
+	side += ".next";
+	std::vector<uint8> bytes = MakeHeader(ProjectId, Base);
+	binary::AppendRaw(bytes, Frames);
+	// Written unflushed beside the journal (StartNew's reasoning), then renamed over it: the owner keeps
+	// appending to the journal it has open until FinishRestart, and those appends land in the old file, which
+	// the rename (POSIX semantics: the old handle shares delete) leaves to that handle.
+	if (!platform::WriteFileBytes(side, bytes, true, OutError) || !platform::ReplaceFileAtomic(side, Path, OutError) || !File.Open(Path, true, OutError))
+	{
+		File.Close();
+		(void)platform::RemoveFile(side);
+		PrepareMs = platform::TimestampToMilliseconds(platform::ReadTimestamp() - start);
+		return false;
+	}
+	bPrepared = true;
+	PrepareMs = platform::TimestampToMilliseconds(platform::ReadTimestamp() - start);
+	return true;
+}
+
+bool CRegistryJournal::FinishRestart (CJournalRestart&& Prepared, FString* OutError)
+{
+	FRT_CPU_SCOPE("Assets.Journal.FinishRestart");
+	const uint64 start = platform::ReadTimestamp();
+	if (Prepared.Generation != Generation || Prepared.Path != Path)
+	{
+		if (OutError != nullptr)
+		{
+			*OutError = "the journal was reopened or restarted since this restart began";
+		}
+		return false;
+	}
+	if (!Prepared.bPrepared)
+	{
+		const double workerMs = Prepared.PrepareMs;
+		const bool bRestarted = Restart(Prepared.Base, OutError);
+		Stats.LastRestartWorkerMs = workerMs;
+		return bRestarted;
+	}
+	// The commits after the view, from memory; those made since BeginRestart went into the replaced file.
+	std::vector<uint8> kept;
+	ForEachCommit(OwnFrames, 0u, false, [&] (SCommitSpan&& Commit)
+	{
+		if (Commit.Revision > Prepared.Base)
+		{
+			binary::AppendRaw(kept, std::span<const uint8>(OwnFrames).subspan(Commit.Begin, Commit.End - Commit.Begin));
+		}
+	});
+	const std::span<const uint8> later = std::span<const uint8>(OwnFrames).subspan((std::min)(Prepared.CoveredBytes, OwnFrames.size()));
+	const uint64 fileStart = platform::ReadTimestamp();
+	++Generation;
+	File = std::move(Prepared.File);
+	JournalBase = Prepared.Base;
+	if (!later.empty() && !File.Append(later, OutError))
+	{
+		// Part of them may be in the file: as a failed Append, nothing more is written until the next restart.
+		File.Close();
+		OwnFrames = std::move(kept);
+		bBroken = true;
+		++Stats.FailedAppends;
+		return false;
+	}
+	const uint64 end = platform::ReadTimestamp();
+	OwnFrames = std::move(kept);
+	bBroken = false;
+	++Stats.Restarts;
+	Stats.LastRestartMs = BeginRestartMs + platform::TimestampToMilliseconds(end - start);
+	Stats.LastRestartFileMs = platform::TimestampToMilliseconds(end - fileStart);
+	Stats.LastRestartWorkerMs = Prepared.PrepareMs;
 	return true;
 }
 }
