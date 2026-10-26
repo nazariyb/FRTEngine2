@@ -54,7 +54,9 @@ struct SAssetData
  * One edge as a reader sees it. From is the record that declares it (the sub-entry for FromSub != 0 when
  * that sub-entry exists). To is the record it resolves to (the sub-entry named by TargetSub when there is
  * one, else the file's record), invalid while Flags has Unresolved - also when the target is ambiguous
- * under the portable fold (bAmbiguous, PATH001). The views point into the view's pools.
+ * under the portable fold (bAmbiguous, PATH001), and invalid for an edge to a companion file (bCompanion: a
+ * glTF's buffer, a FILES row with no record), which is satisfied and so carries no Unresolved - `is:broken-ref`
+ * and the unresolved counts skip it. The views point into the view's pools.
  */
 struct SDependencyView
 {
@@ -62,11 +64,12 @@ struct SDependencyView
 	SRecordId To;
 	uint64 FromSub = 0u;
 	uint64 TargetSub = 0u;
-	EDepFlags Flags {};                 // as declared, plus Unresolved when not resolved
+	EDepFlags Flags {};                 // as declared, plus Unresolved when neither resolved nor a companion
 	FStringView TargetPath;             // the path the source wrote ("#label" included); a Guid target's hint
 	SAssetId TargetId;                  // a Guid target's id; a resolved Path target's record id and TargetSub
 	FStringView FieldPath;
 	bool bAmbiguous = false;
+	bool bCompanion = false;            // the target is a companion file (no record, To invalid, not Unresolved)
 };
 
 struct SMountInfo

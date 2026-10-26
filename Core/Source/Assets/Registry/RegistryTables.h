@@ -257,10 +257,14 @@ struct SSubEntryTable
  * (optionally with "#label") or an SAssetId - and is resolved to a record by the store, at every commit
  * that changes the records its key can match. So an unresolved edge is kept and rebound in place, and the
  * graph never depends on Analyze or commit order. The edge's target record and TargetSub are the target
- * row's (Resolved, TargetSub); its effective flags carry Unresolved unless the target is Resolved.
+ * row's (Resolved, TargetSub); its effective flags carry Unresolved unless the target is Resolved or Companion.
+ * Companion: a Path target that names no record but a live FILES row of class Companion (a glTF's .bin under
+ * §5.2's companion rule): the file the source needs is there, so the edge is not broken, yet there is no
+ * record to point at (Resolved stays InvalidRow). It is re-resolved whenever that path's companion state
+ * changes, in either commit order, like every other target.
  */
 enum class ETargetKind : uint8 { Path, Guid };
-enum class ETargetState : uint8 { Unresolved, Resolved, Ambiguous };   // Ambiguous: PATH001, two records match
+enum class ETargetState : uint8 { Unresolved, Resolved, Ambiguous, Companion };   // Ambiguous: PATH001, two records match
 
 struct STargetRow
 {
@@ -679,4 +683,5 @@ FRT_DECLARE_ENUM_REFLECTION(
 	frt::assets::ETargetState,
 	FRT_ENUM_ENTRY(frt::assets::ETargetState, Unresolved),
 	FRT_ENUM_ENTRY(frt::assets::ETargetState, Resolved),
-	FRT_ENUM_ENTRY(frt::assets::ETargetState, Ambiguous));
+	FRT_ENUM_ENTRY(frt::assets::ETargetState, Ambiguous),
+	FRT_ENUM_ENTRY(frt::assets::ETargetState, Companion));

@@ -202,18 +202,24 @@ TEST(AssetImporterTest, AnalyzedDemoFilesCommitWithResolvedEdges)
 		return std::pair(total, unresolved);
 	};
 	// The image edge resolves to the texture's record. The buffer edge names the companion, a FILES row without a
-	// record of its own, and the store resolves edges to records only: it stays Unresolved (an open question for
-	// the integration, not the importer's).
+	// record of its own: the store marks it satisfied by the file (bCompanion, no record, not Unresolved), so the
+	// Demo's models are no broken references.
 	bool bTextureResolved = false;
+	bool bBufferSatisfied = false;
 	view.ForEachDependency(*view.FindByPath(Model), EDepFlags {}, EDepFlags {}, [&] (const SDependencyView& Edge)
 	{
 		if (Edge.TargetPath == Texture)
 		{
 			bTextureResolved = (Edge.Flags & EDepFlags::Unresolved) == EDepFlags {} && Edge.FromSub == MakeSubId("image:#0");
 		}
+		if (Edge.TargetPath == Buffer)
+		{
+			bBufferSatisfied = (Edge.Flags & EDepFlags::Unresolved) == EDepFlags {} && Edge.bCompanion && !Edge.To.IsValid();
+		}
 	});
 	EXPECT_TRUE(bTextureResolved);
-	EXPECT_EQ(countUnresolved(Model).first, 2u);
+	EXPECT_TRUE(bBufferSatisfied);
+	EXPECT_EQ(countUnresolved(Model), std::pair(2u, 0u));
 	EXPECT_EQ(countUnresolved(Material), std::pair(1u, 0u));
 	// Only IA_MoveUp's file is registered here: three of the map's four edges wait for theirs.
 	EXPECT_EQ(countUnresolved(InputMap), std::pair(4u, 3u));

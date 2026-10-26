@@ -686,11 +686,13 @@ SDependencyView CRegistryView::MakeDependencyView (uint32 Source, uint32 EdgeRef
 	view.FromSub = edge.FromSub;
 	const uint32 fromSub = edge.FromSub != 0u ? FindSubEntryRow(Tables, Source, edge.FromSub) : InvalidRow;
 	view.From = MakeRecordId(fromSub != InvalidRow ? (SubEntryBit | fromSub) : Source);
-	view.Flags = target.State == ETargetState::Resolved ? edge.Flags : (edge.Flags | EDepFlags::Unresolved);
+	const bool bSatisfied = target.State == ETargetState::Resolved || target.State == ETargetState::Companion;
+	view.Flags = bSatisfied ? edge.Flags : (edge.Flags | EDepFlags::Unresolved);
 	view.TargetSub = target.TargetSub;
 	view.TargetPath = target.Text != InvalidRow ? Tables.Paths.Get(target.Text) : FStringView();
 	view.FieldPath = edge.FieldPath != InvalidRow ? Tables.Names.Get(edge.FieldPath) : FStringView();
 	view.bAmbiguous = target.State == ETargetState::Ambiguous;
+	view.bCompanion = target.State == ETargetState::Companion;
 	if (target.Kind == ETargetKind::Guid)
 	{
 		view.TargetId = SAssetId { target.Guid, target.TargetSub };

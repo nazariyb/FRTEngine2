@@ -36,7 +36,10 @@
  *	  since nothing would ever clear them otherwise; Scan and Rules problems stay with their producers.
  *	- A record upsert for a file the store does not know creates the FILES row (class Asset).
  *	- A file named in some record's Companions has class Companion whatever its record; the store never
- *	  deletes a record because of it (F3 sends none for companions).
+ *	  deletes a record because of it (F3 sends none for companions). A path edge that matches no record but
+ *	  a live FILES row of class Companion (a glTF's buffer) is satisfied by the file: its target is
+ *	  ETargetState::Companion, the edge carries no Unresolved and has no record (SDependencyView::bCompanion),
+ *	  and it is rebound like an unresolved edge whenever the path's companion state changes.
  *	- The Registry problems of a record are its edges' REF006 / PATH001 plus the contract problems of its
  *	  last upsert, recomputed whenever a target it names changes resolution.
  *

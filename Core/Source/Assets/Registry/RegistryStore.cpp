@@ -755,7 +755,12 @@ private:
 		files.Identity.Append(platform::SFileIdentity {}, Epoch);
 		files.ContentHash.Append(hash::SContentHash {}, Epoch);
 		files.MetaHash.Append(0u, Epoch);
-		files.Class.Append(EffectiveClass(Path, EFileClass::Asset), Epoch);
+		const EFileClass fileClass = EffectiveClass(Path, EFileClass::Asset);
+		files.Class.Append(fileClass, Epoch);
+		if (fileClass == EFileClass::Companion)
+		{
+			TouchedRecordPaths.insert(FString(Path));   // edges to the path now find a companion
+		}
 		files.BaseClass.Append(EFileClass::Asset, Epoch);
 		files.MetaState.Append(EMetaState::PendingMeta, Epoch);
 		files.Record.Append(InvalidRow, Epoch);
@@ -802,6 +807,10 @@ private:
 			RemoveRecord(files.Record[Row]);
 		}
 		const FStringView path = T.Paths.Get(files.Path[Row]);
+		if (files.Class[Row] == EFileClass::Companion)
+		{
+			TouchedRecordPaths.insert(FString(path));   // edges to the companion become Unresolved
+		}
 		const MountId mount = files.Mount[Row];
 		T.Indices.FilesByPath.Erase(HashMountRule(path, (*T.Mounts)[mount].bCaseSensitive), Row, Epoch);
 		T.Indices.FilesByPortablePath.Erase(HashPortable(path), Row, Epoch);
@@ -815,10 +824,13 @@ private:
 		ClearProblems(path, (1u << SourceIndex(EProblemSource::Analyze)) | (1u << SourceIndex(EProblemSource::Registry)), false);
 	}
 
+	// Called when a path starts or stops being named as a companion: its FILES rows change class, and the
+	// targets naming it are re-resolved (ETargetState::Companion), whichever comes first, file or record.
 	void UpdateCompanionClass (FStringView Path)
 	{
 		const auto found = W.CompanionRefs.find(Path);
 		const bool bCompanion = found != W.CompanionRefs.end() && found->second > 0u;
+		TouchedRecordPaths.insert(FString(Path));
 		T.Indices.FilesByPortablePath.ForEach(HashPortable(Path), [&] (uint32 Row)
 		{
 			if (T.Files.Folder[Row] != InvalidRow && EqualPortable(T.Paths.Get(T.Files.Path[Row]), Path))
@@ -1611,7 +1623,25 @@ private:
 			return result;
 		}
 		result.TargetSub = 0u;
+		if (IsCompanionFile(text))
+		{
+			result.State = ETargetState::Companion;
+		}
 		return result;
+	}
+
+	// Whether a live FILES row of that path (portable fold) is a companion: an edge to it needs the file, which
+	// has no record of its own (§5.2).
+	bool IsCompanionFile (FStringView Path) const
+	{
+		bool bCompanion = false;
+		T.Indices.FilesByPortablePath.ForEach(HashPortable(Path), [&] (uint32 Row)
+		{
+			bCompanion = T.Files.Folder[Row] != InvalidRow && T.Files.Class[Row] == EFileClass::Companion
+				&& EqualPortable(T.Paths.Get(T.Files.Path[Row]), Path);
+			return !bCompanion;
+		});
+		return bCompanion;
 	}
 
 	void ApplyTargetResolution (uint32 Row)

@@ -7,6 +7,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <memory>
 
 #include "Assets/AssetDiagnosticCodes.h"
 #include "Assets/Registry/RegistryTables.h"
@@ -1017,6 +1018,84 @@ TEST(RegistryStoreTest, CompanionsAreClassifiedInEitherCommitOrder)
 	remove.FileRemoves.push_back("/Project/Hero.gltf");
 	reversed.Commit(std::move(remove));
 	EXPECT_EQ(classOf(reversed.Live(), "/Project/Hero.bin"), EFileClass::Unclaimed);
+}
+
+// A glTF's buffer edge names its companion, a FILES row without a record: the edge is satisfied (Companion,
+// no Unresolved, no To) in either commit order, and Unresolved again when the file goes or no record names it.
+TEST(RegistryStoreTest, EdgesToCompanionsAreSatisfiedInEitherCommitOrder)
+{
+	const auto model = [] (bool bNamesCompanion)
+	{
+		SRecordUpsert record = MakeRecord("/Project/Hero.gltf", asset_types::Model, "Model.Gltf");
+		record.Edges = { MakePathEdge("/Project/hero.BIN", EDepFlags::Build | EDepFlags::Path | EDepFlags::Declared, "buffers.0.uri") };
+		if (bNamesCompanion)
+		{
+			record.Companions = { "/Project/Hero.bin" };
+		}
+		return record;
+	};
+	const auto bufferEdge = [] (const CRegistryView& View)
+	{
+		const std::vector<SDependencyView> edges = GetDependencies(View, FindRecord(View, "/Project/Hero.gltf"));
+		EXPECT_EQ(edges.size(), 1u);
+		return edges.empty() ? SDependencyView {} : edges[0];
+	};
+	const auto build = [&] (bool bFileFirst)
+	{
+		auto store = std::make_unique<CRegistryStore>();
+		SRegistryDelta first = MakeMountsDelta();
+		SRegistryDelta second;
+		(bFileFirst ? first : second).FileUpserts.push_back(MakeFile("/Project/Hero.bin", 10u, EFileClass::Unclaimed));
+		(bFileFirst ? second : first).FileUpserts.push_back(MakeFile("/Project/Hero.gltf"));
+		(bFileFirst ? second : first).RecordUpserts.push_back(model(true));
+		store->Commit(std::move(first));
+		store->Commit(std::move(second));
+		return store;
+	};
+
+	for (const bool bFileFirst : { true, false })
+	{
+		const std::unique_ptr<CRegistryStore> built = build(bFileFirst);
+		CRegistryStore& store = *built;
+		SDependencyView edge = bufferEdge(store.Live());
+		EXPECT_FALSE(HasAnyFlags(edge.Flags, EDepFlags::Unresolved)) << bFileFirst;
+		EXPECT_TRUE(edge.bCompanion) << bFileFirst;
+		EXPECT_FALSE(edge.To.IsValid()) << bFileFirst;
+		EXPECT_TRUE(Dump(store.Live()).View().Contains("edge /Project/hero.BIN sub=0000000000000000 flags=Build|Declared|Path field=buffers.0.uri Companion"))
+			<< Dump(store.Live()).CStr();
+		if (!bFileFirst)
+		{
+			continue;
+		}
+		EXPECT_EQ(Dump(store.Live()), Dump(build(false)->Live()));
+
+		// The record stops naming the file: an ordinary Unclaimed file, so the path edge finds no record.
+		SRegistryDelta drop;
+		drop.RecordUpserts.push_back(model(false));
+		store.Commit(std::move(drop));
+		edge = bufferEdge(store.Live());
+		EXPECT_TRUE(HasAnyFlags(edge.Flags, EDepFlags::Unresolved));
+		EXPECT_FALSE(edge.bCompanion);
+
+		// Named again, then the file goes: Unresolved, a broken reference.
+		SRegistryDelta again;
+		again.RecordUpserts.push_back(model(true));
+		store.Commit(std::move(again));
+		EXPECT_TRUE(bufferEdge(store.Live()).bCompanion);
+		SRegistryDelta remove;
+		remove.FileRemoves.push_back("/Project/Hero.bin");
+		store.Commit(std::move(remove));
+		edge = bufferEdge(store.Live());
+		EXPECT_TRUE(HasAnyFlags(edge.Flags, EDepFlags::Unresolved));
+		EXPECT_FALSE(edge.bCompanion);
+
+		// And it comes back.
+		SRegistryDelta back;
+		back.FileUpserts.push_back(MakeFile("/Project/Hero.bin", 10u, EFileClass::Unclaimed));
+		store.Commit(std::move(back));
+		EXPECT_TRUE(bufferEdge(store.Live()).bCompanion);
+		EXPECT_FALSE(HasAnyFlags(bufferEdge(store.Live()).Flags, EDepFlags::Unresolved));
+	}
 }
 
 
