@@ -1,0 +1,444 @@
+// The M3 pipeline end to end over the Demo template, the contract F3 builds on: a temp copy of the engine's content,
+// Core/Config/Assets.yml and Templates/Demo goes through CMountTable -> CRulesEngine -> CMountScanner -> ResolveFile ->
+// AnalyzeFile -> AppendRecordUpsert -> CRegistryStore::Commit, with the companions known before RULE002 is computed,
+// as F3 will run it. Then: no RULE001 or RULE002, no error, no unresolved edge; the records per type are what the
+// files on disk say; two scans (different thread counts) dump identically; the engine and project snapshots written
+// and loaded back dump the same; and text queries answer what the files say.
+#include <gtest/gtest.h>
+
+#include <algorithm>
+#include <cstdio>
+#include <filesystem>
+#include <map>
+#include <memory>
+#include <set>
+#include <system_error>
+#include <vector>
+
+#include "../Discovery/DiscoveryTestUtils.h"
+
+#include "Assets/AssetDiagnosticCodes.h"
+#include "Assets/AssetTypes.h"
+#include "Assets/Discovery/Mounts.h"
+#include "Assets/Discovery/MountScanner.h"
+#include "Assets/Pipeline/ImporterTable.h"
+#include "Assets/Pipeline/Importers/AssetImporter.h"
+#include "Assets/Pipeline/Rules.h"
+#include "Assets/Registry/QueryEngine.h"
+#include "Assets/Registry/RegistryStore.h"
+#include "Assets/Registry/RegistryView.h"
+#include "Assets/Registry/Snapshot.h"
+#include "Containers/String.h"
+#include "EnginePaths.h"
+#include "Jobs/WorkerPool.h"
+#include "Platform/FileSystem.h"
+#include "Platform/Timestamp.h"
+
+using namespace frt;
+using namespace frt::assets;
+using frt::test::discovery::CDiscoveryTree;
+
+
+namespace
+{
+// Copies Source into Destination, every file, skipping the directories named in Skip (relative to Source).
+void CopyTree (const std::filesystem::path& Source, const std::filesystem::path& Destination, std::span<const FStringView> Skip = {})
+{
+	std::error_code ec;
+	std::filesystem::create_directories(Destination, ec);
+	for (std::filesystem::recursive_directory_iterator it(Source, ec), end; it != end; it.increment(ec))
+	{
+		const std::filesystem::path relative = std::filesystem::relative(it->path(), Source, ec);
+		const FString relativeText = FString::FromPath(relative, EPathStyle::Generic);
+		if (it->is_directory(ec))
+		{
+			if (std::any_of(Skip.begin(), Skip.end(), [&] (FStringView S) { return relativeText.View() == S; }))
+			{
+				it.disable_recursion_pending();
+				continue;
+			}
+			std::filesystem::create_directories(Destination / relative, ec);
+			continue;
+		}
+		std::filesystem::copy_file(it->path(), Destination / relative, std::filesystem::copy_options::overwrite_existing, ec);
+		ASSERT_FALSE(ec) << FString::FromPath(it->path()).CStr();
+	}
+}
+
+// The Demo project and the engine content as F3 would mount them, in a temp tree of their own (the runtime may write
+// Content/, so the test never scans the checkout itself).
+class CDemoCopy
+{
+public:
+	CDemoCopy ()
+		: Tree("DemoPipeline")
+	{
+		const FStringView skipShaderBinaries[] = { "Shaders/Bin" };
+		CopyTree(paths::GetEngineContentDir(), Tree.EngineContent(), skipShaderBinaries);
+		std::error_code ec;
+		std::filesystem::create_directories(Tree.EngineConfig(), ec);
+		std::filesystem::copy_file(paths::GetEngineConfigPath().parent_path() / "Assets.yml", Tree.EngineConfig() / "Assets.yml", ec);
+		const std::filesystem::path demo = paths::GetEngineDir() / "Templates" / "Demo";
+		CopyTree(demo / "Content", Tree.ProjectContent());
+		std::filesystem::create_directories(Tree.ProjectDir() / "Config", ec);
+		std::filesystem::copy_file(demo / "Config" / "Assets.yml", Tree.ProjectDir() / "Config" / "Assets.yml", ec);
+		Mounts = CMountTable::Resolve(Tree.EngineContent(), Tree.EngineConfig(), Tree.ProjectDir(), &MountDiagnostics);
+	}
+
+	CDiscoveryTree Tree;
+	CMountTable Mounts;
+	std::vector<SDiagnostic> MountDiagnostics;
+};
+
+struct SPipelineRun
+{
+	std::unique_ptr<CRegistryStore> Store = std::make_unique<CRegistryStore>();
+	std::unique_ptr<CRulesEngine> Rules;
+	std::vector<SDiagnostic> Diagnostics;       // everything the producers reported, for the checks
+	uint32 Files = 0u;
+	uint32 Analyzed = 0u;
+	double Milliseconds = 0.0;
+};
+
+// Groups diagnostics by Subject into one SProblemsSet each, under Source.
+void AddProblems (SRegistryDelta& Delta, EProblemSource Source, const std::vector<SDiagnostic>& Diagnostics)
+{
+	std::map<FString, std::vector<SDiagnostic>, std::less<>> bySubject;
+	for (const SDiagnostic& diagnostic : Diagnostics)
+	{
+		bySubject[diagnostic.Subject].push_back(diagnostic);
+	}
+	for (auto& [subject, list] : bySubject)
+	{
+		Delta.Problems.push_back(SProblemsSet { subject, Source, std::move(list) });
+	}
+}
+
+/**
+ * One cold run of the M3 pipeline as F3 runs it: rules, a scan per mount, per file the effective settings and
+ * Analyze (Types filter applied), one commit, then RULE002 for the files still Unclaimed once companions are known.
+ */
+SPipelineRun RunPipeline (const CMountTable& Mounts, uint32 Threads)
+{
+	SPipelineRun run;
+	const uint64 start = platform::ReadTimestamp();
+	run.Rules = std::make_unique<CRulesEngine>(Mounts);
+	CRulesEngine& rules = *run.Rules;
+	rules.LoadMountRules(&run.Diagnostics);
+
+	jobs::SWorkerPoolDesc poolDesc;
+	poolDesc.ThreadCount = Threads;
+	poolDesc.Name = "Demo Pipeline";
+	jobs::CWorkerPool pool(poolDesc);
+
+	SRegistryDelta delta;
+	for (const SMount& mount : Mounts.GetMounts())
+	{
+		delta.Mounts.push_back(SMountUpsert { mount.Name, mount.Volume.bCaseSensitive, mount.Id });
+		if (const uint64 hash = rules.GetMountRulesHash(mount.Name); hash != 0u)
+		{
+			delta.RuleFileUpserts.push_back(SRuleFileUpsert { mount.Name, FString(), hash });
+		}
+	}
+	std::vector<std::pair<FString, bool>> unclaimedCandidates;   // path, quiet
+	for (const SMount& mount : Mounts.GetMounts())
+	{
+		const SScanBatch batch = CMountScanner::ScanBlocking(pool, mount, mount.GetRootMountPath(), rules, nullptr);
+		run.Diagnostics.insert(run.Diagnostics.end(), batch.Diagnostics.begin(), batch.Diagnostics.end());
+		run.Diagnostics.insert(run.Diagnostics.end(), batch.RuleDiagnostics.begin(), batch.RuleDiagnostics.end());
+		EXPECT_TRUE(batch.FailedFolders.empty()) << mount.Name.CStr();
+		AddProblems(delta, EProblemSource::Scan, batch.Diagnostics);
+		AddProblems(delta, EProblemSource::Rules, batch.RuleDiagnostics);
+		for (const SScanFolder& folder : batch.Folders)
+		{
+			delta.FolderUpserts.push_back(SFolderUpsert { folder.MountPath });
+			if (folder.bHasRuleFile)
+			{
+				delta.RuleFileUpserts.push_back(SRuleFileUpsert { mount.Name, folder.MountPath, folder.RulesHash });
+			}
+		}
+		for (const SScanFile& file : batch.Files)
+		{
+			const SScanFolder& folder = batch.Folders[file.Folder];
+			const FString path = folder.MountPath + "/" + file.Name;
+			const SEffectiveFileSettings settings = rules.ResolveFile(*folder.Scope, path, {}, false);
+			SFileUpsert row;
+			row.MountPath = path;
+			row.Size = file.Size;
+			row.MTime = file.MTime;
+			row.Identity = file.Identity;
+			row.Class = settings.Class;
+			row.ContentHash = hash::SContentHash {};   // changed, not hashed (F3 hashes lazily)
+			++run.Files;
+			if (settings.Importer != nullptr && settings.Class != EFileClass::Excluded)
+			{
+				const std::optional<SAnalyzeInput> input = SAnalyzeInput::FromMount(mount, path);
+				EXPECT_TRUE(input.has_value()) << path.CStr();
+				if (input.has_value())
+				{
+					SAnalyzeResult result;
+					(void)AnalyzeFile(*input, settings, result);
+					run.Analyzed += result.Status == EImportStatus::Analyzed ? 1u : 0u;
+					if (result.ContentHash.has_value())
+					{
+						row.ContentHash = result.ContentHash;
+					}
+					RemoveSubEntries(result, path, [&] (reflect::TypeId Type) { return rules.IsTypeIncluded(*folder.Scope, Type); });
+					run.Diagnostics.insert(run.Diagnostics.end(), result.Diagnostics.begin(), result.Diagnostics.end());
+					AppendRecordUpsert(std::move(result), settings, path, delta);
+				}
+			}
+			else if (settings.Class == EFileClass::Unclaimed)
+			{
+				unclaimedCandidates.emplace_back(path, file.Verdict.bQuiet);
+			}
+			delta.FileUpserts.push_back(std::move(row));
+		}
+	}
+	run.Store->Commit(std::move(delta));
+
+	// RULE002 once companions are known: the candidates the commit left Unclaimed (a glTF's .bin is a Companion now).
+	const CRegistryView& view = run.Store->Live();
+	std::vector<SUnclaimedFile> unclaimed;
+	for (const auto& [path, bQuiet] : unclaimedCandidates)
+	{
+		SFileData data;
+		if (const std::optional<uint32> row = view.FindFileExact(path); row && view.GetFile(*row, data) && data.Class == EFileClass::Unclaimed)
+		{
+			unclaimed.push_back(SUnclaimedFile { path.View(), bQuiet });
+		}
+	}
+	const std::vector<SDiagnostic> rule002 = ReportUnclaimedFiles(unclaimed);
+	run.Diagnostics.insert(run.Diagnostics.end(), rule002.begin(), rule002.end());
+	SRegistryDelta unclaimedDelta;
+	AddProblems(unclaimedDelta, EProblemSource::Unclaimed, rule002);
+	run.Store->Commit(std::move(unclaimedDelta));
+	run.Milliseconds = platform::TimestampToMilliseconds(platform::ReadTimestamp() - start);
+	return run;
+}
+
+FString DumpOf (const CRegistryView& View)
+{
+	FString text;
+	View.DumpText(text);
+	return text;
+}
+
+FString Describe (const std::vector<SDiagnostic>& Diagnostics)
+{
+	FString text;
+	for (const SDiagnostic& diagnostic : Diagnostics)
+	{
+		text.AppendFormat("\n  {} {} {}: {}", FormatDiagnosticCode(diagnostic.Code), GetSeverityName(diagnostic.Severity), diagnostic.Subject,
+			diagnostic.Message);
+	}
+	return text;
+}
+
+// What the copied files say: per type, how many files claim it by extension (the Demo has no rule that changes an
+// importer), and how many glTF buffers there are.
+struct SExpected
+{
+	std::map<reflect::TypeId, uint32> Records;
+	uint32 Buffers = 0u;
+};
+
+SExpected CountByExtension (const CDemoCopy& Copy)
+{
+	SExpected expected;
+	const auto count = [&] (const std::filesystem::path& Root, bool bEngine)
+	{
+		std::error_code ec;
+		for (std::filesystem::recursive_directory_iterator it(Root, ec), end; it != end; it.increment(ec))
+		{
+			const FString relative = FString::FromPath(std::filesystem::relative(it->path(), Root, ec), EPathStyle::Generic);
+			if (bEngine && relative.StartsWith("Shaders"))
+			{
+				it.disable_recursion_pending();   // Core/Config/Assets.yml excludes /Engine/Shaders/**
+				continue;
+			}
+			if (it->is_directory(ec))
+			{
+				continue;
+			}
+			const FString name = FString::FromPath(it->path().filename(), EPathStyle::Generic);
+			if (name.View().EndsWith<ESearchCase::IgnoreCase>(".bin"))
+			{
+				++expected.Buffers;
+				continue;
+			}
+			if (bEngine && relative.StartsWith("Fonts/") && (name.View().EndsWith<ESearchCase::IgnoreCase>(".ttf")
+				|| name.View().EndsWith<ESearchCase::IgnoreCase>(".otf")))
+			{
+				++expected.Records[asset_types::Raw];   // Scan.Raw in the engine file
+				continue;
+			}
+			if (const SImporterDesc* importer = FindImporterForFile(name); importer != nullptr)
+			{
+				++expected.Records[importer->GetMainType(name)];
+			}
+		}
+	};
+	count(Copy.Tree.EngineContent(), true);
+	count(Copy.Tree.ProjectContent(), false);
+	return expected;
+}
+
+std::set<FString> FilesOf (const CRegistryView& View, const std::vector<SRecordId>& Records)
+{
+	std::set<FString> files;
+	for (const SRecordId record : Records)
+	{
+		SAssetData data;
+		if (View.GetRecord(record, data))
+		{
+			const uint32 hash = data.MountPath.View().Find('#');
+			files.insert(FString(hash == FStringView::NotFound ? data.MountPath.View() : data.MountPath.View().Left(hash)));
+		}
+	}
+	return files;
+}
+}
+
+
+TEST(DemoPipelineTest, TheDemoTemplateGoesThroughEveryM3PieceAsTheFilesSay)
+{
+	const CDemoCopy copy;
+	ASSERT_EQ(copy.Mounts.GetMounts().size(), 2u) << Describe(copy.MountDiagnostics).CStr();
+	EXPECT_TRUE(copy.MountDiagnostics.empty()) << Describe(copy.MountDiagnostics).CStr();
+
+	SPipelineRun run = RunPipeline(copy.Mounts, 4u);
+	const CRegistryView& view = run.Store->Live();
+	std::printf("[ PERF     ] Demo pipeline, cold: %u files, %u analyzed, %.1f ms (4 threads)\n", run.Files, run.Analyzed, run.Milliseconds);
+
+	// No rule problem, nothing unclaimed that is not quiet, no error anywhere.
+	std::vector<SDiagnostic> bad;
+	for (const SDiagnostic& diagnostic : run.Diagnostics)
+	{
+		if (diagnostic.Code == Rule001 || diagnostic.Code == Rule002 || diagnostic.Severity == ESeverity::Error)
+		{
+			bad.push_back(diagnostic);
+		}
+	}
+	EXPECT_TRUE(bad.empty()) << Describe(bad).CStr();
+	view.ForEachProblem([&] (FStringView Subject, EProblemSource Source, const SDiagnostic& Diagnostic)
+	{
+		EXPECT_NE(Source, EProblemSource::Registry) << Subject.GetData() << ": " << Diagnostic.Message.CStr();
+		EXPECT_NE(Diagnostic.Code, Rule001);
+		EXPECT_NE(Diagnostic.Code, Rule002);
+	});
+
+	// Every edge resolves (a glTF's buffer is a companion, never an edge).
+	std::vector<FString> unresolved;
+	std::map<reflect::TypeId, uint32> records;
+	view.ForEachRecord([&] (SRecordId Record)
+	{
+		SAssetData data;
+		ASSERT_TRUE(view.GetRecord(Record, data));
+		++records[data.Type];
+		view.ForEachDependency(Record, EDepFlags {}, EDepFlags {}, [&] (const SDependencyView& Edge)
+		{
+			if ((Edge.Flags & EDepFlags::Unresolved) != EDepFlags {})
+			{
+				unresolved.push_back(data.MountPath + " -> " + Edge.TargetPath);
+			}
+		});
+	});
+	EXPECT_TRUE(unresolved.empty()) << unresolved.size() << " unresolved, e.g. " << (unresolved.empty() ? "" : unresolved[0].CStr());
+
+	// The records per type are the files that claim it, and every buffer is a companion.
+	const SExpected expected = CountByExtension(copy);
+	for (const reflect::TypeId type : { asset_types::Texture, asset_types::Model, asset_types::Material, asset_types::InputActionMap,
+		asset_types::InputAction, asset_types::Raw })
+	{
+		EXPECT_EQ(records[type], expected.Records.contains(type) ? expected.Records.at(type) : 0u) << CAssetTypeRegistry::Get(type).Name.GetData();
+	}
+	EXPECT_GT(records[asset_types::Texture], 0u);
+	EXPECT_EQ(records[asset_types::Model], 6u);
+	uint32 total = 0u;
+	for (const auto& [type, count] : expected.Records)
+	{
+		total += count;
+	}
+	EXPECT_EQ(view.GetRecordCount(), total);
+	uint32 companions = 0u;
+	view.ForEachFile([&] (uint32 Row)
+	{
+		SFileData data;
+		companions += view.GetFile(Row, data) && data.Class == EFileClass::Companion ? 1u : 0u;
+	});
+	EXPECT_EQ(companions, expected.Buffers);
+	EXPECT_EQ(companions, 6u);
+
+	// A second scan, on another thread count, dumps byte for byte the same.
+	const FString dump = DumpOf(view);
+	EXPECT_TRUE(dump.View().IsValidUtf8());
+	{
+		SPipelineRun again = RunPipeline(copy.Mounts, 1u);
+		EXPECT_EQ(DumpOf(again.Store->Live()), dump);
+	}
+
+	// The engine's and the project's snapshots, written and loaded back together, dump the same.
+	const std::filesystem::path engineSnapshot = copy.Tree.EngineDir() / "Local" / "Registry" / "Engine.snapshot";
+	const std::filesystem::path projectSnapshot = copy.Tree.ProjectDir() / "Local" / "Assets" / "AssetRegistry.snapshot";
+	const SGuid engineId = SGuid::NewRandom();
+	const SGuid projectId = SGuid::NewRandom();
+	const MountId engineMounts[] = { EngineMountId };
+	const MountId projectMounts[] = { ProjectMountId };
+	FString error;
+	ASSERT_TRUE(WriteSnapshot(view, engineMounts, engineSnapshot, engineId, run.Rules->GetRulesBasis(false), &error)) << error.CStr();
+	ASSERT_TRUE(WriteSnapshot(view, projectMounts, projectSnapshot, projectId, run.Rules->GetRulesBasis(true), &error)) << error.CStr();
+	std::vector<SMountUpsert> mountUpserts;
+	for (const SMount& mount : copy.Mounts.GetMounts())
+	{
+		mountUpserts.push_back(SMountUpsert { mount.Name, mount.Volume.bCaseSensitive, mount.Id });
+	}
+	const SSnapshotSource sources[] = {
+		SSnapshotSource { engineSnapshot, engineId, false, run.Rules->GetRulesBasis(false) },
+		SSnapshotSource { projectSnapshot, projectId, false, run.Rules->GetRulesBasis(true) },
+	};
+	CRegistryStore loaded;
+	const SSnapshotLoadResult load = LoadSnapshots(loaded, sources, mountUpserts);
+	ASSERT_EQ(load.Files.size(), 2u);
+	for (const SSnapshotFileReport& file : load.Files)
+	{
+		EXPECT_EQ(file.State, ESnapshotFileState::Loaded) << file.Message.CStr();
+		EXPECT_TRUE(file.DroppedSections.empty()) << file.Message.CStr();
+		EXPECT_FALSE(file.bRuleFilesDropped);
+		EXPECT_EQ(file.StaleRecords, 0u);
+	}
+	EXPECT_EQ(DumpOf(loaded.Live()), dump);
+
+	// Text queries answer what the files say.
+	std::vector<SRecordId> found;
+	SDiagnostic queryError;
+	EXPECT_EQ(view.RunText("type:Texture", found, &queryError), std::optional<uint32>(records[asset_types::Texture])) << queryError.Message.CStr();
+	EXPECT_EQ(view.RunText("type:Model", found, &queryError), std::optional<uint32>(6u)) << queryError.Message.CStr();
+	EXPECT_EQ(FilesOf(view, found).size(), 6u);
+	EXPECT_EQ(view.RunText("type:InputActionMap", found, &queryError), std::optional<uint32>(records[asset_types::InputActionMap]));
+
+	// ref: a texture - exactly the sources whose text names it (the glTF's image URI, the legacy material's texture).
+	constexpr FStringLiteral Texture = "/Project/Models/Duck/DuckCM.png";
+	std::set<FString> naming;
+	{
+		std::error_code ec;
+		for (std::filesystem::recursive_directory_iterator it(copy.Tree.ProjectContent(), ec), end; it != end; it.increment(ec))
+		{
+			const FString name = FString::FromPath(it->path().filename(), EPathStyle::Generic);
+			if (!name.View().EndsWith<ESearchCase::IgnoreCase>(".gltf") && !name.View().EndsWith<ESearchCase::IgnoreCase>(".frtmat.yml"))
+			{
+				continue;
+			}
+			const std::optional<FString> text = platform::ReadFileText(it->path());
+			if (text.has_value() && text->View().Contains<ESearchCase::IgnoreCase>(FStringView("DuckCM.png")))
+			{
+				naming.insert(*copy.Mounts.ToMountPath(it->path()));
+			}
+		}
+	}
+	ASSERT_FALSE(naming.empty());
+	EXPECT_TRUE(view.RunText(FString::Format("ref:{}", Texture).View(), found, &queryError).has_value()) << queryError.Message.CStr();
+	EXPECT_EQ(FilesOf(view, found), naming);
+	ASSERT_TRUE(view.RunText("dep:/Project/Models/Duck/Duck.gltf", found, &queryError).has_value()) << queryError.Message.CStr();
+	EXPECT_TRUE(FilesOf(view, found).contains(FString(Texture)));
+}
