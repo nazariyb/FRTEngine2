@@ -578,6 +578,25 @@ TEST_F(FileSystemTest, WriteFileBytesRoundTrip)
 	EXPECT_FALSE(error.IsEmpty());
 }
 
+TEST_F(FileSystemTest, AnUncachedReadGivesTheFilesBytes)
+{
+	// Past the cache, in whole sectors: sizes that are not a sector's multiple, larger than one 4 MiB chunk,
+	// empty; a missing file fails with the reason.
+	for (const size_t size : { size_t(0u), size_t(1u), size_t(4095u), size_t(70000u), size_t((4u << 20u) + 4097u) })
+	{
+		const std::filesystem::path file = File("Без кешу") / FString::Format("{}.bin", size).ToPath();
+		const std::vector<uint8> bytes = MakeBytes(size, 9u);
+		ASSERT_TRUE(platform::WriteFileAtomic(file, bytes));
+		FString error;
+		const std::optional<std::vector<uint8>> read = platform::ReadFileBytesUncached(file, &error);
+		ASSERT_TRUE(read.has_value()) << error.CStr();
+		EXPECT_EQ(*read, bytes) << size;
+	}
+	FString error;
+	EXPECT_FALSE(platform::ReadFileBytesUncached(File("Немає.bin"), &error).has_value());
+	EXPECT_FALSE(error.IsEmpty());
+}
+
 TEST_F(FileSystemTest, WriteFileAtomicReplacesAndLeavesNoTemporaryFile)
 {
 	const std::filesystem::path subdirectory = File("Атомарно 原子");

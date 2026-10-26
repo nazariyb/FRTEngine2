@@ -4,10 +4,11 @@
 // and one delta commits the folder's new RulesHash and only the records whose rule outputs (labels, cook rule,
 // chunk) changed, rebuilt from what the view holds - the way F3 re-evaluates without touching the disk or
 // re-analyzing. No M3 settings field is Analyze-relevant, so no stamp changes and nothing is re-analyzed here.
-// D3's own test (Rules/RulesScanTest.cpp) times the re-evaluation alone.
-//
-// Timings mean something in optimized builds only: Debug prints, never judges. The check fails on a clear
-// regression (twice the budget) and holds the exact budget only with FRT_PERF_STRICT=1.
+// D3's own test (Rules/RulesScanTest.cpp) times the re-evaluation alone. §5.11 budgets the row at 10k and 100k +
+// 500k rows alike, and a commit's cost grows with the registry (page lists, the file order, larger indices, cache
+// misses), so the 1k files sit inside G3's generated project (Query/QueryBenchmarkGenerator.h): 10k assets in
+// Core-Test, 100k + 500k rows on demand (--gtest_also_run_disabled_tests). How the row is judged:
+// BenchmarkBudget.h.
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -15,14 +16,17 @@
 #include <memory>
 #include <vector>
 
+#include "../Query/QueryBenchmarkGenerator.h"
 #include "../Rules/RulesTestUtils.h"
 #include "Assets/Registry/RegistryTables.h"
+#include "BenchmarkBudget.h"
 #include "Platform/Platform.h"
 #include "Platform/Timestamp.h"
 #include "RegistryTestFixture.h"
 
 using namespace frt;
 using namespace frt::assets;
+using namespace frt::assets::bench;
 using namespace frt::assets::registry_test;
 using frt::test::rules::CRulesTree;
 using frt::test::rules::DescribeDiagnostics;
@@ -95,13 +99,9 @@ bool RuleOutputsChanged (const CRegistryView& View, SRecordId Record, const SEff
 	});
 	return bChanged || index != Settings.RuleLabels.size();
 }
-}
 
-TEST(RegistryRulesEditBenchmark, AFolderRuleEditReevaluatesAThousandFilesAndCommitsOnlyTheChangedRecords)
+void MeasureFolderEdit (uint32 Assets, uint32 Rows, const SBudget& Budget)
 {
-	const bool bOptimized = !FRT_BUILD_DEBUG;
-	const double slack = platform::GetEnvironmentValue("FRT_PERF_STRICT").value_or(FString()) == "1" ? 1.0 : 2.0;
-
 	CRulesTree tree("Registry Edit");
 	tree.WriteEngineRules("FormatVersion: 1\nScan:\n  Exclude: [ \"/Engine/Shaders/**\" ]\n  Quiet: [ \"**/README.md\" ]\nPresets:\n"
 		"  Texture/Color:  { ColorSpace: Srgb,   Mips: Box, Compression: None }\n  Texture/Normal: { ColorSpace: Normal, Mips: Box, Compression: None }\n"
@@ -133,6 +133,10 @@ TEST(RegistryRulesEditBenchmark, AFolderRuleEditReevaluatesAThousandFilesAndComm
 		files.push_back(FString::Format("{}/Тека {:02}/Файл_{}{}", EditedFolder, i / 50u, i, Extensions[i % std::size(Extensions)]));
 	}
 	CRegistryStore store;
+	query_bench::SGeneratorSpec spec;
+	spec.Assets = Assets;
+	spec.Rows = Rows;
+	query_bench::Generate(store, spec);
 	{
 		uint64 rulesHash = 0u;
 		std::vector<SDiagnostic> bind;
@@ -186,6 +190,7 @@ TEST(RegistryRulesEditBenchmark, AFolderRuleEditReevaluatesAThousandFilesAndComm
 
 	// One edit: bind the new text, re-evaluate the interval, commit the changed records. Alternately to the edited
 	// text and back, the best of three each way.
+	double LastCommitMs = 0.0;
 	const auto edit = [&] (FStringView Text, uint32& OutChanged, uint32& OutEvaluated) -> double
 	{
 		const uint64 start = platform::ReadTimestamp();
@@ -218,27 +223,42 @@ TEST(RegistryRulesEditBenchmark, AFolderRuleEditReevaluatesAThousandFilesAndComm
 			}
 		});
 		store.Commit(std::move(delta));
+		LastCommitMs = store.GetLastCommitStats().Milliseconds;
 		return platform::TimestampToMilliseconds(platform::ReadTimestamp() - start);
 	};
 	double best = 1e30;
+	double bestCommitMs = 0.0;
 	uint32 changed = 0u;
 	uint32 evaluated = 0u;
 	for (uint32 round = 0u; round < 6u; ++round)
 	{
 		uint32 roundChanged = 0u;
 		const double ms = edit(texts[(round + 1u) % 2u].View(), roundChanged, evaluated);
-		best = (std::min)(best, ms);
+		if (ms < best)
+		{
+			best = ms;
+			bestCommitMs = LastCommitMs;
+		}
 		changed = (std::max)(changed, roundChanged);
 		EXPECT_GT(roundChanged, 0u);
 		EXPECT_LT(roundChanged, 100u) << "only the subfolder's records change";
 	}
 	EXPECT_EQ(Dump(store.Live()), before) << "back at the first text, the registry is as it was";
 	EXPECT_GE(evaluated, 700u);
-	std::printf("[registry] folder Assets.yml edit: %u records re-evaluated, %u committed, %.3f ms (budget 2.000 ms; best of 6)\n", evaluated,
-		changed, best);
-	RecordProperty("FolderEditCommitMs", FString::Format("{:.3f}", best).CStr());
-	if (bOptimized)
-	{
-		EXPECT_LE(best, 2.0 * slack) << "FolderEditCommitMs";
-	}
+	CheckBudget("[registry]", "FolderEditCommitMs", best, Budget, "ms",
+		FString::Format("({} records re-evaluated, {} committed, best of 6: the commit {:.3f} ms of it; in a store of {} records)", evaluated,
+			changed, bestCommitMs, store.Live().GetRecordCount()).CStr());
+}
+}
+
+TEST(RegistryRulesEditBenchmark, AFolderRuleEditReevaluatesAThousandFilesAndCommitsOnlyTheChangedRecords)
+{
+	MeasureFolderEdit(10000u, 0u, SBudget { 2.0, -1.0, 1.8, 4.0 });
+}
+
+TEST(RegistryRulesEditBenchmark, DISABLED_AFolderRuleEditAt100kAssetsAnd500kRows)
+{
+	// 2.7-2.9 ms measured (the commit 0.7 ms of it, the re-evaluation of 750 records in a store of this size the
+	// rest): over 5.11's figure, printed as MISSED; the guard holds what was measured.
+	MeasureFolderEdit(100000u, 500000u, SBudget { 2.0, -1.0, 4.0, 8.0 });
 }

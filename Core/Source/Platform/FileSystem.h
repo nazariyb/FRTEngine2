@@ -188,6 +188,13 @@ bool EnumerateDirectory (const T&, F&&, FString* = nullptr) = delete;
  * for files nothing else reads concurrently (scratch output, test fixtures).
  */
 
+// A whole file as bytes read past the OS file cache (Windows: FILE_FLAG_NO_BUFFERING): what reading the
+// file's data costs the first time after a reboot, when nothing of it is cached (its metadata - the MFT
+// record, the directories on the way - may still be). For benchmarks that report a cold column (§5.11);
+// everything else reads through the cache (ReadFileBytes, Platform.h). nullopt, with the reason, if the
+// file cannot be opened or read whole.
+[[nodiscard]] FRT_CORE_API std::optional<std::vector<uint8>> ReadFileBytesUncached (const std::filesystem::path& Path, FString* OutError = nullptr);
+
 // Replaces the file at Path with Bytes in place (created or truncated; binary). Creates the parent
 // directories first when bCreateDirectories. A crash midway leaves a partial file: use
 // WriteFileAtomic for anything that is read back. The engine's one in-place writer: WriteFileText

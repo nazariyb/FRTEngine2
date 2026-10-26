@@ -1379,6 +1379,14 @@ void AppendImage (SRegistryImage& Into, SRegistryImage&& From)
 		Into = std::move(From);
 		return;
 	}
+	// The smaller image goes after the larger one, whichever came first (Engine.snapshot's few hundred files
+	// before the project's hundred thousand would otherwise copy all of the project's): the merged image's order
+	// is only its indices - which file gave a shared mount was decided before - and the bulk adoption merges the
+	// two sorted runs of files this leaves.
+	if (Into.Files.size() + Into.Records.size() + Into.Tags.size() < From.Files.size() + From.Records.size() + From.Tags.size())
+	{
+		std::swap(Into, From);
+	}
 	const uint16 mountBase = static_cast<uint16>(Into.Mounts.size());
 	const uint32 nameBase = static_cast<uint32>(Into.Names.size());
 	const uint32 stringBase = static_cast<uint32>(Into.Strings.size());
@@ -1396,6 +1404,15 @@ void AppendImage (SRegistryImage& Into, SRegistryImage&& From)
 	{
 		To.insert(To.end(), std::make_move_iterator(Items.begin()), std::make_move_iterator(Items.end()));
 	};
+	const auto reserveFor = [] (auto& To, const auto& Items) { To.reserve(To.size() + Items.size()); };
+	reserveFor(Into.Folders, From.Folders);
+	reserveFor(Into.Files, From.Files);
+	reserveFor(Into.Records, From.Records);
+	reserveFor(Into.Labels, From.Labels);
+	reserveFor(Into.SubEntries, From.SubEntries);
+	reserveFor(Into.Tags, From.Tags);
+	reserveFor(Into.Edges, From.Edges);
+	reserveFor(Into.Companions, From.Companions);
 
 	for (SImageMount& mount : From.Mounts)
 	{

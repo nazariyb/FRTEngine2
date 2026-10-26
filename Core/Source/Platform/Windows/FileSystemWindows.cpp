@@ -493,6 +493,61 @@ bool EnumerateDirectory (const std::filesystem::path& Directory, TFunctionRef<bo
 
 // ---------------- Writing ----------------
 
+std::optional<std::vector<uint8>> ReadFileBytesUncached (const std::filesystem::path& Path, FString* OutError)
+{
+	CScopedHandle file(CreateFileW(windows::ToWin32Path(Path).c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+		nullptr, OPEN_EXISTING, FILE_FLAG_NO_BUFFERING | FILE_FLAG_SEQUENTIAL_SCAN, nullptr));
+	if (!file.IsValid())
+	{
+		windows::SetError(OutError, "Cannot open", Path, GetLastError());
+		return std::nullopt;
+	}
+	LARGE_INTEGER size {};
+	if (!GetFileSizeEx(file.Get(), &size))
+	{
+		windows::SetError(OutError, "Cannot size", Path, GetLastError());
+		return std::nullopt;
+	}
+	// Unbuffered reads take whole sectors into sector-aligned memory: a page-aligned block of whole MiB.
+	constexpr DWORD ChunkBytes = 4u << 20u;
+	void* const buffer = VirtualAlloc(nullptr, ChunkBytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+	if (buffer == nullptr)
+	{
+		windows::SetError(OutError, "Cannot allocate a read buffer for", Path, GetLastError());
+		return std::nullopt;
+	}
+	std::vector<uint8> bytes;
+	bytes.reserve(static_cast<size_t>(size.QuadPart));
+	bool bOk = true;
+	while (bytes.size() < static_cast<uint64>(size.QuadPart))
+	{
+		DWORD read = 0u;
+		if (!ReadFile(file.Get(), buffer, ChunkBytes, &read, nullptr))
+		{
+			windows::SetError(OutError, "Cannot read", Path, GetLastError());
+			bOk = false;
+			break;
+		}
+		if (read == 0u)
+		{
+			break;
+		}
+		const size_t take = (std::min)(static_cast<size_t>(read), static_cast<size_t>(size.QuadPart) - bytes.size());
+		bytes.insert(bytes.end(), static_cast<const uint8*>(buffer), static_cast<const uint8*>(buffer) + take);
+	}
+	VirtualFree(buffer, 0u, MEM_RELEASE);
+	if (!bOk)
+	{
+		return std::nullopt;
+	}
+	if (bytes.size() != static_cast<uint64>(size.QuadPart))
+	{
+		windows::SetErrorText(OutError, "Cannot read", Path, "the file is shorter than when it was opened");
+		return std::nullopt;
+	}
+	return bytes;
+}
+
 bool WriteFileBytes (const std::filesystem::path& Path, std::span<const uint8> Bytes, bool bCreateDirectories, FString* OutError)
 {
 	if (bCreateDirectories)

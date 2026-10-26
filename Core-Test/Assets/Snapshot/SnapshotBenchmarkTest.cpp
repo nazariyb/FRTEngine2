@@ -1,12 +1,14 @@
 // The snapshot rows of the §5.11 budget table, measured on G3's generator project (Query/QueryBenchmarkGenerator.h:
-// the exact §5.2 schema through the real store): a full snapshot write from a view (export, encode, and the atomic
-// write to disk reported apart), a journal append per commit, and the load a start-up waits for - snapshot and
+// the exact §5.2 schema through the real store): a full snapshot write from a view (export and encode on the worker,
+// and the whole row as §5.11 words it, the flushed atomic write to disk included), a journal append per commit, the
+// journal restart after a full write (the owner thread's part), and the load a start-up waits for - snapshot and
 // journal read, checked, decoded and adopted with every index rebuilt (§5.11 "snapshot + journal load, all
-// indices"). Core-Test runs 10k assets; the DISABLED_ test runs 100k and 100k + 500k rows on demand
-// (--gtest_also_run_disabled_tests).
-//
-// Timings mean something in optimized builds only: Debug prints, never judges. The suite keeps the machine busy,
-// so a check fails on a clear regression (twice the budget) and holds the exact budget only with FRT_PERF_STRICT=1.
+// indices"), on the engine's worker count as at start-up. Beside the best load: the first load in the process (a
+// fresh process pays page faults the later rounds do not), the same load on one thread, the file read past the OS
+// cache (a cold read's approximation: the data, not the metadata), the engine's and the project's files loaded
+// together in both orders, and the loaded store's resident memory, right after the load and with its change ring
+// full. Core-Test runs 10k assets; the DISABLED_ tests run 100k and 100k + 500k rows on demand
+// (--gtest_also_run_disabled_tests). How a row is judged: ../Registry/BenchmarkBudget.h.
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -14,97 +16,75 @@
 #include <vector>
 
 #include "../Query/QueryBenchmarkGenerator.h"
+#include "../Registry/BenchmarkBudget.h"
 #include "Jobs/WorkerPool.h"
+#include "Platform/FileSystem.h"
 #include "Platform/Platform.h"
 #include "Platform/Timestamp.h"
 #include "SnapshotTestUtils.h"
 
 using namespace frt;
 using namespace frt::assets;
+using namespace frt::assets::bench;
 using namespace frt::assets::snapshot_test;
 
 
 namespace
 {
-struct SBudgetCheck
+struct SSnapshotBudgets
 {
-	bool bJudge = !FRT_BUILD_DEBUG;
-	double Slack = platform::GetEnvironmentValue("FRT_PERF_STRICT").value_or(FString()) == "1" ? 1.0 : 2.0;
-
-	/**
-	 * Spec: the §5.11 figure (< 0: not budgeted). Judged: what the check holds - the §5.11 figure, or where the
-	 * real schema cannot meet it, the figure M3 measured and proposed for §5.11's written revision (printed
-	 * beside it); < 0: printed only.
-	 */
-	void Check (const char* Name, double Measured, double Spec, double Judged, const char* Unit, const char* Note = "")
-	{
-		if (Spec >= 0.0 && Judged < 0.0)
-		{
-			std::printf("[snapshot] %-22s %10.3f %s (budget %.3f %s; reported only) %s\n", Name, Measured, Unit, Spec, Unit, Note);
-		}
-		else if (Spec >= 0.0 && Judged != Spec)
-		{
-			std::printf("[snapshot] %-22s %10.3f %s (budget %.3f %s; M3 revision %.3f %s) %s\n", Name, Measured, Unit, Spec, Unit,
-				Judged, Unit, Note);
-		}
-		else if (Spec >= 0.0)
-		{
-			std::printf("[snapshot] %-22s %10.3f %s (budget %.3f %s) %s\n", Name, Measured, Unit, Spec, Unit, Note);
-		}
-		else if (Judged >= 0.0)
-		{
-			std::printf("[snapshot] %-22s %10.3f %s (not in 5.11; M3 check %.3f %s) %s\n", Name, Measured, Unit, Judged, Unit, Note);
-		}
-		else
-		{
-			std::printf("[snapshot] %-22s %10.3f %s (not budgeted) %s\n", Name, Measured, Unit, Note);
-		}
-		::testing::Test::RecordProperty(Name, FString::Format("{:.3f}", Measured).CStr());
-		if (bJudge && Judged >= 0.0)
-		{
-			EXPECT_LE(Measured, Judged * Slack) << Name;
-		}
-	}
-};
-
-// Per row: the §5.11 figure and the figure the check holds (see SBudgetCheck::Check).
-struct SBudget
-{
-	double Spec = -1.0;
-	double Judged = -1.0;
-};
-
-struct SBudgets
-{
-	SBudget Load;          // snapshot + journal load, all indices
-	SBudget Write;         // full snapshot write from a view (worker): export + encode
+	SBudget Load;          // snapshot + journal load, all indices (on the pool)
+	SBudget WriteCpu;      // full snapshot write from a view: export + encode (worker)
+	SBudget WriteTotal;    // ... with the flushed atomic write to disk: §5.11's row as worded
 	SBudget Append;        // journal append per commit
-	SBudget Restart { -1.0, 1.0 };   // journal restart after a full write (owner thread); not in §5.11
+	SBudget Restart;       // journal restart after a full write, the owner thread's part (not in §5.11)
+	SBudget Memory;        // resident memory of the loaded store with a full change ring
 };
 
-void MeasureSnapshot (const std::filesystem::path& Dir, uint32 Assets, uint32 Rows, const SBudgets& Budgets, bool bJudge)
+void Check (const char* Name, double Measured, const SBudget& Budget, const char* Unit, const char* Note = "")
 {
-	SBudgetCheck budget;
-	budget.bJudge = budget.bJudge && bJudge;
+	CheckBudget("[snapshot]", Name, Measured, Budget, Unit, Note);
+}
+
+FString DescribeLoad (const SSnapshotLoadResult& Load)
+{
+	return FString::Format("read {:.2f} + decode {:.2f} + adopt {:.2f} ({}) + journal replay {:.2f} ms", Load.ReadMs, Load.DecodeMs, Load.AdoptMs,
+		Load.bAdoptedInBulk ? "bulk" : "replayed", Load.ReplayMs);
+}
+
+void MeasureSnapshot (const std::filesystem::path& Dir, uint32 Assets, uint32 Rows, const SSnapshotBudgets& Budgets)
+{
 	CRegistryStore store;
 	query_bench::SGeneratorSpec spec;
 	spec.Assets = Assets;
 	spec.Rows = Rows;
-	const query_bench::SGeneratorReport generated = query_bench::Generate(store, spec);
+	query_bench::Generate(store, spec);
 	std::printf("[snapshot] generated %u assets, %u rows: %u records, %u sub-entries, %u files, %u edges\n", Assets, Rows,
 		store.Live().GetRecordCount(), store.Live().GetSubEntryCount(), store.Live().GetFileCount(), GetTables(store.Live()).Graph.LiveEdges);
-	(void)generated;
+	// The engine's content for the two-file load: textures under /Engine, written to a file of their own.
+	{
+		SRegistryDelta engine;
+		for (uint32 i = 0u; i < (std::max)(200u, Assets / 50u); ++i)
+		{
+			AddTexture(engine, FString::Format("/Engine/Textures/S{}/T_Engine_{}.png", i / 48u, i), 64 << (i % 4u), 64);
+		}
+		store.Commit(std::move(engine));
+	}
+	const MountId projectMounts[] = { ProjectMountId };
+	const MountId engineMounts[] = { EngineMountId };
 	const std::filesystem::path path = Dir / "AssetRegistry.snapshot";
+	const std::filesystem::path enginePath = Dir / "Engine.snapshot";
 	const SGuid projectId = SGuid::NewRandom();
+	ASSERT_TRUE(WriteSnapshot(store.Live(), engineMounts, enginePath, projectId, 0u));
 
-	// A full write from a view: the best of three (the machine is shared).
+	// A full write of the project from a view: the best of three (the machine is shared).
 	SSnapshotWriteStats write;
 	write.ExportMs = 1e30;
 	for (uint32 round = 0u; round < 3u; ++round)
 	{
 		SSnapshotWriteStats stats;
 		FString error;
-		ASSERT_TRUE(WriteSnapshot(*store.Acquire(), {}, path, projectId, 0u, &error, &stats)) << error.CStr();
+		ASSERT_TRUE(WriteSnapshot(*store.Acquire(), projectMounts, path, projectId, 0u, &error, &stats)) << error.CStr();
 		if (stats.ExportMs + stats.EncodeMs < write.ExportMs + write.EncodeMs)
 		{
 			write = stats;
@@ -112,13 +92,14 @@ void MeasureSnapshot (const std::filesystem::path& Dir, uint32 Assets, uint32 Ro
 	}
 	std::printf("[snapshot] file: %.2f MB; export %.2f ms, encode %.2f ms, write to disk %.2f ms\n", write.Bytes / 1048576.0, write.ExportMs,
 		write.EncodeMs, write.WriteMs);
-	budget.Check("SnapshotWriteCpuMs", write.ExportMs + write.EncodeMs, Budgets.Write.Spec, Budgets.Write.Judged, "ms", "(export + encode, worker)");
-	budget.Check("SnapshotWriteDiskMs", write.WriteMs, -1.0, -1.0, "ms", "(WriteFileAtomic, flushed)");
+	Check("SnapshotWriteCpuMs", write.ExportMs + write.EncodeMs, Budgets.WriteCpu, "ms", "(export + encode, worker)");
+	Check("SnapshotWriteTotalMs", write.ExportMs + write.EncodeMs + write.WriteMs, Budgets.WriteTotal, "ms",
+		FString::Format("(the row as 5.11 words it: export + encode + flushed atomic write {:.2f} ms)", write.WriteMs).CStr());
 
 	// The journal: one-edit commits as F3 appends them (journal first), median of 101.
 	CRegistryJournal journal;
 	FString error;
-	ASSERT_TRUE(journal.Open(GetJournalPath(path), projectId, store.GetRevision(), {}, &error)) << error.CStr();
+	ASSERT_TRUE(journal.Open(GetJournalPath(path), projectId, store.GetRevision(), { "Project" }, &error)) << error.CStr();
 	std::vector<double> appends;
 	for (uint32 i = 0u; i < 101u; ++i)
 	{
@@ -130,109 +111,210 @@ void MeasureSnapshot (const std::filesystem::path& Dir, uint32 Assets, uint32 Ro
 	}
 	journal.Close();
 	std::sort(appends.begin(), appends.end());
-	budget.Check("JournalAppendMs", appends[appends.size() / 2u], Budgets.Append.Spec, Budgets.Append.Judged, "ms", "(median of 101 one-edit commits)");
+	Check("JournalAppendMs", appends[appends.size() / 2u], Budgets.Append, "ms", "(median of 101 one-edit commits)");
 
-	// The load: snapshot + journal into a fresh store, best of three, on the engine's worker count (as at start-up,
-	// where the load runs on a worker and splits its work over the pool; RegistryParallel.h).
+	// The load: the project's snapshot + journal into a fresh store on the engine's worker count (at start-up the
+	// load runs on a worker and splits its work over the pool, RegistryParallel.h): the first load in this process
+	// and the best of three.
 	jobs::CWorkerPool pool;
+	const SSnapshotSource source { path, projectId };
+	const SSnapshotSource engineSource { enginePath, projectId };
+	SSnapshotLoadResult first;
 	SSnapshotLoadResult best;
 	best.TotalMs = 1e30;
 	for (uint32 round = 0u; round < 3u; ++round)
 	{
 		CRegistryStore loaded;
-		const SSnapshotSource sources[] = { SSnapshotSource { path, projectId } };
-		SSnapshotLoadResult result = LoadSnapshots(loaded, sources, {}, &pool);
+		SSnapshotLoadResult result = LoadSnapshots(loaded, std::span(&source, 1u), {}, &pool);
 		ASSERT_EQ(result.Files[0].State, ESnapshotFileState::Loaded) << result.Files[0].Message.CStr();
 		ASSERT_EQ(result.Files[0].JournalCommits, 101u);
-		ASSERT_EQ(loaded.Live().GetRecordCount(), store.Live().GetRecordCount());
+		ASSERT_EQ(loaded.Live().GetRecordCount(), Assets);
 		if (round == 0u)
 		{
-			EXPECT_EQ(Dump(loaded.Live()), Dump(store.Live()));
+			first = result;
 		}
 		if (result.TotalMs < best.TotalMs)
 		{
 			best = std::move(result);
 		}
 	}
-	std::printf("[snapshot] load: read %.2f ms, decode %.2f ms, adopt %.2f ms (%s), journal replay %.2f ms\n", best.ReadMs, best.DecodeMs,
-		best.AdoptMs, best.bAdoptedInBulk ? "bulk" : "replayed", best.ReplayMs);
-	budget.Check("SnapshotLoadMs", best.TotalMs, Budgets.Load.Spec, Budgets.Load.Judged, "ms", "(read + checksum + decode + adopt + replay)");
+	std::printf("[snapshot] best load: %s\n", DescribeLoad(best).CStr());
+	Check("SnapshotLoadMs", best.TotalMs, Budgets.Load, "ms", FString::Format("(best of 3 on {} workers)", pool.GetThreadCount()).CStr());
+	Check("SnapshotLoadFirstMs", first.TotalMs, SBudget {}, "ms", FString::Format("(the first load in this process: {})", DescribeLoad(first)).CStr());
 	{
 		double oneThreadMs = 1e30;
 		for (uint32 round = 0u; round < 3u; ++round)
 		{
 			CRegistryStore loaded;
-			const SSnapshotSource sources[] = { SSnapshotSource { path, projectId } };
-			oneThreadMs = (std::min)(oneThreadMs, LoadSnapshots(loaded, sources).TotalMs);
+			oneThreadMs = (std::min)(oneThreadMs, LoadSnapshots(loaded, std::span(&source, 1u)).TotalMs);
 		}
-		budget.Check("SnapshotLoadOneThreadMs", oneThreadMs, -1.0, -1.0, "ms", FString::Format("(the same load without a pool; {} workers above)", pool.GetThreadCount()).CStr());
+		Check("SnapshotLoadOneThreadMs", oneThreadMs, SBudget {}, "ms", "(the same load without a pool, best of 3)");
+	}
+	{
+		double uncachedMs = 1e30;
+		for (uint32 round = 0u; round < 3u; ++round)
+		{
+			const uint64 start = platform::ReadTimestamp();
+			ASSERT_TRUE(platform::ReadFileBytesUncached(path).has_value());
+			uncachedMs = (std::min)(uncachedMs, platform::TimestampToMilliseconds(platform::ReadTimestamp() - start));
+		}
+		Check("SnapshotReadUncachedMs", uncachedMs, SBudget {}, "ms",
+			FString::Format("(the file read past the OS cache: a cold read of its data; the load above read it warm in {:.2f} ms)", best.ReadMs).CStr());
 	}
 
-	// Restart after a full write, on the owner thread (§5.3: writing never stalls it): 101 commits appended, the
-	// view held all but the last 5. A journal file of its own, so the snapshot's stays as the load read it. A
-	// restart is a little work - picking the commits the written view does not hold, framing the new journal - and
-	// then replacing the file (close, create and write, reopen), which the file system and the virus scanner can
-	// hold up for milliseconds while the machine is busy (one run measured 3.77 ms, another 4.8 ms in every one of
-	// 15 rounds). The check holds the work (JournalRestartCpuMs, best of 5) to 1 ms; the file time is printed.
-	double restartMs = 1e30;
-	double restartFileMs = 1e30;
-	double restartCpuMs = 1e30;
+	// The engine's and the project's files together, as at start-up, in either order (the larger image is merged
+	// first either way; the bulk adoption merges the two sorted runs of files): equal to the store they were written
+	// from. The rounds interleave the project's file alone with both pairs, so all three see the same process
+	// state: later loads in a process run slower than its first ones (its heap has grown and been handed back).
+	{
+		const SSnapshotSource engineFirst[] = { engineSource, source };
+		const SSnapshotSource projectFirst[] = { source, engineSource };
+		const std::span<const SSnapshotSource> configs[] = { projectFirst, engineFirst, std::span(&source, 1u) };
+		SSnapshotLoadResult bestOf[3];
+		for (SSnapshotLoadResult& result : bestOf)
+		{
+			result.TotalMs = 1e30;
+		}
+		for (uint32 round = 0u; round < 3u; ++round)
+		{
+			for (uint32 config = 0u; config < 3u; ++config)
+			{
+				CRegistryStore loaded;
+				SSnapshotLoadResult result = LoadSnapshots(loaded, configs[config], {}, &pool);
+				ASSERT_TRUE(result.bAdoptedInBulk);
+				if (round == 0u && config < 2u)
+				{
+					EXPECT_EQ(Dump(loaded.Live()), Dump(store.Live()));
+				}
+				if (result.TotalMs < bestOf[config].TotalMs)
+				{
+					bestOf[config] = std::move(result);
+				}
+			}
+		}
+		Check("SnapshotLoadAloneLaterMs", bestOf[2].TotalMs, SBudget {}, "ms",
+			FString::Format("(AssetRegistry.snapshot alone, in the rounds beside the pairs: {})", DescribeLoad(bestOf[2])).CStr());
+		Check("SnapshotLoadEngineFirstMs", bestOf[1].TotalMs, SBudget {}, "ms",
+			FString::Format("(Engine.snapshot, then AssetRegistry.snapshot: {})", DescribeLoad(bestOf[1])).CStr());
+		Check("SnapshotLoadProjectFirstMs", bestOf[0].TotalMs, SBudget {}, "ms",
+			FString::Format("(AssetRegistry.snapshot, then Engine.snapshot: {})", DescribeLoad(bestOf[0])).CStr());
+	}
+
+	// The loaded store's resident memory (§5.11 counts the change ring full): right after the load, as start-up
+	// leaves it, and after re-upserting the project until the ring has wrapped.
+	{
+		CRegistryStore loaded;
+		ASSERT_TRUE(LoadSnapshots(loaded, std::span(&source, 1u), {}, &pool).AnyLoaded());
+		const double afterLoadMB = loaded.GetMemoryStats().Total / 1048576.0;
+		const uint64 loadedRevision = loaded.GetRevision();   // the ring reports nothing older (AdoptImage)
+		for (uint32 round = 0u; round < 16u && loaded.ForEachChangeSince(loadedRevision, [] (const SRecordChange&) {}); ++round)
+		{
+			query_bench::Generate(loaded, spec);
+		}
+		const SRegistryMemoryStats memory = loaded.GetMemoryStats();
+		Check("LoadedMemoryMB", afterLoadMB, SBudget {}, "MB", "(right after the load)");
+		Check("LoadedMemoryFullRingMB", memory.Total / 1048576.0, Budgets.Memory, "MB",
+			FString::Format("(change ring full: {:.2f} MB of it)", memory.ChangeRing / 1048576.0).CStr());
+	}
+
+	// The journal restart after a full write (§5.3: writing never stalls the owner thread; F3's Pump has 2 ms a
+	// frame): BeginRestart where the view is taken, Prepare on the worker after the snapshot (the new journal
+	// written, renamed over the old one, opened), FinishRestart in the completion. 101 commits appended, the view
+	// at the 96th, the last 5 made while the worker ran (3 before its rename, 2 after it). A journal file of its
+	// own, so the snapshot's stays as the load read it. The check holds the owner thread's whole part - work and
+	// file (the handle swap, the old handle closed, one append of the commits since BeginRestart) - the worst of 5
+	// rounds; the worker's part and the one-call Restart (all of it on the owner thread) are printed.
+	double ownerMs = 0.0;
+	double ownerFileMs = 0.0;
+	double workerMs = 0.0;
+	double oneCallMs = 0.0;
+	const auto makeEdit = [] (uint32 I)
+	{
+		SRegistryDelta edit;
+		AddMaterial(edit, query_bench::GetMaterialPath(7u), { query_bench::GetTexturePath(I), query_bench::GetTexturePath(I + 1u) });
+		return edit;
+	};
 	for (uint32 round = 0u; round < 5u; ++round)
 	{
 		CRegistryJournal restarted;
 		ASSERT_TRUE(restarted.Open(Dir / "Restart.journal", projectId, std::nullopt, {}, &error)) << error.CStr();
+		for (uint32 i = 0u; i < 96u; ++i)
+		{
+			ASSERT_TRUE(restarted.Append(makeEdit(i), 1000u + i, &error)) << error.CStr();
+		}
+		CJournalRestart restart = restarted.BeginRestart(1000u + 95u);
+		for (uint32 i = 96u; i < 99u; ++i)
+		{
+			ASSERT_TRUE(restarted.Append(makeEdit(i), 1000u + i, &error)) << error.CStr();
+		}
+		ASSERT_TRUE(restart.Prepare(&error)) << error.CStr();
+		for (uint32 i = 99u; i < 101u; ++i)
+		{
+			ASSERT_TRUE(restarted.Append(makeEdit(i), 1000u + i, &error)) << error.CStr();
+		}
+		ASSERT_TRUE(restarted.FinishRestart(std::move(restart), &error)) << error.CStr();
+		const SJournalStats& stats = restarted.GetStats();
+		ownerMs = (std::max)(ownerMs, stats.LastRestartMs);
+		ownerFileMs = (std::max)(ownerFileMs, stats.LastRestartFileMs);
+		workerMs = (std::max)(workerMs, stats.LastRestartWorkerMs);
+		restarted.Close();
+		EXPECT_EQ(ReadJournal(Dir / "Restart.journal").Deltas.size(), 5u);
+
+		CRegistryJournal oneCall;
+		ASSERT_TRUE(oneCall.Open(Dir / "OneCall.journal", projectId, std::nullopt, {}, &error)) << error.CStr();
 		for (uint32 i = 0u; i < 101u; ++i)
 		{
-			SRegistryDelta edit;
-			AddMaterial(edit, query_bench::GetMaterialPath(7u), { query_bench::GetTexturePath(i), query_bench::GetTexturePath(i + 1u) });
-			ASSERT_TRUE(restarted.Append(edit, 1000u + i, &error)) << error.CStr();
+			ASSERT_TRUE(oneCall.Append(makeEdit(i), 1000u + i, &error)) << error.CStr();
 		}
-		ASSERT_TRUE(restarted.Restart(1000u + 95u, &error)) << error.CStr();
-		const SJournalStats& stats = restarted.GetStats();
-		restartMs = (std::min)(restartMs, stats.LastRestartMs);
-		restartFileMs = (std::min)(restartFileMs, stats.LastRestartFileMs);
-		restartCpuMs = (std::min)(restartCpuMs, stats.LastRestartMs - stats.LastRestartFileMs);
+		ASSERT_TRUE(oneCall.Restart(1000u + 95u, &error)) << error.CStr();
+		oneCallMs = (std::max)(oneCallMs, oneCall.GetStats().LastRestartMs);
 	}
-	EXPECT_EQ(ReadJournal(Dir / "Restart.journal").Deltas.size(), 5u);
-	budget.Check("JournalRestartCpuMs", restartCpuMs, -1.0, Budgets.Restart.Judged, "ms", "(owner thread, 5 commits kept; best of 5)");
-	budget.Check("JournalRestartFileMs", restartFileMs, -1.0, -1.0, "ms", "(replacing the file; file system time, not judged)");
-	budget.Check("JournalRestartMs", restartMs, -1.0, -1.0, "ms", "(both)");
+	Check("JournalRestartOwnerMs", ownerMs, Budgets.Restart, "ms", FString::Format("(owner thread, worst of 5; file work {:.3f} ms of it)", ownerFileMs).CStr());
+	Check("JournalRestartWorkerMs", workerMs, SBudget {}, "ms", "(Prepare on the worker, worst of 5)");
+	Check("JournalRestartOneCallMs", oneCallMs, SBudget {}, "ms", "(Restart, all on the owner thread, worst of 5; a full write does not use it)");
 }
 }
 
 /**
- * The write meets §5.11 at 10k and 100k. The load does not: §5.11's 5 / 30 / 120 ms came from a thin-schema
- * snapshot, and the exact schema's load reads, checks and decodes every section and rebuilds every index, the
- * CSR, the file order and every target's resolution (AdoptImage's bulk path); the checks hold the figures
- * proposed for §5.11's written revision (20 ms at 10k; on a worker at start-up, 250 ms at 100k and 550 ms with
- * 500k rows), the §5.11 figure printed beside each.
- * Measured (Release, i7-13700K, warm, affinity 0xFFFFFC), before P3 -> after: 10k load 33.8 -> 16.9-18.6 ms
- * (adopt 27.8 -> 11.2-12.3, decode 2.9, read 0.9, replay of 101 commits 1.4), write 16.6 -> 5.8-6.7 ms CPU;
- * 100k load 496 -> 187-200 ms (adopt 444 -> 143-155, decode 29), write 324 -> 73-77 ms CPU; 100k + 500k rows
- * load 1807 -> 432 ms (adopt 1551 -> 290, decode 182 -> 106), write 778 -> 215 ms CPU; append 0.003-0.004 ms.
+ * §5.11's write row as worded includes the flushed atomic write, which the CPU figure leaves out: MISSED at 10k and
+ * 100k with it (proposed for the written revision: the row as worker CPU, the flushed write reported beside it).
+ * The load cannot meet §5.11's 5 / 30 / 120 ms (a thin-schema figure): the exact schema's load decodes every section
+ * and rebuilds every index, the CSR, the file order and every target's resolution; on the worker pool the
+ * independent parts run at once, but the records are written by one thread (they append to shared pools in record
+ * order). The proposed revisions are for an optimized build (Release): Development, the build that runs the live
+ * registry, is about twice as slow and is reported beside them. Measured (i7-13700K, affinity 0xFFFFFC, warm; the
+ * figures of P3's review): see the M3 report.
  */
 TEST_F(SnapshotTest, SnapshotAndJournalMeetTheirBudgetsAt10kAssets)
 {
-	SBudgets budgets;
-	budgets.Load = SBudget { 5.0, 20.0 };
-	budgets.Write = SBudget { 10.0, 10.0 };
-	budgets.Append = SBudget { 0.1, 0.1 };
-	MeasureSnapshot(Dir, 10000u, 0u, budgets, true);
+	SSnapshotBudgets budgets;
+	budgets.Load = SBudget { 5.0, 20.0, 20.0, 50.0 };
+	budgets.WriteCpu = SBudget { 10.0, -1.0, 9.0, 22.0 };
+	budgets.WriteTotal = SBudget { 10.0 };
+	budgets.Append = SBudget { 0.1, -1.0, 0.05, 0.1 };
+	budgets.Restart = SBudget { -1.0, 1.0, 1.0, 2.0 };
+	budgets.Memory = SBudget { 15.0, -1.0, 14.0, 14.0 };
+	MeasureSnapshot(Dir, 10000u, 0u, budgets);
 }
 
 TEST_F(SnapshotTest, DISABLED_SnapshotAndJournalAt100kAssets)
 {
-	SBudgets budgets;
-	budgets.Load = SBudget { 30.0, 250.0 };
-	budgets.Write = SBudget { 80.0, 80.0 };
-	budgets.Append = SBudget { 0.1, 0.1 };
-	MeasureSnapshot(Dir, 100000u, 0u, budgets, true);
+	SSnapshotBudgets budgets;
+	budgets.Load = SBudget { 30.0, 200.0, 220.0, 450.0 };
+	budgets.WriteCpu = SBudget { 80.0, -1.0, 90.0, 180.0 };
+	budgets.WriteTotal = SBudget { 80.0 };
+	budgets.Append = SBudget { 0.1, -1.0, 0.05, 0.1 };
+	budgets.Restart = SBudget { -1.0, 1.0, 1.0, 2.0 };
+	MeasureSnapshot(Dir, 100000u, 0u, budgets);
 }
 
 TEST_F(SnapshotTest, DISABLED_SnapshotAndJournalAt100kAssetsAnd500kRows)
 {
-	SBudgets budgets;
-	budgets.Load = SBudget { 120.0, 550.0 };
-	budgets.Append = SBudget { 0.1, 0.1 };
-	MeasureSnapshot(Dir, 100000u, 500000u, budgets, true);
+	SSnapshotBudgets budgets;
+	budgets.Load = SBudget { 120.0, 450.0, 520.0, 1000.0 };
+	budgets.WriteCpu = SBudget { -1.0, -1.0, 300.0, 600.0 };
+	budgets.Append = SBudget { 0.1, -1.0, 0.05, 0.1 };
+	budgets.Restart = SBudget { -1.0, 1.0, 1.0, 2.0 };
+	budgets.Memory = SBudget { 150.0, -1.0, 155.0, 155.0 };
+	MeasureSnapshot(Dir, 100000u, 500000u, budgets);
 }
