@@ -1647,6 +1647,74 @@ TEST(RegistryStoreTest, AnImageTheBulkPathDoesNotTakeIsReplayedAndReported)
 	EXPECT_EQ(GetDiagnostics(adopted.Live(), a, 0u).size(), 1u);
 }
 
+TEST(RegistryStoreTest, AnImageWhoseSubEntryRangesDoNotTileItsSubEntriesIsReplayed)
+{
+	// The bulk path sizes the type tables and SUBENTRY from the image's sub-entries as a whole, so it takes only
+	// images whose records' ranges lie back to back over every entry. An entry no record names (the replay
+	// ignores it: no phantom Mesh row a type: query would find) or two records naming one entry (the replay
+	// gives it to both) goes to the replay, and the answers are the replay's.
+	SRegistryDelta content = MakeRichContent();
+	content.FileUpserts.push_back(MakeFile("/Project/Villain.gltf"));
+	SRecordUpsert villain = MakeRecord("/Project/Villain.gltf", asset_types::Model, "Model.Gltf");
+	villain.SubEntries.push_back(SSubEntryDecl { "mesh:Cape", 0u, asset_types::Mesh, ERecordFlags::None, { MakeIntTag("VertexCount", 5) } });
+	villain.SubEntries.push_back(SSubEntryDecl { "mesh:Hood", 0u, asset_types::Mesh, ERecordFlags::None, { MakeIntTag("VertexCount", 7) } });
+	content.RecordUpserts.push_back(std::move(villain));
+	CRegistryStore original;
+	original.Commit(std::move(content));
+	const SRegistryImage image = original.Live().ExportImage({});
+	std::vector<uint32> withSubs;
+	for (uint32 r = 0u; r < image.Records.size(); ++r)
+	{
+		if (image.Records[r].SubEntries.Count > 0u)
+		{
+			withSubs.push_back(r);
+		}
+	}
+	ASSERT_EQ(withSubs.size(), 2u);
+
+	const auto expectReplayed = [&] (SRegistryImage Changed)
+	{
+		CRegistryStore adopted;
+		adopted.AdoptImage(SRegistryImage(Changed), 9u);
+		EXPECT_TRUE(adopted.GetLastCommitStats().bReplayedImage);
+		CRegistryStore replayed;
+		SRegistryDelta mounts = MakeMountsDelta();
+		mounts.Mounts.push_back(MakeMount("Plugin.Trees", FirstPluginMountId, true));
+		replayed.Commit(std::move(mounts));
+		replayed.AdoptImage(std::move(Changed), 9u);
+		ExpectSameAnswers(adopted.Live(), replayed.Live());
+		std::vector<SRecordId> a;
+		std::vector<SRecordId> b;
+		EXPECT_EQ(adopted.Live().RunText("type:Mesh", a), replayed.Live().RunText("type:Mesh", b));
+		EXPECT_EQ(a, b);
+		return adopted.Live().RunText("type:Mesh", a);
+	};
+
+	// A Mesh entry no record names, at the end.
+	{
+		SRegistryImage orphan = image;
+		orphan.SubEntries.push_back(orphan.SubEntries[image.Records[withSubs[1]].SubEntries.Begin]);
+		EXPECT_EQ(expectReplayed(std::move(orphan)), 3u);   // Hero's mesh:Body, Villain's mesh:Cape and mesh:Hood
+	}
+	// The second model names the first one's entries too: its own become entries no record names.
+	{
+		SRegistryImage overlap = image;
+		overlap.Records[withSubs[1]].SubEntries = image.Records[withSubs[0]].SubEntries;
+		expectReplayed(std::move(overlap));
+	}
+	// The second model's range starts one entry early: it overlaps the first one's last entry.
+	{
+		SRegistryImage shifted = image;
+		--shifted.Records[withSubs[1]].SubEntries.Begin;
+		expectReplayed(std::move(shifted));
+	}
+	// The untouched image still goes through the bulk path.
+	CRegistryStore bulk;
+	bulk.AdoptImage(SRegistryImage(image), 9u);
+	EXPECT_FALSE(bulk.GetLastCommitStats().bReplayedImage);
+	ExpectSameAnswers(bulk.Live(), original.Live());
+}
+
 TEST(RegistryStoreTest, EdgesByIdResolveInEitherOrderAndLeaveAnImageByPath)
 {
 	// An edge that names its target by SAssetId (a .meta reference from M4 on) waits unresolved until a

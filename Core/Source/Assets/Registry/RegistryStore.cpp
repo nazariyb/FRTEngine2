@@ -2123,6 +2123,26 @@ public:
 		{
 			return Index < typeOf.size() && typeOf[Index] >= 0 ? static_cast<reflect::TypeId>(typeOf[Index]) : asset_types::Unknown;
 		};
+		// The type tables and SUBENTRY are sized from Image.SubEntries as a whole, and the records hand those rows out
+		// as they walk their ranges: that holds only when the ranges lie back to back and cover every entry, as
+		// every image a store exports or a snapshot decodes does. An entry no record names (the replay ignores it)
+		// or two records naming one entry (the replay gives it to both) sends the image to the replay.
+		{
+			uint64 nextSub = 0u;
+			for (const SImageRecord& record : Image.Records)
+			{
+				const SPoolRange range = ClampRange(record.SubEntries, Image.SubEntries.size());
+				if (range.Count > 0u && range.Begin != nextSub)
+				{
+					return false;
+				}
+				nextSub += range.Count;
+			}
+			if (nextSub != Image.SubEntries.size())
+			{
+				return false;
+			}
+		}
 		{
 			std::vector<uint32> rowsPerType(T.Types.size(), 0u);
 			for (const SImageRecord& record : Image.Records)
@@ -2512,6 +2532,7 @@ private:
 	{
 		CTypeTable& table = T.Types[Type];
 		const uint32 row = TypeCursor[Type]++;
+		frt_assert(row < table.Records.Size());   // GrowTypeTables counted every row handed out
 		table.Records.Set(row, RecordValue, Epoch);
 		++table.LiveRows;
 		return row;
