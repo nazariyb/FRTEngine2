@@ -119,7 +119,9 @@ void RunSuite (uint32 Assets, uint32 Rows, EBudgetColumn Column)
 		report.CommitMilliseconds);
 	EXPECT_EQ(view->GetRecordCount(), Assets);
 
-	// Text parse + compile (§5.11: 50 us), averaged over a batch, best batch.
+	// Text parse + compile (§5.11: 50 us), averaged over a batch, best batch. The row holds for queries whose ref:/dep:
+	// targets are mount paths (a hash lookup each); a target named by $Name is found by scanning every ASSETS and
+	// SUBENTRY row at compile time, linear in the registry, outside this budget.
 	{
 		const FStringView text = "type:Texture Width>=4096 -label:Debug dir:/Project/Textures order:Width desc limit:50";
 		constexpr uint32 Batch = 200u;

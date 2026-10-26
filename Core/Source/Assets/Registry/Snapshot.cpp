@@ -1086,8 +1086,10 @@ private:
 		struct SValue { uint64 Bits = 0u; uint32 Text = ~0u; };
 		std::vector<uint32> counts(static_cast<size_t>(keyCount) * rowCount);
 		std::vector<std::vector<SValue>> values(keyCount);
+		size_t totalValues = 0u;
 		for (uint32 k = 0u; k < keyCount; ++k)
 		{
+			values[k].reserve(rowCount);   // single-valued keys: at most one a row
 			for (uint32 r = 0u; r < rowCount; ++r)
 			{
 				uint32 count = 0u;
@@ -1096,6 +1098,7 @@ private:
 					return false;
 				}
 				counts[static_cast<size_t>(k) * rowCount + r] = count;
+				totalValues += count;
 				for (uint32 v = 0u; v < count; ++v)
 				{
 					SValue value;
@@ -1134,6 +1137,7 @@ private:
 		{
 			return false;
 		}
+		image.Tags.reserve(image.Tags.size() + totalValues);
 		std::vector<size_t> cursor(keyCount, 0u);
 		for (uint32 r = 0u; r < rowCount; ++r)
 		{

@@ -188,18 +188,21 @@ void MeasureSnapshot (const std::filesystem::path& Dir, uint32 Assets, uint32 Ro
 }
 
 /**
- * 10k: the load is AdoptImage's bulk path for most of its time (B3's, every index rebuilt, every target resolved,
- * the CSR built) and the write ExportImage's, so the real schema misses §5.11's thin-schema figures (5 ms, 10 ms);
- * the checks hold the measured M3 figures proposed for the written revision. The append meets its budget.
- * Measured at M3 (Release, i7-13700K, warm): 10k load 33.5 ms (adopt 27.0, decode 3.4, read 1.0, replay of 101
- * commits 1.5), write 15.7 ms CPU (export 12.5) + 5.0 ms flushed to disk; 100k load 410 ms (adopt 359), write
- * 254 ms CPU; 100k + 500k rows load 812 ms (adopt 650), write 613 ms CPU; append 0.002-0.004 ms throughout.
+ * The write meets §5.11 at 10k and 100k. The load does not: §5.11's 5 / 30 / 120 ms came from a thin-schema
+ * snapshot, and the exact schema's load reads, checks and decodes every section and rebuilds every index, the
+ * CSR, the file order and every target's resolution (AdoptImage's bulk path); the checks hold the figures
+ * proposed for §5.11's written revision (20 ms at 10k; on a worker at start-up, 250 ms at 100k and 550 ms with
+ * 500k rows), the §5.11 figure printed beside each.
+ * Measured (Release, i7-13700K, warm, affinity 0xFFFFFC), before P3 -> after: 10k load 33.8 -> 16.9-18.6 ms
+ * (adopt 27.8 -> 11.2-12.3, decode 2.9, read 0.9, replay of 101 commits 1.4), write 16.6 -> 5.8-6.7 ms CPU;
+ * 100k load 496 -> 187-200 ms (adopt 444 -> 143-155, decode 29), write 324 -> 73-77 ms CPU; 100k + 500k rows
+ * load 1807 -> 432 ms (adopt 1551 -> 290, decode 182 -> 106), write 778 -> 215 ms CPU; append 0.003-0.004 ms.
  */
 TEST_F(SnapshotTest, SnapshotAndJournalMeetTheirBudgetsAt10kAssets)
 {
 	SBudgets budgets;
-	budgets.Load = SBudget { 5.0, 40.0 };
-	budgets.Write = SBudget { 10.0, 20.0 };
+	budgets.Load = SBudget { 5.0, 20.0 };
+	budgets.Write = SBudget { 10.0, 10.0 };
 	budgets.Append = SBudget { 0.1, 0.1 };
 	MeasureSnapshot(Dir, 10000u, 0u, budgets, true);
 }
@@ -207,8 +210,8 @@ TEST_F(SnapshotTest, SnapshotAndJournalMeetTheirBudgetsAt10kAssets)
 TEST_F(SnapshotTest, DISABLED_SnapshotAndJournalAt100kAssets)
 {
 	SBudgets budgets;
-	budgets.Load = SBudget { 30.0, -1.0 };
-	budgets.Write = SBudget { 80.0, -1.0 };
+	budgets.Load = SBudget { 30.0, 250.0 };
+	budgets.Write = SBudget { 80.0, 80.0 };
 	budgets.Append = SBudget { 0.1, 0.1 };
 	MeasureSnapshot(Dir, 100000u, 0u, budgets, true);
 }
@@ -216,7 +219,7 @@ TEST_F(SnapshotTest, DISABLED_SnapshotAndJournalAt100kAssets)
 TEST_F(SnapshotTest, DISABLED_SnapshotAndJournalAt100kAssetsAnd500kRows)
 {
 	SBudgets budgets;
-	budgets.Load = SBudget { 120.0, -1.0 };
+	budgets.Load = SBudget { 120.0, 550.0 };
 	budgets.Append = SBudget { 0.1, 0.1 };
 	MeasureSnapshot(Dir, 100000u, 500000u, budgets, true);
 }
