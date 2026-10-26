@@ -61,7 +61,8 @@ void CopyTree (const std::filesystem::path& Source, const std::filesystem::path&
 			continue;
 		}
 		std::filesystem::copy_file(it->path(), Destination / relative, std::filesystem::copy_options::overwrite_existing, ec);
-		ASSERT_FALSE(ec) << FString::FromPath(it->path()).CStr();
+		const FString copied = FString::FromPath(it->path());
+		ASSERT_FALSE(ec) << copied.CStr();
 	}
 }
 
