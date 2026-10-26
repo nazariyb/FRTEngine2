@@ -247,17 +247,19 @@ std::optional<SAnalyzeInput> SAnalyzeInput::FromMount (const SMount& Mount, FStr
 	FStringView mountName;
 	FStringView relative;
 	if (!IsWellFormedMountPath(FileMountPath) || !SplitMountPath(FileMountPath, mountName, relative) || relative.IsEmpty()
-		|| mountName != Mount.Name.View())
+		|| !mountName.Equals<ESearchCase::IgnoreCase>(Mount.Name.View()))
+	{
+		return std::nullopt;
+	}
+	std::optional<std::filesystem::path> path = Mount.ToAbsolute(relative);
+	if (!path.has_value())
 	{
 		return std::nullopt;
 	}
 	SAnalyzeInput input;
-	input.FileMountPath = FString(FileMountPath);
-	input.Path = Mount.ContentDir / relative.ToPath();
-	if (std::optional<FString> source = platform::GetRelativePath(input.Path, Mount.OwnerRoot, Mount.Volume.bCaseSensitive))
-	{
-		input.SourceFile = std::move(*source);
-	}
+	input.FileMountPath = JoinMountPath(Mount.Name, relative);   // the mount's own spelling of its name
+	input.Path = std::move(*path);
+	input.SourceFile = Mount.GetSourceFile(relative);
 	return input;
 }
 

@@ -374,7 +374,6 @@ private:
 	CMountTable Mounts;
 	SRulesOptions Options;
 	FString TargetPlatform;                     // Options.Target's platform ("Win64"), empty without a target
-	std::vector<FString> ContentPrefixes;       // per mount: its content dir relative to its owner root ("Content")
 	uint64 SemanticsHash = 0u;                  // GetSemanticsHash
 
 	// LoadMutex serialises LoadMountRules whole (read, parse, store), so an older read never lands after a newer one;

@@ -95,6 +95,36 @@ TEST(AssetImporterTest, AnalyzeFileSetsTheImportStatus)
 	EXPECT_FALSE(SAnalyzeInput::FromMount(project, "/Project/../x.png").has_value());
 }
 
+TEST(AssetImporterTest, FromMountNeverLeavesTheMountAndSpellsTheMountItsOwnWay)
+{
+	// FromMount goes through SMount::ToAbsolute, the one mount-path-to-disk conversion: a '\' segment ("..\" is a
+	// parent on Windows), a drive-relative "C:x" (std::filesystem's operator/ would replace the whole path) and a
+	// NUL are refused, as CMountTable::FromMountPath refuses them.
+	const CImporterTree tree("FromMount");
+	tree.Write("Тека/a.png", "x");
+	const CMountTable mounts = tree.Resolve();
+	const SMount& project = *mounts.Find("Project");
+	for (const FStringView bad : { FStringView("/Project/..\\..\\Secrets.txt"), FStringView("/Project/a\\..\\..\\b.png"),
+		FStringView("/Project/C:x"), FStringView("/Project/Тека/C:\\Windows\\win.ini"), FStringView("/Project/a\0b.png", 16u) })
+	{
+		EXPECT_FALSE(SAnalyzeInput::FromMount(project, bad).has_value()) << FString::FromUtf8Lossy(bad).CStr();
+	}
+
+	const std::optional<SAnalyzeInput> input = SAnalyzeInput::FromMount(project, "/Project/Тека/a.png");
+	ASSERT_TRUE(input.has_value());
+	EXPECT_EQ(input->Path, *mounts.FromMountPath("/Project/Тека/a.png"));
+	EXPECT_EQ(input->SourceFile, "Content/Тека/a.png");
+
+	// A mount name typed in another case is the mount (CMountTable::Find's rule); the input spells it the mount's way.
+	const std::optional<SAnalyzeInput> folded = SAnalyzeInput::FromMount(project, "/project/Тека/a.png");
+	ASSERT_TRUE(folded.has_value());
+	EXPECT_EQ(folded->FileMountPath, "/Project/Тека/a.png");
+	EXPECT_EQ(folded->Path, input->Path);
+	EXPECT_EQ(project.GetSourceFile(""), "Content");
+	EXPECT_FALSE(project.ToAbsolute("x/./y").has_value());
+	EXPECT_EQ(project.ToAbsolute(""), std::optional(project.ContentDir));
+}
+
 TEST(AssetImporterTest, AppendRecordUpsertWritesTheWholeRecordAndItsProblems)
 {
 	const CImporterTree tree("Upsert");

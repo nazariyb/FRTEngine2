@@ -2223,12 +2223,6 @@ CRulesEngine::CRulesEngine (const CMountTable& InMounts, SRulesOptions InOptions
 	}
 
 	const std::span<const SMount> mounts = Mounts.GetMounts();
-	ContentPrefixes.reserve(mounts.size());
-	for (const SMount& mount : mounts)
-	{
-		std::optional<FString> prefix = platform::GetRelativePath(mount.ContentDir, mount.OwnerRoot);
-		ContentPrefixes.push_back(prefix.has_value() ? std::move(*prefix) : FString::FromPath(mount.ContentDir.filename(), EPathStyle::Generic));
-	}
 	MountFiles.resize(mounts.size());
 	MountScopes.resize(mounts.size());
 	MountDiagnostics.resize(mounts.size());
@@ -2252,20 +2246,7 @@ SRuleFileOrigin CRulesEngine::MakeFolderOrigin (uint32 MountIndex, FStringView F
 	origin.MountName = mount.Name;
 	origin.FolderMountPath = FString(FolderMountPath);
 	origin.Level = ERuleFileLevel::Folder;
-	FString& file = origin.File;
-	file = ContentPrefixes[MountIndex];
-	for (const FStringView part : { relative, FileName })
-	{
-		if (part.IsEmpty())
-		{
-			continue;
-		}
-		if (!file.IsEmpty())
-		{
-			file += '/';
-		}
-		file += part;
-	}
+	origin.File = mount.GetSourceFile(relative.IsEmpty() ? FString(FileName) : FString(relative) + "/" + FileName);
 	return origin;
 }
 

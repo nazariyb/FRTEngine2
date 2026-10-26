@@ -53,6 +53,8 @@ SMount MakeMount (FString Name, EMountKind Kind, const std::filesystem::path& Co
 	mount.ContentDir = platform::NormalizePath(ContentDir);
 	mount.RulesFile = platform::NormalizePath(RulesFile);
 	mount.OwnerRoot = platform::NormalizePath(OwnerRoot);
+	std::optional<FString> prefix = platform::GetRelativePath(mount.ContentDir, mount.OwnerRoot);
+	mount.ContentPrefix = prefix.has_value() ? std::move(*prefix) : FString::FromPath(mount.ContentDir.filename(), EPathStyle::Generic);
 	if (IsDirectory(mount.ContentDir))
 	{
 		FString error;
@@ -327,21 +329,54 @@ std::optional<std::filesystem::path> CMountTable::FromMountPath (FStringView Mou
 	{
 		return std::nullopt;
 	}
-	if (relative.IsEmpty())
+	return mount->ToAbsolute(relative);
+}
+
+
+std::optional<std::filesystem::path> SMount::ToAbsolute (FStringView Relative) const
+{
+	if (Relative.IsEmpty())
 	{
-		return mount->ContentDir;
+		return ContentDir;
 	}
-	if (relative.Contains('\\') || relative.Contains(':') || relative.Contains('\0'))
+	if (Relative.Contains('\\') || Relative.Contains(':') || Relative.Contains('\0'))
 	{
 		return std::nullopt;
 	}
-	std::optional<std::filesystem::path> below = relative.TryToPath();
+	for (FStringView rest = Relative;;)
+	{
+		const SStringSplit split = rest.SplitFirst('/');
+		if (split.Left.IsEmpty() || split.Left == "." || split.Left == "..")
+		{
+			return std::nullopt;
+		}
+		if (!split.bFound)
+		{
+			break;
+		}
+		rest = split.Right;
+	}
+	std::optional<std::filesystem::path> below = Relative.TryToPath();
 	if (!below.has_value())
 	{
 		return std::nullopt;
 	}
-	std::filesystem::path path = mount->ContentDir / *below;
+	std::filesystem::path path = ContentDir / *below;
 	path.make_preferred();
 	return path;
+}
+
+FString SMount::GetSourceFile (FStringView Relative) const
+{
+	FString file = ContentPrefix;
+	if (!Relative.IsEmpty())
+	{
+		if (!file.IsEmpty())
+		{
+			file += '/';
+		}
+		file += Relative;
+	}
+	return file;
 }
 }

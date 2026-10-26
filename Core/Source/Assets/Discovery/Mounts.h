@@ -60,9 +60,22 @@ struct SMount
 	std::filesystem::path RulesFile;
 	std::filesystem::path OwnerRoot;
 	platform::SVolumeInfo Volume;       // of ContentDir (defaults when it does not exist)
+	// ContentDir relative to OwnerRoot, '/' separated ("Core/Content", "Content", "Plugins/X/Content"; ContentDir's
+	// own name when it does not lie below OwnerRoot): the head of a diagnostic's File for anything in the mount.
+	FString ContentPrefix;
 
 	// "/Engine", "/Project", "/Plugin.<Name>".
 	[[nodiscard]] FString GetRootMountPath () const { return JoinMountPath(Name, FStringView()); }
+	/**
+	 * The absolute path of a relative part of this mount's paths (what SplitMountPath gives; empty = the root), or
+	 * nullopt when it cannot name something inside the mount: an empty, "." or ".." segment, a '\' or ':' (which
+	 * Windows reads as a separator or a drive, so "..\x" or "C:x" would leave the mount), a NUL, or text that is
+	 * not canonical WTF-8. The one mount-path-to-disk conversion: CMountTable::FromMountPath, the importers' input
+	 * and the rules engine use it.
+	 */
+	[[nodiscard]] FRT_CORE_API std::optional<std::filesystem::path> ToAbsolute (FStringView Relative) const;
+	// The File of a diagnostic about Relative in this mount (§13.4 convention): ContentPrefix + "/" + Relative.
+	[[nodiscard]] FRT_CORE_API FString GetSourceFile (FStringView Relative) const;
 };
 
 // Where the mounts come from. EngineDir is /Engine's OwnerRoot (the checkout, or a package's Engine/).
