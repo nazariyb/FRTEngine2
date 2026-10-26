@@ -40,7 +40,8 @@ script, behind FRT.bat verify (Premake/tools.lua). A milestone branch merges onl
   8. git status --porcelain is empty at the end: nothing it ran changed a tracked file.
 Steps that later milestones bring print "skipped (M<n>)". It ends with a summary table and the timings a
 commit message reports (the hosts' "[assets] initial scan:" lines among them: the scan and how long
-BuildWorld waited for it), and exits with 1 when any step failed. --nightly also builds Release and runs its
+BuildWorld waited for it - a Debug or Development host must print it before its first BuildWorld - and their
+"[world] BuildWorld:" and "[module] reload:" times), and exits with 1 when any step failed. --nightly also builds Release and runs its
 Core-Test.exe over the asset system's benchmark suites, the DISABLED_ 100k/1M/100k + 500k ones included, with
 FRT_PERF_STRICT=1, which holds design 5.11's figures, or the proposed revisions, exactly - each test in a process of
 its own, as the figures are for a test run alone (Development's Core-Test step judges the 10k suites by its
@@ -829,12 +830,29 @@ class Gate:
     # The hosts' start-up line (CAssetRegistry::WaitBeforeBuildWorld).
     INITIAL_SCAN_LINE = re.compile(r'\[assets\] initial scan: (\d+) files, (\d+) records, ([\d.]+) ms; BuildWorld waited ([\d.]+) ms')
 
-    def read_initial_scan(self, what, log):
-        """Records the "[assets] initial scan:" line a host start printed to Log for the summary; None without one
-        (Release, or [Assets] Registry=0)."""
-        match = self.INITIAL_SCAN_LINE.search(Path(log).read_bytes().decode('utf-8', errors='replace'))
+    # The hosts' own timings: the game's BuildWorld, and a module reload (unload, load, BuildWorld of the new world).
+    BUILD_WORLD_LINE = re.compile(r'\[world\] BuildWorld: ([\d.]+) ms')
+    MODULE_RELOAD_LINE = re.compile(r'\[module\] reload: ([\d.]+) ms')
+
+    def read_initial_scan(self, what, log, required):
+        """Records the "[assets] initial scan:" line a host start printed to Log, its first BuildWorld and any module
+        reload for the summary. Required (a Debug or Development host over a project: its registry runs): the line
+        must be there and come before the first "[world] BuildWorld:" line - the host waited for the scan before
+        building its world - or StepFailed. Returns the match, None without one (Release)."""
+        text = Path(log).read_bytes().decode('utf-8', errors='replace')
+        match = self.INITIAL_SCAN_LINE.search(text)
+        build = self.BUILD_WORLD_LINE.search(text)
         if match:
             self.initial_scans.append((what, int(match.group(1)), int(match.group(2)), float(match.group(3)), float(match.group(4))))
+        if build:
+            self.timings.append((f'BuildWorld, {what}', f'{float(build.group(1)):.1f} ms'))
+        for reload in self.MODULE_RELOAD_LINE.finditer(text):
+            self.timings.append((f'module reload, {what}', f'{float(reload.group(1)):.1f} ms'))
+        if required:
+            if not match:
+                raise StepFailed(f'no "[assets] initial scan:" line: the host did not wait for the asset registry before BuildWorld (log: {log})')
+            if build and build.start() < match.start():
+                raise StepFailed(f'BuildWorld ran before the initial scan was complete (log: {log})')
         return match
 
     # ---- the shader cache ----
@@ -900,8 +918,9 @@ class Gate:
     def check_smoke_registry(self, name, config, text, log):
         """The smoke test's registry check: the initial scan completed (its "[smoke] ok registry:" line) and the
         editor's Assets panel shows what the registry holds; in SMOKE_TEXTURES templates it lists textures. Records
-        the host's "[assets] initial scan:" line for the summary. Returns a detail text, or raises StepFailed."""
-        self.read_initial_scan(f'editor, {name} ({config})', log)
+        the host's "[assets] initial scan:" line, which must come before its first BuildWorld, for the summary. Returns
+        a detail text, or raises StepFailed."""
+        self.read_initial_scan(f'editor, {name} ({config})', log, required=True)
         registry = self.SMOKE_REGISTRY_LINE.search(text)
         if not registry:
             raise StepFailed('no "[smoke] ok registry:" line: the asset registry check did not pass')
@@ -996,7 +1015,7 @@ class Gate:
             if not base.with_suffix(extension).exists():
                 raise StepFailed(f'no {base.name}{extension} written (log: {log})')
         self.check_shader_cache(config, f'capture {label}', log)
-        self.read_initial_scan(f'capture {label}', log)
+        self.read_initial_scan(f'capture {label}', log, required=config != 'Release')
         return gpu[0] if gpu else 'unknown GPU'
 
     def capture_targets(self, config):

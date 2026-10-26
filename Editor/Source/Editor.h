@@ -102,6 +102,9 @@ public:
 	CAssetsPanel& GetAssetsPanel () { return AssetsPanel; }
 	// Newer builds of the game module loaded so far.
 	uint32 GetGameReloads () const { return GameReloads; }
+	// Whether the asset registry's initial scan was complete when the first BuildWorld ran (design §5.4: game code
+	// never sees "unknown"); true without a registry. What the smoke test checks of StartUp's wait.
+	bool WasInitialScanCompleteAtFirstBuildWorld () const { return bScanCompleteAtFirstBuildWorld; }
 	// Looks for a newer build of the game module at the start of the next frame.
 	void PollGameModuleNow () { NextGamePoll = 0.0; }
 
@@ -129,6 +132,8 @@ private:
 	CGameModule& Module;
 	double NextGamePoll = 0.0;                         // UI time to look for a newer build again
 	uint32 GameReloads = 0u;
+	bool bBuiltWorld = false;                          // BuildEditWorld ran once
+	bool bScanCompleteAtFirstBuildWorld = false;
 	FString GameProblem;                               // why there is no game or world; shown until a build fixes it
 
 	std::unique_ptr<CWorldScene> EditWorld;

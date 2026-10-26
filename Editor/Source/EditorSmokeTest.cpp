@@ -800,6 +800,9 @@ void CEditorSmokeTest::CheckAssetRegistry (CEditor& Editor, CEngine& Engine)
 	const assets::SInitialScanReport& report = registry->GetInitialScanReport();
 	Check(registry->IsInitialScanComplete() && report.bComplete, FString::Format("registry: {} records, initial scan {:.0f} ms",
 		registry->Live().GetRecordCount(), report.TotalMs));
+	// Recorded by the first BuildWorld itself: a scan that completes by this frame anyway (the Demo's takes less than
+	// the window's start-up) proves nothing about the wait before it.
+	Check(Editor.WasInitialScanCompleteAtFirstBuildWorld(), "the initial scan was complete when the first BuildWorld ran");
 	Check(registry->Exists(assets::SAssetId {}) == assets::EExists::No, "the registry answers Exists with Yes or No once its scan is complete");
 	Editor.GetAssetsPanel().SetQuery(AssetsPanelQuery);
 }

@@ -18,7 +18,9 @@
 #include "Graphics/Render/Renderer.h"
 #include "Graphics/Render/RenderView.h"
 #include "Input/InputSystem.h"
+#include "Log/Log.h"
 #include "Platform/Platform.h"
+#include "Platform/Timestamp.h"
 #include "Project/Project.h"
 #include "UI/ImGuiLayer.h"
 
@@ -491,8 +493,18 @@ bool CEditor::BuildEditWorld ()
 		std::printf("[editor] no game to build the world\n");
 		return false;
 	}
+	if (!bBuiltWorld)
+	{
+		bBuiltWorld = true;
+		const assets::CAssetRegistry* registry = Engine.GetAssetRegistry();
+		bScanCompleteAtFirstBuildWorld = registry == nullptr || registry->IsInitialScanComplete();
+	}
 	const SGameContext context { *EditWorld, Engine.GetMaterials(), Engine.GetInputActions(), Engine.GetConfig() };
-	if (!CallGame("BuildWorld", [&] { builder->BuildWorld(context); }))
+	// The game's own time (FRT.bat verify reports it beside the registry's wait before it).
+	const uint64 start = platform::ReadTimestamp();
+	const bool bBuilt = CallGame("BuildWorld", [&] { builder->BuildWorld(context); });
+	log::Info("world", "BuildWorld: {:.1f} ms", platform::TimestampToMilliseconds(platform::ReadTimestamp() - start));
+	if (!bBuilt)
 	{
 		return false;
 	}
@@ -519,6 +531,7 @@ void CEditor::ReloadGame ()
 	const FString name = Module.GetName();
 	std::printf("[editor] new build of game module '%s', reloading\n", name.CStr());
 	const bool bWasPlaying = Play.IsPlaying();
+	const uint64 start = platform::ReadTimestamp();
 
 	// Everything holding the module's code goes before it does (CGameModule): the session's
 	// game instance and world, then the edit world, whose component pools the game made. Their
@@ -537,6 +550,8 @@ void CEditor::ReloadGame ()
 		GameProblem = "The game could not build its world (see the log)";
 	}
 
+	// Unload, load and the new world's BuildWorld (FRT.bat verify reports it).
+	log::Info("module", "reload: {:.1f} ms", platform::TimestampToMilliseconds(platform::ReadTimestamp() - start));
 	if (GameProblem.IsEmpty())
 	{
 		++GameReloads;

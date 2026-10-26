@@ -24,6 +24,8 @@
 #include "Engine/GameModule.h"
 #include "Engine/LaunchConfig.h"
 #include "Input/InputSystem.h"
+#include "Log/Log.h"
+#include "Platform/Timestamp.h"
 #include "Project/Project.h"
 
 #if !defined(FRT_HEADLESS)
@@ -65,7 +67,10 @@ int RunGameLoop (CEngine& Engine, CGameModule& Module)
 		{
 			return false;
 		}
+		// The game's own time (FRT.bat verify reports it beside the registry's wait before the first one).
+		const uint64 start = platform::ReadTimestamp();
 		game->BuildWorld(makeContext());
+		log::Info("world", "BuildWorld: {:.1f} ms", platform::TimestampToMilliseconds(platform::ReadTimestamp() - start));
 		ApplySceneLaunchConfig(config, *world);
 		world->Clock.bPaused = config.Get("Scene", "PauseWorld", false);
 		return true;
@@ -126,6 +131,7 @@ int RunGameLoop (CEngine& Engine, CGameModule& Module)
 			{
 				const FString name = Module.GetName();
 				std::cout << "[launcher] new build of game module '" << name << "', reloading" << std::endl;
+				const uint64 reloadStart = platform::ReadTimestamp();
 				if (game)
 				{
 					game->EndPlay(makeContext());
@@ -137,7 +143,10 @@ int RunGameLoop (CEngine& Engine, CGameModule& Module)
 #endif
 				world.reset();
 				Module.Load(name);
-				if (buildGame())
+				const bool bBuilt = buildGame();
+				// Unload, load and the new world's BuildWorld, as the editor logs it.
+				log::Info("module", "reload: {:.1f} ms", platform::TimestampToMilliseconds(platform::ReadTimestamp() - reloadStart));
+				if (bBuilt)
 				{
 					beginPlay();
 					std::cout << "[launcher] game module '" << name << "' reloaded" << std::endl;
