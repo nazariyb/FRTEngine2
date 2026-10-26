@@ -18,11 +18,12 @@
  * over that view's tables (RegistryTables.h). Both are pure reads of an immutable view, so they run on any thread,
  * allocate only on the CRT heap and never block a commit.
  *
- * §5.7 spells these as CRegistryView::Compile/Run; they are free functions here because the view is the store's
- * (RegistryView.h) and the engine only reads its tables. A compiled query is a plain value the caller keeps (there
- * is no shared plan cache); it holds ids of the view it was compiled against (type keys, folder rows, records of
- * ref:/dep: targets), so RunQuery refuses it on any other revision or store: compile again after a commit or a
- * reload.
+ * The entry points are CRegistryView::Compile, Run and RunText (§5.7; declared in RegistryView.h, defined in
+ * QueryEngine.cpp), the one spelling every caller uses. Two deviations from §5.7: Compile reports one positioned
+ * SDiagnostic (the first error) instead of SQueryDiagnostics, and SAssetQuery::Parse returns an optional instead of
+ * bool + Out. A compiled query is a plain value the caller keeps (there is no shared plan cache); it holds ids of
+ * the view it was compiled against (type keys, folder rows, records of ref:/dep: targets), so Run refuses it on any
+ * other revision or store: compile again after a commit or a reload.
  *
  * Compilation resolves type names (CAssetTypeRegistry: dotted, or a unique short name; M3 has no hierarchy, so
  * "derived types included" adds nothing), tag names to key indices per type in scope, literals per key type, folders
@@ -118,27 +119,6 @@ struct SQueryStats
 	double SortMilliseconds = 0.0;   // ordering, Offset and Limit
 	bool bWrongView = false;         // the query was compiled against another revision or store: nothing ran
 };
-
-/**
- * Compiles Query against View. False on the first term that does not resolve, with OutError filled (Out is left
- * empty); true otherwise, with Out ready for RunQuery on this view.
- */
-FRT_CORE_API bool CompileQuery (const CRegistryView& View, const SAssetQuery& Query, SCompiledQuery& Out, SDiagnostic* OutError = nullptr);
-
-/**
- * Runs a compiled query: Out receives the records of the page [Offset, Offset + Limit) in result order (the whole
- * result without a Limit). Returns how many records matched before Offset and Limit. A query compiled against
- * another revision or store (or not compiled) returns 0 with an empty Out and OutStats->bWrongView set.
- */
-FRT_CORE_API uint32 RunQuery (const CRegistryView& View, const SCompiledQuery& Query, std::vector<SRecordId>& Out, SQueryStats* OutStats = nullptr);
-
-/**
- * Parse (§5.8), compile and run in one call - the search box, `FRT.bat assets query`. nullopt on a parse or compile
- * error (OutError positioned in Text); else the match count as RunQuery returns it. OutNotes receives the compile
- * notes (SCompiledQuery::Notes: "is:redirected matches nothing until its milestone"); it is cleared first.
- */
-FRT_CORE_API std::optional<uint32> RunQueryText (const CRegistryView& View, FStringView Text, std::vector<SRecordId>& Out,
-	SDiagnostic* OutError = nullptr, SQueryStats* OutStats = nullptr, std::vector<SDiagnostic>* OutNotes = nullptr);
 
 /**
  * The values of one column of a record, as a result table shows them: a system column ("$Size"; $Type, $Name,

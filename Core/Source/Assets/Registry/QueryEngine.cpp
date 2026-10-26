@@ -2804,8 +2804,9 @@ private:
 
 // ---------------- Public API ----------------
 
-bool CompileQuery (const CRegistryView& View, const SAssetQuery& Query, SCompiledQuery& Out, SDiagnostic* OutError)
+bool CRegistryView::Compile (const SAssetQuery& Query, SCompiledQuery& Out, SDiagnostic* OutError) const
 {
+	const CRegistryView& View = *this;
 	Out = SCompiledQuery {};
 	std::shared_ptr<SQueryPlan> plan = std::make_shared<SQueryPlan>();
 	std::vector<SDiagnostic> notes;
@@ -2825,8 +2826,9 @@ bool CompileQuery (const CRegistryView& View, const SAssetQuery& Query, SCompile
 	return true;
 }
 
-uint32 RunQuery (const CRegistryView& View, const SCompiledQuery& Query, std::vector<SRecordId>& Out, SQueryStats* OutStats)
+uint32 CRegistryView::Run (const SCompiledQuery& Query, std::vector<SRecordId>& Out, SQueryStats* OutStats) const
 {
+	const CRegistryView& View = *this;
 	const uint64 start = platform::ReadTimestamp();
 	Out.clear();
 	SQueryStats stats;
@@ -2869,8 +2871,8 @@ uint32 RunQuery (const CRegistryView& View, const SCompiledQuery& Query, std::ve
 	return matched;
 }
 
-std::optional<uint32> RunQueryText (const CRegistryView& View, FStringView Text, std::vector<SRecordId>& Out, SDiagnostic* OutError, SQueryStats* OutStats,
-	std::vector<SDiagnostic>* OutNotes)
+std::optional<uint32> CRegistryView::RunText (FStringView Text, std::vector<SRecordId>& Out, SDiagnostic* OutError, SQueryStats* OutStats,
+	std::vector<SDiagnostic>* OutNotes) const
 {
 	Out.clear();
 	if (OutNotes != nullptr)
@@ -2883,11 +2885,11 @@ std::optional<uint32> RunQueryText (const CRegistryView& View, FStringView Text,
 		return std::nullopt;
 	}
 	SCompiledQuery compiled;
-	if (!CompileQuery(View, *query, compiled, OutError))
+	if (!Compile(*query, compiled, OutError))
 	{
 		return std::nullopt;
 	}
-	const uint32 matched = RunQuery(View, compiled, Out, OutStats);
+	const uint32 matched = Run(compiled, Out, OutStats);
 	if (OutNotes != nullptr)
 	{
 		*OutNotes = std::move(compiled.Notes);

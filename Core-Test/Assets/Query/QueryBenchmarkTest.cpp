@@ -70,13 +70,13 @@ STimedRun TimeQuery (const CRegistryView& View, const SAssetQuery& Query, uint32
 {
 	SCompiledQuery compiled;
 	SDiagnostic error;
-	EXPECT_TRUE(CompileQuery(View, Query, compiled, &error)) << Query.Describe().CStr() << ": " << error.Message.CStr();
+	EXPECT_TRUE(View.Compile(Query, compiled, &error)) << Query.Describe().CStr() << ": " << error.Message.CStr();
 	STimedRun timed;
 	std::vector<SRecordId> records;
 	for (uint32 round = 0u; round < Rounds; ++round)
 	{
 		SQueryStats stats;
-		timed.Matched = RunQuery(View, compiled, records, &stats);
+		timed.Matched = View.Run(compiled, records, &stats);
 		timed.Candidates = stats.Candidates;
 		timed.TotalMs = (std::min)(timed.TotalMs, stats.Milliseconds);
 		timed.ScanMs = (std::min)(timed.ScanMs, stats.ScanMilliseconds);
@@ -132,7 +132,7 @@ void RunSuite (uint32 Assets, uint32 Rows, EBudgetColumn Column)
 			{
 				const std::optional<SAssetQuery> query = SAssetQuery::Parse(text);
 				SCompiledQuery plan;
-				compiled += query && CompileQuery(*view, *query, plan) ? 1u : 0u;
+				compiled += query && view->Compile(*query, plan) ? 1u : 0u;
 			}
 			EXPECT_EQ(compiled, Batch);
 			bestUs = (std::min)(bestUs, platform::TimestampToMilliseconds(platform::ReadTimestamp() - start) * 1000.0 / Batch);
@@ -263,6 +263,6 @@ TEST(QueryBenchmarkTest, TheGeneratorIsDeterministic)
 	EXPECT_EQ(whole.Live().GetRecordCount(), 400u);
 	EXPECT_EQ(whole.Live().GetSubEntryCount(), report.Models * 4u + 1000u);
 	std::vector<SRecordId> records;
-	EXPECT_EQ(RunQueryText(whole.Live(), "rows", records), 1000u);
-	EXPECT_EQ(RunQueryText(whole.Live(), "is:broken-ref", records), RunQueryText(chunked.Live(), "is:broken-ref", records));
+	EXPECT_EQ(whole.Live().RunText("rows", records), 1000u);
+	EXPECT_EQ(whole.Live().RunText("is:broken-ref", records), chunked.Live().RunText("is:broken-ref", records));
 }

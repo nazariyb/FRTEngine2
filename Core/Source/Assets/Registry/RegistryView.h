@@ -31,11 +31,17 @@
  * Lookups by path compare under the portable fold (§5.2); the FILES and FOLDERS accessors that say so use
  * the mount's file-system rule. Nothing here touches the disk or the engine's memory pool.
  *
- * Not here yet: Compile/Run (the query engine, Registry/QueryEngine.*), FindPrimary/FindRow (M4/M5),
- * ICatalog (M6). G3 and H3 read the tables through GetTables (RegistryTables.h).
+ * Queries (§5.7): Compile, Run and RunText are declared here and implemented by the query engine
+ * (Registry/QueryEngine.cpp, which documents their semantics; include QueryEngine.h for SCompiledQuery and
+ * SQueryStats). Not here yet: FindPrimary/FindRow (M4/M5), ICatalog (M6). G3 and H3 read the tables through
+ * GetTables (RegistryTables.h).
  */
 namespace frt::assets
 {
+struct SAssetQuery;       // AssetQuery.h
+struct SCompiledQuery;    // QueryEngine.h
+struct SQueryStats;       // QueryEngine.h
+
 // A record copied out of a view; owns its strings.
 struct SAssetData
 {
@@ -240,6 +246,27 @@ public:
 	 * (a WTF-8 surrogate as U+FFFD), so the dump is UTF-8 text; the stored spellings stay as they are.
 	 */
 	void DumpText (FString& Out, EDumpFlags Flags = EDumpFlags::None) const;
+
+	// ---- Queries (§5.6-§5.8; the query engine, QueryEngine.h, says what they mean) ----
+	/**
+	 * Compiles Query against this view. False on the first term that does not resolve, with OutError filled (one
+	 * positioned diagnostic, §5.7's SQueryDiagnostics reduced to its first error; Out left empty); true otherwise,
+	 * with Out ready for Run on this view and its notes in Out.Notes.
+	 */
+	bool Compile (const SAssetQuery& Query, SCompiledQuery& Out, SDiagnostic* OutError = nullptr) const;
+	/**
+	 * Runs a compiled query: Out receives the records of the page [Offset, Offset + Limit) in result order (the whole
+	 * result without a Limit). Returns how many records matched before Offset and Limit. A query compiled against
+	 * another revision or store (or not compiled) returns 0 with an empty Out and OutStats->bWrongView set.
+	 */
+	uint32 Run (const SCompiledQuery& Query, std::vector<SRecordId>& Out, SQueryStats* OutStats = nullptr) const;
+	/**
+	 * Parse (§5.8), compile and run in one call - the search box, `FRT.bat assets query`. nullopt on a parse or
+	 * compile error (OutError positioned in Text); else the match count as Run returns it. OutNotes receives the
+	 * compile notes ("is:redirected matches nothing until its milestone"); it is cleared first.
+	 */
+	std::optional<uint32> RunText (FStringView Text, std::vector<SRecordId>& Out, SDiagnostic* OutError = nullptr,
+		SQueryStats* OutStats = nullptr, std::vector<SDiagnostic>* OutNotes = nullptr) const;
 
 	// ---- Images and memory ----
 	// Every table of the given mounts (all mounts when empty), for snapshots (RegistryTables.h).

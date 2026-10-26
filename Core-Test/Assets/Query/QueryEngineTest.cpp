@@ -96,15 +96,15 @@ TEST_F(QueryEngineTest, LiteralsThatDoNotFitTheKeyAreErrorsAtTheirTerm)
 	mismatch.Where("Width", ECompare::Eq, STagValue::FromName("wide"));
 	SCompiledQuery compiled;
 	SDiagnostic error;
-	EXPECT_FALSE(CompileQuery(View(), mismatch, compiled, &error));
+	EXPECT_FALSE(View().Compile(mismatch, compiled, &error));
 	EXPECT_EQ(error.Column, 0u);
 	EXPECT_FALSE(compiled.IsValid());
 	SAssetQuery prefix;
 	prefix.Where("Width", ECompare::Prefix, STagValue::FromInt64(1));
-	EXPECT_FALSE(CompileQuery(View(), prefix, compiled, &error));
+	EXPECT_FALSE(View().Compile(prefix, compiled, &error));
 	SAssetQuery noValue;
 	noValue.Where("Width", ECompare::Eq);
-	EXPECT_FALSE(CompileQuery(View(), noValue, compiled, &error));
+	EXPECT_FALSE(View().Compile(noValue, compiled, &error));
 }
 
 TEST_F(QueryEngineTest, UnknownNamesAreErrorsAtTheirColumn)
@@ -320,24 +320,24 @@ TEST_F(QueryEngineTest, SystemPredicatesReadFlagsEdgesAndProblems)
 		const std::optional<SAssetQuery> parsed = SAssetQuery::Parse(text);
 		ASSERT_TRUE(parsed.has_value());
 		SCompiledQuery compiled;
-		ASSERT_TRUE(CompileQuery(View(), *parsed, compiled));
+		ASSERT_TRUE(View().Compile(*parsed, compiled));
 		ASSERT_EQ(compiled.Notes.size(), 1u);
 		EXPECT_EQ(compiled.Notes[0].Severity, ESeverity::Info);
 		EXPECT_GE(compiled.Notes[0].Column, 1u);
 		std::vector<SRecordId> records;
-		EXPECT_EQ(RunQuery(View(), compiled, records), 0u);
+		EXPECT_EQ(View().Run(compiled, records), 0u);
 	}
 	// Inside an alternative, only that alternative matches nothing.
 	EXPECT_EQ(Query(View(), "is:redirected or is:primary"), List({ "/Project/Input/IMC_Default.frtinputmap" }));
 	// The text entry point hands the notes on (the search box shows them).
 	std::vector<SRecordId> records;
 	std::vector<SDiagnostic> notes(3u);
-	EXPECT_EQ(RunQueryText(View(), "is:primary or is:redirected", records, nullptr, nullptr, &notes), 1u);
+	EXPECT_EQ(View().RunText("is:primary or is:redirected", records, nullptr, nullptr, &notes), 1u);
 	ASSERT_EQ(notes.size(), 1u);
 	EXPECT_EQ(notes[0].Severity, ESeverity::Info);
 	EXPECT_EQ(notes[0].Column, 15u);
 	EXPECT_TRUE(notes[0].Message.View().Contains("is:redirected")) << notes[0].Message.CStr();
-	EXPECT_EQ(RunQueryText(View(), "is:primary", records, nullptr, nullptr, &notes), 1u);
+	EXPECT_EQ(View().RunText("is:primary", records, nullptr, nullptr, &notes), 1u);
 	EXPECT_TRUE(notes.empty());
 }
 
@@ -424,10 +424,10 @@ TEST_F(QueryEngineTest, OrderLimitAndOffsetShapeADeterministicResult)
 	SAssetQuery page;
 	page.OfType("Texture").OrderBy("Width", false).Limit(2u, 1u);
 	SCompiledQuery compiled;
-	ASSERT_TRUE(CompileQuery(View(), page, compiled));
+	ASSERT_TRUE(View().Compile(page, compiled));
 	std::vector<SRecordId> records;
 	SQueryStats stats;
-	EXPECT_EQ(RunQuery(View(), compiled, records, &stats), 5u);
+	EXPECT_EQ(View().Run(compiled, records, &stats), 5u);
 	EXPECT_EQ(PathsOf(View(), records), List({ "/Project/Textures/Hero/T_Hero_N.png", "/Project/Textures/T_Sand.png" }));
 	EXPECT_EQ(stats.Matched, 5u);
 	EXPECT_EQ(stats.Returned, 2u);
@@ -472,7 +472,7 @@ TEST_F(QueryEngineTest, RemovedAndRetypedRecordsLeaveTheResult)
 TEST_F(QueryEngineTest, AQueryCompiledAgainstAnotherRevisionIsRefused)
 {
 	SCompiledQuery compiled;
-	ASSERT_TRUE(CompileQuery(View(), *SAssetQuery::Parse("type:Texture"), compiled));
+	ASSERT_TRUE(View().Compile(*SAssetQuery::Parse("type:Texture"), compiled));
 	EXPECT_EQ(compiled.Revision, View().GetRevision());
 	const std::shared_ptr<const CRegistryView> before = Store.Acquire();
 	SRegistryDelta later;
@@ -480,30 +480,30 @@ TEST_F(QueryEngineTest, AQueryCompiledAgainstAnotherRevisionIsRefused)
 	Store.Commit(std::move(later));
 	std::vector<SRecordId> records;
 	SQueryStats stats;
-	EXPECT_EQ(RunQuery(View(), compiled, records, &stats), 0u);
+	EXPECT_EQ(View().Run(compiled, records, &stats), 0u);
 	EXPECT_TRUE(stats.bWrongView);
 	EXPECT_TRUE(records.empty());
 	// The view it was compiled against still answers, with its own records.
-	EXPECT_EQ(RunQuery(*before, compiled, records), 5u);
+	EXPECT_EQ(before->Run(compiled, records), 5u);
 	EXPECT_TRUE(before->IsValid(records.front()));
 	EXPECT_FALSE(View().IsValid(records.front()));
 	// An uncompiled query is refused too.
-	EXPECT_EQ(RunQuery(View(), SCompiledQuery {}, records, &stats), 0u);
+	EXPECT_EQ(View().Run(SCompiledQuery {}, records, &stats), 0u);
 	EXPECT_TRUE(stats.bWrongView);
 }
 
 TEST_F(QueryEngineTest, AQueryCompiledAgainstAnotherStoreIsRefused)
 {
 	SCompiledQuery compiled;
-	ASSERT_TRUE(CompileQuery(View(), *SAssetQuery::Parse("dir:/Project/Textures/Hero ref:~T_Rock or type:Texture"), compiled));
+	ASSERT_TRUE(View().Compile(*SAssetQuery::Parse("dir:/Project/Textures/Hero ref:~T_Rock or type:Texture"), compiled));
 	std::vector<SRecordId> records;
 	SQueryStats stats;
-	ASSERT_EQ(RunQuery(View(), compiled, records, &stats), 5u);
+	ASSERT_EQ(View().Run(compiled, records, &stats), 5u);
 	// The same content committed the same way: the same revision, other folder rows and record ids.
 	CRegistryStore twin;
 	CommitFixture(twin, true);
 	ASSERT_EQ(twin.Live().GetRevision(), View().GetRevision());
-	EXPECT_EQ(RunQuery(twin.Live(), compiled, records, &stats), 0u);
+	EXPECT_EQ(twin.Live().Run(compiled, records, &stats), 0u);
 	EXPECT_TRUE(stats.bWrongView);
 	EXPECT_TRUE(records.empty());
 	// A store rebuilt from this one's image at this revision (a reload).
@@ -511,15 +511,15 @@ TEST_F(QueryEngineTest, AQueryCompiledAgainstAnotherStoreIsRefused)
 	const MountId mounts[] = { EngineMountId, ProjectMountId };
 	reloaded.AdoptImage(View().ExportImage(mounts), View().GetRevision());
 	ASSERT_EQ(reloaded.Live().GetRevision(), View().GetRevision());
-	EXPECT_EQ(RunQuery(reloaded.Live(), compiled, records, &stats), 0u);
+	EXPECT_EQ(reloaded.Live().Run(compiled, records, &stats), 0u);
 	EXPECT_TRUE(stats.bWrongView);
 	// Compiled there, it answers there as here.
-	ASSERT_TRUE(CompileQuery(reloaded.Live(), *SAssetQuery::Parse("dir:/Project/Textures/Hero ref:~T_Rock or type:Texture"), compiled));
-	RunQuery(reloaded.Live(), compiled, records);
+	ASSERT_TRUE(reloaded.Live().Compile(*SAssetQuery::Parse("dir:/Project/Textures/Hero ref:~T_Rock or type:Texture"), compiled));
+	reloaded.Live().Run(compiled, records);
 	EXPECT_EQ(PathsOf(reloaded.Live(), records), AllTextures);
 	// An acquired view of the compiling store at the same revision shares its binding.
-	ASSERT_TRUE(CompileQuery(View(), *SAssetQuery::Parse("type:Texture"), compiled));
-	EXPECT_EQ(RunQuery(*Store.Acquire(), compiled, records), 5u);
+	ASSERT_TRUE(View().Compile(*SAssetQuery::Parse("type:Texture"), compiled));
+	EXPECT_EQ(Store.Acquire()->Run(compiled, records), 5u);
 }
 
 TEST(QueryEngineOrderTest, TheAnswerDoesNotDependOnCommitOrder)
@@ -672,7 +672,7 @@ std::vector<uint64> AnswersOf (const CRegistryView& View)
 	for (const FStringView text : ConcurrentQueries)
 	{
 		SDiagnostic error;
-		const std::optional<uint32> count = RunQueryText(View, text, records, &error);
+		const std::optional<uint32> count = View.RunText(text, records, &error);
 		FString joined = count ? FString::Format("{}:", *count) : FString::Format("error {}: {}", error.Column, error.Message);
 		for (const SRecordId record : records)
 		{
@@ -773,12 +773,12 @@ TEST_F(QueryEngineTest, ColumnValuesReadSystemColumnsAndTags)
 TEST_F(QueryEngineTest, TheCompiledPlanDescribesTypedTerms)
 {
 	SCompiledQuery compiled;
-	ASSERT_TRUE(CompileQuery(View(), *SAssetQuery::Parse("type:Texture Width>=4096 order:Width desc limit:5"), compiled));
+	ASSERT_TRUE(View().Compile(*SAssetQuery::Parse("type:Texture Width>=4096 order:Width desc limit:5"), compiled));
 	EXPECT_EQ(DescribeCompiledQuery(compiled), "records:Assets types:frt.Texture where:frt.Texture.Width Ge 4096 order:Width desc limit:5");
-	ASSERT_TRUE(CompileQuery(View(), *SAssetQuery::Parse("VertexCount>2.5 Name:x"), compiled) == false);
-	ASSERT_TRUE(CompileQuery(View(), *SAssetQuery::Parse("VertexCount>2.5"), compiled));
+	ASSERT_TRUE(View().Compile(*SAssetQuery::Parse("VertexCount>2.5 Name:x"), compiled) == false);
+	ASSERT_TRUE(View().Compile(*SAssetQuery::Parse("VertexCount>2.5"), compiled));
 	EXPECT_EQ(DescribeCompiledQuery(compiled), "records:Assets where:frt.Model.VertexCount,frt.Mesh.VertexCount Gt real:2.5");
-	ASSERT_TRUE(CompileQuery(View(), *SAssetQuery::Parse("ValueType:Bu dir=/Project/Input"), compiled));
+	ASSERT_TRUE(View().Compile(*SAssetQuery::Parse("ValueType:Bu dir=/Project/Input"), compiled));
 	EXPECT_TRUE(DescribeCompiledQuery(compiled).View().Contains("where:frt.InputAction.ValueType Prefix \"bu\"")) << DescribeCompiledQuery(compiled).CStr();
 	EXPECT_EQ(DescribeCompiledQuery(SCompiledQuery {}), "");
 }
@@ -813,7 +813,7 @@ TEST_F(QueryEngineTest, RandomQueriesNeverCrashAndEveryErrorHasAPosition)
 			continue;
 		}
 		SCompiledQuery compiled;
-		if (!CompileQuery(View(), *parsed, compiled, &error))
+		if (!View().Compile(*parsed, compiled, &error))
 		{
 			++compileErrors;
 			EXPECT_GE(error.Column, 1u) << text.CStr();
@@ -823,7 +823,7 @@ TEST_F(QueryEngineTest, RandomQueriesNeverCrashAndEveryErrorHasAPosition)
 		}
 		std::vector<SRecordId> records;
 		SQueryStats stats;
-		const uint32 matched = RunQuery(View(), compiled, records, &stats);
+		const uint32 matched = View().Run(compiled, records, &stats);
 		EXPECT_GE(matched, records.size()) << text.CStr();
 		for (const SRecordId record : records)
 		{

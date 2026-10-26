@@ -202,7 +202,7 @@ inline std::vector<FString> Query (const CRegistryView& View, FStringView Text)
 {
 	std::vector<SRecordId> records;
 	SDiagnostic error;
-	const std::optional<uint32> count = RunQueryText(View, Text, records, &error);
+	const std::optional<uint32> count = View.RunText(Text, records, &error);
 	EXPECT_TRUE(count.has_value()) << Text.GetData() << " -> column " << error.Column << ": " << error.Message.CStr();
 	return PathsOf(View, records);
 }
@@ -212,9 +212,9 @@ inline std::vector<FString> Query (const CRegistryView& View, const SAssetQuery&
 {
 	SCompiledQuery compiled;
 	SDiagnostic error;
-	EXPECT_TRUE(CompileQuery(View, Built, compiled, &error)) << Built.Describe().CStr() << " -> " << error.Message.CStr();
+	EXPECT_TRUE(View.Compile(Built, compiled, &error)) << Built.Describe().CStr() << " -> " << error.Message.CStr();
 	std::vector<SRecordId> records;
-	RunQuery(View, compiled, records);
+	View.Run(compiled, records);
 	return PathsOf(View, records);
 }
 
@@ -223,7 +223,7 @@ inline SDiagnostic QueryError (const CRegistryView& View, FStringView Text)
 {
 	std::vector<SRecordId> records;
 	SDiagnostic error;
-	EXPECT_FALSE(RunQueryText(View, Text, records, &error).has_value()) << Text.GetData();
+	EXPECT_FALSE(View.RunText(Text, records, &error).has_value()) << Text.GetData();
 	EXPECT_EQ(error.Severity, ESeverity::Error);
 	EXPECT_EQ(error.Line, 1u);
 	EXPECT_FALSE(error.Message.IsEmpty());
