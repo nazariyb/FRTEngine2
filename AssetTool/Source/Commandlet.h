@@ -8,7 +8,7 @@
 #include "CoreTypes.h"
 #include "Containers/String.h"
 
-#include "JsonWriter.h"
+#include "Text/JsonWriter.h"
 
 
 namespace frt::config
@@ -24,6 +24,10 @@ class CWorkerPool;
 
 namespace frt::assettool
 {
+// AssetTool's --json lines are Core's JSON objects (Text/JsonWriter.h).
+using json::AppendJsonString;
+using json::CJsonObject;
+
 /**
  * AssetTool's exit codes (design §13.1): what scripts, Premake Lua and hooks branch on, so they never
  * change meaning. FRT.bat assets forwards them as its own.

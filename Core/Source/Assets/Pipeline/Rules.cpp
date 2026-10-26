@@ -14,7 +14,9 @@
 #include "Platform/FileSystem.h"
 #include "Platform/Platform.h"
 #include "Reflect/DataTree.h"
+#include "Reflect/DataTreeJson.h"
 #include "Reflect/DataTreeYaml.h"
+#include "Text/JsonWriter.h"
 #include "Unicode/Unicode.h"
 
 
@@ -3439,78 +3441,6 @@ namespace
 constexpr FStringLiteral RulesCacheFormat = "frt.rules.cache";
 constexpr int64 RulesCacheVersion = 1;
 
-// Text as a JSON string literal (RFC 8259): UTF-8 kept, a WTF-8 surrogate as its \u escape, a byte that is not
-// UTF-8 at all as U+FFFD.
-void AppendJsonString (FString& Out, FStringView Text)
-{
-	constexpr FStringLiteral Hex = "0123456789abcdef";
-	const auto appendEscape = [&Out, &Hex] (uint32 Unit)
-	{
-		Out += "\\u";
-		for (int32 shift = 12; shift >= 0; shift -= 4)
-		{
-			Out += Hex[(Unit >> static_cast<uint32>(shift)) & 0xFu];
-		}
-	};
-	Out += '"';
-	const char* data = Text.GetData();
-	uint32 offset = 0u;
-	while (offset < Text.Len())
-	{
-		const char ch = data[offset];
-		const uint32 byte = static_cast<unsigned char>(ch);
-		if (byte < 0x80u)
-		{
-			if (ch == '"' || ch == '\\')
-			{
-				Out += '\\';
-				Out += ch;
-			}
-			else if (byte < 0x20u)
-			{
-				appendEscape(byte);
-			}
-			else
-			{
-				Out += ch;
-			}
-			++offset;
-			continue;
-		}
-		const unicode::SDecodedCodePoint decoded = unicode::DecodeWtf8(data + offset, Text.Len() - offset);
-		if (!decoded.bWellFormed)
-		{
-			appendEscape(static_cast<uint32>(unicode::ReplacementCharacter));
-		}
-		else if (unicode::IsSurrogate(decoded.CodePoint))
-		{
-			appendEscape(static_cast<uint32>(decoded.CodePoint));
-		}
-		else
-		{
-			Out += FStringView(data + offset, decoded.Length);
-		}
-		offset += decoded.Length > 0u ? decoded.Length : 1u;
-	}
-	Out += '"';
-}
-
-void AppendJsonField (FString& Out, FStringView Name, FStringView Value, bool bFirst = false)
-{
-	Out += bFirst ? "{" : ", ";
-	AppendJsonString(Out, Name);
-	Out += ": ";
-	AppendJsonString(Out, Value);
-}
-
-void AppendJsonNumber (FString& Out, FStringView Name, int64 Value)
-{
-	Out += ", ";
-	AppendJsonString(Out, Name);
-	Out += ": ";
-	Out.AppendNumber(Value);
-}
-
 std::optional<uint64> ParseHex64 (FStringView Text) noexcept
 {
 	if (Text.Len() != 16u)
@@ -3541,32 +3471,21 @@ std::optional<uint64> ParseHex64 (FStringView Text) noexcept
 
 FString FormatRulesCache (const SRulesListing& Listing)
 {
-	FString text;
-	text += "{\"format\": ";
-	AppendJsonString(text, RulesCacheFormat);
-	text += ", \"version\": ";
-	text.AppendNumber(RulesCacheVersion);
-	text += "}\n";
+	FString text = json::CJsonObject().AddString("format", RulesCacheFormat).AddInt("version", RulesCacheVersion).ToString();
+	text += '\n';
 	for (const SRuleFileListing& file : Listing.Files)
 	{
-		AppendJsonField(text, "kind", "file", true);
-		AppendJsonField(text, "mount", file.Origin.MountName);
-		AppendJsonField(text, "folder", file.Origin.FolderMountPath);
-		AppendJsonField(text, "file", file.Origin.File);
-		AppendJsonField(text, "level", enum_::ToString(file.Origin.Level));
-		AppendJsonField(text, "hash", FString::Format("{:016x}", file.RulesHash));
-		text += ", \"malformed\": ";
-		text += file.bMalformed ? "true" : "false";
-		text += "}\n";
+		text += json::CJsonObject().AddString("kind", "file").AddString("mount", file.Origin.MountName)
+			.AddString("folder", file.Origin.FolderMountPath).AddString("file", file.Origin.File)
+			.AddString("level", enum_::ToString(file.Origin.Level)).AddString("hash", FString::Format("{:016x}", file.RulesHash))
+			.AddBool("malformed", file.bMalformed).ToString();
+		text += '\n';
 		for (const SRuleListEntry& entry : file.Entries)
 		{
-			AppendJsonField(text, "kind", entry.Kind, true);
-			AppendJsonField(text, "mount", file.Origin.MountName);
-			AppendJsonField(text, "file", file.Origin.File);
-			AppendJsonNumber(text, "line", entry.Line);
-			AppendJsonNumber(text, "rule", entry.RuleIndex);
-			AppendJsonField(text, "text", entry.Text);
-			text += "}\n";
+			text += json::CJsonObject().AddString("kind", entry.Kind).AddString("mount", file.Origin.MountName)
+				.AddString("file", file.Origin.File).AddInt("line", entry.Line).AddInt("rule", entry.RuleIndex)
+				.AddString("text", entry.Text).ToString();
+			text += '\n';
 		}
 	}
 	return text;
@@ -3614,7 +3533,7 @@ std::optional<SRulesListing> ReadRulesCache (const std::filesystem::path& Path, 
 		}
 		reflect::CDataTree tree;
 		SDiagnostic error;
-		if (!reflect::ParseYaml(line, tree, &error) || !tree.GetRoot().IsMap())
+		if (!reflect::ParseJson(line, tree, &error) || !tree.GetRoot().IsMap())
 		{
 			return fail(FString::Format("line {}: not a JSON object: {}", lineNumber, error.Message));
 		}

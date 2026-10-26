@@ -1018,13 +1018,40 @@ TEST(RulesCache, AListingRoundTripsThroughRulesCacheAndAnUnchangedOneIsNotRewrit
 	EXPECT_EQ(before->Identity, after->Identity) << "an identical cache is left alone";
 
 	const FString text = FormatRulesCache(listing);
-	EXPECT_TRUE(text.StartsWith("{\"format\": \"frt.rules.cache\", \"version\": 1}\n"));
-	EXPECT_TRUE(text.Contains("{\"kind\": \"file\", \"mount\": \"Project\", \"folder\": \"/Project\", \"file\": \"Config/Assets.yml\", \"level\": \"Mount\""));
+	EXPECT_TRUE(text.StartsWith("{\"format\":\"frt.rules.cache\",\"version\":1}\n"));
+	EXPECT_TRUE(text.Contains("{\"kind\":\"file\",\"mount\":\"Project\",\"folder\":\"/Project\",\"file\":\"Config/Assets.yml\",\"level\":\"Mount\""));
 
+	// What an older writer spelled with spaces is the same JSON.
+	ASSERT_TRUE(platform::WriteFileBytes(path, FStringView("{\"format\": \"frt.rules.cache\", \"version\": 1}\n").AsBytes()));
+	EXPECT_TRUE(ReadRulesCache(path).has_value());
 	ASSERT_TRUE(platform::WriteFileBytes(path, FStringView("{\"format\": \"frt.rules.cache\", \"version\": 2}\n").AsBytes()));
 	EXPECT_FALSE(ReadRulesCache(path).has_value());
 	ASSERT_TRUE(platform::WriteFileBytes(path, FStringView("{\"format\": \"frt.rules.cache\", \"version\": 1}\n{\"kind\": \"Rule\"}\n").AsBytes()));
 	EXPECT_FALSE(ReadRulesCache(path).has_value());
+}
+
+TEST(RulesCache, AFolderNameWithAnUnpairedSurrogateRoundTrips)
+{
+	// A Windows folder name may hold an unpaired surrogate; the engine keeps it as WTF-8 (U+D800 = ED A0 80) and the
+	// cache writes it as its escape, which yaml-cpp refused to read back: the whole cache was lost.
+	const FStringView lead("\xED\xA0\x80", 3u);
+	const FStringView trail("\xED\xB0\x81", 3u);
+	SRulesListing listing;
+	SRuleFileListing file;
+	file.Origin = SRuleFileOrigin { "Project", FString("/Project/Art") + lead + "x", FString("Content/Art") + lead + "x/Assets.yml",
+		ERuleFileLevel::Folder };
+	file.RulesHash = 0x0123456789abcdefull;
+	file.Entries.push_back(SRuleListEntry { "Rule", FString("Match: ") + trail + "*.png", 3u, 0 });
+	listing.Files.push_back(file);
+
+	SEngineFixture fixture("CacheSurrogate");
+	const std::filesystem::path path = GetRulesCachePath(fixture.Tree.Tree.ProjectDir());
+	FString error;
+	ASSERT_TRUE(WriteRulesCache(path, listing, &error)) << error.CStr();
+	EXPECT_TRUE(FormatRulesCache(listing).View().IsValidUtf8());
+	const std::optional<SRulesListing> read = ReadRulesCache(path, &error);
+	ASSERT_TRUE(read.has_value()) << error.CStr();
+	EXPECT_EQ(*read, listing);
 }
 
 

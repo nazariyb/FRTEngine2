@@ -14,11 +14,10 @@ project "Core-Test"
 	{
 		rootpath("%{prj.name}/**.h"),
 		rootpath("%{prj.name}/**.cpp"),
-		-- The parts of AssetTool that tests check without running it (Core-Test/AssetTool): the JSON
-		-- writer and the commandlet context's option and mount rules. Compiled in every configuration,
-		-- Release included, where there is no AssetTool to run.
+		-- The part of AssetTool that tests check without running it (Core-Test/AssetTool): the
+		-- commandlet context's option and mount rules. Compiled in every configuration, Release
+		-- included, where there is no AssetTool to run.
 		rootpath("AssetTool/Source/CommandletContext.cpp"),
-		rootpath("AssetTool/Source/JsonWriter.cpp"),
 	}
 	-- Core-TestModule's sources (below); the tests include its header and load the DLL.
 	removefiles { rootpath("%{prj.name}/TestModule/**.cpp") }

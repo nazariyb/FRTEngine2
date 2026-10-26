@@ -383,12 +383,13 @@ struct SUnclaimedFile
 
 /**
  * `Local/Assets/Rules.cache` (§3.5, §3.5.4; GetRulesCachePath): a listing flattened to JSON lines, for shell hooks,
- * the packager and Lua, which never parse YAML. The first line is {"format": "frt.rules.cache", "version": 1}; then
- * per rule file a line {"kind": "file", "mount", "folder", "file", "level", "hash" (16 hex digits), "malformed"}
- * followed by one line per entry {"kind": <entry kind>, "mount", "file", "line", "rule", "text"} - the same lines
- * `list-rules --json` prints. FormatRulesCache makes the text; WriteRulesCache writes it atomically and leaves an
- * identical file untouched; ReadRulesCache reads it back (nullopt for anything malformed or another version).
- * Diagnostics are not stored.
+ * the packager and Lua, which never parse YAML. The first line is {"format":"frt.rules.cache","version":1}; then
+ * per rule file a line {"kind":"file", "mount", "folder", "file", "level", "hash" (16 hex digits), "malformed"}
+ * followed by one line per entry {"kind":<entry kind>, "mount", "file", "line", "rule", "text"} - the same lines
+ * `list-rules --json` prints. Every line is a Text/JsonWriter.h object (AssetTool's --json writer) and is read back
+ * with reflect::ParseJson, its inverse, so a folder name with an unpaired surrogate round-trips. FormatRulesCache
+ * makes the text; WriteRulesCache writes it atomically and leaves an identical file untouched; ReadRulesCache reads it
+ * back (nullopt for anything malformed or another version). Diagnostics are not stored.
  */
 [[nodiscard]] FRT_CORE_API FString FormatRulesCache (const SRulesListing& Listing);
 FRT_CORE_API bool WriteRulesCache (const std::filesystem::path& Path, const SRulesListing& Listing, FString* OutError = nullptr);

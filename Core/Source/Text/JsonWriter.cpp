@@ -1,9 +1,9 @@
-#include "JsonWriter.h"
+#include "Text/JsonWriter.h"
 
 #include "Unicode/Unicode.h"
 
 
-namespace frt::assettool
+namespace frt::json
 {
 void AppendJsonString (FString& Out, FStringView Text)
 {

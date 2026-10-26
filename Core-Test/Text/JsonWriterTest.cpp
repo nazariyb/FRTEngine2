@@ -1,9 +1,9 @@
-// AssetTool's --json lines (AssetTool/Source/JsonWriter.h, design §13.1): every string comes out as an RFC 8259
-// string literal that any JSON reader takes back as the same text - quotes, backslashes (every Windows path an
-// error or an owner names), control characters, non-ASCII text as UTF-8 - and engine text that is not UTF-8
-// still makes valid UTF-8 JSON: a WTF-8 surrogate (a Windows path's unpaired one) as its \u escape, a byte that
-// is no UTF-8 at all as \ufffd. Objects keep their fields in the order they were added. Compiled into Core-Test
-// from AssetTool's sources, so it runs in every configuration, Release included.
+// Core's JSON lines (Text/JsonWriter.h: AssetTool's --json output, design §13.1, and Rules.cache): every string
+// comes out as an RFC 8259 string literal that any JSON reader takes back as the same text - quotes, backslashes
+// (every Windows path an error or an owner names), control characters, non-ASCII text as UTF-8 - and engine text
+// that is not UTF-8 still makes valid UTF-8 JSON: a WTF-8 surrogate (a Windows path's unpaired one) as its \u
+// escape, a byte that is no UTF-8 at all as \ufffd. Objects keep their fields in the order they were added.
+// Reflect/DataTreeJson.h reads such lines back (DataTreeJsonTest).
 #include <gtest/gtest.h>
 
 #include "TestCommon.h"
@@ -12,11 +12,11 @@
 
 #include "Containers/String.h"
 
-#include "JsonWriter.h"
+#include "Text/JsonWriter.h"
 
 using namespace frt;
-using assettool::AppendJsonString;
-using assettool::CJsonObject;
+using json::AppendJsonString;
+using json::CJsonObject;
 
 
 namespace
