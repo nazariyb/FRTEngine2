@@ -8,6 +8,7 @@
 
 #include "Assets/ByteStream.h"
 #include "Assets/KeyWriter.h"
+#include "Assets/RecordFrames.h"
 #include "Log/Log.h"
 #include "Platform/Timestamp.h"
 #include "Profiler/CpuProfiler.h"
@@ -24,13 +25,13 @@ using binary::AppendText;
 using binary::AppendVarint;
 using binary::CByteReader;
 
+using record_frames::AppendFrame;
+using record_frames::FindNextMagic;
+using record_frames::MaxPayloadBytes;
+using record_frames::ReadFrame;
+using record_frames::SFrame;
+
 constexpr uint8 LogHeader[8] = { 'F', 'R', 'T', 'B', 'S', 'L', 'G', '1' };
-// 0xFE never occurs in UTF-8, so text in payloads cannot fake it; the checksum rejects the rest.
-constexpr uint8 RecordMagic[4] = { 0xFEu, 0x42u, 0x53u, 0xA7u };
-constexpr size_t FrameHeaderBytes = 4u + 4u + 1u;     // magic, payload size, kind
-constexpr size_t FrameBytes = FrameHeaderBytes + 8u;  // ... and the trailing checksum
-// No record comes near this: a size beyond it is garbage.
-constexpr uint32 MaxPayloadBytes = 16u * 1024u * 1024u;
 
 constexpr uint8 KindStep = 1u;
 constexpr uint8 KindKeyBlob = 2u;
@@ -38,17 +39,7 @@ constexpr uint8 KindKeyBlob = 2u;
 
 // ---------------- Records ----------------
 
-// One framed record: magic, size, kind, payload, checksum of everything after the magic.
-void AppendFrame (std::vector<uint8>& Out, uint8 Kind, std::span<const uint8> Payload)
-{
-	const size_t start = Out.size();
-	AppendRaw(Out, RecordMagic);
-	AppendLittleEndian(Out, Payload.size(), 4u);
-	Out.push_back(Kind);
-	AppendRaw(Out, Payload);
-	const uint64 checksum = hash::Xxh3_64(std::span<const uint8>(Out).subspan(start + 4u));
-	AppendLittleEndian(Out, checksum, 8u);
-}
+// Records are framed by Assets/RecordFrames.h (AppendFrame, ReadFrame).
 
 // The step's four fields as a step record starts: what the index hashes.
 void AppendStepKey (std::vector<uint8>& Out, const SBuildStepId& Step)
@@ -214,58 +205,6 @@ std::optional<std::vector<uint8>> DecodeKeyBlobPayload (std::span<const uint8> P
 		*OutStaticKey = staticKey;
 	}
 	return std::vector<uint8>(blob.begin(), blob.end());
-}
-
-// The checked record at Offset of Bytes: its kind and payload, or nullopt when there is none there
-// (no magic, a size past the end or beyond reason, a checksum that fails).
-struct SFrame
-{
-	uint8 Kind = 0u;
-	std::span<const uint8> Payload;
-	size_t Size = 0u;
-};
-
-std::optional<SFrame> ReadFrame (std::span<const uint8> Bytes, size_t Offset)
-{
-	if (Bytes.size() - Offset < FrameBytes || std::memcmp(Bytes.data() + Offset, RecordMagic, sizeof(RecordMagic)) != 0)
-	{
-		return std::nullopt;
-	}
-	const uint64 payloadSize = binary::ReadLittleEndianAt(Bytes, Offset + 4u, 4u);
-	if (payloadSize > MaxPayloadBytes || payloadSize > Bytes.size() - Offset - FrameBytes)
-	{
-		return std::nullopt;
-	}
-	const size_t checksumOffset = Offset + FrameHeaderBytes + static_cast<size_t>(payloadSize);
-	const uint64 stored = binary::ReadLittleEndianAt(Bytes, checksumOffset, 8u);
-	if (stored != hash::Xxh3_64(Bytes.subspan(Offset + 4u, checksumOffset - Offset - 4u)))
-	{
-		return std::nullopt;
-	}
-	SFrame frame;
-	frame.Kind = Bytes[Offset + 8u];
-	frame.Payload = Bytes.subspan(Offset + FrameHeaderBytes, static_cast<size_t>(payloadSize));
-	frame.Size = FrameBytes + static_cast<size_t>(payloadSize);
-	return frame;
-}
-
-// Where the next magic number starts after Offset, or Bytes.size().
-size_t FindNextMagic (std::span<const uint8> Bytes, size_t Offset)
-{
-	for (size_t at = Offset + 1u; at + sizeof(RecordMagic) <= Bytes.size(); ++at)
-	{
-		const void* found = std::memchr(Bytes.data() + at, RecordMagic[0], Bytes.size() - at);
-		if (found == nullptr)
-		{
-			break;
-		}
-		at = static_cast<size_t>(static_cast<const uint8*>(found) - Bytes.data());
-		if (at + sizeof(RecordMagic) <= Bytes.size() && std::memcmp(Bytes.data() + at, RecordMagic, sizeof(RecordMagic)) == 0)
-		{
-			return at;
-		}
-	}
-	return Bytes.size();
 }
 
 bool IsHeaderValid (std::span<const uint8> Bytes) noexcept

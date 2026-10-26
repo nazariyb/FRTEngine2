@@ -249,6 +249,29 @@ TEST_F(BuildStateTest, KeyBlobsAreStoredOncePerDistinctBlob)
 	EXPECT_TRUE(found->KeyBlob.empty());
 }
 
+// The log's bytes are a format other processes and older builds read: a log of two steps (one with a
+// KeyBlob and diagnostics, one without a blob) has exactly these bytes. Recorded before the record frames
+// moved to Assets/RecordFrames.h (shared with the registry journal), so the move provably changed nothing.
+TEST_F(BuildStateTest, ALogOfKnownStepsHasKnownBytes)
+{
+	FString error;
+	CBuildStateLog log;
+	ASSERT_TRUE(log.Open(LogPath, &error)) << error.CStr();
+	SBuildStateEntry first = MakeEntry(MakeStep(1u), 1u, 1u);
+	first.Diagnostics = { "warning: the alpha channel is unused" };
+	SBuildStateEntry second = MakeEntry(MakeStep(2u, "DataTable"), 2u, 2u);
+	second.KeyBlob.clear();
+	second.StaticKey = HashOf("given");
+	second.Status = EBuildStatus::Failed;
+	ASSERT_TRUE(log.Append(first, &error)) << error.CStr();
+	ASSERT_TRUE(log.Append(second, &error)) << error.CStr();
+	log.Close();
+
+	const std::vector<uint8> bytes = ReadBytes(LogPath);
+	EXPECT_EQ(bytes.size(), 438u);
+	EXPECT_EQ(hash::Xxh3_64(bytes), 0xE50519D1D940C059ull);
+}
+
 // A crash in the middle of an append leaves a torn last record: the reader skips it (the step falls
 // back to its previous record), and records appended after it are found.
 TEST_F(BuildStateTest, ATornTailIsIgnoredAndLaterAppendsAreFound)
