@@ -23,4 +23,12 @@ namespace frt::assets
 {
 	return GetMountAssetsLocalDir(MountRoot) / "Rules.cache";
 }
+
+// <MountRoot>/Local/Assets/ProjectId: the owner root's random id, generated once (design §5.3), which every
+// registry snapshot and journal of that root carries so a file copied from elsewhere is not taken for its own
+// (Assets/Registry/Snapshot.h ReadProjectId, ReadOrCreateProjectId). Machine-local, never in the .frtproject.
+[[nodiscard]] inline std::filesystem::path GetProjectIdPath (const std::filesystem::path& MountRoot)
+{
+	return GetMountAssetsLocalDir(MountRoot) / "ProjectId";
+}
 }
