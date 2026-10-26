@@ -2,6 +2,8 @@
 // success, 2 for every usage error (unknown options too), 3 when the writer lock cannot be taken for a
 // reason other than an owner, 4 when a run that writes meets a mount another process owns - the shape of
 // the --json lines (one object per line, stable field names), help's list of verbs, newguid's GUIDs, the
+// asset registry's verbs (scan, status, query, refs, referencers, explain, list-rules, dump registry: only scan
+// writes, and only under the lock; their answers, exit codes and positioned query errors), the
 // writer lock of /Project and, with --engine, of /Engine: a read-only run never takes it, and AssetTool's
 // own lock verb keeps every other writer out until its input ends. A verb that writes nothing runs beside a
 // working directory's project it cannot use. The ddc verbs (§7.4, §13.2) count, trim and check the store
@@ -16,6 +18,8 @@
 
 #include <chrono>
 #include <filesystem>
+#include <initializer_list>
+#include <iterator>
 #include <optional>
 #include <set>
 #include <system_error>
@@ -27,13 +31,16 @@
 #include "Assets/AssetId.h"
 #include "Assets/BuildState.h"
 #include "Assets/DerivedDataCache.h"
+#include "Assets/MountPaths.h"
 #include "Assets/OwnerLock.h"
 #include "Containers/String.h"
+#include "Diagnostics/Diagnostics.h"
 #include "Platform/FileLock.h"
 #include "Platform/Platform.h"
 #include "Platform/Process.h"
 #include "Project/Project.h"
 #include "Project/UserRegistry.h"
+#include "Reflect/DataTreeJson.h"
 
 using namespace frt;
 
@@ -295,7 +302,7 @@ TEST_F(AssetToolTest, HelpListsEveryVerb)
 	const test::SProcessResult json = Run({ "help", "--json" });
 	ASSERT_EQ(json.ExitCode, 0) << json.Errors.CStr();
 	const std::vector<FStringView> lines = SplitLines(json.Output);
-	ASSERT_EQ(lines.size(), 4u) << json.Output.CStr();
+	ASSERT_EQ(lines.size(), 12u) << json.Output.CStr();
 	EXPECT_TRUE(lines[0].StartsWith("{\"verb\":\"help\",\"usage\":\"help [verb]: ")) << json.Output.CStr();
 	EXPECT_TRUE(lines[0].EndsWith("\",\"writes\":false}")) << json.Output.CStr();
 	EXPECT_TRUE(lines[1].StartsWith("{\"verb\":\"newguid\",\"usage\":\"newguid [n]: ")) << json.Output.CStr();
@@ -303,6 +310,13 @@ TEST_F(AssetToolTest, HelpListsEveryVerb)
 	EXPECT_TRUE(lines[2].EndsWith("\",\"writes\":true}")) << json.Output.CStr();
 	EXPECT_TRUE(lines[3].StartsWith("{\"verb\":\"ddc\",")) << json.Output.CStr();
 	EXPECT_TRUE(lines[3].EndsWith("\",\"writes\":false}")) << json.Output.CStr();
+	// The registry's verbs: only scan writes.
+	constexpr FStringLiteral RegistryVerbs[] = { "scan", "status", "query", "refs", "referencers", "explain", "list-rules", "dump" };
+	for (uint32 i = 0u; i < std::size(RegistryVerbs); ++i)
+	{
+		EXPECT_TRUE(lines[4u + i].StartsWith("{\"verb\":\"" + FString(RegistryVerbs[i]) + "\",")) << json.Output.CStr();
+		EXPECT_EQ(lines[4u + i].EndsWith("\"writes\":true}"), i == 0u) << json.Output.CStr();
+	}
 
 	const test::SProcessResult one = Run({ "help", "NewGuid" });
 	ASSERT_EQ(one.ExitCode, 0) << one.Errors.CStr();
@@ -830,4 +844,330 @@ TEST_F(AssetToolTest, DdcVerifyDeletesCorruptFilesAndSaysSo)
 	const test::SProcessResult clean = Run({ "ddc", "verify" });
 	EXPECT_EQ(clean.ExitCode, 0) << clean.Errors.CStr();
 	EXPECT_TRUE(clean.Output.Contains("every file is intact")) << clean.Output.CStr();
+}
+
+
+// ---- The asset registry's verbs ----
+
+namespace
+{
+// A PNG's header as stb_image's info reads it: signature, IHDR (8-bit RGBA), an empty IDAT, IEND.
+std::vector<uint8> MakeRegistryPng (uint32 Width, uint32 Height)
+{
+	std::vector<uint8> png = { 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
+	const auto u32 = [&] (uint32 Value)
+	{
+		png.insert(png.end(), { uint8(Value >> 24u), uint8(Value >> 16u), uint8(Value >> 8u), uint8(Value) });
+	};
+	const auto chunk = [&] (const char (&Type)[5], std::initializer_list<uint8> Data, std::initializer_list<uint32> Words)
+	{
+		u32(static_cast<uint32>(Data.size() + Words.size() * 4u));
+		png.insert(png.end(), Type, Type + 4);
+		for (const uint32 word : Words)
+		{
+			u32(word);
+		}
+		png.insert(png.end(), Data);
+		u32(0u);   // stb never checks the CRC
+	};
+	chunk("IHDR", { 8u, 6u, 0u, 0u, 0u }, { Width, Height });
+	chunk("IDAT", {}, {});
+	chunk("IEND", {}, {});
+	return png;
+}
+
+// Every line of a --json stream parsed (a failure for a line that is no JSON object).
+std::vector<reflect::CDataTree> ParseJsonLines (FStringView Output)
+{
+	std::vector<reflect::CDataTree> objects;
+	for (const FStringView line : Output.Lines())
+	{
+		if (line.TrimStartAndEnd().IsEmpty())
+		{
+			continue;
+		}
+		reflect::CDataTree tree;
+		SDiagnostic error;
+		EXPECT_TRUE(reflect::ParseJson(line, tree, &error)) << error.Message.CStr() << ": " << FString(line).CStr();
+		objects.push_back(std::move(tree));
+	}
+	return objects;
+}
+
+FString JsonText (const reflect::CDataTree& Tree, FStringView Path)
+{
+	return FString(Tree.Find(Path).AsText().value_or(FStringView()));
+}
+
+int64 JsonInt (const reflect::CDataTree& Tree, FStringView Path)
+{
+	return Tree.Find(Path).AsInt64().value_or(-1);
+}
+
+class AssetToolRegistryTest : public AssetToolTest
+{
+protected:
+	void SetUp () override
+	{
+		AssetToolTest::SetUp();
+		if (IsSkipped() || HasFatalFailure())
+		{
+			return;
+		}
+		const std::filesystem::path content = ProjectDir / "Content";
+		WritePng(content / FStringView("Textures/Камінь.png").ToPath(), 64u);
+		WritePng(content / FStringView("Textures/Трава.png").ToPath(), 2048u);
+		WriteText(content / FStringView("Textures/Assets.yml").ToPath(), "FormatVersion: 1\nRules:\n  - { Match: \"*.png\", Labels: [ Stone ] }\n");
+		WriteText(content / FStringView("Materials/Камінь.frtmat.yml").ToPath(), "version: 2\nname: Камінь\n\nalbedo:\n  texture: ../Textures/Камінь.png\n");
+		WriteText(content / FStringView("Notes/нотатки.txt").ToPath(), "notes");
+		WriteText(ProjectDir / "Config" / "Assets.yml", "FormatVersion: 1\n");
+	}
+
+	static void WritePng (const std::filesystem::path& Path, uint32 Size)
+	{
+		std::error_code ec;
+		std::filesystem::create_directories(Path.parent_path(), ec);
+		ASSERT_TRUE(platform::WriteFileBytes(Path, MakeRegistryPng(Size, Size))) << FString::FromPath(Path).CStr();
+	}
+
+	static void WriteText (const std::filesystem::path& Path, FStringView Text)
+	{
+		std::error_code ec;
+		std::filesystem::create_directories(Path.parent_path(), ec);
+		ASSERT_TRUE(platform::WriteFileText(Path, Text)) << FString::FromPath(Path).CStr();
+	}
+
+	// A registry verb on the scratch project, run in its directory.
+	test::SProcessResult RunOnProject (std::vector<FString> Arguments) const
+	{
+		Arguments.insert(Arguments.begin(), ProjectArgument());
+		return Run(Arguments, ProjectDir);
+	}
+
+	[[nodiscard]] bool WroteLocalAssets () const
+	{
+		return std::filesystem::exists(assets::GetMountAssetsLocalDir(ProjectDir));
+	}
+};
+}
+
+// scan under the lock writes the project's snapshot, ProjectId and Rules.cache, and a warm scan loads it; scan --ci
+// and every read verb write nothing at all.
+TEST_F(AssetToolRegistryTest, OnlyAScanUnderTheLockWritesAndAWarmScanLoadsItsSnapshot)
+{
+	for (const std::vector<FString>& readOnly : std::vector<std::vector<FString>> { { "scan", "--ci" }, { "status" }, { "query", "type:Texture" },
+		{ "refs", "/Project/Materials/Камінь.frtmat.yml" }, { "referencers", "/Project/Textures/Камінь.png" },
+		{ "explain", "/Project/Textures/Трава.png" }, { "list-rules" }, { "dump", "registry" } })
+	{
+		const test::SProcessResult result = RunOnProject(readOnly);
+		EXPECT_EQ(result.ExitCode, 0) << readOnly.front().CStr() << ": " << result.Errors.CStr();
+		EXPECT_FALSE(WroteLocalAssets()) << readOnly.front().CStr();
+	}
+
+	const test::SProcessResult cold = RunOnProject({ "scan", "--json" });
+	ASSERT_EQ(cold.ExitCode, 0) << cold.Errors.CStr();
+	const std::vector<reflect::CDataTree> coldLines = ParseJsonLines(cold.Output);
+	ASSERT_EQ(coldLines.size(), 1u) << cold.Output.CStr();
+	EXPECT_EQ(JsonText(coldLines[0], "verb"), "scan");
+	EXPECT_EQ(JsonText(coldLines[0], "owner"), "Project");
+	EXPECT_EQ(JsonText(coldLines[0], "mounts.1"), "/Project");
+	EXPECT_TRUE(coldLines[0].Find("writer").AsBool().value_or(false));
+	EXPECT_GE(JsonInt(coldLines[0], "records"), 3);
+	EXPECT_GE(JsonInt(coldLines[0], "analyzed"), 3);
+	EXPECT_EQ(JsonInt(coldLines[0], "errors"), 0);
+	EXPECT_TRUE(std::filesystem::exists(assets::GetRegistrySnapshotPath(ProjectDir)));
+	EXPECT_TRUE(std::filesystem::exists(assets::GetProjectIdPath(ProjectDir)));
+	EXPECT_TRUE(std::filesystem::exists(assets::GetRulesCachePath(ProjectDir)));
+	EXPECT_EQ(FString::FromPath(assets::GetRegistrySnapshotPath(ProjectDir)), JsonText(coldLines[0], "snapshot"));
+
+	// Warm: the project's records come from its snapshot (Engine.snapshot is not this verb's to write).
+	const test::SProcessResult warm = RunOnProject({ "scan" });
+	ASSERT_EQ(warm.ExitCode, 0) << warm.Errors.CStr();
+	EXPECT_TRUE(warm.Output.Contains("AssetRegistry.snapshot: Loaded")) << warm.Output.CStr();
+	EXPECT_TRUE(warm.Output.Contains("wrote ")) << warm.Output.CStr();
+
+	// The same dump from the warm registry as from a cold read-only one.
+	const test::SProcessResult warmDump = RunOnProject({ "dump", "registry", "--mount=Project" });
+	ASSERT_EQ(warmDump.ExitCode, 0) << warmDump.Errors.CStr();
+	std::error_code ec;
+	std::filesystem::remove_all(assets::GetMountAssetsLocalDir(ProjectDir), ec);
+	const test::SProcessResult coldDump = RunOnProject({ "dump", "registry", "--mount=Project" });
+	EXPECT_EQ(warmDump.Output, coldDump.Output);
+	EXPECT_FALSE(WroteLocalAssets());
+}
+
+// query: the records in the query engine's order with the columns asked for, a limit, and positioned errors.
+TEST_F(AssetToolRegistryTest, QueryPrintsTheMatchingRecordsAndPositionsItsErrors)
+{
+	const test::SProcessResult json = RunOnProject({ "query", "type:Texture", "--columns=$Path,Width,$Labels", "--json" });
+	ASSERT_EQ(json.ExitCode, 0) << json.Errors.CStr();
+	const std::vector<reflect::CDataTree> lines = ParseJsonLines(json.Output);
+	ASSERT_EQ(lines.size(), 3u) << json.Output.CStr();
+	EXPECT_EQ(JsonText(lines[0], "path"), "/Project/Textures/Камінь.png");
+	EXPECT_EQ(JsonInt(lines[0], "Width"), 64);
+	EXPECT_EQ(JsonText(lines[0], "labels.0"), "Stone");
+	EXPECT_EQ(JsonText(lines[1], "path"), "/Project/Textures/Трава.png");
+	EXPECT_EQ(JsonInt(lines[2], "matched"), 2);
+	EXPECT_EQ(JsonInt(lines[2], "shown"), 2);
+
+	// Several arguments are one query text.
+	const test::SProcessResult limited = RunOnProject({ "query", "type:Texture", "Width>=1024", "--limit=1" });
+	ASSERT_EQ(limited.ExitCode, 0) << limited.Errors.CStr();
+	EXPECT_TRUE(limited.Output.Contains("/Project/Textures/Трава.png")) << limited.Output.CStr();
+	EXPECT_TRUE(limited.Output.Contains("1 of 1 record(s)")) << limited.Output.CStr();
+
+	const test::SProcessResult parse = RunOnProject({ "query", "type:Texture (Width>1" });
+	EXPECT_EQ(parse.ExitCode, 2) << parse.Errors.CStr();
+	EXPECT_TRUE(parse.Errors.Contains("query: column ")) << parse.Errors.CStr();
+	EXPECT_TRUE(parse.Errors.Contains("^")) << parse.Errors.CStr();
+	const test::SProcessResult compile = RunOnProject({ "query", "type:Texture Wdth>1", "--json" });
+	EXPECT_EQ(compile.ExitCode, 2) << compile.Errors.CStr();
+	EXPECT_TRUE(compile.Errors.Contains("query: column 14: ")) << compile.Errors.CStr();
+	EXPECT_TRUE(compile.Output.Contains("\"exitCode\":2,\"column\":14}")) << compile.Output.CStr();
+	EXPECT_EQ(RunOnProject({ "query", "type:Texture", "--columns=Nope" }).ExitCode, 2);
+	EXPECT_EQ(RunOnProject({ "query", "type:Texture", "--limit=0" }).ExitCode, 2);
+
+	const test::SProcessResult rows = RunOnProject({ "query", "type:Texture", "--rows" });
+	EXPECT_EQ(rows.ExitCode, 0) << rows.Errors.CStr();
+	EXPECT_TRUE(rows.Errors.Contains("M5")) << rows.Errors.CStr();
+	EXPECT_TRUE(rows.Output.Contains("0 of 0 record(s)")) << rows.Output.CStr();
+
+	// No mount: no project here, no --engine.
+	const test::SProcessResult noProject = Run({ "query", "type:Texture" });
+	EXPECT_EQ(noProject.ExitCode, 2);
+	EXPECT_TRUE(noProject.Errors.Contains("query: no project")) << noProject.Errors.CStr();
+}
+
+// refs and referencers list edges with their flags and field paths; an asset that names no record, or several, is a
+// usage error.
+TEST_F(AssetToolRegistryTest, RefsAndReferencersListEdgesWithTheirFieldPaths)
+{
+	const test::SProcessResult refs = RunOnProject({ "refs", "/Project/Materials/Камінь.frtmat.yml", "--json" });
+	ASSERT_EQ(refs.ExitCode, 0) << refs.Errors.CStr();
+	const std::vector<reflect::CDataTree> edges = ParseJsonLines(refs.Output);
+	ASSERT_EQ(edges.size(), 1u) << refs.Output.CStr();
+	EXPECT_EQ(JsonText(edges[0], "from"), "/Project/Materials/Камінь.frtmat.yml");
+	EXPECT_EQ(JsonText(edges[0], "target"), "/Project/Textures/Камінь.png");
+	EXPECT_EQ(JsonText(edges[0], "resolved"), "/Project/Textures/Камінь.png");
+	EXPECT_EQ(JsonText(edges[0], "field"), "albedo.texture");
+	EXPECT_EQ(JsonText(edges[0], "state"), "Resolved");
+	EXPECT_EQ(JsonText(edges[0], "flags.0"), "Build");
+
+	const test::SProcessResult direct = RunOnProject({ "referencers", "/Project/Textures/Камінь.png" });
+	ASSERT_EQ(direct.ExitCode, 0) << direct.Errors.CStr();
+	EXPECT_TRUE(direct.Output.Contains("/Project/Materials/Камінь.frtmat.yml -> /Project/Textures/Камінь.png")) << direct.Output.CStr();
+	EXPECT_TRUE(direct.Output.Contains("field=albedo.texture")) << direct.Output.CStr();
+	const test::SProcessResult transitive = RunOnProject({ "referencers", "/Project/Textures/Камінь.png", "--transitive", "--json" });
+	ASSERT_EQ(transitive.ExitCode, 0) << transitive.Errors.CStr();
+	const std::vector<reflect::CDataTree> reached = ParseJsonLines(transitive.Output);
+	ASSERT_EQ(reached.size(), 1u) << transitive.Output.CStr();
+	EXPECT_EQ(JsonText(reached[0], "type"), "frt.Material");
+
+	// By a unique name, as the search box resolves ref:X: "Трава" is one texture's stem; "Камінь" is the stem of the
+	// texture and of the material.
+	EXPECT_EQ(RunOnProject({ "referencers", "Трава" }).ExitCode, 0);
+	const test::SProcessResult ambiguous = RunOnProject({ "refs", "Камінь" });
+	EXPECT_EQ(ambiguous.ExitCode, 2);
+	EXPECT_TRUE(ambiguous.Errors.Contains("names 2 records")) << ambiguous.Errors.CStr();
+	EXPECT_EQ(RunOnProject({ "refs", "/Project/Nothing.png" }).ExitCode, 2);
+	EXPECT_EQ(RunOnProject({ "refs" }).ExitCode, 2);
+}
+
+// explain: every effective value with the rule file and line that set it, for a mount path or a disk path.
+TEST_F(AssetToolRegistryTest, ExplainNamesTheRuleFileAndLineOfEveryValue)
+{
+	const test::SProcessResult text = RunOnProject({ "explain", "/Project/Textures/Камінь.png" });
+	ASSERT_EQ(text.ExitCode, 0) << text.Errors.CStr();
+	EXPECT_TRUE(text.Output.Contains("importer  Texture")) << text.Output.CStr();
+	EXPECT_TRUE(text.Output.Contains("Content/Textures/Assets.yml:3 (rule 1)")) << text.Output.CStr();
+	EXPECT_TRUE(text.Output.Contains("Core/Config/Assets.yml")) << text.Output.CStr();
+
+	// A disk path relative to the working directory names the same file.
+	const test::SProcessResult relative = RunOnProject({ "explain", "Content/Textures/Камінь.png" });
+	ASSERT_EQ(relative.ExitCode, 0) << relative.Errors.CStr();
+	EXPECT_EQ(relative.Output, text.Output);
+
+	const test::SProcessResult json = RunOnProject({ "explain", "Content/Notes/нотатки.txt", "--json" });
+	ASSERT_EQ(json.ExitCode, 0) << json.Errors.CStr();
+	const std::vector<reflect::CDataTree> lines = ParseJsonLines(json.Output);
+	ASSERT_EQ(lines.size(), 1u) << json.Output.CStr();
+	EXPECT_EQ(JsonText(lines[0], "class"), "Unclaimed");
+	EXPECT_EQ(JsonText(lines[0], "importer"), "");
+	EXPECT_FALSE(lines[0].Find("record").AsBool().value_or(true));
+
+	EXPECT_EQ(RunOnProject({ "explain", "/Nowhere/x.png" }).ExitCode, 2);
+	EXPECT_EQ(RunOnProject({ "explain", FString::FromPath(Dir) }).ExitCode, 2);
+}
+
+// status and scan exit with 1 on an error-severity problem (a malformed rule file's RULE001); list-rules --json is
+// Rules.cache's lines; dump --json has a record for every record line of the text dump, and --mount filters.
+TEST_F(AssetToolRegistryTest, StatusListRulesAndDumpReportWhatTheRegistryHolds)
+{
+	const test::SProcessResult clean = RunOnProject({ "status", "--json" });
+	ASSERT_EQ(clean.ExitCode, 0) << clean.Errors.CStr();
+	bool bUnclaimed = false;
+	for (const reflect::CDataTree& line : ParseJsonLines(clean.Output))
+	{
+		bUnclaimed = bUnclaimed || (JsonText(line, "kind") == "unclaimed" && JsonText(line, "folder") == "/Project/Notes" && JsonText(line, "extension") == ".txt");
+	}
+	EXPECT_TRUE(bUnclaimed) << clean.Output.CStr();
+
+	const test::SProcessResult rules = RunOnProject({ "list-rules", "--json" });
+	ASSERT_EQ(rules.ExitCode, 0) << rules.Errors.CStr();
+	const std::vector<reflect::CDataTree> ruleLines = ParseJsonLines(rules.Output);
+	ASSERT_GE(ruleLines.size(), 4u) << rules.Output.CStr();
+	EXPECT_EQ(JsonText(ruleLines[0], "format"), "frt.rules.cache");
+	EXPECT_TRUE(rules.Output.Contains("\"file\":\"Content/Textures/Assets.yml\"")) << rules.Output.CStr();
+
+	const test::SProcessResult dumpText = RunOnProject({ "dump", "registry", "--text", "--mount=/Project" });
+	const test::SProcessResult dumpJson = RunOnProject({ "dump", "registry", "--json", "--mount=Project" });
+	ASSERT_EQ(dumpText.ExitCode, 0) << dumpText.Errors.CStr();
+	ASSERT_EQ(dumpJson.ExitCode, 0) << dumpJson.Errors.CStr();
+	EXPECT_TRUE(dumpText.Output.StartsWith("mount /Project")) << dumpText.Output.CStr();
+	EXPECT_FALSE(dumpText.Output.Contains("mount /Engine")) << dumpText.Output.CStr();
+	uint32 textRecords = 0u;
+	for (const FStringView line : dumpText.Output.View().Lines())
+	{
+		textRecords += line.StartsWith("    record ") ? 1u : 0u;
+	}
+	uint32 jsonRecords = 0u;
+	for (const reflect::CDataTree& line : ParseJsonLines(dumpJson.Output))
+	{
+		jsonRecords += JsonText(line, "kind") == "record" ? 1u : 0u;
+	}
+	EXPECT_EQ(jsonRecords, textRecords);
+	EXPECT_GE(textRecords, 3u);
+	EXPECT_EQ(RunOnProject({ "dump", "registry", "--mount=Nope" }).ExitCode, 2);
+	EXPECT_EQ(RunOnProject({ "dump", "asset" }).ExitCode, 2);
+
+	// A malformed folder rule file: RULE001, an error, so status and scan exit with 1.
+	WriteText(ProjectDir / "Content" / "Textures" / "Assets.yml", "FormatVersion: 1\nScan:\n  Bogus: 1\n");
+	const test::SProcessResult broken = RunOnProject({ "status" });
+	EXPECT_EQ(broken.ExitCode, 1) << broken.Output.CStr();
+	EXPECT_TRUE(broken.Output.Contains("RULE001")) << broken.Output.CStr();
+	EXPECT_EQ(RunOnProject({ "scan", "--ci" }).ExitCode, 1);
+}
+
+// scan --engine is the engine's owner: it writes Engine.snapshot under its own engine checkout, never a project's.
+TEST_F(AssetToolRegistryTest, ScanWithEngineWritesTheEnginesSnapshot)
+{
+	const std::filesystem::path engine = Dir / FStringView("Рушій 引擎").ToPath();
+	const std::filesystem::path engineTool = MakeScratchEngine(engine);
+	ASSERT_FALSE(HasFailure());
+	WritePng(engine / "Core" / "Content" / "Textures" / "Default.png", 4u);
+	const test::SProcessResult scanned = test::RunProcess(engineTool, std::vector<FString> { "--engine", "scan", "--json" }, Dir);
+	ASSERT_EQ(scanned.ExitCode, 0) << scanned.Errors.CStr();
+	const std::vector<reflect::CDataTree> lines = ParseJsonLines(scanned.Output);
+	ASSERT_EQ(lines.size(), 1u) << scanned.Output.CStr();
+	EXPECT_EQ(JsonText(lines[0], "owner"), "Engine");
+	EXPECT_EQ(JsonInt(lines[0], "records"), 1);
+	EXPECT_TRUE(std::filesystem::exists(assets::GetEngineSnapshotPath(engine)));
+	EXPECT_TRUE(std::filesystem::exists(assets::GetProjectIdPath(engine)));
+	EXPECT_FALSE(WroteLocalAssets());
+
+	// A read verb with --engine reads /Engine alone.
+	const test::SProcessResult dump = test::RunProcess(engineTool, std::vector<FString> { "--engine", "dump", "registry" }, Dir);
+	ASSERT_EQ(dump.ExitCode, 0) << dump.Errors.CStr();
+	EXPECT_TRUE(dump.Output.Contains("file /Engine/Textures/Default.png Asset")) << dump.Output.CStr();
+	EXPECT_FALSE(dump.Output.Contains("mount /Project")) << dump.Output.CStr();
 }

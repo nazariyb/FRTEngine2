@@ -45,23 +45,6 @@ constexpr uint64 BytesPerGiB = 1024ull * 1024ull * 1024ull;
 // A budget of more than this many GiB is a typo, not a cache size (and would overflow the bytes).
 constexpr double MaxBudgetGiB = 1024.0 * 1024.0;
 
-// "123 B", "4.5 KiB", "6.7 MiB", "8.9 GiB".
-FString FormatBytes (uint64 Bytes)
-{
-	if (Bytes < 1024u)
-	{
-		return FString::Format("{} B", Bytes);
-	}
-	constexpr FStringLiteral Units[] = { "KiB", "MiB", "GiB", "TiB" };
-	double value = static_cast<double>(Bytes) / 1024.0;
-	uint32 unit = 0u;
-	while (value >= 1024.0 && unit + 1u < std::size(Units))
-	{
-		value /= 1024.0;
-		++unit;
-	}
-	return FString::Format("{:.1f} {}", value, Units[unit]);
-}
 
 // A budget in GiB as given (--max-gb=, [DerivedDataCache] MaxGB): a number from 0 up; nullopt otherwise.
 std::optional<uint64> ParseBudget (FStringView Text)
@@ -356,5 +339,46 @@ int32 RunDdc (CCommandletContext& Context)
 		return RunGc(Context, ddc, rootText, maxBytes);
 	}
 	return RunVerify(Context, ddc, rootText);
+}
+
+FString FormatBytes (uint64 Bytes)
+{
+	if (Bytes < 1024u)
+	{
+		return FString::Format("{} B", Bytes);
+	}
+	constexpr FStringLiteral Units[] = { "KiB", "MiB", "GiB", "TiB" };
+	double value = static_cast<double>(Bytes) / 1024.0;
+	uint32 unit = 0u;
+	while (value >= 1024.0 && unit + 1u < std::size(Units))
+	{
+		value /= 1024.0;
+		++unit;
+	}
+	return FString::Format("{:.1f} {}", value, Units[unit]);
+}
+
+SDdcSummary SummarizeDdc (CCommandletContext& Context)
+{
+	SDdcSummary summary;
+	std::filesystem::path root = assets::CDerivedDataCache::GetDefaultRoot(&Context.GetConfig()).lexically_normal();
+	root.make_preferred();
+	summary.Root = FString::FromPath(root);
+	if (!assets::CDerivedDataCache::HoldsStore(root))
+	{
+		return summary;
+	}
+	summary.bExists = true;
+	assets::CDerivedDataCache ddc;
+	if (!ddc.Open(root, &summary.Error))
+	{
+		return summary;
+	}
+	assets::SDdcStats stats;
+	RunOnWorker(Context, [&] () { stats = ddc.GetStats(); });
+	summary.ContentBytes = stats.GetContentBytes();
+	summary.TotalBytes = summary.ContentBytes + stats.Tmp.Bytes + stats.Access.Bytes + stats.Other.Bytes;
+	summary.Files = stats.Manifests.Files + stats.Records.Files + stats.Values.Files + stats.Tmp.Files + stats.Access.Files + stats.Other.Files;
+	return summary;
 }
 }

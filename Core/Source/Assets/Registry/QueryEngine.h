@@ -126,6 +126,11 @@ struct SQueryStats
  * key of the record's type (every value of a MultiValue key). Nothing for an invalid record or an unknown key.
  */
 FRT_CORE_API void ForEachColumnValue (const CRegistryView& View, SRecordId Record, FStringView Key, TFunctionRef<void (const STagValue&)> Visit);
+// One value as a result table shows it: numbers in decimal (doubles in shortest round-trip form), true/false, names
+// and strings as their text, references as 16 hex digits, "-" for none.
+[[nodiscard]] FRT_CORE_API FString FormatColumnValue (const STagValue& Value);
+// Every value of a record's column (ForEachColumnValue), formatted and joined with ", "; empty when it has none.
+[[nodiscard]] FRT_CORE_API FString FormatColumnValues (const CRegistryView& View, SRecordId Record, FStringView Key);
 
 /**
  * The records the graph terms of a compiled query resolved their targets to (ref:X, dep:X: X's record, a sub-entry

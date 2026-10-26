@@ -128,6 +128,23 @@ void CCommandletContext::PrintJson (const CJsonObject& Object) const
 	}
 }
 
+void CCommandletContext::PrintJsonLine (FStringView Line) const
+{
+	if (bJson)
+	{
+		WriteLine(stdout, Line);
+	}
+}
+
+void CCommandletContext::PrintText (FStringView Text) const
+{
+	if (!bJson)
+	{
+		std::fwrite(Text.GetData(), 1u, Text.Len(), stdout);
+		std::fflush(stdout);
+	}
+}
+
 void CCommandletContext::PrintError (FStringView Line) const
 {
 	WriteLine(stderr, Line);

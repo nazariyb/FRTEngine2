@@ -20,6 +20,9 @@ int32 RunNewGuid (CCommandletContext& Context);
 int32 RunLock (CCommandletContext& Context);
 
 constexpr FStringLiteral DdcOptions[] = { "max-gb", "ddc" };
+constexpr FStringLiteral QueryOptions[] = { "rows", "columns", "limit" };
+constexpr FStringLiteral ReferencersOptions[] = { "transitive" };
+constexpr FStringLiteral DumpOptions[] = { "text", "mount" };
 
 /**
  * Every verb, in the order help lists them. A new verb is a function and a line here (§13.1: no
@@ -38,6 +41,25 @@ constexpr SCommandlet Commandlets[] =
 		"([DerivedDataCache] MaxGB, default 20), least recently used first, keeping what the mount's BuildState names - "
 		"with --ci a dry run that deletes nothing; verify re-checks every file and deletes the corrupt ones", false,
 		DdcOptions },
+	// The asset registry (M3, read-only; RegistryCommandlets.cpp). Only scan writes, and only under the mount's
+	// writer lock (not with --ci); the others read the snapshots and the disk and write nothing.
+	{ "scan", &RunScan, "scan: scans the project's mounts (with --engine, /Engine) into the asset registry and writes its snapshot "
+		"(Local/Assets/AssetRegistry.snapshot; with --engine <engine>/Local/Registry/Engine.snapshot) - with --ci nothing; prints what it "
+		"found and did", true },
+	{ "status", &RunStatus, "status: the registry's problems by code and source, unclaimed files by folder and extension, the scan state "
+		"and the derived-data cache's size", false },
+	{ "query", &RunQuery, "query \"<text>\" [--columns=a,b] [--limit=<n>] [--rows]: the registry records a query matches, in the search "
+		"syntax (type:Texture Width>=1024 dir:/Project/Textures label:Hero ref:X is:broken-ref order:Width desc ...)", false, QueryOptions },
+	{ "refs", &RunRefs, "refs <asset>: the edges an asset declares (a mount path, #label for a sub-asset, or a unique name), with flags "
+		"and field paths", false },
+	{ "referencers", &RunReferencers, "referencers <asset> [--transitive]: the edges that reach an asset, or with --transitive every record "
+		"that reaches it", false, ReferencersOptions },
+	{ "explain", &RunExplain, "explain <file>: a file's effective importer, class, settings, cook rule, chunk and labels, each with the rule "
+		"file and line that set it (a mount path, or a path on disk)", false },
+	{ "list-rules", &RunListRules, "list-rules: every rule file of the mounts with its entries (--json: the lines of Local/Assets/Rules.cache)",
+		false },
+	{ "dump", &RunDump, "dump registry [--text|--json] [--mount=<name>,...]: the registry's deterministic dump, of every mount or of the "
+		"ones named (the golden files)", false, DumpOptions },
 };
 
 // What help says beyond the verbs: the options every verb takes (FindUnknownOption knows the same

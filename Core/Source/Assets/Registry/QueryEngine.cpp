@@ -3033,6 +3033,54 @@ void ForEachColumnValue (const CRegistryView& View, SRecordId Record, FStringVie
 	});
 }
 
+FString FormatColumnValue (const STagValue& Value)
+{
+	FString text;
+	switch (Value.Type)
+	{
+	case ETagType::Int64:
+		text.AppendNumber(Value.AsInt64());
+		break;
+	case ETagType::Double:
+		text.AppendNumber(Value.AsDouble());
+		break;
+	case ETagType::Bool:
+		text = Value.AsBool() ? "true" : "false";
+		break;
+	case ETagType::Name:
+	case ETagType::String:
+		text = Value.Text;
+		break;
+	case ETagType::Enum:
+		text.AppendNumber(Value.Bits);
+		break;
+	case ETagType::AssetRef:
+	case ETagType::RowRef:
+		text.AppendFormat("{:016x}", Value.Bits);
+		break;
+	case ETagType::None:
+		text = "-";
+		break;
+	}
+	return text;
+}
+
+FString FormatColumnValues (const CRegistryView& View, SRecordId Record, FStringView Key)
+{
+	FString text;
+	bool bFirst = true;
+	ForEachColumnValue(View, Record, Key, [&] (const STagValue& Value)
+	{
+		if (!bFirst)
+		{
+			text += ", ";
+		}
+		text += FormatColumnValue(Value);
+		bFirst = false;
+	});
+	return text;
+}
+
 std::vector<SRecordId> GetGraphTargets (const SCompiledQuery& Query)
 {
 	std::vector<SRecordId> targets;

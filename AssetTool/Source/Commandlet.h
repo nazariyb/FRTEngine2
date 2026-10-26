@@ -95,6 +95,10 @@ public:
 	void Print (FStringView Line) const;
 	// With --json, Object as one line on stdout; nothing without.
 	void PrintJson (const CJsonObject& Object) const;
+	// With --json, a line that already is one JSON object (Rules.cache's lines, a registry dump's); nothing without.
+	void PrintJsonLine (FStringView Line) const;
+	// Text as it is, line breaks included, on stdout in one write; nothing with --json (a registry dump).
+	void PrintText (FStringView Text) const;
 	// A line on stderr, in either mode: warnings and progress that are not the verb's result.
 	void PrintError (FStringView Line) const;
 	// Reports a failure and returns ExitCode, for "return Context.Fail(ExitUsage, ...)": the message
@@ -142,6 +146,31 @@ struct SCommandlet
 // Verbs with a file of their own (their table rows, options included, are in Commandlets.cpp).
 // DdcCommandlets.cpp: ddc stats|gc|verify.
 int32 RunDdc (CCommandletContext& Context);
+// RegistryCommandlets.cpp: the asset registry's verbs (design §13.2, M3).
+int32 RunScan (CCommandletContext& Context);
+int32 RunStatus (CCommandletContext& Context);
+int32 RunQuery (CCommandletContext& Context);
+int32 RunRefs (CCommandletContext& Context);
+int32 RunReferencers (CCommandletContext& Context);
+int32 RunExplain (CCommandletContext& Context);
+int32 RunListRules (CCommandletContext& Context);
+int32 RunDump (CCommandletContext& Context);
+
+// "123 B", "4.5 KiB", "6.7 MiB", "8.9 GiB" (DdcCommandlets.cpp).
+[[nodiscard]] FString FormatBytes (uint64 Bytes);
+
+// The machine's derived-data cache in one line, as `status` shows it (DdcCommandlets.cpp): the store the ddc
+// verbs use by default (CDerivedDataCache::GetDefaultRoot), counted on the worker pool; nothing is created.
+struct SDdcSummary
+{
+	FString Root;
+	bool bExists = false;      // the root holds a store
+	FString Error;             // it does, and could not be opened
+	uint64 ContentBytes = 0u;  // manifests, records and values
+	uint64 TotalBytes = 0u;    // everything under the root
+	uint64 Files = 0u;
+};
+[[nodiscard]] SDdcSummary SummarizeDdc (CCommandletContext& Context);
 
 // The table, in the order help lists it.
 [[nodiscard]] std::span<const SCommandlet> GetCommandlets ();
