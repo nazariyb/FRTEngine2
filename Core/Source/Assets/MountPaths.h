@@ -16,4 +16,11 @@ namespace frt::assets
 {
 	return MountRoot / "Local" / "Assets";
 }
+
+// <MountRoot>/Local/Assets/Rules.cache: every rule file the process sees, flattened to JSON lines for hooks, the
+// packager and Lua (design §3.5, §3.5.4; Assets/Pipeline/Rules.h WriteRulesCache). Only the writer-lock holder writes it.
+[[nodiscard]] inline std::filesystem::path GetRulesCachePath (const std::filesystem::path& MountRoot)
+{
+	return GetMountAssetsLocalDir(MountRoot) / "Rules.cache";
+}
 }

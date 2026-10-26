@@ -1,0 +1,14 @@
+# Asset pipeline rules for the /Engine mount, and the trailing fallback of every other mount's rules (design §3.5).
+# Hand-written and tracked: FRT reads this file and never rewrites it. "FRT.bat assets explain <file>" shows where
+# every effective setting of a file comes from.
+FormatVersion: 1
+Scan:                                               # built-in excludes (§3.5.2) apply before these, in every mount
+  Exclude: [ "/Engine/Shaders/**" ]                 # engine code: shader DDC client, no metas (§14.5)
+  Raw:     [ "/Engine/Fonts/*.{ttf,otf}" ]
+  Quiet:   [ "/Engine/Fonts/OFL.txt", "**/README.md" ]
+Presets:
+  Texture/Color:  { ColorSpace: Srgb,   Mips: Box, Compression: None }
+  Texture/Normal: { ColorSpace: Normal, Mips: Box, Compression: None }
+Rules:
+  - { Match: "/Engine/Defaults/**", Cook: Always }
+  - { Match: "**/*.{png,jpg,jpeg,tga,bmp,psd,kra,ora}", Preset: Texture/Color }
