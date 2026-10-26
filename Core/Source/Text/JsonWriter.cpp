@@ -99,6 +99,45 @@ CJsonObject& CJsonObject::AddBool (FStringView Name, bool Value)
 	return *this;
 }
 
+CJsonObject& CJsonObject::AddStringArray (FStringView Name, std::span<const FString> Values)
+{
+	AddName(Name);
+	Fields.AppendChar('[');
+	for (size_t i = 0u; i < Values.size(); ++i)
+	{
+		if (i != 0u)
+		{
+			Fields.AppendChar(',');
+		}
+		AppendJsonString(Fields, Values[i]);
+	}
+	Fields.AppendChar(']');
+	return *this;
+}
+
+CJsonObject& CJsonObject::AddObjectArray (FStringView Name, std::span<const CJsonObject> Values)
+{
+	AddName(Name);
+	Fields.AppendChar('[');
+	for (size_t i = 0u; i < Values.size(); ++i)
+	{
+		if (i != 0u)
+		{
+			Fields.AppendChar(',');
+		}
+		Fields.Append(Values[i].ToString());
+	}
+	Fields.AppendChar(']');
+	return *this;
+}
+
+CJsonObject& CJsonObject::AddObject (FStringView Name, const CJsonObject& Value)
+{
+	AddName(Name);
+	Fields.Append(Value.ToString());
+	return *this;
+}
+
 CJsonObject& CJsonObject::AddFields (const CJsonObject& Other)
 {
 	if (!Other.Fields.IsEmpty())

@@ -1,13 +1,15 @@
 // The registry's text dump (design §5.3): equal content dumps identically whatever the commit order, the
 // batching, a compaction or an image round trip, and nothing machine-specific (times, identities, content
 // hashes, revisions, the volume's case rule) reaches it. One small registry is pinned to its exact text so
-// a format change is a deliberate edit here.
+// a format change is a deliberate edit here. A mount filter dumps exactly those mounts' sections, and the JSON
+// lines carry the text dump's content in its order.
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <random>
 
 #include "Assets/AssetDiagnosticCodes.h"
+#include "Reflect/DataTreeJson.h"
 #include "RegistryTestFixture.h"
 
 using namespace frt;
@@ -214,4 +216,127 @@ TEST(RegistryDumpTest, TheDumpFormatIsPinned)
 		"  problem REF006 info Registry /Project/M/m.frtmat.yml field albedo.texture: reference '/Project/t/B.png' resolves to "
 		"'/Project/T/b.png', which is spelled differently on disk\n";
 	EXPECT_EQ(Dump(store.Live()), expected) << Dump(store.Live()).CStr();
+}
+
+TEST(RegistryDumpTest, AMountFilterDumpsExactlyThoseMountsSections)
+{
+	const std::vector<SRegistryDelta> content = MakeContent();
+	std::vector<uint32> order(content.size());
+	for (uint32 i = 0u; i < order.size(); ++i)
+	{
+		order[i] = i;
+	}
+	CRegistryStore store;
+	store.Commit(MakeMountsDelta());
+	for (const uint32 index : order)
+	{
+		store.Commit(SRegistryDelta(content[index]));
+	}
+	const FString all = Dump(store.Live());
+	const uint32 projectAt = all.View().Find("mount /Project\n");
+	ASSERT_NE(projectAt, FStringView::NotFound);
+
+	FString engine;
+	const MountId engineOnly[] = { EngineMountId };
+	store.Live().DumpText(engine, EDumpFlags::None, engineOnly);
+	EXPECT_EQ(engine, all.View().Left(projectAt)) << engine.CStr();
+
+	FString project;
+	const MountId projectOnly[] = { ProjectMountId };
+	store.Live().DumpText(project, EDumpFlags::None, projectOnly);
+	EXPECT_EQ(project, all.View().RightChop(projectAt)) << project.CStr();
+
+	FString both;
+	const MountId bothMounts[] = { ProjectMountId, EngineMountId };
+	store.Live().DumpText(both, EDumpFlags::None, bothMounts);
+	EXPECT_EQ(both, all);
+}
+
+TEST(RegistryDumpTest, TheJsonLinesCarryTheTextDumpsContentInItsOrder)
+{
+	CRegistryStore store;
+	store.Commit(MakeMountsDelta());
+	for (const SRegistryDelta& delta : MakeContent())
+	{
+		store.Commit(SRegistryDelta(delta));
+	}
+	const FString text = Dump(store.Live());
+
+	// What the text says, line by line: the kind of each top-level line and the path it names.
+	std::vector<std::pair<FString, FString>> expected;
+	for (const FStringView line : text.View().Split('\n'))
+	{
+		const auto take = [&] (FStringView Prefix, FStringView Kind)
+		{
+			if (!line.StartsWith(Prefix))
+			{
+				return false;
+			}
+			FStringView rest = line.RightChop(Prefix.Len());
+			const uint32 space = rest.Find(' ');
+			expected.emplace_back(FString(Kind), FString(space == FStringView::NotFound ? rest : rest.Left(space)));
+			return true;
+		};
+		take("mount ", "mount") || take("  rules ", "rules") || take("  folder ", "folder") || take("  file ", "file")
+			|| take("    record ", "record") || take("  problem ", "problem");
+	}
+
+	std::vector<std::pair<FString, FString>> actual;
+	uint32 lines = 0u;
+	FString lastFile;
+	store.Live().DumpJson([&] (FStringView Line)
+	{
+		++lines;
+		reflect::CDataTree tree;
+		SDiagnostic error;
+		ASSERT_TRUE(reflect::ParseJson(Line, tree, &error)) << error.Message.CStr() << ": " << FString(Line).CStr();
+		const FString kind(tree.Find("kind").AsText().value_or(FStringView()));
+		FString key;
+		if (kind == "mount")
+		{
+			key = FString(tree.Find("mount").AsText().value_or(FStringView()));
+		}
+		else if (kind == "rules")
+		{
+			key = FString(tree.Find("file").AsText().value_or(FStringView()));
+		}
+		else if (kind == "problem")
+		{
+			key = FString(tree.Find("code").AsText().value_or(FStringView()));
+		}
+		else if (kind == "record")
+		{
+			// The record follows its file, with the record's own columns.
+			key = "type=" + FString(tree.Find("type").AsText().value_or(FStringView()));
+			EXPECT_EQ(FString(tree.Find("path").AsText().value_or(FStringView())), lastFile);
+		}
+		else
+		{
+			key = FString(tree.Find("path").AsText().value_or(FStringView()));
+			if (kind == "file")
+			{
+				lastFile = key;
+			}
+		}
+		actual.emplace_back(kind, key);
+
+		if (kind == "record" && lastFile == "/Project/Models/Hero.gltf")
+		{
+			EXPECT_EQ(tree.Find("labels.0").AsText().value_or(FStringView()), "rule:Characters");
+			EXPECT_EQ(tree.Find("subEntries.0.label").AsText().value_or(FStringView()), "image:#0");
+			EXPECT_EQ(tree.Find("subEntries.1.tags.0.key").AsText().value_or(FStringView()), "VertexCount");
+			EXPECT_EQ(tree.Find("subEntries.1.tags.0.value").AsText().value_or(FStringView()), "10");
+			EXPECT_EQ(tree.Find("edges.1.field").AsText().value_or(FStringView()), "images[0].uri");
+			EXPECT_EQ(tree.Find("edges.1.from").AsText().value_or(FStringView()), "image:#0");
+			EXPECT_EQ(tree.Find("companions.0").AsText().value_or(FStringView()), "/Project/Models/Hero.bin");
+			EXPECT_EQ(tree.Find("stamp").AsText().value_or(FStringView()), "0000000000abcdef");
+		}
+	});
+	ASSERT_EQ(actual.size(), expected.size());
+	for (size_t i = 0u; i < actual.size(); ++i)
+	{
+		EXPECT_EQ(actual[i].first, expected[i].first) << i;
+		EXPECT_EQ(actual[i].second, expected[i].second) << i;
+	}
+	EXPECT_GT(lines, 10u);
 }

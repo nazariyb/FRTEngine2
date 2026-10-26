@@ -129,6 +129,7 @@ struct SGraphSpec
 	EDepFlags Mask {};
 	uint32 TargetAsset = InvalidRow;    // ASSETS row of the target's file
 	uint64 TargetSub = 0u;              // the target sub-entry's SubId; 0 = the asset record
+	uint32 TargetRecord = InvalidRow;   // the target's SRecordId value (GetGraphTargets)
 };
 
 /**
@@ -1043,6 +1044,7 @@ private:
 		spec.Direction = Graph.Direction;
 		spec.bTransitive = Graph.bTransitive;
 		spec.Mask = Graph.Mask;
+		spec.TargetRecord = value;
 		if ((value & SubEntryBit) != 0u)
 		{
 			const uint32 sub = value & ~SubEntryBit;
@@ -3029,6 +3031,20 @@ void ForEachColumnValue (const CRegistryView& View, SRecordId Record, FStringVie
 			return;
 		}
 	});
+}
+
+std::vector<SRecordId> GetGraphTargets (const SCompiledQuery& Query)
+{
+	std::vector<SRecordId> targets;
+	if (Query.Plan != nullptr)
+	{
+		targets.reserve(Query.Plan->Graph.size());
+		for (const SGraphSpec& spec : Query.Plan->Graph)
+		{
+			targets.push_back(SRecordId { spec.TargetRecord, static_cast<uint32>(Query.Revision) });
+		}
+	}
+	return targets;
 }
 
 FString DescribeCompiledQuery (const SCompiledQuery& Query)

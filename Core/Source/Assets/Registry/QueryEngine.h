@@ -128,6 +128,14 @@ struct SQueryStats
 FRT_CORE_API void ForEachColumnValue (const CRegistryView& View, SRecordId Record, FStringView Key, TFunctionRef<void (const STagValue&)> Visit);
 
 /**
+ * The records the graph terms of a compiled query resolved their targets to (ref:X, dep:X: X's record, a sub-entry
+ * for "path#label"), in the order Compile met the terms, as SRecordIds of the view it was compiled against. What
+ * `FRT.bat assets refs` and `referencers` list edges of: the query engine resolves the target once, with its
+ * positioned errors, and nothing looks it up a second way.
+ */
+[[nodiscard]] FRT_CORE_API std::vector<SRecordId> GetGraphTargets (const SCompiledQuery& Query);
+
+/**
  * The compiled plan in one line, for tests and `assets query --explain`: scope, types, typed predicates per type
  * ("frt.Texture.Width Ge 4096"), folders as intervals, graph targets, order and page. Empty for an invalid query.
  */

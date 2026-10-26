@@ -1,5 +1,7 @@
 #pragma once
 
+#include <span>
+
 #include "Core.h"
 #include "Containers/String.h"
 
@@ -9,7 +11,8 @@ namespace frt::json
 /**
  * One JSON object, built field by field: AssetTool's --json output and the JSON-lines files the engine
  * writes (Local/Assets/Rules.cache). One object per line, so Lua, Python and hook scripts read a stream
- * line by line without a streaming parser (design §13.1). Reflect/DataTreeJson.h reads such a line
+ * line by line without a streaming parser (design §13.1). Arrays and nested objects exist for the few
+ * outputs that carry lists per line (AssetTool's dump of a registry record). Reflect/DataTreeJson.h reads such a line
  * back, surrogate escapes included: the one writer and its one reader.
  *
  * Field names are the stable interface: once a verb prints a field, scripts may rely on it, so a field
@@ -28,6 +31,11 @@ public:
 	CJsonObject& AddInt (FStringView Name, int64 Value);
 	CJsonObject& AddUInt (FStringView Name, uint64 Value);
 	CJsonObject& AddBool (FStringView Name, bool Value);
+	// An array of strings, and an array of objects (the registry dump's tags, edges and sub-entries).
+	CJsonObject& AddStringArray (FStringView Name, std::span<const FString> Values);
+	CJsonObject& AddObjectArray (FStringView Name, std::span<const CJsonObject> Values);
+	// Another object as this field's value.
+	CJsonObject& AddObject (FStringView Name, const CJsonObject& Value);
 	// Other's fields after these, in their order.
 	CJsonObject& AddFields (const CJsonObject& Other);
 

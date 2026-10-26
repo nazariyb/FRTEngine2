@@ -245,8 +245,19 @@ public:
 	 * identically, fresh or warm, on any machine. A diagnostic's message is printed only for coded
 	 * diagnostics (code 0 messages may hold absolute paths). Paths and subjects are shown with ToDisplayText
 	 * (a WTF-8 surrogate as U+FFFD), so the dump is UTF-8 text; the stored spellings stay as they are.
+	 *
+	 * Mounts: the mounts to dump (every mount when empty, then also the problems of no mount, "unmounted"); the
+	 * golden dumps of the engine and of a template each take their own mounts, so an engine edit never touches a
+	 * template's golden file.
 	 */
-	void DumpText (FString& Out, EDumpFlags Flags = EDumpFlags::None) const;
+	void DumpText (FString& Out, EDumpFlags Flags = EDumpFlags::None, std::span<const MountId> Mounts = {}) const;
+	/**
+	 * The same content as JSON lines (Text/JsonWriter.h), in DumpText's order: one object per mount, rule file,
+	 * folder, file, record (its labels, tags, sub-entries, edges and companions as arrays) and problem, each with a
+	 * "kind" field ("mount", "rules", "folder", "file", "record", "problem"). Paths are the stored spellings (the
+	 * JSON writer escapes an unpaired surrogate). Emit gets each line without a line break.
+	 */
+	void DumpJson (TFunctionRef<void (FStringView Line)> Emit, EDumpFlags Flags = EDumpFlags::None, std::span<const MountId> Mounts = {}) const;
 
 	// ---- Queries (§5.6-§5.8; the query engine, QueryEngine.h, says what they mean) ----
 	/**
@@ -276,6 +287,7 @@ public:
 
 private:
 	friend class CRegistryStore;
+	struct SDumpBuilder;   // RegistryDump.cpp
 	friend FRT_CORE_API const SRegistryTables& GetTables (const CRegistryView& View) noexcept;
 
 	[[nodiscard]] SRecordId MakeRecordId (uint32 Value) const noexcept { return SRecordId { Value, static_cast<uint32>(Tables.Revision) }; }
