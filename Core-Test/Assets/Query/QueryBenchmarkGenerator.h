@@ -14,7 +14,7 @@
 //    each material sub-entry and eight more from the model to materials;
 //  - input actions (4%, three Path edges to other actions) and primary input maps (1%, Actions, four edges);
 //  - raw audio files (15%);
-//  - tables: Rows / 500 of them (taken from the asset count), 500 rows each, one Row|Schemaless edge per row to a
+//  - tables: Rows / 500 of them (taken from the asset count), 500 rows each, one Schemaless edge per row to a
 //    texture.
 // Paths are /Project/<Category>/<Theme>/S<n>/<Prefix>_<Theme>_<Word>_<k>.<ext>, about 48 files per folder; every
 // record carries one or two rule labels.

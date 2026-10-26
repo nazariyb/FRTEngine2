@@ -1,7 +1,8 @@
 #pragma once
 
 // A small registry the query engine's tests (G3) read: every record kind M3 has - textures, legacy materials with
-// path edges (one unresolved, one to a sub-entry), a glTF model with mesh and material sub-entries and a companion,
+// path edges (one unresolved, one to a sub-entry), a glTF model with mesh, material and image sub-entries (the last
+// two of file types: frt.Material, frt.Texture) and a companion,
 // input actions and a primary input map with a MultiValue tag, a table with two rows, raw files with a shared stem,
 // an excluded texture, a problem, labels, cook rules and chunks - so each query reads as a list of expected paths.
 
@@ -121,6 +122,8 @@ inline std::vector<SRegistryDelta> MakeFixtureDeltas ()
 	model.SubEntries.push_back(SSubEntryDecl { "mesh:Rock", 0u, asset_types::Mesh, ERecordFlags::None, { Int("VertexCount", 3000), Int("TriangleCount", 1000) } });
 	model.SubEntries.push_back(SSubEntryDecl { "mesh:Rock_LOD1", 0u, asset_types::Mesh, ERecordFlags::None, { Int("VertexCount", 1000), Int("TriangleCount", 300) } });
 	model.SubEntries.push_back(SSubEntryDecl { "material:Rock", 0u, asset_types::Material, ERecordFlags::None, {} });
+	model.SubEntries.push_back(SSubEntryDecl { "image:Rock_BaseColor", 0u, asset_types::Texture, ERecordFlags::None,
+		{ Int("Width", 2048), Int("Height", 2048), Int("Channels", 4), Bool("HasAlpha", true) } });
 	model.Edges = { PathEdge("/Project/Models/SM_Rock.bin", EDepFlags::Build | EDepFlags::Path | EDepFlags::Declared),
 		PathEdge("/Project/Materials/M_Rock.frtmat.yml", EDepFlags::Hard, MakeSubId("material:Rock")) };
 	model.Companions = { "/Project/Models/SM_Rock.bin" };

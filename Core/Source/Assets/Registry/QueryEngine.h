@@ -21,7 +21,8 @@
  * §5.7 spells these as CRegistryView::Compile/Run; they are free functions here because the view is the store's
  * (RegistryView.h) and the engine only reads its tables. A compiled query is a plain value the caller keeps (there
  * is no shared plan cache); it holds ids of the view it was compiled against (type keys, folder rows, records of
- * ref:/dep: targets), so RunQuery refuses it on any other revision: compile again after a commit.
+ * ref:/dep: targets), so RunQuery refuses it on any other revision or store: compile again after a commit or a
+ * reload.
  *
  * Compilation resolves type names (CAssetTypeRegistry: dotted, or a unique short name; M3 has no hierarchy, so
  * "derived types included" adds nothing), tag names to key indices per type in scope, literals per key type, folders
@@ -32,10 +33,15 @@
  * is:unsaved, is:pending-meta) compile and leave a note in SCompiledQuery::Notes.
  *
  * Semantics beyond SAssetQuery's own (AssetQuery.h):
- *  - Records. Assets: main asset records - plus the imported sub-assets of every type a Types term of the query
- *    names explicitly (`type:Mesh` finds meshes, which are sub-entries of models); Rows: table rows; SubAssets:
- *    imported sub-assets; All: every record. A sub-entry is a row when its label holds no ':' (row keys never do,
- *    §3.6) and an imported sub-asset otherwise (importer labels are "kind:name", §4.3).
+ *  - Records. Assets: main asset records - plus the imported sub-assets of a sub-asset-only type that a Types term
+ *    names (`type:Mesh` finds meshes, which are sub-entries of models). A sub-asset-only type is one that no
+ *    importer of the table (available or not) has as the main type of a file (ImporterTable.h): frt.Mesh is,
+ *    frt.Texture and frt.Material are not, so `type:Texture` lists texture files and not the images a glTF embeds
+ *    (Records SubAssets or All reach those). The admission belongs to the AnyOf alternative whose term named the
+ *    type: a sub-asset is in scope when the root, or an alternative it matches (at any depth), admits its type.
+ *    Rows: table rows; SubAssets: imported sub-assets; All: every record. A sub-entry is a row when its label holds
+ *    no ':' (row keys never do, §3.6) and an imported sub-asset otherwise (importer labels are "kind:name", §4.3).
+ *    M5's Document importer, whose main type is the document's $type, revisits which types are sub-asset-only.
  *  - A sub-entry is matched by its file's folder, labels, size, import status, cook rule and chunk (they belong to
  *    the file); its own type, label ($Name), "file#label" path, tags, edges and problems.
  *  - A tag predicate matches records of the types in scope that declare the key; a bare key matches every type in
@@ -86,12 +92,16 @@ inline constexpr uint32 SystemColumnCount = 13u;
 [[nodiscard]] FRT_CORE_API std::optional<ESystemColumn> FindSystemColumn (FStringView Name) noexcept;
 
 /**
- * A query compiled against one view: the plan (immutable, shared between copies) and the revision it is bound to.
- * Notes: diagnostics of terms that compiled but cannot match yet (Severity Info, positioned like errors).
+ * A query compiled against one view: the plan (immutable, shared between copies) and the view it is bound to - its
+ * revision and its store. Store pins the view's mount table: every view of one store at one revision shares it,
+ * and a view of another store (or of a store that adopted an image into fresh tables) never holds the same one;
+ * holding it keeps its address from being reused. Notes: diagnostics of terms that compiled but cannot match yet
+ * (Severity Info, positioned like errors).
  */
 struct SCompiledQuery
 {
 	uint64 Revision = 0u;
+	std::shared_ptr<const void> Store;
 	std::shared_ptr<const SQueryPlan> Plan;
 	std::vector<SDiagnostic> Notes;
 
@@ -106,7 +116,7 @@ struct SQueryStats
 	double Milliseconds = 0.0;       // the whole run
 	double ScanMilliseconds = 0.0;   // graph sets and filters
 	double SortMilliseconds = 0.0;   // ordering, Offset and Limit
-	bool bWrongView = false;         // the query was compiled against another revision: nothing ran
+	bool bWrongView = false;         // the query was compiled against another revision or store: nothing ran
 };
 
 /**
@@ -118,16 +128,17 @@ FRT_CORE_API bool CompileQuery (const CRegistryView& View, const SAssetQuery& Qu
 /**
  * Runs a compiled query: Out receives the records of the page [Offset, Offset + Limit) in result order (the whole
  * result without a Limit). Returns how many records matched before Offset and Limit. A query compiled against
- * another revision (or not compiled) returns 0 with an empty Out and OutStats->bWrongView set.
+ * another revision or store (or not compiled) returns 0 with an empty Out and OutStats->bWrongView set.
  */
 FRT_CORE_API uint32 RunQuery (const CRegistryView& View, const SCompiledQuery& Query, std::vector<SRecordId>& Out, SQueryStats* OutStats = nullptr);
 
 /**
  * Parse (§5.8), compile and run in one call - the search box, `FRT.bat assets query`. nullopt on a parse or compile
- * error (OutError positioned in Text); else the match count as RunQuery returns it.
+ * error (OutError positioned in Text); else the match count as RunQuery returns it. OutNotes receives the compile
+ * notes (SCompiledQuery::Notes: "is:redirected matches nothing until its milestone"); it is cleared first.
  */
 FRT_CORE_API std::optional<uint32> RunQueryText (const CRegistryView& View, FStringView Text, std::vector<SRecordId>& Out,
-	SDiagnostic* OutError = nullptr, SQueryStats* OutStats = nullptr);
+	SDiagnostic* OutError = nullptr, SQueryStats* OutStats = nullptr, std::vector<SDiagnostic>* OutNotes = nullptr);
 
 /**
  * The values of one column of a record, as a result table shows them: a system column ("$Size"; $Type, $Name,

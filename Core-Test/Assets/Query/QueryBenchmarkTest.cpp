@@ -6,9 +6,9 @@
 //
 // Timings mean something in optimized builds only: Debug prints, never judges. The whole suite keeps the machine
 // busy, so a check fails on a clear regression (twice the budget) and holds the exact budget only with
-// FRT_PERF_STRICT=1. The predicate rows judge the scan (ScanMilliseconds: graph sets, column masks, the per-row
-// terms and collecting the hits) - the column scan §5.11 budgets - and print the full run with its path sort
-// beside it; OrderBy + Limit judges the whole run, partial sort included. 1M has no budget column: printed only.
+// FRT_PERF_STRICT=1. Every row judges the whole run a caller waits for (SQueryStats::Milliseconds): the scan and
+// the deterministic order §5.6 step 5 gives every result (the path sort of an unordered query, the partial sort
+// of OrderBy + Limit); the split is printed beside it. 1M has no budget column: printed only.
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -144,7 +144,7 @@ void RunSuite (uint32 Assets, uint32 Rows, EBudgetColumn Column)
 	{
 		const STimedRun run = TimeQuery(*view, "type:Texture Width>=8192");
 		EXPECT_GT(run.Matched, 0u);
-		budget.Check("UnindexedPredicateScanMs", run.ScanMs, 0.1, 0.5, "ms", Detail(run).CStr());
+		budget.Check("UnindexedPredicateMs", run.TotalMs, 0.1, 0.5, "ms", Detail(run).CStr());
 	}
 
 	// Three predicates over the rows of one row type (three column bitmasks).
@@ -154,7 +154,7 @@ void RunSuite (uint32 Assets, uint32 Rows, EBudgetColumn Column)
 		EXPECT_GT(run.Matched, 0u);
 		// §5.11 budgets 3 ms over 500k rows; smaller row counts are judged pro rata.
 		const double rowBudget = 3.0 * static_cast<double>(Rows) / 500000.0;
-		budget.Check("ThreePredicateRowScanMs", run.ScanMs, rowBudget, rowBudget, "ms",
+		budget.Check("ThreePredicateRowMs", run.TotalMs, rowBudget, rowBudget, "ms",
 			FString::Format("{} over {} rows", Detail(run), Rows).CStr());
 		const STimedRun limited = TimeQuery(*view, "rows type:Model MeshCount>=4 VertexCount<50000 TriangleCount>=100000 limit:50");
 		budget.Check("ThreePredicateRowLimit50Ms", limited.TotalMs, -1.0, -1.0, "ms", Detail(limited).CStr());

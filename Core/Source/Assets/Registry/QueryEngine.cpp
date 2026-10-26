@@ -2,10 +2,12 @@
 
 #include <algorithm>
 #include <bit>
+#include <cmath>
 #include <iterator>
 
 #include "Assets/AssetDiagnosticCodes.h"
 #include "Assets/AssetTypes.h"
+#include "Assets/Pipeline/ImporterTable.h"
 #include "Assets/Registry/RegistryTables.h"
 #include "Assets/Registry/RegistryView.h"
 #include "Platform/Timestamp.h"
@@ -131,11 +133,13 @@ struct SGraphSpec
 /**
  * One SAssetQuery (the root or an AnyOf alternative). AllowedTypes folds the type terms of this node and its
  * ancestors and the keys of its tag predicates: a record of another type fails the node before anything else is
- * read. TypeTests[t] holds the node's tag predicates bound to type t's keys.
+ * read. TypeTests[t] holds the node's tag predicates bound to type t's keys. AdmittedSubAssets: the sub-asset-only
+ * types a type term of this node or an ancestor names (Records Assets: their imported sub-assets are in scope).
  */
 struct SQueryNode
 {
 	std::vector<uint8> AllowedTypes;
+	std::vector<uint8> AdmittedSubAssets;
 	std::vector<std::vector<SColumnTest>> TypeTests;
 	std::vector<SSystemTest> SystemTests;
 	std::vector<SFolderRange> Folders;
@@ -168,7 +172,7 @@ struct SQueryPlan
 {
 	SQueryNode Root;
 	ERecordScope Records = ERecordScope::Assets;
-	std::vector<uint8> AdmittedSubAssets;   // Records Assets: sub-assets of these types are in scope (named types)
+	std::vector<uint8> AdmittedSubAssets;   // Records Assets: the union of every node's (a node decides; scans skip the rest)
 	std::vector<SGraphSpec> Graph;
 	std::vector<FString> FoldedTypeNames;   // per TypeId, for $Type prefix / contains
 	SOrderSpec Order;
@@ -194,6 +198,38 @@ namespace
 [[nodiscard]] bool IsRowLabel (FStringView Label) noexcept
 {
 	return !Label.Contains(':');
+}
+
+/**
+ * Per TypeId: 1 when no importer of the table (available or not) reads a file whose main record has that type -
+ * the types that exist only as imported sub-assets (frt.Mesh). Naming one in a Types term brings its sub-assets
+ * into Records Assets; naming a file type (frt.Texture, frt.Material) does not.
+ */
+[[nodiscard]] const std::vector<uint8>& GetSubAssetOnlyTypes ()
+{
+	static const std::vector<uint8> types = []
+	{
+		std::vector<uint8> only(CAssetTypeRegistry::GetTypes().size(), 1u);
+		const auto markMain = [&] (reflect::TypeId Type)
+		{
+			if (Type < only.size())
+			{
+				only[Type] = 0u;
+			}
+		};
+		for (const SImporterDesc& importer : GetImporters())
+		{
+			markMain(importer.MainType);
+			for (const FStringLiteral extension : importer.Extensions)
+			{
+				FString name("a");   // GetMainType needs a stem before the extension
+				name += extension;
+				markMain(importer.GetMainType(name.View()));
+			}
+		}
+		return only;
+	}();
+	return types;
 }
 
 [[nodiscard]] FStringLiteral GetOpName (EOp Op) noexcept
@@ -281,6 +317,7 @@ void AppendSeparator (FString& Out)
 struct STypeScope
 {
 	std::vector<uint8> Types;
+	std::vector<uint8> Admitted;    // sub-asset-only types named by the node or an ancestor (SQueryNode::AdmittedSubAssets)
 	bool bExplicit = false;
 };
 
@@ -309,6 +346,7 @@ public:
 		Plan.Description.AppendFormat("records:{}", enum_::ToString(Query.Records));
 		STypeScope all;
 		all.Types.assign(typeCount, 1u);
+		all.Admitted.assign(typeCount, 0u);
 		STypeScope rootScope;
 		if (!CompileNode(Query, all, Plan.Root, Plan.Description, rootScope))
 		{
@@ -374,6 +412,7 @@ private:
 		if (!Query.Types.empty())
 		{
 			std::vector<uint8> own(typeCount, 0u);
+			const std::vector<uint8>& subAssetOnly = GetSubAssetOnlyTypes();
 			AppendSeparator(Describe);
 			Describe += "types:";
 			for (size_t i = 0u; i < Query.Types.size(); ++i)
@@ -385,18 +424,24 @@ private:
 					return false;
 				}
 				own[type] = 1u;
-				Plan.AdmittedSubAssets[type] = 1u;
+				if (type < subAssetOnly.size() && subAssetOnly[type] != 0u)
+				{
+					scope.Admitted[type] = 1u;
+				}
 				Describe += i == 0u ? "" : ",";
 				Describe += CAssetTypeRegistry::Get(type).Name;
 			}
 			for (uint32 t = 0u; t < typeCount; ++t)
 			{
 				scope.Types[t] = scope.Types[t] != 0u && own[t] != 0u ? 1u : 0u;
+				scope.Admitted[t] = scope.Admitted[t] != 0u && scope.Types[t] != 0u ? 1u : 0u;
+				Plan.AdmittedSubAssets[t] |= scope.Admitted[t];
 			}
 			scope.bExplicit = true;
 		}
 		OutScope = scope;
 		Out.AllowedTypes = scope.Types;
+		Out.AdmittedSubAssets = scope.Admitted;
 		Out.TypeTests.resize(typeCount);
 
 		for (const SQueryPredicate& predicate : Query.Predicates)
@@ -1622,6 +1667,10 @@ public:
 			const size_t keep = end < Results.size() ? static_cast<size_t>(end) : Results.size();
 			std::partial_sort(Results.begin(), Results.begin() + static_cast<std::ptrdiff_t>(keep), Results.end(), less);
 		}
+		else if (Plan.Order.Kind == EOrderKind::None)
+		{
+			SortByPath(Results);
+		}
 		else
 		{
 			std::sort(Results.begin(), Results.end(), less);
@@ -1659,13 +1708,36 @@ private:
 		switch (Plan.Records)
 		{
 		case ERecordScope::Assets:
-			return !bSub || (Plan.AdmittedSubAssets[Context.Type] != 0u && !IsRow(Context.Sub));
+			return !bSub || (Plan.AdmittedSubAssets[Context.Type] != 0u && !IsRow(Context.Sub) && AdmitsSubAsset(Plan.Root, Context));
 		case ERecordScope::Rows:
 			return bSub && IsRow(Context.Sub);
 		case ERecordScope::SubAssets:
 			return bSub && !IsRow(Context.Sub);
 		case ERecordScope::All:
 			return true;
+		}
+		return false;
+	}
+
+	/**
+	 * Records Assets: whether a node admits this imported sub-asset - its type terms (or an ancestor's) name the
+	 * sub-asset's type, or an alternative of one of its AnyOf groups that the sub-asset matches admits it.
+	 */
+	[[nodiscard]] bool AdmitsSubAsset (const SQueryNode& Node, const SRowContext& Context)
+	{
+		if (Context.Type < Node.AdmittedSubAssets.size() && Node.AdmittedSubAssets[Context.Type] != 0u)
+		{
+			return true;
+		}
+		for (const std::vector<SQueryNode>& group : Node.AnyOf)
+		{
+			for (const SQueryNode& alternative : group)
+			{
+				if (MatchesNode(alternative, Context, false) && AdmitsSubAsset(alternative, Context))
+				{
+					return true;
+				}
+			}
 		}
 		return false;
 	}
@@ -2247,6 +2319,8 @@ private:
 		{
 			return;
 		}
+		// Records Assets with the type admitted by an alternative only: each sub-asset asks which node admits it.
+		const bool bCheckAdmission = Plan.Records == ERecordScope::Assets && bSubs && root.AdmittedSubAssets[Type] == 0u;
 		const CTypeTable& table = Tables.Types[Type];
 		const uint32 rows = table.Records.Size();
 		if (table.LiveRows == 0u || rows == 0u)
@@ -2331,6 +2405,10 @@ private:
 				{
 					continue;
 				}
+				if (bCheckAdmission && context.Sub != InvalidRow && !AdmitsSubAsset(root, context))
+				{
+					continue;
+				}
 				Out.push_back(MakeResult(context));
 			}
 		}
@@ -2368,8 +2446,12 @@ private:
 					switch (table.Keys[key].Type)
 					{
 					case ETagType::Double:
-						result.Class = OrderReal;
-						result.Bits = bits;
+						// NaN has no place among numbers (it would make the order non-transitive): it sorts as absent.
+						if (!std::isnan(std::bit_cast<double>(bits)))
+						{
+							result.Class = OrderReal;
+							result.Bits = bits;
+						}
 						break;
 					case ETagType::Name:
 						result.Class = OrderText;
@@ -2563,6 +2645,159 @@ private:
 		}
 		return ComparePaths(A, B) < 0;
 	}
+
+	// ---- Path order without an order key ----
+
+	/**
+	 * The whole result in path order (ComparePaths), as a most-significant-digit radix sort: hits sort by eight
+	 * bytes of their folded path at a time - one integer compare where a string compare would walk a long shared
+	 * prefix ("/project/textures/rock/s0/t_rock_...") on every call - and only hits whose bytes so far are equal go
+	 * on to the next eight. The hits of one file then sort by folded label the same way (the asset record, whose
+	 * label is empty, first). Small groups, and the ties the folded bytes cannot break (two files equal under the
+	 * fold, labels equal under the fold), take ComparePaths itself, so the order is exactly Less's.
+	 */
+	struct SPathKey
+	{
+		uint64 Key = 0u;
+		uint32 Index = 0u;
+	};
+
+	static constexpr size_t SmallPathRange = 12u;
+
+	void SortByPath (std::vector<SResult>& Results) const
+	{
+		if (Results.size() < 2u)
+		{
+			return;
+		}
+		// The scans emit a file's hits together (its rows are contiguous in a type table): the paths sort one
+		// entry per such run, and each file's hits then sort by label.
+		std::vector<SPathKey> files;
+		std::vector<uint32> runEnd(Results.size());
+		for (uint32 i = 0u; i < Results.size();)
+		{
+			uint32 end = i + 1u;
+			while (end < Results.size() && Results[end].Asset == Results[i].Asset)
+			{
+				++end;
+			}
+			files.push_back(SPathKey { 0u, i });
+			runEnd[i] = end;
+			i = end;
+		}
+		SortPathRange(Results, files.data(), files.data() + files.size(), 0u, false);
+		std::vector<SPathKey> hits;
+		hits.reserve(Results.size());
+		for (const SPathKey& file : files)
+		{
+			for (uint32 i = file.Index; i < runEnd[file.Index]; ++i)
+			{
+				hits.push_back(SPathKey { 0u, i });
+			}
+		}
+		// A file whose hits came in several runs has them side by side now (equal paths never name two files).
+		for (size_t first = 0u; first < hits.size();)
+		{
+			size_t end = first + 1u;
+			while (end < hits.size() && Results[hits[end].Index].Asset == Results[hits[first].Index].Asset)
+			{
+				++end;
+			}
+			if (end - first > 1u)
+			{
+				SortPathRange(Results, hits.data() + first, hits.data() + end, 0u, true);
+			}
+			first = end;
+		}
+		std::vector<SResult> sorted;
+		sorted.reserve(Results.size());
+		for (const SPathKey& hit : hits)
+		{
+			sorted.push_back(Results[hit.Index]);
+		}
+		Results.swap(sorted);
+	}
+
+	// The text a level sorts by: the folded file path, or (bLabels) the folded label - empty for the asset record.
+	[[nodiscard]] FStringView GetSortText (const SResult& Result, bool bLabels) const noexcept
+	{
+		return bLabels ? Result.Text : GetFoldedPath(Result);
+	}
+
+	// Eight bytes of Text from Offset, big-endian, zero past its end (paths and labels hold no NUL byte, so a
+	// shorter text sorts first, as in a string compare).
+	[[nodiscard]] static uint64 LoadPathKey (FStringView Text, uint32 Offset) noexcept
+	{
+		const uint32 length = Text.Len();
+		const char* data = Text.GetData();
+		uint64 key = 0u;
+		for (uint32 i = 0u; i < 8u; ++i)
+		{
+			key <<= 8u;
+			if (Offset + i < length)
+			{
+				key |= static_cast<uint8>(data[Offset + i]);
+			}
+		}
+		return key;
+	}
+
+	// Every text in [First, Last) agrees on its first Offset bytes.
+	void SortPathRange (const std::vector<SResult>& Results, SPathKey* First, SPathKey* Last, uint32 Offset, bool bLabels) const
+	{
+		const auto compare = [&] (const SPathKey& A, const SPathKey& B) { return ComparePaths(Results[A.Index], Results[B.Index]) < 0; };
+		const size_t count = static_cast<size_t>(Last - First);
+		if (count < 2u)
+		{
+			return;
+		}
+		if (count <= SmallPathRange)
+		{
+			std::sort(First, Last, compare);
+			return;
+		}
+		const FStringView pivot = GetSortText(Results[First->Index], bLabels);
+		if (Offset > 0u && pivot.Len() <= Offset)
+		{
+			// Equal texts (the range shares a key that reached past the pivot's end, and no text holds a NUL byte):
+			// the folded bytes are spent.
+			if (!bLabels && std::all_of(First, Last, [&] (const SPathKey& Key) { return Results[Key.Index].Asset == Results[First->Index].Asset; }))
+			{
+				SortPathRange(Results, First, Last, 0u, true);   // one file: its record, then its sub-entries by label
+				return;
+			}
+			std::sort(First, Last, compare);
+			return;
+		}
+		// Skip the bytes every text of the range shares.
+		uint32 common = pivot.Len();
+		for (const SPathKey* key = First + 1; key != Last && common > Offset; ++key)
+		{
+			const FStringView text = GetSortText(Results[key->Index], bLabels);
+			const uint32 limit = (std::min)(common, text.Len());
+			uint32 i = Offset;
+			while (i < limit && text.GetData()[i] == pivot.GetData()[i])
+			{
+				++i;
+			}
+			common = i;
+		}
+		for (SPathKey* key = First; key != Last; ++key)
+		{
+			key->Key = LoadPathKey(GetSortText(Results[key->Index], bLabels), common);
+		}
+		std::sort(First, Last, [] (const SPathKey& A, const SPathKey& B) { return A.Key < B.Key; });
+		for (SPathKey* run = First; run != Last;)
+		{
+			SPathKey* end = run + 1;
+			while (end != Last && end->Key == run->Key)
+			{
+				++end;
+			}
+			SortPathRange(Results, run, end, common + 8u, bLabels);
+			run = end;
+		}
+	}
 };
 }
 
@@ -2584,6 +2819,7 @@ bool CompileQuery (const CRegistryView& View, const SAssetQuery& Query, SCompile
 		return false;
 	}
 	Out.Revision = View.GetRevision();
+	Out.Store = GetTables(View).Mounts;
 	Out.Plan = std::move(plan);
 	Out.Notes = std::move(notes);
 	return true;
@@ -2594,7 +2830,7 @@ uint32 RunQuery (const CRegistryView& View, const SCompiledQuery& Query, std::ve
 	const uint64 start = platform::ReadTimestamp();
 	Out.clear();
 	SQueryStats stats;
-	if (!Query.IsValid() || Query.Revision != View.GetRevision())
+	if (!Query.IsValid() || Query.Revision != View.GetRevision() || Query.Store != GetTables(View).Mounts)
 	{
 		stats.bWrongView = true;
 		if (OutStats != nullptr)
@@ -2633,9 +2869,14 @@ uint32 RunQuery (const CRegistryView& View, const SCompiledQuery& Query, std::ve
 	return matched;
 }
 
-std::optional<uint32> RunQueryText (const CRegistryView& View, FStringView Text, std::vector<SRecordId>& Out, SDiagnostic* OutError, SQueryStats* OutStats)
+std::optional<uint32> RunQueryText (const CRegistryView& View, FStringView Text, std::vector<SRecordId>& Out, SDiagnostic* OutError, SQueryStats* OutStats,
+	std::vector<SDiagnostic>* OutNotes)
 {
 	Out.clear();
+	if (OutNotes != nullptr)
+	{
+		OutNotes->clear();
+	}
 	const std::optional<SAssetQuery> query = SAssetQuery::Parse(Text, OutError);
 	if (!query)
 	{
@@ -2646,7 +2887,12 @@ std::optional<uint32> RunQueryText (const CRegistryView& View, FStringView Text,
 	{
 		return std::nullopt;
 	}
-	return RunQuery(View, compiled, Out, OutStats);
+	const uint32 matched = RunQuery(View, compiled, Out, OutStats);
+	if (OutNotes != nullptr)
+	{
+		*OutNotes = std::move(compiled.Notes);
+	}
+	return matched;
 }
 
 void ForEachColumnValue (const CRegistryView& View, SRecordId Record, FStringView Key, TFunctionRef<void (const STagValue&)> Visit)

@@ -5,7 +5,12 @@
 // queries over the fixture's names never crash, and every error from text has a position.
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <cstdio>
+#include <functional>
 #include <random>
+#include <string_view>
+#include <thread>
 
 #include "Assets/Registry/RegistryTables.h"
 #include "QueryTestFixture.h"
@@ -134,6 +139,45 @@ TEST_F(QueryEngineTest, ABareKeyMatchesEveryTypeInScopeThatDeclaresIt)
 	EXPECT_EQ(Query(View(), all), List({ "/Project/Models/SM_Rock.gltf", "/Project/Models/SM_Rock.gltf#mesh:Rock" }));
 }
 
+TEST_F(QueryEngineTest, NamingAFileTypeKeepsItsImportedSubAssetsOut)
+{
+	// The model embeds an image (frt.Texture) and a material (frt.Material): types that are files of their own, so
+	// naming them lists the files only, as $Type does.
+	EXPECT_EQ(Query(View(), "type:Texture"), AllTextures);
+	EXPECT_EQ(Query(View(), "type:Texture"), Query(View(), "$Type=Texture"));
+	EXPECT_EQ(Query(View(), "type:Material"), List({ "/Project/Materials/M_Hero.frtmat.yml", "/Project/Materials/M_Rock.frtmat.yml" }));
+	EXPECT_EQ(Query(View(), "type:Texture is:unused"), List({ "/Project/Textures/Old/T_Old.png" }));
+	EXPECT_EQ(Query(View(), "type:Texture -label:Hero"), List({ "/Project/Textures/Old/T_Old.png", "/Project/Textures/T_Rock.png", "/Project/Textures/T_Sand.png" }));
+	EXPECT_EQ(Query(View(), "type:Texture Width=2048"), List({ "/Project/Textures/T_Sand.png" }));
+	// A sub-asset-only type still brings its sub-assets in.
+	EXPECT_EQ(Query(View(), "type:Mesh"), List({ "/Project/Models/SM_Rock.gltf#mesh:Rock", "/Project/Models/SM_Rock.gltf#mesh:Rock_LOD1" }));
+	EXPECT_EQ(Query(View(), "type:Mesh or type:Material"), List({ "/Project/Materials/M_Hero.frtmat.yml", "/Project/Materials/M_Rock.frtmat.yml",
+		"/Project/Models/SM_Rock.gltf#mesh:Rock", "/Project/Models/SM_Rock.gltf#mesh:Rock_LOD1" }));
+	// The other scopes reach the embedded ones.
+	SAssetQuery images;
+	images.Scope(ERecordScope::SubAssets).OfType("Texture");
+	EXPECT_EQ(Query(View(), images), List({ "/Project/Models/SM_Rock.gltf#image:Rock_BaseColor" }));
+	SAssetQuery everything;
+	everything.Scope(ERecordScope::All).OfType("Material");
+	EXPECT_EQ(Query(View(), everything), List({ "/Project/Materials/M_Hero.frtmat.yml", "/Project/Materials/M_Rock.frtmat.yml",
+		"/Project/Models/SM_Rock.gltf#material:Rock" }));
+}
+
+TEST_F(QueryEngineTest, ASubAssetIsAdmittedByTheAlternativeThatNamesItsType)
+{
+	// LOD1 (1000 vertices) matches only the folder alternative, which names no type: it stays out.
+	EXPECT_EQ(Query(View(), "(type:Mesh VertexCount>2000) or dir:/Project/Models"), List({ "/Project/Models/SM_Rock.gltf",
+		"/Project/Models/SM_Rock.gltf#mesh:Rock" }));
+	EXPECT_EQ(Query(View(), "dir:/Project/Models (type:Mesh VertexCount>2000 or label:Environment)"), List({ "/Project/Models/SM_Rock.gltf",
+		"/Project/Models/SM_Rock.gltf#mesh:Rock" }));
+	// Named at the root, the type admits its sub-assets for every alternative.
+	EXPECT_EQ(Query(View(), "type:Mesh (VertexCount>2000 or TriangleCount<500)"), List({ "/Project/Models/SM_Rock.gltf#mesh:Rock",
+		"/Project/Models/SM_Rock.gltf#mesh:Rock_LOD1" }));
+	// Nested: an alternative inside an alternative admits.
+	EXPECT_EQ(Query(View(), "dir:/Project/Models (label:Environment ((type:Mesh TriangleCount<500) or is:primary) or is:legacy-ref)"),
+		List({ "/Project/Models/SM_Rock.gltf#mesh:Rock_LOD1" }));
+}
+
 TEST_F(QueryEngineTest, NameTagsCompareUnderThePortableFold)
 {
 	EXPECT_EQ(Query(View(), "ValueType=button"), List({ "/Project/Input/IA_Jump.frtinputaction" }));
@@ -200,7 +244,8 @@ TEST_F(QueryEngineTest, GraphTermsFollowResolvedEdges)
 	SAssetQuery transitiveAll;
 	transitiveAll.Scope(ERecordScope::All).References("/Project/Textures/T_Rock.png", true);
 	EXPECT_EQ(Query(View(), transitiveAll), List({ "/Project/Materials/M_Hero.frtmat.yml", "/Project/Materials/M_Rock.frtmat.yml", "/Project/Models/SM_Rock.gltf",
-		"/Project/Models/SM_Rock.gltf#material:Rock", "/Project/Models/SM_Rock.gltf#mesh:Rock", "/Project/Models/SM_Rock.gltf#mesh:Rock_LOD1" }));
+		"/Project/Models/SM_Rock.gltf#image:Rock_BaseColor", "/Project/Models/SM_Rock.gltf#material:Rock", "/Project/Models/SM_Rock.gltf#mesh:Rock",
+		"/Project/Models/SM_Rock.gltf#mesh:Rock_LOD1" }));
 	// A direct referencer that is a sub-entry: the sub-entry that declared the edge, and its file's record.
 	SAssetQuery direct;
 	direct.Scope(ERecordScope::All).References("/Project/Materials/M_Rock.frtmat.yml");
@@ -286,6 +331,16 @@ TEST_F(QueryEngineTest, SystemPredicatesReadFlagsEdgesAndProblems)
 	}
 	// Inside an alternative, only that alternative matches nothing.
 	EXPECT_EQ(Query(View(), "is:redirected or is:primary"), List({ "/Project/Input/IMC_Default.frtinputmap" }));
+	// The text entry point hands the notes on (the search box shows them).
+	std::vector<SRecordId> records;
+	std::vector<SDiagnostic> notes(3u);
+	EXPECT_EQ(RunQueryText(View(), "is:primary or is:redirected", records, nullptr, nullptr, &notes), 1u);
+	ASSERT_EQ(notes.size(), 1u);
+	EXPECT_EQ(notes[0].Severity, ESeverity::Info);
+	EXPECT_EQ(notes[0].Column, 15u);
+	EXPECT_TRUE(notes[0].Message.View().Contains("is:redirected")) << notes[0].Message.CStr();
+	EXPECT_EQ(RunQueryText(View(), "is:primary", records, nullptr, nullptr, &notes), 1u);
+	EXPECT_TRUE(notes.empty());
 }
 
 TEST_F(QueryEngineTest, SystemColumnsCompareLikeTags)
@@ -324,8 +379,8 @@ TEST_F(QueryEngineTest, RecordScopesTellRowsFromImportedSubAssets)
 	EXPECT_TRUE(Query(View(), "table:SM_Rock").empty());
 	SAssetQuery subAssets;
 	subAssets.Scope(ERecordScope::SubAssets);
-	EXPECT_EQ(Query(View(), subAssets), List({ "/Project/Models/SM_Rock.gltf#material:Rock", "/Project/Models/SM_Rock.gltf#mesh:Rock",
-		"/Project/Models/SM_Rock.gltf#mesh:Rock_LOD1" }));
+	EXPECT_EQ(Query(View(), subAssets), List({ "/Project/Models/SM_Rock.gltf#image:Rock_BaseColor", "/Project/Models/SM_Rock.gltf#material:Rock",
+		"/Project/Models/SM_Rock.gltf#mesh:Rock", "/Project/Models/SM_Rock.gltf#mesh:Rock_LOD1" }));
 	EXPECT_EQ(Query(View(), "rows $Name:p"), List({ "/Project/Data/DT_Ammo.frt#Pistol9mm" }));
 	// Rows are found by their table's folder and file.
 	EXPECT_EQ(Query(View(), "rows dir:/Project/Data").size(), 2u);
@@ -385,8 +440,8 @@ TEST_F(QueryEngineTest, OrderLimitAndOffsetShapeADeterministicResult)
 	// Sub-entries follow their file's record, by label.
 	SAssetQuery all;
 	all.Scope(ERecordScope::All).InFolder("/Project/Models");
-	EXPECT_EQ(Query(View(), all), List({ "/Project/Models/SM_Rock.gltf", "/Project/Models/SM_Rock.gltf#material:Rock",
-		"/Project/Models/SM_Rock.gltf#mesh:Rock", "/Project/Models/SM_Rock.gltf#mesh:Rock_LOD1" }));
+	EXPECT_EQ(Query(View(), all), List({ "/Project/Models/SM_Rock.gltf", "/Project/Models/SM_Rock.gltf#image:Rock_BaseColor",
+		"/Project/Models/SM_Rock.gltf#material:Rock", "/Project/Models/SM_Rock.gltf#mesh:Rock", "/Project/Models/SM_Rock.gltf#mesh:Rock_LOD1" }));
 }
 
 TEST_F(QueryEngineTest, IdsRestrictTheResult)
@@ -439,6 +494,36 @@ TEST_F(QueryEngineTest, AQueryCompiledAgainstAnotherRevisionIsRefused)
 	EXPECT_TRUE(stats.bWrongView);
 }
 
+TEST_F(QueryEngineTest, AQueryCompiledAgainstAnotherStoreIsRefused)
+{
+	SCompiledQuery compiled;
+	ASSERT_TRUE(CompileQuery(View(), *SAssetQuery::Parse("dir:/Project/Textures/Hero ref:~T_Rock or type:Texture"), compiled));
+	std::vector<SRecordId> records;
+	SQueryStats stats;
+	ASSERT_EQ(RunQuery(View(), compiled, records, &stats), 5u);
+	// The same content committed the same way: the same revision, other folder rows and record ids.
+	CRegistryStore twin;
+	CommitFixture(twin, true);
+	ASSERT_EQ(twin.Live().GetRevision(), View().GetRevision());
+	EXPECT_EQ(RunQuery(twin.Live(), compiled, records, &stats), 0u);
+	EXPECT_TRUE(stats.bWrongView);
+	EXPECT_TRUE(records.empty());
+	// A store rebuilt from this one's image at this revision (a reload).
+	CRegistryStore reloaded;
+	const MountId mounts[] = { EngineMountId, ProjectMountId };
+	reloaded.AdoptImage(View().ExportImage(mounts), View().GetRevision());
+	ASSERT_EQ(reloaded.Live().GetRevision(), View().GetRevision());
+	EXPECT_EQ(RunQuery(reloaded.Live(), compiled, records, &stats), 0u);
+	EXPECT_TRUE(stats.bWrongView);
+	// Compiled there, it answers there as here.
+	ASSERT_TRUE(CompileQuery(reloaded.Live(), *SAssetQuery::Parse("dir:/Project/Textures/Hero ref:~T_Rock or type:Texture"), compiled));
+	RunQuery(reloaded.Live(), compiled, records);
+	EXPECT_EQ(PathsOf(reloaded.Live(), records), AllTextures);
+	// An acquired view of the compiling store at the same revision shares its binding.
+	ASSERT_TRUE(CompileQuery(View(), *SAssetQuery::Parse("type:Texture"), compiled));
+	EXPECT_EQ(RunQuery(*Store.Acquire(), compiled, records), 5u);
+}
+
 TEST(QueryEngineOrderTest, TheAnswerDoesNotDependOnCommitOrder)
 {
 	CRegistryStore forward;
@@ -454,6 +539,210 @@ TEST(QueryEngineOrderTest, TheAnswerDoesNotDependOnCommitOrder)
 	SAssetQuery all;
 	all.Scope(ERecordScope::All).OrderBy("$Type");
 	EXPECT_EQ(Query(forward.Live(), all), Query(reverse.Live(), all));
+}
+
+namespace
+{
+// The documented result order without an order key, from the record paths alone ("file#label"): the file path
+// folded, then its bytes, then the asset record before its sub-entries, then the label folded, then its bytes.
+bool PathOrderLess (const FString& A, const FString& B)
+{
+	const auto split = [] (const FString& Path, FStringView& OutFile, FStringView& OutLabel)
+	{
+		const FStringView path = Path.View();
+		const uint32 hash = path.Find('#');
+		OutFile = hash == FStringView::NotFound ? path : path.Left(hash);
+		OutLabel = hash == FStringView::NotFound ? FStringView() : path.Mid(hash + 1u);
+	};
+	FStringView fileA, labelA, fileB, labelB;
+	split(A, fileA, labelA);
+	split(B, fileB, labelB);
+	if (const int32 folded = FString(fileA).FoldCase().View().Compare(FString(fileB).FoldCase().View()); folded != 0)
+	{
+		return folded < 0;
+	}
+	if (const int32 bytes = fileA.Compare(fileB); bytes != 0)
+	{
+		return bytes < 0;
+	}
+	if (labelA.IsEmpty() != labelB.IsEmpty())
+	{
+		return labelA.IsEmpty();
+	}
+	if (const int32 folded = FString(labelA).FoldCase().View().Compare(FString(labelB).FoldCase().View()); folded != 0)
+	{
+		return folded < 0;
+	}
+	return labelA.Compare(labelB) < 0;
+}
+}
+
+TEST(QueryEngineOrderTest, ThePathOrderIsTheFoldThenTheBytesWhateverTheShapeOfThePaths)
+{
+	// Long shared prefixes, a folder whose name is a prefix of a sibling's, files beside subfolders, names that
+	// differ in case only (the case-sensitive mount keeps them apart) and a model with many sub-entries: enough
+	// hits for the sort's radix levels, with every tie it has to hand back to the string compare.
+	CRegistryStore store;
+	SRegistryDelta delta;
+	delta.Mounts.push_back(SMountUpsert { "Engine", false, EngineMountId });
+	delta.Mounts.push_back(SMountUpsert { "Project", true, ProjectMountId });
+	const FStringView folders[] = { "/Project/Textures/Environment/Rocks/Set0", "/Project/Textures/Environment/Rocks/Set0/Detail",
+		"/Project/Textures/Environment/Rocks/Set1", "/Project/Textures/Environment/Rocks-Old", "/Project/Textures/Environment/Rocks",
+		"/Project/Textures/ENVIRONMENT/Rocks/Set0", "/Project/Textures/environment/rocks/set0", "/Project/Tex", "/Engine/Textures" };
+	const FStringView stems[] = { "T_Rock_Detail_", "T_Rock_detail_", "t_rock_detail_", "T_Rock_Detail", "T_Rock_Detail_Long_Shared_Prefix_", "T_RockDetail_",
+		"T_Rock_Detail-" };
+	std::mt19937 random(20261026u);
+	std::vector<FString> added;
+	for (uint32 i = 0u; i < 400u; ++i)
+	{
+		const FStringView folder = folders[random() % std::size(folders)];
+		const FStringView stem = stems[random() % std::size(stems)];
+		const uint32 number = random() % 3u == 0u ? random() % 12u : random() % 2000u;
+		FString path = FString::Format("{}/{}{}.png", folder, stem, number);
+		if (std::find(added.begin(), added.end(), path) != added.end())
+		{
+			continue;
+		}
+		AddTexture(delta, path.View(), 64, 64, 3, {});
+		added.push_back(std::move(path));
+	}
+	delta.FileUpserts.push_back(MakeFile("/Project/Textures/Environment/Rocks/SM_Rock.gltf", 100u));
+	SRecordUpsert model = MakeRecord("/Project/Textures/Environment/Rocks/SM_Rock.gltf", asset_types::Model, "Model.Gltf");
+	for (uint32 i = 0u; i < 40u; ++i)
+	{
+		const FString label = FString::Format("{}:Rock_Part_With_A_Long_Name_{}", i % 2u == 0u ? "mesh" : "material", i * 37u % 1000u);
+		model.SubEntries.push_back(SSubEntryDecl { label, 0u, i % 2u == 0u ? asset_types::Mesh : asset_types::Material, ERecordFlags::None, {} });
+	}
+	delta.RecordUpserts.push_back(std::move(model));
+	store.Commit(std::move(delta));
+
+	SAssetQuery all;
+	all.Scope(ERecordScope::All);
+	SAssetQuery subs;
+	subs.Scope(ERecordScope::SubAssets);
+	for (const std::vector<FString>& paths : { Query(store.Live(), all), Query(store.Live(), "type:Texture"), Query(store.Live(), "dir:/Project/Textures/Environment"),
+		Query(store.Live(), subs) })
+	{
+		ASSERT_GT(paths.size(), 12u);
+		std::vector<FString> expected = paths;
+		std::sort(expected.begin(), expected.end(), PathOrderLess);
+		EXPECT_EQ(paths, expected);
+	}
+	EXPECT_EQ(Query(store.Live(), all).size(), added.size() + 41u);
+}
+
+namespace
+{
+// Concurrency step i: texture i arrives (Width from i), the material M_Gen points at the last three textures and
+// T_Rock, and every fifth step removes the texture of four steps before.
+FString GenTexturePath (uint32 Step)
+{
+	return FString::Format("/Project/Gen/{}/T_Gen_{}.png", Step % 8u, Step);
+}
+
+SRegistryDelta MakeQueryStep (uint32 Step)
+{
+	SRegistryDelta delta;
+	AddTexture(delta, GenTexturePath(Step).View(), static_cast<int64>(Step * 37u % 4096u + 1u), 64, Step % 2u == 0u ? 4 : 3,
+		{ Step % 3u == 0u ? FStringView("Environment") : FStringView("Gen") }, 100u + Step);
+	if (Step == 1u)
+	{
+		delta.FileUpserts.push_back(MakeFile("/Project/Materials/M_Gen.frtmat.yml", 100u));
+	}
+	SRecordUpsert material = MakeRecord("/Project/Materials/M_Gen.frtmat.yml", asset_types::Material, "Material.Legacy");
+	for (uint32 k = Step >= 3u ? Step - 2u : 1u; k <= Step; ++k)
+	{
+		material.Edges.push_back(PathEdge(GenTexturePath(k).View(), EDepFlags::Build | EDepFlags::Path));
+	}
+	material.Edges.push_back(PathEdge("/Project/Textures/T_Rock.png", EDepFlags::Build | EDepFlags::Path));
+	delta.RecordUpserts.push_back(std::move(material));
+	if (Step % 5u == 0u && Step > 4u)
+	{
+		delta.FileRemoves.push_back(GenTexturePath(Step - 4u));
+	}
+	return delta;
+}
+
+constexpr FStringView ConcurrentQueries[] = { "ref:~/Project/Textures/T_Rock.png", "dep:M_Gen", "type:Texture order:Width desc limit:7", "dir:/Project/Gen",
+	"rows", "is:unused", "gen or type:Mesh", "label:Environment order:$Size desc", "type:Texture Width>2000 -label:Gen" };
+
+// One hash per query of what it returns on View (paths in order, or the error).
+std::vector<uint64> AnswersOf (const CRegistryView& View)
+{
+	std::vector<uint64> answers;
+	std::vector<SRecordId> records;
+	for (const FStringView text : ConcurrentQueries)
+	{
+		SDiagnostic error;
+		const std::optional<uint32> count = RunQueryText(View, text, records, &error);
+		FString joined = count ? FString::Format("{}:", *count) : FString::Format("error {}: {}", error.Column, error.Message);
+		for (const SRecordId record : records)
+		{
+			SAssetData data;
+			joined += View.GetRecord(record, data) ? data.MountPath.View() : FStringView("<invalid>");
+			joined += '\n';
+		}
+		answers.push_back(std::hash<std::string_view> {}(std::string_view(joined.GetData(), joined.Len())));
+	}
+	return answers;
+}
+}
+
+TEST(QueryConcurrencyTest, QueriesOnOtherThreadsAnswerAsTheOwnerThreadDoesForTheirView)
+{
+	// Compile and run are pure reads of an acquired view (§5.9): four readers query while the owner commits, and
+	// every answer equals the one a single thread gets from a store at that revision.
+	constexpr uint32 Steps = FRT_BUILD_DEBUG ? 100u : 300u;
+	CRegistryStore reference;
+	CommitFixture(reference);
+	const uint64 baseRevision = reference.GetRevision();
+	std::vector<std::vector<uint64>> expected;
+	expected.push_back(AnswersOf(reference.Live()));
+	for (uint32 step = 1u; step <= Steps; ++step)
+	{
+		reference.Commit(MakeQueryStep(step));
+		ASSERT_EQ(reference.GetRevision(), baseRevision + step);
+		expected.push_back(AnswersOf(reference.Live()));
+	}
+
+	CRegistryStore store;
+	CommitFixture(store);
+	ASSERT_EQ(store.GetRevision(), baseRevision);
+	std::atomic<bool> bDone = false;
+	std::atomic<uint32> failures = 0u;
+	std::atomic<uint32> checkedViews = 0u;
+	std::vector<std::thread> readers;
+	for (uint32 t = 0u; t < 4u; ++t)
+	{
+		readers.emplace_back([&] ()
+		{
+			bool bLast = false;
+			while (!bLast)
+			{
+				bLast = bDone.load(std::memory_order_acquire);   // one more view after the last commit
+				const std::shared_ptr<const CRegistryView> view = store.Acquire();
+				const uint64 step = view->GetRevision() - baseRevision;
+				if (step >= expected.size() || AnswersOf(*view) != expected[static_cast<size_t>(step)])
+				{
+					failures.fetch_add(1u);
+				}
+				checkedViews.fetch_add(1u);
+			}
+		});
+	}
+	for (uint32 step = 1u; step <= Steps; ++step)
+	{
+		store.Commit(MakeQueryStep(step));
+	}
+	bDone.store(true, std::memory_order_release);
+	for (std::thread& reader : readers)
+	{
+		reader.join();
+	}
+	EXPECT_EQ(failures.load(), 0u);
+	EXPECT_GE(checkedViews.load(), 4u);
+	std::printf("[query] 4 readers checked %u views over %u commits\n", checkedViews.load(), Steps);
+	EXPECT_EQ(AnswersOf(store.Live()), expected.back());
 }
 
 TEST_F(QueryEngineTest, ColumnValuesReadSystemColumnsAndTags)
