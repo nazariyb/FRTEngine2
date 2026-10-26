@@ -231,11 +231,62 @@ TEST(GltfImporterTest, CountsAreSummedOverAccessors)
 	// A: 4 indexed vertices, 6 indices -> 2 triangles; 9 vertices as a list -> 3.
 	EXPECT_EQ(GetIntTag(a->Tags, "VertexCount"), 13);
 	EXPECT_EQ(GetIntTag(a->Tags, "TriangleCount"), 5);
-	// B: a strip of 5 -> 3; an indexed fan of 6 -> 4; points and lines -> 0; no POSITION -> nothing.
-	EXPECT_EQ(GetIntTag(b->Tags, "VertexCount"), 5 + 4 + 7 + 7);
+	// B: a strip of 5 -> 3; an indexed fan of 6 -> 4; points and lines -> 0; no POSITION -> nothing. Accessor 4,
+	// drawn as points and as lines, is one set of 7 vertices.
+	EXPECT_EQ(GetIntTag(b->Tags, "VertexCount"), 5 + 4 + 7);
 	EXPECT_EQ(GetIntTag(b->Tags, "TriangleCount"), 7);
-	EXPECT_EQ(GetIntTag(result.Tags, "VertexCount"), 13 + 23);
+	// The file counts each POSITION accessor once: accessor 0 is shared by A and B.
+	EXPECT_EQ(GetIntTag(result.Tags, "VertexCount"), 4 + 9 + 5 + 7);
 	EXPECT_EQ(GetIntTag(result.Tags, "TriangleCount"), 12);
+}
+
+// A character outside the BMP written as an escaped surrogate pair (Python's json.dumps does so by default) is that
+// character, in names (so the label and SubId do not depend on how the exporter escaped) and in URIs (so the edge
+// names the file Assimp's JSON reader opens); an unpaired surrogate reads as U+FFFD with a warning.
+TEST(GltfImporterTest, EscapedSurrogatePairsAreOneCharacter)
+{
+	const CImporterTree tree("Surrogates");
+	tree.Write("E/\xF0\x9F\x98\x80.png", "x");
+	tree.Write("E/model.gltf", R"({"asset":{"version":"2.0"},
+		"meshes":[{"name":"\ud83d\ude00","primitives":[]},{"name":"\uD83D\uDE00 B","primitives":[]},{"name":"lone \ud83d!","primitives":[]},
+			{"name":"\ude00","primitives":[]}],
+		"images":[{"uri":"\ud83d\ude00.png"}]})");
+	const SAnalyzeResult result = tree.Analyze("E/model.gltf");
+	ASSERT_EQ(result.Status, EImportStatus::Analyzed) << DescribeDiagnostics(result).CStr();
+	EXPECT_EQ(GetLabels(result), (std::vector<FString> { "mesh:\xF0\x9F\x98\x80", "mesh:\xF0\x9F\x98\x80 B", "mesh:lone \xEF\xBF\xBD!",
+		"mesh:\xEF\xBF\xBD", "image:#0" }));
+	const SSubEntryDecl* emoji = FindSubEntry(result, "mesh:\xF0\x9F\x98\x80");
+	ASSERT_NE(emoji, nullptr);
+	EXPECT_EQ(emoji->SubId, MakeSubId(FStringView("mesh:\xF0\x9F\x98\x80")));
+	const SEdgeDecl* image = FindEdgeTo(result, "/Project/E/\xF0\x9F\x98\x80.png");
+	ASSERT_NE(image, nullptr);
+	EXPECT_EQ(image->FieldPath, "images.0.uri");
+	EXPECT_TRUE(result.Companions.empty());   // a .png has its own Texture record
+	// The two unpaired surrogates: one warning each, naming the field.
+	EXPECT_EQ(CountDiagnostics(result, ESeverity::Warning, 0u), 2u) << DescribeDiagnostics(result).CStr();
+	const SDiagnostic* lone = FindDiagnostic(result, "unpaired");
+	ASSERT_NE(lone, nullptr);
+	EXPECT_EQ(lone->FieldPath, "meshes.2.name");
+}
+
+// An image no available importer claims (KHR_texture_basisu's .ktx2, EXT_texture_webp's .webp, MSFT_texture_dds's
+// .dds) has no record: the model names it as a companion, like a buffer, and keeps the edge to it.
+TEST(GltfImporterTest, UnclaimedImagesAreCompanions)
+{
+	const CImporterTree tree("ImageCompanions");
+	tree.Write("M/model.gltf", R"({"asset":{"version":"2.0"},
+		"images":[{"uri":"albedo.ktx2"},{"uri":"albedo.ktx2"},{"uri":"normal.webp"},{"uri":"rough.dds"},{"uri":"base.png"}],
+		"buffers":[{"uri":"model.bin","byteLength":4}]})");
+	const SAnalyzeResult result = tree.Analyze("M/model.gltf");
+	ASSERT_EQ(result.Status, EImportStatus::Analyzed) << DescribeDiagnostics(result).CStr();
+	EXPECT_EQ(result.Companions, (std::vector<FString> { "/Project/M/albedo.ktx2", "/Project/M/normal.webp", "/Project/M/rough.dds",
+		"/Project/M/model.bin" }));
+	EXPECT_EQ(result.Edges.size(), 6u);
+	const SEdgeDecl* ktx = FindEdgeTo(result, "/Project/M/albedo.ktx2");
+	ASSERT_NE(ktx, nullptr);
+	EXPECT_EQ(ktx->FromSub, MakeSubId("image:#0"));
+	EXPECT_EQ(ktx->Flags, UriEdgeFlags);
+	EXPECT_NE(FindEdgeTo(result, "/Project/M/base.png"), nullptr);
 }
 
 TEST(GltfImporterTest, UrisResolveAsTranslateWillOpenThem)

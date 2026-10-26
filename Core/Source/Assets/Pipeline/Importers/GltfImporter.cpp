@@ -1,7 +1,9 @@
 #include "Assets/Pipeline/Importers/ImporterUtils.h"
 
+#include <algorithm>
 #include <span>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include <cgltf.h>
@@ -10,6 +12,7 @@
 #include "Containers/StringMap.h"
 #include "Graphics/AssimpWideIO.h"
 #include "Platform/FileSystem.h"
+#include "Unicode/Unicode.h"
 
 
 namespace frt::assets::importers
@@ -18,12 +21,14 @@ namespace
 {
 struct SPrimitiveCounts
 {
+	const cgltf_accessor* Positions = nullptr;
 	int64 Vertices = 0;
 	int64 Triangles = 0;
 };
 
-// glTF-native counts of one primitive: its POSITION accessor's count, and the triangles its mode and index (or
-// vertex) count make. Points and lines make none. Nothing is read from a buffer: the counts are the accessors'.
+// glTF-native counts of one primitive: its POSITION accessor (and that accessor's count), and the triangles its
+// mode and index (or vertex) count make. Points and lines make none. Nothing is read from a buffer: the counts
+// are the accessors'.
 SPrimitiveCounts CountPrimitive (const cgltf_primitive& Primitive) noexcept
 {
 	SPrimitiveCounts counts;
@@ -32,6 +37,7 @@ SPrimitiveCounts CountPrimitive (const cgltf_primitive& Primitive) noexcept
 		const cgltf_attribute& attribute = Primitive.attributes[i];
 		if (attribute.type == cgltf_attribute_type_position && attribute.index == 0 && attribute.data != nullptr)
 		{
+			counts.Positions = attribute.data;
 			counts.Vertices = static_cast<int64>(attribute.data->count);
 			break;
 		}
@@ -47,15 +53,117 @@ SPrimitiveCounts CountPrimitive (const cgltf_primitive& Primitive) noexcept
 	return counts;
 }
 
-// cgltf keeps JSON strings as written: unescape a name or URI in place ("é", "\/") before using it.
-FStringView DecodeJsonString (char* Text) noexcept
+// The value of 4 hex digits at Text, or -1 when one of them is not a hex digit.
+int32 ParseHex4 (const char* Text) noexcept
 {
+	int32 value = 0;
+	for (uint32 i = 0u; i < 4u; ++i)
+	{
+		const char c = Text[i];
+		const int32 digit = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+		if (digit < 0)
+		{
+			return -1;
+		}
+		value = value * 16 + digit;
+	}
+	return value;
+}
+
+/**
+ * cgltf keeps JSON strings as written: unescape a name or URI in place ("\u00e9", "\/") before using it. Not
+ * cgltf_decode_string, which turns every \uXXXX into UTF-8 on its own: an escaped surrogate pair (how Python's
+ * json.dumps writes U+1F600) would become CESU-8 - invalid UTF-8 whose label and SubId differ from the same name
+ * written unescaped, and a URI that no longer names the file Assimp's JSON reader opens. Here a high surrogate
+ * followed by an escaped low one is one 4-byte sequence; a lone surrogate (or a malformed escape) becomes U+FFFD
+ * and sets bOutReplaced. The text only shrinks, so the decoding is in place.
+ */
+FStringView DecodeJsonString (char* Text, bool& bOutReplaced) noexcept
+{
+	bOutReplaced = false;
 	if (Text == nullptr)
 	{
 		return FStringView();
 	}
-	const cgltf_size length = cgltf_decode_string(Text);
-	return FStringView(Text, static_cast<uint32>(length));
+	const char* read = Text;
+	char* write = Text;
+	while (*read != 0)
+	{
+		if (*read != '\\')
+		{
+			*write++ = *read++;
+			continue;
+		}
+		const char escape = read[1];
+		if (escape == 0)
+		{
+			break;
+		}
+		read += 2;
+		switch (escape)
+		{
+		case 'b': *write++ = '\b'; break;
+		case 'f': *write++ = '\f'; break;
+		case 'r': *write++ = '\r'; break;
+		case 'n': *write++ = '\n'; break;
+		case 't': *write++ = '\t'; break;
+		case 'u':
+		{
+			const int32 unit = ParseHex4(read);
+			char32_t codePoint = unicode::ReplacementCharacter;
+			if (unit < 0)
+			{
+				bOutReplaced = true;   // jsmn checks escapes; keep what follows as text
+			}
+			else if (unit >= 0xD800 && unit <= 0xDBFF)
+			{
+				read += 4;
+				const int32 low = read[0] == '\\' && read[1] == 'u' ? ParseHex4(read + 2) : -1;
+				if (low >= 0xDC00 && low <= 0xDFFF)
+				{
+					codePoint = static_cast<char32_t>(0x10000 + ((unit - 0xD800) << 10) + (low - 0xDC00));
+					read += 6;
+				}
+				else
+				{
+					bOutReplaced = true;
+				}
+			}
+			else
+			{
+				read += 4;
+				if (unit >= 0xDC00 && unit <= 0xDFFF)
+				{
+					bOutReplaced = true;
+				}
+				else
+				{
+					codePoint = static_cast<char32_t>(unit);
+				}
+			}
+			write += unicode::EncodeUtf8(codePoint, write);
+			break;
+		}
+		default: *write++ = escape; break;   // '"', '\\', '/'
+		}
+	}
+	*write = 0;
+	return FStringView(Text, static_cast<uint32>(write - Text));
+}
+
+// DecodeJsonString with a warning on the file when it read an unpaired surrogate as U+FFFD.
+FStringView DecodeJsonString (char* Text, const SAnalyzeInput& In, FStringView FieldPath, SAnalyzeResult& Out)
+{
+	bool bReplaced = false;
+	const FStringView decoded = DecodeJsonString(Text, bReplaced);
+	if (bReplaced)
+	{
+		SDiagnostic diagnostic = MakeFileDiagnostic(In, ESeverity::Warning,
+			FString::Format("the string '{}' holds an unpaired UTF-16 surrogate escape: read as U+FFFD", decoded));
+		diagnostic.FieldPath = FString(FieldPath);
+		Out.Diagnostics.push_back(std::move(diagnostic));
+	}
+	return decoded;
 }
 
 /**
@@ -186,8 +294,9 @@ void AddPathEdge (SAnalyzeResult& Out, uint64 FromSub, FString TargetPath, FStri
  * (hashed in the same read), a .glb's JSON chunk alone. glTF-native facts, never Assimp's post-processed ones
  * (no extra default material, no split meshes): sub-entries mesh: (frt.Mesh, with VertexCount and TriangleCount),
  * material: (frt.Material) and image: (frt.Texture); on the record MeshCount, MaterialCount, ImageCount and the
- * vertex and triangle counts summed over every mesh's primitives. External buffer and image URIs are
- * Build | Path | Declared edges (an image's from its sub-entry); buffer files are also Companions. The
+ * vertex and triangle counts - vertices summed over distinct POSITION accessors, triangles over primitives.
+ * External buffer and image URIs are Build | Path | Declared edges (an image's from its sub-entry); buffer
+ * files, and image files no available importer claims, are also Companions. The
  * `<stem>_mat<N>.frtmat.yml` files beside a model follow Assimp's material index and are not linked here.
  */
 class CGltfImporter final : public IAssetImporter
@@ -244,21 +353,33 @@ public:
 		cgltf_data& data = *document;
 		CLabelMaker labels(In, Out);
 
+		// Vertices are counted once per distinct POSITION accessor (a vertex buffer drawn by several primitives,
+		// or shared by two meshes, is one set of vertices); triangles per primitive, as they are drawn.
 		int64 vertices = 0;
 		int64 triangles = 0;
+		std::unordered_set<const cgltf_accessor*> fileAccessors;
+		std::unordered_set<const cgltf_accessor*> meshAccessors;
 		for (cgltf_size i = 0u; i < data.meshes_count; ++i)
 		{
 			const cgltf_mesh& mesh = data.meshes[i];
 			SPrimitiveCounts meshCounts;
+			meshAccessors.clear();
 			for (cgltf_size p = 0u; p < mesh.primitives_count; ++p)
 			{
 				const SPrimitiveCounts counts = CountPrimitive(mesh.primitives[p]);
-				meshCounts.Vertices += counts.Vertices;
+				if (counts.Positions != nullptr && meshAccessors.insert(counts.Positions).second)
+				{
+					meshCounts.Vertices += counts.Vertices;
+				}
+				if (counts.Positions != nullptr && fileAccessors.insert(counts.Positions).second)
+				{
+					vertices += counts.Vertices;
+				}
 				meshCounts.Triangles += counts.Triangles;
 			}
-			vertices += meshCounts.Vertices;
 			triangles += meshCounts.Triangles;
-			if (SSubEntryDecl* sub = labels.Add("mesh", DecodeJsonString(data.meshes[i].name), i, asset_types::Mesh))
+			const FStringView name = DecodeJsonString(data.meshes[i].name, In, FString::Format("meshes.{}.name", i), Out);
+			if (SSubEntryDecl* sub = labels.Add("mesh", name, i, asset_types::Mesh))
 			{
 				sub->Tags.push_back({ "VertexCount", STagValue::FromInt64(meshCounts.Vertices) });
 				sub->Tags.push_back({ "TriangleCount", STagValue::FromInt64(meshCounts.Triangles) });
@@ -266,19 +387,34 @@ public:
 		}
 		for (cgltf_size i = 0u; i < data.materials_count; ++i)
 		{
-			(void)labels.Add("material", DecodeJsonString(data.materials[i].name), i, asset_types::Material);
+			const FStringView name = DecodeJsonString(data.materials[i].name, In, FString::Format("materials.{}.name", i), Out);
+			(void)labels.Add("material", name, i, asset_types::Material);
 		}
+		const auto addCompanion = [&] (const FString& Target)
+		{
+			if (std::find(Out.Companions.begin(), Out.Companions.end(), Target) == Out.Companions.end())
+			{
+				Out.Companions.push_back(Target);
+			}
+		};
 		for (cgltf_size i = 0u; i < data.images_count; ++i)
 		{
 			cgltf_image& image = data.images[i];
-			const SSubEntryDecl* sub = labels.Add("image", DecodeJsonString(image.name), i, asset_types::Texture);
+			const FStringView name = DecodeJsonString(image.name, In, FString::Format("images.{}.name", i), Out);
+			const SSubEntryDecl* sub = labels.Add("image", name, i, asset_types::Texture);
 			if (image.uri == nullptr || image.buffer_view != nullptr)
 			{
 				continue;   // embedded in a buffer
 			}
 			const FString fieldPath = FString::Format("images.{}.uri", i);
-			if (std::optional<FString> target = ResolveUri(In, DecodeJsonString(image.uri), fieldPath, Out))
+			if (std::optional<FString> target = ResolveUri(In, DecodeJsonString(image.uri, In, fieldPath, Out), fieldPath, Out))
 			{
+				// An image no available importer claims (.ktx2, .webp, .dds through extensions) has no record of
+				// its own: it is the model's companion, like a buffer, rather than an Unclaimed file.
+				if (FindImporterForFile(GetMountPathLeaf(*target)) == nullptr)
+				{
+					addCompanion(*target);
+				}
 				AddPathEdge(Out, sub != nullptr ? sub->SubId : 0u, std::move(*target), fieldPath);
 			}
 		}
@@ -290,17 +426,9 @@ public:
 				continue;   // a GLB's BIN chunk
 			}
 			const FString fieldPath = FString::Format("buffers.{}.uri", i);
-			if (std::optional<FString> target = ResolveUri(In, DecodeJsonString(buffer.uri), fieldPath, Out))
+			if (std::optional<FString> target = ResolveUri(In, DecodeJsonString(buffer.uri, In, fieldPath, Out), fieldPath, Out))
 			{
-				bool bKnown = false;
-				for (const FString& companion : Out.Companions)
-				{
-					bKnown = bKnown || companion == *target;
-				}
-				if (!bKnown)
-				{
-					Out.Companions.push_back(*target);
-				}
+				addCompanion(*target);
 				AddPathEdge(Out, 0u, std::move(*target), fieldPath);
 			}
 		}
