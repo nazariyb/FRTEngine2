@@ -7,6 +7,8 @@
 // and Rules.cache behave as documented.
 #include <gtest/gtest.h>
 
+#include <atomic>
+#include <thread>
 #include <vector>
 
 #include "RulesTestUtils.h"
@@ -1023,4 +1025,168 @@ TEST(RulesCache, AListingRoundTripsThroughRulesCacheAndAnUnchangedOneIsNotRewrit
 	EXPECT_FALSE(ReadRulesCache(path).has_value());
 	ASSERT_TRUE(platform::WriteFileBytes(path, FStringView("{\"format\": \"frt.rules.cache\", \"version\": 1}\n{\"kind\": \"Rule\"}\n").AsBytes()));
 	EXPECT_FALSE(ReadRulesCache(path).has_value());
+}
+
+
+// ---------------- Review fixes ----------------
+
+TEST(RulesParse, DoubleSettingsMustBeFinite)
+{
+	for (const FStringView value : { FStringView(".nan"), FStringView(".inf"), FStringView("-.inf") })
+	{
+		const FString text = FString("FormatVersion: 1\nPresets:\n  Model.Gltf/Odd: { ScaleFactor: ") + value + " }\n";
+		const std::vector<SDiagnostic> errors = ParseErrors(text);
+		ASSERT_EQ(errors.size(), 1u) << value.GetData() << DescribeDiagnostics(errors).CStr();
+		EXPECT_TRUE(HasError(errors, 3u, "ScaleFactor must be a finite number")) << DescribeDiagnostics(errors).CStr();
+	}
+	std::vector<SDiagnostic> diagnostics;
+	EXPECT_NE(Parse("FormatVersion: 1\nPresets:\n  Model.Gltf/Big: { ScaleFactor: 1e300 }\n", diagnostics), nullptr) << DescribeDiagnostics(diagnostics).CStr();
+}
+
+TEST(RulesEngine, TheSemanticsHashCoversTheTargetAndIsStable)
+{
+	SEngineFixture fixture("Semantics");
+	CRulesEngine& none = fixture.Start();
+	const CRulesEngine again(fixture.Mounts);
+	const CRulesEngine d3d12(fixture.Mounts, SRulesOptions { FString("Win64-D3D12") });
+	const CRulesEngine headless(fixture.Mounts, SRulesOptions { FString("Win64-Headless") });
+	const CRulesEngine headlessFolded(fixture.Mounts, SRulesOptions { FString("win64-headless") });
+	EXPECT_NE(none.GetSemanticsHash(), 0u);
+	EXPECT_EQ(none.GetSemanticsHash(), again.GetSemanticsHash()) << "the same build and target: the same hash";
+	EXPECT_NE(none.GetSemanticsHash(), d3d12.GetSemanticsHash());
+	EXPECT_NE(d3d12.GetSemanticsHash(), headless.GetSemanticsHash());
+	EXPECT_EQ(headless.GetSemanticsHash(), headlessFolded.GetSemanticsHash()) << "the target's canonical spelling counts";
+	fixture.Tree.WriteProjectRules("FormatVersion: 1\nRules: [ { Match: \"**\", Cook: Never } ]\n");
+	none.LoadMountRules();
+	EXPECT_EQ(none.GetSemanticsHash(), again.GetSemanticsHash()) << "rule texts are RulesHash's, not this hash's";
+}
+
+TEST(RulesEngine, ASelectorRulesPresetWithoutAnalyzeRelevantFieldsBindsCleanly)
+{
+	// No M3 setting is Analyze-relevant, so the RULE001 for one reached through a Type or Label rule's preset cannot
+	// fire on the shipped tables; this pins the clean case (the bind-time check adds nothing).
+	SEngineFixture fixture("SelectorPreset");
+	fixture.Tree.WriteProjectRules("FormatVersion: 1\nPresets:\n  Texture/Proto: { MaxSize: 256 }\n");
+	CRulesEngine& engine = fixture.Start();
+	const auto project = fixture.Open("/Project");
+	std::vector<SDiagnostic> diagnostics;
+	const auto art = fixture.Enter(project, "/Project/Art", FStringView("FormatVersion: 1\nRules:\n  - { Type: frt.Texture, Preset: Texture/Proto }\n"),
+		&diagnostics);
+	EXPECT_TRUE(diagnostics.empty()) << DescribeDiagnostics(diagnostics).CStr();
+	SFileFacts facts;
+	facts.Type = asset_types::Texture;
+	EXPECT_EQ(FindSetting(engine.ResolveFile(*art, "/Project/Art/A.png", facts), "MaxSize"), "256");
+}
+
+TEST(RulesEngine, LoadsOfTheMountFilesAreSerialised)
+{
+	SEngineFixture fixture("ConcurrentLoads");
+	fixture.Tree.WriteProjectRules("FormatVersion: 1\nRules: [ { Match: \"**\", Cook: Never } ]\n");
+	CRulesEngine& engine = fixture.Start();
+	std::atomic<uint32> wrong { 0u };
+	std::vector<std::thread> threads;
+	for (uint32 t = 0u; t < 4u; ++t)
+	{
+		threads.emplace_back([&engine, &wrong, t]
+		{
+			for (uint32 i = 0u; i < 20u; ++i)
+			{
+				if ((i + t) % 2u == 0u)
+				{
+					engine.LoadMountRules();
+				}
+				std::vector<SDiagnostic> diagnostics;
+				const auto scope = engine.OpenScope("/Project", diagnostics);
+				if (!diagnostics.empty() || engine.ResolveFile(*scope, "/Project/A.png").CookRule != ECookRule::Never)
+				{
+					wrong.fetch_add(1u);
+				}
+			}
+		});
+	}
+	for (std::thread& thread : threads)
+	{
+		thread.join();
+	}
+	EXPECT_EQ(wrong.load(), 0u);
+
+	// The last load read the file as it is now, so only the edit below changes anything.
+	fixture.Tree.WriteProjectRules("FormatVersion: 1\nRules: [ { Match: \"**\", Cook: Always } ]\n");
+	std::vector<FString> changed;
+	engine.LoadMountRules(nullptr, &changed);
+	EXPECT_EQ(changed, (std::vector<FString> { "Project" }));
+	changed.clear();
+	engine.LoadMountRules(nullptr, &changed);
+	EXPECT_TRUE(changed.empty());
+}
+
+TEST(RulesEngine, TheAncestorWalkFindsTheRuleFileAsTheScannerDoes)
+{
+	SEngineFixture fixture("AncestorSpelling");
+	const std::filesystem::path art = fixture.Tree.Tree.ProjectContent() / "Art";
+	const std::filesystem::path ruleFile = art / "assets.yml";
+	frt::test::rules::WriteFile(ruleFile, "FormatVersion: 1\nRules: [ { Match: \"**\", Cook: Never } ]\n");
+	frt::test::rules::WriteFile(art / "Rocks" / "A.png", "x");
+	CRulesEngine& engine = fixture.Start();
+
+	// A scan enters the folder with the spelling its listing holds.
+	const auto project = fixture.Open("/Project");
+	uint64 hash = 0u;
+	std::vector<SDiagnostic> diagnostics;
+	const auto root = engine.EnterFolder(project, "/Project", nullptr, hash, diagnostics);
+	engine.EnterFolder(root, "/Project/Art", &ruleFile, hash, diagnostics);
+	EXPECT_TRUE(diagnostics.empty()) << DescribeDiagnostics(diagnostics).CStr();
+	EXPECT_NE(hash, 0u);
+	const auto listedFile = [&engine] () -> FString
+	{
+		for (const SRuleFileListing& file : engine.GetListing().Files)
+		{
+			if (file.Origin.FolderMountPath == "/Project/Art")
+			{
+				return file.Origin.File;
+			}
+		}
+		return FString("(not listed)");
+	};
+	EXPECT_EQ(listedFile(), "Content/Art/assets.yml");
+
+	// Opening a subtree below it, or the folder itself, finds and records the same file.
+	const auto rocks = fixture.Open("/Project/Art/Rocks");
+	EXPECT_EQ(engine.ResolveFile(*rocks, "/Project/Art/Rocks/A.png").CookRule, ECookRule::Never);
+	EXPECT_EQ(listedFile(), "Content/Art/assets.yml") << "the on-disk spelling, as the scan recorded it";
+	diagnostics.clear();
+	const auto folder = engine.OpenFolderScope("/Project/Art", diagnostics);
+	EXPECT_TRUE(diagnostics.empty()) << DescribeDiagnostics(diagnostics).CStr();
+	EXPECT_EQ(engine.ResolveFile(*folder, "/Project/Art/A.png").CookRule, ECookRule::Never);
+	EXPECT_EQ(listedFile(), "Content/Art/assets.yml");
+
+	// The file gone (a listing says so): the folder has no rules and leaves the listing.
+	std::error_code ec;
+	std::filesystem::remove(ruleFile, ec);
+	const auto bare = fixture.Open("/Project/Art/Rocks");
+	EXPECT_EQ(engine.ResolveFile(*bare, "/Project/Art/Rocks/A.png").CookRule, ECookRule::Default);
+	EXPECT_EQ(listedFile(), "(not listed)");
+}
+
+TEST(RulesEngine, OnACaseSensitiveFolderTheAncestorWalkTakesAnySpellingAndPrefersTheReservedOne)
+{
+	SEngineFixture fixture("AncestorCaseSensitive");
+	const std::filesystem::path art = fixture.Tree.Tree.ProjectContent() / "Art";
+	frt::test::rules::MakeDirectories(art);
+	if (!test::discovery::MakeCaseSensitive(art))
+	{
+		GTEST_SKIP() << "cannot make a directory case-sensitive here";
+	}
+	frt::test::rules::WriteFile(art / "assets.yml", "FormatVersion: 1\nRules: [ { Match: \"**\", Cook: Never } ]\n");
+	CRulesEngine& engine = fixture.Start();
+	const auto lower = fixture.Open("/Project/Art/Rocks");
+	EXPECT_EQ(engine.ResolveFile(*lower, "/Project/Art/Rocks/A.png").CookRule, ECookRule::Never) << "\"assets.yml\" is the folder's rule file";
+
+	frt::test::rules::WriteFile(art / "Assets.yml", "FormatVersion: 1\nRules: [ { Match: \"**\", Cook: Always } ]\n");
+	const auto both = fixture.Open("/Project/Art/Rocks");
+	EXPECT_EQ(engine.ResolveFile(*both, "/Project/Art/Rocks/A.png").CookRule, ECookRule::Always) << "the reserved spelling wins";
+	const SRulesListing listing = engine.GetListing();
+	const auto entry = std::find_if(listing.Files.begin(), listing.Files.end(), [] (const SRuleFileListing& File) { return File.Origin.FolderMountPath == "/Project/Art"; });
+	ASSERT_NE(entry, listing.Files.end());
+	EXPECT_EQ(entry->Origin.File, "Content/Art/Assets.yml");
 }

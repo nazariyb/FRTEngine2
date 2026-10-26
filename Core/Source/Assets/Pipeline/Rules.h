@@ -53,7 +53,8 @@
  *	- Rules: evaluated deepest file first, inside a file in order; every matching rule contributes and, per field,
  *	  the first rule that sets it wins. A rule matches when all its selectors do: `Match` (any of its globs),
  *	  `Type` (the record's type, known after Analyze: SFileFacts) and `Label` (an authored label). `Type`/`Label`
- *	  rules may set only fields that do not change Analyze (no `Importer`, no Analyze-relevant setting: RULE001).
+ *	  rules may set only fields that do not change Analyze (no `Importer`, no Analyze-relevant setting: RULE001,
+ *	  for a setting their preset carries when the file is bound into a scope).
  *	  Inside one rule a full-target `Targets` block beats a platform block, which beats the plain fields; the
  *	  rule's inline `Settings` beat its `Preset`. Settings apply only to files whose importer uses the same
  *	  settings table (Texture.Psd and Texture.Krita share Texture's, Model.Blender takes Model.Gltf's). Labels
@@ -80,7 +81,8 @@
  *
  * RulesHash (§5.2 RULEFILES, §5.3): XXH3 of the file's normalised rules (the canonical text of every listed entry
  * in order, without line numbers), so a comment, blank line or formatting edit changes nothing. Never 0 for a
- * file that parsed (0 means "no rules").
+ * file that parsed (0 means "no rules"). It covers the text only: what the importer table, this engine's version
+ * and the target make of that text is CRulesEngine::GetSemanticsHash, which F3 persists and compares too.
  */
 namespace frt::assets
 {
@@ -220,10 +222,14 @@ struct SRuleExplanation
  * The rules of a process's mounts, and the scan oracle over them. Construct it from the mount table (copied), then
  * LoadMountRules - OpenScope does that itself the first time. Every member is safe to call from any thread at
  * once: the parsed files and scopes are immutable, the small mutable state (each mount file's and each folder
- * file's last good parse) sits behind one mutex held only for a lookup or a store.
+ * file's last good parse) sits behind one mutex held only for a lookup or a store. Loads of the mount files are
+ * serialised (concurrent LoadMountRules calls, and the first OpenScope's implicit load, run one after another), so
+ * the newest read is the one that stays.
  *
  * Reading rule files: EnterFolder reads the folder's Assets.yml and re-parses it only when its text changed since
- * the last read; OpenScope of a subtree root reads the root's ancestors' files (never inside an excluded folder);
+ * the last read; OpenScope of a subtree root reads the root's ancestors' files (never inside an excluded folder;
+ * each found by listing its folder, as the scanner finds it, so a case-sensitive folder's "assets.yml" counts and
+ * the recorded spelling is the on-disk one; a folder that cannot be listed keeps its last read);
  * LoadMountRules reads every mount's `Config/Assets.yml`. EnterFolderFromText and EnterFolderCached bind a folder
  * without I/O (an edit the watcher delivered; a subtree re-evaluated in memory after an outer file changed).
  */
@@ -245,6 +251,22 @@ public:
 	void LoadMountRules (std::vector<SDiagnostic>* OutDiagnostics = nullptr, std::vector<FString>* OutChangedMounts = nullptr);
 	// The RulesHash of a mount's `Config/Assets.yml` (RULEFILES' row with no folder); 0 when it has none or no good parse.
 	[[nodiscard]] uint64 GetMountRulesHash (FStringView MountName) const;
+	/**
+	 * What a file's class, importer, settings, cook rule and chunk depend on besides the rule texts, which RulesHash
+	 * alone covers: XXH3 of RulesEngineVersion (bumped when this engine's own semantics change - precedence, the
+	 * `Auto` alias, IsBuiltinExcludedName's list), every ImporterTable row (name, extensions, availability, main
+	 * type, settings table with each field's name, kind, default, enum values and Analyze relevance), the targets
+	 * and their platforms, and Options.Target. Never 0; fixed for the engine's lifetime.
+	 *
+	 * F3 persists it beside RULEFILES (the snapshot header) and, when the stored value differs at a warm start,
+	 * re-evaluates every mount in memory as if every RulesHash had changed (§5.3): a later build that adds an
+	 * extension claim, makes an importer available or changes a settings default must not leave unchanged files
+	 * with their old class and settings. Re-analysis still follows each record's AnalyzeStamp, so this costs glob
+	 * matching, not I/O. The registry should resolve with an empty Target, so the CookRule and Chunk it stores do
+	 * not depend on which host wrote the snapshot (the editor and a headless host share one); per-target values are
+	 * a cook-time query on an engine made with that target.
+	 */
+	[[nodiscard]] uint64 GetSemanticsHash () const noexcept { return SemanticsHash; }
 
 	// ---- IScanMembership (ScanTypes.h has the protocol) ----
 
@@ -319,6 +341,7 @@ private:
 	};
 
 	void EnsureLoaded () const;
+	void LoadMountRulesLocked (std::vector<SDiagnostic>* OutDiagnostics, std::vector<FString>* OutChangedMounts);   // LoadMutex held
 	[[nodiscard]] std::shared_ptr<const SScanScope> OpenScopeImpl (FStringView FolderMountPath, bool bIncludeSelf, std::vector<SDiagnostic>& OutDiagnostics) const;
 	[[nodiscard]] std::shared_ptr<const SScanScope> BindFolder (const std::shared_ptr<const SScanScope>& Parent, FStringView FolderMountPath,
 		std::optional<FStringView> Text, bool bReadFailed, FStringView ReadError, FStringView FileName, uint64& OutRulesHash,
@@ -331,7 +354,11 @@ private:
 	SRulesOptions Options;
 	FString TargetPlatform;                     // Options.Target's platform ("Win64"), empty without a target
 	std::vector<FString> ContentPrefixes;       // per mount: its content dir relative to its owner root ("Content")
+	uint64 SemanticsHash = 0u;                  // GetSemanticsHash
 
+	// LoadMutex serialises LoadMountRules whole (read, parse, store), so an older read never lands after a newer one;
+	// it is taken before Mutex, never while holding it. Mutex guards the state below for a lookup or a store only.
+	mutable std::mutex LoadMutex;
 	mutable std::mutex Mutex;
 	mutable bool bLoaded = false;
 	mutable std::vector<SFileState> MountFiles;                       // by mount index

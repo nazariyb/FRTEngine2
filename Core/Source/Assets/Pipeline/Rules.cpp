@@ -884,13 +884,12 @@ private:
 				ErrorAt(Node, FString::Format("{} must be a number: {}", Field.Name, error.Message));
 				return std::nullopt;
 			}
-			if (std::isnan(*number))
+			if (!std::isfinite(*number))
 			{
-				return FString(".nan");
-			}
-			if (std::isinf(*number))
-			{
-				return FString(*number < 0.0 ? "-.inf" : ".inf");
+				// YAML's .nan and .inf parse as numbers, but no setting means anything by them, and a NaN would reach
+				// the import and its derived-data keys.
+				ErrorAt(Node, FString::Format("{} must be a finite number", Field.Name));
+				return std::nullopt;
 			}
 			return FString::FromNumber(*number);
 		}
@@ -1899,19 +1898,52 @@ std::shared_ptr<const SScope> MakeScope (const SScope& Parent, const std::shared
 
 	if (OutDiagnostics != nullptr)
 	{
+		const auto report = [&File, OutDiagnostics] (uint32 Line, FString Message)
+		{
+			SDiagnostic diagnostic;
+			diagnostic.Severity = ESeverity::Error;
+			diagnostic.Code = Rule001;
+			diagnostic.Subject = File->GetOrigin().FolderMountPath;
+			diagnostic.File = File->GetOrigin().File;
+			diagnostic.Line = Line;
+			diagnostic.Message = std::move(Message);
+			OutDiagnostics->push_back(std::move(diagnostic));
+		};
 		for (const SRuleDef& rule : data.Rules)
 		{
-			if (!rule.Preset.IsEmpty() && (scope->Presets == nullptr || !scope->Presets->contains(rule.Preset)))
+			if (rule.Preset.IsEmpty())
 			{
-				SDiagnostic diagnostic;
-				diagnostic.Severity = ESeverity::Error;
-				diagnostic.Code = Rule001;
-				diagnostic.Subject = File->GetOrigin().FolderMountPath;
-				diagnostic.File = File->GetOrigin().File;
-				diagnostic.Line = rule.PresetLine;
-				diagnostic.Message = FString::Format("rule {}: the preset '{}' is defined neither in this file nor in an outer rule file of "
-					"its chain", rule.Index + 1, rule.Preset);
-				OutDiagnostics->push_back(std::move(diagnostic));
+				continue;
+			}
+			const SPresetBinding* binding = nullptr;
+			if (scope->Presets != nullptr)
+			{
+				if (const auto found = scope->Presets->find(rule.Preset); found != scope->Presets->end())
+				{
+					binding = &found->second;
+				}
+			}
+			if (binding == nullptr)
+			{
+				report(rule.PresetLine, FString::Format("rule {}: the preset '{}' is defined neither in this file nor in an outer rule file of "
+					"its chain", rule.Index + 1, rule.Preset));
+				continue;
+			}
+			// A Type or Label rule may not change Analyze through its preset either (its inline Settings were checked at
+			// parse time; the preset is known only along a chain). Resolving skips such a value anyway: this says so.
+			const SPresetDef& preset = *binding->Def;
+			if (rule.IsSelectorRule() && preset.Importer->Settings != nullptr)
+			{
+				for (const SSettingDef& value : preset.Values)
+				{
+					const SSettingsField& field = preset.Importer->Settings->Fields[value.Field];
+					if (field.bAnalyzeRelevant)
+					{
+						report(rule.PresetLine, FString::Format("rule {}: a rule with a Type or Label selector cannot set '{}' through the preset "
+							"'{}' ({}): it changes what Analyze reads, and type and labels are known only after Analyze", rule.Index + 1, field.Name,
+							rule.Preset, FormatProvenance(binding->File->GetOrigin(), preset.Line)));
+					}
+				}
 			}
 		}
 	}
@@ -2109,6 +2141,66 @@ const SSettingDef* FindSetting (std::span<const SSettingDef> Values, uint32 Fiel
 
 // ---------------- CRulesEngine ----------------
 
+namespace
+{
+/**
+ * The version of this engine's own semantics (CRulesEngine::GetSemanticsHash). Bump it when a rule text would
+ * classify or resolve differently with no change to ImporterTable: precedence, Final, the importer order (Raw,
+ * Importer rules, extension claims), Quiet, the `Auto` alias, or IsBuiltinExcludedName's list.
+ */
+constexpr uint32 RulesEngineVersion = 1u;
+
+uint64 ComputeSemanticsHash (FStringView Target)
+{
+	FString bytes;
+	const auto add = [&bytes] (FStringView Text)
+	{
+		bytes += Text;
+		bytes += '\x1F';
+	};
+	add(FString::FromNumber(RulesEngineVersion));
+	for (const SImporterDesc& importer : GetImporters())
+	{
+		bytes += '\x1E';
+		add(importer.Name);
+		for (const FStringLiteral extension : importer.Extensions)
+		{
+			add(extension);
+		}
+		add(importer.bAvailable ? FStringView("available") : FStringView("unavailable"));
+		add(FString::FromNumber(importer.MainType));
+		if (importer.Settings == nullptr)
+		{
+			add("no settings");
+			continue;
+		}
+		add(importer.Settings->Name);
+		for (const SSettingsField& field : importer.Settings->Fields)
+		{
+			bytes += '\x1D';
+			add(field.Name);
+			add(enum_::ToString(field.Kind));
+			add(field.Default);
+			for (const FStringLiteral value : field.EnumValues)
+			{
+				add(value);
+			}
+			add(field.bAnalyzeRelevant ? FStringView("analyze") : FStringView("-"));
+		}
+	}
+	bytes += '\x1E';
+	for (const STargetName& target : KnownTargets)
+	{
+		add(target.Name);
+		add(target.Platform);
+	}
+	bytes += '\x1E';
+	add(Target);
+	const uint64 hash = hash::Xxh3_64(bytes.View());
+	return hash != 0u ? hash : 1u;
+}
+}
+
 CRulesEngine::CRulesEngine (const CMountTable& InMounts, SRulesOptions InOptions)
 	: Mounts(InMounts)
 	, Options(std::move(InOptions))
@@ -2138,6 +2230,7 @@ CRulesEngine::CRulesEngine (const CMountTable& InMounts, SRulesOptions InOptions
 	MountFiles.resize(mounts.size());
 	MountScopes.resize(mounts.size());
 	MountDiagnostics.resize(mounts.size());
+	SemanticsHash = ComputeSemanticsHash(Options.Target);
 }
 
 CRulesEngine::~CRulesEngine () = default;
@@ -2211,9 +2304,17 @@ void CRulesEngine::UpdateFileState (SFileState& State, const SRuleFileOrigin& Or
 
 void CRulesEngine::LoadMountRules (std::vector<SDiagnostic>* OutDiagnostics, std::vector<FString>* OutChangedMounts)
 {
+	std::scoped_lock loadLock(LoadMutex);
+	LoadMountRulesLocked(OutDiagnostics, OutChangedMounts);
+}
+
+void CRulesEngine::LoadMountRulesLocked (std::vector<SDiagnostic>* OutDiagnostics, std::vector<FString>* OutChangedMounts)
+{
 	const std::span<const SMount> mounts = Mounts.GetMounts();
 
-	// Read outside the lock; parse against the previous state so an unchanged text is not parsed again.
+	// Read outside Mutex (scans keep looking scopes up meanwhile), under LoadMutex (no other load interleaves, so
+	// the state stored below is the one these reads were compared against); parse against the previous state so an
+	// unchanged text is not parsed again.
 	std::vector<SFileState> states;
 	{
 		std::scoped_lock lock(Mutex);
@@ -2317,7 +2418,16 @@ void CRulesEngine::EnsureLoaded () const
 			return;
 		}
 	}
-	const_cast<CRulesEngine*>(this)->LoadMountRules();
+	// One thread loads; the others wait for it and then find the rules loaded.
+	std::scoped_lock loadLock(LoadMutex);
+	{
+		std::scoped_lock lock(Mutex);
+		if (bLoaded)
+		{
+			return;
+		}
+	}
+	const_cast<CRulesEngine*>(this)->LoadMountRulesLocked(nullptr, nullptr);
 }
 
 uint64 CRulesEngine::GetMountRulesHash (FStringView MountName) const
@@ -2402,17 +2512,47 @@ std::shared_ptr<const SScanScope> CRulesEngine::OpenScopeImpl (FStringView Folde
 		uint64 rulesHash = 0u;
 		if (directory.has_value())
 		{
-			const std::filesystem::path ruleFile = *directory / FStringView(RuleFileName).ToPath();
-			const std::optional<platform::SFileStat> stat = platform::Stat(ruleFile);
-			if (stat.has_value() && !stat->bDirectory)
+			// The folder's rule file found the way the scanner finds it (MountScanner.cpp): a listing, any spelling
+			// under the portable fold, the reserved spelling winning on a case-sensitive folder that holds two. A
+			// probe of the reserved spelling alone would miss "assets.yml" on a case-sensitive folder, and on NTFS
+			// record a spelling the scan does not, so the two paths would disagree on the folder's rules.
+			FString fileName;
+			FString listError;
+			const bool bListed = platform::EnumerateDirectory(*directory, [&fileName] (const platform::SDirectoryEntry& Entry)
 			{
+				if (!Entry.Stat.bDirectory && !Entry.bNameSurrogate && IsRuleFileName(Entry.Name))
+				{
+					fileName = FString(Entry.Name);
+					return Entry.Name != RuleFileName;   // the reserved spelling ends the search
+				}
+				return true;
+			}, &listError);
+			if (!bListed)
+			{
+				// Unknown, not gone: the folder's last read stays in force (the scanner treats an unlistable folder
+				// as unknown too).
+				if (diagnostics != nullptr)
+				{
+					SDiagnostic diagnostic;
+					diagnostic.Severity = ESeverity::Warning;
+					diagnostic.Subject = folder;
+					diagnostic.Message = FString::Format("cannot list the folder to find its {}: {}; its last read rules stay in force",
+						RuleFileName, listError);
+					diagnostics->push_back(std::move(diagnostic));
+				}
+				std::vector<SDiagnostic> ignored;
+				scope = EnterFolderCached(scope, folder, rulesHash, diagnostics != nullptr ? *diagnostics : ignored);
+			}
+			else if (!fileName.IsEmpty())
+			{
+				const std::filesystem::path ruleFile = *directory / fileName.ToPath();
 				const std::optional<FString> text = platform::ReadFileText(ruleFile);
 				scope = BindFolder(scope, folder, text.has_value() ? std::optional<FStringView>(text->View()) : std::nullopt, !text.has_value(),
-					FString::Format("{} could not be read", FString::FromPath(ruleFile)), RuleFileName, rulesHash, diagnostics);
+					FString::Format("{} could not be read", FString::FromPath(ruleFile)), fileName, rulesHash, diagnostics);
 			}
 			else
 			{
-				scope = BindFolder(scope, folder, std::nullopt, false, FStringView(), RuleFileName, rulesHash, diagnostics);
+				scope = BindFolder(scope, folder, std::nullopt, false, FStringView(), RuleFileName, rulesHash, diagnostics);   // listed: none
 			}
 		}
 		if (bSelf)
