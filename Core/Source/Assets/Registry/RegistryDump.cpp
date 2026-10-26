@@ -360,8 +360,9 @@ void CRegistryView::DumpText (FString& Out, EDumpFlags Flags) const
 				edge.FieldPath = edgeRow.FieldPath != InvalidRow ? FString(tables.Names.Get(edgeRow.FieldPath)) : FString();
 				if (edgeRow.FromSub != 0u)
 				{
-					const uint32 fromSub = FindSubEntryRow(tables, row, edgeRow.FromSub);
-					edge.From = fromSub != InvalidRow ? FString(tables.Names.Get(tables.SubEntries.Key[fromSub])) : FString("?");
+					const uint32 fromSub = GetEdgeSourceSub(tables, row, edgeRow);
+					edge.From = fromSub < tables.SubEntries.Owner.Size() && tables.SubEntries.Owner[fromSub] == row
+						? FString(tables.Names.Get(tables.SubEntries.Key[fromSub])) : FString("?");
 				}
 				edge.State = enum_::ToString(target.State);
 				edges.push_back(std::move(edge));

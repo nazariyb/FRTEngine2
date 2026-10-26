@@ -688,8 +688,8 @@ SDependencyView CRegistryView::MakeDependencyView (uint32 Source, uint32 EdgeRef
 	const SEdgeRow& edge = GetEdgeRow(Tables, EdgeRef);
 	const STargetRow& target = Tables.Graph.Targets[edge.Target];
 	SDependencyView view;
-	view.FromSub = edge.FromSub;
-	const uint32 fromSub = edge.FromSub != 0u ? FindSubEntryRow(Tables, Source, edge.FromSub) : InvalidRow;
+	const uint32 fromSub = GetEdgeSourceSub(Tables, Source, edge);
+	view.FromSub = fromSub != InvalidRow ? Tables.SubEntries.SubId[fromSub] : 0u;
 	view.From = MakeRecordId(fromSub != InvalidRow ? (SubEntryBit | fromSub) : Source);
 	const bool bSatisfied = target.State == ETargetState::Resolved || target.State == ETargetState::Companion;
 	view.Flags = bSatisfied ? edge.Flags : (edge.Flags | EDepFlags::Unresolved);
@@ -720,10 +720,9 @@ void CRegistryView::ForEachDependency (SRecordId Record, EDepFlags Require, EDep
 	}
 	const bool bSub = Record.IsSubEntry();
 	const uint32 row = bSub ? Tables.SubEntries.Owner[Record.Value & ~SubEntryBit] : Record.Value;
-	const uint64 subId = bSub ? Tables.SubEntries.SubId[Record.Value & ~SubEntryBit] : 0u;
 	ForEachLiveEdge(Tables, row, [&] (uint32 EdgeRef)
 	{
-		if (bSub && GetEdgeRow(Tables, EdgeRef).FromSub != subId)
+		if (bSub && GetEdgeSourceSub(Tables, row, GetEdgeRow(Tables, EdgeRef)) != (Record.Value & ~SubEntryBit))
 		{
 			return;
 		}

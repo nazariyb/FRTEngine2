@@ -1520,6 +1520,18 @@ private:
 
 	// ---------------- Edges and targets ----------------
 
+	// SEdgeRow::FromSub for a declared FromSub SubId (Positions: the record's (SubId, position) pairs, sorted): 0 for
+	// the record, InvalidRow for a SubId the record does not declare.
+	static uint32 FindSubPosition (const std::vector<std::pair<uint64, uint32>>& Positions, uint64 SubId) noexcept
+	{
+		if (SubId == 0u)
+		{
+			return 0u;
+		}
+		const auto found = std::lower_bound(Positions.begin(), Positions.end(), std::pair<uint64, uint32>(SubId, 0u));
+		return found != Positions.end() && found->first == SubId ? found->second : InvalidRow;
+	}
+
 	// A target by id when Target is valid, else by the path TargetPath (a Guid target keeps TargetPath as
 	// its hint).
 	uint32 FindTarget (const SAssetId& Target, FStringView TargetPath) const
@@ -1636,17 +1648,21 @@ private:
 	{
 		SAssetsTable& assets = T.Assets;
 		SGraphTables& graph = T.Graph;
-		std::unordered_set<uint64> subIds;
+		// The record's sub-entries by SubId: an edge names its sub-entry by position (SEdgeRow::FromSub).
+		std::vector<std::pair<uint64, uint32>> subPositions;
+		subPositions.reserve(assets.NumSubs[Row]);
 		for (uint32 i = 0u; i < assets.NumSubs[Row]; ++i)
 		{
-			subIds.insert(T.SubEntries.SubId[assets.FirstSub[Row] + i]);
+			subPositions.emplace_back(T.SubEntries.SubId[assets.FirstSub[Row] + i], i + 1u);
 		}
+		std::sort(subPositions.begin(), subPositions.end());
 		std::vector<SEdgeRow> edges;
 		edges.reserve(Decls.size());
 		CEdgeDeduplicator unique;
 		for (const SEdgeDecl& decl : Decls)
 		{
-			if (decl.FromSub != 0u && !subIds.contains(decl.FromSub))
+			const uint32 fromSub = FindSubPosition(subPositions, decl.FromSub);
+			if (fromSub == InvalidRow)
 			{
 				Violation(Path, FString::Format("edge to '{}' comes from SubId {:016x}, which the record does not declare: dropped",
 					decl.TargetPath, decl.FromSub));
@@ -1658,7 +1674,7 @@ private:
 				continue;
 			}
 			SEdgeRow edge;
-			edge.FromSub = decl.FromSub;
+			edge.FromSub = fromSub;
 			edge.Target = target;
 			edge.FieldPath = decl.FieldPath.IsEmpty() ? InvalidRow : T.Names.Intern(decl.FieldPath, Epoch);
 			edge.Flags = decl.Flags & ~EDepFlags::Unresolved;
@@ -1683,7 +1699,7 @@ private:
 		for (const SEdgeRow& edge : edges)
 		{
 			const uint32 index = graph.OverflowEdges.Append(edge, Epoch);
-			SReverseEdge reverse;
+			SOverflowReverseEdge reverse;
 			reverse.Source = Row;
 			reverse.Edge = OverflowEdgeBit | index;
 			reverse.Next = graph.OverflowReverseHead[edge.Target];
@@ -1973,7 +1989,7 @@ public:
 		std::vector<uint32> labels;
 		std::vector<uint32> companions;
 		std::vector<uint64> subIds;
-		std::vector<uint64> sortedSubIds;
+		std::vector<std::pair<uint64, uint32>> subPositions;
 		CEdgeDeduplicator unique;
 		SImageKeys keys(T.Types.size());
 		for (uint32 r = 0u; r < recordCount; ++r)
@@ -2088,9 +2104,14 @@ public:
 					return false;
 				}
 			}
-			sortedSubIds.assign(subIds.begin(), subIds.end());
-			std::sort(sortedSubIds.begin(), sortedSubIds.end());
-			if (std::adjacent_find(sortedSubIds.begin(), sortedSubIds.end()) != sortedSubIds.end())
+			subPositions.clear();
+			for (uint32 i = 0u; i < subIds.size(); ++i)
+			{
+				subPositions.emplace_back(subIds[i], i + 1u);
+			}
+			std::sort(subPositions.begin(), subPositions.end());
+			if (std::adjacent_find(subPositions.begin(), subPositions.end(), [] (const auto& A, const auto& B) { return A.first == B.first; })
+				!= subPositions.end())
 			{
 				return false;   // a repeated SubId: the replay drops the second one
 			}
@@ -2104,12 +2125,12 @@ public:
 			for (uint32 i = edgeRange.Begin; i < edgeRange.Begin + edgeRange.Count; ++i)
 			{
 				const SImageEdge& edge = Image.Edges[i];
-				if (edge.FromSub != 0u && !std::binary_search(sortedSubIds.begin(), sortedSubIds.end(), edge.FromSub))
+				SEdgeRow edgeRow;
+				edgeRow.FromSub = FindSubPosition(subPositions, edge.FromSub);
+				if (edgeRow.FromSub == InvalidRow)
 				{
 					return false;
 				}
-				SEdgeRow edgeRow;
-				edgeRow.FromSub = edge.FromSub;
 				if (edge.Target.IsValid())
 				{
 					edgeRow.Target = GetOrCreateTarget(edge.Target, textAt(edge.TargetPath), path);

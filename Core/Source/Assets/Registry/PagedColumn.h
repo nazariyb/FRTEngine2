@@ -415,7 +415,7 @@ public:
 		frt_assert(Value != ~0u);
 		if (static_cast<uint64>(Used + Tombstones + 1u) * 4u > static_cast<uint64>(Capacity) * 3u)
 		{
-			Rehash(Used + 1u, 2u, Epoch);
+			Rehash(Used + 1u, true, Epoch);
 		}
 		const uint32 tag = MakeTag(Hash);
 		const uint32 mask = Capacity - 1u;
@@ -476,7 +476,7 @@ public:
 	{
 		if (static_cast<uint64>(Count + Tombstones) * 4u > static_cast<uint64>(Capacity) * 3u)
 		{
-			Rehash(Count, 1u, Epoch);
+			Rehash(Count, false, Epoch);
 		}
 	}
 
@@ -495,16 +495,16 @@ private:
 	}
 
 	/**
-	 * The load stays at most 3/4: past it an insert grows the table to at most 3/8 full (Headroom 2, so it
-	 * roughly doubles), while Reserve sizes it to hold its entries within 3/4 (Headroom 1). An 8-byte slot per
-	 * entry at loads of 3/8 to 3/4 costs 11-21 bytes per entry; linear probing over 32-bit tags stays within a
-	 * cache line or two at 3/4. (Loads of 1/4 to 1/2 cost 16-32 bytes per entry: 24 MB of §5.11's 150 at 100k
-	 * assets and 500k rows.)
+	 * The load stays at most 3/4: past it an insert grows the table to at most half full (bGrow: it doubles),
+	 * while Reserve sizes it to hold its entries within 3/4. An 8-byte slot per entry at loads of 3/8 to 3/4
+	 * costs 11-21 bytes per entry; linear probing over 32-bit tags stays within a cache line or two at 3/4.
+	 * (Loads of 1/4 to 1/2 cost 16-32 bytes per entry: 24 MB of §5.11's 150 at 100k assets and 500k rows.)
 	 */
-	void Rehash (uint32 MinEntries, uint32 Headroom, uint64 Epoch)
+	void Rehash (uint32 MinEntries, bool bGrow, uint64 Epoch)
 	{
 		uint32 capacity = 16u;
-		while (static_cast<uint64>(capacity) * 3u < static_cast<uint64>(MinEntries) * 4u * Headroom)
+		while (bGrow ? static_cast<uint64>(capacity) < static_cast<uint64>(MinEntries) * 2u
+			: static_cast<uint64>(capacity) * 3u < static_cast<uint64>(MinEntries) * 4u)
 		{
 			capacity *= 2u;
 		}

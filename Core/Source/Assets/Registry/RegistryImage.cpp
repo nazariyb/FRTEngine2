@@ -297,7 +297,7 @@ SRegistryImage CRegistryView::ExportImage (std::span<const MountId> Mounts) cons
 			const SEdgeRow& edgeRow = GetEdgeRow(tables, EdgeRef);
 			const STargetRow& target = tables.Graph.Targets[edgeRow.Target];
 			SImageEdge edge;
-			edge.FromSub = edgeRow.FromSub;
+			edge.FromSub = GetEdgeFromSubId(tables, row, edgeRow);
 			edge.Flags = edgeRow.Flags;
 			edge.FieldPath = edgeRow.FieldPath != InvalidRow ? nameOf(edgeRow.FieldPath) : ~0u;
 			if (target.Kind == ETargetKind::Path)

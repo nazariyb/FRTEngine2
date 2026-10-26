@@ -436,9 +436,13 @@ struct STargetRow
 // A record keeps one edge per distinct (FromSub, Target, Flags) (§5.2 "one edge per distinct (target, sub,
 // flags)"): a repeat with another FieldPath (two material slots naming one texture) is dropped and the
 // first FieldPath stays, so each source counts once among a target's referencers.
+// FromSub names the declaring sub-entry by its position among the record's sub-entries (+1; 0 = the record): a
+// record's edges are rewritten whenever its sub-entries are, and compaction keeps their order, so the position
+// stays right, in 4 bytes instead of an 8-byte SubId (16 bytes an edge instead of 24). GetEdgeFromSubId gives the
+// SubId back.
 struct SEdgeRow
 {
-	uint64 FromSub = 0u;                // 0 = the record; else one of its SubIds
+	uint32 FromSub = 0u;                // 0 = the record; else 1 + the sub-entry's index from the record's FirstSub
 	uint32 Target = InvalidRow;         // TARGETS row
 	uint32 FieldPath = InvalidRow;      // NAMES
 	EDepFlags Flags {};                 // as declared, without Unresolved
@@ -453,7 +457,15 @@ struct SReverseEdge
 {
 	uint32 Source = InvalidRow;
 	uint32 Edge = InvalidRow;
-	uint32 Next = InvalidRow;           // overflow lists: the next older entry of the same target
+};
+
+// An entry of a target's overflow list: the reverse entry and the next older entry of the same target. (The base
+// CSR's entries need no link: 8 bytes an edge instead of 12.)
+struct SOverflowReverseEdge
+{
+	uint32 Source = InvalidRow;
+	uint32 Edge = InvalidRow;
+	uint32 Next = InvalidRow;
 };
 
 /**
@@ -471,7 +483,7 @@ struct SGraphTables
 	CPagedColumn<SPoolRange> BaseReverse;                 // per target row
 	CPagedColumn<SReverseEdge> BaseReverseEdges;
 	CPagedColumn<uint32> OverflowReverseHead;             // per target row: newest entry, InvalidRow = none
-	CPagedColumn<SReverseEdge> OverflowReverseEdges;
+	CPagedColumn<SOverflowReverseEdge> OverflowReverseEdges;
 	CPagedHashIndex TargetsByKey;                         // Path: HashExact(Text); Guid: HashGuid ^ TargetSub
 	CPagedHashIndex TargetsByResolved;                    // MixRegistryKey(ASSETS row) -> target rows resolved to it
 	uint32 LiveEdges = 0u;
@@ -630,6 +642,19 @@ FRT_CORE_API uint32 FindRecordRowsPortableHashed (const SRegistryTables& Tables,
 // The subject row of a problem subject, or InvalidRow.
 [[nodiscard]] FRT_CORE_API uint32 FindProblemSubject (const SRegistryTables& Tables, FStringView Subject) noexcept;
 
+// The SUBENTRY row an edge of the ASSETS row AssetRow comes from, or InvalidRow for the record itself.
+[[nodiscard]] inline uint32 GetEdgeSourceSub (const SRegistryTables& Tables, uint32 AssetRow, const SEdgeRow& Edge) noexcept
+{
+	return Edge.FromSub != 0u ? Tables.Assets.FirstSub[AssetRow] + Edge.FromSub - 1u : InvalidRow;
+}
+
+// The SubId of that sub-entry (SEdgeDecl::FromSub), 0 for the record.
+[[nodiscard]] inline uint64 GetEdgeFromSubId (const SRegistryTables& Tables, uint32 AssetRow, const SEdgeRow& Edge) noexcept
+{
+	const uint32 sub = GetEdgeSourceSub(Tables, AssetRow, Edge);
+	return sub != InvalidRow ? Tables.SubEntries.SubId[sub] : 0u;
+}
+
 // True when the edge Edge (OverflowEdgeBit | index, or a base index) is still one of Source's live edges.
 [[nodiscard]] FRT_CORE_API bool IsEdgeLive (const SRegistryTables& Tables, uint32 Source, uint32 Edge) noexcept;
 [[nodiscard]] FRT_CORE_API const SEdgeRow& GetEdgeRow (const SRegistryTables& Tables, uint32 Edge) noexcept;
@@ -673,10 +698,10 @@ void ForEachLiveReverseEdge (const SRegistryTables& Tables, uint32 TargetRow, TV
 	}
 	for (uint32 node = graph.OverflowReverseHead[TargetRow]; node != InvalidRow; node = graph.OverflowReverseEdges[node].Next)
 	{
-		const SReverseEdge& entry = graph.OverflowReverseEdges[node];
+		const SOverflowReverseEdge& entry = graph.OverflowReverseEdges[node];
 		if (IsEdgeLive(Tables, entry.Source, entry.Edge))
 		{
-			Visit(entry);
+			Visit(SReverseEdge { entry.Source, entry.Edge });
 		}
 	}
 }

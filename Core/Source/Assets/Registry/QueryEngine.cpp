@@ -1259,11 +1259,10 @@ void ForEachEdgeInto (const SRegistryTables& Tables, uint32 AssetRow, uint64 Sub
 template <typename TVisit>
 void ForEachOwnEdge (const SRegistryTables& Tables, const SRowContext& Context, TVisit&& Visit)
 {
-	const uint64 subId = Context.Sub != InvalidRow ? Tables.SubEntries.SubId[Context.Sub] : 0u;
 	ForEachLiveEdge(Tables, Context.Asset, [&] (uint32 EdgeRef)
 	{
 		const SEdgeRow& edge = GetEdgeRow(Tables, EdgeRef);
-		if (Context.Sub == InvalidRow || edge.FromSub == subId)
+		if (Context.Sub == InvalidRow || GetEdgeSourceSub(Tables, Context.Asset, edge) == Context.Sub)
 		{
 			Visit(edge, Tables.Graph.Targets[edge.Target]);
 		}
@@ -1785,7 +1784,7 @@ private:
 					if (HasAllFlags(Edge.Flags, Spec.Mask))
 					{
 						enter(Source);
-						addSub(Source, Edge.FromSub);
+						addSub(Source, GetEdgeFromSubId(Tables, Source, Edge));
 					}
 				});
 				return;
@@ -1794,7 +1793,7 @@ private:
 			{
 				const SEdgeRow& edge = GetEdgeRow(Tables, EdgeRef);
 				const STargetRow& target = Tables.Graph.Targets[edge.Target];
-				if ((SubId == 0u || edge.FromSub == SubId) && target.State == ETargetState::Resolved && HasAllFlags(edge.Flags, Spec.Mask))
+				if ((SubId == 0u || GetEdgeFromSubId(Tables, Row, edge) == SubId) && target.State == ETargetState::Resolved && HasAllFlags(edge.Flags, Spec.Mask))
 				{
 					enter(target.Resolved);
 					addSub(target.Resolved, target.TargetSub);
