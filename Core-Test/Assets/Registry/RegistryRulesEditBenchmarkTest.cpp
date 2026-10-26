@@ -253,7 +253,7 @@ void MeasureFolderEdit (uint32 Assets, uint32 Rows, const SBudget& Budget)
 
 TEST(RegistryRulesEditBenchmark, AFolderRuleEditReevaluatesAThousandFilesAndCommitsOnlyTheChangedRecords)
 {
-	MeasureFolderEdit(10000u, 0u, SBudget { 2.0, -1.0, 3.0, 4.0 });
+	MeasureFolderEdit(FixtureSize(10000u), 0u, SBudget { 2.0, -1.0, 3.0, 4.0 });
 }
 
 TEST(RegistryRulesEditBenchmark, DISABLED_AFolderRuleEditAt100kAssetsAnd500kRows)

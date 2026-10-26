@@ -295,7 +295,7 @@ TEST_F(SnapshotTest, SnapshotAndJournalMeetTheirBudgetsAt10kAssets)
 	budgets.Append = SBudget { 0.1, -1.0, 0.05, 0.1 };
 	budgets.Restart = SBudget { -1.0, 1.0, 1.5, 2.0 };
 	budgets.Memory = SBudget { 15.0, -1.0, 14.0, 14.0 };
-	MeasureSnapshot(Dir, 10000u, 0u, budgets);
+	MeasureSnapshot(Dir, FixtureSize(10000u), 0u, budgets);
 }
 
 TEST_F(SnapshotTest, DISABLED_SnapshotAndJournalAt100kAssets)

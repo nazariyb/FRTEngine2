@@ -4,7 +4,8 @@
 //
 // Every row prints what it measured beside §5.11's figure ("met" or "MISSED") and, where M3 measured that the real
 // schema cannot meet it, the figure proposed for §5.11's written revision. What a run judges depends on the build:
-//	- Debug prints only.
+//	- Debug prints only, and runs the 10k fixtures at a fifth of their size (FixtureSize): it judges nothing, so
+//	  the full sizes would only make its Core-Test step (verify runs it) slower. The printed names keep 10k.
 //	- Release and Development (FRT.bat verify runs Core-Test in Development): a regression guard per row and build,
 //	  set from what M3 measured inside a whole Core-Test run of that build, with headroom for a busy machine. Inside
 //	  the whole suite a row takes up to about twice what it takes run alone, in either build (the 10k load 26 ms
@@ -36,6 +37,12 @@ struct SBudget
 	[[nodiscard]] double GetJudged () const noexcept { return Revision >= 0.0 ? Revision : Spec; }
 	[[nodiscard]] double GetGuard () const noexcept { return FRT_BUILD_RELEASE ? Release : Development; }
 };
+
+// The size a benchmark fixture of nominal size Nominal runs at in this build: Debug a fifth of it (see above).
+[[nodiscard]] constexpr uint32 FixtureSize (uint32 Nominal) noexcept
+{
+	return FRT_BUILD_DEBUG ? (Nominal / 5u > 0u ? Nominal / 5u : 1u) : Nominal;
+}
 
 [[nodiscard]] inline bool IsPerfStrict ()
 {

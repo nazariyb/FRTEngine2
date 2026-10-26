@@ -222,7 +222,7 @@ void RunSuite (uint32 Assets, uint32 Rows, EBudgetColumn Column)
 
 TEST(QueryBenchmarkTest, TheQueryEngineMeetsItsBudgetsAt10kAssets)
 {
-	RunSuite(10000u, 50000u, EBudgetColumn::Assets10k);
+	RunSuite(FixtureSize(10000u), FixtureSize(50000u), EBudgetColumn::Assets10k);
 }
 
 TEST(QueryBenchmarkTest, DISABLED_TheQueryEngineAt100kAssets)

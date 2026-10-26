@@ -438,7 +438,7 @@ void MeasureLookupsAtFullLoad (std::initializer_list<uint32> AssetCounts, const 
 
 TEST(RegistryBenchmarkTest, TheLookupsMeetTheirBudgetsWithTheIndicesAtTheirFullest)
 {
-	MeasureLookupsAtFullLoad({ 8150u, 12250u }, SBudget { 50.0, -1.0, 60.0, 75.0 }, SBudget { 50.0, -1.0, 24.0, 36.0 }, SBudget { 0.5, -1.0, 0.38, 0.46 });
+	MeasureLookupsAtFullLoad({ FixtureSize(8150u), FixtureSize(12250u) }, SBudget { 50.0, -1.0, 60.0, 75.0 }, SBudget { 50.0, -1.0, 24.0, 36.0 }, SBudget { 0.5, -1.0, 0.38, 0.46 });
 }
 
 TEST(RegistryBenchmarkTest, DISABLED_TheLookupsAt100kScaleWithTheIndicesAtTheirFullest)
@@ -458,7 +458,7 @@ TEST(RegistryBenchmarkTest, TheStoreMeetsItsBudgetsAt10kGeneratedAssets)
 	budgets.AssetId64Lookup = SBudget { 50.0, -1.0, 20.0, 30.0 };
 	budgets.PathLookup = SBudget { 0.5, -1.0, 0.34, 0.46 };
 	budgets.ResidentMemory = SBudget { 15.0, -1.0, 13.0, 13.0 };
-	MeasureStoreAtScale(10000u, 0u, budgets);
+	MeasureStoreAtScale(FixtureSize(10000u), 0u, budgets);
 }
 
 TEST(RegistryBenchmarkTest, DISABLED_TheStoreAt100kAssets)
