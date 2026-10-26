@@ -683,8 +683,9 @@ class Gate:
     @staticmethod
     def golden_sources(template):
         """What a golden dump reads, and nothing else (an edit of Game.ini or Engine.ini changes no dump): the engine's
-        content and rule file, and a template's, with its plugins' content and rule files (mounted when they exist)."""
-        sources = ['Core/Content', 'Core/Config/Assets.yml']
+        content and rule file, and a template's, with its plugins' content and rule files (mounted when they exist).
+        The engine's shaders are left out: its rules exclude them from the scan (and their Bin/ is ignored output)."""
+        sources = ['Core/Content', 'Core/Config/Assets.yml', ':(exclude)Core/Content/Shaders']
         if template:
             root = f'Templates/{template}'
             sources += [f'{root}/Content', f'{root}/Config/Assets.yml',
@@ -695,17 +696,24 @@ class Gate:
     # problems) or that reports an error.
     G11_PROBLEM = re.compile(r'^  problem (?:(?:PATH00[123]|RULE00[12]) |\S+ error )', re.MULTILINE)
 
+    @classmethod
+    def golden_source_status(cls, template):
+        """git status of what a golden dump reads (golden_sources), ignored files included: a file .gitignore hides (a
+        .d or .o beside a model) is scanned and dumped all the same, and no other checkout has it. None outside git."""
+        return git('status', '--porcelain', '--ignored', '--untracked-files=all', '--', *cls.golden_sources(template))
+
     def registry_goldens(self, log):
         """The registry's golden dumps (GOLDENS): dump registry --text --ci in place, on a tree whose dumped content
-        git says is unchanged (the runtime can write Content/), equals Core-Test/Assets/Golden/Registry-<name>.txt
-        and passes G11. The difference goes into the log; --update-goldens writes the files again."""
+        git says is unchanged, ignored files included (the runtime can write Content/), equals
+        Core-Test/Assets/Golden/Registry-<name>.txt and passes G11. The difference goes into the log;
+        --update-goldens writes the files again."""
         compared = []
         for name, template, arguments in GOLDENS:
-            changed = git('status', '--porcelain', '--', *self.golden_sources(template))
+            changed = self.golden_source_status(template)
             if changed is None:
                 raise StepFailed('not a git checkout: the dumped content cannot be checked unchanged')
             if changed.strip():
-                raise StepFailed(f'{name}: its content has uncommitted changes, so the dump says nothing about the commit: '
+                raise StepFailed(f'{name}: its content has uncommitted or ignored files, so the dump says nothing about the commit: '
                                  + '; '.join(changed.decode('utf-8', errors='replace').splitlines()[:3]))
             dumped = self.golden_dump(log, name, template, arguments)
             golden_path = GOLDEN_DIR / f'Registry-{name}.txt'
@@ -738,7 +746,13 @@ class Gate:
         for name, template, arguments in GOLDENS:
             log = self.log_path(f'golden {name}')
             golden_path = GOLDEN_DIR / f'Registry-{name}.txt'
-            changed = git('status', '--porcelain', '--', *self.golden_sources(template))
+            changed = self.golden_source_status(template)
+            ignored = [line for line in (changed or b'').decode('utf-8', errors='replace').splitlines() if line.startswith('!! ')]
+            if ignored:
+                # No other checkout has them, so a golden written with them would fail RegistryGoldenTest everywhere.
+                print(f'[verify] {name}: not written: its content holds files git ignores ({"; ".join(ignored[:3])})')
+                failed = True
+                continue
             if changed and changed.strip():
                 print(f'[verify] {name}: its content has uncommitted changes; the golden file will hold them')
             try:
