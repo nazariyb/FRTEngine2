@@ -41,7 +41,7 @@ SRegistryDelta MakeEveryMember ()
 	delta.FileRemoves = { "/Project/T/old.png" };
 	delta.RecordRemoves = { "/Project/T/older.png" };
 	delta.RuleFileRemoves = { SRuleFileUpsert { "Project", "/Project/Old", 5u } };
-	delta.ProblemClears = { SProblemsClear { "/Project/T", EProblemSource::Rules } };
+	delta.ProblemClears = { SProblemsClear { "/Project/T", EProblemSource::Rules }, SProblemsClear { "/Project/U", EProblemSource::Unclaimed } };
 	delta.FileUpserts[0].ContentHash.reset();
 	delta.FileUpserts[1].MTime = -42;
 	SDiagnostic full = MakeWarning("/Project/T/Rock.png", "every field", DiagnosticCode("REF007"));
@@ -50,6 +50,7 @@ SRegistryDelta MakeEveryMember ()
 	full.Column = 9u;
 	full.FieldPath = "Rules[0].Match";
 	delta.Problems.push_back(SProblemsSet { "/Project/T/Rock.png", EProblemSource::Analyze, { full } });
+	delta.Problems.push_back(SProblemsSet { "/Project/T", EProblemSource::Unclaimed, { MakeWarning("/Project/T", "unclaimed", DiagnosticCode("RULE002")) } });
 	delta.RecordUpserts[0].Tags.push_back(STagDecl { "Channels", STagValue::FromInt64(-3) });
 	return delta;
 }
@@ -88,7 +89,7 @@ protected:
 		Snapshot = Dir / "AssetRegistry.snapshot";
 		Journal = GetJournalPath(Snapshot);
 		Store.Commit(MakeContent());
-		ASSERT_TRUE(WriteSnapshot(Store.Live(), {}, Snapshot, ProjectId));
+		ASSERT_TRUE(WriteSnapshot(Store.Live(), {}, Snapshot, ProjectId, 0u));
 	}
 
 	SSnapshotLoadResult Load (CRegistryStore& Into)
@@ -218,7 +219,7 @@ TEST(JournalEncodingTest, ADeltaSplitByMountKeepsEachPartWhole)
 	EXPECT_EQ(project.RecordUpserts.size() + others.RecordUpserts.size(), delta.RecordUpserts.size());
 	EXPECT_EQ(project.Problems.size() + others.Problems.size(), delta.Problems.size());
 	EXPECT_EQ(project.RuleFileUpserts.size() + others.RuleFileUpserts.size(), delta.RuleFileUpserts.size());
-	EXPECT_EQ(project.ProblemClears.size(), 1u);
+	EXPECT_EQ(project.ProblemClears.size(), 2u);
 	for (const SRecordUpsert& record : others.RecordUpserts)
 	{
 		EXPECT_FALSE(record.FileMountPath.StartsWith("/Project/")) << record.FileMountPath.CStr();
@@ -264,7 +265,7 @@ TEST_F(JournalTest, AJournalKeepsOnlyItsSnapshotsMounts)
 {
 	// The project's snapshot and journal: /Engine's part of a commit is not written there.
 	const MountId projectMounts[] = { ProjectMountId, FirstPluginMountId };
-	ASSERT_TRUE(WriteSnapshot(Store.Live(), projectMounts, Snapshot, ProjectId));
+	ASSERT_TRUE(WriteSnapshot(Store.Live(), projectMounts, Snapshot, ProjectId, 0u));
 	CRegistryJournal journal;
 	ASSERT_TRUE(journal.Open(Journal, ProjectId, Store.GetRevision(), { "Project", "Plugin.Trees" }));
 	SRegistryDelta both = MakeEdit(1u);
@@ -345,7 +346,7 @@ TEST_F(JournalTest, AJournalOfAnotherSnapshotIsIgnored)
 	CommitJournaled(Store, journal, MakeEdit(1u));
 	journal.Close();
 	// A full write that was never followed by Restart (the process died in between).
-	ASSERT_TRUE(WriteSnapshot(Store.Live(), {}, Snapshot, ProjectId));
+	ASSERT_TRUE(WriteSnapshot(Store.Live(), {}, Snapshot, ProjectId, 0u));
 	CRegistryStore loaded;
 	const SSnapshotFileReport report = Load(loaded).Files[0];
 	EXPECT_TRUE(report.bJournalFound);
@@ -382,7 +383,7 @@ TEST_F(JournalTest, RestartKeepsExactlyTheCommitsTheSnapshotDoesNotHold)
 	// The worker writes a view while the owner commits once more.
 	const std::shared_ptr<const CRegistryView> view = store.Acquire();
 	CommitJournaled(store, journal, MakeEdit(4u));
-	ASSERT_TRUE(WriteSnapshot(*view, {}, Snapshot, ProjectId));
+	ASSERT_TRUE(WriteSnapshot(*view, {}, Snapshot, ProjectId, 0u));
 	FString error;
 	ASSERT_TRUE(journal.Restart(view->GetRevision(), &error)) << error.CStr();
 	EXPECT_EQ(journal.GetJournalBase(), view->GetRevision());
@@ -476,7 +477,7 @@ TEST_F(JournalTest, AFailedAppendBreaksTheJournalUntilAFullWriteAndLosesNoCommit
 	SRegistryDelta fourth = MakeEdit(4u);
 	EXPECT_FALSE(journal.Append(fourth, Store.GetRevision() + 1u));
 	Store.Commit(std::move(fourth));
-	ASSERT_TRUE(WriteSnapshot(*view, {}, Snapshot, ProjectId));
+	ASSERT_TRUE(WriteSnapshot(*view, {}, Snapshot, ProjectId, 0u));
 	ASSERT_TRUE(journal.Restart(view->GetRevision(), &error)) << error.CStr();
 	EXPECT_FALSE(journal.IsBroken());
 	EXPECT_TRUE(journal.IsOpen());
@@ -520,7 +521,7 @@ TEST_F(JournalTest, ASnapshotThatLostItsRuleOutputsReplaysNoRuleHashes)
 	EXPECT_TRUE(FindRecord(loaded.Live(), "/Project/T/New1.png").IsValid());   // the rest of the journal is replayed
 
 	// An intact snapshot keeps the journal's hashes.
-	ASSERT_TRUE(WriteSnapshot(Store.Live(), {}, Snapshot, ProjectId));
+	ASSERT_TRUE(WriteSnapshot(Store.Live(), {}, Snapshot, ProjectId, 0u));
 	CRegistryJournal fresh;
 	ASSERT_TRUE(fresh.Open(Journal, ProjectId, Store.GetRevision(), {}));
 	SRegistryDelta again;
@@ -534,6 +535,56 @@ TEST_F(JournalTest, ASnapshotThatLostItsRuleOutputsReplaysNoRuleHashes)
 	SRuleFileData ruleFile;
 	ASSERT_TRUE(intact.Live().GetRuleFile(*row, ruleFile));
 	EXPECT_EQ(ruleFile.RulesHash, 97u);
+}
+
+TEST_F(JournalTest, ASnapshotOfAnotherRulesBasisLoadsWithoutItsRuleHashes)
+{
+	// The header's RulesBasis: what the records were evaluated against besides the file's own RULEFILES rows (the
+	// rules semantics, the engine fallback file). A file that stored another basis than this process has - or none
+	// (0, a file written before the field) - loads as if RULEFILES were lost, journaled rule hashes included.
+	constexpr uint64 Basis = 0x5eed5eed5eed5eedull;
+	ASSERT_TRUE(WriteSnapshot(Store.Live(), {}, Snapshot, ProjectId, Basis));
+	CRegistryJournal journal;
+	ASSERT_TRUE(journal.Open(Journal, ProjectId, Store.GetRevision(), {}));
+	SRegistryDelta rules;
+	rules.RuleFileUpserts.push_back(SRuleFileUpsert { "Project", "/Project/T", 99u });
+	CommitJournaled(Store, journal, std::move(rules));
+	journal.Close();
+
+	const auto load = [&] (uint64 LiveBasis, CRegistryStore& Into)
+	{
+		const SSnapshotSource sources[] = { SSnapshotSource { Snapshot, ProjectId, false, LiveBasis } };
+		return LoadSnapshots(Into, sources).Files[0];
+	};
+	for (const uint64 live : { Basis, uint64 { 0u } })
+	{
+		CRegistryStore same;
+		const SSnapshotFileReport report = load(live, same);
+		EXPECT_EQ(report.RulesBasis, Basis);
+		EXPECT_FALSE(report.bRuleFilesDropped) << "live basis " << live;
+		EXPECT_FALSE(report.bRulesBasisChanged);
+		EXPECT_TRUE(same.Live().FindRuleFile("Project", "").has_value());
+		EXPECT_TRUE(same.Live().FindRuleFile("Project", "/Project/T").has_value());
+	}
+
+	CRegistryStore other;
+	const SSnapshotFileReport report = load(Basis + 1u, other);
+	EXPECT_EQ(report.State, ESnapshotFileState::Loaded);
+	EXPECT_TRUE(report.bRuleFilesDropped);
+	EXPECT_TRUE(report.bRulesBasisChanged);
+	EXPECT_NE(std::find(report.DroppedSections.begin(), report.DroppedSections.end(), ESnapshotSection::RuleFiles), report.DroppedSections.end());
+	EXPECT_TRUE(report.bJournalUsed);
+	uint32 ruleFiles = 0u;
+	other.Live().ForEachRuleFile([&] (uint32) { ++ruleFiles; });
+	EXPECT_EQ(ruleFiles, 0u);
+	EXPECT_EQ(other.Live().GetRecordCount(), Store.Live().GetRecordCount());   // the records stay; only the hashes go
+
+	// A file written with no basis (0, unknown) never matches a live one.
+	ASSERT_TRUE(WriteSnapshot(Store.Live(), {}, Snapshot, ProjectId, 0u));
+	std::filesystem::remove(Journal);
+	CRegistryStore unknown;
+	EXPECT_TRUE(load(Basis, unknown).bRulesBasisChanged);
+	EXPECT_FALSE(unknown.Live().FindRuleFile("Project", "").has_value());
 }
 
 TEST_F(JournalTest, ADeltaLargerThanAFrameIsSplitAndJoined)

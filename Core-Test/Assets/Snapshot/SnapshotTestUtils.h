@@ -170,6 +170,7 @@ inline SRegistryDelta MakeContent (bool bCrossMountIdEdge = true)
 	delta.FolderUpserts.push_back(SFolderUpsert { "/Project/Empty/Inner" });
 	delta.Problems.push_back(SProblemsSet { "/Project/T/Rock.png", EProblemSource::Scan, { MakeWarning("/Project/T/Rock.png", "long", DiagnosticCode("PATH003")) } });
 	delta.Problems.push_back(SProblemsSet { "/Project/T", EProblemSource::Rules, { MakeWarning("/Project/T", "unknown key", DiagnosticCode("RULE001")) } });
+	delta.Problems.push_back(SProblemsSet { "/Project/T", EProblemSource::Unclaimed, { MakeWarning("/Project/T", "no importer for .docx", DiagnosticCode("RULE002")) } });
 	delta.Problems.push_back(SProblemsSet { "/Project/Hero.gltf#mesh:Body", EProblemSource::Analyze, { MakeWarning("/Project/Hero.gltf#mesh:Body", "degenerate") } });
 	delta.Problems.push_back(SProblemsSet { "/Engine/Textures/White.png", EProblemSource::Analyze, { MakeWarning("/Engine/Textures/White.png", "tiny") } });
 	return delta;

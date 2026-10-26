@@ -1216,6 +1216,71 @@ TEST(RegistryStoreTest, ProblemListsAreReplacedPerSubjectAndSource)
 }
 
 
+TEST(RegistryStoreTest, AFoldersRuleAndUnclaimedListsNeverEraseEachOther)
+{
+	// RULE001 (the scan or the rules loader) and RULE002 (after Analyze, once companions are known) share a Subject
+	// but are produced at different times: each has its own source, so whichever is set or cleared last leaves the
+	// other alone, and the dump does not depend on the order.
+	SDiagnostic rule001 = MakeScanWarning("/Project/T", "Assets.yml: unknown key 'Rulez'");
+	rule001.Code = DiagnosticCode("RULE001");
+	rule001.Severity = ESeverity::Error;
+	SDiagnostic rule002 = MakeScanWarning("/Project/T", "no importer for .docx under /Project/T (notes.docx)");
+	rule002.Code = DiagnosticCode("RULE002");
+	const auto setRules = [&] (CRegistryStore& Store)
+	{
+		SRegistryDelta delta;
+		delta.Problems.push_back(SProblemsSet { "/Project/T", EProblemSource::Rules, { rule001 } });
+		Store.Commit(std::move(delta));
+	};
+	const auto setUnclaimed = [&] (CRegistryStore& Store)
+	{
+		SRegistryDelta delta;
+		delta.Problems.push_back(SProblemsSet { "/Project/T", EProblemSource::Unclaimed, { rule002 } });
+		Store.Commit(std::move(delta));
+	};
+	const auto countAt = [] (const CRegistryStore& Store)
+	{
+		uint32 count = 0u;
+		Store.Live().ForEachDiagnosticAt("/Project/T", [&] (EProblemSource, const SDiagnostic&) { ++count; });
+		return count;
+	};
+
+	FString dumps[2];
+	for (const bool bRulesFirst : { true, false })
+	{
+		CRegistryStore store;
+		SRegistryDelta base = MakeMountsDelta();
+		AddTexture(base, "/Project/T/a.png");
+		store.Commit(std::move(base));
+		if (bRulesFirst)
+		{
+			setRules(store);
+			setUnclaimed(store);
+		}
+		else
+		{
+			setUnclaimed(store);
+			setRules(store);
+		}
+		EXPECT_EQ(countAt(store), 2u);
+		store.Live().DumpText(dumps[bRulesFirst ? 0 : 1]);
+
+		// A subtree re-evaluation clears the Rules source only; the unclaimed files' list stays until it is recomputed.
+		SRegistryDelta clear;
+		clear.ProblemClears.push_back(SProblemsClear { "/Project", EProblemSource::Rules });
+		store.Commit(std::move(clear));
+		bool bUnclaimedLeft = false;
+		store.Live().ForEachDiagnosticAt("/Project/T", [&] (EProblemSource Source, const SDiagnostic& Diagnostic)
+		{
+			bUnclaimedLeft = Source == EProblemSource::Unclaimed && Diagnostic.Code == DiagnosticCode("RULE002");
+		});
+		EXPECT_EQ(countAt(store), 1u);
+		EXPECT_TRUE(bUnclaimedLeft);
+	}
+	EXPECT_EQ(dumps[0], dumps[1]);
+	EXPECT_TRUE(dumps[0].Contains("Unclaimed")) << dumps[0].CStr();
+}
+
 TEST(RegistryStoreTest, AProblemOnlyDeltaChangesTheRecordWhoseCountItChanges)
 {
 	CRegistryStore store;

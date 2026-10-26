@@ -244,9 +244,18 @@ public:
 	/**
 	 * (Re)reads every mount's `Config/Assets.yml` (a missing one is no error: no rules) and rebuilds the mount
 	 * scopes; scopes handed out earlier keep the rules they were made with. A file with errors keeps its last good
-	 * rules. OutDiagnostics gets every mount file's RULE001s; OutChangedMounts the names of the mounts whose chain
-	 * changed (their own file's RulesHash, or the engine file's for every mount but /Engine) - all of them at the
-	 * first load. Call it when a watcher reports a mount rule file changed.
+	 * rules. OutDiagnostics gets, per mount, the complete Rules list of the mount root's Subject: the mount file's
+	 * RULE001s and those of the content root's Assets.yml as last read, bound against the new chain (the two files
+	 * share the Subject, see below). OutChangedMounts gets the names of the mounts whose chain changed (their own
+	 * file's RulesHash, or the engine file's for every mount but /Engine) - all of them at the first load. Call it
+	 * when a watcher reports a mount rule file changed.
+	 *
+	 * The mount-root Subject: a mount's Config/Assets.yml and its content root's Assets.yml both report under the
+	 * mount root ("/Project"), one (Subject, Rules) problem list. Every entry point that reports for that Subject -
+	 * LoadMountRules, and EnterFolder, EnterFolderFromText, EnterFolderCached and OpenFolderScope of the mount root -
+	 * returns both files' diagnostics, so its result is always the Subject's complete list and the caller replaces the
+	 * list with it (SProblemsSet). OpenScope of a mount root reports nothing: the root's EnterFolder that follows it
+	 * (the scan protocol, ScanTypes.h) does.
 	 */
 	void LoadMountRules (std::vector<SDiagnostic>* OutDiagnostics = nullptr, std::vector<FString>* OutChangedMounts = nullptr);
 	// The RulesHash of a mount's `Config/Assets.yml` (RULEFILES' row with no folder); 0 when it has none or no good parse.
@@ -258,21 +267,30 @@ public:
 	 * type, settings table with each field's name, kind, default, enum values and Analyze relevance), the targets
 	 * and their platforms, and Options.Target. Never 0; fixed for the engine's lifetime.
 	 *
-	 * F3 persists it beside RULEFILES (the snapshot header) and, when the stored value differs at a warm start,
-	 * re-evaluates every mount in memory as if every RulesHash had changed (§5.3): a later build that adds an
-	 * extension claim, makes an importer available or changes a settings default must not leave unchanged files
-	 * with their old class and settings. Re-analysis still follows each record's AnalyzeStamp, so this costs glob
-	 * matching, not I/O. The registry should resolve with an empty Target, so the CookRule and Chunk it stores do
-	 * not depend on which host wrote the snapshot (the editor and a headless host share one); per-target values are
-	 * a cook-time query on an engine made with that target.
+	 * It goes into each snapshot file through GetRulesBasis (the snapshot header's RulesBasis, Snapshot.h): a later
+	 * build that adds an extension claim, makes an importer available or changes a settings default must not leave
+	 * unchanged files with their old class and settings. Re-analysis still follows each record's AnalyzeStamp, so
+	 * this costs glob matching, not I/O. The registry should resolve with an empty Target, so the CookRule and Chunk
+	 * it stores do not depend on which host wrote the snapshot (the editor and a headless host share one);
+	 * per-target values are a cook-time query on an engine made with that target.
 	 */
 	[[nodiscard]] uint64 GetSemanticsHash () const noexcept { return SemanticsHash; }
+	/**
+	 * What a snapshot file's records were evaluated against besides the RULEFILES rows the file holds itself (its
+	 * mounts' own rule files): the semantics hash, and for a file with any mount but /Engine also the engine
+	 * file's RulesHash, since /Project and every plugin fall back to Core/Config/Assets.yml (§3.5.4) while that row
+	 * lives only in Engine.snapshot, which editors never write. bWithEngineFallback: false for Engine.snapshot,
+	 * true for AssetRegistry.snapshot. F3 passes it to WriteSnapshot and as SSnapshotSource::RulesBasis; a file
+	 * whose stored basis differs loses its RULEFILES rows at load (bRuleFilesDropped), so its mounts re-evaluate.
+	 * Never 0 (0 is "unknown" in the header).
+	 */
+	[[nodiscard]] uint64 GetRulesBasis (bool bWithEngineFallback) const;
 
 	// ---- IScanMembership (ScanTypes.h has the protocol) ----
 
-	// The scope of everything strictly above FolderMountPath. For a mount root, the mount's chain, and the mount
-	// file's diagnostics (parse and bind) go to OutDiagnostics; for a subtree root, the ancestors' folder files
-	// are read and bound too (their diagnostics belong to their own folders' scans and are not repeated). An
+	// The scope of everything strictly above FolderMountPath. For a mount root, the mount's chain (the mount file's
+	// diagnostics come with the root's EnterFolder, see LoadMountRules); for a subtree root, the ancestors' folder
+	// files are read and bound too (their diagnostics belong to their own folders' scans and are not repeated). An
 	// unknown mount gives a scope that excludes everything, with a code-0 error.
 	std::shared_ptr<const SScanScope> OpenScope (FStringView FolderMountPath, std::vector<SDiagnostic>& OutDiagnostics) const override;
 	std::shared_ptr<const SScanScope> EnterFolder (const std::shared_ptr<const SScanScope>& Parent, FStringView FolderMountPath,
@@ -349,6 +367,9 @@ private:
 	[[nodiscard]] SRuleFileOrigin MakeFolderOrigin (uint32 MountIndex, FStringView FolderMountPath, FStringView FileName) const;
 	[[nodiscard]] int32 FindMountIndex (FStringView MountName) const noexcept;
 	void UpdateFileState (SFileState& State, const SRuleFileOrigin& Origin, std::optional<FStringView> Text, FStringView ReadError) const;
+	// For a mount root: the mount file's diagnostics (parse and bind), which share the root's Subject with the
+	// content root's Assets.yml.
+	void AppendMountRootDiagnostics (FStringView FolderMountPath, std::vector<SDiagnostic>& OutDiagnostics) const;
 
 	CMountTable Mounts;
 	SRulesOptions Options;
@@ -369,9 +390,11 @@ private:
 
 /**
  * RULE002 (§3.5.2, §13.4): files still Unclaimed after Analyze (companions known), reported once per folder and
- * extension (folded: ".PNG" and ".png" are one group), never for a quiet file. Subject: the folder mount path (the
- * registry stores them in the folder's Rules list). Warning severity; apply a scope's Validation override with
- * ApplyValidation. Sorted by folder (SStringLessIgnoreCase, then bytes), then extension.
+ * extension (folded: ".PNG" and ".png" are one group), never for a quiet file. Subject: the folder mount path; the
+ * registry keeps them under their own problem source, EProblemSource::Unclaimed, which the caller clears and sets
+ * only when it recomputes the unclaimed files - never in the Rules list, which other steps replace at other times.
+ * Warning severity; apply a scope's Validation override with ApplyValidation. Sorted by folder
+ * (SStringLessIgnoreCase, then bytes), then extension.
  */
 struct SUnclaimedFile
 {

@@ -21,7 +21,7 @@
  * Analyze rebuild, so nothing here ever fails start-up; a bad file or section is reported and dropped.
  *
  * File layout (little-endian): the 48-byte header - Magic "FRTAREG1", FormatVersion, SectionCount,
- * ProjectId, JournalBase, 8 reserved bytes - then SectionCount entries { Id u32; LayoutVersion u32; Offset u64;
+ * ProjectId, JournalBase, RulesBasis (u64; 0 = unknown, what files written before it held) - then SectionCount entries { Id u32; LayoutVersion u32; Offset u64;
  * Size u64; Xxh3 u64 }, then the sections at 16-byte aligned offsets. FormatVersion gates the container only;
  * each section has its own LayoutVersion and checksum (ESnapshotSection lists them; ALIASES, FORMERPATHS,
  * METAS and TOMBSTONES are written empty in M3). The image's string tables are written as they are (NAMES,
@@ -40,11 +40,19 @@
  *	  "Analyze again" has in §5.3. F3 re-analyzes every StaleTags record whose type is known. (A type name
  *	  this build does not know at all leaves its records frt.Unknown with Schemaless | StaleTags and their
  *	  stamps: they wait for their type, AdoptImage's rule.)
- *	- Rule outputs lost - LABELS or PROBLEMS: the RULEFILES rows are dropped too, so no stored RulesHash
- *	  matches and every record of those mounts is re-evaluated (the file's journal is replayed without its
- *	  rule-file upserts and removes, which would make some folders look current again).
+ *	- Rule outputs lost - LABELS or PROBLEMS: the RULEFILES rows are dropped too, and every record of those
+ *	  mounts is re-evaluated (the file's journal is replayed without its rule-file upserts and removes, which
+ *	  would make some folders look current again).
  *	- STRINGS lost: DEPS and PROBLEMS go with it (and type tables with a String key).
- *	- RULEFILES lost alone: its rule files' subtrees are re-evaluated.
+ *	- RULEFILES lost alone: every record of the file's mounts is re-evaluated.
+ *	- RulesBasis changed: the header's RulesBasis is what the records were evaluated against besides the file's
+ *	  own RULEFILES rows - CRulesEngine::GetRulesBasis: the rules semantics hash (importer table, rules engine
+ *	  version, target) and, in AssetRegistry.snapshot, the RulesHash of the engine file /Project and the plugins
+ *	  fall back to. When SSnapshotSource::RulesBasis is set and differs from the stored one (0, unknown, always
+ *	  differs), the file is treated as having lost RULEFILES (bRuleFilesDropped, bRulesBasisChanged).
+ * Whenever report.bRuleFilesDropped is set, F3 re-evaluates every record of that file's mounts. It never infers
+ * this from a missing RULEFILES row: a folder without an Assets.yml, and a mount without a Config/Assets.yml, have
+ * no row either, so a missing row cannot tell a lost hash from no file.
  *
  * Mount sets. WriteSnapshot writes the given mounts only; an edge that leaves the set is stored by the target's
  * mount path and re-resolved wherever the file is loaded (ExportImage). ReadSnapshots merges several files
@@ -118,15 +126,18 @@ struct SSnapshotWriteStats
 };
 
 // The file's bytes for an image (EncodeSnapshot) - deterministic: one image gives one byte sequence.
-[[nodiscard]] FRT_CORE_API std::vector<uint8> EncodeSnapshot (const SRegistryImage& Image, const SGuid& ProjectId, uint64 JournalBase);
+[[nodiscard]] FRT_CORE_API std::vector<uint8> EncodeSnapshot (const SRegistryImage& Image, const SGuid& ProjectId, uint64 JournalBase,
+	uint64 RulesBasis);
 
 /**
  * Writes the given mounts of a view (every mount when empty) to Path through WriteFileAtomic, with
- * JournalBase = the view's revision. Callable on any thread (it only reads the view). The caller then starts
- * the snapshot's journal again at that revision (CRegistryJournal::Restart), on the store's owner thread.
+ * JournalBase = the view's revision. RulesBasis: CRulesEngine::GetRulesBasis of the engine the records were
+ * evaluated with (false for Engine.snapshot, true for AssetRegistry.snapshot); 0 writes "unknown". Callable on
+ * any thread (it only reads the view). The caller then starts the snapshot's journal again at that revision
+ * (CRegistryJournal::Restart), on the store's owner thread.
  */
 FRT_CORE_API bool WriteSnapshot (const CRegistryView& View, std::span<const MountId> Mounts, const std::filesystem::path& Path,
-	const SGuid& ProjectId, FString* OutError = nullptr, SSnapshotWriteStats* OutStats = nullptr);
+	const SGuid& ProjectId, uint64 RulesBasis, FString* OutError = nullptr, SSnapshotWriteStats* OutStats = nullptr);
 
 
 // ---------------- Loading ----------------
@@ -136,12 +147,15 @@ FRT_CORE_API bool WriteSnapshot (const CRegistryView& View, std::span<const Moun
  * no <root>/Local/Assets/ProjectId yet, or an unreadable one - passes an invalid id and loads no snapshot of
  * that root (a cold start): a file it cannot tie to the root may be another project's or checkout's.
  * bAnyProject takes the file whatever project it names: tests and tools inspecting a given file only.
+ * RulesBasis: this process's CRulesEngine::GetRulesBasis for the file (see the header comment); a file that
+ * stored another one loads without its RULEFILES rows. 0: not compared (tools and tests inspecting a file).
  */
 struct SSnapshotSource
 {
 	std::filesystem::path Path;   // the snapshot; its journal is GetJournalPath(Path)
 	SGuid ProjectId;
 	bool bAnyProject = false;
+	uint64 RulesBasis = 0u;
 };
 
 enum class ESnapshotFileState : uint8
@@ -159,6 +173,7 @@ struct SSnapshotFileReport
 	FString Message;                                   // why it was not loaded, or what was dropped
 	uint64 Bytes = 0u;
 	uint64 JournalBase = 0u;
+	uint64 RulesBasis = 0u;                            // as the header stores it (0 = unknown)
 	std::vector<FString> Mounts;                       // mounts loaded from this file
 	std::vector<FString> SkippedMounts;                // in the file, not loaded (see Message)
 	std::vector<ESnapshotSection> DroppedSections;     // bad, or lost with a section they depend on
@@ -166,6 +181,7 @@ struct SSnapshotFileReport
 	uint32 Records = 0u;
 	uint32 StaleRecords = 0u;                          // flagged StaleTags with AnalyzeStamp 0 (see the header comment)
 	bool bRuleFilesDropped = false;                    // no RulesHash survived: the mounts re-evaluate every record
+	bool bRulesBasisChanged = false;                   // why, when the cause was SSnapshotSource::RulesBasis
 
 	// The journal beside the snapshot.
 	bool bJournalFound = false;

@@ -42,7 +42,7 @@ protected:
 		Original.Commit(MakeContent());
 		Path = Dir / "AssetRegistry.snapshot";
 		FString error;
-		ASSERT_TRUE(WriteSnapshot(Original.Live(), {}, Path, ProjectId, &error)) << error.CStr();
+		ASSERT_TRUE(WriteSnapshot(Original.Live(), {}, Path, ProjectId, 0u, &error)) << error.CStr();
 	}
 
 	CRegistryStore Original;
@@ -92,12 +92,12 @@ TEST_F(SnapshotRoundTripTest, AStoreLoadedFromASnapshotWritesTheSameBytes)
 	CRegistryStore loaded;
 	ASSERT_TRUE(Load(loaded, Path, ProjectId).AnyLoaded());
 	const std::filesystem::path again = Dir / "Again.snapshot";
-	ASSERT_TRUE(WriteSnapshot(loaded.Live(), {}, again, ProjectId));
+	ASSERT_TRUE(WriteSnapshot(loaded.Live(), {}, again, ProjectId, 0u));
 	EXPECT_EQ(ReadBytes(again), ReadBytes(Path));
 
 	// One image gives one byte sequence.
 	const SRegistryImage image = Original.Live().ExportImage({});
-	EXPECT_EQ(EncodeSnapshot(image, ProjectId, 7u), EncodeSnapshot(image, ProjectId, 7u));
+	EXPECT_EQ(EncodeSnapshot(image, ProjectId, 7u, 0u), EncodeSnapshot(image, ProjectId, 7u, 0u));
 }
 
 TEST_F(SnapshotTest, EngineAndProjectFilesLoadedTogetherEqualOneFreshCommit)
@@ -108,8 +108,8 @@ TEST_F(SnapshotTest, EngineAndProjectFilesLoadedTogetherEqualOneFreshCommit)
 	const std::filesystem::path project = Dir / "AssetRegistry.snapshot";
 	const SGuid engineId = SGuid::NewRandom();
 	const SGuid projectId = SGuid::NewRandom();
-	ASSERT_TRUE(WriteSnapshot(original.Live(), EngineMounts, engine, engineId));
-	ASSERT_TRUE(WriteSnapshot(original.Live(), ProjectMounts, project, projectId));
+	ASSERT_TRUE(WriteSnapshot(original.Live(), EngineMounts, engine, engineId, 0u));
+	ASSERT_TRUE(WriteSnapshot(original.Live(), ProjectMounts, project, projectId, 0u));
 
 	// In either order: the project's edges into /Engine resolve once both are in.
 	for (const bool bEngineFirst : { true, false })
@@ -146,8 +146,8 @@ TEST_F(SnapshotTest, EngineAndProjectFilesLoadedTogetherEqualOneFreshCommit)
 	// An edge by id into /Engine is stored by the target's mount path and resolves once both files are in.
 	CRegistryStore withId;
 	withId.Commit(MakeContent(true));
-	ASSERT_TRUE(WriteSnapshot(withId.Live(), EngineMounts, engine, engineId));
-	ASSERT_TRUE(WriteSnapshot(withId.Live(), ProjectMounts, project, projectId));
+	ASSERT_TRUE(WriteSnapshot(withId.Live(), EngineMounts, engine, engineId, 0u));
+	ASSERT_TRUE(WriteSnapshot(withId.Live(), ProjectMounts, project, projectId, 0u));
 	CRegistryStore merged;
 	const SSnapshotSource sources[] = { SSnapshotSource { project, projectId }, SSnapshotSource { engine, engineId } };
 	ASSERT_TRUE(LoadSnapshots(merged, sources).AnyLoaded());
@@ -165,7 +165,7 @@ TEST_F(SnapshotTest, MountsAreRemappedByNameToThisProcesssIds)
 	CRegistryStore original;
 	original.Commit(MakeContent());
 	const std::filesystem::path project = Dir / "AssetRegistry.snapshot";
-	ASSERT_TRUE(WriteSnapshot(original.Live(), ProjectMounts, project, SGuid {}));
+	ASSERT_TRUE(WriteSnapshot(original.Live(), ProjectMounts, project, SGuid {}, 0u));
 
 	// Another plugin sorts before Trees now: Trees gets id 3.
 	{
@@ -225,7 +225,7 @@ TEST_F(SnapshotRoundTripTest, AFileWithoutItsStructureIsNotUsed)
 {
 	for (const ESnapshotSection section : { ESnapshotSection::Mounts, ESnapshotSection::Names, ESnapshotSection::Folders, ESnapshotSection::Files })
 	{
-		ASSERT_TRUE(WriteSnapshot(Original.Live(), {}, Path, ProjectId));
+		ASSERT_TRUE(WriteSnapshot(Original.Live(), {}, Path, ProjectId, 0u));
 		DamageSection(Path, section);
 		CRegistryStore loaded;
 		const SSnapshotLoadResult result = Load(loaded, Path, ProjectId);
@@ -282,7 +282,7 @@ TEST_F(SnapshotRoundTripTest, LostAnalyzeOutputsMakeOnlyTheirRecordsStale)
 	}
 	// DEPS: every record with edges or companions is stale; the companion is a plain file until re-analyzed.
 	{
-		ASSERT_TRUE(WriteSnapshot(Original.Live(), {}, Path, ProjectId));
+		ASSERT_TRUE(WriteSnapshot(Original.Live(), {}, Path, ProjectId, 0u));
 		DamageSection(Path, ESnapshotSection::Deps);
 		CRegistryStore loaded;
 		const SSnapshotFileReport report = Load(loaded, Path, ProjectId).Files[0];
@@ -300,7 +300,7 @@ TEST_F(SnapshotRoundTripTest, LostAnalyzeOutputsMakeOnlyTheirRecordsStale)
 	}
 	// TYPES: every type index is meaningless; every record is frt.Unknown and analyzed again.
 	{
-		ASSERT_TRUE(WriteSnapshot(Original.Live(), {}, Path, ProjectId));
+		ASSERT_TRUE(WriteSnapshot(Original.Live(), {}, Path, ProjectId, 0u));
 		DamageSection(Path, ESnapshotSection::Types);
 		CRegistryStore loaded;
 		const SSnapshotFileReport report = Load(loaded, Path, ProjectId).Files[0];
@@ -331,7 +331,7 @@ TEST_F(SnapshotRoundTripTest, LostRuleOutputsDropTheRuleHashes)
 	}
 	// RULEFILES alone: the hashes go, the labels stay.
 	{
-		ASSERT_TRUE(WriteSnapshot(Original.Live(), {}, Path, ProjectId));
+		ASSERT_TRUE(WriteSnapshot(Original.Live(), {}, Path, ProjectId, 0u));
 		DamageSection(Path, ESnapshotSection::RuleFiles);
 		CRegistryStore loaded;
 		const SSnapshotFileReport report = Load(loaded, Path, ProjectId).Files[0];
@@ -344,7 +344,7 @@ TEST_F(SnapshotRoundTripTest, LostRuleOutputsDropTheRuleHashes)
 	}
 	// PROBLEMS: Analyze and Rules problems are lost: every record is analyzed and re-evaluated again.
 	{
-		ASSERT_TRUE(WriteSnapshot(Original.Live(), {}, Path, ProjectId));
+		ASSERT_TRUE(WriteSnapshot(Original.Live(), {}, Path, ProjectId, 0u));
 		DamageSection(Path, ESnapshotSection::Problems);
 		CRegistryStore loaded;
 		const SSnapshotFileReport report = Load(loaded, Path, ProjectId).Files[0];
@@ -357,7 +357,7 @@ TEST_F(SnapshotRoundTripTest, LostRuleOutputsDropTheRuleHashes)
 	}
 	// STRINGS: edges, companions and problems go with it.
 	{
-		ASSERT_TRUE(WriteSnapshot(Original.Live(), {}, Path, ProjectId));
+		ASSERT_TRUE(WriteSnapshot(Original.Live(), {}, Path, ProjectId, 0u));
 		DamageSection(Path, ESnapshotSection::Strings);
 		CRegistryStore loaded;
 		const SSnapshotFileReport report = Load(loaded, Path, ProjectId).Files[0];
@@ -372,7 +372,7 @@ TEST_F(SnapshotRoundTripTest, LostRuleOutputsDropTheRuleHashes)
 	}
 	// The sections M3 writes empty are not read: damage there costs nothing.
 	{
-		ASSERT_TRUE(WriteSnapshot(Original.Live(), {}, Path, ProjectId));
+		ASSERT_TRUE(WriteSnapshot(Original.Live(), {}, Path, ProjectId, 0u));
 		DamageSection(Path, ESnapshotSection::Metas);
 		CRegistryStore loaded;
 		const SSnapshotFileReport report = Load(loaded, Path, ProjectId).Files[0];
@@ -450,8 +450,8 @@ TEST_F(SnapshotTest, ADamagedFileLeavesTheOtherFileIntact)
 	original.Commit(MakeContent());
 	const std::filesystem::path engine = Dir / "Engine.snapshot";
 	const std::filesystem::path project = Dir / "AssetRegistry.snapshot";
-	ASSERT_TRUE(WriteSnapshot(original.Live(), EngineMounts, engine, SGuid {}));
-	ASSERT_TRUE(WriteSnapshot(original.Live(), ProjectMounts, project, SGuid {}));
+	ASSERT_TRUE(WriteSnapshot(original.Live(), EngineMounts, engine, SGuid {}, 0u));
+	ASSERT_TRUE(WriteSnapshot(original.Live(), ProjectMounts, project, SGuid {}, 0u));
 	const SSnapshotSource sources[] = { SSnapshotSource { engine, SGuid {}, true }, SSnapshotSource { project, SGuid {}, true } };
 
 	DamageSection(engine, ESnapshotSection::Files);
@@ -467,7 +467,7 @@ TEST_F(SnapshotTest, ADamagedFileLeavesTheOtherFileIntact)
 		EXPECT_EQ(result.Files[1].StaleRecords, 0u);
 	}
 
-	ASSERT_TRUE(WriteSnapshot(original.Live(), EngineMounts, engine, SGuid {}));
+	ASSERT_TRUE(WriteSnapshot(original.Live(), EngineMounts, engine, SGuid {}, 0u));
 	DamageSection(project, ESnapshotSection::SubEntry);
 	{
 		CRegistryStore merged;
@@ -497,7 +497,7 @@ TEST_F(SnapshotTest, ARecordOfATypeThisBuildDoesNotKnowWaitsSchemaless)
 	ASSERT_NE(type, image.TypeNames.end());
 	*type = "Game.Weapon";
 	const std::filesystem::path path = Dir / "AssetRegistry.snapshot";
-	WriteBytes(path, EncodeSnapshot(image, SGuid {}, 5u));
+	WriteBytes(path, EncodeSnapshot(image, SGuid {}, 5u, 0u));
 
 	CRegistryStore loaded;
 	const SSnapshotFileReport report = Load(loaded, path).Files[0];
@@ -522,7 +522,7 @@ TEST_F(SnapshotTest, AFileOfAnotherProjectFormatOrKindIsNotTaken)
 	original.Commit(MakeContent());
 	const std::filesystem::path path = Dir / "AssetRegistry.snapshot";
 	const SGuid writer = SGuid::NewRandom();
-	ASSERT_TRUE(WriteSnapshot(original.Live(), {}, path, writer));
+	ASSERT_TRUE(WriteSnapshot(original.Live(), {}, path, writer, 0u));
 
 	const auto loadState = [&] (const SGuid& Expected, bool bAnyProject = false)
 	{

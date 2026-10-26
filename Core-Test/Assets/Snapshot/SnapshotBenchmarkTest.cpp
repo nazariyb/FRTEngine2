@@ -103,7 +103,7 @@ void MeasureSnapshot (const std::filesystem::path& Dir, uint32 Assets, uint32 Ro
 	{
 		SSnapshotWriteStats stats;
 		FString error;
-		ASSERT_TRUE(WriteSnapshot(*store.Acquire(), {}, path, projectId, &error, &stats)) << error.CStr();
+		ASSERT_TRUE(WriteSnapshot(*store.Acquire(), {}, path, projectId, 0u, &error, &stats)) << error.CStr();
 		if (stats.ExportMs + stats.EncodeMs < write.ExportMs + write.EncodeMs)
 		{
 			write = stats;

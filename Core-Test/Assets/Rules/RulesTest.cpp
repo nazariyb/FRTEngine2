@@ -831,8 +831,9 @@ TEST(RulesEngine, MountFilesLoadOnceReportTheirProblemsAtTheMountRootAndReloadOn
 	EXPECT_EQ(diagnostics[0].Subject, "/Project");
 	EXPECT_EQ(diagnostics[0].File, "Config/Assets.yml");
 	EXPECT_EQ(diagnostics[0].Line, 3u);
+	// The root's own scope reports it too (OpenScope of a mount root leaves that to the root's EnterFolder).
 	std::vector<SDiagnostic> rootDiagnostics;
-	const auto root = engine.OpenScope("/Project", rootDiagnostics);
+	const auto root = engine.OpenFolderScope("/Project", rootDiagnostics);
 	EXPECT_EQ(CountCode(rootDiagnostics, Rule001), 1u);
 	std::vector<SDiagnostic> subtreeDiagnostics;
 	engine.OpenScope("/Project/Art", subtreeDiagnostics);
@@ -845,7 +846,7 @@ TEST(RulesEngine, MountFilesLoadOnceReportTheirProblemsAtTheMountRootAndReloadOn
 	engine.LoadMountRules(nullptr, &changed);
 	EXPECT_EQ(changed, (std::vector<FString> { "Engine", "Project" }));
 	std::vector<SDiagnostic> reloadDiagnostics;
-	const auto reloaded = engine.OpenScope("/Project", reloadDiagnostics);
+	const auto reloaded = engine.OpenFolderScope("/Project", reloadDiagnostics);
 	EXPECT_EQ(CountCode(reloadDiagnostics, Rule001), 1u) << "the project file is still broken";
 	EXPECT_EQ(FindSetting(engine.ResolveFile(*reloaded, "/Project/A.png"), "ColorSpace"), "Srgb") << "the importer default";
 	EXPECT_TRUE(FindProvenance(engine.ResolveFile(*reloaded, "/Project/A.png"), "ColorSpace")->File.IsEmpty());
@@ -1086,6 +1087,85 @@ TEST(RulesEngine, TheSemanticsHashCoversTheTargetAndIsStable)
 	fixture.Tree.WriteProjectRules("FormatVersion: 1\nRules: [ { Match: \"**\", Cook: Never } ]\n");
 	none.LoadMountRules();
 	EXPECT_EQ(none.GetSemanticsHash(), again.GetSemanticsHash()) << "rule texts are RulesHash's, not this hash's";
+}
+
+TEST(RulesEngine, EveryResultForAMountRootHoldsBothOfItsRuleFilesDiagnostics)
+{
+	// The mount's Config/Assets.yml and the content root's Assets.yml both report under "/Project", one (Subject,
+	// Rules) list the registry replaces whole: whichever entry point reports for the root must return both files'
+	// problems, or a watcher event for one file erases the other's RULE001.
+	SEngineFixture fixture("MountRootUnion");
+	fixture.Tree.WriteProjectRules("FormatVersion: 1\nRulez: []\n");
+	fixture.Tree.WriteProjectContent("Assets.yml", "FormatVersion: 1\nScann: {}\n");
+	CRulesEngine& engine = fixture.Start();
+	const auto countFiles = [] (const std::vector<SDiagnostic>& Diagnostics, FStringView File)
+	{
+		return static_cast<uint32>(std::count_if(Diagnostics.begin(), Diagnostics.end(), [&] (const SDiagnostic& D)
+		{
+			return D.Code == Rule001 && D.Subject == "/Project" && D.File == File;
+		}));
+	};
+
+	// The scan protocol: OpenScope of the root reports nothing for it, the root's EnterFolder both files.
+	std::vector<SDiagnostic> opened;
+	const std::shared_ptr<const SScanScope> above = engine.OpenScope("/Project", opened);
+	EXPECT_EQ(countFiles(opened, "Config/Assets.yml"), 0u) << DescribeDiagnostics(opened).CStr();
+	uint64 hash = 0u;
+	std::vector<SDiagnostic> entered;
+	const std::filesystem::path rootFile = fixture.Tree.Tree.ProjectContent() / "Assets.yml";
+	(void)engine.EnterFolder(above, "/Project", &rootFile, hash, entered);
+	EXPECT_EQ(countFiles(entered, "Config/Assets.yml"), 1u) << DescribeDiagnostics(entered).CStr();
+	EXPECT_EQ(countFiles(entered, "Content/Assets.yml"), 1u) << DescribeDiagnostics(entered).CStr();
+
+	// A watcher edit that fixes the root's Assets.yml: the mount file's RULE001 is still in the list.
+	std::vector<SDiagnostic> fixed;
+	(void)engine.EnterFolderFromText(above, "/Project", FStringView("FormatVersion: 1\n"), hash, fixed);
+	EXPECT_EQ(countFiles(fixed, "Config/Assets.yml"), 1u) << DescribeDiagnostics(fixed).CStr();
+	EXPECT_EQ(countFiles(fixed, "Content/Assets.yml"), 0u);
+	std::vector<SDiagnostic> cached;
+	(void)engine.EnterFolderCached(above, "/Project", hash, cached);
+	EXPECT_EQ(cached, fixed);
+	std::vector<SDiagnostic> folderScope;
+	(void)engine.OpenFolderScope("/Project", folderScope);
+	EXPECT_EQ(countFiles(folderScope, "Config/Assets.yml"), 1u) << DescribeDiagnostics(folderScope).CStr();
+
+	// A mount file event: LoadMountRules returns the mount file's problems with the root file's last read.
+	(void)engine.EnterFolderFromText(above, "/Project", FStringView("FormatVersion: 1\nScann: {}\n"), hash, fixed);
+	fixture.Tree.WriteProjectRules("FormatVersion: 1\n");
+	std::vector<SDiagnostic> loaded;
+	engine.LoadMountRules(&loaded);
+	EXPECT_EQ(countFiles(loaded, "Config/Assets.yml"), 0u) << DescribeDiagnostics(loaded).CStr();
+	EXPECT_EQ(countFiles(loaded, "Content/Assets.yml"), 1u) << DescribeDiagnostics(loaded).CStr();
+
+	// A folder below the root gets neither.
+	std::vector<SDiagnostic> below;
+	(void)engine.EnterFolderFromText(above, "/Project/Art", std::nullopt, hash, below);
+	EXPECT_TRUE(below.empty()) << DescribeDiagnostics(below).CStr();
+}
+
+TEST(RulesEngine, TheRulesBasisOfAProjectSnapshotFollowsTheEngineFile)
+{
+	// /Project and the plugins fall back to the engine's file, whose RULEFILES row only Engine.snapshot holds: the
+	// basis of AssetRegistry.snapshot covers its RulesHash, Engine.snapshot's basis is the semantics hash alone.
+	SEngineFixture fixture("RulesBasis");
+	fixture.Tree.WriteEngineRules(EngineDefaults);
+	CRulesEngine& engine = fixture.Start();
+	const uint64 engineBasis = engine.GetRulesBasis(false);
+	const uint64 projectBasis = engine.GetRulesBasis(true);
+	EXPECT_EQ(engineBasis, engine.GetSemanticsHash());
+	EXPECT_NE(projectBasis, 0u);
+	EXPECT_NE(projectBasis, engineBasis);
+	const CRulesEngine d3d12(fixture.Mounts, SRulesOptions { FString("Win64-D3D12") });
+	EXPECT_NE(d3d12.GetRulesBasis(true), projectBasis) << "the semantics hash is part of it";
+
+	fixture.Tree.WriteProjectRules("FormatVersion: 1\nRules: [ { Match: \"**\", Cook: Never } ]\n");
+	engine.LoadMountRules();
+	EXPECT_EQ(engine.GetRulesBasis(true), projectBasis) << "the project's own file is its RULEFILES row's business";
+
+	fixture.Tree.WriteEngineRules(FString(EngineDefaults) + "  - { Match: \"**/*.bin\", Cook: Never }\n");
+	engine.LoadMountRules();
+	EXPECT_NE(engine.GetRulesBasis(true), projectBasis);
+	EXPECT_EQ(engine.GetRulesBasis(false), engineBasis);
 }
 
 TEST(RulesEngine, ASelectorRulesPresetWithoutAnalyzeRelevantFieldsBindsCleanly)

@@ -2400,7 +2400,27 @@ void CRulesEngine::LoadMountRulesLocked (std::vector<SDiagnostic>* OutDiagnostic
 	{
 		if (OutDiagnostics != nullptr)
 		{
+			// The mount root's complete Rules list: the mount file's, then the content root's Assets.yml as last read,
+			// bound against the new chain (a preset it names may have come or gone with the mount file).
 			OutDiagnostics->insert(OutDiagnostics->end(), diagnostics[i].begin(), diagnostics[i].end());
+			SFileState root;
+			bool bRootRead = false;
+			{
+				std::scoped_lock lock(Mutex);
+				if (const auto found = FolderFiles.find(mounts[i].GetRootMountPath()); found != FolderFiles.end())
+				{
+					root = found->second;
+					bRootRead = true;
+				}
+			}
+			if (bRootRead)
+			{
+				OutDiagnostics->insert(OutDiagnostics->end(), root.Diagnostics.begin(), root.Diagnostics.end());
+				if (root.LastGood != nullptr)
+				{
+					(void)MakeScope(*scopes[i], root.LastGood, OutDiagnostics);
+				}
+			}
 		}
 		const uint64 newHash = states[i].LastGood != nullptr ? states[i].LastGood->GetRulesHash() : 0u;
 		const bool bChanged = bFirstLoad || newHash != oldHashes[i] || (static_cast<int32>(i) != engineIndex && newEngineHash != oldEngineHash);
@@ -2445,6 +2465,23 @@ uint64 CRulesEngine::GetMountRulesHash (FStringView MountName) const
 	return state.LastGood != nullptr ? state.LastGood->GetRulesHash() : 0u;
 }
 
+uint64 CRulesEngine::GetRulesBasis (bool bWithEngineFallback) const
+{
+	if (!bWithEngineFallback)
+	{
+		return SemanticsHash;
+	}
+	uint8 bytes[16];
+	const uint64 engineHash = GetMountRulesHash("Engine");
+	for (uint32 i = 0u; i < 8u; ++i)
+	{
+		bytes[i] = static_cast<uint8>(SemanticsHash >> (8u * i));
+		bytes[8u + i] = static_cast<uint8>(engineHash >> (8u * i));
+	}
+	const uint64 basis = hash::Xxh3_64(std::span<const uint8>(bytes));
+	return basis != 0u ? basis : 1u;
+}
+
 std::shared_ptr<const SScanScope> CRulesEngine::OpenScope (FStringView FolderMountPath, std::vector<SDiagnostic>& OutDiagnostics) const
 {
 	return OpenScopeImpl(FolderMountPath, false, OutDiagnostics);
@@ -2479,11 +2516,6 @@ std::shared_ptr<const SScanScope> CRulesEngine::OpenScopeImpl (FStringView Folde
 	{
 		std::scoped_lock lock(Mutex);
 		mountScope = MountScopes[static_cast<uint32>(index)];
-		if (relative.IsEmpty())
-		{
-			const std::vector<SDiagnostic>& diagnostics = MountDiagnostics[static_cast<uint32>(index)];
-			OutDiagnostics.insert(OutDiagnostics.end(), diagnostics.begin(), diagnostics.end());
-		}
 	}
 	if (relative.IsEmpty() && !bIncludeSelf)
 	{
@@ -2576,6 +2608,10 @@ std::shared_ptr<const SScanScope> CRulesEngine::BindFolder (const std::shared_pt
 {
 	frt_assert(Parent != nullptr);
 	const SScope& parent = AsScope(*Parent);
+	if (OutDiagnostics != nullptr)
+	{
+		AppendMountRootDiagnostics(FolderMountPath, *OutDiagnostics);
+	}
 	if (!Text.has_value() && !bReadFailed)
 	{
 		std::scoped_lock lock(Mutex);
@@ -2642,6 +2678,7 @@ std::shared_ptr<const SScanScope> CRulesEngine::EnterFolderCached (const std::sh
 	uint64& OutRulesHash, std::vector<SDiagnostic>& OutDiagnostics) const
 {
 	frt_assert(Parent != nullptr);
+	AppendMountRootDiagnostics(FolderMountPath, OutDiagnostics);
 	SFileState state;
 	{
 		std::scoped_lock lock(Mutex);
@@ -2661,6 +2698,25 @@ std::shared_ptr<const SScanScope> CRulesEngine::EnterFolderCached (const std::sh
 	}
 	OutRulesHash = state.LastGood->GetRulesHash();
 	return MakeScope(AsScope(*Parent), state.LastGood, &OutDiagnostics);
+}
+
+void CRulesEngine::AppendMountRootDiagnostics (FStringView FolderMountPath, std::vector<SDiagnostic>& OutDiagnostics) const
+{
+	FStringView mountName;
+	FStringView relative;
+	if (!SplitMountPath(FolderMountPath, mountName, relative) || !relative.IsEmpty())
+	{
+		return;
+	}
+	EnsureLoaded();
+	const int32 index = FindMountIndex(mountName);
+	if (index < 0)
+	{
+		return;
+	}
+	std::scoped_lock lock(Mutex);
+	const std::vector<SDiagnostic>& diagnostics = MountDiagnostics[static_cast<uint32>(index)];
+	OutDiagnostics.insert(OutDiagnostics.end(), diagnostics.begin(), diagnostics.end());
 }
 
 void CRulesEngine::ForgetFolders (FStringView SubtreeMountPath)

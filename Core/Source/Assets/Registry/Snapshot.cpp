@@ -411,12 +411,13 @@ private:
 		uint64 sectionCount = 0u;
 		SGuid projectId;
 		uint64 journalBase = 0u;
+		uint64 rulesBasis = 0u;
 		if (Bytes.size() < SnapshotHeaderBytes || !reader.Expect(SnapshotMagic))
 		{
 			return Reject("not a registry snapshot");
 		}
 		if (!reader.ReadLittleEndian(version, 4u) || !reader.ReadLittleEndian(sectionCount, 4u) || !ReadGuid(reader, projectId)
-			|| !ReadU64(reader, journalBase))
+			|| !ReadU64(reader, journalBase) || !ReadU64(reader, rulesBasis))
 		{
 			return Reject("its header is cut short");
 		}
@@ -433,6 +434,7 @@ private:
 			return Reject(FString::Format("it belongs to project {}, not {}", projectId.ToString(), ExpectedProjectId.ToString()));
 		}
 		Report.JournalBase = journalBase;
+		Report.RulesBasis = rulesBasis;
 		ProjectId = projectId;
 		if (sectionCount > (Bytes.size() - SnapshotHeaderBytes) / SnapshotSectionEntryBytes)
 		{
@@ -735,7 +737,7 @@ private:
 			image.Problems.resize(count);
 			for (SImageProblems& problems : image.Problems)
 			{
-				if (!ReadU32Varint(Reader, problems.Subject) || !ReadEnum(Reader, EProblemSource::Registry, problems.Source)
+				if (!ReadU32Varint(Reader, problems.Subject) || !ReadEnum(Reader, EProblemSource::Unclaimed, problems.Source)
 					|| !ReadDiagnostics(Reader, problems.Diagnostics) || problems.Subject >= image.Strings.size())
 				{
 					return false;
@@ -1320,7 +1322,7 @@ std::filesystem::path GetJournalPath (const std::filesystem::path& SnapshotPath)
 
 // ---------------- Writing ----------------
 
-std::vector<uint8> EncodeSnapshot (const SRegistryImage& Image, const SGuid& ProjectId, uint64 JournalBase)
+std::vector<uint8> EncodeSnapshot (const SRegistryImage& Image, const SGuid& ProjectId, uint64 JournalBase, uint64 RulesBasis)
 {
 	FRT_CPU_SCOPE("Assets.Snapshot.Encode");
 	std::array<std::vector<uint8>, SectionOrder.size()> sections;
@@ -1338,7 +1340,7 @@ std::vector<uint8> EncodeSnapshot (const SRegistryImage& Image, const SGuid& Pro
 	AppendLittleEndian(bytes, SectionOrder.size(), 4u);
 	AppendGuid(bytes, ProjectId);
 	AppendLittleEndian(bytes, JournalBase, 8u);
-	AppendLittleEndian(bytes, 0u, 8u);   // reserved
+	AppendLittleEndian(bytes, RulesBasis, 8u);
 	const size_t table = bytes.size();
 	bytes.resize(AlignUp16(table + SectionOrder.size() * SnapshotSectionEntryBytes), 0u);
 	for (size_t i = 0u; i < SectionOrder.size(); ++i)
@@ -1357,7 +1359,7 @@ std::vector<uint8> EncodeSnapshot (const SRegistryImage& Image, const SGuid& Pro
 }
 
 bool WriteSnapshot (const CRegistryView& View, std::span<const MountId> Mounts, const std::filesystem::path& Path, const SGuid& ProjectId,
-	FString* OutError, SSnapshotWriteStats* OutStats)
+	uint64 RulesBasis, FString* OutError, SSnapshotWriteStats* OutStats)
 {
 	FRT_CPU_SCOPE("Assets.Snapshot.Write");
 	SSnapshotWriteStats stats;
@@ -1368,7 +1370,7 @@ bool WriteSnapshot (const CRegistryView& View, std::span<const MountId> Mounts, 
 	stats.JournalBase = View.GetRevision();
 
 	start = platform::ReadTimestamp();
-	const std::vector<uint8> bytes = EncodeSnapshot(image, ProjectId, stats.JournalBase);
+	const std::vector<uint8> bytes = EncodeSnapshot(image, ProjectId, stats.JournalBase, RulesBasis);
 	stats.EncodeMs = platform::TimestampToMilliseconds(platform::ReadTimestamp() - start);
 	stats.Bytes = bytes.size();
 
@@ -1420,6 +1422,19 @@ SLoadedSnapshots ReadSnapshots (std::span<const SSnapshotSource> Sources, std::s
 		{
 			loaded.DecodeMs += platform::TimestampToMilliseconds(platform::ReadTimestamp() - start);
 			continue;
+		}
+
+		// Records evaluated against other rules semantics, or another engine fallback file, than this process
+		// has: as if RULEFILES were lost, so the file's mounts re-evaluate (Snapshot.h).
+		if (source.RulesBasis != 0u && report.RulesBasis != source.RulesBasis)
+		{
+			image.RuleFiles.clear();
+			report.bRulesBasisChanged = true;
+			if (!report.bRuleFilesDropped)
+			{
+				report.bRuleFilesDropped = true;
+				report.DroppedSections.push_back(ESnapshotSection::RuleFiles);
+			}
 		}
 
 		// Mounts by name: this process's ids, or the file's own when none are given.

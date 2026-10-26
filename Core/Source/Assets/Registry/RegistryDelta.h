@@ -38,9 +38,15 @@
  *	    Rules    - RULE001 (always, also when the scan's oracle raised it) and the rules engine's other
  *	               diagnostics, Subject = the folder of the rule file. A mount root holds two rule files
  *	               (the mount's Config/Assets.yml and the content root's Assets.yml) under one Subject: the
- *	               producer sends both files' diagnostics in that one list (File tells them apart);
+ *	               producer sends both files' diagnostics in that one list (File tells them apart); every
+ *	               CRulesEngine entry point that reports for a mount root returns both (Rules.h, LoadMountRules);
+ *	    Unclaimed - RULE002 (ReportUnclaimedFiles), Subject = the folder. Its own source because it is computed
+ *	               at another time than RULE001 (after Analyze and commit, once companions are known): the
+ *	               producer clears and sets it only when it recomputes a folder's unclaimed files, so neither
+ *	               list erases the other;
  *	    Analyze  - an importer's diagnostics for its file (Subject: the file, or file#label);
- *	    Registry - what the store itself finds at commit (REF006, PATH001 on edges, contract violations).
+ *	    Registry - what the store itself finds at commit (REF006, PATH001 on edges, contract violations). Their
+ *	               severities are fixed: a rule file's Validation: overrides do not reach them in M3.
  *	- An edge with an invalid Target resolves at commit by TargetPath, through the record path index under
  *	  the portable fold (§5.2). No match: the edge is kept with EDepFlags::Unresolved against an unresolved
  *	  slot keyed by the folded path (or by the GUID for a Target id nothing has), and is rebound - reverse
@@ -88,7 +94,7 @@ struct SRecordUpsert     // replaces the whole record of FileMountPath: tags, la
 	std::vector<STagDecl> Tags; std::vector<SSubEntryDecl> SubEntries; std::vector<SEdgeDecl> Edges;
 	std::vector<FString> Companions;                 // mount paths this record's importer reads besides the file (glTF .bin)
 };
-enum class EProblemSource : uint8 { Scan, Rules, Analyze, Registry };
+enum class EProblemSource : uint8 { Scan, Rules, Analyze, Registry, Unclaimed };   // values are stored: append only
 struct SProblemsSet { FString Subject; EProblemSource Source = EProblemSource::Scan; std::vector<SDiagnostic> Diagnostics; };  // replaces that pair's list; empty clears
 // Clears every list of Source whose Subject equals MountPath or continues it with '/' or '#' (byte-exact).
 struct SProblemsClear { FString MountPath; EProblemSource Source = EProblemSource::Scan; };
@@ -123,4 +129,5 @@ FRT_DECLARE_ENUM_REFLECTION(
 	FRT_ENUM_ENTRY(frt::assets::EProblemSource, Scan),
 	FRT_ENUM_ENTRY(frt::assets::EProblemSource, Rules),
 	FRT_ENUM_ENTRY(frt::assets::EProblemSource, Analyze),
-	FRT_ENUM_ENTRY(frt::assets::EProblemSource, Registry));
+	FRT_ENUM_ENTRY(frt::assets::EProblemSource, Registry),
+	FRT_ENUM_ENTRY(frt::assets::EProblemSource, Unclaimed));
