@@ -3,6 +3,12 @@
 # checkout (core.autocrlf=true, Git for Windows' default) and an LF one would key the same file
 # differently. LF in the index and in every working tree, whatever core.autocrlf says. The
 # engine's own .gitattributes has the same rules.
+#
+# Everything under a content folder is first never converted, so a file of a kind listed nowhere
+# here (a license.txt, a README.md, a .obj beside a model) reaches the scan, its FILES row and the
+# registry dump with the committed bytes; the rules below then make the known text kinds LF.
+Content/** -text
+Plugins/*/Content/** -text
 *.meta text eol=lf
 *.yml text eol=lf
 *.frt text eol=lf
