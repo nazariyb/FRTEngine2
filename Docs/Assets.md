@@ -141,7 +141,7 @@ Errors carry the column of the term at fault.
 
 | File | Holds | Written by |
 |---|---|---|
-| `<engine>/Local/Registry/Engine.snapshot` (+ `Engine.journal`) | `/Engine` | the engine's owner: `FRT.bat assets scan --engine` |
+| `<engine>/Local/Registry/Engine.snapshot` (+ `Engine.journal`) | `/Engine` | the engine's owner: `<engine>/FRT.bat assets scan --engine` |
 | `<project>/Local/Assets/AssetRegistry.snapshot` (+ `.journal`) | `/Project` and its plugins | the project's writer: the editor holding `Owner.lock`, `FRT.bat assets scan` |
 | `<root>/Local/Assets/ProjectId` | a random id, so a copied snapshot is never taken for this root's | the root's writer, once |
 | `<root>/Local/Assets/Rules.cache` | the rule files as JSON lines | the root's writer |
@@ -271,7 +271,9 @@ project outside the engine checkout and with the shaders read from a copy, `-Ren
 
 `AssetTool.exe` is the asset system's command line, a console host beside the editor and the launcher (Debug,
 Development, Development-Headless; Release cannot load a game module, so it never runs tools). `FRT.bat assets <verb>`
-runs it (building it first when it is missing or stale) for the current project, or for `/Engine` with `--engine`.
+runs it (building it first when it is missing or stale) for the current project, or for `/Engine` with `--engine` -
+run from the engine checkout's own `FRT.bat`: a project's `FRT.bat` always names its project, and AssetTool refuses
+`--engine` with a project (exit code 2).
 
 | Verb | Does |
 |---|---|

@@ -1581,8 +1581,10 @@ struct CAssetRegistry::SImpl
 			{
 				return Report.State == ESnapshotFileState::Loaded && Report.Path == GetEngineSnapshotPath(EngineDir);
 			});
-			log::Info(LogCategory, "{} ({} /Engine files analyzed): run FRT.bat assets scan --engine",
-				bLoaded ? "Engine.snapshot is older than /Engine" : "no usable Engine.snapshot", Initial.EngineAnalyzed);
+			// The engine checkout's own FRT.bat: a project's names its project, which --engine refuses.
+			log::Info(LogCategory, "{} ({} /Engine files analyzed): run {} assets scan --engine",
+				bLoaded ? "Engine.snapshot is older than /Engine" : "no usable Engine.snapshot", Initial.EngineAnalyzed,
+				FString::FromPath(EngineDir / "FRT.bat"));
 		}
 		WriteRulesCache();
 	}
