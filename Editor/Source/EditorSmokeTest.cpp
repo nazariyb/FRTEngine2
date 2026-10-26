@@ -4,12 +4,15 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <optional>
 #include <system_error>
 
 #include "EnginePaths.h"
 #include "Timer.h"
 #include "Window.h"
+#include "Assets/AssetRegistry.h"
 #include "Assets/FileWatcherService.h"
+#include "Assets/Registry/RegistryView.h"
 #include "Config/Config.h"
 #include "Containers/String.h"
 #include "Engine/Engine.h"
@@ -466,6 +469,10 @@ void CEditorSmokeTest::Update (CEditor& Editor, CEngine& Engine)
 	static const SStep steps[] =
 	{
 		{ 2u, "camera controller", [] (CEditorSmokeTest& T, CEditor&, CEngine&) { T.CheckCameraController(); } },
+		// The asset registry's initial scan was complete before the first BuildWorld; the Assets panel lists what a
+		// query of it matches (read-only, nothing here writes).
+		{ 3u, "asset registry", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G) { T.CheckAssetRegistry(E, G); } },
+		{ 6u, "Assets panel", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G) { T.CheckAssetsPanel(E, G); } },
 		{ 30u, "docked", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G)
 		{
 			T.Check(E.GetViewport(EViewportTarget::Scene).GetFrame().bVisible, "the Scene view is visible");
@@ -780,6 +787,38 @@ void CEditorSmokeTest::Update (CEditor& Editor, CEngine& Engine)
 		Log(Failures == 0u ? "PASSED" : FString::Format("FAILED: {} check(s)", Failures));
 		Engine.RequestQuit(Failures == 0u ? 0 : 2);
 	}
+}
+
+void CEditorSmokeTest::CheckAssetRegistry (CEditor& Editor, CEngine& Engine)
+{
+	assets::CAssetRegistry* registry = Engine.GetAssetRegistry();
+	if (registry == nullptr)
+	{
+		Log("  skip  no asset registry runs ([Assets] Registry=0)");
+		return;
+	}
+	const assets::SInitialScanReport& report = registry->GetInitialScanReport();
+	Check(registry->IsInitialScanComplete() && report.bComplete, FString::Format("registry: {} records, initial scan {:.0f} ms",
+		registry->Live().GetRecordCount(), report.TotalMs));
+	Check(registry->Exists(assets::SAssetId {}) == assets::EExists::No, "the registry answers Exists with Yes or No once its scan is complete");
+	Editor.GetAssetsPanel().SetQuery(AssetsPanelQuery);
+}
+
+void CEditorSmokeTest::CheckAssetsPanel (CEditor& Editor, CEngine& Engine)
+{
+	assets::CAssetRegistry* registry = Engine.GetAssetRegistry();
+	if (registry == nullptr)
+	{
+		return;
+	}
+	// What the registry itself answers, against what the panel shows (its tab may be behind Stats: its state, not
+	// ImGui's, is checked).
+	std::vector<assets::SRecordId> records;
+	const std::optional<uint32> matched = registry->Live().RunText(AssetsPanelQuery, records);
+	const CAssetsPanel& panel = Editor.GetAssetsPanel();
+	Check(panel.GetError().IsEmpty() && panel.GetShownRevision() == registry->GetRevision(), "the Assets panel ran its query on the current revision");
+	Check(matched.has_value() && panel.GetResultCount() == *matched && panel.GetShownCount() == std::min(*matched, CAssetsPanel::DefaultLimit),
+		FString::Format("the Assets panel shows {} of {} record(s) of {}", panel.GetShownCount(), panel.GetResultCount(), AssetsPanelQuery));
 }
 
 void CEditorSmokeTest::SelectNamedEntity (CEditor& Editor, uint32 Which)

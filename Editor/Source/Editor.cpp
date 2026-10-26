@@ -218,6 +218,7 @@ int CEditor::Run ()
 		// Also under a fullscreen viewport: a docked window left out for a frame gives up its
 		// dock node, and the layout would come back rearranged.
 		Tools.Draw(tools);
+		AssetsPanel.Draw(Engine.GetAssetRegistry());
 
 		// ---- input: routed from what the panels reported ----
 		HandleShortcuts();
@@ -651,6 +652,7 @@ void CEditor::DrawMainMenu ()
 				FocusRequest = i;
 			}
 		}
+		ImGui::MenuItem(CAssetsPanel::Name, nullptr, &AssetsPanel.bOpen);
 		ImGui::Separator();
 		if (ImGui::MenuItem("Maximize Viewport", shortcut(EEditorCommand::ToggleMaximize), MaximizedViewport >= 0))
 		{

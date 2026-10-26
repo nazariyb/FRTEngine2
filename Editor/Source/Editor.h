@@ -10,6 +10,7 @@
 #include "Graphics/Render/Scene/WorldExtraction.h"
 #include "UI/DebugTools.h"
 
+#include "AssetsPanel.h"
 #include "CursorCapture.h"
 #include "EditorCommands.h"
 #include "EditorInput.h"
@@ -97,6 +98,8 @@ public:
 	void FocusViewport (EViewportTarget Viewport);
 	const CGameModule& GetGameModule () const { return Module; }
 	CDebugTools& GetTools () { return Tools; }
+	// The Assets panel: the registry's search and result list (read-only in M3).
+	CAssetsPanel& GetAssetsPanel () { return AssetsPanel; }
 	// Newer builds of the game module loaded so far.
 	uint32 GetGameReloads () const { return GameReloads; }
 	// Looks for a newer build of the game module at the start of the next frame.
@@ -156,6 +159,7 @@ private:
 
 	CEditorLayout Layout;
 	CDebugTools Tools;
+	CAssetsPanel AssetsPanel;
 	graphics::SRenderExtractOptions Extract;
 	CCursorCapture Capture;
 

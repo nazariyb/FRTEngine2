@@ -8,7 +8,7 @@ namespace frt::editor
 /**
  * The editor's dock space: one dock tree over the window's work area (below the main menu and
  * the toolbar), which ImGui saves with the layout. The default arrangement is Unity's: Scene and
- * Game tabbed in the centre, tools on the right, stats along the bottom. It is built when no
+ * Game tabbed in the centre, tools on the right, stats and the Assets panel along the bottom. It is built when no
  * saved layout exists and on Reset Layout.
  */
 class CEditorLayout

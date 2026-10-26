@@ -49,10 +49,17 @@ class CEditor;
  * one of the project's materials is rewritten and must reload (its Version goes up, its new value
  * shows), and one shader include gets a comment and exactly the programs that include it must be
  * rebuilt. They refuse, and fail, when the project or the shaders are in the engine checkout.
+ *
+ * It also checks the asset registry (read-only, as every scripted run is): its initial scan was
+ * complete before the first world was built ("[smoke] ok registry: <n> records, initial scan <ms> ms"),
+ * and the editor's Assets panel shows what the registry answers for type:Texture.
  */
 class CEditorSmokeTest
 {
 public:
+	// What the smoke test asks the Assets panel ("[smoke] ok the Assets panel shows <n> of <m> record(s) of ...").
+	static constexpr FStringLiteral AssetsPanelQuery = "type:Texture";
+
 	explicit CEditorSmokeTest (const config::CConfig& Config);
 
 	// Every frame, after the editor applied its commands.
@@ -63,6 +70,10 @@ public:
 
 private:
 	void Check (bool bPassed, FStringView What);
+	// The registry's initial scan is complete (CEditor::StartUp waited for it); the Assets panel is given a query.
+	void CheckAssetRegistry (CEditor& Editor, CEngine& Engine);
+	// The panel shows what the registry answers for that query.
+	void CheckAssetsPanel (CEditor& Editor, CEngine& Engine);
 	void CheckCameraController ();
 	void TouchGameBuild (CEditor& Editor);
 	void WriteInputOverrides (FStringView Text);
