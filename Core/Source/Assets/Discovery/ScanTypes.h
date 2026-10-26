@@ -43,7 +43,11 @@ public:
 	virtual std::optional<SKnownFile> Find (FStringView FileMountPath) const = 0;   // F3: over an acquired view; tests: a map
 };
 struct SScanScope { virtual ~SScanScope () = default; };          // the oracle's immutable per-folder state (its rule chain)
-struct SFileVerdict { EFileClass Class = EFileClass::Asset; bool bQuiet = false; };  // Asset (claimed), Raw or Unclaimed
+struct SFileVerdict   // Asset (claimed), Raw or Unclaimed
+{
+	EFileClass Class = EFileClass::Asset; bool bQuiet = false;
+	bool operator== (const SFileVerdict&) const = default;
+};
 /**
  * The scan protocol, the same for a mount scan and a subtree rescan (a watcher Rescan or Moved):
  *	1. Scope(above root) = OpenScope(root): every rule that applies strictly above the root - the engine

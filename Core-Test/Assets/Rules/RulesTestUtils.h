@@ -23,12 +23,7 @@
 
 namespace frt::assets
 {
-// ScanTypes.h gives the verdict no comparison; the tests compare and print whole verdicts.
-inline bool operator== (const SFileVerdict& A, const SFileVerdict& B) noexcept
-{
-	return A.Class == B.Class && A.bQuiet == B.bQuiet;
-}
-
+// The tests print whole verdicts (ScanTypes.h compares them).
 inline void PrintTo (const SFileVerdict& Verdict, std::ostream* Out)
 {
 	*Out << "{ " << enum_::ToString(Verdict.Class).GetData() << (Verdict.bQuiet ? ", quiet }" : " }");
