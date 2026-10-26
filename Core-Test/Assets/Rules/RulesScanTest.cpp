@@ -165,6 +165,53 @@ TEST(RulesScan, TheScannerFollowsTheRulesEngineFolderByFolder)
 	EXPECT_EQ(FindFolder(fixed, "/Project/Art")->RulesHash, art->RulesHash);
 }
 
+TEST(RulesScan, VerdictsScopesAndHashesDoNotDependOnTheThreadCount)
+{
+	CRulesTree tree("Threads");
+	tree.WriteProjectRules("FormatVersion: 1\nScan: { Exclude: [ \"**/Skip/**\" ], Quiet: [ \"*.txt\" ] }\n"
+		"Rules: [ { Match: \"**/*.png\", Labels: [ Png ] } ]\n");
+	for (uint32 folder = 0u; folder < 12u; ++folder)
+	{
+		const FString base = FString::Format("Тека {}/Під {}", folder % 3u, folder);
+		if (folder % 4u == 0u)
+		{
+			tree.WriteProjectContent(base + "/Assets.yml", FString::Format("FormatVersion: 1\nRules: [ {{ Match: \"*\", Chunk: {} }} ]\n", folder));
+		}
+		for (uint32 file = 0u; file < 8u; ++file)
+		{
+			constexpr FStringLiteral Extensions[] = { ".png", ".txt", ".gltf", ".xyz" };
+			tree.WriteProjectContent(FString::Format("{}/Файл {}{}", base, file, Extensions[file % 4u]));
+		}
+		tree.WriteProjectContent(base + "/Skip/Hidden.png");
+	}
+	const CMountTable mounts = tree.Resolve();
+	const SMount& project = *mounts.Find("Project");
+
+	const auto describe = [&] (uint32 Threads)
+	{
+		const CRulesEngine engine(mounts);
+		const auto pool = MakePool(Threads);
+		const SScanBatch batch = CMountScanner::ScanBlocking(*pool, project, "/Project", engine, nullptr);
+		FString text;
+		for (const SScanFolder& folder : batch.Folders)
+		{
+			text += FString::Format("{} {:016x}\n", folder.MountPath, folder.RulesHash);
+		}
+		for (const SScanFile& file : batch.Files)
+		{
+			const FString path = MakeChildMountPath(batch.Folders[file.Folder].MountPath, file.Name);
+			const SEffectiveFileSettings settings = engine.ResolveFile(*batch.Folders[file.Folder].Scope, path);
+			text += FString::Format("{} {} {} {} {}\n", path, enum_::ToString(file.Verdict.Class), file.Verdict.bQuiet, settings.Chunk,
+				settings.RuleLabels.size());
+		}
+		return text;
+	};
+	const FString one = describe(1u);
+	EXPECT_FALSE(one.Contains("Skip"));
+	EXPECT_TRUE(one.Contains(" Unclaimed true 0 0"));
+	EXPECT_EQ(describe(4u), one);
+}
+
 TEST(RulesScan, TheCommittedEngineAndTemplateRulesRaiseNoRule001AndNoRule002)
 {
 	const std::filesystem::path engineDir = paths::GetEngineDir();

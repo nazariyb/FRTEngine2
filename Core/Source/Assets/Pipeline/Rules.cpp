@@ -35,6 +35,7 @@ struct SGlobEntry
 	CPathGlob Glob;
 	FString Text;        // as written, mount prefix included
 	FString OnlyMount;
+	FString OnlyMountFolded;
 	uint32 Line = 0u;
 };
 
@@ -674,6 +675,7 @@ private:
 					return std::nullopt;
 				}
 				entry.OnlyMount = FString(split.Left);
+				entry.OnlyMountFolded = entry.OnlyMount.FoldCase();
 				pattern = FString("/") + split.Right;
 			}
 		}
@@ -1761,6 +1763,7 @@ struct CRulesEngine::SScope final : SScanScope
 {
 	uint32 MountIndex = 0u;
 	FString MountName;
+	FString MountNameFolded;   // for absolute patterns' OnlyMount
 	std::vector<std::shared_ptr<const CRuleFile>> Chain;
 	std::shared_ptr<const FPresetTable> Presets;
 	bool bExcluded = false;   // inside an excluded folder (a subtree root below one): nothing is a member
@@ -1789,6 +1792,7 @@ std::shared_ptr<const SScope> MakeScope (const SScope& Parent, const std::shared
 	auto scope = std::make_shared<SScope>();
 	scope->MountIndex = Parent.MountIndex;
 	scope->MountName = Parent.MountName;
+	scope->MountNameFolded = Parent.MountNameFolded;
 	scope->bExcluded = Parent.bExcluded;
 	scope->Chain.reserve(Parent.Chain.size() + 1u);
 	scope->Chain.push_back(File);
@@ -1841,7 +1845,7 @@ std::shared_ptr<const SScope> MakeScope (const SScope& Parent, const std::shared
 
 bool Applies (const SGlobEntry& Entry, const SScope& Scope) noexcept
 {
-	return Entry.OnlyMount.IsEmpty() || Entry.OnlyMount.Equals<ESearchCase::IgnoreCase>(Scope.MountName);
+	return Entry.OnlyMount.IsEmpty() || Entry.OnlyMountFolded == Scope.MountNameFolded;
 }
 
 /**
@@ -2168,6 +2172,7 @@ void CRulesEngine::LoadMountRules (std::vector<SDiagnostic>* OutDiagnostics, std
 		auto base = std::make_shared<SScope>();
 		base->MountIndex = i;
 		base->MountName = mounts[i].Name;
+		base->MountNameFolded = mounts[i].Name.FoldCase();
 		std::shared_ptr<const SScope> scope = base;
 		if (static_cast<int32>(i) != engineIndex && engineFile != nullptr)
 		{
@@ -2235,6 +2240,16 @@ uint64 CRulesEngine::GetMountRulesHash (FStringView MountName) const
 
 std::shared_ptr<const SScanScope> CRulesEngine::OpenScope (FStringView FolderMountPath, std::vector<SDiagnostic>& OutDiagnostics) const
 {
+	return OpenScopeImpl(FolderMountPath, false, OutDiagnostics);
+}
+
+std::shared_ptr<const SScanScope> CRulesEngine::OpenFolderScope (FStringView FolderMountPath, std::vector<SDiagnostic>& OutDiagnostics) const
+{
+	return OpenScopeImpl(FolderMountPath, true, OutDiagnostics);
+}
+
+std::shared_ptr<const SScanScope> CRulesEngine::OpenScopeImpl (FStringView FolderMountPath, bool bIncludeSelf, std::vector<SDiagnostic>& OutDiagnostics) const
+{
 	EnsureLoaded();
 	FStringView mountName;
 	FStringView relative;
@@ -2248,6 +2263,7 @@ std::shared_ptr<const SScanScope> CRulesEngine::OpenScope (FStringView FolderMou
 		OutDiagnostics.push_back(std::move(diagnostic));
 		auto excluded = std::make_shared<SScope>();
 		excluded->MountName = FString(mountName);
+		excluded->MountNameFolded = excluded->MountName.FoldCase();
 		excluded->bExcluded = true;
 		return excluded;
 	}
@@ -2262,24 +2278,31 @@ std::shared_ptr<const SScanScope> CRulesEngine::OpenScope (FStringView FolderMou
 			OutDiagnostics.insert(OutDiagnostics.end(), diagnostics.begin(), diagnostics.end());
 		}
 	}
-	if (relative.IsEmpty())
+	if (relative.IsEmpty() && !bIncludeSelf)
 	{
 		return mountScope;
 	}
 
-	// A subtree root: the ancestors' folder files, top-down, never inside an excluded folder.
+	// The folders from the mount root down, each folder file read and bound, never inside an excluded folder. Only
+	// the requested folder's own file reports its problems: the others belong to their own folders' scans.
 	const SMount& mount = Mounts.GetMounts()[static_cast<uint32>(index)];
 	std::shared_ptr<const SScanScope> scope = mountScope;
 	FString folder = mount.GetRootMountPath();
 	FStringView rest = relative;
+	bool bSelf = relative.IsEmpty();
 	for (;;)
 	{
+		if (bSelf && !bIncludeSelf)
+		{
+			break;   // the root itself is EnterFolder's
+		}
 		if (folder.Len() > mount.Name.Len() + 1u && !ShouldDescend(*scope, folder))
 		{
 			auto excluded = std::make_shared<SScope>(AsScope(*scope));
 			excluded->bExcluded = true;
 			return excluded;
 		}
+		std::vector<SDiagnostic>* diagnostics = bSelf ? &OutDiagnostics : nullptr;
 		const std::optional<std::filesystem::path> directory = Mounts.FromMountPath(folder);
 		uint64 rulesHash = 0u;
 		if (directory.has_value())
@@ -2290,21 +2313,22 @@ std::shared_ptr<const SScanScope> CRulesEngine::OpenScope (FStringView FolderMou
 			{
 				const std::optional<FString> text = platform::ReadFileText(ruleFile);
 				scope = BindFolder(scope, folder, text.has_value() ? std::optional<FStringView>(text->View()) : std::nullopt, !text.has_value(),
-					FString::Format("{} could not be read", FString::FromPath(ruleFile)), RuleFileName, rulesHash, nullptr);
+					FString::Format("{} could not be read", FString::FromPath(ruleFile)), RuleFileName, rulesHash, diagnostics);
 			}
 			else
 			{
-				scope = BindFolder(scope, folder, std::nullopt, false, FStringView(), RuleFileName, rulesHash, nullptr);
+				scope = BindFolder(scope, folder, std::nullopt, false, FStringView(), RuleFileName, rulesHash, diagnostics);
 			}
 		}
-		const SStringSplit split = rest.SplitFirst('/');
-		if (!split.bFound)
+		if (bSelf)
 		{
-			break;   // the root itself is EnterFolder's
+			break;
 		}
+		const SStringSplit split = rest.SplitFirst('/');
 		folder += '/';
 		folder += split.Left;
 		rest = split.Right;
+		bSelf = !split.bFound;
 	}
 	return scope;
 }

@@ -272,6 +272,13 @@ public:
 	 */
 	std::shared_ptr<const SScanScope> EnterFolderCached (const std::shared_ptr<const SScanScope>& Parent, FStringView FolderMountPath,
 		uint64& OutRulesHash, std::vector<SDiagnostic>& OutDiagnostics) const;
+	/**
+	 * The scope OF a folder, its own Assets.yml included, read from disk without a scan: OpenScope followed by the
+	 * folder's own EnterFolder. For explain, list panels and a single file a watcher reports. OutDiagnostics gets the
+	 * folder's own file's problems (and the mount file's for a mount root); an excluded folder gives a scope that
+	 * excludes everything.
+	 */
+	[[nodiscard]] std::shared_ptr<const SScanScope> OpenFolderScope (FStringView FolderMountPath, std::vector<SDiagnostic>& OutDiagnostics) const;
 	// Forgets the folder files at or below SubtreeMountPath (a folder removed from disk), so listings stop naming them.
 	void ForgetFolders (FStringView SubtreeMountPath);
 
@@ -312,6 +319,7 @@ private:
 	};
 
 	void EnsureLoaded () const;
+	[[nodiscard]] std::shared_ptr<const SScanScope> OpenScopeImpl (FStringView FolderMountPath, bool bIncludeSelf, std::vector<SDiagnostic>& OutDiagnostics) const;
 	[[nodiscard]] std::shared_ptr<const SScanScope> BindFolder (const std::shared_ptr<const SScanScope>& Parent, FStringView FolderMountPath,
 		std::optional<FStringView> Text, bool bReadFailed, FStringView ReadError, FStringView FileName, uint64& OutRulesHash,
 		std::vector<SDiagnostic>* OutDiagnostics) const;

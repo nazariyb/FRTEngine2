@@ -861,6 +861,36 @@ TEST(RulesEngine, OpenScopeOfASubtreeReadsItsAncestorsButNothingInsideAnExcluded
 	EXPECT_EQ(engine.GetListing().Files.size(), 2u);
 }
 
+TEST(RulesEngine, OpenFolderScopeIncludesTheFoldersOwnFileAndItsProblems)
+{
+	SEngineFixture fixture("FolderScope");
+	fixture.Tree.WriteProjectRules("FormatVersion: 1\nScan: { Exclude: [ \"Attic/**\" ] }\n");
+	fixture.Tree.WriteProjectContent("Assets.yml", "FormatVersion: 1\nRules: [ { Match: \"**\", Chunk: 5 } ]\n");
+	fixture.Tree.WriteProjectContent("Art/Assets.yml", "FormatVersion: 1\nRules: [ { Match: \"**\", Cook: Never } ]\n");
+	fixture.Tree.WriteProjectContent("Art/Bad/Assets.yml", "FormatVersion: 1\nRulez: [ ]\n");
+	CRulesEngine& engine = fixture.Start();
+
+	std::vector<SDiagnostic> diagnostics;
+	const auto art = engine.OpenFolderScope("/Project/Art", diagnostics);
+	EXPECT_TRUE(diagnostics.empty()) << DescribeDiagnostics(diagnostics).CStr();
+	const SEffectiveFileSettings rock = engine.ResolveFile(*art, "/Project/Art/Rock.png");
+	EXPECT_EQ(rock.Chunk, 5u);
+	EXPECT_EQ(rock.CookRule, ECookRule::Never) << "the folder's own file is part of its scope";
+
+	const auto root = engine.OpenFolderScope("/Project", diagnostics);
+	EXPECT_EQ(engine.ResolveFile(*root, "/Project/Rock.png").Chunk, 5u) << "a mount root's scope holds the content root's file";
+
+	const auto bad = engine.OpenFolderScope("/Project/Art/Bad", diagnostics);
+	ASSERT_EQ(CountCode(diagnostics, Rule001), 1u) << "only the folder's own problems";
+	EXPECT_EQ(diagnostics[0].Subject, "/Project/Art/Bad");
+	EXPECT_EQ(engine.ResolveFile(*bad, "/Project/Art/Bad/A.png").CookRule, ECookRule::Never) << "its parent's rules";
+
+	diagnostics.clear();
+	const auto attic = engine.OpenFolderScope("/Project/Attic", diagnostics);
+	EXPECT_TRUE(diagnostics.empty());
+	EXPECT_EQ(engine.Classify(*attic, "/Project/Attic/A.png"), std::nullopt);
+}
+
 TEST(RulesEngine, TypesAndValidationFollowTheChain)
 {
 	SEngineFixture fixture("TypesValidation");
