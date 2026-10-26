@@ -24,4 +24,8 @@ FRT_CORE_API FStringView StripTrailingComment (FStringView Value);
 // otherwise, or when the file cannot be read or the version is not an integer. The file is decoded
 // as platform::ReadFileText's Detect decodes it: a reader it is the check for must decode it so too.
 FRT_CORE_API int32 GetTextAssetVersion (const std::filesystem::path& Path);
+
+// GetTextAssetVersion over a file's text already decoded as platform::ReadFileText's Detect decodes it: for a
+// reader that reads the file once (hashing it in the same pass) and dispatches on the version afterwards.
+FRT_CORE_API int32 GetTextAssetVersionFromText (FStringView Text);
 }
