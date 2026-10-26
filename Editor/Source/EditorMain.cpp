@@ -131,6 +131,9 @@ int RunEditor ()
 	}
 	if (bRunManager)
 	{
+		// The project manager uses no registry; the project's writer lock must be free for the editor its "Build and
+		// Open" starts (it takes the lock at once, while this process is still running).
+		engine.EndAssetRegistry();
 		CProjectManager projects(engine, std::move(manager));
 		exitCode = projects.Run();
 	}

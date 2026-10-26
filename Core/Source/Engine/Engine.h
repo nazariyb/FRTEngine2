@@ -164,6 +164,11 @@ public:
 	// [Assets] Registry=0. Never reachable from game code. Valid from StartUp until ShutDown, which ends it before
 	// the file watcher and the worker pool.
 	assets::CAssetRegistry* GetAssetRegistry () { return AssetRegistry.get(); }
+	// Ends the asset registry now, as ShutDown would (its exit snapshot written), and lets the project's writer lock go:
+	// for a host that keeps running without the project, such as the editor falling back to the project manager, whose
+	// "Build and Open" starts another editor of the same project that must take the lock. GetAssetRegistry is null
+	// afterwards.
+	void EndAssetRegistry ();
 	// The renderer's library, or a standalone one when headless.
 	graphics::CMaterialLibrary& GetMaterials ();
 

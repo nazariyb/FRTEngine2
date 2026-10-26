@@ -267,6 +267,17 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 	return true;
 }
 
+void CEngine::EndAssetRegistry ()
+{
+	if (AssetRegistry)
+	{
+		AssetRegistry->ShutDown();
+		AssetRegistry.reset();
+	}
+	// The lock goes once nothing writes any more.
+	AssetOwnerLock.reset();
+}
+
 void CEngine::ShutDown ()
 {
 	if (!bStarted)
@@ -292,13 +303,8 @@ void CEngine::ShutDown ()
 #endif
 	HeadlessMaterials.reset();
 	// Before the file watcher it subscribes to and the worker pool whose drain would drop its exit snapshot
-	// unwritten (CAssetRegistry::ShutDown waits for it); the lock goes once nothing writes any more.
-	if (AssetRegistry)
-	{
-		AssetRegistry->ShutDown();
-		AssetRegistry.reset();
-	}
-	AssetOwnerLock.reset();
+	// unwritten (CAssetRegistry::ShutDown waits for it).
+	EndAssetRegistry();
 	// After the renderer, whose libraries subscribe to it; the input actions (a member, destroyed
 	// later) end theirs first. Ends every subscription left.
 	InputActions.SetFileWatcher(nullptr);
