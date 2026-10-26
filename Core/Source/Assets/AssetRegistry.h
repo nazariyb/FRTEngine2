@@ -84,6 +84,7 @@ class CWorkerPool;
 namespace frt::assets
 {
 class CFileWatcherService;
+class CRegistryJournal;
 
 // Which owner root's files a writer writes, and which mounts it holds.
 enum class EAssetRegistryOwner : uint8
@@ -286,6 +287,10 @@ public:
 	struct SImpl;
 
 private:
+	friend struct SAssetRegistryTestAccess;   // Core-Test: breaks the journal as a failed write would
+	// The writer's journal while it is open (null for a reader, and before the snapshots loaded or after ShutDown).
+	[[nodiscard]] CRegistryJournal* GetJournal () noexcept;
+
 	std::unique_ptr<SImpl> Impl;
 };
 }

@@ -12,22 +12,12 @@
 
 #include "Assets/AssetTypes.h"
 #include "Assets/RecordFrames.h"
+#include "JournalTestAccess.h"
 #include "SnapshotTestUtils.h"
 
 using namespace frt;
 using namespace frt::assets;
 using namespace frt::assets::snapshot_test;
-
-
-namespace frt::assets
-{
-// CRegistryJournal's test seam (a friend): the next Append writes only Bytes of its frames and fails, as a full
-// disk cuts a write short.
-struct SRegistryJournalTestAccess
-{
-	static void FailNextAppendAfter (CRegistryJournal& Journal, size_t Bytes) { Journal.FailAppendAfterBytes = Bytes; }
-};
-}
 
 
 namespace

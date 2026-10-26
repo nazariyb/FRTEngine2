@@ -1440,11 +1440,14 @@ struct CAssetRegistry::SImpl
 			return;
 		}
 		const uint64 start = platform::ReadTimestamp();
-		if (Journal.has_value() && Journal->IsOpen() && !Journal->IsBroken())
+		// Broken or not (Journal.h, protocol step 4): a broken journal keeps the commit in memory, and the restart after
+		// the full write its break triggers writes it into the next journal.
+		if (Journal.has_value())
 		{
 			FString error;
-			if (!Journal->Append(Delta, Store->GetRevision() + 1u, &error))
+			if (!Journal->Append(Delta, Store->GetRevision() + 1u, &error) && !bJournalBreakLogged)
 			{
+				bJournalBreakLogged = true;
 				log::Warning(LogCategory, "the registry journal broke ({}): a full snapshot is written instead", error);
 			}
 		}
@@ -1649,7 +1652,7 @@ struct CAssetRegistry::SImpl
 		job->Path = SnapshotPath;
 		job->ProjectId = ProjectId;
 		job->RulesBasis = Rules->GetRulesBasis(bWithEngineFallback);
-		if (Journal.has_value() && Journal->IsOpen())
+		if (Journal.has_value())   // a broken one too: the restart mends it
 		{
 			job->Restart = Journal->BeginRestart(job->View->GetRevision());
 			job->bHasRestart = true;
@@ -1690,6 +1693,10 @@ struct CAssetRegistry::SImpl
 			if (!Journal->FinishRestart(std::move(Job.Restart), &error) && !error.IsEmpty())
 			{
 				log::Warning(LogCategory, "the registry journal was not restarted: {}", error);
+			}
+			if (!Journal->IsBroken())
+			{
+				bJournalBreakLogged = false;   // the next break is logged again
 			}
 		}
 	}
@@ -1769,6 +1776,7 @@ struct CAssetRegistry::SImpl
 	bool bWithEngineFallback = true;
 	SGuid ProjectId;
 	std::optional<CRegistryJournal> Journal;
+	bool bJournalBreakLogged = false;
 	std::vector<SSnapshotFileReport> SnapshotReports;
 	std::vector<SDiagnostic> MountRuleDiagnostics;
 
@@ -2029,5 +2037,10 @@ EAssetRegistryOwner CAssetRegistry::GetOwner () const noexcept
 const std::filesystem::path& CAssetRegistry::GetSnapshotPath () const noexcept
 {
 	return Impl->SnapshotPath;
+}
+
+CRegistryJournal* CAssetRegistry::GetJournal () noexcept
+{
+	return Impl->Journal.has_value() ? &*Impl->Journal : nullptr;
 }
 }

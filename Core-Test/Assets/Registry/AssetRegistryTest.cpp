@@ -5,7 +5,8 @@
 // and back; a torn snapshot section or journal tail costs a rescan, never a wrong registry; a watcher sequence
 // (create, modify, rename, folder move, a VCS-sized burst) ends in the dump of a fresh scan; a process without the
 // writer lock writes nothing; Validation: reaches the scan's and RULE002's severities; the tri-state Exists and the
-// change notification. Every tree has non-ASCII names and lives in the temp directory.
+// change notification; a broken journal is mended by the full write its break triggers, and loses no commit. Every
+// tree has non-ASCII names and lives in the temp directory.
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -19,6 +20,7 @@
 #include <vector>
 
 #include "../Rules/RulesTestUtils.h"
+#include "../Snapshot/JournalTestAccess.h"
 
 #include "Assets/AssetDiagnosticCodes.h"
 #include "Assets/AssetRegistry.h"
@@ -31,12 +33,23 @@
 #include "Assets/Registry/Snapshot.h"
 #include "Jobs/WorkerPool.h"
 #include "Platform/FileSystem.h"
+#include "Platform/Process.h"
 #include "Platform/Timestamp.h"
 
 using namespace frt;
 using namespace frt::assets;
 using frt::test::rules::CRulesTree;
 using frt::test::rules::DescribeDiagnostics;
+
+
+namespace frt::assets
+{
+// CAssetRegistry's test seam (a friend): its journal, to break it as a failed write would.
+struct SAssetRegistryTestAccess
+{
+	static CRegistryJournal* GetJournal (CAssetRegistry& Registry) { return Registry.GetJournal(); }
+};
+}
 
 
 namespace
@@ -268,6 +281,29 @@ reflect::TypeId TypeOf (const CRegistryView& View, FStringView MountPath)
 	SAssetData data;
 	const std::optional<SRecordId> record = View.FindByPath(MountPath);
 	return record.has_value() && View.GetRecord(*record, data) ? data.Type : reflect::InvalidTypeId;
+}
+
+// Frames as a host runs them (worker completions, then the registry's Pump with its commit budget) until Done holds;
+// false when TimeoutSeconds ran out first.
+template <typename F>
+bool PumpFramesUntil (jobs::CWorkerPool& Pool, CAssetRegistry& Registry, F&& Done, double TimeoutSeconds)
+{
+	const uint64 deadline = platform::MakeDeadline(TimeoutSeconds);
+	while (!Done())
+	{
+		if (platform::ReadTimestamp() >= deadline)
+		{
+			return false;
+		}
+		Pool.PumpCompletions();
+		Registry.Pump();
+		if (Done())
+		{
+			break;
+		}
+		Pool.WaitForCompletions(0.01);
+	}
+	return true;
 }
 
 // Every file below Directory, relative and '/' separated.
@@ -778,4 +814,51 @@ TEST(AssetRegistry, AWriterWritesItsSnapshotAfterABatchAndWhenIdle)
 		EXPECT_TRUE(std::filesystem::exists(GetRegistrySnapshotPath(tree.Tree.ProjectDir()), ec));
 		std::filesystem::remove(GetRegistrySnapshotPath(tree.Tree.ProjectDir()), ec);
 	}
+}
+
+TEST(AssetRegistry, ABrokenJournalIsRestartedByTheFullWriteItTriggersAndLosesNoCommit)
+{
+	const CServiceTree tree("Broken Journal");
+	jobs::CWorkerPool pool(MakePoolDesc(4u));
+	(void)WriteBothSnapshots(pool, tree);
+	SAssetRegistryDesc desc;
+	desc.Mounts = tree.Project();
+	desc.Pool = &pool;
+	desc.bWriter = true;
+	desc.bSnapshotAtShutDown = false;   // what follows the full write stays in the journal alone
+	desc.SnapshotBatchRecords = 1000000u;
+	desc.SnapshotIdleSeconds = 3600.0;
+	CAssetRegistry registry(std::move(desc));
+	registry.Start();
+	ASSERT_TRUE(registry.WaitForInitialScan(60.0));
+	CRegistryJournal* journal = SAssetRegistryTestAccess::GetJournal(registry);
+	ASSERT_NE(journal, nullptr);
+
+	// The next append is cut short: the journal breaks and a full write starts. A second commit lands while it runs or
+	// right after it, a third once the journal is back.
+	SRegistryJournalTestAccess::FailNextAppendAfter(*journal, 20u);
+	tree.WriteProjectPng("Textures/Нова.png");
+	const FString added[] = { "/Project/Textures/Нова.png" };
+	ASSERT_TRUE(registry.ScanPathsSynchronous(added, 30.0));
+	tree.WriteProjectPng("Textures/Трава.png", 8u);
+	const FString modified[] = { "/Project/Textures/Трава.png" };
+	ASSERT_TRUE(registry.ScanPathsSynchronous(modified, 30.0));
+	EXPECT_TRUE(PumpFramesUntil(pool, registry, [&] { return registry.GetCounters().SnapshotsWritten > 0u && !journal->IsBroken(); }, 10.0))
+		<< "the full write restarts the broken journal";
+	tree.WriteProjectPng("Textures/Камінь.png", 16u);
+	const FString later[] = { "/Project/Textures/Камінь.png" };
+	ASSERT_TRUE(registry.ScanPathsSynchronous(later, 30.0));
+	EXPECT_FALSE(journal->IsBroken());
+	const FString live = DumpOf(registry.Live());
+	registry.ShutDown();
+
+	// The snapshot and the restarted journal hold every commit: a warm start with nothing to analyze.
+	const SRun replayed = RunOnce(pool, tree.Project());
+	EXPECT_EQ(replayed.Dump, live);
+	EXPECT_EQ(replayed.Dump, FreshDump(pool, tree.Project()));
+	EXPECT_EQ(replayed.Counters.Analyzed, 0u);
+	const SSnapshotFileReport* report = FindReport(replayed, "AssetRegistry.snapshot");
+	ASSERT_NE(report, nullptr);
+	EXPECT_TRUE(report->bJournalUsed) << report->JournalMessage.CStr();
+	EXPECT_GT(report->JournalCommits, 0u);
 }
