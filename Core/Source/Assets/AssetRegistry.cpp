@@ -189,12 +189,13 @@ struct SAnalyzeRequest
 	int64 MTime = 0;
 	platform::SFileIdentity Identity;
 	EFileClass Class = EFileClass::Asset;
+	bool bContentChanged = false;                       // new or changed: a hash Analyze does not compute is zeroed
 	uint32 Retries = 0u;
 	uint64 Sequence = 0u;                               // the registry's request sequence of this file
 };
 
-// One analyzed file's delta (record, Analyze problems, the file row when Analyze hashed it or the Types filter
-// excluded its type).
+// One analyzed file's delta: its file row (the stat the scan saw, the hash when Analyze computed one), record and
+// Analyze problems.
 struct SAnalyzedFile
 {
 	FString Path;
@@ -268,17 +269,24 @@ SAnalyzeOutcome RunAnalyze (std::vector<SAnalyzeRequest>& Requests, const CRules
 		SAnalyzedFile& file = outcome.Files.emplace_back();
 		file.Path = request.Path;
 		file.Sequence = request.Sequence;
-		if (result.ContentHash.has_value() || !bTypeIncluded)
+		// The file's new stat goes in with its record, never before it (ConvertBatch leaves it out of the conversion
+		// for a file that has a record): a pass cut short before this delta leaves the stat the old record was made
+		// from, so the next scan finds the file changed and analyzes it again.
+		SFileUpsert row;
+		row.MountPath = request.Path;
+		row.Size = request.Size;
+		row.MTime = request.MTime;
+		row.Identity = request.Identity;
+		if (result.ContentHash.has_value())
 		{
-			SFileUpsert row;
-			row.MountPath = request.Path;
-			row.Size = request.Size;
-			row.MTime = request.MTime;
-			row.Identity = request.Identity;
 			row.ContentHash = result.ContentHash;
-			row.Class = bTypeIncluded ? request.Class : EFileClass::Excluded;
-			file.Delta.FileUpserts.push_back(std::move(row));
 		}
+		else if (request.bContentChanged)
+		{
+			row.ContentHash = hash::SContentHash {};   // changed, not hashed (hashes are lazy, §5.4 step 5)
+		}
+		row.Class = bTypeIncluded ? request.Class : EFileClass::Excluded;
+		file.Delta.FileUpserts.push_back(std::move(row));
 		AppendRecordUpsert(std::move(result), settings, request.Path, file.Delta);
 		if (!bTypeIncluded)
 		{
@@ -300,6 +308,9 @@ struct SUnclaimedFolder
 struct SConversion
 {
 	SRegistryDelta Delta;
+	// The RULEFILES rows the batch changed (the mount's Config/Assets.yml included): committed last, with RULE002,
+	// once every record they cover is committed (CheckPassDone), never by a pass cut short.
+	SRegistryDelta RuleFiles;
 	std::vector<SAnalyzeRequest> Analyze;
 	std::vector<SUnclaimedFolder> Folders;
 	std::vector<FString> RemovedFolders;
@@ -338,17 +349,18 @@ SConversion ConvertBatch (SConvertInput& In)
 	const FString& root = batch.RootMountPath;
 	const std::span<const FString> failed = batch.FailedFolders;
 	SRegistryDelta& delta = out.Delta;
+	SRegistryDelta& ruleFiles = out.RuleFiles;
 
 	if (In.MountRulesHash.has_value() && *In.MountRulesHash != GetStoredMountRulesHash(view, mount.Name))
 	{
 		out.bRuleFilesChanged = true;
 		if (*In.MountRulesHash != 0u)
 		{
-			delta.RuleFileUpserts.push_back(SRuleFileUpsert { mount.Name, FString(), *In.MountRulesHash });
+			ruleFiles.RuleFileUpserts.push_back(SRuleFileUpsert { mount.Name, FString(), *In.MountRulesHash });
 		}
 		else
 		{
-			delta.RuleFileRemoves.push_back(SRuleFileUpsert { mount.Name, FString(), 0u });
+			ruleFiles.RuleFileRemoves.push_back(SRuleFileUpsert { mount.Name, FString(), 0u });
 		}
 	}
 
@@ -382,11 +394,11 @@ SConversion ConvertBatch (SConvertInput& In)
 			out.bRuleFilesChanged = true;
 			if (hash != 0u)
 			{
-				delta.RuleFileUpserts.push_back(SRuleFileUpsert { mount.Name, folder.MountPath, hash });
+				ruleFiles.RuleFileUpserts.push_back(SRuleFileUpsert { mount.Name, folder.MountPath, hash });
 			}
 			else
 			{
-				delta.RuleFileRemoves.push_back(SRuleFileUpsert { mount.Name, folder.MountPath, 0u });
+				ruleFiles.RuleFileRemoves.push_back(SRuleFileUpsert { mount.Name, folder.MountPath, 0u });
 			}
 		}
 		dirty[i] = (In.bReEvaluateAll || hash != storedHash || bParentDirty) ? 1u : 0u;
@@ -467,7 +479,8 @@ SConversion ConvertBatch (SConvertInput& In)
 			SEffectiveFileSettings settings = rules.ResolveFile(scope, path, facts, false);
 			const bool bTypeIncluded = !bHasRecord || rules.IsTypeIncluded(scope, stored->Type);
 			const EFileClass fileClass = bTypeIncluded ? settings.Class : EFileClass::Excluded;
-			if (!stored.has_value() || bStatChanged || stored->BaseClass != fileClass)
+			const bool bRowChanged = !stored.has_value() || bStatChanged || stored->BaseClass != fileClass;
+			const auto addRow = [&]
 			{
 				SFileUpsert& row = chunkOut.FileUpserts.emplace_back();
 				row.MountPath = path;
@@ -479,11 +492,15 @@ SConversion ConvertBatch (SConvertInput& In)
 					row.ContentHash = hash::SContentHash {};   // changed, not hashed (hashes are lazy, §5.4 step 5)
 				}
 				row.Class = fileClass;
-			}
+			};
 
 			const SImporterDesc* importer = settings.Importer;
 			if (importer == nullptr || settings.Class == EFileClass::Excluded || settings.Class == EFileClass::Unclaimed)
 			{
+				if (bRowChanged)
+				{
+					addRow();
+				}
 				if (bHasRecord)
 				{
 					chunkOut.RecordRemoves.push_back(path);   // its importer went away (Importers.Exclude, a rule)
@@ -494,6 +511,13 @@ SConversion ConvertBatch (SConvertInput& In)
 			const bool bAnalyze = !bHasRecord || bContentChanged || bStale || stored->AnalyzeStamp != stamp || stored->Importer != importer->Name.View();
 			if (bAnalyze)
 			{
+				// A file with a record gets its new row with its Analyze result (RunAnalyze), so what is persisted never
+				// pairs a new stat with the old record; a file without one gets it now (the next scan analyzes a file
+				// that has no record whatever its row says).
+				if (bRowChanged && !bHasRecord)
+				{
+					addRow();
+				}
 				SAnalyzeRequest& request = chunkOut.Analyze.emplace_back();
 				request.Path = path;
 				request.Mount = In.MountIndex;
@@ -503,7 +527,12 @@ SConversion ConvertBatch (SConvertInput& In)
 				request.MTime = file.MTime;
 				request.Identity = file.Identity;
 				request.Class = file.Verdict.Class;
+				request.bContentChanged = !stored.has_value() || bContentChanged;
 				continue;
+			}
+			if (bRowChanged)
+			{
+				addRow();
 			}
 			if (bDirty || bClassDiffers)
 			{
@@ -635,13 +664,14 @@ struct CAssetRegistry::SImpl
 		std::optional<SScanBatch> Batch;               // scanned while the snapshots loaded: converted once they are
 		std::optional<uint64> MountRulesHash;
 		bool bConverted = false;
-		bool bUnclaimedQueued = false;
-		bool bLost = false;
+		bool bFinalQueued = false;       // the RULEFILES rows and RULE002 (CheckPassDone)
+		bool bLost = false;              // cut short: a conversion or Analyze work dropped unrun
 		bool bRuleFilesChanged = false;
 		bool bFilesChanged = false;      // a delta of it changed files or records (RULE002 may differ)
 		uint32 PendingDeltas = 0u;       // queued, not committed
 		uint32 OutstandingAnalyze = 0u;  // tasks in the pool or waiting to be retried
 		std::vector<SUnclaimedFolder> Folders;
+		SRegistryDelta RuleFiles;        // SConversion::RuleFiles
 	};
 
 	struct SQueuedDelta
@@ -1020,8 +1050,8 @@ struct CAssetRegistry::SImpl
 		std::vector<SDiagnostic> diagnostics;
 		std::vector<FString> changed;
 		Rules->LoadMountRules(&diagnostics, &changed);
-		// The RULEFILES rows of the mount files change with the rescans' deltas, together with the records they
-		// re-evaluate: a pass cut short never leaves a row that claims records it did not reach.
+		// The RULEFILES rows of the mount files change with the rescans' last deltas, once the records they cover are
+		// committed (CheckPassDone): a pass cut short never leaves a row that claims records it did not reach.
 		SRegistryDelta delta;
 		for (const SMount& mount : Mounts->GetMounts())
 		{
@@ -1175,6 +1205,7 @@ struct CAssetRegistry::SImpl
 		pass.bConverted = true;
 		pass.bRuleFilesChanged = Conversion.bRuleFilesChanged;
 		pass.Folders = std::move(Conversion.Folders);
+		pass.RuleFiles = std::move(Conversion.RuleFiles);
 		Counters.ReEvaluated += Conversion.ReEvaluated;
 		if (!Initial.bComplete)
 		{
@@ -1236,6 +1267,7 @@ struct CAssetRegistry::SImpl
 		--AnalyzeTasksInFlight;
 		SPass& pass = Passes.at(PassId);
 		--pass.OutstandingAnalyze;
+		pass.bLost = true;
 		CheckPassDone(PassId);
 	}
 
@@ -1292,6 +1324,7 @@ struct CAssetRegistry::SImpl
 			--pass.OutstandingAnalyze;   // SubmitAnalyze counts it again
 			if (bStopping)
 			{
+				pass.bLost = true;
 				CheckPassDone(retry.Pass);
 				continue;
 			}
@@ -1321,16 +1354,27 @@ struct CAssetRegistry::SImpl
 		{
 			return;
 		}
-		// RULE002 can only differ when files or records changed, or the rules did (a Validation: severity, Scan.Quiet).
-		const bool bUnclaimedMayDiffer = pass.bFilesChanged || pass.bRuleFilesChanged || pass.bReEvaluateAll;
-		if (!pass.bUnclaimedQueued && !pass.bLost && !bStopping && bUnclaimedMayDiffer)
+		if (!pass.bFinalQueued)
 		{
-			pass.bUnclaimedQueued = true;
-			const uint64 start = platform::ReadTimestamp();
-			SRegistryDelta delta = MakeUnclaimedDelta(pass);
-			if (!Initial.bComplete)
+			// The pass's last delta. Its RULEFILES rows only now, when every record they cover is committed, and only
+			// when nothing of the pass was dropped: a pass cut short leaves the old rows, so the next start evaluates
+			// (and analyzes) that interval again.
+			pass.bFinalQueued = true;
+			SRegistryDelta delta;
+			if (!pass.bLost)
 			{
-				Initial.UnclaimedMs += MillisecondsSince(start);
+				delta = std::move(pass.RuleFiles);
+			}
+			// RULE002 can only differ when files or records changed, or the rules did (a Validation: severity, Scan.Quiet).
+			const bool bUnclaimedMayDiffer = pass.bFilesChanged || pass.bRuleFilesChanged || pass.bReEvaluateAll;
+			if (!pass.bLost && bUnclaimedMayDiffer)
+			{
+				const uint64 start = platform::ReadTimestamp();
+				MergeDelta(delta, MakeUnclaimedDelta(pass));
+				if (!Initial.bComplete)
+				{
+					Initial.UnclaimedMs += MillisecondsSince(start);
+				}
 			}
 			if (!delta.IsEmpty())
 			{
@@ -1717,9 +1761,9 @@ struct CAssetRegistry::SImpl
 	// ---- shut-down ----
 
 	/**
-	 * The exit snapshot is written only when nothing was left undone: a pass cut short could leave records evaluated
-	 * under rules whose RULEFILES row says otherwise. What was committed is in the journal either way, and the next
-	 * start's scan finds the rest.
+	 * The exit snapshot is written only when nothing was left undone. A pass cut short persists nothing that claims
+	 * work it did not do (a file analyzed later keeps its old row, the RULEFILES rows wait for the pass's last
+	 * delta), so what was committed is in the journal either way, and the next start's scan finds the rest.
 	 */
 	void ShutDown ()
 	{

@@ -5,8 +5,9 @@
 // and back; a torn snapshot section or journal tail costs a rescan, never a wrong registry; a watcher sequence
 // (create, modify, rename, folder move, a VCS-sized burst) ends in the dump of a fresh scan; a process without the
 // writer lock writes nothing; Validation: reaches the scan's and RULE002's severities; the tri-state Exists and the
-// change notification; a broken journal is mended by the full write its break triggers, and loses no commit. Every
-// tree has non-ASCII names and lives in the temp directory.
+// change notification; a pass cut short after its conversion (a clean exit while Analyze is pending, a crash) persists
+// nothing that claims work it did not do; a broken journal is mended by the full write its break triggers, and loses no
+// commit. Every tree has non-ASCII names and lives in the temp directory.
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -814,6 +815,46 @@ TEST(AssetRegistry, AWriterWritesItsSnapshotAfterABatchAndWhenIdle)
 		EXPECT_TRUE(std::filesystem::exists(GetRegistrySnapshotPath(tree.Tree.ProjectDir()), ec));
 		std::filesystem::remove(GetRegistrySnapshotPath(tree.Tree.ProjectDir()), ec);
 	}
+}
+
+TEST(AssetRegistry, APassCutShortAfterItsConversionLeavesTheNextStartEverythingToRedo)
+{
+	const CServiceTree tree("Cut Short");
+	jobs::CWorkerPool pool(MakePoolDesc(4u));
+	(void)WriteBothSnapshots(pool, tree);
+	// Changed files (Analyze), a new one, and a folder rule that switches the importer (another AnalyzeStamp).
+	tree.WriteProjectPng("Textures/Камінь.png", 16u);
+	tree.WriteProjectPng("Textures/Трава.png", 8u);
+	tree.WriteProjectPng("Textures/Нова.png");
+	frt::test::rules::WriteFile(tree.FolderRules(), "FormatVersion: 1\nRules:\n  - { Match: \"*.png\", Importer: Raw }\n");
+	{
+		SAssetRegistryDesc desc;
+		desc.Mounts = tree.Project();
+		desc.Pool = &pool;
+		desc.bWriter = true;
+		desc.AnalyzeBatchFiles = 1u;
+		CAssetRegistry registry(std::move(desc));
+		registry.Start();
+		ASSERT_TRUE(PumpFramesUntil(pool, registry, [&] { return registry.GetScanState() != EScanState::LoadingSnapshots; }, 60.0));
+		// The first commit after the snapshots' adoption is the project's conversion; its Analyze tasks were submitted
+		// in the same frame, and ShutDown cancels them before any of their completions runs (a clean exit, or a crash
+		// once the journal holds the conversion).
+		const uint64 adopted = registry.GetCounters().Committed;
+		ASSERT_TRUE(PumpFramesUntil(pool, registry, [&] { return registry.GetCounters().Committed > adopted; }, 60.0));
+		EXPECT_FALSE(registry.IsInitialScanComplete());
+		registry.ShutDown();
+	}
+	// The next start finds every file and rule edit still to do: what the half pass persisted claims nothing it did not
+	// do.
+	const FString fresh = FreshDump(pool, tree.Project());
+	const SRun next = RunOnce(pool, tree.Project());
+	EXPECT_EQ(next.Dump, fresh);
+	SOpen writer;
+	writer.bWriter = true;
+	std::unique_ptr<CAssetRegistry> registry = Open(pool, tree.Project(), writer);
+	EXPECT_EQ(TypeOf(registry->Live(), FString::Format("/Project/{}/Лист.png", Foliage)), asset_types::Raw);
+	EXPECT_EQ(TypeOf(registry->Live(), "/Project/Textures/Нова.png"), asset_types::Texture);
+	EXPECT_EQ(Close(registry).Dump, fresh);
 }
 
 TEST(AssetRegistry, ABrokenJournalIsRestartedByTheFullWriteItTriggersAndLosesNoCommit)

@@ -39,16 +39,20 @@ class CWorkerPool;
  *	2. The batch becomes one delta on a worker (ConvertBatch in the .cpp), each file compared with the view by the
  *	   scan's Unchanged test (ScanTypes.h; byte-exact, as IKnownFiles would - done here rather than in the scan so
  *	   that the initial scans need not wait for the loaded view): folders, changed file rows (ContentHash kept for
- *	   an identity-only change), removals (known files and folders at or below the root that the batch does
- *	   not hold, outside its failed folders), RULEFILES rows, the Scan and Rules problem lists of the subtree (with
- *	   the rule files' Validation: severities). Each file is then one of: analyzed (new, changed, no record, StaleTags,
+ *	   an identity-only change; a file analyzed below that has a record gets its row with its Analyze result
+ *	   instead, so nothing persisted pairs a new stat with the old record), removals (known files and folders at
+ *	   or below the root that the batch does not hold, outside its failed folders), the Scan and Rules problem
+ *	   lists of the subtree (with the rule files' Validation: severities); the RULEFILES rows the batch changed are
+ *	   held for step 4. Each file is then one of: analyzed (new, changed, no record, StaleTags,
  *	   another AnalyzeStamp or importer), re-evaluated in memory (its folder's rule chain changed: committed again from
  *	   the view when its cook rule, chunk, labels or Types filter changed - never read from disk), or left alone.
  *	3. Analyze runs on workers, a few files per task (AnalyzeFile, the Types filter, Validation, AppendRecordUpsert):
  *	   one delta per task. A file that changed while it was read is retried after the watcher's settle window, three
  *	   times, then committed AnalyzeFailed with a code-0 problem saying so, so a wait always ends.
- *	4. Once every delta of the pass is committed, RULE002 is recomputed for its folders (companions are known by
- *	   then) under EProblemSource::Unclaimed.
+ *	4. Once every delta of the pass is committed, one last delta: the pass's RULEFILES rows (the mount's
+ *	   Config/Assets.yml row included) and RULE002 recomputed for its folders (companions are known by then) under
+ *	   EProblemSource::Unclaimed. The rows go in only when nothing of the pass was dropped (ShutDown cancels
+ *	   Analyze work): a pass cut short leaves the old rows, and the next start evaluates that interval again.
  * A file's rule chain counts as changed when its folder or an ancestor has a RulesHash in the batch other than its
  * RULEFILES row (absent = 0, so a rule file added or deleted offline is a change), when its mount's Config/Assets.yml
  * changed (or, for every mount but /Engine, the engine's), or when its snapshot file lost its RULEFILES rows (another
