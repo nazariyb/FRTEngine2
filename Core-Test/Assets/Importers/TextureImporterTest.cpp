@@ -1,7 +1,8 @@
 // The Texture importer's Analyze (E3, design §7.11): every image format the importer claims yields Width, Height,
 // Channels and HasAlpha from its header alone - read through Platform/ and handed to stb as bytes - including a JPEG
-// whose frame header lies past the 64 KiB prefix, and a file stb cannot read is AnalyzeFailed with a code-0 error
-// while its record keeps the texture type.
+// whose frame header and a paletted PNG whose palette lie past the 64 KiB prefix (read further up to a 16 MiB cap,
+// and only for those two signatures), and a file stb cannot read is AnalyzeFailed with a code-0 error while its
+// record keeps the texture type.
 #include <gtest/gtest.h>
 
 #include <vector>
@@ -46,8 +47,9 @@ void AppendPngChunk (std::vector<uint8>& Out, const char (&Type)[5], std::initia
 	AppendU32BE(Out, 0u);
 }
 
-// A paletted PNG's header: signature, IHDR, PLTE, optional tRNS, then the start of the image data.
-std::vector<uint8> MakePalettedPngHeader (uint32 Width, uint32 Height, bool bTransparent)
+// A paletted PNG's header: signature, IHDR, optional ancillary padding (a tEXt chunk of PaddingBytes before the
+// palette), PLTE, optional tRNS, then the start of the image data.
+std::vector<uint8> MakePalettedPngHeader (uint32 Width, uint32 Height, bool bTransparent, uint32 PaddingBytes = 0u)
 {
 	std::vector<uint8> png = { 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
 	std::vector<uint8> ihdr;
@@ -58,6 +60,13 @@ std::vector<uint8> MakePalettedPngHeader (uint32 Width, uint32 Height, bool bTra
 	png.insert(png.end(), { 'I', 'H', 'D', 'R' });
 	png.insert(png.end(), ihdr.begin(), ihdr.end());
 	AppendU32BE(png, 0u);
+	if (PaddingBytes > 0u)
+	{
+		AppendU32BE(png, PaddingBytes);
+		png.insert(png.end(), { 't', 'E', 'X', 't' });
+		png.insert(png.end(), PaddingBytes, uint8('a'));
+		AppendU32BE(png, 0u);
+	}
 	AppendPngChunk(png, "PLTE", { 255u, 0u, 0u });
 	if (bTransparent)
 	{
@@ -157,7 +166,7 @@ TEST(TextureImporterTest, TgaAndBmpHeadersAreRead)
 	ExpectTexture(tree.Analyze("image.bmp"), 10, 4, 3, false);
 }
 
-TEST(TextureImporterTest, JpegWhoseFrameHeaderLiesPastThePrefixIsReadWhole)
+TEST(TextureImporterTest, JpegWhoseFrameHeaderLiesPastThePrefixIsReadFurther)
 {
 	const std::optional<std::vector<uint8>> jpeg = platform::ReadFileBytes(
 		paths::GetEngineDir() / "Templates" / "Demo" / "Content" / "Models" / "Sponza" / "8773302468495022225.jpg");
@@ -178,6 +187,40 @@ TEST(TextureImporterTest, JpegWhoseFrameHeaderLiesPastThePrefixIsReadWhole)
 	const CImporterTree tree("LateJpegHeader");
 	tree.WriteBinary("late.jpeg", padded);
 	ExpectTexture(tree.Analyze("late.jpeg"), 1024, 1024, 3, false);
+}
+
+TEST(TextureImporterTest, PalettedPngWhosePaletteLiesPastThePrefixIsReadFurther)
+{
+	const CImporterTree tree("LatePalette");
+	tree.WriteBinary("late.png", MakePalettedPngHeader(3u, 5u, true, 300u * 1024u));
+	ExpectTexture(tree.Analyze("late.png"), 3, 5, 4, true);
+}
+
+// The longer read stops at 16 MiB: a JPEG whose SOF lies beyond is a failure that says why, and a file without a
+// JPEG or PNG signature is never read past its prefix (a large misnamed file fails like a small one).
+TEST(TextureImporterTest, LongerReadsStopAtTheCap)
+{
+	std::vector<uint8> jpeg = { 0xFF, 0xD8 };
+	constexpr uint32 SegmentBytes = 0xFFF0u;
+	while (jpeg.size() < 17u * 1024u * 1024u)
+	{
+		jpeg.insert(jpeg.end(), { 0xFF, 0xEF, static_cast<uint8>((SegmentBytes + 2u) >> 8u), static_cast<uint8>((SegmentBytes + 2u) & 0xFFu) });
+		jpeg.insert(jpeg.end(), SegmentBytes, uint8(0x20));
+	}
+	std::vector<uint8> misnamed(2u * 1024u * 1024u, uint8(0x5A));
+
+	const CImporterTree tree("HeaderCap");
+	tree.WriteBinary("huge.jpg", jpeg);
+	tree.WriteBinary("archive.png", misnamed);
+	const SAnalyzeResult huge = tree.Analyze("huge.jpg");
+	EXPECT_EQ(huge.Status, EImportStatus::AnalyzeFailed);
+	ASSERT_EQ(CountDiagnostics(huge, ESeverity::Error, 0u), 1u) << DescribeDiagnostics(huge).CStr();
+	EXPECT_NE(FindDiagnostic(huge, "at most 16 MiB"), nullptr) << DescribeDiagnostics(huge).CStr();
+
+	const SAnalyzeResult archive = tree.Analyze("archive.png");
+	EXPECT_EQ(archive.Status, EImportStatus::AnalyzeFailed);
+	ASSERT_EQ(CountDiagnostics(archive, ESeverity::Error, 0u), 1u) << DescribeDiagnostics(archive).CStr();
+	EXPECT_NE(FindDiagnostic(archive, "cannot read the image's header"), nullptr) << DescribeDiagnostics(archive).CStr();
 }
 
 TEST(TextureImporterTest, UnreadableImageFailsAndKeepsTheTextureType)
