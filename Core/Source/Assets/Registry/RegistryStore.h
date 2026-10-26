@@ -144,11 +144,15 @@ private:
 
 	void CheckOwnerThread ();
 	void Publish ();
+	[[nodiscard]] bool IsEmpty () const noexcept;
 	[[nodiscard]] bool GraphNeedsCompaction () const noexcept;
 	[[nodiscard]] bool RecordTablesNeedCompaction () const noexcept;
 	void RunCompaction (bool bGraph, bool bTables);
 	void CompactGraphTables ();
+	void InstallGraphTables (std::span<const SEdgeRow> Edges, std::span<const SPoolRange> Ranges);
 	void CompactRecordTables ();
+	void InitTables ();
+	void ResetToEmpty ();
 
 	CRegistryView LiveView;
 	std::unique_ptr<SWriterState> Writer;

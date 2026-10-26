@@ -155,9 +155,14 @@ uint32 FindFolderRowsPortable (const SRegistryTables& Tables, FStringView MountP
 
 uint32 FindRecordRowsPortable (const SRegistryTables& Tables, FStringView FileMountPath, uint32& OutRow) noexcept
 {
+	return FindRecordRowsPortableHashed(Tables, FileMountPath, HashPortable(FileMountPath), OutRow);
+}
+
+uint32 FindRecordRowsPortableHashed (const SRegistryTables& Tables, FStringView FileMountPath, uint64 PortableHash, uint32& OutRow) noexcept
+{
 	OutRow = InvalidRow;
 	uint32 matches = 0u;
-	Tables.Indices.RecordsByPortablePath.ForEach(HashPortable(FileMountPath), [&] (uint32 Row)
+	Tables.Indices.RecordsByPortablePath.ForEach(PortableHash, [&] (uint32 Row)
 	{
 		const uint32 file = Tables.Assets.File[Row];
 		if (file != InvalidRow && EqualPortable(Tables.Paths.Get(Tables.Files.Path[file]), FileMountPath))

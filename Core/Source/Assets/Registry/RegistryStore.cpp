@@ -26,9 +26,24 @@ struct CRegistryStore::SRingEntry
 	ERecordChange Kind = ERecordChange::Modified;
 };
 
+namespace
+{
+// The epoch of the writer's own hash indices: they are never published, so their pages are never frozen.
+constexpr uint64 WriterEpoch = 0u;
+
+// A companion path (portable fold) and how many committed records name it.
+struct SCompanionRef
+{
+	uint32 Path = InvalidRow;                          // PATHS: the spelling that first named it
+	uint32 Count = 0u;
+};
+}
+
 /**
- * What only the writer needs: lists the readers never look at, so they stay plain std containers outside
- * the views (nothing here is copied when a view is published). AdoptImage rebuilds all of it by committing.
+ * What only the writer needs: lists the readers never look at, so they stay outside the views (nothing here is
+ * copied when a view is published). Its hash indices are CPagedHashIndex tables at WriterEpoch, keyed like the
+ * view's (in-memory hashes, rows compared by the caller), never std node containers: they cost a slot of 8 bytes
+ * per entry instead of a node, a bucket and, for strings, a copy of the key. AdoptImage rebuilds all of it.
  */
 struct CRegistryStore::SWriterState
 {
@@ -39,13 +54,15 @@ struct CRegistryStore::SWriterState
 	// Path targets by the portable hash (HashPortable) of every file path they could name (the whole text,
 	// and the text before each '#'): the targets to re-resolve when a record of that path comes or goes. A
 	// hash collision only re-resolves a target that stays as it was; no path is kept twice.
-	std::unordered_multimap<uint64, uint32> PathTargetCandidates;
-	// Guid targets by GUID.
-	std::unordered_multimap<uint64, uint32> GuidTargets;
-	// How many committed records name each companion path (portable fold).
-	TStringMapIgnoreCase<uint32> CompanionRefs;
-	// The PATHS id of every companion path ever named (exact bytes), so a re-upsert adds no path again.
-	TStringMap<uint32> CompanionPathIds;
+	CPagedHashIndex PathTargetCandidates;
+	// Guid targets by GUID (HashGuid).
+	CPagedHashIndex GuidTargets;
+	// How many committed records name each companion path (portable fold): CompanionRefs, found by HashPortable
+	// of the path in CompanionRefsByFold.
+	std::vector<SCompanionRef> CompanionRefs;
+	CPagedHashIndex CompanionRefsByFold;
+	// The PATHS id of every companion path ever named (HashExact of its bytes), so a re-upsert adds no path again.
+	CPagedHashIndex CompanionPathIds;
 	// Problem subjects in byte order: the subjects at or below a path are one range ('#' and '/' follow it).
 	std::map<FString, uint32, SStringLess> SubjectsByText;
 
@@ -80,20 +97,81 @@ bool HasRelativePart (FStringView MountPath) noexcept
 	return SplitMountPath(MountPath, mountName, relative) && !relative.IsEmpty();
 }
 
-// Byte offsets of the '#' characters that may end a target's file part, rightmost first (the whole text
-// is tried before them).
-std::vector<uint32> GetLabelSplits (FStringView Text)
+// Visit(uint32 Split) for the byte offsets of the '#' characters that may end a target's file part, rightmost
+// first (the whole text is tried before them); Visit returns false to stop.
+template <typename TVisit>
+void ForEachLabelSplit (FStringView Text, TVisit&& Visit)
 {
-	std::vector<uint32> splits;
+	const char* data = Text.GetData();
 	for (uint32 i = Text.Len(); i > 1u; --i)
 	{
-		if (Text[i - 1u] == '#')
+		if (data[i - 1u] == '#' && !Visit(i - 1u))
 		{
-			splits.push_back(i - 1u);
+			return;
 		}
 	}
-	return splits;
 }
+
+/**
+ * A record keeps one edge per distinct (FromSub, Target, Flags): Keep(i) is false for an edge that repeats an
+ * earlier one. Short lists compare pairwise; long ones (a table's rows, one edge each) go through a hash set, so
+ * a 50k-row table is not quadratic.
+ */
+class CEdgeDeduplicator
+{
+public:
+	// Whether Edge is new among the edges seen since the last Reset (and remembers it).
+	bool Add (const SEdgeRow& Edge, std::span<const SEdgeRow> Kept)
+	{
+		if (Kept.size() < 32u)
+		{
+			for (const SEdgeRow& other : Kept)
+			{
+				if (other.FromSub == Edge.FromSub && other.Target == Edge.Target && other.Flags == Edge.Flags)
+				{
+					return false;
+				}
+			}
+			return true;
+		}
+		if (Kept.size() == 32u && Seen.GetCount() == 0u)
+		{
+			for (uint32 i = 0u; i < Kept.size(); ++i)
+			{
+				Seen.Insert(Hash(Kept[i]), i, WriterEpoch);
+			}
+		}
+		bool bRepeated = false;
+		const uint64 hash = Hash(Edge);
+		Seen.ForEach(hash, [&] (uint32 Index)
+		{
+			const SEdgeRow& other = Kept[Index];
+			bRepeated = other.FromSub == Edge.FromSub && other.Target == Edge.Target && other.Flags == Edge.Flags;
+			return !bRepeated;
+		});
+		if (!bRepeated)
+		{
+			Seen.Insert(hash, static_cast<uint32>(Kept.size()), WriterEpoch);
+		}
+		return !bRepeated;
+	}
+
+	void Reset () noexcept
+	{
+		if (Seen.GetCount() != 0u)
+		{
+			Seen.Clear();
+		}
+	}
+
+private:
+	static uint64 Hash (const SEdgeRow& Edge) noexcept
+	{
+		return MixRegistryKey(Edge.FromSub ^ (static_cast<uint64>(Edge.Target) << 16u) ^ (static_cast<uint64>(Edge.Flags) * 0x9E3779B97F4A7C15ull));
+	}
+
+	CPagedHashIndex Seen;
+};
 }
 
 
@@ -681,10 +759,40 @@ private:
 
 	// ---------------- Files ----------------
 
+	// The CompanionRefs entry of Path (portable fold), or InvalidRow.
+	uint32 FindCompanionRef (FStringView Path, uint64 PortableHash) const
+	{
+		uint32 found = InvalidRow;
+		W.CompanionRefsByFold.ForEach(PortableHash, [&] (uint32 Index)
+		{
+			if (EqualPortable(T.Paths.Get(W.CompanionRefs[Index].Path), Path))
+			{
+				found = Index;
+				return false;
+			}
+			return true;
+		});
+		return found;
+	}
+
+	[[nodiscard]] bool IsNamedCompanion (FStringView Path, uint64 PortableHash) const
+	{
+		if (W.CompanionRefs.empty())
+		{
+			return false;
+		}
+		const uint32 ref = FindCompanionRef(Path, PortableHash);
+		return ref != InvalidRow && W.CompanionRefs[ref].Count > 0u;
+	}
+
+	EFileClass EffectiveClass (FStringView Path, EFileClass BaseClass, uint64 PortableHash) const
+	{
+		return IsNamedCompanion(Path, PortableHash) ? EFileClass::Companion : BaseClass;
+	}
+
 	EFileClass EffectiveClass (FStringView Path, EFileClass BaseClass) const
 	{
-		const auto found = W.CompanionRefs.find(Path);
-		return found != W.CompanionRefs.end() && found->second > 0u ? EFileClass::Companion : BaseClass;
+		return W.CompanionRefs.empty() ? BaseClass : EffectiveClass(Path, BaseClass, HashPortable(Path));
 	}
 
 	// The FILES row of that exact spelling, created (with its folders) when missing. InvalidRow on a violation.
@@ -712,36 +820,58 @@ private:
 			return InvalidRow;
 		}
 		bOutCreated = true;
-		return CreateFileRow(folder, Path, T.Names.Intern(GetMountPathLeaf(Path), Epoch), *mount, HashPortable(Path));
+		SNewFile file;
+		file.LeafName = T.Names.Intern(GetMountPathLeaf(Path), Epoch);
+		return CreateFileRow(folder, Path, *mount, file);
 	}
 
-	// A new FILES row (class Asset until an upsert says otherwise) in Folder, listed in the path indices.
-	uint32 CreateFileRow (uint32 Folder, FStringView Path, uint32 LeafName, const SMountRow& Mount, uint64 PortableHash)
+	// What CreateFileRow writes into a new FILES row (an upsert's file starts as class Asset with no stats until
+	// the upsert says otherwise), and the hashes it shares with its caller.
+	struct SNewFile
+	{
+		uint32 PathId = InvalidRow;                 // PATHS; InvalidRow: CreateFileRow adds the path
+		uint32 LeafName = InvalidRow;               // NAMES
+		uint64 MountRuleHash = 0u;                  // HashMountRule of the path; 0: CreateFileRow computes it
+		uint64 PortableHash = 0u;                   // out: HashPortable of the path
+		uint64 Size = 0u;
+		int64 MTime = 0;
+		platform::SFileIdentity Identity;
+		hash::SContentHash ContentHash;
+		uint64 MetaHash = 0u;
+		EFileClass Class = EFileClass::Asset;
+		EMetaState MetaState = EMetaState::PendingMeta;
+	};
+
+	// A new FILES row in Folder, listed in the path indices.
+	uint32 CreateFileRow (uint32 Folder, FStringView Path, const SMountRow& Mount, SNewFile& File)
 	{
 		SFilesTable& files = T.Files;
 		const uint32 row = files.Folder.Append(Folder, Epoch);
-		files.LeafName.Append(LeafName, Epoch);
-		const uint32 pathId = T.Paths.Add(Path, Epoch);
+		files.LeafName.Append(File.LeafName, Epoch);
+		const uint32 pathId = File.PathId != InvalidRow ? File.PathId : T.Paths.Add(Path, Epoch);
 		files.Path.Append(pathId, Epoch);
-		const FString folded = FString(Path).FoldCase();
-		files.FoldedPath.Append(folded.View() == Path ? T.Paths.GetRef(pathId) : T.Paths.Store(folded.View()), Epoch);
+		char buffer[registry_detail::FastCaseBytes];
+		FString heap;
+		const FStringView folded = FoldPortable(Path, buffer, heap);
+		File.PortableHash = folded.GetData() == buffer ? hash::HashBytes(buffer, folded.Len()) : HashPortable(Path);
+		files.FoldedPath.Append(folded == Path ? T.Paths.GetRef(pathId) : T.Paths.Store(folded), Epoch);
 		files.Mount.Append(Mount.Id, Epoch);
-		files.Size.Append(0u, Epoch);
-		files.MTime.Append(0, Epoch);
-		files.Identity.Append(platform::SFileIdentity {}, Epoch);
-		files.ContentHash.Append(hash::SContentHash {}, Epoch);
-		files.MetaHash.Append(0u, Epoch);
-		const EFileClass fileClass = EffectiveClass(Path, EFileClass::Asset);
+		files.Size.Append(File.Size, Epoch);
+		files.MTime.Append(File.MTime, Epoch);
+		files.Identity.Append(File.Identity, Epoch);
+		files.ContentHash.Append(File.ContentHash, Epoch);
+		files.MetaHash.Append(File.MetaHash, Epoch);
+		const EFileClass fileClass = EffectiveClass(Path, File.Class, File.PortableHash);
 		files.Class.Append(fileClass, Epoch);
-		if (fileClass == EFileClass::Companion)
+		if (fileClass == EFileClass::Companion && !bBulk)
 		{
 			TouchedRecordPaths.insert(FString(Path));   // edges to the path now find a companion
 		}
-		files.BaseClass.Append(EFileClass::Asset, Epoch);
-		files.MetaState.Append(EMetaState::PendingMeta, Epoch);
+		files.BaseClass.Append(File.Class, Epoch);
+		files.MetaState.Append(File.MetaState, Epoch);
 		files.Record.Append(InvalidRow, Epoch);
-		T.Indices.FilesByPath.Insert(HashMountRule(Path, Mount.bCaseSensitive), row, Epoch);
-		T.Indices.FilesByPortablePath.Insert(PortableHash, row, Epoch);
+		T.Indices.FilesByPath.Insert(File.MountRuleHash != 0u ? File.MountRuleHash : HashMountRule(Path, Mount.bCaseSensitive), row, Epoch);
+		T.Indices.FilesByPortablePath.Insert(File.PortableHash, row, Epoch);
 		W.FileSlot.resize(row + 1u);
 		W.FileSlot[row] = static_cast<uint32>(W.FolderFiles[Folder].size());
 		W.FolderFiles[Folder].push_back(row);
@@ -802,12 +932,13 @@ private:
 
 	// Called when a path starts or stops being named as a companion: its FILES rows change class, and the
 	// targets naming it are re-resolved (ETargetState::Companion), whichever comes first, file or record.
-	void UpdateCompanionClass (FStringView Path)
+	void UpdateCompanionClass (FStringView Path, uint64 PortableHash, bool bCompanion)
 	{
-		const auto found = W.CompanionRefs.find(Path);
-		const bool bCompanion = found != W.CompanionRefs.end() && found->second > 0u;
-		TouchedRecordPaths.insert(FString(Path));
-		T.Indices.FilesByPortablePath.ForEach(HashPortable(Path), [&] (uint32 Row)
+		if (!bBulk)
+		{
+			TouchedRecordPaths.insert(FString(Path));   // bulk adoption resolves every target at the end
+		}
+		T.Indices.FilesByPortablePath.ForEach(PortableHash, [&] (uint32 Row)
 		{
 			if (T.Files.Folder[Row] != InvalidRow && EqualPortable(T.Paths.Get(T.Files.Path[Row]), Path))
 			{
@@ -817,27 +948,54 @@ private:
 		});
 	}
 
-	void AddCompanionRef (FStringView Path)
+	// PathId: the PATHS id of Path.
+	void AddCompanionRef (FStringView Path, uint32 PathId)
 	{
-		const auto [it, bInserted] = W.CompanionRefs.try_emplace(FString(Path), 0u);
-		if (++it->second == 1u)
+		const uint64 hash = HashPortable(Path);
+		uint32 ref = FindCompanionRef(Path, hash);
+		if (ref == InvalidRow)
 		{
-			UpdateCompanionClass(Path);
+			ref = static_cast<uint32>(W.CompanionRefs.size());
+			W.CompanionRefs.push_back(SCompanionRef { PathId, 0u });
+			W.CompanionRefsByFold.Insert(hash, ref, WriterEpoch);
+		}
+		if (++W.CompanionRefs[ref].Count == 1u)
+		{
+			UpdateCompanionClass(Path, hash, true);
 		}
 	}
 
+	// An entry whose count drops to zero stays (with count 0) for the next record that names the path.
 	void ReleaseCompanionRef (FStringView Path)
 	{
-		const auto found = W.CompanionRefs.find(Path);
-		if (found == W.CompanionRefs.end())
+		const uint64 hash = HashPortable(Path);
+		const uint32 ref = FindCompanionRef(Path, hash);
+		if (ref != InvalidRow && W.CompanionRefs[ref].Count > 0u && --W.CompanionRefs[ref].Count == 0u)
 		{
-			return;
+			UpdateCompanionClass(Path, hash, false);
 		}
-		if (--found->second == 0u)
+	}
+
+	// The PATHS id of a companion spelling, added the first time it is named.
+	uint32 GetCompanionPathId (FStringView Path)
+	{
+		const uint64 hash = HashExact(Path);
+		uint32 found = InvalidRow;
+		W.CompanionPathIds.ForEach(hash, [&] (uint32 Id)
 		{
-			W.CompanionRefs.erase(found);
-			UpdateCompanionClass(Path);
+			if (T.Paths.Get(Id) == Path)
+			{
+				found = Id;
+				return false;
+			}
+			return true;
+		});
+		if (found == InvalidRow)
+		{
+			found = T.Paths.Add(Path, Epoch);
+			W.CompanionPathIds.Insert(hash, found, WriterEpoch);
 		}
+		return found;
 	}
 
 	// ---------------- Type tables ----------------
@@ -1238,12 +1396,7 @@ private:
 				Violation(Path, FString::Format("companion '{}' is not a well-formed mount path of a file: dropped", companion));
 				continue;
 			}
-			const auto [it, bInserted] = W.CompanionPathIds.try_emplace(companion, 0u);
-			if (bInserted)
-			{
-				it->second = T.Paths.Add(companion, Epoch);
-			}
-			ids.push_back(it->second);
+			ids.push_back(GetCompanionPathId(companion));
 		}
 		SAssetsTable& assets = T.Assets;
 		const SPoolRange old = assets.Companions[Row];
@@ -1258,7 +1411,7 @@ private:
 		}
 		for (const uint32 id : ids)
 		{
-			AddCompanionRef(T.Paths.Get(id));
+			AddCompanionRef(T.Paths.Get(id), id);
 		}
 		for (uint32 i = 0u; i < old.Count; ++i)
 		{
@@ -1441,17 +1594,18 @@ private:
 		if (target.Kind == ETargetKind::Guid)
 		{
 			graph.TargetsByKey.Insert(HashGuid(target.Guid) ^ MixRegistryKey(target.TargetSub), row, Epoch);
-			W.GuidTargets.emplace(HashGuid(target.Guid), row);
+			W.GuidTargets.Insert(HashGuid(target.Guid), row, WriterEpoch);
 		}
 		else
 		{
 			const FStringView text = TargetPath;
 			graph.TargetsByKey.Insert(HashExact(text), row, Epoch);
-			W.PathTargetCandidates.emplace(HashPortable(text), row);
-			for (const uint32 split : GetLabelSplits(text))
+			W.PathTargetCandidates.Insert(HashPortable(text), row, WriterEpoch);
+			ForEachLabelSplit(text, [&] (uint32 Split)
 			{
-				W.PathTargetCandidates.emplace(HashPortable(text.Left(split)), row);
-			}
+				W.PathTargetCandidates.Insert(HashPortable(text.Left(Split)), row, WriterEpoch);
+				return true;
+			});
 		}
 		TargetsToResolve.insert(row);
 		return row;
@@ -1489,6 +1643,7 @@ private:
 		}
 		std::vector<SEdgeRow> edges;
 		edges.reserve(Decls.size());
+		CEdgeDeduplicator unique;
 		for (const SEdgeDecl& decl : Decls)
 		{
 			if (decl.FromSub != 0u && !subIds.contains(decl.FromSub))
@@ -1507,11 +1662,7 @@ private:
 			edge.Target = target;
 			edge.FieldPath = decl.FieldPath.IsEmpty() ? InvalidRow : T.Names.Intern(decl.FieldPath, Epoch);
 			edge.Flags = decl.Flags & ~EDepFlags::Unresolved;
-			const bool bDuplicate = std::any_of(edges.begin(), edges.end(), [&] (const SEdgeRow& Other)
-			{
-				return Other.FromSub == edge.FromSub && Other.Target == edge.Target && Other.Flags == edge.Flags;
-			});
-			if (!bDuplicate)
+			if (unique.Add(edge, edges))
 			{
 				edges.push_back(edge);
 			}
@@ -1542,7 +1693,8 @@ private:
 		graph.LiveEdges += static_cast<uint32>(edges.size());
 	}
 
-	STargetRow ResolveTarget (const STargetRow& Current) const
+	// WholeHash: HashPortable of a Path target's whole text when the caller has it, else 0.
+	STargetRow ResolveTarget (const STargetRow& Current, uint64 WholeHash = 0u) const
 	{
 		STargetRow result = Current;
 		result.State = ETargetState::Unresolved;
@@ -1575,27 +1727,36 @@ private:
 		}
 
 		const FStringView text = T.Paths.Get(Current.Text);
-		std::vector<uint32> splits = GetLabelSplits(text);
-		splits.insert(splits.begin(), text.Len());
-		for (const uint32 split : splits)
+		bool bDone = false;
+		const auto trySplit = [&] (uint32 Split)
 		{
-			const FStringView filePart = text.Left(split);
+			const FStringView filePart = text.Left(Split);
 			uint32 first = InvalidRow;
-			const uint32 matches = FindRecordRowsPortable(T, filePart, first);
+			const uint64 hash = Split == text.Len() && WholeHash != 0u ? WholeHash : HashPortable(filePart);
+			const uint32 matches = FindRecordRowsPortableHashed(T, filePart, hash, first);
 			if (matches == 0u)
 			{
-				continue;
+				return true;
 			}
-			result.FilePartLength = split;
+			result.FilePartLength = Split;
+			bDone = true;
 			if (matches > 1u)
 			{
 				result.State = ETargetState::Ambiguous;
-				return result;
+				return false;
 			}
 			result.State = ETargetState::Resolved;
 			result.Resolved = first;
-			result.TargetSub = split < text.Len() ? MakeSubId(text.RightChop(split + 1u)) : 0u;
+			result.TargetSub = Split < text.Len() ? MakeSubId(text.RightChop(Split + 1u)) : 0u;
 			result.bSpellingDiffers = T.Paths.Get(T.Files.Path[T.Assets.File[first]]) != filePart;
+			return false;
+		};
+		if (trySplit(text.Len()))
+		{
+			ForEachLabelSplit(text, trySplit);
+		}
+		if (bDone)
+		{
 			return result;
 		}
 		result.TargetSub = 0u;
@@ -1649,335 +1810,30 @@ private:
 		});
 	}
 
-	// ---------------- Bulk adoption of an image by a fresh store ----------------
+	// ---------------- Bulk adoption of an image by an empty store ----------------
 
 public:
 	/**
-	 * AdoptImage's fast path: an image adopted by a fresh store fills the tables straight from its vectors -
-	 * names interned once, files created in their known folders, records written without per-item change
-	 * tracking, edges appended without reverse lists (the CSR is built once at the end), every target
-	 * resolved once and Registry problems computed only for records whose edges have any - instead of a
-	 * delta built from the image and replayed item by item. The result is the replay's (the tests compare
-	 * dumps). An image the replay would not apply as it is - one that names a bad index, a malformed path, a
-	 * tag key the type lacks or of another type, a repeated SubId, an edge from an undeclared sub-entry, two
-	 * records or two rows for one file - makes it return false before anything is written; the caller
-	 * replays such an image, which reports what it skips.
+	 * AdoptImage's fast path: an image adopted by an empty store fills the tables straight from its vectors instead
+	 * of a delta built from the image and replayed item by item. Everything the image names by index is resolved
+	 * through dense tables over its indices, never by string: names interned once (InternAll), file paths written
+	 * into PATHS from their folder's path and their leaf, each distinct target path made a target once (the image
+	 * deduplicates its strings), companions found by string index; edges go straight into the base CSR (built once,
+	 * as a compaction does) and every target is resolved once at the end, with Registry problems computed only for
+	 * the records whose edges carry REF006 or PATH001. The result is the replay's (the tests compare dumps and
+	 * answers). The checks the replay makes as it applies items are made here as each item is written; an item the
+	 * replay would not apply as it is - a bad index, a malformed path, a tag key the type lacks or of another type,
+	 * a repeated SubId, an edge from an undeclared sub-entry, two records or two rows for one file - makes it return
+	 * false with only this empty store written (the image unchanged): the caller empties the store and replays the
+	 * image, which reports what it skips.
 	 */
 	bool AdoptIntoFreshStore (SRegistryImage& Image)
 	{
-		SImagePlan plan;
-		if (!IsFreshStore() || !PlanImage(Image, plan))
-		{
-			return false;
-		}
-		SAssetsTable& assets = T.Assets;
-		SGraphTables& graph = T.Graph;
-
-		for (const SImageMount& mount : Image.Mounts)
-		{
-			UpsertMount(SMountUpsert { mount.Name, mount.bCaseSensitive, mount.Id });
-		}
-		std::vector<uint32> nameIds(Image.Names.size());
-		for (uint32 i = 0u; i < Image.Names.size(); ++i)
-		{
-			nameIds[i] = T.Names.Intern(Image.Names[i], Epoch);
-		}
-		const auto nameIdOf = [&] (uint32 Index) { return Index < nameIds.size() ? nameIds[Index] : T.Names.Intern(FStringView(), Epoch); };
-		const auto textOf = [&] (uint32 Index) { return Index < Image.Strings.size() ? Image.Strings[Index].View() : FStringView(); };
-
-		// Folders, parents first: a root is its mount's root row.
-		std::vector<uint32> folderRows(Image.Folders.size(), InvalidRow);
-		for (const uint32 folder : plan.FolderOrder)
-		{
-			const SImageFolder& image = Image.Folders[folder];
-			const SMountRow* mount = FindMountRowForPath(T, plan.FolderPaths[folder]);
-			folderRows[folder] = image.Parent == ~0u ? mount->RootFolder : EnsureFolder(plan.FolderPaths[folder], *mount);
-		}
-
-		// Files.
-		const uint32 fileCount = static_cast<uint32>(Image.Files.size());
-		T.Indices.FilesByPath.Reserve(fileCount, Epoch);
-		T.Indices.FilesByPortablePath.Reserve(fileCount, Epoch);
-		T.Indices.RecordsByPortablePath.Reserve(static_cast<uint32>(Image.Records.size()), Epoch);
-		T.Indices.RecordsByGuid.Reserve(static_cast<uint32>(Image.Records.size()), Epoch);
-		T.Indices.RecordsById64.Reserve(static_cast<uint32>(Image.Records.size() + Image.SubEntries.size()), Epoch);
-		std::vector<uint32> fileRows(fileCount, InvalidRow);
-		std::vector<uint64> portableHashes(fileCount, 0u);
-		SFilesTable& files = T.Files;
-		for (uint32 i = 0u; i < fileCount; ++i)
-		{
-			const SImageFile& image = Image.Files[i];
-			const FStringView path = plan.FilePaths[i];
-			portableHashes[i] = HashPortable(path);
-			const SMountRow* mount = FindMountRowForPath(T, path);
-			const uint32 row = CreateFileRow(folderRows[image.Folder], path, nameIdOf(image.LeafName), *mount, portableHashes[i]);
-			fileRows[i] = row;
-			files.Size.Set(row, image.Size, Epoch);
-			files.MTime.Set(row, image.MTime, Epoch);
-			files.Identity.Set(row, image.Identity, Epoch);
-			files.ContentHash.Set(row, image.ContentHash, Epoch);
-			files.MetaHash.Set(row, image.MetaHash, Epoch);
-			files.Class.Set(row, image.Class, Epoch);
-			files.BaseClass.Set(row, image.Class, Epoch);
-			files.MetaState.Set(row, image.MetaState, Epoch);
-		}
-
-		// Records, their sub-entries, tags, edges and companions.
-		std::vector<uint16> importerIds(Image.ImporterNames.size(), InvalidImporter);
-		std::vector<uint32> labels;
-		std::vector<SEdgeRow> edges;
-		std::vector<uint32> companions;
-		for (const SImageRecord& image : Image.Records)
-		{
-			const uint32 file = fileRows[image.File];
-			const FStringView path = plan.FilePaths[image.File];
-			const uint32 row = AppendAssetRow();
-			++T.LiveRecords;
-			T.Indices.RecordsByPortablePath.Insert(portableHashes[image.File], row, Epoch);
-			const SGuid guid = image.Guid.IsValid() ? image.Guid : MakeProvisionalGuid(path);
-			const uint64 id64 = MakeAssetId64(SAssetId { guid, 0u }).Value;
-			assets.Guid.Set(row, guid, Epoch);
-			assets.AssetId64.Set(row, id64, Epoch);
-			assets.File.Set(row, file, Epoch);
-			files.Record.Set(file, row, Epoch);
-			T.Indices.RecordsByGuid.Insert(HashGuid(guid), row, Epoch);
-			T.Indices.RecordsById64.Insert(MixRegistryKey(id64), row, Epoch);
-
-			const int32 typeOf = plan.TypeOf[image.Type];
-			const reflect::TypeId type = typeOf >= 0 ? static_cast<reflect::TypeId>(typeOf) : asset_types::Unknown;
-			ERecordFlags flags = image.Flags & ~ERecordFlags::HasProblems;
-			if (typeOf < 0)
-			{
-				flags |= ERecordFlags::Schemaless | ERecordFlags::StaleTags;
-			}
-			const SPoolRange subRange = ClampRange(image.SubEntries, Image.SubEntries.size());
-			for (uint32 i = subRange.Begin; i < subRange.Begin + subRange.Count; ++i)
-			{
-				if (plan.TypeOf[Image.SubEntries[i].Type] < 0)
-				{
-					flags |= ERecordFlags::StaleTags;
-				}
-			}
-			uint16 importer = InvalidImporter;
-			if (image.Importer < importerIds.size())
-			{
-				if (importerIds[image.Importer] == InvalidImporter)
-				{
-					importerIds[image.Importer] = InternImporter(Image.ImporterNames[image.Importer]);
-				}
-				importer = importerIds[image.Importer];
-			}
-			assets.Type.Set(row, type, Epoch);
-			assets.TypeRow.Set(row, AddTypeRow(type, row), Epoch);
-			assets.AssetType.Set(row, type, Epoch);
-			assets.Importer.Set(row, importer, Epoch);
-			assets.Flags.Set(row, flags, Epoch);
-			assets.CookRule.Set(row, image.CookRule, Epoch);
-			assets.Chunk.Set(row, image.Chunk, Epoch);
-			const FStringView primaryName = image.PrimaryName < Image.Names.size() ? Image.Names[image.PrimaryName].View() : FStringView();
-			assets.PrimaryName.Set(row, primaryName.IsEmpty() ? InvalidRow : nameIds[image.PrimaryName], Epoch);
-			assets.ImportStatus.Set(row, image.ImportStatus, Epoch);
-			assets.AnalyzeStamp.Set(row, image.AnalyzeStamp, Epoch);
-			assets.Name.Set(row, T.Names.Intern(GetAssetStem(GetMountPathLeaf(path)), Epoch), Epoch);
-			assets.ChangedRevision.Set(row, Revision, Epoch);
-
-			labels.clear();
-			const SPoolRange labelRange = ClampRange(image.Labels, Image.Labels.size());
-			for (uint32 i = labelRange.Begin; i < labelRange.Begin + labelRange.Count; ++i)
-			{
-				if ((Image.Labels[i] & RuleLabelBit) != 0u)
-				{
-					labels.push_back(nameIdOf(Image.Labels[i] & ~RuleLabelBit) | RuleLabelBit);
-				}
-			}
-			SetLabels(row, labels);
-			if (typeOf >= 0)
-			{
-				WriteImageTags(type, assets.TypeRow[row], Image, image.Tags, plan, nameIdOf);
-			}
-
-			const uint32 firstSub = T.SubEntries.Owner.Size();
-			for (uint32 i = subRange.Begin; i < subRange.Begin + subRange.Count; ++i)
-			{
-				const SImageSubEntry& entry = Image.SubEntries[i];
-				const int32 subTypeOf = plan.TypeOf[entry.Type];
-				const reflect::TypeId subType = subTypeOf >= 0 ? static_cast<reflect::TypeId>(subTypeOf) : asset_types::Unknown;
-				ERecordFlags subFlags = entry.Flags & ~ERecordFlags::HasProblems;
-				if (subTypeOf < 0)
-				{
-					subFlags |= ERecordFlags::Schemaless | ERecordFlags::StaleTags;
-				}
-				const uint64 subId = plan.SubIds[i];
-				SSubEntryTable& subs = T.SubEntries;
-				const uint32 sub = subs.Owner.Append(row, Epoch);
-				subs.SubId.Append(subId, Epoch);
-				subs.Key.Append(nameIdOf(entry.Label), Epoch);
-				subs.Type.Append(subType, Epoch);
-				subs.Flags.Append(subFlags, Epoch);
-				subs.TypeRow.Append(AddTypeRow(subType, SubEntryBit | sub), Epoch);
-				const uint64 subId64 = MakeAssetId64(SAssetId { guid, subId }).Value;
-				subs.AssetId64.Append(subId64, Epoch);
-				T.Indices.RecordsById64.Insert(MixRegistryKey(subId64), SubEntryBit | sub, Epoch);
-				++T.LiveSubEntries;
-				if (subTypeOf >= 0)
-				{
-					WriteImageTags(subType, subs.TypeRow[sub], Image, entry.Tags, plan, nameIdOf);
-				}
-			}
-			assets.FirstSub.Set(row, subRange.Count > 0u ? firstSub : 0u, Epoch);
-			assets.NumSubs.Set(row, subRange.Count, Epoch);
-
-			// Edges go to the overflow list only; CompactGraphTables builds both CSRs from them.
-			edges.clear();
-			const SPoolRange edgeRange = ClampRange(image.Edges, Image.Edges.size());
-			for (uint32 i = edgeRange.Begin; i < edgeRange.Begin + edgeRange.Count; ++i)
-			{
-				const SImageEdge& edge = Image.Edges[i];
-				SEdgeRow edgeRow;
-				edgeRow.FromSub = edge.FromSub;
-				edgeRow.Target = GetOrCreateTarget(edge.Target, edge.TargetPath != ~0u ? textOf(edge.TargetPath) : FStringView(), path);
-				const FStringView fieldPath = edge.FieldPath < Image.Names.size() ? Image.Names[edge.FieldPath].View() : FStringView();
-				edgeRow.FieldPath = fieldPath.IsEmpty() ? InvalidRow : nameIds[edge.FieldPath];
-				edgeRow.Flags = edge.Flags & ~EDepFlags::Unresolved;
-				const bool bDuplicate = std::any_of(edges.begin(), edges.end(), [&] (const SEdgeRow& Other)
-				{
-					return Other.FromSub == edgeRow.FromSub && Other.Target == edgeRow.Target && Other.Flags == edgeRow.Flags;
-				});
-				if (!bDuplicate)
-				{
-					edges.push_back(edgeRow);
-				}
-			}
-			const uint32 edgeBegin = graph.OverflowEdges.Size();
-			for (const SEdgeRow& edge : edges)
-			{
-				graph.OverflowEdges.Append(edge, Epoch);
-			}
-			assets.OverflowEdges.Set(row, SPoolRange { edges.empty() ? 0u : edgeBegin, static_cast<uint32>(edges.size()) }, Epoch);
-			graph.LiveEdges += static_cast<uint32>(edges.size());
-
-			companions.clear();
-			const SPoolRange companionRange = ClampRange(image.Companions, Image.Companions.size());
-			for (uint32 i = companionRange.Begin; i < companionRange.Begin + companionRange.Count; ++i)
-			{
-				const FStringView companion = textOf(Image.Companions[i]);
-				const auto [it, bInserted] = W.CompanionPathIds.try_emplace(FString(companion), 0u);
-				if (bInserted)
-				{
-					it->second = T.Paths.Add(companion, Epoch);
-				}
-				companions.push_back(it->second);
-				AddCompanionRef(companion);
-			}
-			assets.Companions.Set(row, SPoolRange { companions.empty() ? 0u : T.Companions.Append(companions, Epoch),
-				static_cast<uint32>(companions.size()) }, Epoch);
-		}
-
-		// Rule files and problems as the replay applies them (they are few, and may report violations).
-		for (const SImageRuleFile& ruleFile : Image.RuleFiles)
-		{
-			if (ruleFile.Mount >= Image.Mounts.size())
-			{
-				continue;
-			}
-			SRuleFileUpsert upsert;
-			upsert.MountName = Image.Mounts[ruleFile.Mount].Name;
-			upsert.RulesHash = ruleFile.RulesHash;
-			if (ruleFile.Folder != ~0u)
-			{
-				if (ruleFile.Folder >= plan.FolderPaths.size())
-				{
-					continue;
-				}
-				upsert.FolderMountPath = plan.FolderPaths[ruleFile.Folder];
-			}
-			UpsertRuleFile(upsert);
-		}
-		for (SImageProblems& problems : Image.Problems)
-		{
-			if (problems.Subject < Image.Strings.size())
-			{
-				SetProblems(Image.Strings[problems.Subject], problems.Source, std::move(problems.Diagnostics));
-			}
-		}
-		FinishAdoption();
-		return true;
-	}
-
-private:
-	// What PlanImage works out once for AdoptIntoFreshStore.
-	struct SImagePlan
-	{
-		std::vector<FString> FolderPaths;     // per image folder
-		std::vector<uint32> FolderOrder;      // image folders, each after its parent
-		std::vector<FString> FilePaths;       // per image file
-		std::vector<int32> TypeOf;            // per image type name: its TypeId, or -1 (frt.Unknown, stale)
-		std::vector<uint64> SubIds;           // per image sub-entry
-		std::unordered_map<uint64, int32> KeyOf;   // (TypeId << 32 | image name) -> tag key index, -1 = none
-	};
-
-	static SPoolRange ClampRange (SPoolRange Range, size_t Size) noexcept
-	{
-		const uint64 begin = (std::min)(static_cast<uint64>(Range.Begin), static_cast<uint64>(Size));
-		const uint64 end = (std::min)(static_cast<uint64>(Range.Begin) + Range.Count, static_cast<uint64>(Size));
-		return SPoolRange { static_cast<uint32>(begin), static_cast<uint32>(end - begin) };
-	}
-
-	static bool IsPathSegment (FStringView Name) noexcept
-	{
-		return !Name.IsEmpty() && !Name.Contains('/') && Name != "." && Name != "..";
-	}
-
-	bool IsFreshStore () const noexcept
-	{
-		return T.Mounts->empty() && T.Folders.Mount.Size() == 0u && T.Files.Folder.Size() == 0u && T.Assets.File.Size() == 0u
-			&& T.Graph.Targets.Size() == 0u && T.Problems.Subject.Size() == 0u && T.RuleFiles.Mount.Size() == 0u;
-	}
-
-	int32 FindImageKey (SImagePlan& Plan, const SRegistryImage& Image, reflect::TypeId Type, uint32 Name) const
-	{
-		const uint64 key = (static_cast<uint64>(Type) << 32u) | Name;
-		const auto [it, bInserted] = Plan.KeyOf.try_emplace(key, -1);
-		if (bInserted && Name < Image.Names.size())
-		{
-			const std::optional<uint32> found = CAssetTypeRegistry::FindKey(Type, Image.Names[Name]);
-			it->second = found ? static_cast<int32>(*found) : -1;
-		}
-		return it->second;
-	}
-
-	// The image's tags of one record or sub-entry are what WriteTags would take without a violation.
-	bool AreImageTagsClean (SImagePlan& Plan, const SRegistryImage& Image, reflect::TypeId Type, SPoolRange Range) const
-	{
-		const CTypeTable& table = T.Types[Type];
-		const SPoolRange range = ClampRange(Range, Image.Tags.size());
-		uint64 seen = 0u;   // single-valued keys met so far (a type has fewer than 64 keys)
-		for (uint32 i = range.Begin; i < range.Begin + range.Count; ++i)
-		{
-			const SImageTag& tag = Image.Tags[i];
-			const int32 key = FindImageKey(Plan, Image, Type, tag.Key);
-			if (key < 0 || key >= 64 || tag.Type != table.Keys[key].Type)
-			{
-				return false;
-			}
-			if (!HasAnyFlags(table.Keys[key].Flags, ETagFlags::MultiValue))
-			{
-				if ((seen & (uint64(1) << key)) != 0u)
-				{
-					return false;
-				}
-				seen |= uint64(1) << key;
-			}
-		}
-		return true;
-	}
-
-	// Works out folder and file paths, types, keys and SubIds, and checks everything AdoptIntoFreshStore
-	// writes without the replay's checks. Reads the image and the static tables only.
-	bool PlanImage (const SRegistryImage& Image, SImagePlan& Plan) const
-	{
+		bBulk = true;
 		const auto nameAt = [&] (uint32 Index) { return Index < Image.Names.size() ? Image.Names[Index].View() : FStringView(); };
 		const auto textAt = [&] (uint32 Index) { return Index < Image.Strings.size() ? Image.Strings[Index].View() : FStringView(); };
+
+		// Mounts: distinct names and ids, each name a path segment.
 		for (uint32 i = 0u; i < Image.Mounts.size(); ++i)
 		{
 			const SImageMount& mount = Image.Mounts[i];
@@ -1993,11 +1849,387 @@ private:
 				}
 			}
 		}
+		for (const SImageMount& mount : Image.Mounts)
+		{
+			UpsertMount(SMountUpsert { mount.Name, mount.bCaseSensitive, mount.Id });
+		}
 
-		// Folder paths, iteratively (up a parent chain to a resolved folder or a root, then down).
+		std::vector<uint32> nameIds;
+		T.Names.InternAll(Image.Names, nameIds, Epoch);
+		const uint32 emptyName = T.Names.Intern(FStringView(), Epoch);
+		const auto nameIdOf = [&] (uint32 Index) { return Index < nameIds.size() ? nameIds[Index] : emptyName; };
+
+		// Folders, parents first: a root is its mount's root row.
+		std::vector<FString> folderPaths;
+		std::vector<uint32> folderOrder;
+		std::vector<uint16> folderMounts;   // image mount index of each folder's path
+		if (!PlanFolders(Image, folderPaths, folderOrder, folderMounts))
+		{
+			return false;
+		}
 		const uint32 folderCount = static_cast<uint32>(Image.Folders.size());
-		Plan.FolderPaths.assign(folderCount, FString());
-		Plan.FolderOrder.reserve(folderCount);
+		std::vector<uint32> folderRows(folderCount, InvalidRow);
+		for (const uint32 folder : folderOrder)
+		{
+			const SImageFolder& image = Image.Folders[folder];
+			const SMountRow& mount = (*T.Mounts)[Image.Mounts[folderMounts[folder]].Id];
+			if (image.Parent == ~0u)
+			{
+				folderRows[folder] = mount.RootFolder;
+				continue;
+			}
+			if (FindFolderRowExact(T, folderPaths[folder]) != InvalidRow)
+			{
+				return false;   // two image folders of one path: the replay makes them one
+			}
+			folderRows[folder] = CreateFolderRow(folderRows[image.Parent], folderPaths[folder], mount.Id, nameAt(image.Name));
+		}
+
+		// Files, each path written into PATHS once, from its folder's path and its leaf.
+		const uint32 fileCount = static_cast<uint32>(Image.Files.size());
+		const uint32 recordCount = static_cast<uint32>(Image.Records.size());
+		T.Indices.FilesByPath.Reserve(fileCount, Epoch);
+		T.Indices.FilesByPortablePath.Reserve(fileCount, Epoch);
+		T.Indices.RecordsByPortablePath.Reserve(recordCount, Epoch);
+		T.Indices.RecordsByGuid.Reserve(recordCount, Epoch);
+		T.Indices.RecordsById64.Reserve(recordCount + static_cast<uint32>(Image.SubEntries.size()), Epoch);
+		T.Names.Reserve(recordCount, Epoch);   // the records' stems
+		std::vector<uint32> fileRows(fileCount, InvalidRow);
+		std::vector<uint64> portableHashes(fileCount, 0u);
+		for (uint32 i = 0u; i < fileCount; ++i)
+		{
+			const SImageFile& image = Image.Files[i];
+			const FStringView leaf = nameAt(image.LeafName);
+			if (image.Folder >= folderCount || !IsPathSegment(leaf))
+			{
+				return false;
+			}
+			const SMountRow& mount = (*T.Mounts)[Image.Mounts[folderMounts[image.Folder]].Id];
+			SNewFile file;
+			file.PathId = T.Paths.AddJoined(folderPaths[image.Folder], leaf, Epoch);
+			const FStringView path = T.Paths.Get(file.PathId);
+			file.MountRuleHash = HashMountRule(path, mount.bCaseSensitive);
+			bool bRepeated = false;
+			T.Indices.FilesByPath.ForEach(file.MountRuleHash, [&] (uint32 Row)
+			{
+				bRepeated = T.Paths.Get(T.Files.Path[Row]) == path;
+				return !bRepeated;
+			});
+			if (bRepeated)
+			{
+				return false;   // two rows of one path: the replay makes them one
+			}
+			file.LeafName = nameIdOf(image.LeafName);
+			file.Size = image.Size;
+			file.MTime = image.MTime;
+			file.Identity = image.Identity;
+			file.ContentHash = image.ContentHash;
+			file.MetaHash = image.MetaHash;
+			file.Class = image.Class;
+			file.MetaState = image.MetaState;
+			fileRows[i] = CreateFileRow(folderRows[image.Folder], path, mount, file);
+			portableHashes[i] = file.PortableHash;
+		}
+
+		// Types by exact dotted name, as MakeImageDelta resolves them; each type table sized for its rows at once.
+		std::vector<int32> typeOf(Image.TypeNames.size(), -1);
+		for (uint32 i = 0u; i < Image.TypeNames.size(); ++i)
+		{
+			if (const std::optional<reflect::TypeId> type = CAssetTypeRegistry::FindExact(Image.TypeNames[i]))
+			{
+				typeOf[i] = *type;
+			}
+		}
+		const auto typeIdOf = [&] (uint16 Index) -> reflect::TypeId
+		{
+			return Index < typeOf.size() && typeOf[Index] >= 0 ? static_cast<reflect::TypeId>(typeOf[Index]) : asset_types::Unknown;
+		};
+		{
+			std::vector<uint32> rowsPerType(T.Types.size(), 0u);
+			for (const SImageRecord& record : Image.Records)
+			{
+				++rowsPerType[typeIdOf(record.Type)];
+			}
+			for (const SImageSubEntry& sub : Image.SubEntries)
+			{
+				++rowsPerType[typeIdOf(sub.Type)];
+			}
+			GrowTypeTables(rowsPerType);
+		}
+
+		// Records, their sub-entries, tags, edges and companions.
+		SAssetsTable& assets = T.Assets;
+		SSubEntryTable& subs = T.SubEntries;
+		GrowAssetRows(recordCount);
+		GrowSubEntryRows(static_cast<uint32>(Image.SubEntries.size()));
+		std::vector<uint8> hasRecord(fileCount, 0u);
+		std::vector<uint16> importerIds(Image.ImporterNames.size(), InvalidImporter);
+		std::vector<uint32> pathTargets(Image.Strings.size(), InvalidRow);       // image string -> its path target
+		std::vector<uint32> companionPaths(Image.Strings.size(), InvalidRow);    // image string -> its PATHS id
+		std::vector<SEdgeRow> edges;
+		edges.reserve(Image.Edges.size());
+		std::vector<SPoolRange> edgeRanges;
+		edgeRanges.reserve(recordCount);
+		std::vector<uint32> labels;
+		std::vector<uint32> companions;
+		std::vector<uint64> subIds;
+		std::vector<uint64> sortedSubIds;
+		CEdgeDeduplicator unique;
+		SImageKeys keys(T.Types.size());
+		for (uint32 r = 0u; r < recordCount; ++r)
+		{
+			const SImageRecord& image = Image.Records[r];
+			if (image.File >= fileCount || hasRecord[image.File] != 0u || image.Type >= Image.TypeNames.size())
+			{
+				return false;
+			}
+			hasRecord[image.File] = 1u;
+			const uint32 file = fileRows[image.File];
+			const FStringView path = T.Paths.Get(T.Files.Path[file]);
+			const uint32 row = r;
+			++T.LiveRecords;
+			T.Indices.RecordsByPortablePath.Insert(portableHashes[image.File], row, Epoch);
+			const SGuid guid = image.Guid.IsValid() ? image.Guid : MakeProvisionalGuid(path);
+			const uint64 id64 = MakeAssetId64(SAssetId { guid, 0u }).Value;
+			assets.Guid.Set(row, guid, Epoch);
+			assets.AssetId64.Set(row, id64, Epoch);
+			assets.File.Set(row, file, Epoch);
+			T.Files.Record.Set(file, row, Epoch);
+			T.Indices.RecordsByGuid.Insert(HashGuid(guid), row, Epoch);
+			T.Indices.RecordsById64.Insert(MixRegistryKey(id64), row, Epoch);
+
+			const reflect::TypeId type = typeIdOf(image.Type);
+			const bool bTyped = typeOf[image.Type] >= 0;
+			ERecordFlags flags = image.Flags & ~ERecordFlags::HasProblems;
+			if (!bTyped)
+			{
+				flags |= ERecordFlags::Schemaless | ERecordFlags::StaleTags;
+			}
+			const SPoolRange subRange = ClampRange(image.SubEntries, Image.SubEntries.size());
+			for (uint32 i = subRange.Begin; i < subRange.Begin + subRange.Count; ++i)
+			{
+				if (Image.SubEntries[i].Type >= Image.TypeNames.size())
+				{
+					return false;
+				}
+				if (typeOf[Image.SubEntries[i].Type] < 0)
+				{
+					flags |= ERecordFlags::StaleTags;
+				}
+			}
+			uint16 importer = InvalidImporter;
+			if (image.Importer < importerIds.size())
+			{
+				if (importerIds[image.Importer] == InvalidImporter)
+				{
+					importerIds[image.Importer] = InternImporter(Image.ImporterNames[image.Importer]);
+				}
+				importer = importerIds[image.Importer];
+			}
+			assets.Type.Set(row, type, Epoch);
+			assets.TypeRow.Set(row, TakeTypeRow(type, row), Epoch);
+			assets.AssetType.Set(row, type, Epoch);
+			assets.Importer.Set(row, importer, Epoch);
+			assets.Flags.Set(row, flags, Epoch);
+			assets.CookRule.Set(row, image.CookRule, Epoch);
+			assets.Chunk.Set(row, image.Chunk, Epoch);
+			const FStringView primaryName = nameAt(image.PrimaryName);
+			assets.PrimaryName.Set(row, primaryName.IsEmpty() ? InvalidRow : nameIds[image.PrimaryName], Epoch);
+			assets.ImportStatus.Set(row, image.ImportStatus, Epoch);
+			assets.AnalyzeStamp.Set(row, image.AnalyzeStamp, Epoch);
+			assets.Name.Set(row, T.Names.Intern(GetAssetStem(GetMountPathLeaf(path)), Epoch), Epoch);
+			assets.ChangedRevision.Set(row, Revision, Epoch);
+
+			labels.clear();
+			const SPoolRange labelRange = ClampRange(image.Labels, Image.Labels.size());
+			for (uint32 i = labelRange.Begin; i < labelRange.Begin + labelRange.Count; ++i)
+			{
+				if ((Image.Labels[i] & RuleLabelBit) != 0u)
+				{
+					labels.push_back(nameIdOf(Image.Labels[i] & ~RuleLabelBit) | RuleLabelBit);
+				}
+			}
+			if (!labels.empty())
+			{
+				assets.Labels.Set(row, SPoolRange { T.Labels.Append(labels, Epoch), static_cast<uint32>(labels.size()) }, Epoch);
+			}
+			if (bTyped && !WriteImageTags(type, assets.TypeRow[row], Image, image.Tags, nameIdOf, keys))
+			{
+				return false;
+			}
+
+			// Sub-entries, each SubId once.
+			subIds.clear();
+			const uint32 firstSub = T.LiveSubEntries;
+			for (uint32 i = subRange.Begin; i < subRange.Begin + subRange.Count; ++i)
+			{
+				const SImageSubEntry& entry = Image.SubEntries[i];
+				const reflect::TypeId subType = typeIdOf(entry.Type);
+				const bool bSubTyped = typeOf[entry.Type] >= 0;
+				ERecordFlags subFlags = entry.Flags & ~ERecordFlags::HasProblems;
+				if (!bSubTyped)
+				{
+					subFlags |= ERecordFlags::Schemaless | ERecordFlags::StaleTags;
+				}
+				const uint64 subId = entry.SubId != 0u ? entry.SubId : MakeSubId(nameAt(entry.Label));
+				subIds.push_back(subId);
+				const uint32 sub = T.LiveSubEntries++;
+				subs.Owner.Set(sub, row, Epoch);
+				subs.SubId.Set(sub, subId, Epoch);
+				subs.Key.Set(sub, nameIdOf(entry.Label), Epoch);
+				subs.Type.Set(sub, subType, Epoch);
+				subs.Flags.Set(sub, subFlags, Epoch);
+				subs.TypeRow.Set(sub, TakeTypeRow(subType, SubEntryBit | sub), Epoch);
+				const uint64 subId64 = MakeAssetId64(SAssetId { guid, subId }).Value;
+				subs.AssetId64.Set(sub, subId64, Epoch);
+				T.Indices.RecordsById64.Insert(MixRegistryKey(subId64), SubEntryBit | sub, Epoch);
+				if (bSubTyped && !WriteImageTags(subType, subs.TypeRow[sub], Image, entry.Tags, nameIdOf, keys))
+				{
+					return false;
+				}
+			}
+			sortedSubIds.assign(subIds.begin(), subIds.end());
+			std::sort(sortedSubIds.begin(), sortedSubIds.end());
+			if (std::adjacent_find(sortedSubIds.begin(), sortedSubIds.end()) != sortedSubIds.end())
+			{
+				return false;   // a repeated SubId: the replay drops the second one
+			}
+			assets.FirstSub.Set(row, subRange.Count > 0u ? firstSub : 0u, Epoch);
+			assets.NumSubs.Set(row, subRange.Count, Epoch);
+
+			// Edges straight into the base CSR, one per distinct (FromSub, target, flags).
+			const uint32 edgeBegin = static_cast<uint32>(edges.size());
+			unique.Reset();
+			const SPoolRange edgeRange = ClampRange(image.Edges, Image.Edges.size());
+			for (uint32 i = edgeRange.Begin; i < edgeRange.Begin + edgeRange.Count; ++i)
+			{
+				const SImageEdge& edge = Image.Edges[i];
+				if (edge.FromSub != 0u && !std::binary_search(sortedSubIds.begin(), sortedSubIds.end(), edge.FromSub))
+				{
+					return false;
+				}
+				SEdgeRow edgeRow;
+				edgeRow.FromSub = edge.FromSub;
+				if (edge.Target.IsValid())
+				{
+					edgeRow.Target = GetOrCreateTarget(edge.Target, textAt(edge.TargetPath), path);
+				}
+				else
+				{
+					const FStringView targetPath = textAt(edge.TargetPath);
+					if (edge.TargetPath == ~0u || !IsTargetPath(targetPath))
+					{
+						return false;
+					}
+					uint32& target = pathTargets[edge.TargetPath];
+					if (target == InvalidRow)
+					{
+						target = CreatePathTarget(targetPath);
+					}
+					edgeRow.Target = target;
+				}
+				const FStringView fieldPath = nameAt(edge.FieldPath);
+				edgeRow.FieldPath = fieldPath.IsEmpty() ? InvalidRow : nameIds[edge.FieldPath];
+				edgeRow.Flags = edge.Flags & ~EDepFlags::Unresolved;
+				const std::span<const SEdgeRow> kept(edges.data() + edgeBegin, edges.size() - edgeBegin);
+				if (unique.Add(edgeRow, kept))
+				{
+					edges.push_back(edgeRow);
+				}
+			}
+			edgeRanges.push_back(SPoolRange { edgeBegin, static_cast<uint32>(edges.size()) - edgeBegin });
+
+			// Companions, each path interned once.
+			companions.clear();
+			const SPoolRange companionRange = ClampRange(image.Companions, Image.Companions.size());
+			for (uint32 i = companionRange.Begin; i < companionRange.Begin + companionRange.Count; ++i)
+			{
+				const uint32 text = Image.Companions[i];
+				const FStringView companion = textAt(text);
+				if (!IsWellFormedMountPath(companion) || !HasRelativePart(companion))
+				{
+					return false;
+				}
+				uint32& pathId = companionPaths[text];
+				if (pathId == InvalidRow)
+				{
+					pathId = GetCompanionPathId(companion);
+				}
+				companions.push_back(pathId);
+				AddCompanionRef(companion, pathId);
+			}
+			if (!companions.empty())
+			{
+				assets.Companions.Set(row, SPoolRange { T.Companions.Append(companions, Epoch), static_cast<uint32>(companions.size()) }, Epoch);
+			}
+		}
+		Store.InstallGraphTables(edges, edgeRanges);
+
+		// Rule files and problems as the replay applies them (they are few, and may report violations).
+		for (const SImageRuleFile& ruleFile : Image.RuleFiles)
+		{
+			if (ruleFile.Mount >= Image.Mounts.size())
+			{
+				continue;
+			}
+			SRuleFileUpsert upsert;
+			upsert.MountName = Image.Mounts[ruleFile.Mount].Name;
+			upsert.RulesHash = ruleFile.RulesHash;
+			if (ruleFile.Folder != ~0u)
+			{
+				if (ruleFile.Folder >= folderPaths.size() || folderPaths[ruleFile.Folder].IsEmpty())
+				{
+					continue;
+				}
+				upsert.FolderMountPath = folderPaths[ruleFile.Folder];
+			}
+			UpsertRuleFile(upsert);
+		}
+		for (SImageProblems& problems : Image.Problems)
+		{
+			if (problems.Subject < Image.Strings.size())
+			{
+				SetProblems(Image.Strings[problems.Subject], problems.Source, std::move(problems.Diagnostics));
+			}
+		}
+		FinishAdoption();
+		return true;
+	}
+
+private:
+	// The image's tag keys per type: (image name index, key index) pairs, searched linearly (a type has a few keys;
+	// a snapshot's key names are the same few indices throughout).
+	struct SImageKeys
+	{
+		explicit SImageKeys (size_t TypeCount)
+			: ByType(TypeCount)
+		{}
+
+		std::vector<std::vector<std::pair<uint32, int32>>> ByType;
+	};
+
+	static SPoolRange ClampRange (SPoolRange Range, size_t Size) noexcept
+	{
+		const uint64 begin = (std::min)(static_cast<uint64>(Range.Begin), static_cast<uint64>(Size));
+		const uint64 end = (std::min)(static_cast<uint64>(Range.Begin) + Range.Count, static_cast<uint64>(Size));
+		return SPoolRange { static_cast<uint32>(begin), static_cast<uint32>(end - begin) };
+	}
+
+	static bool IsPathSegment (FStringView Name) noexcept
+	{
+		return !Name.IsEmpty() && !Name.Contains('/') && Name != "." && Name != "..";
+	}
+
+	// Folder paths, iteratively (up a parent chain to a resolved folder or a root, then down), each folder after its
+	// parent in OutOrder; OutMounts: the image mount of each folder's root. False for a parent out of range, a cycle,
+	// a root that does not name its mount or a name that is no path segment.
+	static bool PlanFolders (const SRegistryImage& Image, std::vector<FString>& OutPaths, std::vector<uint32>& OutOrder, std::vector<uint16>& OutMounts)
+	{
+		const auto nameAt = [&] (uint32 Index) { return Index < Image.Names.size() ? Image.Names[Index].View() : FStringView(); };
+		const uint32 folderCount = static_cast<uint32>(Image.Folders.size());
+		OutPaths.assign(folderCount, FString());
+		OutMounts.assign(folderCount, uint16(0u));
+		OutOrder.reserve(folderCount);
 		std::vector<uint8> state(folderCount, 0u);   // 0 unknown, 1 on the current chain, 2 resolved
 		std::vector<uint32> chain;
 		for (uint32 i = 0u; i < folderCount; ++i)
@@ -2023,7 +2255,8 @@ private:
 			{
 				return false;   // a parent out of range, or a cycle
 			}
-			FStringView base = bRootOnTop ? FStringView() : Plan.FolderPaths[current].View();
+			FStringView base = bRootOnTop ? FStringView() : OutPaths[current].View();
+			uint16 mount = bRootOnTop ? uint16(0u) : OutMounts[current];
 			for (auto it = chain.rbegin(); it != chain.rend(); ++it)
 			{
 				const SImageFolder& folder = Image.Folders[*it];
@@ -2034,7 +2267,8 @@ private:
 					{
 						return false;   // a root that does not name its mount
 					}
-					Plan.FolderPaths[*it] = JoinMountPath(name, FStringView());
+					OutPaths[*it] = JoinMountPath(name, FStringView());
+					mount = folder.Mount;
 				}
 				else
 				{
@@ -2042,172 +2276,241 @@ private:
 					{
 						return false;
 					}
-					Plan.FolderPaths[*it] = MakeChildMountPath(base, name);
+					OutPaths[*it] = MakeChildMountPath(base, name);
 				}
+				OutMounts[*it] = mount;
 				state[*it] = 2u;
-				base = Plan.FolderPaths[*it];
-				Plan.FolderOrder.push_back(*it);
-			}
-		}
-
-		// File paths, each spelled once (two rows of one path would be one row in the replay).
-		Plan.FilePaths.resize(Image.Files.size());
-		CPagedHashIndex seenFiles;
-		seenFiles.Reserve(static_cast<uint32>(Image.Files.size()), 1u);
-		for (uint32 i = 0u; i < Image.Files.size(); ++i)
-		{
-			const SImageFile& file = Image.Files[i];
-			const FStringView leaf = nameAt(file.LeafName);
-			if (file.Folder >= folderCount || !IsPathSegment(leaf))
-			{
-				return false;
-			}
-			Plan.FilePaths[i] = MakeChildMountPath(Plan.FolderPaths[file.Folder], leaf);
-			const uint64 hash = HashExact(Plan.FilePaths[i]);
-			bool bRepeated = false;
-			seenFiles.ForEach(hash, [&] (uint32 Other)
-			{
-				bRepeated = Plan.FilePaths[Other] == Plan.FilePaths[i];
-				return !bRepeated;
-			});
-			if (bRepeated)
-			{
-				return false;
-			}
-			seenFiles.Insert(hash, i, 1u);
-		}
-
-		// Types by exact dotted name, as MakeImageDelta resolves them.
-		Plan.TypeOf.assign(Image.TypeNames.size(), -1);
-		for (uint32 i = 0u; i < Image.TypeNames.size(); ++i)
-		{
-			if (const std::optional<reflect::TypeId> type = CAssetTypeRegistry::FindExact(Image.TypeNames[i]))
-			{
-				Plan.TypeOf[i] = *type;
-			}
-		}
-
-		// Records: one per file, clean tags, distinct SubIds, edges from declared sub-entries to valid
-		// targets, companions that are file paths.
-		Plan.SubIds.assign(Image.SubEntries.size(), 0u);
-		std::vector<uint8> hasRecord(Image.Files.size(), 0u);
-		std::vector<uint64> subIds;
-		for (const SImageRecord& record : Image.Records)
-		{
-			if (record.File >= Image.Files.size() || hasRecord[record.File] != 0u || record.Type >= Image.TypeNames.size())
-			{
-				return false;
-			}
-			hasRecord[record.File] = 1u;
-			const int32 type = Plan.TypeOf[record.Type];
-			if (type >= 0 && !AreImageTagsClean(Plan, Image, static_cast<reflect::TypeId>(type), record.Tags))
-			{
-				return false;
-			}
-			subIds.clear();
-			const SPoolRange subs = ClampRange(record.SubEntries, Image.SubEntries.size());
-			for (uint32 i = subs.Begin; i < subs.Begin + subs.Count; ++i)
-			{
-				const SImageSubEntry& sub = Image.SubEntries[i];
-				const uint64 subId = sub.SubId != 0u ? sub.SubId : MakeSubId(nameAt(sub.Label));
-				if (sub.Type >= Image.TypeNames.size() || std::find(subIds.begin(), subIds.end(), subId) != subIds.end())
-				{
-					return false;
-				}
-				subIds.push_back(subId);
-				Plan.SubIds[i] = subId;
-				const int32 subType = Plan.TypeOf[sub.Type];
-				if (subType >= 0 && !AreImageTagsClean(Plan, Image, static_cast<reflect::TypeId>(subType), sub.Tags))
-				{
-					return false;
-				}
-			}
-			const SPoolRange edges = ClampRange(record.Edges, Image.Edges.size());
-			for (uint32 i = edges.Begin; i < edges.Begin + edges.Count; ++i)
-			{
-				const SImageEdge& edge = Image.Edges[i];
-				if (edge.FromSub != 0u && std::find(subIds.begin(), subIds.end(), edge.FromSub) == subIds.end())
-				{
-					return false;
-				}
-				if (!edge.Target.IsValid() && (edge.TargetPath == ~0u || !IsTargetPath(textAt(edge.TargetPath))))
-				{
-					return false;
-				}
-			}
-			const SPoolRange companions = ClampRange(record.Companions, Image.Companions.size());
-			for (uint32 i = companions.Begin; i < companions.Begin + companions.Count; ++i)
-			{
-				const FStringView companion = textAt(Image.Companions[i]);
-				if (!IsWellFormedMountPath(companion) || !HasRelativePart(companion))
-				{
-					return false;
-				}
+				base = OutPaths[*it];
+				OutOrder.push_back(*it);
 			}
 		}
 		return true;
 	}
 
-	// A fresh type row's tags from the image (PlanImage checked them).
-	template <typename TNameId>
-	void WriteImageTags (reflect::TypeId Type, uint32 Row, const SRegistryImage& Image, SPoolRange Range, SImagePlan& Plan, TNameId&& NameIdOf)
+	// Sizes each type table for RowsPerType more rows at once; TakeTypeRow hands them out in order.
+	void GrowTypeTables (const std::vector<uint32>& RowsPerType)
 	{
-		CTypeTable& table = T.Types[Type];
-		std::vector<std::vector<uint64>> multi;
-		const SPoolRange range = ClampRange(Range, Image.Tags.size());
-		for (uint32 i = range.Begin; i < range.Begin + range.Count; ++i)
+		TypeCursor.assign(T.Types.size(), 0u);
+		for (uint32 type = 0u; type < T.Types.size(); ++type)
 		{
-			const SImageTag& tag = Image.Tags[i];
-			const uint32 key = static_cast<uint32>(FindImageKey(Plan, Image, Type, tag.Key));
-			const STagKeyDesc& desc = table.Keys[key];
-			uint64 bits = tag.Bits;
-			if (desc.Type == ETagType::Name)
+			CTypeTable& table = T.Types[type];
+			TypeCursor[type] = table.Records.Size();
+			if (RowsPerType[type] == 0u)
 			{
-				bits = NameIdOf(tag.Text);
-			}
-			else if (desc.Type == ETagType::String)
-			{
-				bits = T.Strings.Add(tag.Text < Image.Strings.size() ? Image.Strings[tag.Text].View() : FStringView(), Epoch);
-			}
-			STagColumn& column = table.Columns[key];
-			if (HasAnyFlags(desc.Flags, ETagFlags::MultiValue))
-			{
-				multi.resize(table.Keys.size());
-				multi[key].push_back(bits);
 				continue;
 			}
-			column.Values.Set(Row, bits, Epoch);
-			column.PresentBits.Set(Row, true, Epoch);
-		}
-		for (uint32 key = 0u; key < multi.size(); ++key)
-		{
-			if (!multi[key].empty())
+			const uint32 size = table.Records.Size() + RowsPerType[type];
+			table.Records.Grow(size, Epoch);
+			table.Dead.Grow(size, Epoch);
+			for (uint32 key = 0u; key < table.Columns.size(); ++key)
 			{
 				STagColumn& column = table.Columns[key];
-				const uint32 begin = column.Multi.Append(multi[key], Epoch);
-				column.MultiRanges.Set(Row, SPoolRange { begin, static_cast<uint32>(multi[key].size()) }, Epoch);
-				column.Values.Set(Row, multi[key][0], Epoch);
-				column.PresentBits.Set(Row, true, Epoch);
+				column.Values.Grow(size, Epoch);
+				column.PresentBits.Grow(size, Epoch);
+				if (HasAnyFlags(table.Keys[key].Flags, ETagFlags::MultiValue))
+				{
+					column.MultiRanges.Grow(size, Epoch);
+				}
 			}
 		}
 	}
 
-	// Finish for AdoptIntoFreshStore: targets resolved once, both CSRs built from the overflow lists, then
-	// Registry problems for the records whose edges carry REF006 or PATH001, problem counts, intervals.
+	uint32 TakeTypeRow (reflect::TypeId Type, uint32 RecordValue)
+	{
+		CTypeTable& table = T.Types[Type];
+		const uint32 row = TypeCursor[Type]++;
+		table.Records.Set(row, RecordValue, Epoch);
+		++table.LiveRows;
+		return row;
+	}
+
+	// Count more ASSETS rows with AppendAssetRow's values, written in place by the bulk path.
+	void GrowAssetRows (uint32 Count)
+	{
+		SAssetsTable& assets = T.Assets;
+		const uint32 size = assets.Guid.Size() + Count;
+		assets.Guid.Grow(size, Epoch);
+		assets.AssetId64.Grow(size, Epoch);
+		assets.File.Grow(size, Epoch);
+		assets.Type.Grow(size, Epoch);
+		assets.AssetType.Grow(size, Epoch);
+		assets.Importer.Grow(size, Epoch);
+		assets.Flags.Grow(size, Epoch);
+		assets.CookRule.Grow(size, Epoch);
+		assets.Chunk.Grow(size, Epoch);
+		assets.PrimaryName.Grow(size, Epoch);
+		assets.Labels.Grow(size, Epoch);
+		assets.FirstSub.Grow(size, Epoch);
+		assets.NumSubs.Grow(size, Epoch);
+		assets.TypeRow.Grow(size, Epoch);
+		assets.ImportStatus.Grow(size, Epoch);
+		assets.Problems.Grow(size, Epoch);
+		assets.AnalyzeStamp.Grow(size, Epoch);
+		assets.Name.Grow(size, Epoch);
+		assets.ChangedRevision.Grow(size, Epoch);
+		assets.Companions.Grow(size, Epoch);
+		assets.BaseEdges.Grow(size, Epoch);
+		assets.BaseEdgesMasked.Grow(size, Epoch);
+		assets.OverflowEdges.Grow(size, Epoch);
+	}
+
+	void GrowSubEntryRows (uint32 Count)
+	{
+		SSubEntryTable& subs = T.SubEntries;
+		const uint32 size = subs.Owner.Size() + Count;
+		subs.Owner.Grow(size, Epoch);
+		subs.SubId.Grow(size, Epoch);
+		subs.Key.Grow(size, Epoch);
+		subs.Type.Grow(size, Epoch);
+		subs.Flags.Grow(size, Epoch);
+		subs.TypeRow.Grow(size, Epoch);
+		subs.AssetId64.Grow(size, Epoch);
+	}
+
+	// A path target the image names for the first time (bulk: every image string is distinct, so it is new).
+	uint32 CreatePathTarget (FStringView TargetPath)
+	{
+		SGraphTables& graph = T.Graph;
+		STargetRow target;
+		target.Kind = ETargetKind::Path;
+		const uint32 file = FindFileRowExact(T, TargetPath);   // most references spell a file's path exactly
+		target.Text = file != InvalidRow ? T.Files.Path[file] : T.Paths.Add(TargetPath, Epoch);
+		const uint32 row = graph.Targets.Append(target, Epoch);
+		graph.OverflowReverseHead.Append(InvalidRow, Epoch);
+		graph.TargetsByKey.Insert(HashExact(TargetPath), row, Epoch);
+		const uint64 portable = HashPortable(TargetPath);
+		W.PathTargetCandidates.Insert(portable, row, WriterEpoch);
+		ForEachLabelSplit(TargetPath, [&] (uint32 Split)
+		{
+			W.PathTargetCandidates.Insert(HashPortable(TargetPath.Left(Split)), row, WriterEpoch);
+			return true;
+		});
+		TargetPortableHashes.resize(row + 1u, 0u);
+		TargetPortableHashes[row] = portable;
+		return row;
+	}
+
+	// The key index of an image tag key for Type, or -1.
+	int32 FindImageKey (SImageKeys& Keys, const SRegistryImage& Image, reflect::TypeId Type, uint32 Name) const
+	{
+		std::vector<std::pair<uint32, int32>>& known = Keys.ByType[Type];
+		for (const auto& [name, key] : known)
+		{
+			if (name == Name)
+			{
+				return key;
+			}
+		}
+		int32 key = -1;
+		if (Name < Image.Names.size())
+		{
+			const std::optional<uint32> found = CAssetTypeRegistry::FindKey(Type, Image.Names[Name]);
+			key = found ? static_cast<int32>(*found) : -1;
+		}
+		known.emplace_back(Name, key);
+		return key;
+	}
+
+	/**
+	 * A fresh type row's tags from the image. False for a tag the replay would drop (a key the type lacks, a value
+	 * of another type, a single-valued key repeated).
+	 */
+	template <typename TNameId>
+	bool WriteImageTags (reflect::TypeId Type, uint32 Row, const SRegistryImage& Image, SPoolRange Range, TNameId&& NameIdOf, SImageKeys& Keys)
+	{
+		CTypeTable& table = T.Types[Type];
+		const SPoolRange range = ClampRange(Range, Image.Tags.size());
+		uint64 seen = 0u;   // single-valued keys met so far (a type has fewer than 64 keys)
+		bool bMulti = false;
+		for (uint32 i = range.Begin; i < range.Begin + range.Count; ++i)
+		{
+			const SImageTag& tag = Image.Tags[i];
+			const int32 key = FindImageKey(Keys, Image, Type, tag.Key);
+			if (key < 0 || key >= 64 || tag.Type != table.Keys[key].Type)
+			{
+				return false;
+			}
+			const STagKeyDesc& desc = table.Keys[key];
+			if (HasAnyFlags(desc.Flags, ETagFlags::MultiValue))
+			{
+				bMulti = true;
+				continue;
+			}
+			if ((seen & (uint64(1) << key)) != 0u)
+			{
+				return false;
+			}
+			seen |= uint64(1) << key;
+			STagColumn& column = table.Columns[key];
+			column.Values.Set(Row, EncodeImageTag(desc.Type, tag, Image, NameIdOf), Epoch);
+			column.PresentBits.Set(Row, true, Epoch);
+		}
+		if (!bMulti)
+		{
+			return true;
+		}
+		// MultiValue keys: each key's values in tag order, as one list.
+		std::vector<uint64> items;
+		for (uint32 key = 0u; key < table.Keys.size(); ++key)
+		{
+			const STagKeyDesc& desc = table.Keys[key];
+			if (!HasAnyFlags(desc.Flags, ETagFlags::MultiValue))
+			{
+				continue;
+			}
+			items.clear();
+			for (uint32 i = range.Begin; i < range.Begin + range.Count; ++i)
+			{
+				const SImageTag& tag = Image.Tags[i];
+				if (FindImageKey(Keys, Image, Type, tag.Key) == static_cast<int32>(key))
+				{
+					items.push_back(EncodeImageTag(desc.Type, tag, Image, NameIdOf));
+				}
+			}
+			if (!items.empty())
+			{
+				STagColumn& column = table.Columns[key];
+				const uint32 begin = column.Multi.Append(items, Epoch);
+				column.MultiRanges.Set(Row, SPoolRange { begin, static_cast<uint32>(items.size()) }, Epoch);
+				column.Values.Set(Row, items[0], Epoch);
+				column.PresentBits.Set(Row, true, Epoch);
+			}
+		}
+		return true;
+	}
+
+	template <typename TNameId>
+	uint64 EncodeImageTag (ETagType Type, const SImageTag& Tag, const SRegistryImage& Image, TNameId&& NameIdOf)
+	{
+		if (Type == ETagType::Name)
+		{
+			return NameIdOf(Tag.Text);
+		}
+		if (Type == ETagType::String)
+		{
+			return T.Strings.Add(Tag.Text < Image.Strings.size() ? Image.Strings[Tag.Text].View() : FStringView(), Epoch);
+		}
+		return Tag.Bits;
+	}
+
+	// Finish for AdoptIntoFreshStore: every target resolved once (the CSR is built: the reverse entries name their
+	// sources), then Registry problems for the records whose edges carry REF006 or PATH001, problem counts,
+	// intervals.
 	void FinishAdoption ()
 	{
-		std::vector<uint32> targets(TargetsToResolve.begin(), TargetsToResolve.end());
-		std::sort(targets.begin(), targets.end());
-		for (const uint32 target : targets)
-		{
-			ApplyTargetResolution(target);   // no reverse entries yet: nothing is touched
-		}
-		Store.CompactGraphTables();
+		const uint32 targetRows = T.Graph.Targets.Size();
 		std::vector<uint32> sources;
-		for (const uint32 target : targets)
+		for (uint32 target = 0u; target < targetRows; ++target)
 		{
-			const STargetRow& row = T.Graph.Targets[target];
-			if (row.State == ETargetState::Ambiguous || (row.State == ETargetState::Resolved && row.bSpellingDiffers))
+			const STargetRow current = T.Graph.Targets[target];
+			const uint64 portable = target < TargetPortableHashes.size() ? TargetPortableHashes[target] : 0u;
+			const STargetRow resolved = current.Kind == ETargetKind::Path && portable != 0u ? ResolveTarget(current, portable) : ResolveTarget(current);
+			if (resolved.Resolved != InvalidRow)
+			{
+				T.Graph.TargetsByResolved.Insert(MixRegistryKey(resolved.Resolved), target, Epoch);
+			}
+			T.Graph.Targets.Set(target, resolved, Epoch);
+			if (resolved.State == ETargetState::Ambiguous || (resolved.State == ETargetState::Resolved && resolved.bSpellingDiffers))
 			{
 				ForEachLiveReverseEdge(T, target, [&] (const SReverseEdge& Entry) { sources.push_back(Entry.Source); });
 			}
@@ -2243,6 +2546,10 @@ private:
 			}
 		}
 	}
+
+	bool bBulk = false;                              // AdoptIntoFreshStore: targets resolve at the end, all at once
+	std::vector<uint32> TypeCursor;                  // per type: the next row GrowTypeTables made
+	std::vector<uint64> TargetPortableHashes;        // per target row: HashPortable of its whole text (bulk)
 
 	// ---------------- Derived state ----------------
 
@@ -2316,14 +2623,11 @@ private:
 		uint32 file = FindFileRowExact(T, Subject);
 		if (file == InvalidRow)
 		{
-			for (const uint32 split : GetLabelSplits(Subject))
+			ForEachLabelSplit(Subject, [&] (uint32 Split)
 			{
-				file = FindFileRowExact(T, Subject.Left(split));
-				if (file != InvalidRow)
-				{
-					break;
-				}
-			}
+				file = FindFileRowExact(T, Subject.Left(Split));
+				return file == InvalidRow;
+			});
 		}
 		return file != InvalidRow ? T.Files.Record[file] : InvalidRow;
 	}
@@ -2381,19 +2685,19 @@ private:
 		// Targets whose candidate records changed, and the new ones.
 		for (const FString& path : TouchedRecordPaths)
 		{
-			const auto [begin, end] = W.PathTargetCandidates.equal_range(HashPortable(path));
-			for (auto it = begin; it != end; ++it)
+			W.PathTargetCandidates.ForEach(HashPortable(path), [&] (uint32 Target)
 			{
-				TargetsToResolve.insert(it->second);
-			}
+				TargetsToResolve.insert(Target);
+				return true;
+			});
 		}
 		for (const uint64 guidHash : TouchedGuids)
 		{
-			const auto [begin, end] = W.GuidTargets.equal_range(guidHash);
-			for (auto it = begin; it != end; ++it)
+			W.GuidTargets.ForEach(guidHash, [&] (uint32 Target)
 			{
-				TargetsToResolve.insert(it->second);
-			}
+				TargetsToResolve.insert(Target);
+				return true;
+			});
 		}
 		std::vector<uint32> targets(TargetsToResolve.begin(), TargetsToResolve.end());
 		std::sort(targets.begin(), targets.end());
@@ -2475,6 +2779,15 @@ private:
 CRegistryStore::CRegistryStore ()
 	: Writer(std::make_unique<SWriterState>())
 {
+	InitTables();
+	Publish();
+}
+
+CRegistryStore::~CRegistryStore () = default;
+
+// The tables of an empty store: no mounts or importers, a type table per CAssetTypeRegistry type with its keys.
+void CRegistryStore::InitTables ()
+{
 	SRegistryTables& tables = LiveView.Tables;
 	tables.Mounts = std::make_shared<const std::vector<SMountRow>>();
 	tables.Importers = std::make_shared<const std::vector<FString>>();
@@ -2495,10 +2808,15 @@ CRegistryStore::CRegistryStore ()
 		}
 		table.Columns.resize(table.Keys.size());
 	}
-	Publish();
 }
 
-CRegistryStore::~CRegistryStore () = default;
+// Back to an empty store before anything was published from it (a bulk adoption that stopped part way).
+void CRegistryStore::ResetToEmpty ()
+{
+	LiveView.Tables = SRegistryTables {};
+	InitTables();
+	*Writer = SWriterState {};
+}
 
 void CRegistryStore::CheckOwnerThread ()
 {
@@ -2604,22 +2922,6 @@ uint64 GetHeapBytes (const FString& Text) noexcept
 	return Text.IsHeapAllocated() ? Text.GetCapacity() + 1u + BlockOverhead : 0u;
 }
 
-uint64 GetHeapBytes (uint64) noexcept
-{
-	return 0u;
-}
-
-template <typename TMap>
-uint64 GetHashMapBytes (const TMap& Map)
-{
-	uint64 bytes = Map.bucket_count() * 2u * sizeof(void*);
-	for (const auto& entry : Map)
-	{
-		bytes += 2u * sizeof(void*) + sizeof(entry) + BlockOverhead + GetHeapBytes(entry.first);
-	}
-	return bytes;
-}
-
 template <typename TMap>
 uint64 GetTreeMapBytes (const TMap& Map)
 {
@@ -2647,8 +2949,8 @@ SRegistryMemoryStats CRegistryStore::GetMemoryStats () const
 	SRegistryMemoryStats stats = ComputeMemoryStats(LiveView.Tables);
 	const SWriterState& state = *Writer;
 	stats.Writer = GetListsBytes(state.FolderChildren) + GetListsBytes(state.FolderFiles) + state.FileSlot.capacity() * sizeof(uint32)
-		+ GetHashMapBytes(state.PathTargetCandidates) + GetHashMapBytes(state.GuidTargets) + GetHashMapBytes(state.CompanionRefs)
-		+ GetHashMapBytes(state.CompanionPathIds) + GetTreeMapBytes(state.SubjectsByText);
+		+ state.PathTargetCandidates.GetResidentBytes() + state.GuidTargets.GetResidentBytes() + state.CompanionRefs.capacity() * sizeof(SCompanionRef)
+		+ state.CompanionRefsByFold.GetResidentBytes() + state.CompanionPathIds.GetResidentBytes() + GetTreeMapBytes(state.SubjectsByText);
 	stats.ChangeRing = state.Ring.capacity() * sizeof(SRingEntry);
 	stats.Total += stats.Writer + stats.ChangeRing;
 	return stats;
@@ -2658,22 +2960,28 @@ void CRegistryStore::AdoptImage (SRegistryImage&& Image, uint64 Revision)
 {
 	CheckOwnerThread();
 	const uint64 start = platform::ReadTimestamp();
-	SRegistryTables& tables = LiveView.Tables;
+	if (IsEmpty())
 	{
-		const uint32 recordsBefore = tables.LiveRecords;
-		CWriter writer(*this, Revision);
-		if (writer.AdoptIntoFreshStore(Image))
+		bool bAdopted = false;
+		{
+			CWriter writer(*this, Revision);
+			bAdopted = writer.AdoptIntoFreshStore(Image);
+		}
+		SRegistryTables& tables = LiveView.Tables;
+		if (bAdopted)
 		{
 			tables.Revision = Revision;
 			LastStats = SRegistryCommitStats {};
-			LastStats.RecordsChanged = tables.LiveRecords - recordsBefore;
+			LastStats.RecordsChanged = tables.LiveRecords;
 			LastStats.bCompactedGraph = true;
 			Writer->DroppedUpTo = (std::max)(Writer->DroppedUpTo, Revision);   // readers refresh everything
 			Publish();
 			LastStats.Milliseconds = platform::TimestampToMilliseconds(platform::ReadTimestamp() - start);
 			return;
 		}
+		ResetToEmpty();   // the image holds an item the bulk path does not take: the replay applies and reports it
 	}
+	SRegistryTables& tables = LiveView.Tables;
 	SRegistryDelta delta = MakeImageDelta(std::move(Image));
 	tables.Revision = Revision;
 	const bool bReplayed = true;
@@ -2693,6 +3001,15 @@ void CRegistryStore::AdoptImage (SRegistryImage&& Image, uint64 Revision)
 	LastStats.bCompactedGraph = true;
 	Publish();
 	LastStats.Milliseconds = platform::TimestampToMilliseconds(platform::ReadTimestamp() - start);
+}
+
+// Nothing committed or adopted yet (only the type tables' key names in NAMES).
+bool CRegistryStore::IsEmpty () const noexcept
+{
+	const SRegistryTables& tables = LiveView.Tables;
+	return tables.Mounts->empty() && tables.Folders.Mount.Size() == 0u && tables.Files.Folder.Size() == 0u && tables.Assets.File.Size() == 0u
+		&& tables.Graph.Targets.Size() == 0u && tables.Problems.Subject.Size() == 0u && tables.RuleFiles.Mount.Size() == 0u
+		&& tables.SubEntries.Owner.Size() == 0u && tables.Revision == 0u;
 }
 
 bool CRegistryStore::GraphNeedsCompaction () const noexcept
@@ -2931,33 +3248,40 @@ void CRegistryStore::CompactRecordTables ()
  */
 void CRegistryStore::CompactGraphTables ()
 {
-	SRegistryTables& tables = LiveView.Tables;
-	SAssetsTable& assets = tables.Assets;
-	SGraphTables& graph = tables.Graph;
+	const SRegistryTables& tables = LiveView.Tables;
+	const SAssetsTable& assets = tables.Assets;
 	const uint32 assetRows = assets.File.Size();
-	const uint32 targetRows = graph.Targets.Size();
-
 	std::vector<SEdgeRow> edges;
-	edges.reserve(graph.LiveEdges);
+	edges.reserve(tables.Graph.LiveEdges);
 	std::vector<SPoolRange> ranges(assetRows);
-	std::vector<uint32> sources;
-	sources.reserve(graph.LiveEdges);
 	for (uint32 row = 0u; row < assetRows; ++row)
 	{
 		ranges[row].Begin = static_cast<uint32>(edges.size());
 		if (assets.File[row] != InvalidRow)
 		{
-			ForEachLiveEdge(tables, row, [&] (uint32 EdgeRef)
-			{
-				edges.push_back(GetEdgeRow(tables, EdgeRef));
-				sources.push_back(row);
-			});
+			ForEachLiveEdge(tables, row, [&] (uint32 EdgeRef) { edges.push_back(GetEdgeRow(tables, EdgeRef)); });
 		}
 		ranges[row].Count = static_cast<uint32>(edges.size()) - ranges[row].Begin;
 	}
+	InstallGraphTables(edges, ranges);
+}
+
+/**
+ * Makes Edges the base CSR (Ranges: each ASSETS row's slice, in row order, empty for removed rows) and builds the
+ * reverse CSR by a counting sort over targets; the overflow lists and masks start empty. New columns, so views
+ * holding the old ones keep them. Shared by compaction and bulk adoption.
+ */
+void CRegistryStore::InstallGraphTables (std::span<const SEdgeRow> Edges, std::span<const SPoolRange> Ranges)
+{
+	SRegistryTables& tables = LiveView.Tables;
+	SAssetsTable& assets = tables.Assets;
+	SGraphTables& graph = tables.Graph;
+	const uint32 assetRows = assets.File.Size();
+	const uint32 targetRows = graph.Targets.Size();
+	frt_assert(Ranges.size() == assetRows);
 
 	std::vector<uint32> counts(targetRows + 1u, 0u);
-	for (const SEdgeRow& edge : edges)
+	for (const SEdgeRow& edge : Edges)
 	{
 		++counts[edge.Target + 1u];
 	}
@@ -2965,62 +3289,47 @@ void CRegistryStore::CompactGraphTables ()
 	{
 		counts[i] += counts[i - 1u];
 	}
-	std::vector<SReverseEdge> reverse(edges.size());
+	std::vector<SReverseEdge> reverse(Edges.size());
 	std::vector<uint32> cursor(counts.begin(), counts.end() - 1);
-	for (uint32 i = 0u; i < edges.size(); ++i)
+	for (uint32 row = 0u; row < assetRows; ++row)
 	{
-		SReverseEdge& entry = reverse[cursor[edges[i].Target]++];
-		entry.Source = sources[i];
-		entry.Edge = i;
+		const SPoolRange range = Ranges[row];
+		for (uint32 i = range.Begin; i < range.Begin + range.Count; ++i)
+		{
+			SReverseEdge& entry = reverse[cursor[Edges[i].Target]++];
+			entry.Source = row;
+			entry.Edge = i;
+		}
 	}
 
 	const uint64 epoch = Epoch;
-	CPagedColumn<SEdgeRow> baseEdges;
-	baseEdges.Grow(static_cast<uint32>(edges.size()), epoch);
-	for (uint32 i = 0u; i < edges.size(); ++i)
-	{
-		baseEdges.Set(i, edges[i], epoch);
-	}
-	CPagedColumn<SPoolRange> baseRanges;
 	CPagedBitmap masked;
-	CPagedColumn<SPoolRange> overflowRanges;
-	baseRanges.Grow(assetRows, epoch);
 	masked.Grow(assetRows, epoch);
-	overflowRanges.Grow(assetRows, epoch);
 	for (uint32 row = 0u; row < assetRows; ++row)
 	{
-		baseRanges.Set(row, ranges[row], epoch);
 		if (assets.File[row] == InvalidRow)
 		{
 			masked.Set(row, true, epoch);
 		}
 	}
-	CPagedColumn<SReverseEdge> baseReverseEdges;
-	baseReverseEdges.Grow(static_cast<uint32>(reverse.size()), epoch);
-	for (uint32 i = 0u; i < reverse.size(); ++i)
-	{
-		baseReverseEdges.Set(i, reverse[i], epoch);
-	}
-	CPagedColumn<SPoolRange> baseReverse;
-	CPagedColumn<uint32> reverseHeads;
-	baseReverse.Grow(targetRows, epoch);
-	reverseHeads.Grow(targetRows, epoch);
+	std::vector<SPoolRange> baseReverse(targetRows);
 	for (uint32 target = 0u; target < targetRows; ++target)
 	{
-		baseReverse.Set(target, SPoolRange { counts[target], counts[target + 1u] - counts[target] }, epoch);
-		reverseHeads.Set(target, InvalidRow, epoch);
+		baseReverse[target] = SPoolRange { counts[target], counts[target + 1u] - counts[target] };
 	}
+	const std::vector<uint32> reverseHeads(targetRows, InvalidRow);
+	const std::vector<SPoolRange> noOverflow(assetRows);
 
-	assets.BaseEdges = std::move(baseRanges);
+	assets.BaseEdges.Assign(Ranges, epoch);
 	assets.BaseEdgesMasked = std::move(masked);
-	assets.OverflowEdges = std::move(overflowRanges);
-	graph.BaseEdges = std::move(baseEdges);
+	assets.OverflowEdges.Assign(noOverflow, epoch);
+	graph.BaseEdges.Assign(Edges, epoch);
 	graph.OverflowEdges.Clear();
-	graph.BaseReverse = std::move(baseReverse);
-	graph.BaseReverseEdges = std::move(baseReverseEdges);
-	graph.OverflowReverseHead = std::move(reverseHeads);
+	graph.BaseReverse.Assign(baseReverse, epoch);
+	graph.BaseReverseEdges.Assign(reverse, epoch);
+	graph.OverflowReverseHead.Assign(reverseHeads, epoch);
 	graph.OverflowReverseEdges.Clear();
-	graph.LiveEdges = static_cast<uint32>(edges.size());
+	graph.LiveEdges = static_cast<uint32>(Edges.size());
 	graph.GarbageEdges = 0u;
 }
 }

@@ -46,20 +46,134 @@ inline constexpr uint16 InvalidImporter = 0xFFFFu;
 
 // ---------------- Hashes and comparisons (in memory only) ----------------
 
-// The portable fold (§5.2): lookups, Path edges, companions, PATH001.
-[[nodiscard]] inline uint64 HashPortable (FStringView Text) noexcept { return SStringHashIgnoreCase {}(Text); }
-[[nodiscard]] inline bool EqualPortable (FStringView A, FStringView B) noexcept { return SStringEqualIgnoreCase {}(A, B); }
+/**
+ * ASCII fast paths. The caseless hashes of Containers/ (SStringHashIgnoreCase, SPathHash) stream each code point's
+ * key, byte by byte, into 256-byte chunks; up to 256 bytes that is exactly hash::HashBytes of the keys' bytes. For
+ * an ASCII text the keys are its bytes with the letters lowered (the portable fold) or raised (NTFS's upcase), so
+ * lowering or raising into a buffer and hashing it gives the same value at a fraction of the cost - paths are
+ * hashed at every file, record and target the store adds. Anything else takes the general functors.
+ */
+namespace registry_detail
+{
+inline constexpr uint32 FastCaseBytes = 256u;
+
+// Writes Text with its ASCII letters lowered to Out (Text.Len() bytes); returns the OR of every byte, so a result
+// with bit 7 set means Text holds a non-ASCII byte (and Out is not its fold).
+inline uint8 LowerAscii (FStringView Text, char* Out) noexcept
+{
+	const char* data = Text.GetData();
+	uint8 bits = 0u;
+	for (uint32 i = 0u, count = Text.Len(); i < count; ++i)
+	{
+		const uint8 c = static_cast<uint8>(data[i]);
+		bits |= c;
+		Out[i] = static_cast<char>(c + (static_cast<uint8>(c - uint8('A')) < 26u ? 32u : 0u));
+	}
+	return bits;
+}
+
+// The same with the letters raised.
+inline uint8 UpperAscii (FStringView Text, char* Out) noexcept
+{
+	const char* data = Text.GetData();
+	uint8 bits = 0u;
+	for (uint32 i = 0u, count = Text.Len(); i < count; ++i)
+	{
+		const uint8 c = static_cast<uint8>(data[i]);
+		bits |= c;
+		Out[i] = static_cast<char>(c - (static_cast<uint8>(c - uint8('a')) < 26u ? 32u : 0u));
+	}
+	return bits;
+}
+
+// Equal ASCII texts under a case rule (ASCII letters equal in either case), or nullopt when either holds a
+// non-ASCII byte before a difference is found.
+inline std::optional<bool> EqualAsciiIgnoreCase (FStringView A, FStringView B) noexcept
+{
+	if (A.Len() != B.Len())
+	{
+		return std::nullopt;   // folding changes byte lengths (U+212A is 3 bytes, its fold 'k' one)
+	}
+	const char* a = A.GetData();
+	const char* b = B.GetData();
+	for (uint32 i = 0u, count = A.Len(); i < count; ++i)
+	{
+		const uint8 x = static_cast<uint8>(a[i]);
+		const uint8 y = static_cast<uint8>(b[i]);
+		if (((x | y) & 0x80u) != 0u)
+		{
+			return std::nullopt;
+		}
+		if (x != y && (x | 0x20u) != (y | 0x20u))
+		{
+			return false;
+		}
+		if (x != y && static_cast<uint8>((x | 0x20u) - uint8('a')) >= 26u)
+		{
+			return false;   // differ only in bit 5 but are not letters ('@' and '`')
+		}
+	}
+	return true;
+}
+}
+
+// The portable fold (§5.2): lookups, Path edges, companions, PATH001. Equal to SStringHashIgnoreCase.
+[[nodiscard]] inline uint64 HashPortable (FStringView Text) noexcept
+{
+	if (Text.Len() <= registry_detail::FastCaseBytes)
+	{
+		char folded[registry_detail::FastCaseBytes];
+		if ((registry_detail::LowerAscii(Text, folded) & 0x80u) == 0u)
+		{
+			return hash::HashBytes(folded, Text.Len());
+		}
+	}
+	return SStringHashIgnoreCase {}(Text);
+}
+[[nodiscard]] inline bool EqualPortable (FStringView A, FStringView B) noexcept
+{
+	const std::optional<bool> ascii = registry_detail::EqualAsciiIgnoreCase(A, B);
+	return ascii.has_value() ? *ascii : SStringEqualIgnoreCase {}(A, B);
+}
 [[nodiscard]] inline uint64 HashExact (FStringView Text) noexcept { return SStringHash {}(Text); }
 
 // The mount root's file-system rule (§5.2 "File-system entries follow the volume"): NTFS's upcase table on a
-// case-insensitive mount (TPathMap's rule), byte-exact on a case-sensitive one.
+// case-insensitive mount (TPathMap's rule, equal to SPathHash), byte-exact on a case-sensitive one.
 [[nodiscard]] inline uint64 HashMountRule (FStringView Path, bool bCaseSensitive) noexcept
 {
-	return bCaseSensitive ? SStringHash {}(Path) : SPathHash {}(Path);
+	if (bCaseSensitive)
+	{
+		return SStringHash {}(Path);
+	}
+	if (Path.Len() <= registry_detail::FastCaseBytes)
+	{
+		char upper[registry_detail::FastCaseBytes];
+		if ((registry_detail::UpperAscii(Path, upper) & 0x80u) == 0u)
+		{
+			return hash::HashBytes(upper, Path.Len());
+		}
+	}
+	return SPathHash {}(Path);
 }
 [[nodiscard]] inline bool EqualMountRule (FStringView A, FStringView B, bool bCaseSensitive) noexcept
 {
-	return bCaseSensitive ? A == B : SPathEqual {}(A, B);
+	if (bCaseSensitive)
+	{
+		return A == B;
+	}
+	const std::optional<bool> ascii = registry_detail::EqualAsciiIgnoreCase(A, B);
+	return ascii.has_value() ? *ascii : SPathEqual {}(A, B);
+}
+
+// Folds Text (FString::FoldCase) into Buffer when it is ASCII and fits (returns the view of it), else into Heap.
+[[nodiscard]] inline FStringView FoldPortable (FStringView Text, char (&Buffer)[registry_detail::FastCaseBytes], FString& Heap)
+{
+	if (Text.Len() <= registry_detail::FastCaseBytes && (registry_detail::LowerAscii(Text, Buffer) & 0x80u) == 0u)
+	{
+		return FStringView(Buffer, Text.Len());
+	}
+	Heap = FString(Text).FoldCase();
+	return Heap.View();
 }
 
 [[nodiscard]] inline uint64 HashGuid (const SGuid& Guid) noexcept
@@ -94,8 +208,52 @@ public:
 
 	[[nodiscard]] std::optional<uint32> Find (FStringView Name) const
 	{
+		return FindHashed(Name, HashExact(Name));
+	}
+
+	uint32 Intern (FStringView Name, uint64 Epoch)
+	{
+		const uint64 hash = HashExact(Name);
+		if (const std::optional<uint32> existing = FindHashed(Name, hash))
+		{
+			return *existing;
+		}
+		return Add(Name, hash, Epoch);
+	}
+
+	/**
+	 * Interns names in bulk (a snapshot's NAMES into a store): OutIds[i] is Names[i]'s id, the index sized once
+	 * for all of them.
+	 */
+	void InternAll (std::span<const FString> Names, std::vector<uint32>& OutIds, uint64 Epoch)
+	{
+		OutIds.resize(Names.size());
+		Index.Reserve(Size() + static_cast<uint32>(Names.size()), Epoch);
+		for (size_t i = 0u; i < Names.size(); ++i)
+		{
+			const FStringView name = Names[i].View();
+			const uint64 hash = HashExact(name);
+			const std::optional<uint32> existing = FindHashed(name, hash);
+			OutIds[i] = existing ? *existing : Add(name, hash, Epoch);
+		}
+	}
+
+	// Room in the index for Count more names (a bulk load).
+	void Reserve (uint32 Count, uint64 Epoch)
+	{
+		Index.Reserve(Size() + Count, Epoch);
+	}
+
+	[[nodiscard]] uint64 GetResidentBytes () const noexcept
+	{
+		return Pool.GetResidentBytes() + Folded.GetResidentBytes() + Index.GetResidentBytes();
+	}
+
+private:
+	[[nodiscard]] std::optional<uint32> FindHashed (FStringView Name, uint64 Hash) const
+	{
 		std::optional<uint32> found;
-		Index.ForEach(HashExact(Name), [&] (uint32 Id)
+		Index.ForEach(Hash, [&] (uint32 Id)
 		{
 			if (Pool.Get(Id) == Name)
 			{
@@ -107,23 +265,18 @@ public:
 		return found;
 	}
 
-	uint32 Intern (FStringView Name, uint64 Epoch)
+	uint32 Add (FStringView Name, uint64 Hash, uint64 Epoch)
 	{
-		if (const std::optional<uint32> existing = Find(Name))
-		{
-			return *existing;
-		}
 		const uint32 id = Pool.Add(Name, Epoch);
-		const FString folded = FString(Name).FoldCase();
-		Folded.Append(folded.View() == Name ? Pool.GetRef(id) : Pool.Store(folded.View()), Epoch);
-		Index.Insert(HashExact(Name), id, Epoch);
+		char buffer[registry_detail::FastCaseBytes];
+		FString heap;
+		const FStringView folded = FoldPortable(Name, buffer, heap);
+		Folded.Append(folded == Name ? Pool.GetRef(id) : Pool.Store(folded), Epoch);
+		Index.Insert(Hash, id, Epoch);
 		return id;
 	}
 
-	[[nodiscard]] uint64 GetResidentBytes () const noexcept
-	{
-		return Pool.GetResidentBytes() + Folded.GetResidentBytes() + Index.GetResidentBytes();
-	}
+public:
 
 private:
 	CStringPool Pool;
@@ -144,7 +297,9 @@ public:
 	uint32 Add (FStringView Text, uint64 Epoch)
 	{
 		const uint32 id = Pool.Add(Text, Epoch);
-		Folded.Append(Pool.Store(FString(Text).FoldCase().View()), Epoch);
+		char buffer[registry_detail::FastCaseBytes];
+		FString heap;
+		Folded.Append(Pool.Store(FoldPortable(Text, buffer, heap)), Epoch);
 		return id;
 	}
 
@@ -465,6 +620,8 @@ FRT_CORE_API uint32 FindFolderRowsPortable (const SRegistryTables& Tables, FStri
 // Live records whose file path equals FileMountPath under the portable fold: how many there are, and the
 // one with the lowest row in OutRow (InvalidRow when none).
 FRT_CORE_API uint32 FindRecordRowsPortable (const SRegistryTables& Tables, FStringView FileMountPath, uint32& OutRow) noexcept;
+// The same with HashPortable(FileMountPath) given.
+FRT_CORE_API uint32 FindRecordRowsPortableHashed (const SRegistryTables& Tables, FStringView FileMountPath, uint64 PortableHash, uint32& OutRow) noexcept;
 // The SRecordId value with that AssetId64 (asset or sub-entry), or InvalidRow.
 [[nodiscard]] FRT_CORE_API uint32 FindRecordValueById64 (const SRegistryTables& Tables, uint64 AssetId64) noexcept;
 // The sub-entry row of an ASSETS row with that SubId, or InvalidRow.

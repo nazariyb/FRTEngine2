@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <bit>
 #include <cstring>
 #include <memory>
@@ -112,6 +113,19 @@ public:
 	{
 		Pages.clear();
 		Count = 0u;
+	}
+
+	// Replaces every row with Values, page by page in new pages (a bulk build: a load, a compaction).
+	void Assign (std::span<const T> Values, uint64 Epoch)
+	{
+		Clear();
+		Grow(static_cast<uint32>(Values.size()), Epoch);
+		for (uint32 page = 0u; page < Pages.size(); ++page)
+		{
+			const size_t first = static_cast<size_t>(page) * RegistryPageRows;
+			const size_t rows = (std::min)(Values.size() - first, static_cast<size_t>(RegistryPageRows));
+			std::copy_n(Values.data() + first, rows, Pages[page]->Rows);
+		}
 	}
 
 	[[nodiscard]] uint32 GetPageCount () const noexcept { return static_cast<uint32>(Pages.size()); }
@@ -269,29 +283,23 @@ public:
 	// Stores bytes without giving them an id (a folded shadow, CNamePool).
 	SRef Store (FStringView Text)
 	{
-		SRef ref;
-		ref.Length = Text.Len();
-		if (Text.Len() > BlockBytes)
-		{
-			ref.Block = NewBlock(Text.Len());
-			LastBlockUsed = Text.Len();   // full: nothing else goes into an oversized block
-		}
-		else
-		{
-			if (Blocks.empty() || LastBlockUsed + Text.Len() > Blocks.back()->Capacity)
-			{
-				NewBlock(BlockBytes);
-				LastBlockUsed = 0u;
-			}
-			ref.Block = static_cast<uint32>(Blocks.size() - 1u);
-			ref.Offset = LastBlockUsed;
-			LastBlockUsed += Text.Len();
-		}
+		const SRef ref = Allocate(Text.Len());
 		if (Text.Len() > 0u)
 		{
 			std::memcpy(Blocks[ref.Block]->Data.get() + ref.Offset, Text.GetData(), Text.Len());
 		}
 		return ref;
+	}
+
+	// Adds Parent + '/' + Child (a mount path from its folder's and its leaf) without building it elsewhere first.
+	uint32 AddJoined (FStringView Parent, FStringView Child, uint64 Epoch)
+	{
+		const SRef ref = Allocate(Parent.Len() + 1u + Child.Len());
+		char* out = Blocks[ref.Block]->Data.get() + ref.Offset;
+		std::memcpy(out, Parent.GetData(), Parent.Len());
+		out[Parent.Len()] = '/';
+		std::memcpy(out + Parent.Len() + 1u, Child.GetData(), Child.Len());
+		return Refs.Append(ref, Epoch);
 	}
 
 	[[nodiscard]] const SRef& GetRef (uint32 Id) const noexcept { return Refs[Id]; }
@@ -324,6 +332,28 @@ private:
 		std::unique_ptr<char[]> Data;
 		uint32 Capacity = 0u;
 	};
+
+	// Room for Length bytes: the tail of the last block, a new block, or a block of its own when longer than one.
+	SRef Allocate (uint32 Length)
+	{
+		SRef ref;
+		ref.Length = Length;
+		if (Length > BlockBytes)
+		{
+			ref.Block = NewBlock(Length);
+			LastBlockUsed = Length;   // full: nothing else goes into an oversized block
+			return ref;
+		}
+		if (Blocks.empty() || LastBlockUsed + Length > Blocks.back()->Capacity)
+		{
+			NewBlock(BlockBytes);
+			LastBlockUsed = 0u;
+		}
+		ref.Block = static_cast<uint32>(Blocks.size() - 1u);
+		ref.Offset = LastBlockUsed;
+		LastBlockUsed += Length;
+		return ref;
+	}
 
 	uint32 NewBlock (uint32 Capacity)
 	{
@@ -383,9 +413,9 @@ public:
 	void Insert (uint64 Hash, uint32 Value, uint64 Epoch)
 	{
 		frt_assert(Value != ~0u);
-		if ((Used + Tombstones + 1u) * 2u > Capacity)
+		if (static_cast<uint64>(Used + Tombstones + 1u) * 4u > static_cast<uint64>(Capacity) * 3u)
 		{
-			Rehash(Used + 1u, Epoch);
+			Rehash(Used + 1u, 2u, Epoch);
 		}
 		const uint32 tag = MakeTag(Hash);
 		const uint32 mask = Capacity - 1u;
@@ -440,12 +470,13 @@ public:
 		Tombstones = 0u;
 	}
 
-	// Sizes the table for Count entries up front (a bulk load).
+	// Sizes the table for Count entries up front (a bulk load): the smallest table that holds them within the
+	// maximum load.
 	void Reserve (uint32 Count, uint64 Epoch)
 	{
-		if ((Count + Tombstones) * 2u > Capacity)
+		if (static_cast<uint64>(Count + Tombstones) * 4u > static_cast<uint64>(Capacity) * 3u)
 		{
-			Rehash(Count, Epoch);
+			Rehash(Count, 1u, Epoch);
 		}
 	}
 
@@ -463,12 +494,17 @@ private:
 		return (static_cast<uint64>(Tag) << 32u) | static_cast<uint64>(Value + 1u);
 	}
 
-	// Sizes the table so MinEntries fill at most 3/8 of it (it grows again past half), which keeps probes
-	// short without quadrupling: a quarter-full table cost 32-64 bytes per entry.
-	void Rehash (uint32 MinEntries, uint64 Epoch)
+	/**
+	 * The load stays at most 3/4: past it an insert grows the table to at most 3/8 full (Headroom 2, so it
+	 * roughly doubles), while Reserve sizes it to hold its entries within 3/4 (Headroom 1). An 8-byte slot per
+	 * entry at loads of 3/8 to 3/4 costs 11-21 bytes per entry; linear probing over 32-bit tags stays within a
+	 * cache line or two at 3/4. (Loads of 1/4 to 1/2 cost 16-32 bytes per entry: 24 MB of §5.11's 150 at 100k
+	 * assets and 500k rows.)
+	 */
+	void Rehash (uint32 MinEntries, uint32 Headroom, uint64 Epoch)
 	{
 		uint32 capacity = 16u;
-		while (static_cast<uint64>(capacity) * 3u < static_cast<uint64>(MinEntries) * 8u)
+		while (static_cast<uint64>(capacity) * 3u < static_cast<uint64>(MinEntries) * 4u * Headroom)
 		{
 			capacity *= 2u;
 		}

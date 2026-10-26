@@ -148,3 +148,28 @@ TEST(PagedColumnTest, TheNamePoolInternsExactlyAndKeepsAFoldedShadow)
 	const uint32 kelvin = names.Intern("\xE2\x84\xAA", 1u);   // U+212A KELVIN SIGN folds to 'k'
 	EXPECT_EQ(names.GetFolded(kelvin), "k");
 }
+
+TEST(PagedColumnTest, TheRegistrysFastCaseHashesAreTheContainersHashes)
+{
+	// HashPortable and HashMountRule lower or raise ASCII text into a buffer instead of streaming it: their values
+	// must stay the general functors' (SStringHashIgnoreCase, SPathHash), and the equalities theirs, for every text.
+	std::vector<FString> texts = { "", "a", "A", "/Project/Textures/T_Rock_Albedo.png", "/project/textures/t_rock_albedo.png", "@`[{", "Rock#mesh:Body",
+		"/Project/Тека/Файл.png", "/Project/\xE2\x84\xAA.png", "/Project/k.png", "/Project/K.png", "Stra\xC3\x9F" "e", "\xED\xA0\x80" "ill-formed" };
+	texts.push_back(FString::Repeat("Ab", 128u));          // exactly 256 bytes: the last fast length
+	texts.push_back(FString::Repeat("Ab", 128u) + "C");    // 257 bytes: the streamed chunks
+	texts.push_back(FString::Repeat("x", 1000u));
+	for (const FString& a : texts)
+	{
+		EXPECT_EQ(HashPortable(a), static_cast<uint64>(SStringHashIgnoreCase {}(a))) << a.CStr();
+		EXPECT_EQ(HashMountRule(a, false), static_cast<uint64>(SPathHash {}(a))) << a.CStr();
+		EXPECT_EQ(HashMountRule(a, true), static_cast<uint64>(SStringHash {}(a))) << a.CStr();
+		char buffer[256];
+		FString heap;
+		EXPECT_EQ(FoldPortable(a, buffer, heap), FString(a).FoldCase().View()) << a.CStr();
+		for (const FString& b : texts)
+		{
+			EXPECT_EQ(EqualPortable(a, b), SStringEqualIgnoreCase {}(a, b)) << a.CStr() << " / " << b.CStr();
+			EXPECT_EQ(EqualMountRule(a, b, false), SPathEqual {}(a, b)) << a.CStr() << " / " << b.CStr();
+		}
+	}
+}
