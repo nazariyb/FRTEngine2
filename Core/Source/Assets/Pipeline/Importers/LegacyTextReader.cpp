@@ -1,9 +1,11 @@
 #include "Assets/Pipeline/Importers/LegacyTextReader.h"
 
+#include <algorithm>
 #include <optional>
 #include <vector>
 
 #include "Assets/TextAssetIO.h"
+#include "Containers/StringMap.h"
 
 
 namespace frt::assets::importers
@@ -95,25 +97,30 @@ reflect::CDataTree FinishTree (CDataTreeBuilder& Builder)
 
 reflect::CDataTree ReadKeyValueTree (FStringView Text)
 {
+	// A repeated key keeps its last line, in that line's place: the earlier entry is marked dead (Line 0) rather
+	// than erased, so a file of many keys stays linear.
 	std::vector<SLineValue> entries;
+	TStringMap<size_t> lastIndex;
 	ForEachLine(Text, [&] (const SLineValue& Value)
 	{
-		for (auto it = entries.begin(); it != entries.end(); ++it)
+		const auto [it, bInserted] = lastIndex.try_emplace(FString(Value.Key), entries.size());
+		if (!bInserted)
 		{
-			if (it->Key == Value.Key)
-			{
-				entries.erase(it);
-				break;
-			}
+			entries[it->second].Line = 0u;
+			it->second = entries.size();
 		}
 		entries.push_back(Value);
 	});
 
 	CDataTreeBuilder builder;
-	builder.BeginMap(entries.empty() ? 1u : entries.front().Line, 1u);
+	const auto first = std::find_if(entries.begin(), entries.end(), [] (const SLineValue& Entry) { return Entry.Line != 0u; });
+	builder.BeginMap(first == entries.end() ? 1u : first->Line, 1u);
 	for (const SLineValue& entry : entries)
 	{
-		AddEntry(builder, entry.Key, entry);
+		if (entry.Line != 0u)
+		{
+			AddEntry(builder, entry.Key, entry);
+		}
 	}
 	builder.End();
 	return FinishTree(builder);

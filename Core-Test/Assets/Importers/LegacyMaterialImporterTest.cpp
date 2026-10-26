@@ -5,11 +5,14 @@
 // and the file is hashed in its one read.
 #include <gtest/gtest.h>
 
+#include <chrono>
+#include <cstdio>
 #include <vector>
 
 #include "ImporterTestUtils.h"
 
 #include "Assets/FileHash.h"
+#include "BuildConfig.h"
 
 using namespace frt;
 using namespace frt::assets;
@@ -96,6 +99,32 @@ TEST(LegacyMaterialImporterTest, LineFormatIsReadAsTheRuntimeReadsIt)
 	EXPECT_EQ(result.Diagnostics[0].Column, 22u);
 }
 
+// The line reader keeps the last line of a repeated key, in that line's place, and stays linear in the number of
+// keys (a misnamed or hostile file of 100k distinct keys analyzes in a fraction of a second).
+TEST(LegacyMaterialImporterTest, LineFormatWithManyKeysStaysLinear)
+{
+	FString text("version = 1\nbase_color_texture = a.png\n");
+	constexpr uint32 Keys = 100000u;
+	for (uint32 i = 0u; i < Keys; ++i)
+	{
+		text.AppendFormat("key_{} = {}\n", i, i);
+	}
+	text += "base_color_texture = b.png\n";
+	const CImporterTree tree("ManyKeys");
+	tree.Write("many.frtmat.yml", text);
+	const auto begin = std::chrono::steady_clock::now();
+	const SAnalyzeResult result = tree.Analyze("many.frtmat.yml");
+	const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - begin).count();
+	ASSERT_EQ(result.Status, EImportStatus::Analyzed) << DescribeDiagnostics(result).CStr();
+	ASSERT_EQ(result.Edges.size(), 1u);
+	ExpectLegacyEdge(result, "/Project/b.png", "base_color_texture");
+	EXPECT_EQ(result.Diagnostics[0].Line, Keys + 3u);
+	std::printf("[ PERF     ] v1 material of %u keys: %.1f ms\n", Keys + 2u, seconds * 1000.0);
+#if !FRT_BUILD_DEBUG
+	EXPECT_LT(seconds, 2.0);   // the quadratic reader made ~5e9 key comparisons here
+#endif
+}
+
 TEST(LegacyMaterialImporterTest, ReferencesTheRuntimeReadsAsMachinePathsAreWarnings)
 {
 	const CImporterTree tree("MachinePaths");
@@ -110,9 +139,17 @@ TEST(LegacyMaterialImporterTest, ReferencesTheRuntimeReadsAsMachinePathsAreWarni
 	const SAnalyzeResult result = tree.Analyze("m.frtmat.yml");
 	ASSERT_EQ(result.Status, EImportStatus::Analyzed) << DescribeDiagnostics(result).CStr();
 	EXPECT_TRUE(result.Edges.empty());
-	EXPECT_TRUE((result.Flags & ERecordFlags::LegacyReferences) == ERecordFlags::None);
+	// No edge and no REF007, but legacy path references all the same: `is:legacy-ref` finds the material.
+	EXPECT_TRUE((result.Flags & ERecordFlags::LegacyReferences) != ERecordFlags::None);
 	EXPECT_EQ(CountDiagnostics(result, ESeverity::Warning, 0u), 3u) << DescribeDiagnostics(result).CStr();
 	EXPECT_EQ(CountDiagnostics(result, ESeverity::Info), 0u);
+
+	// A value that is not text names no texture at all: a warning and no flag.
+	tree.Write("map.frtmat.yml", "version: 2\nemissive:\n  texture: { path: x }\n");
+	const SAnalyzeResult map = tree.Analyze("map.frtmat.yml");
+	ASSERT_EQ(map.Status, EImportStatus::Analyzed) << DescribeDiagnostics(map).CStr();
+	EXPECT_TRUE((map.Flags & ERecordFlags::LegacyReferences) == ERecordFlags::None);
+	EXPECT_EQ(CountDiagnostics(map, ESeverity::Warning, 0u), 1u) << DescribeDiagnostics(map).CStr();
 }
 
 TEST(LegacyMaterialImporterTest, YamlOutsideTheSubsetKeepsTheRecordWithAWarning)

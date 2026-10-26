@@ -158,6 +158,45 @@ TEST(AssetImporterTest, AppendRecordUpsertWritesTheWholeRecordAndItsProblems)
 	EXPECT_EQ(third.ProblemClears.size(), 1u);   // an earlier Analyze's problems do not survive
 }
 
+// Problems are grouped per subject in their first diagnostic's order, diagnostics in theirs, for interleaved
+// subjects and for a file with thousands of them (a glTF full of SubId collisions) alike.
+TEST(AssetImporterTest, ProblemsAreGroupedPerSubjectInOrder)
+{
+	SAnalyzeResult result;
+	result.Status = EImportStatus::Analyzed;
+	const auto add = [&] (FStringView Subject, FStringView Message)
+	{
+		SDiagnostic& diagnostic = result.Diagnostics.emplace_back();
+		diagnostic.Severity = ESeverity::Error;
+		diagnostic.Subject = FString(Subject);
+		diagnostic.Message = FString(Message);
+	};
+	add("/Project/m.gltf#mesh:B", "1");
+	add("/Project/m.gltf", "2");
+	add("/Project/m.gltf#mesh:B", "3");
+	add("/Project/m.gltf#mesh:A", "4");
+	add("/Project/m.gltf", "5");
+	constexpr uint32 Many = 20000u;
+	for (uint32 i = 0u; i < Many; ++i)
+	{
+		add(FString::Format("/Project/m.gltf#mesh:N{}", i % (Many / 2u)), "n");
+	}
+
+	SRegistryDelta delta;
+	AppendRecordUpsert(result, MakeSettings(FindImporter("Model.Gltf")), "/Project/m.gltf", delta);
+	ASSERT_EQ(delta.Problems.size(), 3u + Many / 2u);
+	EXPECT_EQ(delta.Problems[0].Subject, "/Project/m.gltf#mesh:B");
+	EXPECT_EQ(delta.Problems[1].Subject, "/Project/m.gltf");
+	EXPECT_EQ(delta.Problems[2].Subject, "/Project/m.gltf#mesh:A");
+	ASSERT_EQ(delta.Problems[0].Diagnostics.size(), 2u);
+	EXPECT_EQ(delta.Problems[0].Diagnostics[1].Message, "3");
+	ASSERT_EQ(delta.Problems[1].Diagnostics.size(), 2u);
+	EXPECT_EQ(delta.Problems[1].Diagnostics[1].Message, "5");
+	EXPECT_EQ(delta.Problems[3].Subject, "/Project/m.gltf#mesh:N0");
+	EXPECT_EQ(delta.Problems[3].Diagnostics.size(), 2u);
+	EXPECT_EQ(delta.Problems.back().Subject, FString::Format("/Project/m.gltf#mesh:N{}", Many / 2u - 1u));
+}
+
 TEST(AssetImporterTest, AnalyzedDemoFilesCommitWithResolvedEdges)
 {
 	const CMountTable mounts = ResolveDemoMounts();

@@ -6,6 +6,7 @@
 #include "Asserts.h"
 #include "BuildConfig.h"
 #include "Assets/Pipeline/Importers/ImporterUtils.h"
+#include "Containers/StringMap.h"
 #include "Platform/Platform.h"
 
 
@@ -223,26 +224,19 @@ void AppendRecordUpsertImpl (TResult&& Result, const SEffectiveFileSettings& Set
 	record.Companions = take(Result.Companions);
 
 	Delta.ProblemClears.push_back(SProblemsClear { FString(FileMountPath), EProblemSource::Analyze });
-	// One set per subject, subjects in their first diagnostic's order, diagnostics in theirs.
-	const size_t firstSet = Delta.Problems.size();
+	// One set per subject, subjects in their first diagnostic's order, diagnostics in theirs (a map from subject
+	// to its set keeps a file with thousands of subjects linear).
+	TStringMap<size_t> setOf;
 	for (auto& diagnostic : Result.Diagnostics)
 	{
-		SProblemsSet* set = nullptr;
-		for (size_t i = firstSet; i < Delta.Problems.size(); ++i)
+		const auto [it, bInserted] = setOf.try_emplace(diagnostic.Subject, Delta.Problems.size());
+		if (bInserted)
 		{
-			if (Delta.Problems[i].Subject == diagnostic.Subject)
-			{
-				set = &Delta.Problems[i];
-				break;
-			}
+			SProblemsSet& added = Delta.Problems.emplace_back();
+			added.Subject = diagnostic.Subject;
+			added.Source = EProblemSource::Analyze;
 		}
-		if (set == nullptr)
-		{
-			set = &Delta.Problems.emplace_back();
-			set->Subject = diagnostic.Subject;
-			set->Source = EProblemSource::Analyze;
-		}
-		set->Diagnostics.push_back(take(diagnostic));
+		Delta.Problems[it->second].Diagnostics.push_back(take(diagnostic));
 	}
 }
 }

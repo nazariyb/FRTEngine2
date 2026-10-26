@@ -24,8 +24,9 @@ constexpr FStringLiteral LineTextureKeys[] = { "base_color_texture" };
  * One legacy texture reference (§4.4 "Legacy path references"): a path relative to the material's folder
  * (SMaterial::ResolveTexturePath). It becomes a Build | Path edge - resolved at commit through the registry's path
  * index, Unresolved only while no record matches - flags the record LegacyReferences, and adds a REF007 notice
- * until `migrate material-refs` (M7) converts it. A reference the runtime would read as a machine path is no
- * edge, only a warning.
+ * until `migrate material-refs` (M7) converts it. A reference the runtime would read as a machine path (a drive,
+ * a rooted path, a '..' above the mount) is no edge, only a warning - but it is a legacy path reference all the
+ * same, the one most in need of migrating, so it flags the record LegacyReferences too (`is:legacy-ref`).
  */
 void AddTextureReference (const SAnalyzeInput& In, const HDataNode& Node, FStringView FieldPath, SAnalyzeResult& Out)
 {
@@ -51,6 +52,7 @@ void AddTextureReference (const SAnalyzeInput& In, const HDataNode& Node, FStrin
 	{
 		return;
 	}
+	Out.Flags |= ERecordFlags::LegacyReferences;
 	EReferenceProblem problem = EReferenceProblem::None;
 	std::optional<FString> target = ResolveRelativeReference(In.FileMountPath, reference, &problem);
 	if (!target)
@@ -65,7 +67,6 @@ void AddTextureReference (const SAnalyzeInput& In, const HDataNode& Node, FStrin
 	edge.TargetPath = std::move(*target);
 	edge.Flags = EDepFlags::Build | EDepFlags::Path;
 	edge.FieldPath = FString(FieldPath);
-	Out.Flags |= ERecordFlags::LegacyReferences;
 }
 
 /**
