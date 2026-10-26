@@ -16,12 +16,18 @@
 // yet, the VCS seam, the off switch and its scope are covered too, and - through a scripted platform
 // watcher - a file system without entry types, whose directories report their own Modified and whose
 // removals and renames say nothing of what was there. Everything runs in directories with non-ASCII
-// names.
+// names, and twice: with the disk checks inline (no worker pool, as tests and tool hosts run it) and on
+// a worker pool (as CEngine runs it), where they must come to the same answers. The pool's own rules
+// follow: checks told by a later Pump, a group the pool drops checked again, a path that changes while
+// its checks run checked again, a Flush that cannot wait for the pool resolving inline, the cap on
+// what one Pump resolves (never splitting a burst or a directory that appeared), and subscriptions that
+// do not verify (told at once what the events say: no writer probe, no self-write check).
 #include <gtest/gtest.h>
 
 #include "TestCommon.h"
 #include "TestProcess.h"
 
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <functional>
@@ -34,6 +40,7 @@
 #include "Assets/FileWatcherService.h"
 #include "Config/Config.h"
 #include "Containers/String.h"
+#include "Jobs/WorkerPool.h"
 #include "Platform/FileSystem.h"
 #include "Platform/Platform.h"
 #include "Platform/Process.h"
@@ -206,12 +213,20 @@ std::optional<std::filesystem::path> FindGitOnPath ()
 
 
 // Every test works in a directory of this process's own with a non-ASCII name; Content is the watched
-// directory, Outside a sibling for moves in and out.
-class FileWatcherServiceTest : public ::testing::Test
+// directory, Outside a sibling for moves in and out. bPooled: the services it makes run their disk
+// checks on Pool.
+class CWatcherTestBase : public ::testing::Test
 {
 protected:
 	void SetUp () override
 	{
+		if (bPooled)
+		{
+			jobs::SWorkerPoolDesc desc;
+			desc.ThreadCount = 3u;
+			desc.Name = "Watcher Test Worker";
+			Pool = std::make_unique<jobs::CWorkerPool>(desc);
+		}
 		Dir = std::filesystem::temp_directory_path() / FString::Format("FRT Служба 服务 😀 {}", platform::GetCurrentProcessId()).ToPath()
 			/ "FileWatcherService";
 		std::error_code ec;
@@ -225,6 +240,7 @@ protected:
 	void TearDown () override
 	{
 		Service.reset();
+		Pool.reset();
 		std::error_code ec;
 		std::filesystem::remove_all(Dir, ec);
 		std::filesystem::remove(Dir.parent_path(), ec);
@@ -233,10 +249,19 @@ protected:
 	// A service with Settings and one subscription on Content (or Directory) with Filter.
 	void Start (const assets::SFileWatcherSettings& Settings = {}, const assets::SWatchFilter& Filter = {})
 	{
-		Service = std::make_unique<assets::CFileWatcherService>(Settings);
+		Service = MakeService(Settings);
 		Handle = Service->Subscribe(Content, Filter, Recorder.MakeCallback());
 		ASSERT_TRUE(Handle.IsValid());
 		ASSERT_EQ(Service->GetStats().Roots, 1u);
+	}
+
+	// A service on Pool when there is one.
+	[[nodiscard]] std::unique_ptr<assets::CFileWatcherService> MakeService (const assets::SFileWatcherSettings& Settings = {},
+		std::unique_ptr<platform::IFileWatcher> Watcher = nullptr) const
+	{
+		auto service = std::make_unique<assets::CFileWatcherService>(Settings, std::move(Watcher));
+		service->SetWorkerPool(Pool.get());
+		return service;
 	}
 
 	[[nodiscard]] std::filesystem::path File (FStringView RelativePath) const
@@ -268,6 +293,8 @@ protected:
 		}
 	}
 
+	bool bPooled = false;
+	std::unique_ptr<jobs::CWorkerPool> Pool;   // destroyed after the service
 	std::filesystem::path Dir;
 	std::filesystem::path Content;
 	std::filesystem::path Outside;
@@ -275,12 +302,53 @@ protected:
 	std::unique_ptr<assets::CFileWatcherService> Service;
 	SDelegateHandle Handle;
 };
+
+// The service's rules, inline and on a pool.
+class FileWatcherServiceTest : public CWatcherTestBase, public ::testing::WithParamInterface<bool>
+{
+protected:
+	void SetUp () override
+	{
+		bPooled = GetParam();
+		CWatcherTestBase::SetUp();
+	}
+};
+
+// What only a pool has.
+class FileWatcherPoolTest : public CWatcherTestBase
+{
+protected:
+	void SetUp () override
+	{
+		bPooled = true;
+		CWatcherTestBase::SetUp();
+	}
+
+	// Pool becomes one worker, busy with a task that runs until Release is set or the pool drains: what
+	// the service submits waits behind it.
+	void BlockThePool ()
+	{
+		jobs::SWorkerPoolDesc desc;
+		desc.ThreadCount = 1u;
+		desc.Name = "Watcher Test Worker";
+		Pool = std::make_unique<jobs::CWorkerPool>(desc);
+		Pool->Submit(jobs::EWorkPriority::High, jobs::NoCancelGroup, [this]
+		{
+			while (!Release.load() && !jobs::CWorkerPool::IsCancelled())
+			{
+				std::this_thread::sleep_for(1ms);
+			}
+		});
+	}
+
+	std::atomic<bool> Release = false;
+};
 }
 
 
 // ---------------- Files ----------------
 
-TEST_F(FileWatcherServiceTest, ACreatedFileSettlesIntoOneAddedWithoutAFlush)
+TEST_P(FileWatcherServiceTest, ACreatedFileSettlesIntoOneAddedWithoutAFlush)
 {
 	Start();
 	WriteText(File("Матеріал.frtmat.yml"), "a: 1\n");
@@ -295,7 +363,7 @@ TEST_F(FileWatcherServiceTest, ACreatedFileSettlesIntoOneAddedWithoutAFlush)
 	EXPECT_FALSE(change.bDirectory);
 }
 
-TEST_F(FileWatcherServiceTest, WritesAndDeletesAreModifiedAndRemoved)
+TEST_P(FileWatcherServiceTest, WritesAndDeletesAreModifiedAndRemoved)
 {
 	WriteText(File("Файл.txt"), "one");
 	Start();
@@ -317,7 +385,7 @@ TEST_F(FileWatcherServiceTest, WritesAndDeletesAreModifiedAndRemoved)
 	EXPECT_TRUE(Recorder.Changes.empty()) << Recorder.Describe().CStr();
 }
 
-TEST_F(FileWatcherServiceTest, ARenameInOneDirectoryIsOneMoved)
+TEST_P(FileWatcherServiceTest, ARenameInOneDirectoryIsOneMoved)
 {
 	WriteText(File("Старе.txt"), "x");
 	Start();
@@ -331,7 +399,7 @@ TEST_F(FileWatcherServiceTest, ARenameInOneDirectoryIsOneMoved)
 	EXPECT_EQ(Recorder.Changes[0].OldPath, File("Старе.txt"));
 }
 
-TEST_F(FileWatcherServiceTest, AMoveBetweenDirectoriesPairsByIdentityIntoOneMoved)
+TEST_P(FileWatcherServiceTest, AMoveBetweenDirectoriesPairsByIdentityIntoOneMoved)
 {
 	std::error_code ec;
 	std::filesystem::create_directories(File("Один"), ec);
@@ -351,7 +419,7 @@ TEST_F(FileWatcherServiceTest, AMoveBetweenDirectoriesPairsByIdentityIntoOneMove
 	EXPECT_EQ(Recorder.Find("Два/Ф.txt")[0]->OldPath, File("Один/Ф.txt"));
 }
 
-TEST_F(FileWatcherServiceTest, ACaseOnlyRenameIsAMovedWhosePathsDifferInCaseOnly)
+TEST_P(FileWatcherServiceTest, ACaseOnlyRenameIsAMovedWhosePathsDifferInCaseOnly)
 {
 	WriteText(File("текстура.png"), "x");
 	Start();
@@ -365,7 +433,7 @@ TEST_F(FileWatcherServiceTest, ACaseOnlyRenameIsAMovedWhosePathsDifferInCaseOnly
 	EXPECT_EQ(change.OldPath, File("текстура.png"));
 }
 
-TEST_F(FileWatcherServiceTest, NamesNtfsKeepsApartArePendingApart)
+TEST_P(FileWatcherServiceTest, NamesNtfsKeepsApartArePendingApart)
 {
 	// Unicode case folding merges 's' and U+017F LONG S; NTFS's upcase table does not: two files.
 	Start();
@@ -385,7 +453,7 @@ TEST_F(FileWatcherServiceTest, NamesNtfsKeepsApartArePendingApart)
 	EXPECT_TRUE(Recorder.HasOnly("s.txt", assets::EFileChange::Modified)) << Recorder.Describe().CStr();
 }
 
-TEST_F(FileWatcherServiceTest, AtomicSavesChangeTheIdentityAndAreStillOneModified)
+TEST_P(FileWatcherServiceTest, AtomicSavesChangeTheIdentityAndAreStillOneModified)
 {
 	WriteText(File("Документ.yml"), "v: 0\n");
 	assets::SWatchFilter filter;
@@ -416,7 +484,7 @@ TEST_F(FileWatcherServiceTest, AtomicSavesChangeTheIdentityAndAreStillOneModifie
 	EXPECT_EQ(Recorder.Changes.size(), 1u) << Recorder.Describe().CStr();
 }
 
-TEST_F(FileWatcherServiceTest, AFileAWriterHoldsIsToldOnlyOnceItLetsGo)
+TEST_P(FileWatcherServiceTest, AFileAWriterHoldsIsToldOnlyOnceItLetsGo)
 {
 	Start();
 	const std::filesystem::path path = File("Записується.bin");
@@ -440,7 +508,7 @@ TEST_F(FileWatcherServiceTest, AFileAWriterHoldsIsToldOnlyOnceItLetsGo)
 
 // ---------------- Directories ----------------
 
-TEST_F(FileWatcherServiceTest, ARenamedDirectoryIsOneMovedAndWhatWasPendingBelowItMovesAlong)
+TEST_P(FileWatcherServiceTest, ARenamedDirectoryIsOneMovedAndWhatWasPendingBelowItMovesAlong)
 {
 	std::error_code ec;
 	std::filesystem::create_directories(File("Стара"), ec);
@@ -462,7 +530,7 @@ TEST_F(FileWatcherServiceTest, ARenamedDirectoryIsOneMovedAndWhatWasPendingBelow
 	EXPECT_TRUE(Recorder.Find("Нова/f.txt").empty()) << "a paired rename is not enumerated\n" << Recorder.Describe().CStr();
 }
 
-TEST_F(FileWatcherServiceTest, ADirectoryMovedOutIsOneRemovedForItsWholeSubtree)
+TEST_P(FileWatcherServiceTest, ADirectoryMovedOutIsOneRemovedForItsWholeSubtree)
 {
 	std::error_code ec;
 	std::filesystem::create_directories(File("Геть/Глибше"), ec);
@@ -488,7 +556,7 @@ TEST_F(FileWatcherServiceTest, ADirectoryMovedOutIsOneRemovedForItsWholeSubtree)
 	EXPECT_EQ(single.Changes[0].Path, File("Геть/Глибше/b.txt"));
 }
 
-TEST_F(FileWatcherServiceTest, ADirectoryMovedInHasItsSubtreeEnumerated)
+TEST_P(FileWatcherServiceTest, ADirectoryMovedInHasItsSubtreeEnumerated)
 {
 	// "Restore from the Recycle Bin" and Explorer's move from another folder of the volume are both a
 	// rename into the root (S13): one event for the directory, none for its children.
@@ -523,7 +591,7 @@ TEST_F(FileWatcherServiceTest, ADirectoryMovedInHasItsSubtreeEnumerated)
 	EXPECT_EQ(Recorder.Changes.size(), 2u) << Recorder.Describe().CStr();
 }
 
-TEST_F(FileWatcherServiceTest, ADirectoryCopiedInIsWalkedOnceWithTheDirectoriesBelowIt)
+TEST_P(FileWatcherServiceTest, ADirectoryCopiedInIsWalkedOnceWithTheDirectoriesBelowIt)
 {
 	// Every directory of a copied tree reports itself: walking each one's subtree when its event
 	// arrives walked the deeper ones again and again.
@@ -545,7 +613,7 @@ TEST_F(FileWatcherServiceTest, ADirectoryCopiedInIsWalkedOnceWithTheDirectoriesB
 	EXPECT_EQ(Service->GetStats().DirectoriesEnumerated, 3u) << "each directory walked once";
 }
 
-TEST_F(FileWatcherServiceTest, AFileMovedIntoADirectoryThatThenGoesIsRemovedWhereItCameFromWithNoLaterEvent)
+TEST_P(FileWatcherServiceTest, AFileMovedIntoADirectoryThatThenGoesIsRemovedWhereItCameFromWithNoLaterEvent)
 {
 	std::error_code ec;
 	std::filesystem::create_directories(File("Звідки"), ec);
@@ -568,7 +636,7 @@ TEST_F(FileWatcherServiceTest, AFileMovedIntoADirectoryThatThenGoesIsRemovedWher
 	EXPECT_EQ(Recorder.Changes.size(), 2u) << Recorder.Describe().CStr();
 }
 
-TEST_F(FileWatcherServiceTest, AFileThatTakesARemovedDirectorysPlaceIsAddedAfterTheDirectorysRemoval)
+TEST_P(FileWatcherServiceTest, AFileThatTakesARemovedDirectorysPlaceIsAddedAfterTheDirectorysRemoval)
 {
 	std::error_code ec;
 	std::filesystem::create_directories(File("Шлях"), ec);
@@ -590,7 +658,7 @@ TEST_F(FileWatcherServiceTest, AFileThatTakesARemovedDirectorysPlaceIsAddedAfter
 	EXPECT_TRUE(assets::IsFileAffected(*found[1], File("Шлях"))) << "a loader of the file looks at it";
 }
 
-TEST_F(FileWatcherServiceTest, ADirectoryRenamedTwiceIsOneMovedFromWhereItBegan)
+TEST_P(FileWatcherServiceTest, ADirectoryRenamedTwiceIsOneMovedFromWhereItBegan)
 {
 	std::error_code ec;
 	std::filesystem::create_directories(File("Перша"), ec);
@@ -611,7 +679,7 @@ TEST_F(FileWatcherServiceTest, ADirectoryRenamedTwiceIsOneMovedFromWhereItBegan)
 	EXPECT_EQ(Recorder.Changes.size(), 1u) << "nothing about the name in between\n" << Recorder.Describe().CStr();
 }
 
-TEST_F(FileWatcherServiceTest, ADirectoryRenamedThenMovedOutIsRemovedWhereItBegan)
+TEST_P(FileWatcherServiceTest, ADirectoryRenamedThenMovedOutIsRemovedWhereItBegan)
 {
 	std::error_code ec;
 	std::filesystem::create_directories(File("Перша"), ec);
@@ -630,7 +698,7 @@ TEST_F(FileWatcherServiceTest, ADirectoryRenamedThenMovedOutIsRemovedWhereItBega
 	EXPECT_EQ(Recorder.Changes.size(), 1u) << Recorder.Describe().CStr();
 }
 
-TEST_F(FileWatcherServiceTest, ACaseOnlyDirectoryRenameIsOneMovedAndAFileMovedIntoItKeepsItsSource)
+TEST_P(FileWatcherServiceTest, ACaseOnlyDirectoryRenameIsOneMovedAndAFileMovedIntoItKeepsItsSource)
 {
 	std::error_code ec;
 	std::filesystem::create_directories(File("Звідки"), ec);
@@ -654,7 +722,7 @@ TEST_F(FileWatcherServiceTest, ACaseOnlyDirectoryRenameIsOneMovedAndAFileMovedIn
 	EXPECT_EQ(Recorder.Changes.size(), 2u) << "no Rescan, nothing enumerated\n" << Recorder.Describe().CStr();
 }
 
-TEST_F(FileWatcherServiceTest, AFileRenamedInADirectoryThatIsThenRenamedMovesFromItsNewPlace)
+TEST_P(FileWatcherServiceTest, AFileRenamedInADirectoryThatIsThenRenamedMovesFromItsNewPlace)
 {
 	std::error_code ec;
 	std::filesystem::create_directories(File("Стара"), ec);
@@ -677,7 +745,7 @@ TEST_F(FileWatcherServiceTest, AFileRenamedInADirectoryThatIsThenRenamedMovesFro
 	EXPECT_EQ(Recorder.Changes[1].OldPath, File("Нова/x.txt")) << "a path that exists once the directory has moved";
 }
 
-TEST_F(FileWatcherServiceTest, WithoutEntryTypesADirectorysOwnModifiedIsDropped)
+TEST_P(FileWatcherServiceTest, WithoutEntryTypesADirectorysOwnModifiedIsDropped)
 {
 	// The fallback without extended information says nothing about what an entry is, and reports a
 	// directory's own MODIFIED whenever an entry inside it changes.
@@ -688,7 +756,7 @@ TEST_F(FileWatcherServiceTest, WithoutEntryTypesADirectorysOwnModifiedIsDropped)
 	assets::SFileWatcherSettings settings;
 	settings.SettleMs = 20u;
 	settings.RemoveGraceMs = 20u;
-	Service = std::make_unique<assets::CFileWatcherService>(settings, std::make_unique<CScriptedWatcher>(queue));
+	Service = MakeService(settings, std::make_unique<CScriptedWatcher>(queue));
 	Service->Subscribe(Content, {}, Recorder.MakeCallback());   // no filter, as the shader root's
 	ASSERT_EQ(Service->GetStats().Roots, 1u);
 
@@ -711,7 +779,7 @@ TEST_F(FileWatcherServiceTest, WithoutEntryTypesADirectorysOwnModifiedIsDropped)
 	EXPECT_EQ(Recorder.Changes.size(), 1u) << Recorder.Describe().CStr();
 }
 
-TEST_F(FileWatcherServiceTest, WithoutEntryTypesARemovedDirectoryIsADirectoryRemovedForEverySubscriptionItConcerns)
+TEST_P(FileWatcherServiceTest, WithoutEntryTypesARemovedDirectoryIsADirectoryRemovedForEverySubscriptionItConcerns)
 {
 	std::error_code ec;
 	std::filesystem::create_directories(File("Матеріали/Глибше"), ec);
@@ -720,7 +788,7 @@ TEST_F(FileWatcherServiceTest, WithoutEntryTypesARemovedDirectoryIsADirectoryRem
 	assets::SFileWatcherSettings settings;
 	settings.SettleMs = 20u;
 	settings.RemoveGraceMs = 20u;
-	Service = std::make_unique<assets::CFileWatcherService>(settings, std::make_unique<CScriptedWatcher>(queue));
+	Service = MakeService(settings, std::make_unique<CScriptedWatcher>(queue));
 	Service->Subscribe(Content, {}, Recorder.MakeCallback());
 	SRecorder materials;
 	assets::SWatchFilter filter;
@@ -746,7 +814,7 @@ TEST_F(FileWatcherServiceTest, WithoutEntryTypesARemovedDirectoryIsADirectoryRem
 	EXPECT_TRUE(inner.Changes[0].bDirectory);
 }
 
-TEST_F(FileWatcherServiceTest, WithoutEntryTypesARenamedDirectoryIsOneMovedAndWhatWasPendingBelowItMovesAlong)
+TEST_P(FileWatcherServiceTest, WithoutEntryTypesARenamedDirectoryIsOneMovedAndWhatWasPendingBelowItMovesAlong)
 {
 	std::error_code ec;
 	std::filesystem::create_directories(File("Стара"), ec);
@@ -756,7 +824,7 @@ TEST_F(FileWatcherServiceTest, WithoutEntryTypesARenamedDirectoryIsOneMovedAndWh
 	assets::SFileWatcherSettings settings;
 	settings.SettleMs = 20u;
 	settings.RemoveGraceMs = 20u;
-	Service = std::make_unique<assets::CFileWatcherService>(settings, std::make_unique<CScriptedWatcher>(queue));
+	Service = MakeService(settings, std::make_unique<CScriptedWatcher>(queue));
 	Service->Subscribe(Content, {}, Recorder.MakeCallback());
 	SRecorder materials;
 	assets::SWatchFilter filter;
@@ -781,7 +849,7 @@ TEST_F(FileWatcherServiceTest, WithoutEntryTypesARenamedDirectoryIsOneMovedAndWh
 
 // ---------------- Overflow, fences, self-writes ----------------
 
-TEST_F(FileWatcherServiceTest, AnOverflowBecomesOneRescanOnceTheTreeIsQuiet)
+TEST_P(FileWatcherServiceTest, AnOverflowBecomesOneRescanOnceTheTreeIsQuiet)
 {
 	assets::SFileWatcherSettings settings;
 	settings.Watcher.BufferBytes = 64u;   // smaller than one record: every report overflows
@@ -805,7 +873,7 @@ TEST_F(FileWatcherServiceTest, AnOverflowBecomesOneRescanOnceTheTreeIsQuiet)
 	EXPECT_EQ(Recorder.Calls.size(), 1u) << Recorder.Describe().CStr();
 }
 
-TEST_F(FileWatcherServiceTest, ARescanMakesTheWalkOfADirectoryThatAppearedMoot)
+TEST_P(FileWatcherServiceTest, ARescanMakesTheWalkOfADirectoryThatAppearedMoot)
 {
 	std::error_code ec;
 	std::filesystem::create_directories(File("Нова"), ec);
@@ -814,7 +882,7 @@ TEST_F(FileWatcherServiceTest, ARescanMakesTheWalkOfADirectoryThatAppearedMoot)
 	assets::SFileWatcherSettings settings;
 	settings.SettleMs = 20u;
 	settings.VcsSettleMs = 50u;
-	Service = std::make_unique<assets::CFileWatcherService>(settings, std::make_unique<CScriptedWatcher>(queue));
+	Service = MakeService(settings, std::make_unique<CScriptedWatcher>(queue));
 	Service->Subscribe(Content, {}, Recorder.MakeCallback());
 
 	queue->Push(platform::EFileEventKind::Added, "Нова");
@@ -825,7 +893,7 @@ TEST_F(FileWatcherServiceTest, ARescanMakesTheWalkOfADirectoryThatAppearedMoot)
 	EXPECT_EQ(Service->GetStats().DirectoriesEnumerated, 0u) << "the Rescan stands for the directory: nothing walked it";
 }
 
-TEST_F(FileWatcherServiceTest, FlushOnARootThatOverflowsTellsItsRescanAtOnce)
+TEST_P(FileWatcherServiceTest, FlushOnARootThatOverflowsTellsItsRescanAtOnce)
 {
 	assets::SFileWatcherSettings settings;
 	settings.Watcher.BufferBytes = 64u;   // every report overflows, the fence's own too
@@ -843,7 +911,7 @@ TEST_F(FileWatcherServiceTest, FlushOnARootThatOverflowsTellsItsRescanAtOnce)
 	EXPECT_EQ(Recorder.Changes[0].Path, Content);
 }
 
-TEST_F(FileWatcherServiceTest, ALostRootIsARescanAndSoIsItsReturn)
+TEST_P(FileWatcherServiceTest, ALostRootIsARescanAndSoIsItsReturn)
 {
 	WriteText(File("a.txt"), "a");
 	assets::SFileWatcherSettings settings;
@@ -873,7 +941,7 @@ TEST_F(FileWatcherServiceTest, ALostRootIsARescanAndSoIsItsReturn)
 	EXPECT_TRUE(Recorder.HasOnly("c.txt", assets::EFileChange::Added)) << Recorder.Describe().CStr();
 }
 
-TEST_F(FileWatcherServiceTest, FlushTellsEverythingBeforeItsFenceAndNothingOfTheFence)
+TEST_P(FileWatcherServiceTest, FlushTellsEverythingBeforeItsFenceAndNothingOfTheFence)
 {
 	assets::SFileWatcherSettings settings;
 	settings.SettleMs = 60000u;
@@ -911,14 +979,14 @@ TEST_F(FileWatcherServiceTest, FlushTellsEverythingBeforeItsFenceAndNothingOfThe
 	EXPECT_FALSE(Service->Flush(Outside));
 }
 
-TEST_F(FileWatcherServiceTest, FlushReachesEveryRootWhenADirectoryWasSubscribedBeforeOneAboveIt)
+TEST_P(FileWatcherServiceTest, FlushReachesEveryRootWhenADirectoryWasSubscribedBeforeOneAboveIt)
 {
 	std::error_code ec;
 	std::filesystem::create_directories(File("Моделі/Спонза"), ec);
 	assets::SFileWatcherSettings settings;
 	settings.SettleMs = 60000u;   // nothing settles by itself: only the fences tell
 	settings.RemoveGraceMs = 60000u;
-	Service = std::make_unique<assets::CFileWatcherService>(settings);
+	Service = MakeService(settings);
 	// A material in a subdirectory loaded before one above it: two roots, each subscription on its own.
 	SRecorder inner;
 	Service->Subscribe(File("Моделі/Спонза"), {}, inner.MakeCallback());
@@ -949,7 +1017,7 @@ TEST_F(FileWatcherServiceTest, FlushReachesEveryRootWhenADirectoryWasSubscribedB
 	EXPECT_EQ(Service->GetStats().PendingPaths, 0u);
 }
 
-TEST_F(FileWatcherServiceTest, AnExpectedWriteDiffsToNothingAndSomeoneElsesWriteIsStillTold)
+TEST_P(FileWatcherServiceTest, AnExpectedWriteDiffsToNothingAndSomeoneElsesWriteIsStillTold)
 {
 	WriteText(File("Налаштування.ini"), "[A]\nB=1\n");
 	Start();
@@ -976,7 +1044,7 @@ TEST_F(FileWatcherServiceTest, AnExpectedWriteDiffsToNothingAndSomeoneElsesWrite
 
 // ---------------- Checkouts ----------------
 
-TEST_F(FileWatcherServiceTest, ASlowCheckoutTellsEveryFileOnceAsModified)
+TEST_P(FileWatcherServiceTest, ASlowCheckoutTellsEveryFileOnceAsModified)
 {
 	// A smudge filter or a Perforce sync: each file unlinked, then written a moment later, the files
 	// arriving one by one over a couple of seconds.
@@ -1009,7 +1077,7 @@ TEST_F(FileWatcherServiceTest, ASlowCheckoutTellsEveryFileOnceAsModified)
 	}
 }
 
-TEST_F(FileWatcherServiceTest, ARemovalWaitsItsGraceForAFileThatLandsLater)
+TEST_P(FileWatcherServiceTest, ARemovalWaitsItsGraceForAFileThatLandsLater)
 {
 	// §5.4: unlink and create bursts, some files landing seconds later. A file written again after the
 	// settle window but within the removal's grace is one Modified; one written after the grace is a
@@ -1036,7 +1104,7 @@ TEST_F(FileWatcherServiceTest, ARemovalWaitsItsGraceForAFileThatLandsLater)
 	EXPECT_EQ(late[1]->Kind, assets::EFileChange::Added) << Recorder.Describe().CStr();
 }
 
-TEST_F(FileWatcherServiceTest, AFileWrittenWithoutPauseIsToldByMaxLatency)
+TEST_P(FileWatcherServiceTest, AFileWrittenWithoutPauseIsToldByMaxLatency)
 {
 	// A path whose events never pause for SettleMs is still told MaxLatencyMs after its first one.
 	WriteText(File("Безперервний.log"), "0\n");
@@ -1065,7 +1133,7 @@ TEST_F(FileWatcherServiceTest, AFileWrittenWithoutPauseIsToldByMaxLatency)
 	EXPECT_EQ(Recorder.Changes[0].Kind, assets::EFileChange::Modified) << Recorder.Describe().CStr();
 }
 
-TEST_F(FileWatcherServiceTest, HalvesOfAMoveFartherApartThanThePairWindowAreARemovedAndAnAdded)
+TEST_P(FileWatcherServiceTest, HalvesOfAMoveFartherApartThanThePairWindowAreARemovedAndAnAdded)
 {
 	std::error_code ec;
 	std::filesystem::create_directories(File("Куди"), ec);
@@ -1075,7 +1143,7 @@ TEST_F(FileWatcherServiceTest, HalvesOfAMoveFartherApartThanThePairWindowAreARem
 	assets::SFileWatcherSettings settings;
 	settings.SettleMs = 20u;
 	settings.RemoveGraceMs = 20u;
-	Service = std::make_unique<assets::CFileWatcherService>(settings, std::make_unique<CScriptedWatcher>(queue));
+	Service = MakeService(settings, std::make_unique<CScriptedWatcher>(queue));
 	Service->Subscribe(Content, {}, Recorder.MakeCallback());
 
 	// Removed and Added with one identity, as Windows reports a move between directories: 300 ms apart
@@ -1104,7 +1172,7 @@ TEST_F(FileWatcherServiceTest, HalvesOfAMoveFartherApartThanThePairWindowAreARem
 	EXPECT_EQ(Recorder.Changes.size(), 3u) << Recorder.Describe().CStr();
 }
 
-TEST_F(FileWatcherServiceTest, AGitCheckoutOf300FilesIsOneBatchAfterTheTreeSettles)
+TEST_P(FileWatcherServiceTest, AGitCheckoutOf300FilesIsOneBatchAfterTheTreeSettles)
 {
 	const std::optional<std::filesystem::path> git = FindGitOnPath();
 	if (!git)
@@ -1151,7 +1219,7 @@ TEST_F(FileWatcherServiceTest, AGitCheckoutOf300FilesIsOneBatchAfterTheTreeSettl
 	runGit({ "commit", "-q", "-m", "feature" });
 	runGit({ "checkout", "-q", "main" });
 
-	Service = std::make_unique<assets::CFileWatcherService>();
+	Service = MakeService();
 	Service->Subscribe(content, {}, Recorder.MakeCallback());
 	ASSERT_EQ(Service->GetSettings().VcsSettleMs, 1500u) << "the default";
 
@@ -1192,7 +1260,7 @@ TEST_F(FileWatcherServiceTest, AGitCheckoutOf300FilesIsOneBatchAfterTheTreeSettl
 
 // ---------------- Subscriptions ----------------
 
-TEST_F(FileWatcherServiceTest, FiltersSelectByPrefixAndExtensionAndShareOneRoot)
+TEST_P(FileWatcherServiceTest, FiltersSelectByPrefixAndExtensionAndShareOneRoot)
 {
 	std::error_code ec;
 	std::filesystem::create_directories(File("Materials"), ec);
@@ -1223,7 +1291,7 @@ TEST_F(FileWatcherServiceTest, FiltersSelectByPrefixAndExtensionAndShareOneRoot)
 	EXPECT_EQ(Recorder.Changes.size(), 4u) << Recorder.Describe().CStr();
 }
 
-TEST_F(FileWatcherServiceTest, AMountIsOneRootForTheFoldersInItAndLeavesThemFreeToRename)
+TEST_P(FileWatcherServiceTest, AMountIsOneRootForTheFoldersInItAndLeavesThemFreeToRename)
 {
 	// Every model's materials live in its own folder: a root per folder would hold a directory handle
 	// on each, and Windows refuses to rename or move any folder above an open one.
@@ -1232,7 +1300,7 @@ TEST_F(FileWatcherServiceTest, AMountIsOneRootForTheFoldersInItAndLeavesThemFree
 	std::filesystem::create_directories(File("Моделі/Колона"), ec);
 	WriteText(File("Моделі/Підлога/a.frtmat.yml"), "a");
 	WriteText(File("Моделі/Колона/b.frtmat.yml"), "b");
-	Service = std::make_unique<assets::CFileWatcherService>();
+	Service = MakeService();
 	Service->AddMount(Content);
 	SRecorder floor;
 	SRecorder pillar;
@@ -1258,9 +1326,9 @@ TEST_F(FileWatcherServiceTest, AMountIsOneRootForTheFoldersInItAndLeavesThemFree
 	EXPECT_EQ(pillar.Changes[0].Path, File("Меблі/Колона"));
 }
 
-TEST_F(FileWatcherServiceTest, ACallbackMayUnsubscribeItselfAndOthersAndTheLastOneDisarmsTheRoot)
+TEST_P(FileWatcherServiceTest, ACallbackMayUnsubscribeItselfAndOthersAndTheLastOneDisarmsTheRoot)
 {
-	Service = std::make_unique<assets::CFileWatcherService>();
+	Service = MakeService();
 	SDelegateHandle first;
 	SDelegateHandle second;
 	uint32 firstCalls = 0u;
@@ -1283,11 +1351,11 @@ TEST_F(FileWatcherServiceTest, ACallbackMayUnsubscribeItselfAndOthersAndTheLastO
 	EXPECT_FALSE(Service->Unsubscribe(first));
 }
 
-TEST_F(FileWatcherServiceTest, ADirectoryThatDoesNotExistYetIsWatchedOnceItAppears)
+TEST_P(FileWatcherServiceTest, ADirectoryThatDoesNotExistYetIsWatchedOnceItAppears)
 {
 	assets::SFileWatcherSettings settings;
 	settings.RootPollMs = 50u;
-	Service = std::make_unique<assets::CFileWatcherService>(settings);
+	Service = MakeService(settings);
 	const std::filesystem::path later = Dir / FStringView("Пізніше").ToPath();
 	Service->Subscribe(later, {}, Recorder.MakeCallback());
 	EXPECT_EQ(Service->GetStats().Roots, 0u);
@@ -1306,7 +1374,7 @@ TEST_F(FileWatcherServiceTest, ADirectoryThatDoesNotExistYetIsWatchedOnceItAppea
 	EXPECT_TRUE(Recorder.HasOnly("b.txt", assets::EFileChange::Added)) << Recorder.Describe().CStr();
 }
 
-TEST_F(FileWatcherServiceTest, WhileTheVcsIsBusyNothingIsTold)
+TEST_P(FileWatcherServiceTest, WhileTheVcsIsBusyNothingIsTold)
 {
 	assets::SFileWatcherSettings settings;
 	settings.VcsSettleMs = 200u;
@@ -1326,11 +1394,11 @@ TEST_F(FileWatcherServiceTest, WhileTheVcsIsBusyNothingIsTold)
 	EXPECT_LT(std::chrono::steady_clock::now() - cleared, 2s);
 }
 
-TEST_F(FileWatcherServiceTest, ADisabledServiceWatchesNothingUntilItIsEnabled)
+TEST_P(FileWatcherServiceTest, ADisabledServiceWatchesNothingUntilItIsEnabled)
 {
 	assets::SFileWatcherSettings settings;
 	settings.bEnabled = false;
-	Service = std::make_unique<assets::CFileWatcherService>(settings);
+	Service = MakeService(settings);
 	Service->Subscribe(Content, {}, Recorder.MakeCallback());
 	EXPECT_EQ(Service->GetStats().Roots, 0u);
 	WriteText(File("a.txt"), "a");
@@ -1350,13 +1418,13 @@ TEST_F(FileWatcherServiceTest, ADisabledServiceWatchesNothingUntilItIsEnabled)
 	EXPECT_TRUE(Service->IsIdle());
 }
 
-TEST_F(FileWatcherServiceTest, EnabledForSomeDirectoriesOnlyTheRootsInOrAboveThemAreWatched)
+TEST_P(FileWatcherServiceTest, EnabledForSomeDirectoriesOnlyTheRootsInOrAboveThemAreWatched)
 {
 	// A scripted step in the engine checkout watches its own directory, never the checkout's shaders
 	// or materials that a developer may be editing meanwhile.
 	assets::SFileWatcherSettings settings;
 	settings.bEnabled = false;
-	Service = std::make_unique<assets::CFileWatcherService>(settings);
+	Service = MakeService(settings);
 	Service->Subscribe(Content, {}, Recorder.MakeCallback());
 	SRecorder outside;
 	Service->Subscribe(Outside, {}, outside.MakeCallback());
@@ -1399,7 +1467,7 @@ TEST_F(FileWatcherServiceTest, EnabledForSomeDirectoriesOnlyTheRootsInOrAboveThe
 	EXPECT_TRUE(Service->Flush(Outside));
 }
 
-TEST_F(FileWatcherServiceTest, SettingsComeFromTheConfig)
+TEST_P(FileWatcherServiceTest, SettingsComeFromTheConfig)
 {
 	config::CConfig config;
 	EXPECT_TRUE(assets::SFileWatcherSettings::FromConfig(config).bEnabled) << "[Assets] Watch defaults to 1";
@@ -1410,3 +1478,217 @@ TEST_F(FileWatcherServiceTest, SettingsComeFromTheConfig)
 	EXPECT_FALSE(assets::SFileWatcherSettings::FromConfig(config).bEnabled);
 	EXPECT_EQ(assets::SFileWatcherSettings::FromConfig(config).VcsSettleMs, 2500u);
 }
+
+// ---------------- Subscriptions that do not verify ----------------
+
+TEST_P(FileWatcherServiceTest, ASubscriptionThatDoesNotVerifyIsToldWhatTheEventsSayWithoutAProbeOrASelfWriteCheck)
+{
+	Start();
+	SRecorder unverified;
+	assets::SWatchFilter filter;
+	filter.bVerify = false;
+	Service->Subscribe(Content, filter, unverified.MakeCallback());
+
+	// A writer holds the file: the subscription that verifies waits for it, the other is told now.
+	const std::filesystem::path path = File("Записується.bin");
+	const HANDLE writer = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_NEW, 0u, nullptr);
+	ASSERT_NE(writer, INVALID_HANDLE_VALUE);
+	DWORD written = 0u;
+	ASSERT_TRUE(WriteFile(writer, "0123456789", 10u, &written, nullptr));
+	ASSERT_TRUE(FlushFileBuffers(writer));
+	Flush();
+	EXPECT_TRUE(Recorder.Changes.empty()) << Recorder.Describe().CStr();
+	EXPECT_TRUE(unverified.HasOnly("Записується.bin", assets::EFileChange::Added)) << unverified.Describe().CStr();
+	EXPECT_GE(Service->GetStats().WriterBackoffs, 1u);
+
+	CloseHandle(writer);
+	Flush();
+	EXPECT_TRUE(Recorder.HasOnly("Записується.bin", assets::EFileChange::Added)) << Recorder.Describe().CStr();
+	// The close may report itself: told again then, never anything else.
+	for (const assets::SFileChange& change : unverified.Changes)
+	{
+		EXPECT_EQ(change.Kind, assets::EFileChange::Added) << unverified.Describe().CStr();
+	}
+
+	// The echo of an expected write: nothing for the subscription that verifies, an Added for the other.
+	Recorder.Clear();
+	unverified.Clear();
+	const FStringView bytes = "our own bytes";
+	Service->ExpectWrite(File("Наш.txt"), bytes.AsBytes());
+	WriteText(File("Наш.txt"), bytes);
+	Flush();
+	EXPECT_TRUE(Recorder.Changes.empty()) << Recorder.Describe().CStr();
+	EXPECT_EQ(Service->GetStats().SelfWritesSuppressed, 1u);
+	EXPECT_TRUE(unverified.HasOnly("Наш.txt", assets::EFileChange::Added)) << unverified.Describe().CStr();
+	EXPECT_TRUE(Service->IsIdle());
+}
+
+TEST_P(FileWatcherServiceTest, ADirectoryReplacedByAFileIsARescanForASubscriptionThatDoesNotVerify)
+{
+	std::error_code ec;
+	std::filesystem::create_directories(File("Шлях"), ec);
+	WriteText(File("Шлях/a.txt"), "a");
+	Start();
+	SRecorder unverified;
+	assets::SWatchFilter filter;
+	filter.bVerify = false;
+	Service->Subscribe(Content, filter, unverified.MakeCallback());
+
+	std::filesystem::remove_all(File("Шлях"), ec);
+	ASSERT_FALSE(ec);
+	WriteText(File("Шлях"), "a file now");
+	Flush();
+	// The disk says what is there: the directory went, a file came.
+	const std::vector<const assets::SFileChange*> found = Recorder.Find("Шлях");
+	ASSERT_EQ(found.size(), 2u) << Recorder.Describe().CStr();
+	EXPECT_EQ(found[0]->Kind, assets::EFileChange::Removed) << Recorder.Describe().CStr();
+	EXPECT_EQ(found[1]->Kind, assets::EFileChange::Added) << Recorder.Describe().CStr();
+	// The events cannot: what is at the path now is for the subscriber to look at.
+	ASSERT_TRUE(unverified.HasOnly("Шлях", assets::EFileChange::Rescan)) << unverified.Describe().CStr();
+	EXPECT_TRUE(unverified.Changes[0].bDirectory);
+	EXPECT_EQ(unverified.Changes.size(), 1u) << unverified.Describe().CStr();
+}
+
+// ---------------- The cap ----------------
+
+TEST_P(FileWatcherServiceTest, TheCapLeavesSettledPathsToLaterPumpsButKeepsADirectoryThatAppearedTogether)
+{
+	assets::SFileWatcherSettings settings;
+	settings.MaxChangesPerPump = 3u;
+	settings.SettleMs = 100u;
+	Start(settings);
+
+	for (uint32 i = 0u; i < 10u; ++i)
+	{
+		WriteText(File(FString::Format("Файл {:02}.txt", i)), "x");
+	}
+	ASSERT_TRUE(PumpUntil([this] { return Recorder.Changes.size() >= 10u && Service->IsIdle(); })) << Recorder.Describe().CStr();
+	EXPECT_EQ(Recorder.Changes.size(), 10u) << Recorder.Describe().CStr();
+	for (uint32 i = 0u; i < 10u; ++i)
+	{
+		EXPECT_TRUE(Recorder.HasOnly(FString::Format("Файл {:02}.txt", i), assets::EFileChange::Added)) << Recorder.Describe().CStr();
+	}
+	EXPECT_GE(Recorder.Calls.size(), 4u) << "three a Pump";
+	for (const SRecorder::SCall& call : Recorder.Calls)
+	{
+		EXPECT_LE(call.Changes, 3u);
+	}
+	EXPECT_GE(Service->GetStats().CappedPumps, 1u);
+
+	// A directory moved in: its files are found by one walk and told together, cap or not.
+	Recorder.Clear();
+	std::error_code ec;
+	const std::filesystem::path package = Outside / FStringView("Пакет").ToPath();
+	ASSERT_TRUE(std::filesystem::create_directories(package, ec));
+	for (uint32 i = 0u; i < 8u; ++i)
+	{
+		WriteText(package / FString::Format("Вміст {:02}.txt", i).ToPath(), "y");
+	}
+	std::filesystem::rename(package, File("Пакет"), ec);
+	ASSERT_FALSE(ec);
+	ASSERT_TRUE(PumpUntil([this] { return Recorder.Changes.size() >= 8u && Service->IsIdle(); })) << Recorder.Describe().CStr();
+	EXPECT_EQ(Recorder.Changes.size(), 8u) << Recorder.Describe().CStr();
+	EXPECT_EQ(Recorder.Calls.size(), 1u) << "one directory, one batch\n" << Recorder.Describe().CStr();
+}
+
+TEST_P(FileWatcherServiceTest, TheCapNeverSplitsABurst)
+{
+	assets::SFileWatcherSettings settings;
+	settings.MaxChangesPerPump = 3u;
+	settings.BurstEvents = 8u;
+	settings.VcsSettleMs = 150u;
+	Start(settings);
+
+	for (uint32 i = 0u; i < 10u; ++i)
+	{
+		WriteText(File(FString::Format("Файл {:02}.txt", i)), "x");
+	}
+	ASSERT_TRUE(PumpUntil([this] { return Recorder.Changes.size() >= 10u; })) << Recorder.Describe().CStr();
+	PumpUntil([] { return false; }, 300ms);
+	EXPECT_EQ(Recorder.Calls.size(), 1u) << "held, then told at once\n" << Recorder.Describe().CStr();
+	EXPECT_EQ(Recorder.Changes.size(), 10u) << Recorder.Describe().CStr();
+	EXPECT_GE(Service->GetStats().Bursts, 1u);
+	EXPECT_EQ(Service->GetStats().CappedPumps, 0u);
+}
+
+// ---------------- The pool ----------------
+
+TEST_F(FileWatcherPoolTest, ChecksRunOnThePoolAndALaterPumpTellsThem)
+{
+	assets::SFileWatcherSettings settings;
+	settings.SettleMs = 20u;
+	Start(settings);
+
+	WriteText(File("a.txt"), "a");
+	ASSERT_TRUE(PumpUntil([this] { return Service->GetStats().VerifyTasks >= 1u; }));
+	EXPECT_TRUE(Recorder.Changes.empty()) << "the Pump that sends the checks does not tell them\n" << Recorder.Describe().CStr();
+	ASSERT_TRUE(PumpUntil([this] { return !Recorder.Changes.empty() && Service->IsIdle(); })) << Recorder.Describe().CStr();
+	EXPECT_TRUE(Recorder.HasOnly("a.txt", assets::EFileChange::Added)) << Recorder.Describe().CStr();
+	EXPECT_EQ(Service->GetStats().VerifyingPaths, 0u);
+}
+
+TEST_F(FileWatcherPoolTest, AGroupThePoolDropsUnrunIsCheckedAgain)
+{
+	BlockThePool();
+	assets::SFileWatcherSettings settings;
+	settings.SettleMs = 20u;
+	Start(settings);
+
+	WriteText(File("a.txt"), "a");
+	ASSERT_TRUE(PumpUntil([this] { return Service->GetStats().VerifyTasks >= 1u; }));
+	EXPECT_EQ(Service->GetStats().VerifyingPaths, 1u);
+	EXPECT_FALSE(Service->IsIdle());
+
+	// The module barrier: the blocker stops, the checks are dropped without running.
+	Pool->CancelAllAndDrain();
+	ASSERT_TRUE(PumpUntil([this] { return !Recorder.Changes.empty() && Service->IsIdle(); })) << Recorder.Describe().CStr();
+	EXPECT_TRUE(Recorder.HasOnly("a.txt", assets::EFileChange::Added)) << Recorder.Describe().CStr();
+	EXPECT_GE(Service->GetStats().VerifyTasks, 2u) << "sent again";
+}
+
+TEST_F(FileWatcherPoolTest, APathThatChangesWhileItsChecksRunIsCheckedAgain)
+{
+	BlockThePool();
+	assets::SFileWatcherSettings settings;
+	settings.SettleMs = 20u;
+	Start(settings);
+
+	WriteText(File("a.txt"), "one");
+	ASSERT_TRUE(PumpUntil([this] { return Service->GetStats().VerifyTasks >= 1u; }));
+	// Changed again while its checks wait behind the blocker: whatever they find is stale.
+	WriteText(File("a.txt"), "two, longer");
+	std::this_thread::sleep_for(100ms);
+	Service->Pump();
+	Release = true;
+	ASSERT_TRUE(PumpUntil([this] { return !Recorder.Changes.empty() && Service->IsIdle(); })) << Recorder.Describe().CStr();
+	PumpUntil([] { return false; }, 200ms);
+	EXPECT_TRUE(Recorder.HasOnly("a.txt", assets::EFileChange::Added)) << "one change, from the checks made after it\n"
+		<< Recorder.Describe().CStr();
+	EXPECT_EQ(Recorder.Calls.size(), 1u) << Recorder.Describe().CStr();
+	EXPECT_GE(Service->GetStats().VerifyTasks, 2u);
+}
+
+TEST_F(FileWatcherPoolTest, FlushResolvesInlineWhatThePoolCannotCheckBeforeItsTimeout)
+{
+	BlockThePool();
+	assets::SFileWatcherSettings settings;
+	settings.SettleMs = 60000u;
+	settings.RemoveGraceMs = 60000u;
+	Start(settings);
+
+	WriteText(File("a.txt"), "a");
+	const auto start = std::chrono::steady_clock::now();
+	EXPECT_TRUE(Service->Flush(Content, 1.0));
+	EXPECT_LT(std::chrono::steady_clock::now() - start, 3s);
+	EXPECT_TRUE(Recorder.HasOnly("a.txt", assets::EFileChange::Added)) << "told within the Flush\n" << Recorder.Describe().CStr();
+	EXPECT_TRUE(Service->IsIdle());
+
+	// The checks it gave up on finish later and change nothing.
+	Release = true;
+	Pool->CancelAllAndDrain();
+	Service->Pump();
+	EXPECT_EQ(Recorder.Changes.size(), 1u) << Recorder.Describe().CStr();
+}
+
+INSTANTIATE_TEST_SUITE_P(Checks, FileWatcherServiceTest, ::testing::Values(false, true),
+	[] (const ::testing::TestParamInfo<bool>& Info) { return Info.param ? "OnAPool" : "Inline"; });

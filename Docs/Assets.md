@@ -51,6 +51,9 @@ wrong answer.
 | Overflow, lost root | one `Rescan` of the root: compare what you hold with the disk, reload only what differs |
 | Writers | a file a writer still holds waits (back-off up to 2 s, a warning after 10 s) |
 | Self-writes | `ExpectWrite(path, hash, size, deadline)`: an echo with exactly those bytes is not told |
+| Verification off the frame | with a worker pool (`SetWorkerPool`; `CEngine` passes its own) the disk checks of settled paths - stat, writer probe, the self-write hash, and the stat that names an entry where the platform gives no entry types - run on the workers, one group per `Pump`, and a later `Pump` applies each group whole, so a burst's batch stays one batch; a path that changed meanwhile is checked again, a group the pool's drain drops is sent again, and `Flush` waits for the checks it covers (resolving inline what the pool cannot finish by its timeout). Without a pool (tests, tool hosts) they run inline |
+| Subscriptions that do not verify | `SWatchFilter::bVerify = false` (for a subscriber that compares with the disk itself, such as the asset registry): told each settled path at once with the kind its events say - no writer probe, no self-write check, and a `Rescan` where a removed directory has something back in its place |
+| Cap | at most `MaxChangesPerPump` (4096) settled paths are resolved per `Pump`, oldest first; a held release, a `Flush` and the files found below one directory that appeared are never split |
 
 `AddMount(directory)` before anything subscribes: a subscription inside a mount is watched from one root at the mount
 (`CEngine` mounts the engine's `Content/` and the project's `Content/` and `Config/`), since an open directory handle
@@ -63,7 +66,7 @@ only), `GetStats`. `IsFileAffected(change, file)` is the rule loaders share: a c
 directory above it, and never a removal; `CAffectedFiles(changes).Contains(file)` answers the same for many files in
 one lookup each. Paths compare as NTFS compares names (`MakePathKey`, `Containers/StringMap.h`: its upcase table, not
 Unicode folding), through `platform::NormalizePath` and `platform::GetRelativePath` (`Platform/FileSystem.h`). `CEngine::GetFileWatcher()` owns one in Debug and Development (headless too;
-null in Release and in tool hosts). `[Assets] Watch` (default 1) turns it off.
+null in Release and in tool hosts), its disk checks on `CEngine::GetWorkerPool()`. `[Assets] Watch` (default 1) turns it off.
 
 ### Subscribers
 

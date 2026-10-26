@@ -21,6 +21,11 @@ namespace frt::config
 class CConfig;
 }
 
+namespace frt::jobs
+{
+class CWorkerPool;
+}
+
 
 /**
  * The one file watcher of dev builds (design §5.4 "The watcher", §9.1, §15 I14): every system that
@@ -90,10 +95,32 @@ class CConfig;
  * Flush, at most once per call each, with the subscription's changes sorted by path; a callback may
  * subscribe, unsubscribe (itself included) and register expected writes, but not Pump or Flush.
  *
+ * Verification off the owner thread (§5.4 "Verification is level-triggered", §5.9). With a worker
+ * pool (SetWorkerPool: CEngine's), the disk checks that decide what a settled path is - its Stat, the
+ * writer probe, the hash an expected write is compared with, and the Stat that says what an event of
+ * unknown entry type was about - run on the pool, in one group of tasks per Pump; a later Pump applies
+ * the group whole (a group is never told in part, so a burst's batch stays one batch), and a path that
+ * changed again meanwhile is checked again. Without a pool (tests, tool hosts) they run inline, as
+ * they always did. Flush stays synchronous either way: it waits for the checks of everything its
+ * fences cover (resolving them inline if the pool cannot get to them before its timeout) and tells
+ * them before it returns.
+ *
+ * Subscriptions that do not verify (SWatchFilter::bVerify false: the asset registry, which stats,
+ * reads and retries files itself) are told a settled path as soon as it settles, with the kind its
+ * events say, without any disk check: no writer probe (a file a writer still holds is told, and told
+ * again when the writer's close reports it), no self-write check (an expected write's echo is told
+ * too). Where the events cannot say what is there now - a directory removed and something back in its
+ * place - they are told a Rescan of the path.
+ *
+ * A cap on how many settled paths one Pump resolves (SFileWatcherSettings::MaxChangesPerPump) keeps a
+ * folder dropped into a mount from costing one frame everything at once; it never splits a held
+ * release (a burst, an overflow, a busy VCS ending), a Flush, or the files found below one directory
+ * that appeared, so no subscriber is told part of a tree.
+ *
  * Owner thread: the thread that constructed the service (CEngine's main thread); every member asserts
  * it. Nothing here allocates from the engine's memory pool: std containers and FString, on the CRT
- * heap. Dev builds only: CEngine owns one in Debug and Development (Engine.h, GetFileWatcher), pumped
- * in BeginFrame; Release builds watch nothing.
+ * heap; the work on the pool uses nothing else. Dev builds only: CEngine owns one in Debug and
+ * Development (Engine.h, GetFileWatcher), pumped in BeginFrame; Release builds watch nothing.
  */
 namespace frt::assets
 {
@@ -114,6 +141,9 @@ struct SFileWatcherSettings
 	uint32 MaxProbeBackoffMs = 2000u;
 	uint32 HeldWarningMs = 10000u;
 	uint32 RootPollMs = 1000u;
+	// How many settled paths one Pump resolves; the rest are resolved by the next ones, oldest first. A
+	// held release, a Flush and the files found below one directory that appeared are never split.
+	uint32 MaxChangesPerPump = 4096u;
 	// For the platform watcher the service creates (buffer size, thread name, lost-root polling).
 	platform::SFileWatcherDesc Watcher;
 
@@ -163,6 +193,11 @@ struct SWatchFilter
 	FString Prefix;
 	// Name endings, compared ignoring case (".frtmat.yml"). Empty: any name.
 	std::vector<FString> Extensions;
+	// Told only what the disk confirms (the default): a file once no writer holds it, never the echo of
+	// an expected write. False: told every settled path at once, with the kind its events say and no
+	// disk check (see the class comment) - for a subscriber that compares what it holds with the disk
+	// itself.
+	bool bVerify = true;
 };
 
 using FFileChangesCallback = TUniqueFunction<void (std::span<const SFileChange>)>;
@@ -203,6 +238,7 @@ struct SFileWatcherStats
 	uint32 Roots = 0u;                // platform roots armed now
 	uint32 Subscriptions = 0u;
 	uint32 PendingPaths = 0u;         // marked dirty, not told yet
+	uint32 VerifyingPaths = 0u;       // disk checks on the worker pool, not applied yet
 	bool bHolding = false;            // a burst, an overflow or a busy VCS holds everything until quiet
 	uint64 Events = 0u;               // taken from the platform watcher
 	uint64 Overflows = 0u;
@@ -214,6 +250,8 @@ struct SFileWatcherStats
 	uint64 Changes = 0u;              // changes handed to them, summed over callbacks
 	uint64 SelfWritesSuppressed = 0u;
 	uint64 WriterBackoffs = 0u;       // probes that found a writer
+	uint64 VerifyTasks = 0u;          // disk-check tasks submitted to the worker pool
+	uint64 CappedPumps = 0u;          // Pumps that left settled paths to the next (MaxChangesPerPump)
 };
 
 class FRT_CORE_API CFileWatcherService
@@ -257,6 +295,11 @@ public:
 	// the scope are disarmed; roots that stay in it keep watching.
 	void SetEnabled (bool bEnabled, std::span<const std::filesystem::path> OnlyUnder = {});
 	[[nodiscard]] bool IsEnabled () const noexcept;
+
+	// The pool the disk checks run on (see the class comment); null runs them inline on the owner
+	// thread. The pool must outlive the service, or be replaced (null included) before it goes; checks
+	// already submitted finish on it, or are checked again when its drain drops them.
+	void SetWorkerPool (jobs::CWorkerPool* Pool);
 
 	// ---- the frame ----
 

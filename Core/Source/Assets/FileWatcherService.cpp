@@ -1,15 +1,21 @@
 #include "Assets/FileWatcherService.h"
 
 #include <algorithm>
+#include <chrono>
+#include <condition_variable>
+#include <deque>
+#include <mutex>
 #include <optional>
 #include <system_error>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 #include "Asserts.h"
 #include "Assets/FileHash.h"
 #include "Config/Config.h"
 #include "Containers/StringMap.h"
+#include "Jobs/WorkerPool.h"
 #include "Log/Log.h"
 #include "Platform/FileSystem.h"
 #include "Platform/Process.h"
@@ -106,6 +112,160 @@ FString MakeExpectedKey (const std::filesystem::path& Path)
 	return MakePathKey(FString::FromPath(platform::NormalizePath(Path), EPathStyle::Generic));
 }
 
+// Disk checks of one verification task: enough paths that a task outweighs its scheduling, few enough
+// that a burst's group spreads over the workers.
+constexpr size_t VerifyChunk = 64u;
+
+// What the disk says about one path, now: what a settled entry is decided by (Resolve's facts).
+struct SDiskFacts
+{
+	std::optional<platform::SFileStat> Stat;
+	platform::EWriterProbe Probe = platform::EWriterProbe::Failed;
+	std::optional<hash::SContentHash> Hash;
+	bool bProbed = false;
+	bool bHashed = false;
+};
+
+// One path's disk checks: what to look at (filled on the owner thread) and what was found (filled by
+// whoever runs the checks: a worker, or the owner thread without a pool).
+struct SVerifyItem
+{
+	uint64 RootSerial = 0u;
+	FString Key;
+	FString Path;                       // the entry's path when submitted
+	uint64 LastSeen = 0u;               // the entry's when submitted: a later event makes the facts stale
+	std::filesystem::path Full;
+	bool bProbeIfFile = false;          // a file there is probed for writers
+	std::optional<uint64> HashIfSize;   // an expected write's size: a file of that size there is hashed
+	SDiskFacts Facts;
+};
+
+// Stat, writer probe and (for an expected write of that size) hash, in Resolve's order: a file a
+// writer holds, or that went since the stat, is not hashed. Runs on any thread: std, FString and the
+// platform layer only.
+void GatherFacts (SVerifyItem& Item)
+{
+	SDiskFacts& facts = Item.Facts;
+	facts.Stat = platform::Stat(Item.Full);
+	if (!Item.bProbeIfFile || !facts.Stat || facts.Stat->bDirectory)
+	{
+		return;
+	}
+	facts.Probe = platform::ProbeFileWriters(Item.Full);
+	facts.bProbed = true;
+	if (Item.HashIfSize && *Item.HashIfSize == facts.Stat->Size
+		&& facts.Probe != platform::EWriterProbe::Held && facts.Probe != platform::EWriterProbe::Missing)
+	{
+		facts.Hash = HashFileStable(Item.Full);
+		facts.bHashed = true;
+	}
+}
+
+/**
+ * The disk checks of one Pump (or one Flush, or one root's events of unknown type), shared between the
+ * service and the pool tasks that run them in chunks. A chunk's task finishes its chunk when it is
+ * destroyed, run or not: a task the pool drops unrun (its drain) marks the group abandoned, and the
+ * service checks those paths again instead of waiting forever.
+ */
+struct SVerifyGroup
+{
+	uint64 Id = 0u;
+	std::vector<SVerifyItem> Items;
+
+	void Start (uint32 Chunks)
+	{
+		std::lock_guard lock(Mutex);
+		Remaining = Chunks;
+	}
+
+	void FinishChunk (bool bRan)
+	{
+		{
+			std::lock_guard lock(Mutex);
+			--Remaining;
+			bAbandoned = bAbandoned || !bRan;
+		}
+		Finished.notify_all();
+	}
+
+	[[nodiscard]] bool IsDone ()
+	{
+		std::lock_guard lock(Mutex);
+		return Remaining == 0u;
+	}
+
+	// Done (every chunk run or dropped) within TimeoutSeconds.
+	bool WaitDone (double TimeoutSeconds)
+	{
+		std::unique_lock lock(Mutex);
+		return Finished.wait_for(lock, std::chrono::duration<double>(TimeoutSeconds > 0.0 ? TimeoutSeconds : 0.0),
+			[this] { return Remaining == 0u; });
+	}
+
+	// Only once done.
+	[[nodiscard]] bool IsAbandoned ()
+	{
+		std::lock_guard lock(Mutex);
+		return bAbandoned;
+	}
+
+private:
+	std::mutex Mutex;
+	std::condition_variable Finished;
+	uint32 Remaining = 0u;
+	bool bAbandoned = false;
+};
+
+// Owned by a chunk's work callable: finishes the chunk when the callable dies, which the pool does on
+// the worker right after running it, or wherever it drops it unrun.
+struct SChunkGuard
+{
+	std::shared_ptr<SVerifyGroup> Group;
+	bool bRan = false;
+
+	explicit SChunkGuard (std::shared_ptr<SVerifyGroup> InGroup) noexcept
+		: Group(std::move(InGroup))
+	{}
+
+	SChunkGuard (SChunkGuard&& Other) noexcept
+		: Group(std::move(Other.Group))
+		, bRan(Other.bRan)
+	{}
+
+	SChunkGuard (const SChunkGuard&) = delete;
+	SChunkGuard& operator= (const SChunkGuard&) = delete;
+	SChunkGuard& operator= (SChunkGuard&&) = delete;
+
+	~SChunkGuard ()
+	{
+		if (Group)
+		{
+			Group->FinishChunk(bRan);
+		}
+	}
+};
+
+// Submits Group's checks to Pool in chunks; the number of tasks.
+uint32 SubmitGroup (jobs::CWorkerPool& Pool, const std::shared_ptr<SVerifyGroup>& Group, jobs::EWorkPriority Priority)
+{
+	const size_t count = Group->Items.size();
+	const uint32 chunks = static_cast<uint32>((count + VerifyChunk - 1u) / VerifyChunk);
+	Group->Start(chunks);
+	for (size_t begin = 0u; begin < count; begin += VerifyChunk)
+	{
+		const size_t end = begin + VerifyChunk < count ? begin + VerifyChunk : count;
+		Pool.Submit(Priority, jobs::NoCancelGroup, [guard = SChunkGuard(Group), begin, end] () mutable
+		{
+			for (size_t i = begin; i < end; ++i)
+			{
+				GatherFacts(guard.Group->Items[i]);
+			}
+			guard.bRan = true;
+		});
+	}
+	return chunks;
+}
+
 }
 
 
@@ -154,6 +314,9 @@ struct CFileWatcherService::SState
 		                                // that a file landing here afterwards is a Modified (S4's backup rename)
 		bool bEnumerate = false;        // a directory appeared here: every file below it is Added when it comes due
 		bool bWarnedHeld = false;
+		bool bToldUnverified = false;   // the subscriptions that do not verify were told it since its last event
+		uint64 Ticket = 0u;             // the verification group its disk checks went to (0: none)
+		uint64 Cohort = 0u;             // the directory walk that found it (0: none): never split by the cap
 	};
 
 	using FPendingList = std::vector<std::pair<FString, SPending>>;
@@ -192,6 +355,13 @@ struct CFileWatcherService::SState
 		uint32 SubscriptionCount = 0u;
 		std::unordered_map<FString, SPending, SStringHash, SStringEqual> Pending;   // by key
 		SRenamedOld LastRenamedOld;   // for pairing by adjacency where events carry no identity
+		uint64 Serial = 0u;           // names it in work that may outlive it (verification groups)
+		// With a pool, events from the first one whose entry type the disk must say (no entry types: FAT,
+		// ReFS, a share) wait here, in order, for the Stats that Classifying runs on the pool for the first
+		// ClassifyCount of them.
+		std::deque<platform::SFileEvent> Deferred;
+		std::shared_ptr<SVerifyGroup> Classifying;
+		size_t ClassifyCount = 0u;
 	};
 
 	// A Removed or RenamedOld waiting PairWindowMs for the Added or RenamedNew of the same identity.
@@ -220,13 +390,29 @@ struct CFileWatcherService::SState
 		FString RegionPath;   // SubPath joined with the filter's Prefix: the root-relative region it watches
 		FString RegionKey;
 		std::vector<FString> Extensions;
+		bool bVerify = true;
 		FFileChangesCallback Callback;
 	};
+
+	// Who a settled change is for: the subscriptions that verify (told what the disk says), those that
+	// do not (told what the events say, at once), or both (a Rescan, which no check could change).
+	enum class EAudience : uint8
+	{
+		All,
+		Verified,
+		Unverified,
+	};
+
+	[[nodiscard]] static bool IsFor (EAudience Audience, bool bVerify) noexcept
+	{
+		return Audience == EAudience::All || (Audience == EAudience::Verified) == bVerify;
+	}
 
 	// A change that has settled, before it is cut to each subscription.
 	struct SReady
 	{
 		SRoot* Root = nullptr;
+		EAudience Audience = EAudience::All;
 		EFileChange Kind = EFileChange::Modified;
 		bool bDirectory = false;
 		bool bMaybeDirectory = false;
@@ -295,6 +481,14 @@ struct CFileWatcherService::SState
 
 	SFileWatcherStats Stats;
 	std::vector<platform::SFileEvent> EventBuffer;
+
+	// SetWorkerPool's; null: disk checks inline.
+	jobs::CWorkerPool* Pool = nullptr;
+	// Verification groups submitted and not applied yet, oldest first: applied in this order, each whole.
+	std::deque<std::shared_ptr<SVerifyGroup>> InFlight;
+	uint64 NextGroupId = 1u;
+	uint64 NextRootSerial = 1u;
+	uint64 NextCohort = 1u;
 
 	SState (const SFileWatcherSettings& InSettings, std::unique_ptr<platform::IFileWatcher> InWatcher)
 		: Settings(InSettings)
@@ -449,6 +643,9 @@ struct CFileWatcherService::SState
 		Root.Pending.clear();
 		Root.bRescanPending = false;
 		Root.LastRenamedOld = {};
+		Root.Deferred.clear();
+		Root.Classifying.reset();
+		Root.ClassifyCount = 0u;
 		std::erase_if(Removals, [&Root] (const SRemoval& Removal) { return Removal.Root == &Root; });
 	}
 
@@ -547,14 +744,14 @@ struct CFileWatcherService::SState
 		return IsAtOrBelow(Key, Subscription.RegionKey) && MatchesExtension(Subscription, Path);
 	}
 
-	// Some live subscription of the root would be told about this entry: only those are stat'ed,
-	// probed and hashed.
-	[[nodiscard]] bool IsRelevant (const SRoot& Root, const SPending& Entry, FStringView Key) const
+	// Some live subscription of the root that verifies (bVerify) or does not would be told about this
+	// entry: only entries some verifying one would be told are stat'ed, probed and hashed.
+	[[nodiscard]] bool IsRelevant (const SRoot& Root, const SPending& Entry, FStringView Key, bool bVerify) const
 	{
 		const FString movedKey = Entry.MovedFrom.IsEmpty() ? FString() : MakeKey(Root, Entry.MovedFrom);
 		for (const SSubscription& subscription : Subscriptions)
 		{
-			if (subscription.Id == 0u || subscription.Root != &Root)
+			if (subscription.Id == 0u || subscription.Root != &Root || subscription.bVerify != bVerify)
 			{
 				continue;
 			}
@@ -568,31 +765,162 @@ struct CFileWatcherService::SState
 		return false;
 	}
 
+	// Some live subscription of the root verifies (bVerify) or does not.
+	[[nodiscard]] bool HasAudience (const SRoot& Root, bool bVerify) const
+	{
+		return std::any_of(Subscriptions.begin(), Subscriptions.end(), [&Root, bVerify] (const SSubscription& Subscription)
+		{
+			return Subscription.Id != 0u && Subscription.Root == &Root && Subscription.bVerify == bVerify;
+		});
+	}
+
 	// ---------------- Events ----------------
 
-	void PumpEvents ()
+	// Event is about an entry the disk must name: no entry type, and a kind after which the entry exists
+	// (Ingest's fallback). Fences never need it.
+	[[nodiscard]] static bool NeedsClassification (const platform::SFileEvent& Event)
+	{
+		return Event.EntryType == platform::EFileEntryType::Unknown
+			&& (Event.Kind == platform::EFileEventKind::Added || Event.Kind == platform::EFileEventKind::RenamedNew
+				|| Event.Kind == platform::EFileEventKind::Modified)
+			&& !IsFence(Event.Path);
+	}
+
+	// Takes the platform's events. With a pool (and not bInline: Flush), an event that needs the disk to
+	// say what its entry is waits with everything after it in its root, in order, for a Stat on the pool;
+	// the next call ingests what has been classified. Inline, they are ingested now.
+	void PumpEvents (bool bInline = false)
 	{
 		if (!Watcher)
 		{
 			return;
 		}
+		const bool bDefer = Pool != nullptr && !bInline;
+		IngestDeferred(!bDefer);
 		EventBuffer.clear();
 		Watcher->TakeEvents(EventBuffer);
-		for (const platform::SFileEvent& event : EventBuffer)
+		for (platform::SFileEvent& event : EventBuffer)
 		{
-			Ingest(event);
+			const auto rootIt = RootsByWatcherId.find(event.RootId);
+			if (bDefer && rootIt != RootsByWatcherId.end() && (!rootIt->second->Deferred.empty() || NeedsClassification(event)))
+			{
+				if (event.Timestamp == 0u)
+				{
+					event.Timestamp = platform::ReadTimestamp();   // when it arrived, not when it is ingested
+				}
+				rootIt->second->Deferred.push_back(std::move(event));
+				continue;
+			}
+			Ingest(event, std::nullopt);
+		}
+		if (bDefer)
+		{
+			SubmitClassifications();
 		}
 		// Removals older than the pair window can no longer pair: by the newest event, and by the clock,
 		// so that a removal no event follows - a directory removed last, whose left-behind removals
 		// wait for its expiry - is not kept until something unrelated happens. The clock's bound leaves
-		// one more pair window for events the watcher thread read (and stamped) but has not queued yet.
+		// one more pair window for events the watcher thread read (and stamped) but has not queued yet,
+		// and for events that wait for their classification (their other half may be among them).
 		const uint64 now = platform::ReadTimestamp();
 		const uint64 byEvents = LastEventTime > PairTicks ? LastEventTime - PairTicks - 1u : 0u;
-		const uint64 byClock = now > 2u * PairTicks ? now - 2u * PairTicks : 0u;
+		uint64 byClock = now > 2u * PairTicks ? now - 2u * PairTicks : 0u;
+		for (const std::unique_ptr<SRoot>& root : Roots)
+		{
+			if (!root->Deferred.empty())
+			{
+				const uint64 first = root->Deferred.front().Timestamp;
+				const uint64 bound = first > PairTicks ? first - PairTicks - 1u : 0u;
+				byClock = bound < byClock ? bound : byClock;
+			}
+		}
 		const uint64 expireUpTo = byEvents > byClock ? byEvents : byClock;
 		if (expireUpTo > 0u)
 		{
 			ExpireRemovals(expireUpTo);
+		}
+	}
+
+	// Ingests each root's deferred events, in order, as far as their entry types are known: classified
+	// by its finished group, or - bInline - by a Stat now. A group the pool dropped unrun is submitted
+	// again (SubmitClassifications).
+	void IngestDeferred (bool bInline)
+	{
+		for (const std::unique_ptr<SRoot>& rootPtr : Roots)
+		{
+			SRoot& root = *rootPtr;
+			if (root.Deferred.empty())
+			{
+				continue;
+			}
+			size_t classified = 0u;
+			if (root.Classifying && root.Classifying->IsDone())
+			{
+				classified = root.Classifying->IsAbandoned() ? 0u : root.ClassifyCount;
+			}
+			const std::vector<SVerifyItem>* results = classified > 0u ? &root.Classifying->Items : nullptr;
+			size_t next = 0u;   // the next result
+			size_t taken = 0u;
+			// Ingest may not touch Deferred; events are moved out first, as far as they can go.
+			while (taken < root.Deferred.size())
+			{
+				const platform::SFileEvent& event = root.Deferred[taken];
+				std::optional<bool> bDirectory;
+				if (NeedsClassification(event))
+				{
+					if (taken < classified)
+					{
+						const SDiskFacts& facts = (*results)[next++].Facts;
+						bDirectory = facts.Stat && facts.Stat->bDirectory;
+					}
+					else if (!bInline)
+					{
+						break;
+					}
+				}
+				const platform::SFileEvent copy = event;
+				++taken;
+				Ingest(copy, bDirectory);
+			}
+			root.Deferred.erase(root.Deferred.begin(), root.Deferred.begin() + static_cast<std::ptrdiff_t>(taken));
+			if (root.Classifying && (root.Classifying->IsDone() || bInline))
+			{
+				// Used up, dropped, or overtaken by the inline Stats (its late results are ignored).
+				root.Classifying.reset();
+				root.ClassifyCount = 0u;
+			}
+			else if (root.Classifying)
+			{
+				root.ClassifyCount = taken <= root.ClassifyCount ? root.ClassifyCount - taken : 0u;
+			}
+		}
+	}
+
+	// Roots with deferred events and no classification running: their unknown entries are stat'ed on
+	// the pool, one group per root.
+	void SubmitClassifications ()
+	{
+		for (const std::unique_ptr<SRoot>& rootPtr : Roots)
+		{
+			SRoot& root = *rootPtr;
+			if (root.Deferred.empty() || root.Classifying)
+			{
+				continue;
+			}
+			auto group = std::make_shared<SVerifyGroup>();
+			group->Id = NextGroupId++;
+			for (const platform::SFileEvent& event : root.Deferred)
+			{
+				if (NeedsClassification(event))
+				{
+					SVerifyItem item;
+					item.Full = MakeFullPath(root, event.Path);
+					group->Items.push_back(std::move(item));
+				}
+			}
+			root.ClassifyCount = root.Deferred.size();
+			root.Classifying = group;
+			Stats.VerifyTasks += SubmitGroup(*Pool, group, jobs::EWorkPriority::High);
 		}
 	}
 
@@ -626,13 +954,15 @@ struct CFileWatcherService::SState
 			if (!bInserted)
 			{
 				it->second.bMovedAway = false;
-				it->second.LastSeen = entry.LastSeen > it->second.LastSeen ? entry.LastSeen : it->second.LastSeen;
+				MarkChanged(it->second, entry.LastSeen);
 			}
 		}
 		LeftBehind.clear();
 	}
 
-	void Ingest (const platform::SFileEvent& Event)
+	// KnownDirectory: what the disk said the entry of an event of unknown type is (classified on the
+	// pool); nullopt asks it now where that is needed.
+	void Ingest (const platform::SFileEvent& Event, std::optional<bool> KnownDirectory)
 	{
 		++Stats.Events;
 		const auto rootIt = RootsByWatcherId.find(Event.RootId);
@@ -698,8 +1028,15 @@ struct CFileWatcherService::SState
 			// entry is. A directory that appeared is enumerated below; a directory's own Modified is its
 			// times, changed by an entry inside that reports itself, so it is dropped here as the platform
 			// layer drops it where it knows the type - else every edit would rescan its parent directory.
-			const std::optional<platform::SFileStat> stat = platform::Stat(MakeFullPath(root, Event.Path));
-			bDirectory = stat && stat->bDirectory;
+			if (KnownDirectory)
+			{
+				bDirectory = *KnownDirectory;
+			}
+			else
+			{
+				const std::optional<platform::SFileStat> stat = platform::Stat(MakeFullPath(root, Event.Path));
+				bDirectory = stat && stat->bDirectory;
+			}
 			if (bDirectory && Event.Kind == platform::EFileEventKind::Modified)
 			{
 				return;
@@ -733,8 +1070,17 @@ struct CFileWatcherService::SState
 			entry.FirstSeen = Time;
 		}
 		entry.Path = FString(Path);
-		entry.LastSeen = Time > entry.LastSeen ? Time : entry.LastSeen;
+		MarkChanged(entry, Time);
 		return entry;
+	}
+
+	// Something happened at Entry's path at Time: it settles again, the subscriptions that do not verify
+	// are told it again, and disk checks made before are stale.
+	static void MarkChanged (SPending& Entry, uint64 Time)
+	{
+		Entry.LastSeen = Time > Entry.LastSeen ? Time : Entry.LastSeen;
+		Entry.bToldUnverified = false;
+		Entry.Ticket = 0u;
 	}
 
 	// The removal (or rename's old half) the Added or RenamedNew Event completes: same identity within
@@ -960,7 +1306,7 @@ struct CFileWatcherService::SState
 				// Removed and back within the window: whatever was below it may differ (a Rescan).
 				entry.bExistsNow = true;
 			}
-			entry.LastSeen = Time > entry.LastSeen ? Time : entry.LastSeen;
+			MarkChanged(entry, Time);
 			entry.bEnumerate = true;
 			break;
 		}
@@ -1051,9 +1397,9 @@ struct CFileWatcherService::SState
 		}
 	}
 
-	// Every file at or below Directory (root-relative) becomes an Added entry: a directory that moved in
-	// reports nothing for its children (S13).
-	void EnumerateInto (SRoot& Root, FStringView Directory, uint64 Time)
+	// Every file at or below Directory (root-relative) becomes an Added entry of Cohort: a directory that
+	// moved in reports nothing for its children (S13), and they are resolved together.
+	void EnumerateInto (SRoot& Root, FStringView Directory, uint64 Time, uint64 Cohort)
 	{
 		std::vector<FString> stack;
 		stack.emplace_back(Directory);
@@ -1079,6 +1425,7 @@ struct CFileWatcherService::SState
 				}
 				SPending& entry = Touch(Root, MakeKey(Root, path), path, false, Time);
 				entry.bExistsNow = true;
+				entry.Cohort = Cohort;
 			});
 		}
 	}
@@ -1147,7 +1494,7 @@ struct CFileWatcherService::SState
 		}
 		for (const SDue& directory : walk)
 		{
-			EnumerateInto(Root, directory.Path, directory.Time);
+			EnumerateInto(Root, directory.Path, directory.Time, NextCohort++);
 		}
 	}
 
@@ -1171,7 +1518,7 @@ struct CFileWatcherService::SState
 	{
 		for (const std::unique_ptr<SRoot>& root : Roots)
 		{
-			if (!root->Pending.empty() || root->bRescanPending)
+			if (!root->Pending.empty() || root->bRescanPending || !root->Deferred.empty())
 			{
 				return true;
 			}
@@ -1217,88 +1564,36 @@ struct CFileWatcherService::SState
 		TellAndResolveAgain,
 	};
 
-	// What a settled entry turns out to be, by the disk now: Tell (Out filled), Drop (nothing to tell,
-	// or a self-write), Keep (a writer holds it, or it changed under the probe: wait),
-	// TellAndResolveAgain (Out filled, and the entry, changed into another, is resolved once more).
-	EOutcome Resolve (SRoot& Root, const FString& Key, SPending& Entry, uint64 Now, SReady& Out)
+	// The disk checks a settled entry needs, to run inline or on the pool: its Stat, the writer probe if
+	// a file is there (also where a directory was removed: a file in its place is resolved as one next),
+	// and the hash if the caller expects a write of that file's size there.
+	[[nodiscard]] SVerifyItem MakeVerifyItem (const SRoot& Root, const FString& Key, const SPending& Entry) const
 	{
-		Out.Root = &Root;
-		Out.Path = Entry.Path;
-		Out.Key = Key;
-		const std::filesystem::path full = MakeFullPath(Root, Entry.Path);
+		SVerifyItem item;
+		item.RootSerial = Root.Serial;
+		item.Key = Key;
+		item.Path = Entry.Path;
+		item.LastSeen = Entry.LastSeen;
+		item.Full = MakeFullPath(Root, Entry.Path);
+		item.bProbeIfFile = Entry.Type == EEntry::File || Entry.Type == EEntry::DirectoryRemoved;
+		if (item.bProbeIfFile && !Expected.empty())
+		{
+			const auto expected = Expected.find(MakeExpectedKey(item.Full));
+			if (expected != Expected.end())
+			{
+				item.HashIfSize = expected->second.Size;
+			}
+		}
+		return item;
+	}
 
-		if (Entry.Type == EEntry::DirectoryRemoved)
-		{
-			const std::optional<platform::SFileStat> stat = platform::Stat(full);
-			Out.bDirectory = true;
-			if (!Entry.MovedFrom.IsEmpty())
-			{
-				// It had moved here within the window (a -> b), then went on or away: gone from where it
-				// was. Whatever is at its path now is resolved after that, as a path nobody knew.
-				Out.Kind = EFileChange::Removed;
-				Out.Path = Entry.MovedFrom;
-				Out.Key = MakeKey(Root, Entry.MovedFrom);
-				Entry.MovedFrom.Clear();
-				return stat ? EOutcome::TellAndResolveAgain : EOutcome::Tell;
-			}
-			Out.Kind = stat && stat->bDirectory ? EFileChange::Rescan : EFileChange::Removed;
-			if (stat && !stat->bDirectory)
-			{
-				// A file took the directory's place (git switching a path from a directory on one branch to
-				// a file on another): the directory is told gone, then the path is resolved as the file
-				// that is there now - an Added, or the Moved of a file that came from elsewhere in the root
-				// - with the writer probe and the self-write check every file gets.
-				Entry.Type = EEntry::File;
-				Entry.FirstPath = Entry.Path;
-				Entry.bExistedBefore = false;
-				Entry.bExistsNow = true;
-				Entry.bMaybeDirectory = false;
-				Entry.bMovedAway = false;
-				return EOutcome::TellAndResolveAgain;
-			}
-			return EOutcome::Tell;
-		}
-		if (Entry.Type == EEntry::DirectoryAdded)
-		{
-			return EOutcome::Drop;   // its files tell it (EnumerateAppeared made them entries)
-		}
-		if (Entry.Type == EEntry::DirectoryMoved)
-		{
-			const std::optional<platform::SFileStat> stat = platform::Stat(full);
-			Out.bDirectory = true;
-			if (stat && stat->bDirectory)
-			{
-				Out.Kind = EFileChange::Moved;
-				Out.OldPath = Entry.MovedFrom;
-				Out.OldKey = MakeKey(Root, Entry.MovedFrom);
-			}
-			else
-			{
-				// Moved, then gone from its new place too.
-				Out.Kind = EFileChange::Removed;
-				Out.Path = Entry.MovedFrom;
-				Out.Key = MakeKey(Root, Entry.MovedFrom);
-			}
-			return EOutcome::Tell;
-		}
-
-		if (!IsRelevant(Root, Entry, Key))
-		{
-			return EOutcome::Drop;
-		}
-		const std::optional<platform::SFileStat> stat = platform::Stat(full);
-		if (stat && stat->bDirectory)
-		{
-			// A directory where a file event was (a file system without entry types, or a file replaced
-			// by a directory): what is below it is unknown.
-			Out.Kind = EFileChange::Rescan;
-			Out.bDirectory = true;
-			return EOutcome::Tell;
-		}
-		const bool bExists = stat.has_value();
+	// A file entry's change, by whether a file is there now (the disk's answer for the subscriptions
+	// that verify, the events' for the others): false when there is nothing to tell.
+	bool DecideFile (const SRoot& Root, const SPending& Entry, bool bExists, SReady& Out) const
+	{
 		if (Entry.bMovedAway && !bExists)
 		{
-			return EOutcome::Drop;   // where its file went tells the move
+			return false;   // where its file went tells the move
 		}
 		const bool bMoved = !Entry.MovedFrom.IsEmpty() && Entry.bMovedFromExisted;
 		if (bExists && bMoved)
@@ -1334,37 +1629,185 @@ struct CFileWatcherService::SState
 		}
 		else
 		{
-			return EOutcome::Drop;   // born and gone within the window: a temporary file
+			return false;   // born and gone within the window: a temporary file
 		}
 		if (!Out.OldPath.IsEmpty())
 		{
 			Out.OldKey = MakeKey(Root, Out.OldPath);
 		}
+		return true;
+	}
+
+	// What the subscriptions that do not verify are told of a settled entry: what its events say, no
+	// disk check. Where the events cannot say what is at a path now - a directory removed, and something
+	// back in its place - a Rescan of the path stands for it. Appends no change, one or two.
+	void DecideFromEvents (SRoot& Root, const FString& Key, const SPending& Entry, std::vector<SReady>& Out) const
+	{
+		SReady change;
+		change.Root = &Root;
+		change.Audience = EAudience::Unverified;
+		change.Path = Entry.Path;
+		change.Key = Key;
+		switch (Entry.Type)
+		{
+		case EEntry::DirectoryAdded:
+			return;   // its files tell it (EnumerateAppeared made them entries)
+		case EEntry::DirectoryMoved:
+			change.bDirectory = true;
+			change.Kind = EFileChange::Moved;
+			change.OldPath = Entry.MovedFrom;
+			change.OldKey = MakeKey(Root, Entry.MovedFrom);
+			Out.push_back(std::move(change));
+			return;
+		case EEntry::DirectoryRemoved:
+			change.bDirectory = true;
+			if (!Entry.MovedFrom.IsEmpty())
+			{
+				// It had moved here within the window, then went on or away: gone from where it was.
+				SReady gone = change;
+				gone.Kind = EFileChange::Removed;
+				gone.Path = Entry.MovedFrom;
+				gone.Key = MakeKey(Root, Entry.MovedFrom);
+				Out.push_back(std::move(gone));
+			}
+			if (Entry.bExistsNow)
+			{
+				change.Kind = EFileChange::Rescan;
+				Out.push_back(std::move(change));
+			}
+			else if (Entry.MovedFrom.IsEmpty())
+			{
+				change.Kind = EFileChange::Removed;
+				Out.push_back(std::move(change));
+			}
+			return;
+		case EEntry::File:
+			break;
+		}
+		if (DecideFile(Root, Entry, Entry.bExistsNow, change))
+		{
+			Out.push_back(std::move(change));
+		}
+	}
+
+	// What a settled entry turns out to be for the subscriptions that verify, by Item's disk checks:
+	// Tell (Out filled), Drop (nothing to tell, or a self-write), Keep (a writer holds it, it changed
+	// under the probe, or it needs a check Item lacks: wait), TellAndResolveAgain (Out filled, and the
+	// entry, changed into another, is decided once more by the same checks).
+	EOutcome Decide (SRoot& Root, const FString& Key, SPending& Entry, uint64 Now, const SVerifyItem& Item, SReady& Out)
+	{
+		const std::optional<platform::SFileStat>& stat = Item.Facts.Stat;
+		Out.Root = &Root;
+		Out.Audience = EAudience::Verified;
+		Out.Path = Entry.Path;
+		Out.Key = Key;
+
+		if (Entry.Type == EEntry::DirectoryRemoved)
+		{
+			Out.bDirectory = true;
+			if (!Entry.MovedFrom.IsEmpty())
+			{
+				// It had moved here within the window (a -> b), then went on or away: gone from where it
+				// was. Whatever is at its path now is resolved after that, as a path nobody knew.
+				Out.Kind = EFileChange::Removed;
+				Out.Path = Entry.MovedFrom;
+				Out.Key = MakeKey(Root, Entry.MovedFrom);
+				Entry.MovedFrom.Clear();
+				return stat ? EOutcome::TellAndResolveAgain : EOutcome::Tell;
+			}
+			Out.Kind = stat && stat->bDirectory ? EFileChange::Rescan : EFileChange::Removed;
+			if (stat && !stat->bDirectory)
+			{
+				// A file took the directory's place (git switching a path from a directory on one branch to
+				// a file on another): the directory is told gone, then the path is resolved as the file
+				// that is there now - an Added, or the Moved of a file that came from elsewhere in the root
+				// - with the writer probe and the self-write check every file gets.
+				Entry.Type = EEntry::File;
+				Entry.FirstPath = Entry.Path;
+				Entry.bExistedBefore = false;
+				Entry.bExistsNow = true;
+				Entry.bMaybeDirectory = false;
+				Entry.bMovedAway = false;
+				return EOutcome::TellAndResolveAgain;
+			}
+			return EOutcome::Tell;
+		}
+		if (Entry.Type == EEntry::DirectoryAdded)
+		{
+			return EOutcome::Drop;   // its files tell it (EnumerateAppeared made them entries)
+		}
+		if (Entry.Type == EEntry::DirectoryMoved)
+		{
+			Out.bDirectory = true;
+			if (stat && stat->bDirectory)
+			{
+				Out.Kind = EFileChange::Moved;
+				Out.OldPath = Entry.MovedFrom;
+				Out.OldKey = MakeKey(Root, Entry.MovedFrom);
+			}
+			else
+			{
+				// Moved, then gone from its new place too.
+				Out.Kind = EFileChange::Removed;
+				Out.Path = Entry.MovedFrom;
+				Out.Key = MakeKey(Root, Entry.MovedFrom);
+			}
+			return EOutcome::Tell;
+		}
+
+		if (!IsRelevant(Root, Entry, Key, true))
+		{
+			return EOutcome::Drop;
+		}
+		if (stat && stat->bDirectory)
+		{
+			// A directory where a file event was (a file system without entry types, or a file replaced
+			// by a directory): what is below it is unknown.
+			Out.Kind = EFileChange::Rescan;
+			Out.bDirectory = true;
+			return EOutcome::Tell;
+		}
+		const bool bExists = stat.has_value();
+		if (!DecideFile(Root, Entry, bExists, Out))
+		{
+			return EOutcome::Drop;
+		}
 		if (!bExists)
 		{
 			return EOutcome::Tell;
 		}
+		if (!Item.Facts.bProbed)
+		{
+			Entry.NextProbe = 0u;   // not checked as a file: checked again
+			return EOutcome::Keep;
+		}
 
 		// A writer may still be at it (Modified arrives at close, usually; S3, S19).
-		switch (platform::ProbeFileWriters(full))
+		switch (Item.Facts.Probe)
 		{
 		case platform::EWriterProbe::Held:
-			BackOff(Entry, full, Now);
+			BackOff(Entry, Item.Full, Now);
 			return EOutcome::Keep;
 		case platform::EWriterProbe::Missing:
 			// Gone since the stat: settle again.
 			Entry.bExistsNow = false;
-			Entry.LastSeen = Now;
+			MarkChanged(Entry, Now);
 			return EOutcome::Keep;
 		default:
 			break;
 		}
 
 		// The echo of a write of the caller's own: exactly the bytes it said it would write.
-		const auto expected = Expected.find(MakeExpectedKey(full));
+		const auto expected = Expected.find(MakeExpectedKey(Item.Full));
 		if (expected != Expected.end())
 		{
-			const bool bMatch = stat->Size == expected->second.Size && HashFileStable(full) == std::optional(expected->second.Hash);
+			const bool bSameSize = stat->Size == expected->second.Size;
+			if (bSameSize && !Item.Facts.bHashed)
+			{
+				Entry.NextProbe = 0u;   // expected only after the checks ran: hashed in the next ones
+				return EOutcome::Keep;
+			}
+			const bool bMatch = bSameSize && Item.Facts.Hash == std::optional(expected->second.Hash);
 			Expected.erase(expected);
 			if (bMatch)
 			{
@@ -1373,6 +1816,37 @@ struct CFileWatcherService::SState
 			}
 		}
 		return EOutcome::Tell;
+	}
+
+	// Decides Entry by Item's checks, again for as long as it changes into another; appends what to tell
+	// to Out. True when the entry is done (told or dropped), false when it waits.
+	bool ApplyFacts (SRoot& Root, const FString& Key, SPending& Entry, uint64 Now, const SVerifyItem& Item, std::vector<SReady>& Out)
+	{
+		for (;;)
+		{
+			SReady change;
+			switch (Decide(Root, Key, Entry, Now, Item, change))
+			{
+			case EOutcome::Tell:
+				Out.push_back(std::move(change));
+				return true;
+			case EOutcome::Drop:
+				return true;
+			case EOutcome::Keep:
+				return false;
+			case EOutcome::TellAndResolveAgain:
+				Out.push_back(std::move(change));
+				break;   // the same entry again, changed so that it does not ask for this forever
+			}
+		}
+	}
+
+	// The disk checks now, on the owner thread, then ApplyFacts.
+	bool ResolveInline (SRoot& Root, const FString& Key, SPending& Entry, uint64 Now, std::vector<SReady>& Out)
+	{
+		SVerifyItem item = MakeVerifyItem(Root, Key, Entry);
+		GatherFacts(item);
+		return ApplyFacts(Root, Key, Entry, Now, item, Out);
 	}
 
 	void BackOff (SPending& Entry, const std::filesystem::path& Full, uint64 Now)
@@ -1394,20 +1868,216 @@ struct CFileWatcherService::SState
 		}
 	}
 
-	// Everything that has settled (or that one of Fences covers), resolved against the disk, in root
-	// order and sorted by key within each root.
-	std::vector<SReady> CollectReady (uint64 Now, std::span<const SFence> Fences)
+	// ---------------- Verification on the pool ----------------
+
+	// Entry's disk checks are in a group that has not been applied yet.
+	[[nodiscard]] bool IsAwaiting (const SPending& Entry) const
+	{
+		return Entry.Ticket != 0u && std::any_of(InFlight.begin(), InFlight.end(), [&Entry] (const std::shared_ptr<SVerifyGroup>& Group)
+		{
+			return Group->Id == Entry.Ticket;
+		});
+	}
+
+	[[nodiscard]] SRoot* FindRootBySerial (uint64 Serial) const
+	{
+		for (const std::unique_ptr<SRoot>& root : Roots)
+		{
+			if (root->Serial == Serial)
+			{
+				return root.get();
+			}
+		}
+		return nullptr;
+	}
+
+	[[nodiscard]] size_t GetRootIndex (const SRoot* Root) const
+	{
+		for (size_t i = 0u; i < Roots.size(); ++i)
+		{
+			if (Roots[i].get() == Root)
+			{
+				return i;
+			}
+		}
+		return Roots.size();
+	}
+
+	// Ready[First, end) in root order, by key within each root. Stable: two changes of one path (a
+	// directory removed, a file in its place) keep their order.
+	void SortReady (std::vector<SReady>& Ready, size_t First) const
+	{
+		std::stable_sort(Ready.begin() + static_cast<std::ptrdiff_t>(First), Ready.end(), [this] (const SReady& A, const SReady& B)
+		{
+			if (A.Root != B.Root)
+			{
+				return GetRootIndex(A.Root) < GetRootIndex(B.Root);
+			}
+			return A.Key < B.Key;
+		});
+	}
+
+	enum class EApply : uint8
+	{
+		Facts,    // the group's checks are whole: decide by them
+		Inline,   // they are not (a Flush could not wait for them): check again now, inline
+		Forget,   // they are not: the entries are checked again when the next Pump finds them due
+	};
+
+	// One group's entries - those still waiting for it, unchanged since - decided, their changes
+	// appended to Out in root order and by key.
+	void ApplyGroup (SVerifyGroup& Group, uint64 Now, EApply Mode, std::vector<SReady>& Out)
+	{
+		const size_t first = Out.size();
+		for (const SVerifyItem& item : Group.Items)
+		{
+			SRoot* root = FindRootBySerial(item.RootSerial);
+			if (root == nullptr)
+			{
+				continue;   // unsubscribed or disabled meanwhile
+			}
+			const auto it = root->Pending.find(item.Key);
+			if (it == root->Pending.end() || it->second.Ticket != Group.Id)
+			{
+				continue;   // told or forgotten meanwhile (a Rescan), or changed again: checked again
+			}
+			SPending& entry = it->second;
+			entry.Ticket = 0u;
+			if (Mode == EApply::Forget || entry.LastSeen != item.LastSeen || entry.Path != item.Path)
+			{
+				continue;
+			}
+			const bool bDone = Mode == EApply::Inline ? ResolveInline(*root, it->first, entry, Now, Out)
+				: ApplyFacts(*root, it->first, entry, Now, item, Out);
+			if (bDone)
+			{
+				root->Pending.erase(it);
+			}
+		}
+		SortReady(Out, first);
+	}
+
+	// Applies the groups in flight, oldest first, each whole, up to the first that is still running.
+	// WaitDeadline (Flush): waits for each until then instead, and resolves inline what a group still
+	// running at the deadline, or dropped by the pool's drain, would have checked.
+	void ApplyGroups (uint64 Now, std::vector<SReady>& Out, std::optional<uint64> WaitDeadline = std::nullopt)
+	{
+		while (!InFlight.empty())
+		{
+			const std::shared_ptr<SVerifyGroup> group = InFlight.front();
+			bool bDone = group->IsDone();
+			if (!bDone && WaitDeadline)
+			{
+				const uint64 now = platform::ReadTimestamp();
+				const double remaining = now < *WaitDeadline
+					? static_cast<double>(*WaitDeadline - now) / static_cast<double>(platform::GetTimestampFrequency()) : 0.0;
+				bDone = group->WaitDone(remaining);
+			}
+			if (!bDone && !WaitDeadline)
+			{
+				return;
+			}
+			InFlight.pop_front();
+			const bool bWhole = bDone && !group->IsAbandoned();
+			ApplyGroup(*group, Now, bWhole ? EApply::Facts : WaitDeadline ? EApply::Inline : EApply::Forget, Out);
+		}
+	}
+
+	// ---------------- Settling and resolving ----------------
+
+	// One settled entry a Pump may resolve.
+	struct SCandidate
+	{
+		const FString* Key = nullptr;
+		SPending* Entry = nullptr;
+		bool bWhole = false;   // of a held release or under a fence: taken whatever the cap
+		bool bTaken = false;
+	};
+
+	// Takes every candidate, or at most MaxChangesPerPump of them: the whole ones, then the oldest
+	// (by first event, then key), then the rest of every directory walk one of those came from.
+	void SelectCandidates (std::vector<std::vector<SCandidate>>& Candidates, size_t Total)
+	{
+		const size_t cap = Settings.MaxChangesPerPump > 0u ? Settings.MaxChangesPerPump : 1u;
+		std::vector<SCandidate*> rest;
+		size_t taken = 0u;
+		for (std::vector<SCandidate>& ofRoot : Candidates)
+		{
+			for (SCandidate& candidate : ofRoot)
+			{
+				candidate.bTaken = Total <= cap || candidate.bWhole;
+				taken += candidate.bTaken ? 1u : 0u;
+				if (!candidate.bTaken)
+				{
+					rest.push_back(&candidate);
+				}
+			}
+		}
+		if (rest.empty())
+		{
+			return;
+		}
+		std::sort(rest.begin(), rest.end(), [] (const SCandidate* A, const SCandidate* B)
+		{
+			if (A->Entry->FirstSeen != B->Entry->FirstSeen)
+			{
+				return A->Entry->FirstSeen < B->Entry->FirstSeen;
+			}
+			return *A->Key < *B->Key;
+		});
+		std::unordered_set<uint64> cohorts;
+		for (SCandidate* candidate : rest)
+		{
+			if (taken >= cap)
+			{
+				break;
+			}
+			candidate->bTaken = true;
+			++taken;
+			if (candidate->Entry->Cohort != 0u)
+			{
+				cohorts.insert(candidate->Entry->Cohort);
+			}
+		}
+		bool bLeft = false;
+		for (SCandidate* candidate : rest)
+		{
+			if (!candidate->bTaken && candidate->Entry->Cohort != 0u && cohorts.contains(candidate->Entry->Cohort))
+			{
+				candidate->bTaken = true;
+			}
+			bLeft = bLeft || !candidate->bTaken;
+		}
+		if (bLeft)
+		{
+			++Stats.CappedPumps;
+		}
+	}
+
+	// Everything that has settled (or that one of Fences covers), resolved, in root order and sorted by
+	// key within each root: told at once to the subscriptions that do not verify, and for the others
+	// checked against the disk - inline without a pool, else in one group submitted to it, applied by a
+	// later Pump (bFlush: at High priority, also taking what an older group is checking, which Flush
+	// waits for). At most MaxChangesPerPump entries (SelectCandidates).
+	std::vector<SReady> CollectReady (uint64 Now, std::span<const SFence> Fences, bool bFlush = false)
 	{
 		std::vector<SReady> ready;
 		bool bReleaseAll = false;
 		const bool bHold = UpdateHold(Now, bReleaseAll);
-		for (const std::unique_ptr<SRoot>& rootPtr : Roots)
+		if (std::none_of(Roots.begin(), Roots.end(), [] (const std::unique_ptr<SRoot>& Root) { return !Root->Pending.empty() || Root->bRescanPending; }))
 		{
-			SRoot& root = *rootPtr;
+			return ready;   // the common frame: nothing happened
+		}
+
+		std::vector<std::vector<SCandidate>> candidates(Roots.size());
+		std::vector<uint8> rescans(Roots.size(), 0u);
+		size_t total = 0u;
+		for (size_t r = 0u; r < Roots.size(); ++r)
+		{
+			SRoot& root = *Roots[r];
 			const auto fenceIt = std::find_if(Fences.begin(), Fences.end(), [&root] (const SFence& Fence) { return Fence.Root == &root; });
 			const SFence* fence = fenceIt != Fences.end() ? &*fenceIt : nullptr;
 			const bool bFenced = fence != nullptr;
-			const size_t firstOfRoot = ready.size();
 			if (bHold && !bFenced)
 			{
 				continue;   // nothing of it is due: not even worth a walk
@@ -1419,12 +2089,8 @@ struct CFileWatcherService::SState
 					|| (!bHold && (bReleaseAll || Elapsed(root.RescanSince, Now) >= SettleTicks));
 				if (bDue)
 				{
-					// One Rescan of the root stands for everything pending in it.
-					SReady rescan;
-					rescan.Root = &root;
-					rescan.Kind = EFileChange::Rescan;
-					rescan.bDirectory = true;
-					ready.push_back(std::move(rescan));
+					// One Rescan of the root stands for everything pending in it (checks in flight included).
+					rescans[r] = 1u;
 					++Stats.Rescans;
 					root.bRescanPending = false;
 					root.Pending.clear();
@@ -1433,37 +2099,92 @@ struct CFileWatcherService::SState
 			}
 
 			EnumerateAppeared(root, Now, bHold, bReleaseAll, fence);
-			for (auto it = root.Pending.begin(); it != root.Pending.end();)
+			for (auto& [key, entry] : root.Pending)
 			{
-				SPending& entry = it->second;
 				const bool bForced = bFenced && entry.LastSeen <= fence->Time;
-				const bool bDue = IsDue(entry, Now, bHold, bReleaseAll, fence);
-				if (!bDue || (!bForced && Now < entry.NextProbe))
+				if (!IsDue(entry, Now, bHold, bReleaseAll, fence) || (!bForced && Now < entry.NextProbe))
 				{
-					++it;
 					continue;
 				}
-				SReady change;
-				switch (Resolve(root, it->first, entry, Now, change))
+				if (IsAwaiting(entry) && !(bFlush && bForced))
 				{
-				case EOutcome::Tell:
-					ready.push_back(std::move(change));
-					it = root.Pending.erase(it);
-					break;
-				case EOutcome::Drop:
-					it = root.Pending.erase(it);
-					break;
-				case EOutcome::Keep:
-					++it;
-					break;
-				case EOutcome::TellAndResolveAgain:
-					ready.push_back(std::move(change));
-					break;   // the same entry again, changed so that it does not ask for this forever
+					continue;
+				}
+				candidates[r].push_back({ &key, &entry, bReleaseAll || bForced, false });
+				++total;
+			}
+		}
+		SelectCandidates(candidates, total);
+
+		std::shared_ptr<SVerifyGroup> group;
+		std::vector<FString> done;
+		for (size_t r = 0u; r < Roots.size(); ++r)
+		{
+			SRoot& root = *Roots[r];
+			const size_t firstOfRoot = ready.size();
+			if (rescans[r] != 0u)
+			{
+				SReady rescan;
+				rescan.Root = &root;
+				rescan.Kind = EFileChange::Rescan;
+				rescan.bDirectory = true;
+				ready.push_back(std::move(rescan));
+				continue;
+			}
+			if (candidates[r].empty())
+			{
+				continue;
+			}
+			const bool bAnyVerifying = HasAudience(root, true);
+			const bool bAnyUnverified = HasAudience(root, false);
+			done.clear();
+			for (const SCandidate& candidate : candidates[r])
+			{
+				if (!candidate.bTaken)
+				{
+					continue;
+				}
+				const FString& key = *candidate.Key;
+				SPending& entry = *candidate.Entry;
+				if (!entry.bToldUnverified)
+				{
+					entry.bToldUnverified = true;
+					if (bAnyUnverified && (entry.Type != EEntry::File || IsRelevant(root, entry, key, false)))
+					{
+						DecideFromEvents(root, key, entry, ready);
+					}
+				}
+				const bool bVerify = bAnyVerifying && entry.Type != EEntry::DirectoryAdded
+					&& (entry.Type != EEntry::File || IsRelevant(root, entry, key, true));
+				if (!bVerify)
+				{
+					done.push_back(key);
+				}
+				else if (Pool != nullptr)
+				{
+					if (!group)
+					{
+						group = std::make_shared<SVerifyGroup>();
+						group->Id = NextGroupId++;
+					}
+					entry.Ticket = group->Id;
+					group->Items.push_back(MakeVerifyItem(root, key, entry));
+				}
+				else if (ResolveInline(root, key, entry, Now, ready))
+				{
+					done.push_back(key);
 				}
 			}
-			// Stable: two changes of one path (a directory removed, a file in its place) keep their order.
-			std::stable_sort(ready.begin() + static_cast<std::ptrdiff_t>(firstOfRoot), ready.end(),
-				[] (const SReady& A, const SReady& B) { return A.Key < B.Key; });
+			for (const FString& key : done)
+			{
+				root.Pending.erase(key);
+			}
+			SortReady(ready, firstOfRoot);
+		}
+		if (group)
+		{
+			InFlight.push_back(group);
+			Stats.VerifyTasks += SubmitGroup(*Pool, group, bFlush ? jobs::EWorkPriority::High : jobs::EWorkPriority::Normal);
 		}
 		return ready;
 	}
@@ -1505,6 +2226,10 @@ struct CFileWatcherService::SState
 	void AppendMatches (const SSubscription& Subscription, const SReady& Ready, const std::vector<SReady>& All,
 		std::vector<SFileChange>& Out) const
 	{
+		if (!IsFor(Ready.Audience, Subscription.bVerify))
+		{
+			return;
+		}
 		const FString& region = Subscription.RegionKey;
 		const bool bMove = Ready.Kind == EFileChange::Moved;
 		if (Ready.bDirectory)
@@ -1552,9 +2277,9 @@ struct CFileWatcherService::SState
 			{
 				Out.push_back(Compose(Subscription, EFileChange::Added, false, Ready.Path, {}));
 			}
-			else if (std::none_of(All.begin(), All.end(), [&Ready] (const SReady& Other)
+			else if (std::none_of(All.begin(), All.end(), [&Ready, &Subscription] (const SReady& Other)
 				{
-					return Other.Root == Ready.Root && !Other.bDirectory && Other.Key == Ready.OldKey;
+					return Other.Root == Ready.Root && !Other.bDirectory && Other.Key == Ready.OldKey && IsFor(Other.Audience, Subscription.bVerify);
 				}))
 			{
 				Out.push_back(Compose(Subscription, EFileChange::Removed, false, Ready.OldPath, {}));
@@ -1639,7 +2364,12 @@ struct CFileWatcherService::SState
 		const uint64 now = platform::ReadTimestamp();
 		PollRoots(now);
 		std::erase_if(Expected, [now] (const auto& Item) { return Item.second.Deadline <= now; });
-		Deliver(CollectReady(now, {}));
+		// The checks earlier Pumps sent to the pool, then what has settled since: one delivery.
+		std::vector<SReady> ready;
+		ApplyGroups(now, ready);
+		std::vector<SReady> collected = CollectReady(now, {});
+		ready.insert(ready.end(), std::make_move_iterator(collected.begin()), std::make_move_iterator(collected.end()));
+		Deliver(ready);
 	}
 };
 
@@ -1671,6 +2401,7 @@ SDelegateHandle CFileWatcherService::Subscribe (const std::filesystem::path& Dir
 	subscription.Id = detail::NewDelegateHandleId();
 	subscription.Directory = platform::NormalizePath(Directory);
 	subscription.Extensions = Filter.Extensions;
+	subscription.bVerify = Filter.bVerify;
 	subscription.Callback = std::move(Callback);
 
 	FString relative;
@@ -1682,6 +2413,7 @@ SDelegateHandle CFileWatcherService::Subscribe (const std::filesystem::path& Dir
 		const std::filesystem::path* mount = state.FindMount(subscription.Directory, &relative);
 		auto newRoot = std::make_unique<SState::SRoot>();
 		newRoot->Path = mount != nullptr ? *mount : subscription.Directory;
+		newRoot->Serial = state.NextRootSerial++;
 		root = newRoot.get();
 		state.Roots.push_back(std::move(newRoot));
 	}
@@ -1793,6 +2525,12 @@ bool CFileWatcherService::IsEnabled () const noexcept
 	return State->Settings.bEnabled;
 }
 
+void CFileWatcherService::SetWorkerPool (jobs::CWorkerPool* Pool)
+{
+	State->CheckOwner();
+	State->Pool = Pool;
+}
+
 void CFileWatcherService::Pump ()
 {
 	FRT_CPU_SCOPE("Assets.FileWatcher");
@@ -1856,7 +2594,7 @@ bool CFileWatcherService::Flush (const std::filesystem::path& Directory, double 
 	const uint64 deadline = platform::MakeDeadline(TimeoutSeconds);
 	while (true)
 	{
-		state.PumpEvents();
+		state.PumpEvents(true);   // events of unknown entry type are classified inline here
 		bool bAllSeen = true;
 		bool bAnyArmed = false;
 		for (SWaiting& fence : waiting)
@@ -1909,7 +2647,12 @@ bool CFileWatcherService::Flush (const std::filesystem::path& Directory, double 
 	}
 	state.PollRoots(now);
 	std::erase_if(state.Expected, [now] (const auto& Item) { return Item.second.Deadline <= now; });
-	state.Deliver(state.CollectReady(now, settled));
+	// With a pool, the checks of what the fences cover go to it in one group, and Flush waits for that
+	// group and every older one (inline for what they cannot finish by the deadline): synchronous all
+	// the same, one delivery.
+	std::vector<SState::SReady> ready = state.CollectReady(now, settled, true);
+	state.ApplyGroups(now, ready, deadline);
+	state.Deliver(ready);
 	for (const SWaiting& fence : waiting)
 	{
 		platform::RemoveFile(fence.File);
@@ -1949,6 +2692,10 @@ SFileWatcherStats CFileWatcherService::GetStats () const
 	{
 		stats.Roots += root->State == SState::ERootState::Armed || root->State == SState::ERootState::Lost ? 1u : 0u;
 		stats.PendingPaths += static_cast<uint32>(root->Pending.size());
+	}
+	for (const std::shared_ptr<SVerifyGroup>& group : state.InFlight)
+	{
+		stats.VerifyingPaths += static_cast<uint32>(group->Items.size());
 	}
 	stats.bHolding = state.bHolding;
 	return stats;

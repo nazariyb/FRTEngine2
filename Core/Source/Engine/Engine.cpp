@@ -120,6 +120,9 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 	//     handle - and nothing at all with [Assets] Watch=0 (scripted runs).
 #if FRT_WITH_DEV_TOOLS
 	FileWatcher = std::make_unique<assets::CFileWatcherService>(assets::SFileWatcherSettings::FromConfig(Config));
+	// Its disk checks (stat, writer probe, self-write hash) run on the workers, off the frame; the pool
+	// outlives it (ShutDown resets the watcher first).
+	FileWatcher->SetWorkerPool(WorkerPool.get());
 	// The roots it watches from (gap-watch-meta §5 "Roots"), before anything subscribes: one handle per
 	// mount, so that the folders below stay free to rename while the editor runs.
 	FileWatcher->AddMount(paths::GetEngineContentDir());
