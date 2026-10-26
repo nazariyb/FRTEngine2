@@ -236,7 +236,8 @@ public:
 	 * companions; then the mount's diagnostics by (code, subject, message). Never mtime, identity, hashes,
 	 * revisions, record ids, page layout, the volume's case rule or absolute paths: equal content dumps
 	 * identically, fresh or warm, on any machine. A diagnostic's message is printed only for coded
-	 * diagnostics (code 0 messages may hold absolute paths).
+	 * diagnostics (code 0 messages may hold absolute paths). Paths and subjects are shown with ToDisplayText
+	 * (a WTF-8 surrogate as U+FFFD), so the dump is UTF-8 text; the stored spellings stay as they are.
 	 */
 	void DumpText (FString& Out, EDumpFlags Flags = EDumpFlags::None) const;
 

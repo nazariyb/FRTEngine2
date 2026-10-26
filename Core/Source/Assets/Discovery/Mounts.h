@@ -11,6 +11,7 @@
 #include "Containers/String.h"
 #include "Diagnostics/Diagnostics.h"
 #include "Platform/FileSystem.h"
+#include "Unicode/DisplayText.h"
 
 
 /**
@@ -33,13 +34,8 @@
  */
 namespace frt::assets
 {
-/**
- * A name or mount path as spelled on disk, made fit to show: each WTF-8 surrogate (the 3-byte form of a
- * lone UTF-16 surrogate, which Windows allows in names and EnumerateDirectory keeps) becomes one U+FFFD,
- * and any other ill-formed sequence what FString::FromUtf8Lossy makes of it. Valid UTF-8 comes back as
- * it is. For diagnostics' Subject and Message (§13.4: a non-UTF-8 name is PATH002); never for a key.
- */
-[[nodiscard]] FRT_CORE_API FString ToDisplayText (FStringView OnDiskSpelling);
+// Unicode/DisplayText.h: for text people read (Message, dumps, CLI output), never for a key or a Subject.
+using unicode::ToDisplayText;
 
 enum class EMountKind : uint8 { Engine, Project, Plugin };
 

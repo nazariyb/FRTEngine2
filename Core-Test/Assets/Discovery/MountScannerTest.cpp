@@ -149,6 +149,11 @@ FString DumpBatch (const SScanBatch& Batch)
 		text.AppendFormat("diagnostic {} {} {}: {}\n", FormatDiagnosticCode(diagnostic.Code), GetSeverityName(diagnostic.Severity),
 			diagnostic.Subject, diagnostic.Message);
 	}
+	for (const SDiagnostic& diagnostic : Batch.RuleDiagnostics)
+	{
+		text.AppendFormat("rule diagnostic {} {} {}: {}\n", FormatDiagnosticCode(diagnostic.Code), GetSeverityName(diagnostic.Severity),
+			diagnostic.Subject, diagnostic.Message);
+	}
 	return text;
 }
 
@@ -543,8 +548,9 @@ TEST(MountScannerTest, ExcludedFoldersAreNeverListedAndTheirRuleFilesNeverRead)
 	EXPECT_LT(IndexOf(events, "classify /Project/Kept/Assets.yml"), 0) << all.CStr();
 }
 
-// The oracle's diagnostics land in the batch: OpenScope's first, then per folder in batch order; a
-// malformed rule file keeps the parent's scope and reports RulesHash 0 (no last good rules at a cold start).
+// The oracle's diagnostics land in the batch's RuleDiagnostics (never among the scan's own): OpenScope's first,
+// then per folder in batch order; a malformed rule file keeps the parent's scope and reports RulesHash 0 (no last
+// good rules at a cold start).
 TEST(MountScannerTest, TheOraclesDiagnosticsAreInTheBatch)
 {
 	CDiscoveryTree tree("Oracle diagnostics");
@@ -557,10 +563,11 @@ TEST(MountScannerTest, TheOraclesDiagnosticsAreInTheBatch)
 	membership.bOpenScopeDiagnostic = true;
 	const auto pool = MakePool(2u);
 	const SScanBatch batch = CMountScanner::ScanBlocking(*pool, *table.Find("Project"), "/Project", membership, nullptr);
-	const std::vector<const SDiagnostic*> rules = FindDiagnostics(batch, Rule001);
+	EXPECT_TRUE(FindDiagnostics(batch, Rule001).empty()) << DumpBatch(batch).CStr();
+	const std::vector<SDiagnostic>& rules = batch.RuleDiagnostics;
 	ASSERT_EQ(rules.size(), 2u) << DumpBatch(batch).CStr();
-	EXPECT_EQ(rules[0]->Message, "from OpenScope");
-	EXPECT_EQ(rules[1]->Subject, "/Project/Broken");
+	EXPECT_EQ(rules[0].Message, "from OpenScope");
+	EXPECT_EQ(rules[1].Subject, "/Project/Broken");
 	ASSERT_EQ(batch.Folders.size(), 2u);
 	EXPECT_TRUE(batch.Folders[1].bHasRuleFile);
 	EXPECT_EQ(batch.Folders[1].RulesHash, 0u);
@@ -924,15 +931,21 @@ TEST(MountScannerTest, NonPortableNamesAreRecordedUnderTheirSpellingAndReportedA
 
 	const std::vector<const SDiagnostic*> names = FindDiagnostics(batch, Path002);
 	ASSERT_EQ(names.size(), 4u) << DumpBatch(batch).CStr();
+	// The Subject is the on-disk spelling, the key of the file's FILES row (the registry attaches the problem to the
+	// record through it); the Message shows the name as text, U+FFFD for the surrogate.
 	std::vector<FString> subjects;
 	for (const SDiagnostic* diagnostic : names)
 	{
 		subjects.push_back(diagnostic->Subject);
-		EXPECT_TRUE(diagnostic->Subject.View().IsValidUtf8());
+		EXPECT_TRUE(diagnostic->Message.View().IsValidUtf8());
 		EXPECT_EQ(diagnostic->Severity, ESeverity::Warning);
 	}
 	std::sort(subjects.begin(), subjects.end());
-	EXPECT_EQ(subjects, (std::vector<FString> { "/Project/Lone\xEF\xBF\xBD.png", "/Project/Space ", "/Project/Trailing.", "/Project/aux.txt" }));
+	EXPECT_EQ(subjects, (std::vector<FString> { FString::Format("/Project/{}", loneName), "/Project/Space ", "/Project/Trailing.", "/Project/aux.txt" }));
+	const auto lonePath002 = std::find_if(names.begin(), names.end(), [&] (const SDiagnostic* D) { return D->Subject == FString::Format("/Project/{}", loneName); });
+	ASSERT_NE(lonePath002, names.end());
+	EXPECT_TRUE((*lonePath002)->Message.View().Contains(FStringView("Lone\xEF\xBF\xBD.png"))) << (*lonePath002)->Message.CStr();
+	EXPECT_EQ(ToDisplayText((*lonePath002)->Subject), "/Project/Lone\xEF\xBF\xBD.png");
 }
 
 // Win32's path normalization drops a trailing dot or space and may read a device name as the device, so

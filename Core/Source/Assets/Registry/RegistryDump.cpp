@@ -4,6 +4,7 @@
 #include <tuple>
 
 #include "Assets/AssetTypes.h"
+#include "Unicode/DisplayText.h"
 
 
 /**
@@ -116,6 +117,20 @@ struct SDumpProblem
 	EProblemSource Source = EProblemSource::Scan;
 };
 
+// A path or name as people read it: the on-disk spelling stays the key everywhere, but a WTF-8 surrogate (a Windows
+// name's unpaired one) is no UTF-8, so the dump shows it as U+FFFD (ToDisplayText) and stays valid UTF-8 text.
+void AppendShown (FString& Out, FStringView Text)
+{
+	if (Text.IsValidUtf8())
+	{
+		Out += Text;
+	}
+	else
+	{
+		Out += unicode::ToDisplayText(Text);
+	}
+}
+
 void AppendDiagnostic (FString& Out, const SDumpProblem& Problem)
 {
 	const SDiagnostic& diagnostic = *Problem.Diagnostic;
@@ -133,11 +148,11 @@ void AppendDiagnostic (FString& Out, const SDumpProblem& Problem)
 	Out += ' ';
 	Out += enum_::ToString(Problem.Source);
 	Out += ' ';
-	Out += Problem.Subject;
+	AppendShown(Out, Problem.Subject);
 	if (!diagnostic.File.IsEmpty())
 	{
 		Out += " at ";
-		Out += diagnostic.File;
+		AppendShown(Out, diagnostic.File);
 		Out.AppendFormat(":{}:{}", diagnostic.Line, diagnostic.Column);
 	}
 	if (!diagnostic.FieldPath.IsEmpty())
@@ -213,7 +228,7 @@ void CRegistryView::DumpText (FString& Out, EDumpFlags Flags) const
 		for (const auto& [folder, rulesHash] : ruleFiles)
 		{
 			Out += "  rules ";
-			Out += folder;
+			AppendShown(Out, folder);
 			Out += "/Assets.yml ";
 			AppendHex64(Out, rulesHash);
 			Out += '\n';
@@ -233,7 +248,7 @@ void CRegistryView::DumpText (FString& Out, EDumpFlags Flags) const
 			for (const FStringView folder : folders)
 			{
 				Out += "  folder ";
-				Out += folder;
+				AppendShown(Out, folder);
 				Out += '\n';
 			}
 		}
@@ -253,7 +268,7 @@ void CRegistryView::DumpText (FString& Out, EDumpFlags Flags) const
 		for (const uint32 file : files)
 		{
 			Out += "  file ";
-			Out += tables.Paths.Get(tables.Files.Path[file]);
+			AppendShown(Out, tables.Paths.Get(tables.Files.Path[file]));
 			Out += ' ';
 			Out += enum_::ToString(tables.Files.Class[file]);
 			Out += " size=";
@@ -362,7 +377,7 @@ void CRegistryView::DumpText (FString& Out, EDumpFlags Flags) const
 			for (const SDumpEdge& edge : edges)
 			{
 				Out += "    edge ";
-				Out += edge.Target;
+				AppendShown(Out, edge.Target);
 				Out += " sub=";
 				AppendHex64(Out, edge.TargetSub);
 				Out += " flags=";
@@ -388,7 +403,7 @@ void CRegistryView::DumpText (FString& Out, EDumpFlags Flags) const
 			for (const FStringView companion : companions)
 			{
 				Out += "    companion ";
-				Out += companion;
+				AppendShown(Out, companion);
 				Out += '\n';
 			}
 		}

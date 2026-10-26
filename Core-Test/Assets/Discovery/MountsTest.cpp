@@ -165,7 +165,8 @@ TEST(MountsTest, APluginFolderWithAnIllFormedNameIsNotMounted)
 	EXPECT_EQ(table.GetMounts().size(), 2u);
 	ASSERT_EQ(diagnostics.size(), 1u);
 	EXPECT_EQ(diagnostics[0].Code, Path002);
-	EXPECT_EQ(diagnostics[0].Subject, "/Plugin.Bad\xEF\xBF\xBD");
+	EXPECT_EQ(diagnostics[0].Subject, "/Plugin.Bad\xED\xA0\x80");   // the on-disk spelling, as every Subject
+	EXPECT_TRUE(diagnostics[0].Message.Contains("'Bad\xEF\xBF\xBD'")) << diagnostics[0].Message.CStr();   // shown as text
 }
 
 TEST(MountsTest, ToMountPathKeepsTheSpellingBelowTheRootAndMatchesTheRootByTheVolumesRule)

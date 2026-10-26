@@ -162,6 +162,31 @@ TEST(RegistryDumpTest, MachineSpecificColumnsNeverReachTheDump)
 	EXPECT_EQ(build(1, 1u, false, 0u), build(999, 2u, true, 5u));
 }
 
+TEST(RegistryDumpTest, ANameWithAnUnpairedSurrogateIsStoredAsSpelledAndShownAsText)
+{
+	// The scan's PATH002 names the file by its on-disk spelling (WTF-8, U+DC00 = ED B0 80), so the problem reaches
+	// the file's record; the dump shows that spelling as U+FFFD and stays UTF-8.
+	const FString path = FString("/Project/Lone") + FStringView("\xED\xB0\x80", 3u) + ".png";
+	CRegistryStore store;
+	SRegistryDelta delta = MakeMountsDelta();
+	AddTexture(delta, path);
+	SDiagnostic path002;
+	path002.Severity = ESeverity::Warning;
+	path002.Code = Path002;
+	path002.Subject = path;
+	path002.Message = "'Lone\xEF\xBF\xBD.png' is not a portable name";
+	delta.Problems.push_back(SProblemsSet { path, EProblemSource::Scan, { path002 } });
+	store.Commit(std::move(delta));
+
+	uint32 attached = 0u;
+	store.Live().ForEachDiagnostic(FindRecord(store.Live(), path), [&] (const SDiagnostic&) { ++attached; });
+	EXPECT_EQ(attached, 1u);
+	const FString dump = Dump(store.Live());
+	EXPECT_TRUE(dump.View().IsValidUtf8());
+	EXPECT_TRUE(dump.Contains("file /Project/Lone\xEF\xBF\xBD.png ")) << dump.CStr();
+	EXPECT_TRUE(dump.Contains("Scan /Project/Lone\xEF\xBF\xBD.png: ")) << dump.CStr();
+}
+
 TEST(RegistryDumpTest, TheDumpFormatIsPinned)
 {
 	CRegistryStore store;

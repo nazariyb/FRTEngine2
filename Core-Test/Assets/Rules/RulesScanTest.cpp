@@ -120,8 +120,10 @@ TEST(RulesScan, TheScannerFollowsTheRulesEngineFolderByFolder)
 
 	const SScanBatch batch = CMountScanner::ScanBlocking(*pool, *mounts.Find("Project"), "/Project", engine, nullptr);
 	EXPECT_EQ(FindFolder(batch, "/Project/Attic"), nullptr) << "an excluded folder is not descended";
-	ASSERT_EQ(CountCode(batch.Diagnostics, Rule001), 1u) << "the Attic's broken file is never read" << DescribeDiagnostics(batch.Diagnostics).CStr();
-	const auto rule001 = std::find_if(batch.Diagnostics.begin(), batch.Diagnostics.end(), [] (const SDiagnostic& Diagnostic) { return Diagnostic.Code == Rule001; });
+	// The oracle's diagnostics come in their own member, so the consumer routes them to the Rules source by member.
+	EXPECT_EQ(CountCode(batch.Diagnostics, Rule001), 0u) << DescribeDiagnostics(batch.Diagnostics).CStr();
+	ASSERT_EQ(CountCode(batch.RuleDiagnostics, Rule001), 1u) << "the Attic's broken file is never read" << DescribeDiagnostics(batch.RuleDiagnostics).CStr();
+	const auto rule001 = std::find_if(batch.RuleDiagnostics.begin(), batch.RuleDiagnostics.end(), [] (const SDiagnostic& Diagnostic) { return Diagnostic.Code == Rule001; });
 	EXPECT_EQ(rule001->Subject, "/Project/Art/Broken");
 	EXPECT_EQ(rule001->File, "Content/Art/Broken/Assets.yml");
 	EXPECT_EQ(rule001->Line, 2u);
@@ -157,7 +159,7 @@ TEST(RulesScan, TheScannerFollowsTheRulesEngineFolderByFolder)
 	// A rescan finds the same rules without parsing again, and a fix of the broken file lands.
 	tree.WriteProjectContent("Art/Broken/Assets.yml", "FormatVersion: 1\nRules: [ { Match: \"*.png\", Cook: Always } ]\n");
 	const SScanBatch fixed = CMountScanner::ScanBlocking(*pool, *mounts.Find("Project"), "/Project/Art", engine, nullptr);
-	EXPECT_EQ(CountCode(fixed.Diagnostics, Rule001), 0u) << DescribeDiagnostics(fixed.Diagnostics).CStr();
+	EXPECT_EQ(CountCode(fixed.RuleDiagnostics, Rule001), 0u) << DescribeDiagnostics(fixed.RuleDiagnostics).CStr();
 	const SScanFolder* fixedBroken = FindFolder(fixed, "/Project/Art/Broken");
 	ASSERT_NE(fixedBroken, nullptr);
 	EXPECT_NE(fixedBroken->RulesHash, 0u);
@@ -234,6 +236,7 @@ TEST(RulesScan, TheCommittedEngineAndTemplateRulesRaiseNoRule001AndNoRule002)
 			ASSERT_NE(mount, nullptr);
 			const SScanBatch batch = CMountScanner::ScanBlocking(*pool, *mount, mount->GetRootMountPath(), engine, nullptr);
 			diagnostics.insert(diagnostics.end(), batch.Diagnostics.begin(), batch.Diagnostics.end());
+			diagnostics.insert(diagnostics.end(), batch.RuleDiagnostics.begin(), batch.RuleDiagnostics.end());
 			const std::vector<SDiagnostic> unclaimed = ReportUnclaimed(batch, mounts);
 			diagnostics.insert(diagnostics.end(), unclaimed.begin(), unclaimed.end());
 			files += static_cast<uint32>(batch.Files.size());

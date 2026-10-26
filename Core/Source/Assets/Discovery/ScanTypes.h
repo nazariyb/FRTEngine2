@@ -101,7 +101,9 @@ struct SScanBatch
 	std::vector<SScanFile> Files;              // every file Classify kept, Unchanged included; ordered like the folders, then by name
 	std::vector<FString> FailedFolders;        // listing failed: consumers keep everything they know at or below them
 	std::vector<FString> SkippedLinks;         // name-surrogate reparse points (symlinks, junctions): never descended
-	std::vector<SDiagnostic> Diagnostics;      // PATH001-003, the oracle's RULE001 (problem source Rules), unlistable folders
+	std::vector<SDiagnostic> Diagnostics;      // the scan's own (problem source Scan): PATH001-003, unlistable folders, skipped links
+	std::vector<SDiagnostic> RuleDiagnostics;  // what the oracle's OpenScope and EnterFolder returned (source Rules): RULE001 and its
+	                                           // code-0 warnings; the consumer routes by this member, never by code
 	uint32 FoldersListed = 0; double Milliseconds = 0.0;
 };
 }

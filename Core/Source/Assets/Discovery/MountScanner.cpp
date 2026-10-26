@@ -41,8 +41,9 @@ SDiagnostic MakeDiagnostic (ESeverity Severity, uint32 Code, FStringView Subject
 	SDiagnostic diagnostic;
 	diagnostic.Severity = Severity;
 	diagnostic.Code = Code;
-	// A Subject shows text (U+FFFD for a WTF-8 surrogate); the batch itself keeps the on-disk spelling.
-	diagnostic.Subject = ToDisplayText(Subject);
+	// The Subject is a key (the registry's problem lists, FILES rows): the on-disk spelling, as every producer
+	// spells it. Text for people is the Message's, and the outputs show the Subject with ToDisplayText.
+	diagnostic.Subject = FString(Subject);
 	diagnostic.Message = std::move(Message);
 	return diagnostic;
 }
@@ -146,6 +147,7 @@ struct SFolderNode
 	std::vector<std::unique_ptr<SFolderNode>> Children;     // sorted
 	std::vector<FString> SkippedLinks;
 	std::vector<SDiagnostic> Diagnostics;
+	std::vector<SDiagnostic> RuleDiagnostics;   // the oracle's, for SScanBatch::RuleDiagnostics
 };
 
 struct SScanState
@@ -211,7 +213,7 @@ void ScanFolder (SScanState& State, SFolderNode& Node)
 	const std::filesystem::path ruleFilePath = ruleFile != nullptr ? Node.Directory / ruleFile->Name.ToPath() : std::filesystem::path();
 	uint64 rulesHash = 0u;
 	std::shared_ptr<const SScanScope> scope = State.Membership->EnterFolder(Node.ParentScope, Node.MountPath,
-		ruleFile != nullptr ? &ruleFilePath : nullptr, rulesHash, Node.Diagnostics);
+		ruleFile != nullptr ? &ruleFilePath : nullptr, rulesHash, Node.RuleDiagnostics);
 	Node.Scope = scope != nullptr ? std::move(scope) : Node.ParentScope;
 	Node.bHasRuleFile = ruleFile != nullptr;
 	Node.RulesHash = rulesHash;
@@ -345,6 +347,10 @@ void Deliver (SScanState& State)
 			{
 				batch.SkippedLinks.push_back(std::move(link));
 			}
+			for (SDiagnostic& diagnostic : node.RuleDiagnostics)
+			{
+				batch.RuleDiagnostics.push_back(std::move(diagnostic));
+			}
 			for (SDiagnostic& diagnostic : node.Diagnostics)
 			{
 				batch.Diagnostics.push_back(std::move(diagnostic));
@@ -444,7 +450,7 @@ void RunRoot (const FScanStatePtr& State)
 		rest = split.Right;
 	}
 
-	const std::shared_ptr<const SScanScope> scopeAbove = state.Membership->OpenScope(rootPath, state.Batch.Diagnostics);
+	const std::shared_ptr<const SScanScope> scopeAbove = state.Membership->OpenScope(rootPath, state.Batch.RuleDiagnostics);
 	if (scopeAbove == nullptr)
 	{
 		FailRoot(state, FString::Format("the membership oracle opened no scope for '{}' (IScanMembership::OpenScope returned null)",
