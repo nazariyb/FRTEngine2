@@ -1,10 +1,13 @@
 // What Analyze costs per file kind (E3, design §5.11's cold-scan budget is F3's: 10k files incl. Analyze in 3 s on 16
 // threads, so about 4.8 ms of one thread per file at most). Measured on one thread over copies of the Demo template's
 // files with the OS cache warm (a cold cache adds the disk's latency, which F3 measures after a reboot); "cold" means
-// nothing of the registry is reused - every file is read and parsed again. Prints microseconds per file; checks only
-// that every file analyzed, and a generous ceiling outside Debug.
+// nothing of the registry is reused - every file is read and parsed again. Each kind is the best of three passes
+// (the machine is shared), judged as ../BenchmarkBudget.h says: the 4.8 ms per file that §5.11's cold scan leaves
+// under FRT_PERF_STRICT=1, twice that as the regression guard of a whole Core-Test run (Sponza measured 3.7-8.3 ms in
+// single passes there, 1.9 ms alone).
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <filesystem>
@@ -12,6 +15,7 @@
 #include <system_error>
 #include <vector>
 
+#include "../BenchmarkBudget.h"
 #include "ImporterTestUtils.h"
 
 #include "BuildConfig.h"
@@ -41,8 +45,10 @@ constexpr SKind Kinds[] = {
 	{ "Input.Legacy action", "Input/IA_MoveForward.frtinputaction", ".frtinputaction", 200u },
 };
 
-// Generous: Analyze reads headers or small text files; the budget above leaves ~4.8 ms per file.
+// §5.11's cold scan per file of one thread (see above); the guard is twice it in either optimized build.
 constexpr double CeilingMicroseconds = 4800.0;
+constexpr bench::SBudget PerFileBudget { CeilingMicroseconds, -1.0, 2.0 * CeilingMicroseconds, 2.0 * CeilingMicroseconds };
+constexpr uint32 Passes = FRT_BUILD_DEBUG ? 1u : 3u;   // Debug prints only
 }
 
 
@@ -67,7 +73,6 @@ TEST(AnalyzeBenchmarkTest, ColdAnalyzeCostPerFileKind)
 	}();
 	const SMount& project = *mounts.Find("Project");
 
-	const bool bOptimized = !FRT_BUILD_DEBUG;
 	for (uint32 k = 0u; k < std::size(Kinds); ++k)
 	{
 		const SKind& kind = Kinds[k];
@@ -79,20 +84,20 @@ TEST(AnalyzeBenchmarkTest, ColdAnalyzeCostPerFileKind)
 		}
 
 		SAnalyzeResult result;
-		uint32 analyzed = 0u;
-		const auto start = std::chrono::steady_clock::now();
-		for (const SAnalyzeInput& input : inputs)
+		double best = 1e30;
+		for (uint32 pass = 0u; pass < Passes; ++pass)
 		{
-			analyzed += AnalyzeFile(input, settings, result) ? 1u : 0u;
+			uint32 analyzed = 0u;
+			const auto start = std::chrono::steady_clock::now();
+			for (const SAnalyzeInput& input : inputs)
+			{
+				analyzed += AnalyzeFile(input, settings, result) ? 1u : 0u;
+			}
+			best = std::min(best, std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count() / kind.Copies);
+			EXPECT_EQ(analyzed, kind.Copies) << kind.Name.GetData() << DescribeDiagnostics(result).CStr();
 		}
-		const double microseconds = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count() / kind.Copies;
-
-		std::printf("[importers] %-34s %9.1f us/file over %u files%s\n", kind.Name.GetData(), microseconds, kind.Copies,
-			bOptimized ? "" : " (Debug: not judged)");
-		EXPECT_EQ(analyzed, kind.Copies) << kind.Name.GetData() << DescribeDiagnostics(result).CStr();
-		if (bOptimized)
-		{
-			EXPECT_LT(microseconds, CeilingMicroseconds) << kind.Name.GetData();
-		}
+		const FString name = FString::Format("AnalyzeUs.K{}", k);
+		const FString note = FString::Format("({}, over {} files, best of {} passes)", FStringView(kind.Name), kind.Copies, Passes);
+		bench::CheckBudget("[importers]", name.CStr(), best, PerFileBudget, "us/file", note.CStr());
 	}
 }

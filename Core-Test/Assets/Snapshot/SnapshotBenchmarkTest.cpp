@@ -1,6 +1,6 @@
 // The snapshot rows of the §5.11 budget table, measured on G3's generator project (Query/QueryBenchmarkGenerator.h:
 // the exact §5.2 schema through the real store): a full snapshot write from a view (export and encode on the worker,
-// and the whole row as §5.11 words it, the flushed atomic write to disk included), a journal append per commit, the
+// the row §5.11 budgets; the flushed atomic write to disk is reported beside it), a journal append per commit, the
 // journal restart after a full write (the owner thread's part), and the load a start-up waits for - snapshot and
 // journal read, checked, decoded and adopted with every index rebuilt (§5.11 "snapshot + journal load, all
 // indices"), on the engine's worker count as at start-up. Beside the best load: the first load in the process (a
@@ -8,7 +8,7 @@
 // cache (a cold read's approximation: the data, not the metadata), the engine's and the project's files loaded
 // together in both orders, and the loaded store's resident memory, right after the load and with its change ring
 // full. Core-Test runs 10k assets; the DISABLED_ tests run 100k and 100k + 500k rows on demand
-// (--gtest_also_run_disabled_tests). How a row is judged: ../Registry/BenchmarkBudget.h.
+// (--gtest_also_run_disabled_tests). How a row is judged: ../BenchmarkBudget.h.
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -16,7 +16,7 @@
 #include <vector>
 
 #include "../Query/QueryBenchmarkGenerator.h"
-#include "../Registry/BenchmarkBudget.h"
+#include "../BenchmarkBudget.h"
 #include "Jobs/WorkerPool.h"
 #include "Platform/FileSystem.h"
 #include "Platform/Platform.h"
@@ -35,7 +35,7 @@ struct SSnapshotBudgets
 {
 	SBudget Load;          // snapshot + journal load, all indices (on the pool)
 	SBudget WriteCpu;      // full snapshot write from a view: export + encode (worker)
-	SBudget WriteTotal;    // ... with the flushed atomic write to disk: §5.11's row as worded
+	SBudget WriteTotal;    // ... with the flushed atomic write to disk: reported, not budgeted (§5.11, revised at M3)
 	SBudget Append;        // journal append per commit
 	SBudget Restart;       // journal restart after a full write, the owner thread's part (not in §5.11)
 	SBudget Memory;        // resident memory of the loaded store with a full change ring
@@ -94,7 +94,7 @@ void MeasureSnapshot (const std::filesystem::path& Dir, uint32 Assets, uint32 Ro
 		write.EncodeMs, write.WriteMs);
 	Check("SnapshotWriteCpuMs", write.ExportMs + write.EncodeMs, Budgets.WriteCpu, "ms", "(export + encode, worker)");
 	Check("SnapshotWriteTotalMs", write.ExportMs + write.EncodeMs + write.WriteMs, Budgets.WriteTotal, "ms",
-		FString::Format("(the row as 5.11 words it: export + encode + flushed atomic write {:.2f} ms)", write.WriteMs).CStr());
+		FString::Format("(export + encode + flushed atomic write {:.2f} ms; 5.11 budgets the CPU part)", write.WriteMs).CStr());
 
 	// The journal: one-edit commits as F3 appends them (journal first), median of 101.
 	CRegistryJournal journal;
@@ -277,21 +277,20 @@ void MeasureSnapshot (const std::filesystem::path& Dir, uint32 Assets, uint32 Ro
 }
 
 /**
- * §5.11's write row as worded includes the flushed atomic write, which the CPU figure leaves out: MISSED at 10k and
- * 100k with it (proposed for the written revision: the row as worker CPU, the flushed write reported beside it).
- * The load cannot meet §5.11's 5 / 30 / 120 ms (a thin-schema figure): the exact schema's load decodes every section
- * and rebuilds every index, the CSR, the file order and every target's resolution; on the worker pool the
- * independent parts run at once, but the records are written by one thread (they append to shared pools in record
- * order). The proposed revisions are for an optimized build (Release): Development, the build that runs the live
- * registry, is about twice as slow and is reported beside them. Measured (i7-13700K, affinity 0xFFFFFC, warm; the
- * figures of P3's review): see the M3 report.
+ * §5.11 as revised at M3: the full write is budgeted as worker CPU (export + encode), the flushed atomic write is
+ * reported beside it; the load is budgeted at 20 / 250 / 550 ms on a worker. The thin-schema figures (5 / 30 / 120 ms)
+ * could not be met: the exact schema's load decodes every section and rebuilds every index, the CSR, the file order
+ * and every target's resolution; on the worker pool the independent parts run at once, but the records are written
+ * by one thread (they append to shared pools in record order). The figures are for an optimized build (Release):
+ * Development, the build that runs the live registry, is about twice as slow and is reported beside them. Measured
+ * (i7-13700K, affinity 0xFFFFFC, warm; the figures of P3's review): see the M3 report.
  */
 TEST_F(SnapshotTest, SnapshotAndJournalMeetTheirBudgetsAt10kAssets)
 {
 	SSnapshotBudgets budgets;
-	budgets.Load = SBudget { 5.0, 20.0, 36.0, 40.0 };
+	budgets.Load = SBudget { 20.0, -1.0, 36.0, 40.0 };
 	budgets.WriteCpu = SBudget { 10.0, -1.0, 14.5, 15.0 };
-	budgets.WriteTotal = SBudget { 10.0 };
+	budgets.WriteTotal = SBudget {};
 	budgets.Append = SBudget { 0.1, -1.0, 0.05, 0.1 };
 	budgets.Restart = SBudget { -1.0, 1.0, 1.5, 2.0 };
 	budgets.Memory = SBudget { 15.0, -1.0, 14.0, 14.0 };
@@ -301,9 +300,9 @@ TEST_F(SnapshotTest, SnapshotAndJournalMeetTheirBudgetsAt10kAssets)
 TEST_F(SnapshotTest, DISABLED_SnapshotAndJournalAt100kAssets)
 {
 	SSnapshotBudgets budgets;
-	budgets.Load = SBudget { 30.0, 200.0, 220.0, 450.0 };
+	budgets.Load = SBudget { 250.0, -1.0, 220.0, 450.0 };
 	budgets.WriteCpu = SBudget { 80.0, -1.0, 90.0, 180.0 };
-	budgets.WriteTotal = SBudget { 80.0 };
+	budgets.WriteTotal = SBudget {};
 	budgets.Append = SBudget { 0.1, -1.0, 0.05, 0.1 };
 	budgets.Restart = SBudget { -1.0, 1.0, 1.5, 2.0 };
 	MeasureSnapshot(Dir, 100000u, 0u, budgets);
@@ -312,7 +311,7 @@ TEST_F(SnapshotTest, DISABLED_SnapshotAndJournalAt100kAssets)
 TEST_F(SnapshotTest, DISABLED_SnapshotAndJournalAt100kAssetsAnd500kRows)
 {
 	SSnapshotBudgets budgets;
-	budgets.Load = SBudget { 120.0, 450.0, 520.0, 1000.0 };
+	budgets.Load = SBudget { 550.0, -1.0, 520.0, 1000.0 };
 	budgets.WriteCpu = SBudget { -1.0, -1.0, 300.0, 600.0 };
 	budgets.Append = SBudget { 0.1, -1.0, 0.05, 0.1 };
 	budgets.Restart = SBudget { -1.0, 1.0, 1.5, 2.0 };

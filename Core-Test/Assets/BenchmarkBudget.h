@@ -1,6 +1,6 @@
 #pragma once
 
-// How the registry's §5.11 benchmarks (the Registry, Query and Snapshot suites) judge a measurement.
+// How the asset system's §5.11 benchmarks (the Registry, Query, Snapshot and Analyze suites) judge a measurement.
 //
 // Every row prints what it measured beside §5.11's figure ("met" or "MISSED") and, where M3 measured that the real
 // schema cannot meet it, the figure proposed for §5.11's written revision. What a run judges depends on the build:
@@ -13,7 +13,9 @@
 //	  figure measured the same way wherever P3 improved it, so losing an optimization fails the run where machine
 //	  noise does not. A guard is a regression check, not §5.11's figure: the printed status says whether that is
 //	  met. The DISABLED_ suites (100k assets and more) run alone, and their guards are set from runs alone.
-//	- FRT_PERF_STRICT=1 holds §5.11's figure (or the proposed revision) exactly instead: for a Release run alone.
+//	- FRT_PERF_STRICT=1 holds §5.11's figure (or the proposed revision) exactly instead, wherever one exists - also for
+//	  the DISABLED_ sizes, which have no guard: for a Release run of one test alone (FRT.bat verify --nightly runs each
+//	  in a process of its own). Every benchmark of the asset system reads it through IsPerfStrict.
 // Figures are for this project's machine (i7-13700K, processor affinity 0xFFFFFC), as §5.11's are.
 
 #include <gtest/gtest.h>

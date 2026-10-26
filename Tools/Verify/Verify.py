@@ -41,9 +41,10 @@ script, behind FRT.bat verify (Premake/tools.lua). A milestone branch merges onl
 Steps that later milestones bring print "skipped (M<n>)". It ends with a summary table and the timings a
 commit message reports (the hosts' "[assets] initial scan:" lines among them: the scan and how long
 BuildWorld waited for it), and exits with 1 when any step failed. --nightly also builds Release and runs its
-Core-Test.exe over the registry, query and snapshot benchmark suites, the DISABLED_ 100k/1M/100k + 500k ones
-included, with FRT_PERF_STRICT=1, which holds design 5.11's figures exactly (Development's Core-Test step judges
-the 10k suites by its regression guards).
+Core-Test.exe over the asset system's benchmark suites, the DISABLED_ 100k/1M/100k + 500k ones included, with
+FRT_PERF_STRICT=1, which holds design 5.11's figures, or the proposed revisions, exactly - each test in a process of
+its own, as the figures are for a test run alone (Development's Core-Test step judges the 10k suites by its
+regression guards).
 
     python -I Tools/Verify/Verify.py [--quick | --nightly] [--record-baselines] [--baselines=<dir>]
                                      [--pt-tolerance=<rmse>]
@@ -128,6 +129,7 @@ REGISTRY_GATE_TESTS = (
 NIGHTLY_REGISTRY_FILTER = ':'.join((
     'RegistryBenchmarkTest.*', 'QueryBenchmarkTest.*', 'SnapshotTest.*AndJournal*', 'AssetRegistryBudget.*',
     'RegistryRulesEditBenchmark.*', 'DataTreeYamlTest.*Rate*', 'MountScannerTest.*Budget*', 'AnalyzeBenchmarkTest.*',
+    'RulesScan.*Budget*',
 ))
 NIGHTLY_TIMEOUT = 7200
 SMOKE_CONFIGS = ('Debug', 'Development')
@@ -773,24 +775,56 @@ class Gate:
             raise StepFailed('Docs/Assets.md does not name ' + ', '.join(missing))
         return f'{len(verbs)} verbs and {len(codes)} codes named'
 
+    @staticmethod
+    def list_tests(exe, gtest_filter):
+        """The names (Suite.Test) of Exe's tests that Filter selects, the DISABLED_ ones included; None when the
+        listing fails."""
+        listing = output_of([exe, '--gtest_list_tests', '--gtest_also_run_disabled_tests', f'--gtest_filter={gtest_filter}'])
+        if listing is None:
+            return None
+        tests, suite = [], None
+        for line in listing.decode('utf-8', errors='replace').splitlines():
+            name = line.split('#', 1)[0].rstrip()
+            if not name:
+                continue
+            if not line.startswith(' ') and name.endswith('.'):
+                suite = name
+            elif line.startswith('  ') and suite:
+                tests.append(suite + name.strip())
+        return tests
+
     def nightly_registry(self, log):
-        """--nightly: Release's Core-Test.exe over the registry, query and snapshot benchmark suites, the DISABLED_
-        100k/1M/100k + 500k ones included, with FRT_PERF_STRICT=1 (design 5.11's figures, or the proposed
-        revisions, held exactly). Run with nothing else on the machine: the figures are for a quiet one."""
+        """--nightly: Release's Core-Test.exe over the asset system's benchmark suites (NIGHTLY_REGISTRY_FILTER), the
+        DISABLED_ 100k/1M/100k + 500k ones included, with FRT_PERF_STRICT=1: design 5.11's figures, or the proposed
+        revisions where they exist, held exactly. Each test runs in a Core-Test process of its own, as those figures
+        hold for a test run alone - not after another test built 1.5 GB of fixtures in the same process. Run with
+        nothing else on the machine: the figures are for a quiet one."""
         exe = BINARIES / 'Core-Test.exe'
         if not exe.exists():
             raise StepFailed(f'no {exe.name}')
+        tests = self.list_tests(exe, NIGHTLY_REGISTRY_FILTER)
+        if not tests:
+            raise StepFailed(f'{exe.name} lists no test for {NIGHTLY_REGISTRY_FILTER}')
         env = dict(self.env_for(log), FRT_PERF_STRICT='1')
-        code, seconds = run([exe, '--gtest_brief=1', '--gtest_also_run_disabled_tests', f'--gtest_filter={NIGHTLY_REGISTRY_FILTER}'],
-                            log, cwd=ROOT, env=env, timeout=NIGHTLY_TIMEOUT)
-        text = Path(log).read_bytes().decode('utf-8', errors='replace')
-        passed = re.findall(r'\[  PASSED  \] (\d+) test', text)
+        failed, timed_out, total = [], [], 0.0
+        start = Path(log).stat().st_size if Path(log).exists() else 0
+        for test in tests:
+            code, seconds = run([exe, '--gtest_brief=1', '--gtest_also_run_disabled_tests', f'--gtest_filter={test}'],
+                                log, cwd=ROOT, env=env, timeout=NIGHTLY_TIMEOUT)
+            total += seconds
+            if code is None:
+                timed_out.append(test)
+            elif code != 0:
+                failed.append(test)
+        with open(log, 'rb') as f:
+            f.seek(start)
+            text = f.read().decode('utf-8', errors='replace')
         missed = len(re.findall(r'\bMISSED\b', text))
-        self.timings.append(('registry benchmarks, Release with the DISABLED_ suites', f'{seconds:.1f} s'))
-        if code != 0:
-            names = re.findall(r'\[  FAILED  \] (\S+)', text)
-            raise StepFailed(('timed out; ' if code is None else '') + f'{passed[-1] if passed else 0} passed, failed: ' + ', '.join(names[:5]))
-        return f'{passed[-1] if passed else 0} passed; {missed} row(s) print MISSED against 5.11 (see the log)'
+        self.timings.append(('registry benchmarks, Release with the DISABLED_ suites, a process per test', f'{total:.1f} s'))
+        passed = len(tests) - len(failed) - len(timed_out)
+        if failed or timed_out:
+            raise StepFailed(f'{passed} of {len(tests)} passed; failed: ' + ', '.join((failed + [f'{t} (timed out)' for t in timed_out])[:5]))
+        return f'{passed} tests passed, each alone; {missed} row(s) print MISSED against 5.11 (see the log)'
 
     # The hosts' start-up line (CAssetRegistry::WaitBeforeBuildWorld).
     INITIAL_SCAN_LINE = re.compile(r'\[assets\] initial scan: (\d+) files, (\d+) records, ([\d.]+) ms; BuildWorld waited ([\d.]+) ms')

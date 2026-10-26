@@ -8,7 +8,7 @@
 // 500k rows alike, and a commit's cost grows with the registry (page lists, the file order, larger indices, cache
 // misses), so the 1k files sit inside G3's generated project (Query/QueryBenchmarkGenerator.h): 10k assets in
 // Core-Test, 100k + 500k rows on demand (--gtest_also_run_disabled_tests). How the row is judged:
-// BenchmarkBudget.h.
+// ../BenchmarkBudget.h.
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -19,7 +19,7 @@
 #include "../Query/QueryBenchmarkGenerator.h"
 #include "../Rules/RulesTestUtils.h"
 #include "Assets/Registry/RegistryTables.h"
-#include "BenchmarkBudget.h"
+#include "../BenchmarkBudget.h"
 #include "Platform/Platform.h"
 #include "Platform/Timestamp.h"
 #include "RegistryTestFixture.h"

@@ -19,6 +19,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "../BenchmarkBudget.h"
 #include "DiscoveryTestUtils.h"
 
 #include "Assets/AssetDiagnosticCodes.h"
@@ -1122,7 +1123,7 @@ TEST(MountScannerTest, HashFileStableHashesTheWholeFileOrNothing)
 TEST(MountScannerTest, AWarmScanOf20kFilesStaysWithinItsBudget)
 {
 	constexpr bool bOptimized = !FRT_BUILD_DEBUG;
-	const bool bStrict = platform::GetEnvironmentValue("FRT_PERF_STRICT").value_or(FString()) == "1";
+	const bool bStrict = frt::assets::bench::IsPerfStrict();
 	const double slack = bStrict ? 1.0 : 2.0;
 	const uint32 FolderCount = bOptimized ? 200u : 20u;
 	constexpr uint32 FilesPerFolder = 100u;

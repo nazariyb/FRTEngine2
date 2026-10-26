@@ -1,11 +1,12 @@
 // §5.11's start-up rows, end to end through the registry service (Assets/AssetRegistry.h): the Demo template's warm
-// start, a warm start of 20k files with the snapshot load, the same after a mount-rule edit (0 Analyze, 0 hashes), a cold
-// full scan with Analyze at 10k files on 16 threads, the owner-thread cost of one watcher-delivered edit (its
-// commits and journal appends), and the longest frame of a watcher-delivered mount-rule edit. A warm start is a reader's whole start - snapshots read and adopted on a worker, every
-// mount stat-scanned against them, the deltas committed - after a writer's run left Engine.snapshot (an engine-owner
-// registry, as FRT.bat assets scan --engine) and AssetRegistry.snapshot. The 200k-file warm start and the 100k cold scan
-// are DISABLED_ (nightly: --gtest_also_run_disabled_tests). How a row is judged: BenchmarkBudget.h; Debug scales the
-// trees down and prints only.
+// start, a warm start of 20k files with the snapshot load, the same after a mount-rule edit (0 Analyze, 0 hashes; the
+// row as revised at M3), a cold full scan with Analyze at 10k files on 16 threads, the owner-thread cost of one
+// watcher-delivered edit (its commits and journal appends), and the longest frame of a watcher-delivered mount-rule
+// edit. A warm start is a reader's whole start - snapshots read and adopted on a worker, every mount stat-scanned
+// against them, the deltas committed - after a writer's run left Engine.snapshot (an engine-owner registry, as
+// FRT.bat assets scan --engine) and AssetRegistry.snapshot. The 200k-file warm start and the 100k cold scan are
+// DISABLED_ (nightly: --gtest_also_run_disabled_tests), judged by §5.11 under FRT_PERF_STRICT=1 and printed otherwise.
+// How a row is judged: ../BenchmarkBudget.h; Debug scales the trees down and prints only.
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -16,7 +17,7 @@
 #include <vector>
 
 #include "../Rules/RulesTestUtils.h"
-#include "BenchmarkBudget.h"
+#include "../BenchmarkBudget.h"
 #include "TemplateTestUtils.h"
 
 #include "Assets/AssetRegistry.h"
@@ -162,7 +163,7 @@ void MeasureWarmStart (uint32 Files, const SBudget& Warm, const SBudget& AfterEd
 	const FString name = FString::Format("WarmStart{}kMs", Files / 1000u);
 	const FString note = FString::Format("({} files, {} records; snapshot load {:.2f}, scan {:.2f}, convert {:.2f}, commit {:.2f}, RULE002 {:.2f} ms; best of 3)",
 		warm.Report.Files, warm.Report.Records, warm.Report.LoadMs, warm.Report.ScanMs, warm.Report.ConvertMs, warm.Report.CommitMs, warm.Report.UnclaimedMs);
-	CheckBudget(Prefix, name.CStr(), warm.Report.TotalMs, Warm, "ms", note.CStr(), Files <= 20000u);
+	CheckBudget(Prefix, name.CStr(), warm.Report.TotalMs, Warm, "ms", note.CStr());
 
 	// A mount-rule edit with no Analyze-relevant change: every record re-evaluated in memory (glob matching), nothing
 	// analyzed or hashed; the edit labels one folder, so a hundred records are committed again.
@@ -174,7 +175,7 @@ void MeasureWarmStart (uint32 Files, const SBudget& Warm, const SBudget& AfterEd
 	const FString editName = FString::Format("WarmStartAfterRuleEdit{}kMs", Files / 1000u);
 	const FString editNote = FString::Format("({} records re-evaluated, 0 analyzed, 0 hashed; scan {:.2f}, convert {:.2f}, commit {:.2f} ms; best of 3)",
 		edited.Counters.ReEvaluated, edited.Report.ScanMs, edited.Report.ConvertMs, edited.Report.CommitMs);
-	CheckBudget(Prefix, editName.CStr(), edited.Report.TotalMs, AfterEdit, "ms", editNote.CStr(), Files <= 20000u);
+	CheckBudget(Prefix, editName.CStr(), edited.Report.TotalMs, AfterEdit, "ms", editNote.CStr());
 
 	// The worst case, reported only: an edit that changes every texture's labels commits each of them again.
 	tree.WriteProjectRules(FString(ProjectRulesText) + "Rules:\n  - { Match: \"**/*.png\", Labels: [ Budget ] }\n");
@@ -270,7 +271,8 @@ TEST(AssetRegistryBudget, TheDemoTemplateWarmStartsWithinItsBudget)
 TEST(AssetRegistryBudget, TwentyThousandFilesWarmStartWithinTheirBudgetAlsoAfterAMountRuleEdit)
 {
 	const uint32 files = bOptimized ? 20000u : 2000u;
-	MeasureWarmStart(files, SBudget { 60.0, -1.0, 100.0, 150.0 }, SBudget { 60.0, 80.0, 120.0, 170.0 }, true);
+	// After the edit: §5.11 as revised at M3 (80 ms at 20k: the load, then 16k records re-evaluated in memory).
+	MeasureWarmStart(files, SBudget { 60.0, -1.0, 100.0, 150.0 }, SBudget { 80.0, -1.0, 120.0, 170.0 }, true);
 }
 
 TEST(AssetRegistryBudget, AColdFullScanWithAnalyzeOf10kFilesStaysWithinItsBudget)
@@ -293,10 +295,11 @@ TEST(AssetRegistryBudget, AColdFullScanWithAnalyzeOf10kFilesStaysWithinItsBudget
 	CheckBudget(Prefix, "ColdScan10kMs", report.TotalMs, SBudget { 3000.0, -1.0, 3000.0, 3000.0 }, "ms", note.CStr(), files == 10000u);
 }
 
-// Nightly (§5.11's 100k column; writes 200k files: run alone).
+// Nightly (§5.11's 100k column; writes 200k files: run alone). No regression guard: FRT_PERF_STRICT=1 holds §5.11's
+// 400 ms, a run without it prints.
 TEST(AssetRegistryBudget, DISABLED_TwoHundredThousandFilesWarmStartWithinTheirBudget)
 {
-	MeasureWarmStart(200000u, SBudget { 400.0, -1.0, -1.0, -1.0 }, SBudget { 400.0, -1.0, -1.0, -1.0 }, false);   // not calibrated: printed
+	MeasureWarmStart(200000u, SBudget { 400.0, -1.0, -1.0, -1.0 }, SBudget { 400.0, -1.0, -1.0, -1.0 }, false);
 }
 
 TEST(AssetRegistryBudget, DISABLED_AColdFullScanWithAnalyzeOf100kFilesStaysWithinItsBudget)

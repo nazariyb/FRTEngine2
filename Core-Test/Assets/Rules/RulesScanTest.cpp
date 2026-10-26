@@ -11,6 +11,7 @@
 #include <memory>
 #include <vector>
 
+#include "../BenchmarkBudget.h"
 #include "RulesTestUtils.h"
 
 #include "EnginePaths.h"
@@ -251,7 +252,7 @@ TEST(RulesScan, TheCommittedEngineAndTemplateRulesRaiseNoRule001AndNoRule002)
 TEST(RulesScan, AFolderRuleEditReevaluatesAThousandFilesWithinTheBudget)
 {
 	constexpr bool bOptimized = !FRT_BUILD_DEBUG;
-	const bool bStrict = platform::GetEnvironmentValue("FRT_PERF_STRICT").value_or(FString()) == "1";
+	const bool bStrict = frt::assets::bench::IsPerfStrict();
 	const double slack = bStrict ? 1.0 : 2.0;
 
 	CRulesTree tree("Budget");

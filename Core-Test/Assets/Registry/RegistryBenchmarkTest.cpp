@@ -2,7 +2,7 @@
 // path lookups, transitive referencers, a substring search over names and the resident memory of the store (its
 // view's tables, the writer's state and a full change ring), and commits that add files (the file order is kept
 // by rank: a new file takes a rank in its neighbours' gap, and a gap used up renumbers every file). How a row is
-// judged: BenchmarkBudget.h.
+// judged: ../BenchmarkBudget.h.
 //
 // Two fixtures. TheStoreMeetsItsBudgetsAt10kAssets uses this test's own small generator (textures, materials,
 // models with sub-entries, input files) with §5.3's density of about 4.5 edges per asset and rule labels on every
@@ -18,7 +18,7 @@
 
 #include "../Query/QueryBenchmarkGenerator.h"
 #include "Assets/Registry/RegistryTables.h"
-#include "BenchmarkBudget.h"
+#include "../BenchmarkBudget.h"
 #include "Platform/Platform.h"
 #include "Platform/Timestamp.h"
 #include "RegistryTestFixture.h"

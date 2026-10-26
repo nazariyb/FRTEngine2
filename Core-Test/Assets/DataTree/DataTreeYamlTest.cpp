@@ -9,6 +9,8 @@
 #include <random>
 #include <vector>
 
+#include "../BenchmarkBudget.h"
+
 #include "Containers/String.h"
 #include "Diagnostics/Diagnostics.h"
 #include "Platform/Platform.h"
@@ -734,7 +736,7 @@ TEST(DataTreeYamlTest, DataTableFormatParsesAsTheSpecDescribes)
 TEST(DataTreeYamlTest, FiveThousandRowTableParsesAtTheBudgetRate)
 {
 	constexpr bool bOptimized = !FRT_BUILD_DEBUG;
-	const bool bStrict = platform::GetEnvironmentValue("FRT_PERF_STRICT").value_or(FString()) == "1";
+	const bool bStrict = frt::assets::bench::IsPerfStrict();
 	const double slack = bStrict ? 1.0 : 2.0;
 	constexpr uint32 rows = 5000u;
 

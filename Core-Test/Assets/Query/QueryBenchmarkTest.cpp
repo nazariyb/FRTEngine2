@@ -4,7 +4,7 @@
 // transitive referencers, and the store's resident memory (B3's budget, printed). Core-Test runs 10k assets
 // with 50k rows; the DISABLED_ tests run 100k, 1M and 100k + 500k rows on demand (--gtest_also_run_disabled_tests).
 //
-// How a row is judged: ../Registry/BenchmarkBudget.h. Every row judges the whole run a caller waits for
+// How a row is judged: ../BenchmarkBudget.h. Every row judges the whole run a caller waits for
 // (SQueryStats::Milliseconds): the scan and the deterministic order §5.6 step 5 gives every result (the path sort of
 // an unordered query, the partial sort of OrderBy + Limit); the split is printed beside it, and the first run of the
 // query (its per-thread scratch still cold) beside the best. 1M has no budget column: printed only.
@@ -13,7 +13,7 @@
 #include <algorithm>
 #include <cstdio>
 
-#include "../Registry/BenchmarkBudget.h"
+#include "../BenchmarkBudget.h"
 #include "Assets/Registry/QueryEngine.h"
 #include "Assets/Registry/RegistryTables.h"
 #include "Platform/Platform.h"
