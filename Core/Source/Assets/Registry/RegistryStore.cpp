@@ -50,6 +50,7 @@ struct CRegistryStore::SWriterState
 	std::vector<std::vector<uint32>> FolderChildren;   // per FOLDERS row: children by (fold, bytes) of name
 	std::vector<std::vector<uint32>> FolderFiles;      // per FOLDERS row: its FILES rows, unordered
 	std::vector<uint32> FileSlot;                      // per FILES row: its index in FolderFiles[folder]
+	std::vector<uint32> FileOrder;                     // the live FILES rows by PathRank (CompareFileOrder)
 
 	// Path targets by the portable hash (HashPortable) of every file path they could name (the whole text,
 	// and the text before each '#'): the targets to re-resolve when a record of that path comes or goes. A
@@ -870,6 +871,8 @@ private:
 		files.BaseClass.Append(File.Class, Epoch);
 		files.MetaState.Append(File.MetaState, Epoch);
 		files.Record.Append(InvalidRow, Epoch);
+		files.PathRank.Append(0u, Epoch);   // UpdateFileOrder ranks it at the end of the commit
+		NewFiles.push_back(row);
 		T.Indices.FilesByPath.Insert(File.MountRuleHash != 0u ? File.MountRuleHash : HashMountRule(Path, Mount.bCaseSensitive), row, Epoch);
 		T.Indices.FilesByPortablePath.Insert(File.PortableHash, row, Epoch);
 		W.FileSlot.resize(row + 1u);
@@ -927,6 +930,7 @@ private:
 		siblings.pop_back();
 		files.Folder.Set(Row, InvalidRow, Epoch);
 		--T.LiveFiles;
+		bFilesRemoved = true;
 		ClearProblems(path, (1u << SourceIndex(EProblemSource::Analyze)) | (1u << SourceIndex(EProblemSource::Registry)), false);
 	}
 
@@ -1480,12 +1484,15 @@ private:
 		SSubEntryTable& subs = T.SubEntries;
 		if (bReuse)
 		{
+			bool bLabelsChanged = false;
 			const uint32 first = assets.FirstSub[Row];
 			for (uint32 i = 0u; i < Plan.size(); ++i)
 			{
 				const uint32 sub = first + i;
 				const SSubEntryDecl& decl = *Plan[i].Decl;
-				subs.Key.SetIfChanged(sub, T.Names.Intern(decl.Label, Epoch), Epoch);
+				const uint32 key = T.Names.Intern(decl.Label, Epoch);
+				bLabelsChanged = bLabelsChanged || subs.Key[sub] != key;
+				subs.Key.SetIfChanged(sub, key, Epoch);
 				subs.Flags.SetIfChanged(sub, decl.Flags & ~ERecordFlags::HasProblems, Epoch);
 				const uint64 id64 = MakeAssetId64(SAssetId { Guid, Plan[i].SubId }).Value;
 				if (subs.AssetId64[sub] != id64)
@@ -1495,6 +1502,10 @@ private:
 					subs.AssetId64.Set(sub, id64, Epoch);
 				}
 				WriteTags(Plan[i].Type, subs.TypeRow[sub], decl.Tags, Path);
+			}
+			if (bLabelsChanged)
+			{
+				RankSubEntries(Row);
 			}
 			return;
 		}
@@ -1510,12 +1521,111 @@ private:
 			subs.TypeRow.Append(AddTypeRow(plan.Type, SubEntryBit | sub), Epoch);
 			const uint64 id64 = MakeAssetId64(SAssetId { Guid, plan.SubId }).Value;
 			subs.AssetId64.Append(id64, Epoch);
+			subs.LabelRank.Append(0u, Epoch);
 			T.Indices.RecordsById64.Insert(MixRegistryKey(id64), SubEntryBit | sub, Epoch);
 			++T.LiveSubEntries;
 			WriteTags(plan.Type, subs.TypeRow[sub], decl.Tags, Path);
 		}
 		assets.FirstSub.SetIfChanged(Row, Plan.empty() ? 0u : first, Epoch);
 		assets.NumSubs.SetIfChanged(Row, static_cast<uint32>(Plan.size()), Epoch);
+		RankSubEntries(Row);
+	}
+
+	/**
+	 * LabelRank of a record's sub-entries: their order by LessSubEntryLabel. Long lists sort by the first eight bytes
+	 * of the folded label as one integer (a table's rows: "row_12" and "row_120" differ there), comparing labels only
+	 * where those bytes tie.
+	 */
+	void RankSubEntries (uint32 Row)
+	{
+		const uint32 count = T.Assets.NumSubs[Row];
+		if (count == 0u)
+		{
+			return;
+		}
+		const uint32 first = T.Assets.FirstSub[Row];
+		SubOrder.clear();
+		for (uint32 i = 0u; i < count; ++i)
+		{
+			const FStringView folded = T.Names.GetFolded(T.SubEntries.Key[first + i]);
+			uint64 prefix = 0u;
+			for (uint32 b = 0u; b < 8u; ++b)
+			{
+				prefix = (prefix << 8u) | (b < folded.Len() ? static_cast<uint8>(folded.GetData()[b]) : 0u);
+			}
+			SubOrder.emplace_back(prefix, first + i);
+		}
+		std::sort(SubOrder.begin(), SubOrder.end(), [&] (const std::pair<uint64, uint32>& A, const std::pair<uint64, uint32>& B)
+		{
+			return A.first != B.first ? A.first < B.first : LessSubEntryLabel(T, A.second, B.second);
+		});
+		for (uint32 i = 0u; i < count; ++i)
+		{
+			T.SubEntries.LabelRank.SetIfChanged(SubOrder[i].second, i, Epoch);
+		}
+	}
+
+	// ---------------- File order (SFilesTable::PathRank) ----------------
+
+	static constexpr uint64 RankLimit = 0xFFFFFFFFull;   // ranks lie strictly between 0 and RankLimit
+
+	// Ranks FileOrder afresh, evenly spaced over the first two thirds of the range (later files sort last often).
+	void RenumberFiles ()
+	{
+		const std::vector<uint32>& order = W.FileOrder;
+		const uint64 spacing = (std::max)(uint64(1u), RankLimit / (order.size() + order.size() / 2u + 2u));
+		for (size_t i = 0u; i < order.size(); ++i)
+		{
+			T.Files.PathRank.SetIfChanged(order[i], static_cast<uint32>((i + 1u) * spacing), Epoch);
+		}
+	}
+
+	/**
+	 * Keeps FileOrder and PathRank in step with the commit's files: removed ones leave the order (their ranks stay
+	 * with their dead rows), added ones take a rank between their neighbours'. Many added at once - a scan's batch, a
+	 * load - are sorted and merged, and everything is renumbered once.
+	 */
+	void UpdateFileOrder ()
+	{
+		std::vector<uint32>& order = W.FileOrder;
+		const auto isDead = [&] (uint32 Row) { return T.Files.Folder[Row] == InvalidRow; };
+		if (bFilesRemoved)
+		{
+			std::erase_if(order, isDead);
+		}
+		std::erase_if(NewFiles, isDead);
+		if (NewFiles.empty())
+		{
+			return;
+		}
+		const auto less = [&] (uint32 A, uint32 B) { return CompareFileOrder(T, A, B) < 0; };
+		std::sort(NewFiles.begin(), NewFiles.end(), less);
+		if (NewFiles.size() * 8u > order.size())
+		{
+			std::vector<uint32> merged(order.size() + NewFiles.size());
+			std::merge(order.begin(), order.end(), NewFiles.begin(), NewFiles.end(), merged.begin(), less);
+			order.swap(merged);
+			RenumberFiles();
+			NewFiles.clear();
+			return;
+		}
+		for (const uint32 row : NewFiles)
+		{
+			const auto at = std::lower_bound(order.begin(), order.end(), row, less);
+			const size_t position = static_cast<size_t>(at - order.begin());
+			const uint64 low = position > 0u ? T.Files.PathRank[order[position - 1u]] : 0u;
+			const uint64 high = position < order.size() ? T.Files.PathRank[order[position]] : RankLimit;
+			order.insert(at, row);
+			if (high - low >= 2u)
+			{
+				T.Files.PathRank.Set(row, static_cast<uint32>(low + (high - low) / 2u), Epoch);
+			}
+			else
+			{
+				RenumberFiles();
+			}
+		}
+		NewFiles.clear();
 	}
 
 	// ---------------- Edges and targets ----------------
@@ -1946,6 +2056,18 @@ public:
 			fileRows[i] = CreateFileRow(folderRows[image.Folder], path, mount, file);
 			portableHashes[i] = file.PortableHash;
 		}
+		// The file order: an image written from a store lists its files in it (ExportImage), so checking each
+		// neighbour is all it takes; any other image is sorted.
+		{
+			W.FileOrder = fileRows;
+			const auto less = [&] (uint32 A, uint32 B) { return CompareFileOrder(T, A, B) < 0; };
+			if (!std::is_sorted(W.FileOrder.begin(), W.FileOrder.end(), less))
+			{
+				std::sort(W.FileOrder.begin(), W.FileOrder.end(), less);
+			}
+			RenumberFiles();
+			NewFiles.clear();
+		}
 
 		// Types by exact dotted name, as MakeImageDelta resolves them; each type table sized for its rows at once.
 		std::vector<int32> typeOf(Image.TypeNames.size(), -1);
@@ -2117,6 +2239,7 @@ public:
 			}
 			assets.FirstSub.Set(row, subRange.Count > 0u ? firstSub : 0u, Epoch);
 			assets.NumSubs.Set(row, subRange.Count, Epoch);
+			RankSubEntries(row);
 
 			// Edges straight into the base CSR, one per distinct (FromSub, target, flags).
 			const uint32 edgeBegin = static_cast<uint32>(edges.size());
@@ -2386,6 +2509,7 @@ private:
 		subs.Flags.Grow(size, Epoch);
 		subs.TypeRow.Grow(size, Epoch);
 		subs.AssetId64.Grow(size, Epoch);
+		subs.LabelRank.Grow(size, Epoch);
 	}
 
 	// The path target of an image string met for the first time: new, unless another string of the image spells the
@@ -2585,6 +2709,9 @@ private:
 		}
 	}
 
+	std::vector<uint32> NewFiles;                    // FILES rows this commit added (UpdateFileOrder ranks them)
+	bool bFilesRemoved = false;                      // this commit removed a FILES row
+	std::vector<std::pair<uint64, uint32>> SubOrder; // RankSubEntries' scratch
 	bool bBulk = false;                              // AdoptIntoFreshStore: targets resolve at the end, all at once
 	std::vector<uint32> TypeCursor;                  // per type: the next row GrowTypeTables made
 	std::vector<uint64> TargetPortableHashes;        // per target row: HashPortable of its whole text (bulk)
@@ -2784,6 +2911,7 @@ private:
 				RecomputeIntervals(mount);
 			}
 		}
+		UpdateFileOrder();
 
 		for (const auto& [row, touch] : Touched)
 		{
@@ -3158,6 +3286,7 @@ void CRegistryStore::CompactRecordTables ()
 			subs.Flags.Append(oldSubs.Flags[old], epoch);
 			subs.TypeRow.Append(oldSubs.TypeRow[old], epoch);   // remapped below
 			subs.AssetId64.Append(oldSubs.AssetId64[old], epoch);
+			subs.LabelRank.Append(oldSubs.LabelRank[old], epoch);
 		}
 		assets.FirstSub.SetIfChanged(row, count > 0u ? first : 0u, epoch);
 	}

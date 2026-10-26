@@ -260,7 +260,7 @@ SRegistryMemoryStats ComputeMemoryStats (const SRegistryTables& Tables)
 		+ files.FoldedPath.GetResidentBytes() + files.Mount.GetResidentBytes() + files.Size.GetResidentBytes() + files.MTime.GetResidentBytes()
 		+ files.Identity.GetResidentBytes() + files.ContentHash.GetResidentBytes() + files.MetaHash.GetResidentBytes()
 		+ files.Class.GetResidentBytes() + files.BaseClass.GetResidentBytes() + files.MetaState.GetResidentBytes()
-		+ files.Record.GetResidentBytes();
+		+ files.Record.GetResidentBytes() + files.PathRank.GetResidentBytes();
 	const SFoldersTable& folders = Tables.Folders;
 	stats.Folders = folders.Parent.GetResidentBytes() + folders.Name.GetResidentBytes() + folders.PreorderBegin.GetResidentBytes()
 		+ folders.PreorderEnd.GetResidentBytes() + folders.RuleFile.GetResidentBytes() + folders.Path.GetResidentBytes()
@@ -279,7 +279,7 @@ SRegistryMemoryStats ComputeMemoryStats (const SRegistryTables& Tables)
 	const SSubEntryTable& subs = Tables.SubEntries;
 	stats.SubEntries = subs.Owner.GetResidentBytes() + subs.SubId.GetResidentBytes() + subs.Key.GetResidentBytes()
 		+ subs.Type.GetResidentBytes() + subs.Flags.GetResidentBytes() + subs.TypeRow.GetResidentBytes()
-		+ subs.AssetId64.GetResidentBytes();
+		+ subs.AssetId64.GetResidentBytes() + subs.LabelRank.GetResidentBytes();
 	for (const CTypeTable& table : Tables.Types)
 	{
 		stats.TypeTables += table.Records.GetResidentBytes() + table.Dead.GetResidentBytes();

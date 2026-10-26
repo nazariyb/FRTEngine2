@@ -138,16 +138,26 @@ SRegistryImage CRegistryView::ExportImage (std::span<const MountId> Mounts) cons
 		image.Folders.push_back(folder);
 	}
 
+	// Files in their path order (PathRank), so a loading store finds them ranked already.
 	const SFilesTable& files = tables.Files;
 	const uint32 fileRows = files.Folder.Size();
 	std::vector<uint32> fileIndex(fileRows, ~0u);
-	image.Files.reserve(tables.LiveFiles);
+	std::vector<std::pair<uint32, uint32>> rankedFiles;   // (PathRank, row)
+	rankedFiles.reserve(tables.LiveFiles);
 	for (uint32 row = 0u; row < fileRows; ++row)
 	{
-		if (files.Folder[row] == InvalidRow || !isExported(files.Mount[row]))
+		if (files.Folder[row] != InvalidRow && isExported(files.Mount[row]))
 		{
-			continue;
+			rankedFiles.emplace_back(files.PathRank[row], row);
 		}
+	}
+	{
+		std::vector<std::pair<uint32, uint32>> scratch;
+		RadixSortByKey(rankedFiles, scratch, [] (const std::pair<uint32, uint32>& File) { return static_cast<uint64>(File.first); });
+	}
+	image.Files.reserve(rankedFiles.size());
+	for (const auto& [rank, row] : rankedFiles)
+	{
 		SImageFile file;
 		file.Folder = folderIndex[files.Folder[row]];
 		file.LeafName = nameOf(files.LeafName[row]);

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <memory>
 #include <optional>
 #include <span>
@@ -340,6 +341,10 @@ struct SFilesTable
 	CPagedColumn<EFileClass> BaseClass;                   // as the last SFileUpsert gave it
 	CPagedColumn<EMetaState> MetaState;
 	CPagedColumn<uint32> Record;                          // ASSETS row or InvalidRow
+	// The order of the live files by folded path, then path bytes (the queries' result order, §5.6 step 5), as
+	// increasing numbers with gaps (CompareFileOrder): a file added between two others takes a number between
+	// theirs, so a commit renumbers nothing unless a gap runs out or it adds many files at once.
+	CPagedColumn<uint32> PathRank;
 };
 
 // FOLDERS, pre-order numbered per mount: a folder's subtree is the folders whose PreorderBegin lies in
@@ -402,6 +407,9 @@ struct SSubEntryTable
 	CPagedColumn<ERecordFlags> Flags;
 	CPagedColumn<uint32> TypeRow;
 	CPagedColumn<uint64> AssetId64;
+	// The sub-entry's place among its record's sub-entries by folded label, then label bytes (0 first): with
+	// SFilesTable::PathRank, the result order of a query needs no string compare.
+	CPagedColumn<uint32> LabelRank;
 };
 
 
@@ -603,11 +611,97 @@ inline constexpr uint32 RuleLabelBit = 1u << 31u;   // SRegistryTables::Labels: 
 // The tables of a view (a free function so the view's public API stays §5.7's).
 [[nodiscard]] FRT_CORE_API const SRegistryTables& GetTables (const CRegistryView& View) noexcept;
 
+// The order SFilesTable::PathRank keeps: folded path bytes, then path bytes, then the row (two live files never
+// share a path; the row only makes the order total). < 0, 0, > 0.
+[[nodiscard]] inline int32 CompareFileOrder (const SRegistryTables& Tables, uint32 A, uint32 B) noexcept;
+
 // A live FILES row's mount path folded (FString::FoldCase), for caseless substring search over whole paths
 // ("Textures/T_Rock" crosses a '/') without folding per query. Paths never change, so neither does this.
 [[nodiscard]] inline FStringView GetFoldedFilePath (const SRegistryTables& Tables, uint32 FileRow) noexcept
 {
 	return Tables.Paths.Resolve(Tables.Files.FoldedPath[FileRow]);
+}
+
+inline int32 CompareFileOrder (const SRegistryTables& Tables, uint32 A, uint32 B) noexcept
+{
+	int32 compared = GetFoldedFilePath(Tables, A).Compare(GetFoldedFilePath(Tables, B));
+	if (compared == 0)
+	{
+		compared = Tables.Paths.Get(Tables.Files.Path[A]).Compare(Tables.Paths.Get(Tables.Files.Path[B]));
+	}
+	return compared != 0 ? compared : (A < B ? -1 : (A > B ? 1 : 0));
+}
+
+// The order SSubEntryTable::LabelRank keeps among one record's sub-entries: folded label bytes, label bytes, row.
+[[nodiscard]] inline bool LessSubEntryLabel (const SRegistryTables& Tables, uint32 A, uint32 B) noexcept
+{
+	const uint32 keyA = Tables.SubEntries.Key[A];
+	const uint32 keyB = Tables.SubEntries.Key[B];
+	if (keyA != keyB)
+	{
+		const int32 folded = Tables.Names.GetFolded(keyA).Compare(Tables.Names.GetFolded(keyB));
+		if (folded != 0)
+		{
+			return folded < 0;
+		}
+		const int32 raw = Tables.Names.Get(keyA).Compare(Tables.Names.Get(keyB));
+		if (raw != 0)
+		{
+			return raw < 0;
+		}
+	}
+	return A < B;
+}
+
+/**
+ * Sorts Items ascending by a 64-bit key with a stable LSD radix sort over 11-bit digits, skipping the digits that
+ * every key shares (ranks and row numbers leave most of them constant), through Scratch; small lists take a
+ * stable comparison sort. KeyOf(const TItem&) -> uint64.
+ */
+template <typename TItem, typename TKeyOf>
+void RadixSortByKey (std::vector<TItem>& Items, std::vector<TItem>& Scratch, TKeyOf&& KeyOf)
+{
+	const size_t count = Items.size();
+	if (count < 256u)
+	{
+		std::stable_sort(Items.begin(), Items.end(), [&] (const TItem& A, const TItem& B) { return KeyOf(A) < KeyOf(B); });
+		return;
+	}
+	uint64 any = 0u;
+	uint64 all = ~uint64(0u);
+	for (const TItem& item : Items)
+	{
+		const uint64 key = KeyOf(item);
+		any |= key;
+		all &= key;
+	}
+	const uint64 varying = any ^ all;
+	Scratch.resize(count);
+	std::vector<uint32> counts(2048u);
+	for (uint32 shift = 0u; shift < 64u; shift += 11u)
+	{
+		if (((varying >> shift) & 0x7FFu) == 0u)
+		{
+			continue;
+		}
+		std::fill(counts.begin(), counts.end(), 0u);
+		for (const TItem& item : Items)
+		{
+			++counts[(KeyOf(item) >> shift) & 0x7FFu];
+		}
+		uint32 sum = 0u;
+		for (uint32& bucket : counts)
+		{
+			const uint32 size = bucket;
+			bucket = sum;
+			sum += size;
+		}
+		for (const TItem& item : Items)
+		{
+			Scratch[counts[(KeyOf(item) >> shift) & 0x7FFu]++] = item;
+		}
+		Items.swap(Scratch);
+	}
 }
 
 

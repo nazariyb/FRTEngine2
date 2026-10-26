@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <cstring>
 #include <iterator>
 
 #include "Assets/AssetDiagnosticCodes.h"
@@ -1197,6 +1198,32 @@ private:
 // ---------------- Reading records ----------------
 
 // A record of one view as the run reads it.
+// Reads a paged column at rows that mostly ascend (a scan's hits): the page is looked up only when the row leaves it.
+template <typename T>
+class CColumnCursor
+{
+public:
+	explicit CColumnCursor (const CPagedColumn<T>& InColumn) noexcept
+		: Column(InColumn)
+	{}
+
+	[[nodiscard]] const T& operator[] (uint32 Row) noexcept
+	{
+		const uint32 page = Row >> RegistryPageRowsLog2;
+		if (page != Page)
+		{
+			Page = page;
+			Rows = Column.GetPage(page).data();
+		}
+		return Rows[Row & RegistryPageMask];
+	}
+
+private:
+	const CPagedColumn<T>& Column;
+	uint32 Page = ~0u;
+	const T* Rows = nullptr;
+};
+
 struct SRowContext
 {
 	uint32 Value = InvalidRow;     // SRecordId value
@@ -1206,7 +1233,7 @@ struct SRowContext
 	reflect::TypeId Type = 0u;
 	uint32 TypeRow = InvalidRow;
 	uint32 Name = InvalidRow;      // NAMES id of $Name when the scan has read it already
-	FStringView FoldedPath;        // the file's folded path when the scan has it at hand (the previous row's file)
+	uint64 PathKey = ~uint64(0u);  // SResult::PathKey when the scan has read it already
 };
 
 [[nodiscard]] SRowContext MakeContext (const SRegistryTables& Tables, uint32 Value) noexcept
@@ -1590,17 +1617,18 @@ struct SGraphSet
 
 /**
  * A hit as the sort sees it, kept small (the sort moves these): the order key (a number in Bits, or folded text)
- * and, when the path is the primary order, the folded file path. Everything else - the path under an order key,
- * a sub-entry's label, the raw spelling that breaks a tie of folded texts - is read on the rare compare that
- * needs it.
+ * and the path order as one integer (§5.6 step 5: file path - folded, then bytes - then the sub-entry's label the
+ * same way, the asset record first), from the store's rank columns (SFilesTable::PathRank,
+ * SSubEntryTable::LabelRank), so no compare reads a string for it. The raw spelling that breaks a tie of folded
+ * order texts is read on the rare compare that needs it.
  */
 struct SResult
 {
 	uint32 Value = InvalidRow;
 	uint32 Asset = InvalidRow;
 	uint64 Bits = 0u;                   // Int: int64; Real: double bits; Text from a pool: the NAMES / STRINGS id
-	FStringView Text;                   // Text: the folded order text; without an order key, a sub-entry's folded label
-	FStringView FoldedPath;             // empty until needed under an order key
+	uint64 PathKey = 0u;                // PathRank << 32 | (a sub-entry: LabelRank + 1; the asset record: 0)
+	FStringView Text;                   // Text: the folded order text
 	uint8 Class = 0u;                   // EOrderClass
 	uint8 TextSource = 0u;              // ETextSource: where the raw spelling of Text comes from
 };
@@ -1609,12 +1637,56 @@ enum ETextSource : uint8 { TextIsRaw = 0u, TextFromNames = 1u, TextFromStrings =
 
 enum EOrderClass : uint8 { OrderInt = 0u, OrderReal = 1u, OrderText = 2u, OrderPath = 3u, OrderAbsent = 255u };
 
+/**
+ * A thread's working buffers for runs, kept between runs: a result of 70k hits takes megabytes of vectors, which
+ * the CRT gives straight from the OS, so fresh ones cost a page fault per 4 KiB on every run. Buffers that grew
+ * past ReleaseBytes are freed after the run (a rare huge result does not stay resident).
+ */
+struct SQueryScratch
+{
+	static constexpr size_t ReleaseBytes = 64u * 1024u * 1024u;
+
+	std::vector<SResult> Results;
+	std::vector<uint64> Masks;
+	std::vector<uint8> RowLabels;
+	std::vector<std::pair<uint32, uint32>> Keys;
+	std::vector<std::pair<uint32, uint32>> KeyScratch;
+	bool bInUse = false;   // a run inside a run (none today) takes buffers of its own
+
+	template <typename T>
+	static void Trim (std::vector<T>& Buffer)
+	{
+		Buffer.clear();
+		if (Buffer.capacity() * sizeof(T) > ReleaseBytes)
+		{
+			std::vector<T>().swap(Buffer);
+		}
+	}
+
+	void Release ()
+	{
+		Trim(Results);
+		Trim(Masks);
+		Trim(RowLabels);
+		Trim(Keys);
+		Trim(KeyScratch);
+		bInUse = false;
+	}
+};
+
+SQueryScratch& GetQueryScratch () noexcept
+{
+	thread_local SQueryScratch scratch;
+	return scratch;
+}
+
 class CQueryRunner
 {
 public:
-	CQueryRunner (const SRegistryTables& InTables, const SQueryPlan& InPlan) noexcept
+	CQueryRunner (const SRegistryTables& InTables, const SQueryPlan& InPlan, SQueryScratch& InScratch) noexcept
 		: Tables(InTables)
 		, Plan(InPlan)
+		, Buffers(InScratch)
 	{
 	}
 
@@ -1680,7 +1752,8 @@ private:
 	const SRegistryTables& Tables;
 	const SQueryPlan& Plan;
 	std::vector<SGraphSet> GraphSets;
-	std::vector<uint8> RowLabels;       // per NAMES id: 0 not yet known, 1 a row key, 2 an importer label
+	SQueryScratch& Buffers;             // RowLabels: per NAMES id, 0 not yet known, 1 a row key, 2 an importer label
+	bool bRowLabelsReady = false;
 	FString Scratch;
 
 	// ---- Scope ----
@@ -1688,15 +1761,21 @@ private:
 	// IsRowLabel of a sub-entry, remembered per label: rows of different tables share their keys.
 	[[nodiscard]] bool IsRow (uint32 Sub)
 	{
-		const uint32 key = Tables.SubEntries.Key[Sub];
-		if (RowLabels.empty())
+		return IsRowKey(Tables.SubEntries.Key[Sub]);
+	}
+
+	[[nodiscard]] bool IsRowKey (uint32 Key)
+	{
+		std::vector<uint8>& rowLabels = Buffers.RowLabels;
+		if (!bRowLabelsReady)
 		{
-			RowLabels.assign(Tables.Names.Size(), 0u);
+			rowLabels.assign(Tables.Names.Size(), 0u);   // per run: another view or store numbers its names otherwise
+			bRowLabelsReady = true;
 		}
-		uint8& known = RowLabels[key];
+		uint8& known = rowLabels[Key];
 		if (known == 0u)
 		{
-			known = IsRowLabel(Tables.Names.Get(key)) ? 1u : 2u;
+			known = IsRowLabel(Tables.Names.Get(Key)) ? 1u : 2u;
 		}
 		return known == 1u;
 	}
@@ -1912,7 +1991,7 @@ private:
 
 	[[nodiscard]] bool MatchesText (const SQueryNode& Node, const SRowContext& Context) const noexcept
 	{
-		const FStringView path = !Context.FoldedPath.IsEmpty() ? Context.FoldedPath : GetFoldedFilePath(Tables, Context.File);
+		const FStringView path = GetFoldedFilePath(Tables, Context.File);
 		const FStringView label = Context.Sub != InvalidRow ? Tables.Names.GetFolded(Tables.SubEntries.Key[Context.Sub]) : FStringView();
 		for (const FString& text : Node.Texts)
 		{
@@ -2080,10 +2159,24 @@ private:
 				const uint32 base = word * 64u;
 				const uint32 count = rows - base < 64u ? rows - base : 64u;
 				const uint64* data = values.data() + base;
-				uint64 bits = 0u;
+				// One byte per row first (no chain through one accumulator), then eight bytes of 0/1 at a time
+				// gathered into eight bits: (b0 + b1 << 8 + ...) * 0x0102040810204080 has b_i at bit 56 + i.
+				alignas(8) uint8 flags[64];
 				for (uint32 i = 0u; i < count; ++i)
 				{
-					bits |= static_cast<uint64>(Test(data[i]) ? 1u : 0u) << i;
+					flags[i] = Test(data[i]) ? 1u : 0u;
+				}
+				for (uint32 i = count; i < 64u; ++i)
+				{
+					flags[i] = 0u;
+				}
+				static_assert(std::endian::native == std::endian::little, "flags[8 * g] is the low byte of chunk g");
+				uint64 bits = 0u;
+				for (uint32 group = 0u; group < 8u; ++group)
+				{
+					uint64 chunk = 0u;
+					std::memcpy(&chunk, flags + group * 8u, 8u);
+					bits |= ((chunk * 0x0102040810204080ull) >> 56u) << (group * 8u);
 				}
 				mask &= bits & Column.PresentBits.GetWord(index);
 			}
@@ -2228,6 +2321,10 @@ private:
 	void ScanAssets (std::vector<SResult>& Out, uint32& OutCandidates)
 	{
 		const SQueryNode& root = Plan.Root;
+		if (ScanAssetNames(Out, OutCandidates))
+		{
+			return;
+		}
 		if (!root.bHasRowTests)
 		{
 			Out.reserve(Out.size() + Tables.LiveRecords);   // every record of an allowed type is a hit
@@ -2238,6 +2335,61 @@ private:
 		{
 			return !root.bHasRowTests || (PassesCheapTests(root, Context) && (root.bOnlyCheapRowTests || MatchesNode(root, Context, true)));
 		});
+	}
+
+	/**
+	 * The search box's commonest query - one $Name test (contains, prefix or equals) over asset records - as one
+	 * tight loop over the ASSETS pages and the folded names, with no per-row context or test dispatch. False when
+	 * the query is not that shape.
+	 */
+	bool ScanAssetNames (std::vector<SResult>& Out, uint32& OutCandidates)
+	{
+		const SQueryNode& root = Plan.Root;
+		if (!root.bOnlyCheapRowTests || root.SystemTests.size() != 1u || !root.AnyOf.empty() || Plan.Order.Kind != EOrderKind::None)
+		{
+			return false;
+		}
+		const SSystemTest& test = root.SystemTests[0];
+		if (test.Column != ESystemColumn::Name || test.Kind != EValueKind::Text || test.Values.Texts.size() != 1u
+			|| (test.Op != EOp::Contains && test.Op != EOp::Prefix && test.Op != EOp::Eq))
+		{
+			return false;
+		}
+		const FStringView needle = test.Values.Texts[0].View();
+		const SAssetsTable& assets = Tables.Assets;
+		const uint8* const allowed = root.AllowedTypes.data();
+		const size_t allowedCount = root.AllowedTypes.size();
+		uint32 candidates = 0u;
+		for (uint32 page = 0u; page < assets.File.GetPageCount(); ++page)
+		{
+			const std::span<const uint32> files = assets.File.GetPage(page);
+			const std::span<const reflect::TypeId> types = assets.Type.GetPage(page);
+			const std::span<const uint32> names = assets.Name.GetPage(page);
+			const uint32 rows = static_cast<uint32>(files.size());
+			for (uint32 i = 0u; i < rows; ++i)
+			{
+				const reflect::TypeId type = types[i];
+				if (files[i] == InvalidRow || type >= allowedCount || allowed[type] == 0u)
+				{
+					continue;
+				}
+				++candidates;
+				const FStringView folded = Tables.Names.GetFolded(names[i]);
+				const bool bMatch = test.Op == EOp::Contains ? folded.Contains(needle) : (test.Op == EOp::Prefix ? folded.StartsWith(needle) : folded == needle);
+				if (bMatch)
+				{
+					SRowContext context;
+					context.Value = page * RegistryPageRows + i;
+					context.Asset = context.Value;
+					context.File = files[i];
+					context.Type = type;
+					context.Name = names[i];
+					Out.push_back(MakeResult(context));
+				}
+			}
+		}
+		OutCandidates += candidates;
+		return true;
 	}
 
 	template <typename TFilter>
@@ -2328,7 +2480,8 @@ private:
 		}
 
 		// Live rows of the admitted kinds.
-		std::vector<uint64> masks((rows + 63u) / 64u, 0u);
+		std::vector<uint64>& masks = Buffers.Masks;
+		masks.assign((rows + 63u) / 64u, 0u);
 		constexpr uint32 WordsPerPage = RegistryPageRows / 64u;
 		for (uint32 page = 0u; page < table.Records.GetPageCount(); ++page)
 		{
@@ -2340,10 +2493,29 @@ private:
 				const uint32 base = word * 64u;
 				const uint32 n = count - base < 64u ? count - base : 64u;
 				uint64 bits = 0u;
-				for (uint32 i = 0u; i < n; ++i)
+				if (bSubs && bAssets)
 				{
-					const bool bSub = (records[base + i] & SubEntryBit) != 0u;
-					bits |= static_cast<uint64>(bSub ? bSubs : bAssets) << i;
+					bits = n == 64u ? ~uint64(0u) : (uint64(1) << n) - 1u;
+				}
+				else
+				{
+					// Bit 31 of each record value (SubEntryBit) gathered into a word, eight rows at a time.
+					const uint32 flip = bSubs ? 0u : 1u;
+					alignas(8) uint8 flags[64];
+					for (uint32 i = 0u; i < n; ++i)
+					{
+						flags[i] = static_cast<uint8>((records[base + i] >> 31u) ^ flip);
+					}
+					for (uint32 i = n; i < 64u; ++i)
+					{
+						flags[i] = 0u;
+					}
+					for (uint32 group = 0u; group < 8u; ++group)
+					{
+						uint64 chunk = 0u;
+						std::memcpy(&chunk, flags + group * 8u, 8u);
+						bits |= ((chunk * 0x0102040810204080ull) >> 56u) << (group * 8u);
+					}
 				}
 				masks[index] = bits & ~table.Dead.GetWord(index);
 			}
@@ -2364,7 +2536,12 @@ private:
 		// Rows of one table record are contiguous: the previous row's file is usually this row's.
 		uint32 lastAsset = InvalidRow;
 		uint32 lastFile = InvalidRow;
-		FStringView lastFoldedPath;
+		uint64 lastFileKey = 0u;
+		// A table's hits ascend by row, and so do their sub-entries' rows: page cursors read the columns.
+		CColumnCursor<uint32> records(table.Records);
+		CColumnCursor<uint32> owners(Tables.SubEntries.Owner);
+		CColumnCursor<uint32> keys(Tables.SubEntries.Key);
+		CColumnCursor<uint32> labelRanks(Tables.SubEntries.LabelRank);
 		for (uint32 word = 0u; word < masks.size(); ++word)
 		{
 			uint64 remaining = masks[word];
@@ -2373,20 +2550,22 @@ private:
 				const uint32 bit = static_cast<uint32>(std::countr_zero(remaining));
 				remaining &= remaining - 1u;
 				const uint32 row = word * 64u + bit;
-				const uint32 value = table.Records[row];
+				const uint32 value = records[row];
 				// The context from what the scan knows: the type and its row are this table's.
 				SRowContext context;
 				context.Value = value;
 				context.Type = Type;
 				context.TypeRow = row;
+				uint64 subKey = 0u;
 				if ((value & SubEntryBit) != 0u)
 				{
 					context.Sub = value & ~SubEntryBit;
-					if (bClassify && IsRow(context.Sub) != bWantRows)
+					if (bClassify && IsRowKey(keys[context.Sub]) != bWantRows)
 					{
 						continue;
 					}
-					context.Asset = Tables.SubEntries.Owner[context.Sub];
+					context.Asset = owners[context.Sub];
+					subKey = static_cast<uint64>(labelRanks[context.Sub]) + 1u;
 				}
 				else
 				{
@@ -2396,10 +2575,10 @@ private:
 				{
 					lastAsset = context.Asset;
 					lastFile = Tables.Assets.File[context.Asset];
-					lastFoldedPath = GetFoldedFilePath(Tables, lastFile);
+					lastFileKey = static_cast<uint64>(Tables.Files.PathRank[lastFile]) << 32u;
 				}
 				context.File = lastFile;
-				context.FoldedPath = lastFoldedPath;
+				context.PathKey = lastFileKey | subKey;
 				if (root.bHasRowTests && (!PassesCheapTests(root, context) || (!root.bOnlyCheapRowTests && !MatchesNode(root, context, true))))
 				{
 					continue;
@@ -2421,16 +2600,12 @@ private:
 		result.Value = Context.Value;
 		result.Asset = Context.Asset;
 		result.Class = OrderAbsent;
+		result.PathKey = Context.PathKey != ~uint64(0u) ? Context.PathKey : (static_cast<uint64>(Tables.Files.PathRank[Context.File]) << 32u)
+			| (Context.Sub != InvalidRow ? static_cast<uint64>(Tables.SubEntries.LabelRank[Context.Sub]) + 1u : 0u);
 		const SOrderSpec& order = Plan.Order;
 		if (order.Kind == EOrderKind::None)
 		{
-			// The path is the order: keep it, and a sub-entry's label, at hand for the sort.
-			result.FoldedPath = !Context.FoldedPath.IsEmpty() ? Context.FoldedPath : GetFoldedFilePath(Tables, Context.File);
-			if (Context.Sub != InvalidRow)
-			{
-				result.Text = Tables.Names.GetFolded(Tables.SubEntries.Key[Context.Sub]);
-			}
-			return result;
+			return result;   // the path is the order
 		}
 		if (order.Kind == EOrderKind::Tag)
 		{
@@ -2548,50 +2723,14 @@ private:
 		}
 	}
 
-	[[nodiscard]] FStringView GetFoldedPath (const SResult& Result) const noexcept
+	// File path (folded, then bytes), then the label (the asset record first): PathKey (SResult).
+	[[nodiscard]] static int32 ComparePaths (const SResult& A, const SResult& B) noexcept
 	{
-		return !Result.FoldedPath.IsEmpty() ? Result.FoldedPath : GetFoldedFilePath(Tables, Tables.Assets.File[Result.Asset]);
-	}
-
-	// File path (fold, then bytes), then the label (the asset record first).
-	[[nodiscard]] int32 ComparePaths (const SResult& A, const SResult& B) const noexcept
-	{
-		if (A.Asset != B.Asset)
+		if (A.PathKey != B.PathKey)
 		{
-			int32 compared = GetFoldedPath(A).Compare(GetFoldedPath(B));
-			if (compared != 0)
-			{
-				return compared;
-			}
-			compared = Tables.Paths.Get(Tables.Files.Path[Tables.Assets.File[A.Asset]]).Compare(Tables.Paths.Get(Tables.Files.Path[Tables.Assets.File[B.Asset]]));
-			if (compared != 0)
-			{
-				return compared;
-			}
-			return A.Asset < B.Asset ? -1 : 1;   // equal paths are never two live files; keep the order total anyway
+			return A.PathKey < B.PathKey ? -1 : 1;
 		}
-		const bool bSubA = (A.Value & SubEntryBit) != 0u;
-		const bool bSubB = (B.Value & SubEntryBit) != 0u;
-		if (bSubA != bSubB)
-		{
-			return bSubA ? 1 : -1;
-		}
-		if (!bSubA)
-		{
-			return 0;
-		}
-		const auto key = [this] (const SResult& Result) { return Tables.SubEntries.Key[Result.Value & ~SubEntryBit]; };
-		int32 compared = Plan.Order.Kind == EOrderKind::None ? A.Text.Compare(B.Text)
-			: Tables.Names.GetFolded(key(A)).Compare(Tables.Names.GetFolded(key(B)));
-		if (compared == 0)
-		{
-			compared = Tables.Names.Get(key(A)).Compare(Tables.Names.Get(key(B)));
-		}
-		if (compared == 0 && A.Value != B.Value)
-		{
-			compared = A.Value < B.Value ? -1 : 1;
-		}
-		return compared;
+		return A.Value == B.Value ? 0 : (A.Value < B.Value ? -1 : 1);   // never two live records; keep the order total
 	}
 
 	// The order key alone: absent values sort last in either direction.
@@ -2648,153 +2787,103 @@ private:
 	// ---- Path order without an order key ----
 
 	/**
-	 * The whole result in path order (ComparePaths), as a most-significant-digit radix sort: hits sort by eight
-	 * bytes of their folded path at a time - one integer compare where a string compare would walk a long shared
-	 * prefix ("/project/textures/rock/s0/t_rock_...") on every call - and only hits whose bytes so far are equal go
-	 * on to the next eight. The hits of one file then sort by folded label the same way (the asset record, whose
-	 * label is empty, first). Small groups, and the ties the folded bytes cannot break (two files equal under the
-	 * fold, labels equal under the fold), take ComparePaths itself, so the order is exactly Less's.
+	 * The whole result in path order. The scans emit a file's hits together (its rows are contiguous in a type
+	 * table), so the files sort first, one entry per run of hits, by PathRank; each hit then gets its file's place
+	 * in that order and its label rank as a small key (a few radix digits at most), and only a result whose keys are
+	 * not in order already is sorted by them. Stable throughout; two live records never share a PathKey.
 	 */
-	struct SPathKey
-	{
-		uint64 Key = 0u;
-		uint32 Index = 0u;
-	};
-
-	static constexpr size_t SmallPathRange = 12u;
-
 	void SortByPath (std::vector<SResult>& Results) const
 	{
-		if (Results.size() < 2u)
-		{
-			return;
-		}
-		// The scans emit a file's hits together (its rows are contiguous in a type table): the paths sort one
-		// entry per such run, and each file's hits then sort by label.
-		std::vector<SPathKey> files;
-		std::vector<uint32> runEnd(Results.size());
-		for (uint32 i = 0u; i < Results.size();)
-		{
-			uint32 end = i + 1u;
-			while (end < Results.size() && Results[end].Asset == Results[i].Asset)
-			{
-				++end;
-			}
-			files.push_back(SPathKey { 0u, i });
-			runEnd[i] = end;
-			i = end;
-		}
-		SortPathRange(Results, files.data(), files.data() + files.size(), 0u, false);
-		std::vector<SPathKey> hits;
-		hits.reserve(Results.size());
-		for (const SPathKey& file : files)
-		{
-			for (uint32 i = file.Index; i < runEnd[file.Index]; ++i)
-			{
-				hits.push_back(SPathKey { 0u, i });
-			}
-		}
-		// A file whose hits came in several runs has them side by side now (equal paths never name two files).
-		for (size_t first = 0u; first < hits.size();)
-		{
-			size_t end = first + 1u;
-			while (end < hits.size() && Results[hits[end].Index].Asset == Results[hits[first].Index].Asset)
-			{
-				++end;
-			}
-			if (end - first > 1u)
-			{
-				SortPathRange(Results, hits.data() + first, hits.data() + end, 0u, true);
-			}
-			first = end;
-		}
-		std::vector<SResult> sorted;
-		sorted.reserve(Results.size());
-		for (const SPathKey& hit : hits)
-		{
-			sorted.push_back(Results[hit.Index]);
-		}
-		Results.swap(sorted);
-	}
-
-	// The text a level sorts by: the folded file path, or (bLabels) the folded label - empty for the asset record.
-	[[nodiscard]] FStringView GetSortText (const SResult& Result, bool bLabels) const noexcept
-	{
-		return bLabels ? Result.Text : GetFoldedPath(Result);
-	}
-
-	// Eight bytes of Text from Offset, big-endian, zero past its end (paths and labels hold no NUL byte, so a
-	// shorter text sorts first, as in a string compare).
-	[[nodiscard]] static uint64 LoadPathKey (FStringView Text, uint32 Offset) noexcept
-	{
-		const uint32 length = Text.Len();
-		const char* data = Text.GetData();
-		uint64 key = 0u;
-		for (uint32 i = 0u; i < 8u; ++i)
-		{
-			key <<= 8u;
-			if (Offset + i < length)
-			{
-				key |= static_cast<uint8>(data[Offset + i]);
-			}
-		}
-		return key;
-	}
-
-	// Every text in [First, Last) agrees on its first Offset bytes.
-	void SortPathRange (const std::vector<SResult>& Results, SPathKey* First, SPathKey* Last, uint32 Offset, bool bLabels) const
-	{
-		const auto compare = [&] (const SPathKey& A, const SPathKey& B) { return ComparePaths(Results[A.Index], Results[B.Index]) < 0; };
-		const size_t count = static_cast<size_t>(Last - First);
+		const uint32 count = static_cast<uint32>(Results.size());
 		if (count < 2u)
 		{
 			return;
 		}
-		if (count <= SmallPathRange)
+		struct SRun
 		{
-			std::sort(First, Last, compare);
-			return;
-		}
-		const FStringView pivot = GetSortText(Results[First->Index], bLabels);
-		if (Offset > 0u && pivot.Len() <= Offset)
+			uint32 Rank = 0u;
+			uint32 Begin = 0u;
+			uint32 End = 0u;
+		};
+		std::vector<SRun> runs;
+		uint32 maxLabel = 0u;
+		for (uint32 i = 0u; i < count;)
 		{
-			// Equal texts (the range shares a key that reached past the pivot's end, and no text holds a NUL byte):
-			// the folded bytes are spent.
-			if (!bLabels && std::all_of(First, Last, [&] (const SPathKey& Key) { return Results[Key.Index].Asset == Results[First->Index].Asset; }))
-			{
-				SortPathRange(Results, First, Last, 0u, true);   // one file: its record, then its sub-entries by label
-				return;
-			}
-			std::sort(First, Last, compare);
-			return;
-		}
-		// Skip the bytes every text of the range shares.
-		uint32 common = pivot.Len();
-		for (const SPathKey* key = First + 1; key != Last && common > Offset; ++key)
-		{
-			const FStringView text = GetSortText(Results[key->Index], bLabels);
-			const uint32 limit = (std::min)(common, text.Len());
-			uint32 i = Offset;
-			while (i < limit && text.GetData()[i] == pivot.GetData()[i])
-			{
-				++i;
-			}
-			common = i;
-		}
-		for (SPathKey* key = First; key != Last; ++key)
-		{
-			key->Key = LoadPathKey(GetSortText(Results[key->Index], bLabels), common);
-		}
-		std::sort(First, Last, [] (const SPathKey& A, const SPathKey& B) { return A.Key < B.Key; });
-		for (SPathKey* run = First; run != Last;)
-		{
-			SPathKey* end = run + 1;
-			while (end != Last && end->Key == run->Key)
+			uint32 end = i + 1u;
+			while (end < count && Results[end].Asset == Results[i].Asset)
 			{
 				++end;
 			}
-			SortPathRange(Results, run, end, common + 8u, bLabels);
-			run = end;
+			runs.push_back(SRun { static_cast<uint32>(Results[i].PathKey >> 32u), i, end });
+			for (uint32 j = i; j < end; ++j)
+			{
+				maxLabel = (std::max)(maxLabel, static_cast<uint32>(Results[j].PathKey));
+			}
+			i = end;
+		}
+		{
+			std::vector<SRun> scratch;
+			RadixSortByKey(runs, scratch, [] (const SRun& Run) { return static_cast<uint64>(Run.Rank); });
+		}
+		const uint32 labelBits = static_cast<uint32>(std::bit_width(maxLabel));
+		std::vector<std::pair<uint32, uint32>>& keys = Buffers.Keys;   // (file place << labelBits | label rank, hit)
+		keys.clear();
+		keys.reserve(count);
+		uint64 file = 0u;
+		bool bWide = false;
+		for (size_t r = 0u; r < runs.size(); ++r)
+		{
+			if (r == 0u || runs[r].Rank != runs[r - 1u].Rank)
+			{
+				++file;
+			}
+			const uint64 high = file << labelBits;
+			bWide = bWide || high > 0xFFFFFFFFull;
+			for (uint32 i = runs[r].Begin; i < runs[r].End; ++i)
+			{
+				keys.emplace_back(static_cast<uint32>(high | static_cast<uint32>(Results[i].PathKey)), i);
+			}
+		}
+		if (bWide)
+		{
+			// More files times labels than 32 bits hold: the full PathKeys.
+			std::vector<std::pair<uint64, uint32>> wide(count);
+			for (uint32 i = 0u; i < count; ++i)
+			{
+				wide[i] = { Results[i].PathKey, i };
+			}
+			std::vector<std::pair<uint64, uint32>> scratch;
+			RadixSortByKey(wide, scratch, [] (const std::pair<uint64, uint32>& Key) { return Key.first; });
+			for (uint32 i = 0u; i < count; ++i)
+			{
+				keys[i].second = wide[i].second;
+			}
+		}
+		else if (!std::is_sorted(keys.begin(), keys.end(), [] (const auto& A, const auto& B) { return A.first < B.first; }))
+		{
+			RadixSortByKey(keys, Buffers.KeyScratch, [] (const std::pair<uint32, uint32>& Key) { return static_cast<uint64>(Key.first); });
+		}
+		// Results[i] = old Results[keys[i].second], in place: follow each cycle of the permutation.
+		for (uint32 i = 0u; i < count; ++i)
+		{
+			if (keys[i].second == i || keys[i].second == ~0u)
+			{
+				continue;
+			}
+			SResult carried = std::move(Results[i]);
+			uint32 at = i;
+			for (;;)
+			{
+				const uint32 from = keys[at].second;
+				keys[at].second = ~0u;
+				if (from == i)
+				{
+					Results[at] = std::move(carried);
+					break;
+				}
+				Results[at] = std::move(Results[from]);
+				at = from;
+			}
 		}
 	}
 };
@@ -2842,8 +2931,13 @@ uint32 CRegistryView::Run (const SCompiledQuery& Query, std::vector<SRecordId>& 
 	}
 	const SRegistryTables& tables = GetTables(View);
 	const SQueryPlan& plan = *Query.Plan;
-	CQueryRunner runner(tables, plan);
-	std::vector<SResult> results;
+	SQueryScratch& shared = GetQueryScratch();
+	SQueryScratch own;
+	SQueryScratch& scratch = shared.bInUse ? own : shared;
+	scratch.bInUse = true;
+	CQueryRunner runner(tables, plan, scratch);
+	std::vector<SResult>& results = scratch.Results;
+	results.clear();
 	runner.Collect(results, stats.Candidates);
 	const uint64 scanned = platform::ReadTimestamp();
 	runner.Sort(results);
@@ -2857,6 +2951,7 @@ uint32 CRegistryView::Run (const SCompiledQuery& Query, std::vector<SRecordId>& 
 	{
 		Out.push_back(SRecordId { results[static_cast<size_t>(i)].Value, revision });
 	}
+	scratch.Release();
 	const uint64 end = platform::ReadTimestamp();
 	stats.Matched = matched;
 	stats.Returned = static_cast<uint32>(Out.size());
