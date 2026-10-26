@@ -15,8 +15,16 @@ script, behind FRT.bat verify (Premake/tools.lua). A milestone branch merges onl
      version GUID (FRT.bat check-builders, BUILD003);
   4. AssetTool through FRT.bat assets: newguid --json exits with 0, and its standard output is JSON objects,
      one per line, and nothing else; -Project= names the project, and arguments reach AssetTool unchanged;
+     every asset registry verb with --json over Templates/Demo, read-only (scan --ci, status, query, refs,
+     referencers, explain, list-rules, dump registry); the registry's golden dumps: dump registry --text --ci
+     of the engine (/Engine) and of each template (/Project) in place, on a tree git says is unchanged there,
+     equal to Core-Test/Assets/Golden/Registry-*.txt and clean of PATH001-003, RULE001-002 and errors (Core-Test
+     compares the same files over temp copies); and every verb of FRT.bat assets help --json and every code of
+     Core/Source/Assets/AssetDiagnosticCodes.h is named in Docs/Assets.md;
   5. the editor's smoke test (-Editor:SmokeTest=1) over Templates/Demo and Templates/Blank, in place, in
-     Debug and Development; then its steps that edit files, on a scratch copy of Templates/Demo made with
+     Debug and Development, which also checks the asset registry's initial scan and the editor's Assets panel
+     (its "[smoke] ok registry:" line; in Demo the panel lists textures); then its steps that edit files, on a
+     scratch copy of Templates/Demo made with
      FRT.bat new and a copy of the shaders (Gate.smoke_scratch): a material rewritten must reload and a
      shader include edited must rebuild exactly the programs that include it, through the file watcher;
   6. automation captures of Templates/Demo through the launcher, in Debug and in Development: one raster,
@@ -31,10 +39,15 @@ script, behind FRT.bat verify (Premake/tools.lua). A milestone branch merges onl
      the same two captures of each packaged game, against the Release baselines;
   8. git status --porcelain is empty at the end: nothing it ran changed a tracked file.
 Steps that later milestones bring print "skipped (M<n>)". It ends with a summary table and the timings a
-commit message reports, and exits with 1 when any step failed.
+commit message reports (the hosts' "[assets] initial scan:" lines among them: the scan and how long
+BuildWorld waited for it), and exits with 1 when any step failed. --nightly also builds Release and runs its
+Core-Test.exe over the registry, query and snapshot benchmark suites, the DISABLED_ 100k/1M/100k + 500k ones
+included, with FRT_PERF_STRICT=1, which holds design 5.11's figures exactly (Development's Core-Test step judges
+the 10k suites by its regression guards).
 
     python -I Tools/Verify/Verify.py [--quick | --nightly] [--record-baselines] [--baselines=<dir>]
                                      [--pt-tolerance=<rmse>]
+    python -I Tools/Verify/Verify.py --update-goldens
 
   --quick             build Development, run its Core-Test, the lints and AssetTool: the pre-commit subset
   --nightly           everything, and the long checks (placeholders until they exist)
@@ -44,6 +57,8 @@ commit message reports, and exits with 1 when any step failed.
   --baselines=<dir>   where the baselines are (default <engine>/Local/Verify/Baselines): Debug/ and
                       Development/ for the in-place captures, Release/ for the packaged games'
   --pt-tolerance=<x>  the relative RMSE a path-traced capture may differ by (default 1e-4)
+  --update-goldens    write the registry's golden dumps again (Core-Test/Assets/Golden) from FRT.bat assets
+                      dump registry, show what changed, and run nothing else: for a commit that changes content
 
 Baselines belong to a machine: a capture depends on the GPU, its driver and the display's scaling, which
 sets the window's size. Baseline.ini beside them says what took them, and a comparison with baselines
@@ -65,6 +80,7 @@ Standard library only.
 import argparse
 import array
 import datetime
+import difflib
 import hashlib
 import json
 import math
@@ -91,6 +107,29 @@ SCRATCH_TEMPLATE = 'Demo'
 SCRATCH_NAME = 'Scratch'
 SCRATCH_CONFIG = 'Development'
 CAPTURE_CONFIGS = ('Debug', 'Development')
+# The registry's golden dumps (design 5.3): (golden name, template or None for the engine, dump arguments). Each
+# dumps only its own mounts, so an engine content change touches only Registry-Engine.txt.
+GOLDEN_DIR = ROOT / 'Core-Test' / 'Assets' / 'Golden'
+GOLDENS = (
+    ('Engine', None, ('--engine', '--mount=Engine')),
+    ('Demo', 'Demo', ('--mount=Project',)),
+    ('Blank', 'Blank', ('--mount=Project',)),
+)
+# Templates whose in-place smoke test must see textures in the editor's Assets panel (type:Texture).
+SMOKE_TEXTURES = ('Demo',)
+# Core-Test's tests the gate relies on: they must exist and not be disabled (each Core-Test step runs them).
+REGISTRY_GATE_TESTS = (
+    'RegistryGoldenTest.*', 'AssetQueryParseTest.RandomTokenStreamsNeverCrashAndEveryErrorHasAPosition',
+    'RegistryBenchmarkTest.TheStoreMeetsItsBudgetsAt10kAssets', 'QueryBenchmarkTest.TheQueryEngineMeetsItsBudgetsAt10kAssets',
+    'SnapshotTest.SnapshotAndJournalMeetTheirBudgetsAt10kAssets',
+    'AssetRegistryBudget.TwentyThousandFilesWarmStartWithinTheirBudgetAlsoAfterAMountRuleEdit',
+)
+# --nightly: the registry's benchmark suites in Release, the DISABLED_ ones included.
+NIGHTLY_REGISTRY_FILTER = ':'.join((
+    'RegistryBenchmarkTest.*', 'QueryBenchmarkTest.*', 'SnapshotTest.*AndJournal*', 'AssetRegistryBudget.*',
+    'RegistryRulesEditBenchmark.*', 'DataTreeYamlTest.*Rate*', 'MountScannerTest.*Budget*', 'AnalyzeBenchmarkTest.*',
+))
+NIGHTLY_TIMEOUT = 7200
 SMOKE_CONFIGS = ('Debug', 'Development')
 CAPTURE_FRAME = 400
 # ||capture - baseline|| / ||baseline|| over every channel of every pixel of the linear HDR capture. Two
@@ -327,6 +366,8 @@ class Gate:
         self.broken = set()  # what failed and so cannot be used: ('engine', config), (template, config)
         self.gpu = None
         self.step_number = 0
+        # (what, files, records, scan ms, BuildWorld wait ms) of every host start that logged its initial scan.
+        self.initial_scans = []
 
         env = dict(os.environ)
         # Never the user's own; every process gets a directory of its own below this one (env_for).
@@ -471,7 +512,25 @@ class Gate:
             names = re.findall(r'\[  FAILED  \] (\S+)', text)
             raise StepFailed(('timed out; ' if code is None else '') + counts +
                              (f', {failed[-1]} failed: ' + ', '.join(names[:5]) if failed else f', exit code {code}'))
+        missing = self.missing_gate_tests(exe, log)
+        if missing:
+            raise StepFailed(counts + "; the gate's tests are missing or disabled: " + ', '.join(missing))
         return counts
+
+    def missing_gate_tests(self, exe, log):
+        """The REGISTRY_GATE_TESTS patterns that name no enabled test of Exe: the golden dumps, the query fuzz test
+        and the 10k registry budgets must run in every Core-Test step, so a rename or a DISABLED_ fails the step."""
+        listing = Path(log).with_suffix('.tests')
+        missing = []
+        for pattern in REGISTRY_GATE_TESTS:
+            code, _ = run([exe, '--gtest_list_tests', f'--gtest_filter={pattern}'], listing, cwd=ROOT, env=self.env_for(log),
+                          timeout=LINT_TIMEOUT)
+            names = [line for line in listing.read_bytes().decode('utf-8', errors='replace').splitlines()
+                     if line.startswith('  ') and not line.strip().startswith('DISABLED_')]
+            if code != 0 or not names:
+                missing.append(pattern)
+            listing.unlink(missing_ok=True)
+        return missing
 
     def lint(self, log, script):
         code, _ = run([sys.executable, '-I', ROOT / script], log, cwd=ROOT, env=self.env_for(log), timeout=LINT_TIMEOUT)
@@ -567,6 +626,177 @@ class Gate:
             raise StepFailed(f'the argument changed on its way: {json.dumps(refused, ensure_ascii=False)[:160]}')
         return '-Project= and an argument cmd.exe would change'
 
+    # ---- the asset registry ----
+
+    def assets_registry_verbs(self, log):
+        """Every asset registry verb of FRT.bat assets with --json over Templates/Demo, in place and read-only (--ci:
+        only scan could write, and with --ci it writes nothing): each exits with 0 and prints JSON lines with its
+        stable fields. The files it asks about come from a query, so nothing here names a file of the template."""
+        def verb(*arguments):
+            return self.assets_json(log, [FRT, 'assets', '-Project=Templates/Demo', *arguments, '--json', '--ci'], 0)
+
+        scan = verb('scan')
+        if len(scan) != 1 or scan[0].get('verb') != 'scan' or scan[0].get('writer') is not False or not scan[0].get('records'):
+            raise StepFailed(f'scan --ci: {json.dumps(scan)[:160]}')
+        status = verb('status')
+        if not any(o.get('kind') == 'summary' for o in status) or not any(o.get('kind') == 'ddc' for o in status):
+            raise StepFailed(f'status: no "summary" or "ddc" line in {json.dumps(status)[:160]}')
+        textures = verb('query', 'type:Texture', '--columns=$Path,Width')
+        if len(textures) < 2 or not textures[-1].get('matched') or 'path' not in textures[0]:
+            raise StepFailed(f'query type:Texture: {json.dumps(textures)[:160]}')
+        texture = textures[0]['path']
+        models = verb('query', 'type:Model', '--columns=$Path,$Dependencies')
+        model = next((o['path'] for o in models if o.get('dependencies', 0) > 0), None)
+        if model is None:
+            raise StepFailed(f'query type:Model: no model with dependencies in {json.dumps(models)[:160]}')
+        refs = verb('refs', model)
+        if not refs or any(set(o) != {'from', 'target', 'resolved', 'flags', 'field', 'state'} for o in refs):
+            raise StepFailed(f'refs {model}: {json.dumps(refs)[:160]}')
+        referencers = verb('referencers', texture, '--transitive')
+        if any(set(o) != {'path', 'type'} for o in referencers):
+            raise StepFailed(f'referencers {texture} --transitive: {json.dumps(referencers)[:160]}')
+        explain = verb('explain', texture)
+        if len(explain) != 1 or explain[0].get('importer') != 'Texture' or not explain[0].get('chain'):
+            raise StepFailed(f'explain {texture}: {json.dumps(explain)[:160]}')
+        rules = verb('list-rules')
+        if not rules or rules[0] != {'format': 'frt.rules.cache', 'version': 1}:
+            raise StepFailed(f'list-rules: {json.dumps(rules)[:160]}')
+        dump = verb('dump', 'registry', '--mount=Project')
+        records = sum(1 for o in dump if o.get('kind') == 'record')
+        if not records or dump[0] != {'kind': 'mount', 'mount': '/Project'}:
+            raise StepFailed(f'dump registry --mount=Project: {json.dumps(dump[:2])[:160]}')
+        return (f'8 verbs: {scan[0]["records"]} records, {textures[-1]["matched"]} textures, {len(refs)} edge(s) of a model, '
+                f'{records} records dumped')
+
+    def golden_dump(self, log, name, template, arguments):
+        """FRT.bat assets dump registry --text --ci for one golden dump (GOLDENS), in place, with LF line endings."""
+        output = Path(log).with_suffix(f'.{name}.txt')
+        command = [FRT, 'assets', *([f'-Project=Templates/{template}'] if template else []), 'dump', 'registry', '--text', '--ci', *arguments]
+        code, _ = run(command, log, cwd=ROOT, env=self.env_for(log), timeout=BUILD_TIMEOUT, stdout=output)
+        if code != 0:
+            raise StepFailed(f'{name}: ' + ('timed out' if code is None else f'exit code {code}') + '; ' + '; '.join(tail(log, lines=2)))
+        return output.read_bytes().decode('utf-8', errors='replace').replace('\r\n', '\n')
+
+    @staticmethod
+    def golden_sources(template):
+        """What a golden dump reads: the engine's content and rule file, and a template's."""
+        return ['Core/Content', 'Core/Config'] + ([f'Templates/{template}/Content', f'Templates/{template}/Config'] if template else [])
+
+    # A dump line that breaks design 1.1 G11 (the engine and the templates are clean of portable-path and rule
+    # problems) or that reports an error.
+    G11_PROBLEM = re.compile(r'^  problem (?:(?:PATH00[123]|RULE00[12]) |\S+ error )', re.MULTILINE)
+
+    def registry_goldens(self, log):
+        """The registry's golden dumps (GOLDENS): dump registry --text --ci in place, on a tree whose dumped content
+        git says is unchanged (the runtime can write Content/), equals Core-Test/Assets/Golden/Registry-<name>.txt
+        and passes G11. The difference goes into the log; --update-goldens writes the files again."""
+        compared = []
+        for name, template, arguments in GOLDENS:
+            changed = git('status', '--porcelain', '--', *self.golden_sources(template))
+            if changed is None:
+                raise StepFailed('not a git checkout: the dumped content cannot be checked unchanged')
+            if changed.strip():
+                raise StepFailed(f'{name}: its content has uncommitted changes, so the dump says nothing about the commit: '
+                                 + '; '.join(changed.decode('utf-8', errors='replace').splitlines()[:3]))
+            dumped = self.golden_dump(log, name, template, arguments)
+            golden_path = GOLDEN_DIR / f'Registry-{name}.txt'
+            if not golden_path.exists():
+                raise StepFailed(f'no {golden_path.relative_to(ROOT)}: FRT.bat verify --update-goldens writes it')
+            golden = golden_path.read_bytes().decode('utf-8', errors='replace').replace('\r\n', '\n')
+            if dumped != golden:
+                diff = list(difflib.unified_diff(golden.splitlines(), dumped.splitlines(), f'golden/{golden_path.name}',
+                                                 f'dumped/{golden_path.name}', lineterm='', n=1))
+                with open(log, 'a', encoding='utf-8') as f:
+                    f.write('\n'.join(diff[:400]) + '\n')
+                first = next((line for line in diff[2:] if line[:1] in '-+'), '')
+                raise StepFailed(f'{name}: the dump differs from {golden_path.name} (first: {first[:100]!r}; the diff is in the log); '
+                                 f'content changed on purpose: FRT.bat verify --update-goldens')
+            broken = self.G11_PROBLEM.findall(dumped)
+            if broken:
+                raise StepFailed(f'{name}: {len(broken)} problem(s) G11 forbids, first: ' +
+                                 next(line for line in dumped.splitlines() if self.G11_PROBLEM.match(line + '\n')).strip()[:120])
+            compared.append(name)
+        return 'equal to the golden files of ' + ', '.join(compared)
+
+    def update_goldens(self):
+        """--update-goldens: each golden dump written again from FRT.bat assets dump registry, what changed shown,
+        nothing else run (so no git status step counts the rewritten files)."""
+        shutil.rmtree(self.run_dir, ignore_errors=True)
+        self.logs.mkdir(parents=True, exist_ok=True)
+        (self.run_dir / 'UserData').mkdir(parents=True, exist_ok=True)
+        GOLDEN_DIR.mkdir(parents=True, exist_ok=True)
+        failed = False
+        for name, template, arguments in GOLDENS:
+            log = self.log_path(f'golden {name}')
+            golden_path = GOLDEN_DIR / f'Registry-{name}.txt'
+            changed = git('status', '--porcelain', '--', *self.golden_sources(template))
+            if changed and changed.strip():
+                print(f'[verify] {name}: its content has uncommitted changes; the golden file will hold them')
+            try:
+                dumped = self.golden_dump(log, name, template, arguments)
+            except StepFailed as failure:
+                print(f'[verify] {name}: FAILED: {failure}')
+                failed = True
+                continue
+            old = golden_path.read_bytes().decode('utf-8', errors='replace').replace('\r\n', '\n') if golden_path.exists() else ''
+            if old == dumped:
+                print(f'[verify] {golden_path.relative_to(ROOT)}: unchanged')
+                continue
+            golden_path.write_bytes(dumped.encode('utf-8'))
+            diff = list(difflib.unified_diff(old.splitlines(), dumped.splitlines(), f'a/{golden_path.name}', f'b/{golden_path.name}',
+                                             lineterm='', n=1))
+            print(f'[verify] {golden_path.relative_to(ROOT)}: written ({len(dumped.splitlines())} lines)')
+            for line in diff[:80]:
+                print('  ' + line)
+            if len(diff) > 80:
+                print(f'  ... {len(diff) - 80} more diff lines (git diff shows them)')
+        return 1 if failed else 0
+
+    def docs_coverage(self, log):
+        """Design 16.1 item 10: every verb FRT.bat assets help --json lists and every diagnostic code of
+        Core/Source/Assets/AssetDiagnosticCodes.h is named in Docs/Assets.md (a verb in backquotes)."""
+        verbs = [o['verb'] for o in self.assets_json(log, [FRT, 'assets', 'help', '--json'], 0) if 'verb' in o]
+        codes = re.findall(r'DiagnosticCode\("([A-Z]+[0-9]+)"\)',
+                           (ROOT / 'Core' / 'Source' / 'Assets' / 'AssetDiagnosticCodes.h').read_text(encoding='utf-8'))
+        docs = (ROOT / 'Docs' / 'Assets.md').read_text(encoding='utf-8')
+        missing = [f'the verb {v}' for v in verbs if not re.search('`' + re.escape(v) + r'(?![\w-])', docs)]
+        missing += [f'the code {c}' for c in codes if not re.search(r'\b' + c + r'\b', docs)]
+        if not verbs or not codes:
+            raise StepFailed(f'{len(verbs)} verbs and {len(codes)} codes found: nothing to check')
+        if missing:
+            raise StepFailed('Docs/Assets.md does not name ' + ', '.join(missing))
+        return f'{len(verbs)} verbs and {len(codes)} codes named'
+
+    def nightly_registry(self, log):
+        """--nightly: Release's Core-Test.exe over the registry, query and snapshot benchmark suites, the DISABLED_
+        100k/1M/100k + 500k ones included, with FRT_PERF_STRICT=1 (design 5.11's figures, or the proposed
+        revisions, held exactly). Run with nothing else on the machine: the figures are for a quiet one."""
+        exe = BINARIES / 'Core-Test.exe'
+        if not exe.exists():
+            raise StepFailed(f'no {exe.name}')
+        env = dict(self.env_for(log), FRT_PERF_STRICT='1')
+        code, seconds = run([exe, '--gtest_brief=1', '--gtest_also_run_disabled_tests', f'--gtest_filter={NIGHTLY_REGISTRY_FILTER}'],
+                            log, cwd=ROOT, env=env, timeout=NIGHTLY_TIMEOUT)
+        text = Path(log).read_bytes().decode('utf-8', errors='replace')
+        passed = re.findall(r'\[  PASSED  \] (\d+) test', text)
+        missed = len(re.findall(r'\bMISSED\b', text))
+        self.timings.append(('registry benchmarks, Release with the DISABLED_ suites', f'{seconds:.1f} s'))
+        if code != 0:
+            names = re.findall(r'\[  FAILED  \] (\S+)', text)
+            raise StepFailed(('timed out; ' if code is None else '') + f'{passed[-1] if passed else 0} passed, failed: ' + ', '.join(names[:5]))
+        return f'{passed[-1] if passed else 0} passed; {missed} row(s) print MISSED against 5.11 (see the log)'
+
+    # The hosts' start-up line (CAssetRegistry::WaitBeforeBuildWorld).
+    INITIAL_SCAN_LINE = re.compile(r'\[assets\] initial scan: (\d+) files, (\d+) records, ([\d.]+) ms; BuildWorld waited ([\d.]+) ms')
+
+    def read_initial_scan(self, what, log):
+        """Records the "[assets] initial scan:" line a host start printed to Log for the summary; None without one
+        (Release, or [Assets] Registry=0)."""
+        match = self.INITIAL_SCAN_LINE.search(Path(log).read_bytes().decode('utf-8', errors='replace'))
+        if match:
+            self.initial_scans.append((what, int(match.group(1)), int(match.group(2)), float(match.group(3)), float(match.group(4))))
+        return match
+
     # ---- the shader cache ----
 
     SHADER_CACHE_LINE = re.compile(r'^\[shader\] cache: (\d+) hits, (\d+) compiled \((\d+) ms\)', re.MULTILINE)
@@ -621,7 +851,26 @@ class Gate:
             raise StepFailed(('timed out' if code is None else f'exit code {code}') +
                              (': ' + '; '.join(f.strip() for f in failures[:3]) if failures else ''))
         shaders = self.check_shader_cache(config, f'smoke {name}', log)
-        return f'{checks} checks passed' + (f', {skips} skipped' if skips else '') + f'; {shaders}; output in {output}'
+        registry = self.check_smoke_registry(name, config, text, log)
+        return f'{checks} checks passed' + (f', {skips} skipped' if skips else '') + f'; {shaders}; {registry}; output in {output}'
+
+    SMOKE_REGISTRY_LINE = re.compile(r'^\[smoke\]\s+ok\s+registry: (\d+) records, initial scan (\d+) ms', re.MULTILINE)
+    SMOKE_PANEL_LINE = re.compile(r'^\[smoke\]\s+ok\s+the Assets panel shows (\d+) of (\d+) record\(s\) of type:Texture', re.MULTILINE)
+
+    def check_smoke_registry(self, name, config, text, log):
+        """The smoke test's registry check: the initial scan completed (its "[smoke] ok registry:" line) and the
+        editor's Assets panel shows what the registry holds; in SMOKE_TEXTURES templates it lists textures. Records
+        the host's "[assets] initial scan:" line for the summary. Returns a detail text, or raises StepFailed."""
+        self.read_initial_scan(f'editor, {name} ({config})', log)
+        registry = self.SMOKE_REGISTRY_LINE.search(text)
+        if not registry:
+            raise StepFailed('no "[smoke] ok registry:" line: the asset registry check did not pass')
+        panel = self.SMOKE_PANEL_LINE.search(text)
+        if not panel:
+            raise StepFailed('no "[smoke] ok the Assets panel shows" line: the Assets panel check did not pass')
+        if name in SMOKE_TEXTURES and int(panel.group(1)) == 0:
+            raise StepFailed(f'the Assets panel of {name} lists no texture (type:Texture)')
+        return f'registry: {registry.group(1)} records, {panel.group(2)} textures, initial scan {registry.group(2)} ms'
 
     # Lines of the smoke test's file edits that must have passed: without them the step tested nothing.
     SCRATCH_EDIT_CHECKS = (
@@ -707,6 +956,7 @@ class Gate:
             if not base.with_suffix(extension).exists():
                 raise StepFailed(f'no {base.name}{extension} written (log: {log})')
         self.check_shader_cache(config, f'capture {label}', log)
+        self.read_initial_scan(f'capture {label}', log)
         return gpu[0] if gpu else 'unknown GPU'
 
     def capture_targets(self, config):
@@ -946,6 +1196,10 @@ class Gate:
         self.step('builder source guard (BUILD003)', self.check_builders)
         self.step('assets newguid --json', self.assets_newguid, needs=[('engine', 'Development')])
         self.step('assets arguments', self.assets_arguments, needs=[('engine', 'Development')])
+        self.step('assets registry verbs --json', self.assets_registry_verbs, needs=[('engine', 'Development')])
+        # Before the steps that run the editor and games in place: their content as committed.
+        self.step('registry golden dumps', self.registry_goldens, needs=[('engine', 'Development')])
+        self.step('docs name every verb and code', self.docs_coverage, needs=[('engine', 'Development')])
 
         if self.mode != 'quick':
             self.skip('assets validate --ci', 'skipped (M4)')
@@ -966,11 +1220,13 @@ class Gate:
                     self.broken.add((name, 'Release'))
             self.captures('Release')
             self.skip('packaged smoke run', 'skipped (M6)')
-            self.skip('assets docs --check', 'skipped (M1)')
+            self.skip('assets docs --check', 'skipped (later: assets docs)')
         if self.mode == 'nightly':
             self.skip('assets build --determinism-check', 'skipped (M1)')
             self.skip('captures with -Ddc:Verify=100', 'skipped (M1)')
-            self.skip('100k/1M synthetic registry suite', 'skipped (M3)')
+            self.build_engine('Release')
+            self.step('registry benchmarks, DISABLED_ suites (Release, FRT_PERF_STRICT=1)', self.nightly_registry,
+                      needs=[('engine', 'Release')])
             self.skip('assets cook --verify', 'skipped (M6)')
             self.skip('cold-cache start after a reboot', 'skipped (manual)')
 
@@ -990,7 +1246,10 @@ class Gate:
             print('Timings (for the commit message):')
             for what, text in self.timings:
                 print(f'  {what}: {text}')
-            print('  BuildWorld: not logged yet')
+            for what, files, records, scan_ms, waited_ms in self.initial_scans:
+                print(f'  initial scan, {what}: {files} files, {records} records, {scan_ms:.1f} ms; BuildWorld waited {waited_ms:.1f} ms')
+            if not self.initial_scans:
+                print('  BuildWorld: no host logged "[assets] initial scan:"')
         verdict = 'FAILED' if failed else 'passed'
         counts = f'{len(self.results) - len(failed)} of {len(self.results)} steps ok or skipped'
         print(f'verify {verdict}: {counts}, {seconds / 60.0:.1f} min')
@@ -1003,11 +1262,16 @@ def main():
     group = parser.add_mutually_exclusive_group()
     group.add_argument('--quick', action='store_true', help='build Development, its Core-Test and the lints')
     group.add_argument('--nightly', action='store_true', help='everything, and the long checks')
+    group.add_argument('--update-goldens', action='store_true',
+                       help='write the registry\'s golden dumps again from FRT.bat assets, show the diff, run nothing else')
     parser.add_argument('--record-baselines', action='store_true', help='record the captures as the baselines')
     parser.add_argument('--baselines', metavar='DIR', help='the baselines (default Local/Verify/Baselines)')
     parser.add_argument('--pt-tolerance', metavar='RMSE', type=float, default=PATH_TRACED_TOLERANCE,
                         help=f'the relative RMSE a path-traced capture may differ by ({PATH_TRACED_TOLERANCE:g})')
-    return Gate(parser.parse_args()).run()
+    options = parser.parse_args()
+    if options.update_goldens:
+        return Gate(options).update_goldens()
+    return Gate(options).run()
 
 
 if __name__ == '__main__':
