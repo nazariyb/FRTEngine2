@@ -7,9 +7,7 @@
 
 #include <atomic>
 #include <cstdio>
-#include <functional>
 #include <random>
-#include <string_view>
 #include <thread>
 
 #include "Assets/Registry/RegistryTables.h"
@@ -682,7 +680,7 @@ std::vector<uint64> AnswersOf (const CRegistryView& View)
 			joined += View.GetRecord(record, data) ? data.MountPath.View() : FStringView("<invalid>");
 			joined += '\n';
 		}
-		answers.push_back(std::hash<std::string_view> {}(std::string_view(joined.GetData(), joined.Len())));
+		answers.push_back(joined.View().GetHash());
 	}
 	return answers;
 }
