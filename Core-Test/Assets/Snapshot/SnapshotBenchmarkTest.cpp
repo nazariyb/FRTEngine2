@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "../Query/QueryBenchmarkGenerator.h"
+#include "Jobs/WorkerPool.h"
 #include "Platform/Platform.h"
 #include "Platform/Timestamp.h"
 #include "SnapshotTestUtils.h"
@@ -131,14 +132,16 @@ void MeasureSnapshot (const std::filesystem::path& Dir, uint32 Assets, uint32 Ro
 	std::sort(appends.begin(), appends.end());
 	budget.Check("JournalAppendMs", appends[appends.size() / 2u], Budgets.Append.Spec, Budgets.Append.Judged, "ms", "(median of 101 one-edit commits)");
 
-	// The load: snapshot + journal into a fresh store, best of three.
+	// The load: snapshot + journal into a fresh store, best of three, on the engine's worker count (as at start-up,
+	// where the load runs on a worker and splits its work over the pool; RegistryParallel.h).
+	jobs::CWorkerPool pool;
 	SSnapshotLoadResult best;
 	best.TotalMs = 1e30;
 	for (uint32 round = 0u; round < 3u; ++round)
 	{
 		CRegistryStore loaded;
 		const SSnapshotSource sources[] = { SSnapshotSource { path, projectId } };
-		SSnapshotLoadResult result = LoadSnapshots(loaded, sources);
+		SSnapshotLoadResult result = LoadSnapshots(loaded, sources, {}, &pool);
 		ASSERT_EQ(result.Files[0].State, ESnapshotFileState::Loaded) << result.Files[0].Message.CStr();
 		ASSERT_EQ(result.Files[0].JournalCommits, 101u);
 		ASSERT_EQ(loaded.Live().GetRecordCount(), store.Live().GetRecordCount());
@@ -154,6 +157,16 @@ void MeasureSnapshot (const std::filesystem::path& Dir, uint32 Assets, uint32 Ro
 	std::printf("[snapshot] load: read %.2f ms, decode %.2f ms, adopt %.2f ms (%s), journal replay %.2f ms\n", best.ReadMs, best.DecodeMs,
 		best.AdoptMs, best.bAdoptedInBulk ? "bulk" : "replayed", best.ReplayMs);
 	budget.Check("SnapshotLoadMs", best.TotalMs, Budgets.Load.Spec, Budgets.Load.Judged, "ms", "(read + checksum + decode + adopt + replay)");
+	{
+		double oneThreadMs = 1e30;
+		for (uint32 round = 0u; round < 3u; ++round)
+		{
+			CRegistryStore loaded;
+			const SSnapshotSource sources[] = { SSnapshotSource { path, projectId } };
+			oneThreadMs = (std::min)(oneThreadMs, LoadSnapshots(loaded, sources).TotalMs);
+		}
+		budget.Check("SnapshotLoadOneThreadMs", oneThreadMs, -1.0, -1.0, "ms", FString::Format("(the same load without a pool; {} workers above)", pool.GetThreadCount()).CStr());
+	}
 
 	// Restart after a full write, on the owner thread (§5.3: writing never stalls it): 101 commits appended, the
 	// view held all but the last 5. A journal file of its own, so the snapshot's stays as the load read it. A

@@ -9,8 +9,10 @@
 #include <algorithm>
 #include <memory>
 
+#include "../Query/QueryBenchmarkGenerator.h"
 #include "Assets/AssetDiagnosticCodes.h"
 #include "Assets/Registry/RegistryTables.h"
+#include "Jobs/WorkerPool.h"
 #include "RegistryTestFixture.h"
 
 using namespace frt;
@@ -1625,6 +1627,56 @@ TEST(RegistryStoreTest, AFreshStoreAdoptsAnImageInBulkWithTheReplaysResult)
 	ExpectSameAnswers(bulk.Live(), original.Live());
 	bulk.CompactTables();
 	ExpectSameAnswers(bulk.Live(), original.Live());
+}
+
+TEST(RegistryStoreTest, ABulkAdoptionOnAPoolBuildsTheStoreOneThreadBuilds)
+{
+	// The bulk path rebuilds the file order, the FILES indices, the stems, the CSR, the record indices, the
+	// target keys and (in chunks of target pages) the targets' resolution on the pool at once: the store is the
+	// one a single thread builds. 12k generated assets give several chunks of each.
+	CRegistryStore original;
+	query_bench::SGeneratorSpec spec;
+	spec.Assets = 12000u;
+	query_bench::Generate(original, spec);
+	jobs::SWorkerPoolDesc desc;
+	desc.ThreadCount = 4u;
+	desc.Name = "Adopt Pool Test";
+	jobs::CWorkerPool pool(desc);
+	CRegistryStore alone;
+	alone.AdoptImage(original.Live().ExportImage({}), 3u);
+	CRegistryStore pooled;
+	pooled.AdoptImage(original.Live().ExportImage({}), 3u, &pool);
+	EXPECT_FALSE(pooled.GetLastCommitStats().bReplayedImage);
+	FString a;
+	FString b;
+	alone.Live().DumpText(a);
+	pooled.Live().DumpText(b);
+	EXPECT_EQ(a, b);
+	const SRegistryTables& tablesA = GetTables(alone.Live());
+	const SRegistryTables& tablesB = GetTables(pooled.Live());
+	ASSERT_EQ(tablesA.Graph.Targets.Size(), tablesB.Graph.Targets.Size());
+	EXPECT_GT(tablesA.Graph.Targets.Size(), 2u * RegistryPageRows);
+	for (uint32 target = 0u; target < tablesA.Graph.Targets.Size(); ++target)
+	{
+		const STargetRow& x = tablesA.Graph.Targets[target];
+		const STargetRow& y = tablesB.Graph.Targets[target];
+		ASSERT_TRUE(x.State == y.State && x.Resolved == y.Resolved && x.TargetSub == y.TargetSub && x.bSpellingDiffers == y.bSpellingDiffers)
+			<< target;
+	}
+	for (uint32 file = 0u; file < tablesA.Files.PathRank.Size(); ++file)
+	{
+		ASSERT_EQ(tablesA.Files.PathRank[file], tablesB.Files.PathRank[file]) << file;
+	}
+	for (uint32 row = 0u; row < tablesA.Assets.Name.Size(); ++row)
+	{
+		ASSERT_EQ(tablesA.Names.Get(tablesA.Assets.Name[row]), tablesB.Names.Get(tablesB.Assets.Name[row])) << row;
+	}
+	std::vector<SRecordId> x;
+	std::vector<SRecordId> y;
+	EXPECT_EQ(alone.Live().RunText("is:broken-ref", x), pooled.Live().RunText("is:broken-ref", y));
+	EXPECT_EQ(x, y);
+	EXPECT_EQ(alone.Live().RunText("type:Texture order:Width desc limit:50", x), pooled.Live().RunText("type:Texture order:Width desc limit:50", y));
+	EXPECT_EQ(x, y);
 }
 
 TEST(RegistryStoreTest, AnImageTheBulkPathDoesNotTakeIsReplayedAndReported)

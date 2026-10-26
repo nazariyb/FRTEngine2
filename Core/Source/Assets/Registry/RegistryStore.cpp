@@ -8,6 +8,7 @@
 #include "Assets/AssetDiagnosticCodes.h"
 #include "Assets/AssetTypes.h"
 #include "Assets/Pipeline/ImporterTable.h"
+#include "Assets/Registry/RegistryParallel.h"
 #include "Containers/StringMap.h"
 #include "Log/Log.h"
 #include "Platform/Thread.h"
@@ -1574,6 +1575,36 @@ private:
 	static constexpr uint64 RankLimit = 0xFFFFFFFFull;   // ranks lie strictly between 0 and RankLimit
 
 	// Ranks FileOrder afresh, evenly spaced over the first two thirds of the range (later files sort last often).
+	// Sorts Order (FILES rows) by CompareFileOrder: a list of a few sorted runs (an image merged from several
+	// snapshot files, in whatever order they came) is merged run by run, in O(rows) comparisons a run; anything
+	// else is sorted.
+	void OrderFiles (std::vector<uint32>& Order) const
+	{
+		const auto less = [&] (uint32 A, uint32 B) { return CompareFileOrder(T, A, B) < 0; };
+		std::vector<size_t> runs;   // where each run after the first begins
+		for (size_t i = 1u; i < Order.size(); ++i)
+		{
+			if (less(Order[i], Order[i - 1u]))
+			{
+				runs.push_back(i);
+			}
+		}
+		if (runs.empty())
+		{
+			return;
+		}
+		if (runs.size() > 15u)
+		{
+			std::sort(Order.begin(), Order.end(), less);
+			return;
+		}
+		runs.push_back(Order.size());
+		for (size_t r = 0u; r + 1u < runs.size(); ++r)
+		{
+			std::inplace_merge(Order.begin(), Order.begin() + static_cast<ptrdiff_t>(runs[r]), Order.begin() + static_cast<ptrdiff_t>(runs[r + 1u]), less);
+		}
+	}
+
 	void RenumberFiles ()
 	{
 		const std::vector<uint32>& order = W.FileOrder;
@@ -1972,10 +2003,17 @@ public:
 	 * a repeated SubId, an edge from an undeclared sub-entry, two records or two rows for one file - makes it return
 	 * false with only this empty store written (the image unchanged): the caller empties the store and replays the
 	 * image, which reports what it skips.
+	 *
+	 * Pool (may be null): what does not depend on each other runs at once (RunTasks) - the file order, the FILES
+	 * indices and the stems; the CSR, the record indices and the target keys; the targets' resolution in chunks.
+	 * Each task writes tables no other task of its group touches, so the store is the one a single thread builds.
+	 * The records themselves are written by one thread: they append to shared pools (PATHS, targets, labels,
+	 * companions, tag lists) in record order.
 	 */
-	bool AdoptIntoFreshStore (SRegistryImage& Image)
+	bool AdoptIntoFreshStore (SRegistryImage& Image, jobs::CWorkerPool* Pool)
 	{
 		bBulk = true;
+		AdoptPool = Pool;
 		const auto nameAt = [&] (uint32 Index) { return Index < Image.Names.size() ? Image.Names[Index].View() : FStringView(); };
 		const auto textAt = [&] (uint32 Index) { return Index < Image.Strings.size() ? Image.Strings[Index].View() : FStringView(); };
 
@@ -2070,39 +2108,53 @@ public:
 			byPath.emplace_back(file.MountRuleHash, fileRows[i]);
 			byPortablePath.emplace_back(file.PortableHash, fileRows[i]);
 		}
-		// The file order: an image written from a store lists its files in it (ExportImage), so checking each
-		// neighbour is all it takes; any other image is sorted. Neighbours of one spelling are two rows of one
-		// path, which the replay makes one.
+		// Then, at once (nothing here writes PATHS or a FILES column another task reads):
+		//	- the file order. An image written from a store lists its files in it (ExportImage), so checking each
+		//	  neighbour is all it takes; an image merged from several files (ReadSnapshots appends each file's
+		//	  files after the previous one's) is a few sorted runs, merged (OrderFiles). Neighbours of one spelling
+		//	  are two rows of one path, which the replay makes one;
+		//	- the two FILES path indices;
+		//	- the records' stems ($Name), in chunks; a record whose file index is bad stops below.
+		bool bDistinctPaths = true;
+		std::vector<FStringView> stems(recordCount);
 		{
-			W.FileOrder = fileRows;
-			const auto less = [&] (uint32 A, uint32 B) { return CompareFileOrder(T, A, B) < 0; };
-			if (!std::is_sorted(W.FileOrder.begin(), W.FileOrder.end(), less))
+			const auto orderFiles = [&]
 			{
-				std::sort(W.FileOrder.begin(), W.FileOrder.end(), less);
-			}
-			for (size_t i = 1u; i < W.FileOrder.size(); ++i)
-			{
-				if (T.Paths.Get(T.Files.Path[W.FileOrder[i - 1u]]) == T.Paths.Get(T.Files.Path[W.FileOrder[i]]))
+				W.FileOrder = fileRows;
+				OrderFiles(W.FileOrder);
+				for (size_t i = 1u; i < W.FileOrder.size(); ++i)
 				{
-					return false;
+					if (T.Paths.Get(T.Files.Path[W.FileOrder[i - 1u]]) == T.Paths.Get(T.Files.Path[W.FileOrder[i]]))
+					{
+						bDistinctPaths = false;
+						return;
+					}
 				}
-			}
-			RenumberFiles();
-			NewFiles.clear();
-		}
-		T.Indices.FilesByPath.InsertBulk(byPath, Epoch);
-		T.Indices.FilesByPortablePath.InsertBulk(byPortablePath, Epoch);
-		// The records' stems ($Name), interned at once (InternBulk); a record whose file index is bad stops below.
-		std::vector<uint32> stemIds;
-		{
-			std::vector<FStringView> stems(recordCount);
-			for (uint32 r = 0u; r < recordCount; ++r)
+				RenumberFiles();
+				NewFiles.clear();
+			};
+			const auto indexByPath = [&] { T.Indices.FilesByPath.InsertBulk(byPath, Epoch); };
+			const auto indexByPortablePath = [&] { T.Indices.FilesByPortablePath.InsertBulk(byPortablePath, Epoch); };
+			const auto findStems = [&]
 			{
-				const uint32 file = Image.Records[r].File;
-				stems[r] = file < fileCount ? GetRecordStem(GetMountPathLeaf(T.Paths.Get(T.Files.Path[fileRows[file]]))) : FStringView();
-			}
-			T.Names.InternBulk(stems, stemIds, Epoch);
+				const std::vector<SChunkRange> chunks = SplitIntoChunks(Pool, recordCount, 4096u);
+				RunChunks(Pool, chunks, [&] (uint32, uint32 Begin, uint32 End)
+				{
+					for (uint32 r = Begin; r < End; ++r)
+					{
+						const uint32 file = Image.Records[r].File;
+						stems[r] = file < fileCount ? GetRecordStem(GetMountPathLeaf(T.Paths.Get(T.Files.Path[fileRows[file]]))) : FStringView();
+					}
+				});
+			};
+			const TFunctionRef<void ()> tasks[] = { findStems, orderFiles, indexByPath, indexByPortablePath };
+			RunTasks(Pool, tasks);
 		}
+		if (!bDistinctPaths)
+		{
+			return false;
+		}
+		std::vector<uint32> stemIds;
 		std::vector<std::pair<uint64, uint32>> recordsByPortablePath;
 		std::vector<std::pair<uint64, uint32>> recordsByGuid;
 		std::vector<std::pair<uint64, uint32>> recordsById64;
@@ -2153,14 +2205,21 @@ public:
 			{
 				++rowsPerType[typeIdOf(sub.Type)];
 			}
-			GrowTypeTables(rowsPerType);
+			// The stems interned (InternBulk: NAMES only) while the tables grow (no NAMES).
+			const auto internStems = [&] { T.Names.InternBulk(stems, stemIds, Epoch); };
+			const auto growTables = [&]
+			{
+				GrowTypeTables(rowsPerType);
+				GrowAssetRows(recordCount);
+				GrowSubEntryRows(static_cast<uint32>(Image.SubEntries.size()));
+			};
+			const TFunctionRef<void ()> tasks[] = { growTables, internStems };
+			RunTasks(Pool, tasks);
 		}
 
 		// Records, their sub-entries, tags, edges and companions.
 		SAssetsTable& assets = T.Assets;
 		SSubEntryTable& subs = T.SubEntries;
-		GrowAssetRows(recordCount);
-		GrowSubEntryRows(static_cast<uint32>(Image.SubEntries.size()));
 		std::vector<uint8> hasRecord(fileCount, 0u);
 		std::vector<uint16> importerIds(Image.ImporterNames.size(), InvalidImporter);
 		std::vector<uint32> pathTargets(Image.Strings.size(), InvalidRow);       // image string -> its path target
@@ -2368,12 +2427,20 @@ public:
 				assets.Companions.Set(row, SPoolRange { T.Companions.Append(companions, Epoch), static_cast<uint32>(companions.size()) }, Epoch);
 			}
 		}
-		Store.InstallGraphTables(edges, edgeRanges);
-		T.Indices.RecordsByPortablePath.InsertBulk(recordsByPortablePath, Epoch);
-		T.Indices.RecordsByGuid.InsertBulk(recordsByGuid, Epoch);
-		T.Indices.RecordsById64.InsertBulk(recordsById64, Epoch);
-		W.PathTargetCandidates.InsertBulk(TargetCandidates, WriterEpoch);
-		if (!ListPathTargets())
+		// The CSR, the record indices and the targets' keys, at once (each writes its own tables; all read the
+		// records and targets written above).
+		bool bDistinctTargets = true;
+		{
+			const auto graph = [&] { Store.InstallGraphTables(edges, edgeRanges); };
+			const auto byId64 = [&] { T.Indices.RecordsById64.InsertBulk(recordsById64, Epoch); };
+			const auto byRecordPath = [&] { T.Indices.RecordsByPortablePath.InsertBulk(recordsByPortablePath, Epoch); };
+			const auto byGuid = [&] { T.Indices.RecordsByGuid.InsertBulk(recordsByGuid, Epoch); };
+			const auto targetKeys = [&] { bDistinctTargets = ListPathTargets(); };
+			const auto candidates = [&] { W.PathTargetCandidates.InsertBulk(TargetCandidates, WriterEpoch); };
+			const TFunctionRef<void ()> tasks[] = { graph, byId64, byRecordPath, byGuid, targetKeys, candidates };
+			RunTasks(Pool, tasks);
+		}
+		if (!bDistinctTargets)
 		{
 			return false;
 		}
@@ -2733,24 +2800,40 @@ private:
 	// intervals.
 	void FinishAdoption ()
 	{
+		// Every target resolved, in chunks of whole pages of the targets column (ResolveTarget only reads; each
+		// chunk writes its own rows), the chunks' lists joined in target order.
 		const uint32 targetRows = T.Graph.Targets.Size();
+		const std::vector<SChunkRange> chunks = SplitIntoChunks(AdoptPool, targetRows, RegistryPageRows, RegistryPageRows);
+		std::vector<std::vector<uint32>> chunkSources(chunks.size());
+		std::vector<std::vector<std::pair<uint64, uint32>>> chunkResolved(chunks.size());
+		RunChunks(AdoptPool, chunks, [&] (uint32 Chunk, uint32 Begin, uint32 End)
+		{
+			std::vector<uint32>& sources = chunkSources[Chunk];
+			std::vector<std::pair<uint64, uint32>>& byResolved = chunkResolved[Chunk];
+			byResolved.reserve(End - Begin);
+			for (uint32 target = Begin; target < End; ++target)
+			{
+				const STargetRow current = T.Graph.Targets[target];
+				const uint64 portable = target < TargetPortableHashes.size() ? TargetPortableHashes[target] : 0u;
+				const STargetRow resolved = current.Kind == ETargetKind::Path && portable != 0u ? ResolveTarget(current, portable) : ResolveTarget(current);
+				if (resolved.Resolved != InvalidRow)
+				{
+					byResolved.emplace_back(MixRegistryKey(resolved.Resolved), target);
+				}
+				T.Graph.Targets.Set(target, resolved, Epoch);
+				if (resolved.State == ETargetState::Ambiguous || (resolved.State == ETargetState::Resolved && resolved.bSpellingDiffers))
+				{
+					ForEachLiveReverseEdge(T, target, [&] (const SReverseEdge& Entry) { sources.push_back(Entry.Source); });
+				}
+			}
+		});
 		std::vector<uint32> sources;
 		std::vector<std::pair<uint64, uint32>> byResolved;
 		byResolved.reserve(targetRows);
-		for (uint32 target = 0u; target < targetRows; ++target)
+		for (uint32 c = 0u; c < chunks.size(); ++c)
 		{
-			const STargetRow current = T.Graph.Targets[target];
-			const uint64 portable = target < TargetPortableHashes.size() ? TargetPortableHashes[target] : 0u;
-			const STargetRow resolved = current.Kind == ETargetKind::Path && portable != 0u ? ResolveTarget(current, portable) : ResolveTarget(current);
-			if (resolved.Resolved != InvalidRow)
-			{
-				byResolved.emplace_back(MixRegistryKey(resolved.Resolved), target);
-			}
-			T.Graph.Targets.Set(target, resolved, Epoch);
-			if (resolved.State == ETargetState::Ambiguous || (resolved.State == ETargetState::Resolved && resolved.bSpellingDiffers))
-			{
-				ForEachLiveReverseEdge(T, target, [&] (const SReverseEdge& Entry) { sources.push_back(Entry.Source); });
-			}
+			sources.insert(sources.end(), chunkSources[c].begin(), chunkSources[c].end());
+			byResolved.insert(byResolved.end(), chunkResolved[c].begin(), chunkResolved[c].end());
 		}
 		T.Graph.TargetsByResolved.InsertBulk(byResolved, Epoch);
 		std::sort(sources.begin(), sources.end());
@@ -2789,6 +2872,7 @@ private:
 	bool bFilesRemoved = false;                      // this commit removed a FILES row
 	std::vector<std::pair<uint64, uint32>> SubOrder; // RankSubEntries' scratch
 	bool bBulk = false;                              // AdoptIntoFreshStore: targets resolve at the end, all at once
+	jobs::CWorkerPool* AdoptPool = nullptr;          // AdoptIntoFreshStore's pool (may be null)
 	std::vector<uint32> TypeCursor;                  // per type: the next row GrowTypeTables made
 	std::vector<uint64> TargetPortableHashes;        // per target row: HashPortable of its whole text (bulk)
 	std::vector<std::pair<uint64, uint32>> TargetCandidates;   // bulk: PathTargetCandidates' entries, inserted at once
@@ -3206,7 +3290,7 @@ SRegistryMemoryStats CRegistryStore::GetMemoryStats () const
 	return stats;
 }
 
-void CRegistryStore::AdoptImage (SRegistryImage&& Image, uint64 Revision)
+void CRegistryStore::AdoptImage (SRegistryImage&& Image, uint64 Revision, jobs::CWorkerPool* Pool)
 {
 	CheckOwnerThread();
 	const uint64 start = platform::ReadTimestamp();
@@ -3215,7 +3299,7 @@ void CRegistryStore::AdoptImage (SRegistryImage&& Image, uint64 Revision)
 		bool bAdopted = false;
 		{
 			CWriter writer(*this, Revision);
-			bAdopted = writer.AdoptIntoFreshStore(Image);
+			bAdopted = writer.AdoptIntoFreshStore(Image, Pool);
 		}
 		SRegistryTables& tables = LiveView.Tables;
 		if (bAdopted)

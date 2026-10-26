@@ -615,3 +615,99 @@ TEST_F(SnapshotTest, TheProjectIdIsCreatedOnceAndReadBack)
 	ASSERT_TRUE(replaced.has_value());
 	EXPECT_NE(replaced, created);
 }
+
+// ---------------- Loading on a pool ----------------
+
+namespace
+{
+void ExpectSameReport (const SSnapshotFileReport& Expected, const SSnapshotFileReport& Actual)
+{
+	EXPECT_EQ(Expected.State, Actual.State);
+	EXPECT_EQ(Expected.Message, Actual.Message);
+	EXPECT_EQ(Expected.Mounts, Actual.Mounts);
+	EXPECT_EQ(Expected.SkippedMounts, Actual.SkippedMounts);
+	EXPECT_EQ(Expected.DroppedSections, Actual.DroppedSections);
+	EXPECT_EQ(Expected.DroppedTypeTables, Actual.DroppedTypeTables);
+	EXPECT_EQ(Expected.Records, Actual.Records);
+	EXPECT_EQ(Expected.StaleRecords, Actual.StaleRecords);
+	EXPECT_EQ(Expected.bRuleFilesDropped, Actual.bRuleFilesDropped);
+	EXPECT_EQ(Expected.JournalCommits, Actual.JournalCommits);
+}
+}
+
+TEST_F(SnapshotTest, ALoadOnAPoolGivesTheStoreAndReportsOfALoadOnOneThread)
+{
+	// ReadSnapshots decodes the files, their checksums, independent sections and type tables at once, and the
+	// bulk adoption rebuilds independent tables and indices at once (RegistryParallel.h): the store, its dump and
+	// every report are those of a load on one thread, intact or damaged, in either file order.
+	CRegistryStore original;
+	original.Commit(MakeContent(true));
+	const std::filesystem::path engine = Dir / "Engine.snapshot";
+	const std::filesystem::path project = Dir / "AssetRegistry.snapshot";
+	jobs::SWorkerPoolDesc desc;
+	desc.ThreadCount = 4u;
+	desc.Name = "Snapshot Pool Test";
+	jobs::CWorkerPool pool(desc);
+	const auto compare = [&] (const char* Case)
+	{
+		SCOPED_TRACE(Case);
+		for (const bool bEngineFirst : { true, false })
+		{
+			const SSnapshotSource engineSource { engine, SGuid {}, true };
+			const SSnapshotSource projectSource { project, SGuid {}, true };
+			const SSnapshotSource sources[] = { bEngineFirst ? engineSource : projectSource, bEngineFirst ? projectSource : engineSource };
+			CRegistryStore alone;
+			CRegistryStore pooled;
+			const SSnapshotLoadResult expected = LoadSnapshots(alone, sources);
+			const SSnapshotLoadResult actual = LoadSnapshots(pooled, sources, {}, &pool);
+			ASSERT_EQ(expected.Files.size(), actual.Files.size());
+			for (size_t i = 0u; i < expected.Files.size(); ++i)
+			{
+				ExpectSameReport(expected.Files[i], actual.Files[i]);
+			}
+			EXPECT_EQ(expected.bAdoptedInBulk, actual.bAdoptedInBulk);
+			EXPECT_TRUE(actual.bAdoptedInBulk || FStringView(Case) != "intact");   // the project's files first: two sorted runs, merged
+			ExpectSameContent(alone.Live(), pooled.Live());
+		}
+	};
+	ASSERT_TRUE(WriteSnapshot(original.Live(), EngineMounts, engine, SGuid {}, 0u));
+	ASSERT_TRUE(WriteSnapshot(original.Live(), ProjectMounts, project, SGuid {}, 0u));
+	compare("intact");
+
+	// A damaged type table and a damaged section: the same tables and sections are dropped.
+	std::vector<uint8> bytes = ReadBytes(project);
+	const size_t texture = FindTypeTable(bytes, "frt.Texture");
+	ASSERT_GT(texture, 0u);
+	bytes[texture + 8u + 1u + 8u + 2u] ^= 0x33u;
+	WriteBytes(project, bytes);
+	DamageSection(engine, ESnapshotSection::Labels);
+	compare("damaged");
+	DamageSection(project, ESnapshotSection::Deps);
+	compare("damaged twice");
+	DamageSection(engine, ESnapshotSection::Names);
+	compare("a file not used");
+}
+
+TEST_F(SnapshotRoundTripTest, ALoadOnAPoolsOnlyWorkerUsesThatPoolWithoutWaitingForItself)
+{
+	// The start-up load runs on a worker of the pool it splits its work over. With one worker, the helpers it
+	// submits cannot start while it runs: it runs every task itself and never waits for them.
+	jobs::SWorkerPoolDesc desc;
+	desc.ThreadCount = 1u;
+	desc.Name = "Snapshot Test";
+	jobs::CWorkerPool pool(desc);
+	CRegistryStore loaded;
+	bool bDone = false;
+	SSnapshotLoadResult result;
+	pool.Submit(jobs::EWorkPriority::Normal, 0u, [&]
+	{
+		const SSnapshotSource sources[] = { SSnapshotSource { Path, ProjectId } };
+		result = LoadSnapshots(loaded, sources, {}, &pool);
+		loaded.ReleaseOwner();
+	}, [&] { bDone = true; });
+	ASSERT_TRUE(pool.PumpUntil([&] { return bDone; }, 60.0));
+	EXPECT_TRUE(result.AnyLoaded());
+	EXPECT_TRUE(result.bAdoptedInBulk);
+	ExpectSameContent(Original.Live(), loaded.Live());
+	ASSERT_TRUE(pool.PumpUntil([&] { return pool.IsIdle(); }, 60.0));
+}

@@ -71,6 +71,11 @@
  * ProjectId: random, generated once per owner root into <root>/Local/Assets/ProjectId (never in the
  * .frtproject), so a snapshot copied from another project or engine checkout is not taken for this one's.
  */
+namespace frt::jobs
+{
+class CWorkerPool;
+}
+
 namespace frt::assets
 {
 class CRegistryStore;
@@ -201,8 +206,8 @@ struct SLoadedSnapshots
 	std::vector<SRegistryDelta> JournalDeltas;
 	uint64 Revision = 0u;
 	std::vector<SSnapshotFileReport> Files;
-	double ReadMs = 0.0;         // file reads
-	double DecodeMs = 0.0;       // checksums, sections, merge, journals decoded
+	double ReadMs = 0.0;         // file reads (on a pool, where files are read at once: the longest one)
+	double DecodeMs = 0.0;       // the rest: checksums, sections, merge, journals decoded
 };
 
 struct SSnapshotLoadResult
@@ -233,17 +238,21 @@ struct SSnapshotLoadResult
  * Reads, checks and decodes the snapshot files and their journals into one image. Mounts: this process's
  * mounts (CMountTable's names, ids and case rules); each file's mounts are remapped to them by name. Empty:
  * the files' own ids are kept (tools and tests; a mount two files share is taken from the first). Pure: any
- * thread, never the store.
+ * thread, never the store. Pool (may be null): the files are read and decoded at once, and each file's
+ * checksums, independent sections and type tables too (RegistryParallel.h: the calling thread takes part, so
+ * it may be one of Pool's workers); the result is the same either way.
  */
-[[nodiscard]] FRT_CORE_API SLoadedSnapshots ReadSnapshots (std::span<const SSnapshotSource> Sources, std::span<const SMountUpsert> Mounts = {});
+[[nodiscard]] FRT_CORE_API SLoadedSnapshots ReadSnapshots (std::span<const SSnapshotSource> Sources, std::span<const SMountUpsert> Mounts = {},
+	jobs::CWorkerPool* Pool = nullptr);
 
 // Adopts the image (when any file was loaded) and commits the journals' deltas in order. The store's owner
 // thread; meant for an empty store (a store that holds records gets the image replayed, which is slower).
-FRT_CORE_API SSnapshotLoadResult AdoptSnapshots (CRegistryStore& Store, SLoadedSnapshots&& Loaded);
+// Pool: CRegistryStore::AdoptImage's.
+FRT_CORE_API SSnapshotLoadResult AdoptSnapshots (CRegistryStore& Store, SLoadedSnapshots&& Loaded, jobs::CWorkerPool* Pool = nullptr);
 
 // ReadSnapshots, then AdoptSnapshots, timed as one load (§5.11 "snapshot + journal load, all indices").
 FRT_CORE_API SSnapshotLoadResult LoadSnapshots (CRegistryStore& Store, std::span<const SSnapshotSource> Sources,
-	std::span<const SMountUpsert> Mounts = {});
+	std::span<const SMountUpsert> Mounts = {}, jobs::CWorkerPool* Pool = nullptr);
 }
 
 

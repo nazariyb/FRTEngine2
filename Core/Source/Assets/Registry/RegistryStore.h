@@ -45,6 +45,11 @@
  *
  * No user callback runs inside Commit; the change ring is read afterwards (ForEachChangeSince).
  */
+namespace frt::jobs
+{
+class CWorkerPool;
+}
+
 namespace frt::assets
 {
 // What happened to an asset record (its sub-entries, tags and edges are part of it).
@@ -113,8 +118,13 @@ public:
 	 * readers refresh everything (ForEachChangeSince returns false for older revisions). A type name the
 	 * table does not know leaves its records frt.Unknown with Schemaless | StaleTags and no tags. Labels
 	 * without RuleLabelBit (authored, M4) are not kept yet. Owner thread.
+	 *
+	 * Pool: the bulk path rebuilds independent tables and indices on it at once (RegistryParallel.h: the
+	 * calling thread takes part and never waits for a busy worker, so the call may run on one of Pool's own
+	 * workers, the start-up load's case); null runs everything on the calling thread. Either gives the same
+	 * store.
 	 */
-	void AdoptImage (SRegistryImage&& Image, uint64 Revision);
+	void AdoptImage (SRegistryImage&& Image, uint64 Revision, jobs::CWorkerPool* Pool = nullptr);
 
 	/**
 	 * Compaction (§5.2 "Mutation strategy"). Edits leave garbage behind: masked and superseded edges, dead

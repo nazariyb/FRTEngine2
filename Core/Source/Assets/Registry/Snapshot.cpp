@@ -8,6 +8,7 @@
 #include "Assets/MountPaths.h"
 #include "Assets/Registry/Journal.h"
 #include "Assets/Registry/RegistryBinary.h"
+#include "Assets/Registry/RegistryParallel.h"
 #include "Assets/Registry/RegistryStore.h"
 #include "Assets/Registry/RegistryView.h"
 #include "Platform/Platform.h"
@@ -415,6 +416,16 @@ struct SRecordCounts
 	uint32 Companions = 0u;
 };
 
+// A type table decoded on its own (CSnapshotDecoder::DecodeTypeTable), before it goes into the image.
+struct STypeTableResult
+{
+	enum class EState : uint8 { Malformed, BadChecksum, OtherSchema, Decoded };
+	EState State = EState::Malformed;
+	std::vector<FString> KeyNames;                        // as read, up to a failure
+	std::vector<SImageTag> Tags;                          // Key: the key's index in the table
+	std::vector<std::pair<uint32, SPoolRange>> Owners;    // per row of this type: owner (index << 1 | sub), its range in Tags
+};
+
 /**
  * One snapshot file decoded into an image of its own (indices local to it). Applies §5.3's per-section rules
  * (the header comment of Snapshot.h): drops what a bad section takes with it and flags what must be analyzed
@@ -423,9 +434,10 @@ struct SRecordCounts
 class CSnapshotDecoder
 {
 public:
-	CSnapshotDecoder (std::span<const uint8> InBytes, SSnapshotFileReport& InReport)
+	CSnapshotDecoder (std::span<const uint8> InBytes, SSnapshotFileReport& InReport, jobs::CWorkerPool* InPool)
 		: Bytes(InBytes)
 		, Report(InReport)
+		, Pool(InPool)
 	{}
 
 	// The ProjectId the header names (after Decode).
@@ -439,15 +451,29 @@ public:
 			return false;
 		}
 		Image = &Out;
-		for (const ESnapshotSection required : { ESnapshotSection::Mounts, ESnapshotSection::Names, ESnapshotSection::Folders, ESnapshotSection::Files })
+		// STRINGS and TYPES depend on no other section: parsed while the required ones are.
+		std::optional<ESnapshotSection> failed;
+		const auto required = [&]
 		{
-			if (!DecodeRequired(required))
+			for (const ESnapshotSection section : { ESnapshotSection::Mounts, ESnapshotSection::Names, ESnapshotSection::Folders, ESnapshotSection::Files })
 			{
-				Report.State = ESnapshotFileState::Rejected;
-				Report.Message = FString::Format("its {} section is damaged or of another layout; the file was not used", enum_::ToString(required));
-				Report.DroppedSections.push_back(required);
-				return false;
+				if (!DecodeRequired(section))
+				{
+					failed = section;
+					return;
+				}
 			}
+		};
+		const auto strings = [&] { bStringsParsed = Parse(ESnapshotSection::Strings, [&] (CByteReader& Reader) { return ReadTextTable(Reader, Out.Strings); }); };
+		const auto types = [&] { bTypesParsed = Parse(ESnapshotSection::Types, [&] (CByteReader& Reader) { return ReadTextTable(Reader, Out.TypeNames); }); };
+		const TFunctionRef<void ()> tasks[] = { required, strings, types };
+		RunTasks(Pool, tasks);
+		if (failed)
+		{
+			Report.State = ESnapshotFileState::Rejected;
+			Report.Message = FString::Format("its {} section is damaged or of another layout; the file was not used", enum_::ToString(*failed));
+			Report.DroppedSections.push_back(*failed);
+			return false;
 		}
 		DecodeOptional();
 		return true;
@@ -456,10 +482,13 @@ public:
 private:
 	std::span<const uint8> Bytes;
 	SSnapshotFileReport& Report;
+	jobs::CWorkerPool* Pool = nullptr;
 	SRegistryImage* Image = nullptr;
 	std::array<SSectionSpan, SectionOrder.size()> Sections {};
 	std::vector<SRecordCounts> Counts;
 	SGuid ProjectId;
+	bool bStringsParsed = false;            // STRINGS parsed (Decode)
+	bool bTypesParsed = false;              // TYPES parsed (Decode)
 
 	bool Reject (FString Message)
 	{
@@ -504,6 +533,7 @@ private:
 		{
 			return Reject("its section table runs past the end of the file");
 		}
+		std::array<uint64, SectionOrder.size()> checksums {};
 		for (uint64 i = 0u; i < sectionCount; ++i)
 		{
 			const size_t at = SnapshotHeaderBytes + static_cast<size_t>(i) * SnapshotSectionEntryBytes;
@@ -511,7 +541,6 @@ private:
 			const uint64 layout = binary::ReadLittleEndianAt(Bytes, at + 4u, 4u);
 			const uint64 offset = binary::ReadLittleEndianAt(Bytes, at + 8u, 8u);
 			const uint64 size = binary::ReadLittleEndianAt(Bytes, at + 16u, 8u);
-			const uint64 checksum = binary::ReadLittleEndianAt(Bytes, at + 24u, 8u);
 			if (id == 0u || id > SectionOrder.size() || Sections[id - 1u].bPresent || offset > Bytes.size() || size > Bytes.size() - offset)
 			{
 				continue;   // unknown (a later build's) or out of the file: as if absent
@@ -519,8 +548,28 @@ private:
 			SSectionSpan& section = Sections[id - 1u];
 			section.bPresent = true;
 			section.Bytes = Bytes.subspan(static_cast<size_t>(offset), static_cast<size_t>(size));
-			section.bValid = layout == SectionLayoutVersion && hash::Xxh3_64(section.Bytes) == checksum;
+			section.bValid = layout == SectionLayoutVersion;
+			checksums[id - 1u] = binary::ReadLittleEndianAt(Bytes, at + 24u, 8u);
 		}
+		// The checksums, a section a task (the sections are independent; XXH3 of one is not split).
+		std::vector<uint32> listed;
+		for (uint32 slot = 0u; slot < Sections.size(); ++slot)
+		{
+			if (Sections[slot].bValid)
+			{
+				listed.push_back(slot);
+			}
+		}
+		std::sort(listed.begin(), listed.end(), [&] (uint32 A, uint32 B) { return Sections[A].Bytes.size() > Sections[B].Bytes.size(); });
+		const std::vector<SChunkRange> chunks = SplitIntoChunks(Pool, static_cast<uint32>(listed.size()), 1u);
+		RunChunks(Pool, chunks, [&] (uint32, uint32 Begin, uint32 End)
+		{
+			for (uint32 i = Begin; i < End; ++i)
+			{
+				SSectionSpan& section = Sections[listed[i]];
+				section.bValid = hash::Xxh3_64(section.Bytes) == checksums[listed[i]];
+			}
+		});
 		return true;
 	}
 
@@ -635,19 +684,23 @@ private:
 	void DecodeOptional ()
 	{
 		SRegistryImage& image = *Image;
+		const bool bStrings = bStringsParsed;
+		const bool bTypes = bTypesParsed;
 
-		const bool bStrings = Parse(ESnapshotSection::Strings, [&] (CByteReader& Reader) { return ReadTextTable(Reader, image.Strings); });
 		if (!bStrings)
 		{
 			image.Strings.clear();
 		}
-		const bool bTypes = Parse(ESnapshotSection::Types, [&] (CByteReader& Reader) { return ReadTextTable(Reader, image.TypeNames); });
 		if (!bTypes)
 		{
 			image.TypeNames.clear();
 		}
 
-		const bool bRuleFiles = Parse(ESnapshotSection::RuleFiles, [&] (CByteReader& Reader)
+		// RULEFILES and ASSETS at once, then the sections that need ASSETS' counts at once; each writes its own
+		// image vectors and only reads the sections before it.
+		bool bRuleFiles = false;
+		bool bAssets = false;
+		const auto parseRuleFiles = [&] { bRuleFiles = Parse(ESnapshotSection::RuleFiles, [&] (CByteReader& Reader)
 		{
 			uint32 count = 0u;
 			if (!ReadCount(Reader, 10u, count))
@@ -664,11 +717,11 @@ private:
 				}
 			}
 			return true;
-		});
+		}); };
 
 		// Records. Without TYPES, every type index is meaningless: they all point at an empty name, which no
 		// type has (frt.Unknown, Schemaless | StaleTags), and the records are analyzed again.
-		const bool bAssets = Parse(ESnapshotSection::Assets, [&] (CByteReader& Reader)
+		const auto parseAssets = [&] { bAssets = Parse(ESnapshotSection::Assets, [&] (CByteReader& Reader)
 		{
 			uint32 count = 0u;
 			if (!ReadTextTable(Reader, image.ImporterNames) || !ReadCount(Reader, 33u, count))
@@ -696,7 +749,11 @@ private:
 				record.Importer = importer == ~0u ? uint16(0xFFFFu) : static_cast<uint16>(importer);
 			}
 			return true;
-		});
+		}); };
+		{
+			const TFunctionRef<void ()> tasks[] = { parseAssets, parseRuleFiles };
+			RunTasks(Pool, tasks);
+		}
 		if (!bAssets)
 		{
 			image.Records.clear();
@@ -715,7 +772,11 @@ private:
 			return sum;
 		};
 
-		const bool bSubs = bAssets && Parse(ESnapshotSection::SubEntry, [&] (CByteReader& Reader)
+		bool bSubs = false;
+		bool bLabels = false;
+		bool bDeps = false;
+		bool bProblems = false;
+		const auto parseSubs = [&] { bSubs = bAssets && Parse(ESnapshotSection::SubEntry, [&] (CByteReader& Reader)
 		{
 			uint32 count = 0u;
 			if (!ReadCount(Reader, 11u, count) || count != sumOf(&SRecordCounts::SubEntries))
@@ -732,8 +793,8 @@ private:
 				}
 			}
 			return true;
-		});
-		const bool bLabels = bAssets && Parse(ESnapshotSection::Labels, [&] (CByteReader& Reader)
+		}); };
+		const auto parseLabels = [&] { bLabels = bAssets && Parse(ESnapshotSection::Labels, [&] (CByteReader& Reader)
 		{
 			uint32 count = 0u;
 			if (!ReadCount(Reader, 1u, count) || count != sumOf(&SRecordCounts::Labels))
@@ -751,8 +812,8 @@ private:
 				label = static_cast<uint32>(value >> 1u) | ((value & 1u) != 0u ? RuleLabelBit : 0u);
 			}
 			return true;
-		});
-		const bool bDeps = bAssets && bStrings && Parse(ESnapshotSection::Deps, [&] (CByteReader& Reader)
+		}); };
+		const auto parseDeps = [&] { bDeps = bAssets && bStrings && Parse(ESnapshotSection::Deps, [&] (CByteReader& Reader)
 		{
 			uint32 count = 0u;
 			if (!ReadCount(Reader, 12u, count) || count != sumOf(&SRecordCounts::Edges))
@@ -790,8 +851,8 @@ private:
 				}
 			}
 			return true;
-		});
-		const bool bProblems = bStrings && Parse(ESnapshotSection::Problems, [&] (CByteReader& Reader)
+		}); };
+		const auto parseProblems = [&] { bProblems = bStrings && Parse(ESnapshotSection::Problems, [&] (CByteReader& Reader)
 		{
 			uint32 count = 0u;
 			if (!ReadCount(Reader, 3u, count))
@@ -808,7 +869,11 @@ private:
 				}
 			}
 			return true;
-		});
+		}); };
+		{
+			const TFunctionRef<void ()> tasks[] = { parseDeps, parseSubs, parseLabels, parseProblems };
+			RunTasks(Pool, tasks);
+		}
 		if (!bSubs)
 		{
 			image.SubEntries.clear();
@@ -982,6 +1047,20 @@ private:
 			return -1;
 		};
 
+		// The framing first (one pass over the section), then the tables, a table a task: each is checked and
+		// decoded into a table of its own (STypeTableResult) against the image as the sections before left it,
+		// and the results go into the image in table order, as decoding one table after the other would.
+		struct STableJob
+		{
+			FString Name;
+			uint16 TypeIndex = 0u;
+			const SAssetTypeInfo* Info = nullptr;
+			uint64 SchemaHash = 0u;
+			uint64 Checksum = 0u;
+			std::span<const uint8> Payload;
+			STypeTableResult Result;
+		};
+		std::vector<STableJob> jobs;
 		CByteReader reader(section.Bytes);
 		uint32 tableCount = 0u;
 		if (!ReadCount(reader, 18u, tableCount))
@@ -991,56 +1070,106 @@ private:
 		}
 		for (uint32 t = 0u; t < tableCount; ++t)
 		{
-			FString name;
-			uint64 schemaHash = 0u;
-			std::span<const uint8> payload;
-			uint64 checksum = 0u;
+			STableJob job;
 			uint64 size = 0u;
-			if (!reader.ReadText(name) || !ReadU64(reader, schemaHash) || !reader.ReadVarint(size) || !ReadU64(reader, checksum)
-				|| !reader.ReadSpan(size, payload))
+			if (!reader.ReadText(job.Name) || !ReadU64(reader, job.SchemaHash) || !reader.ReadVarint(size) || !ReadU64(reader, job.Checksum)
+				|| !reader.ReadSpan(size, job.Payload))
 			{
 				Drop(ESnapshotSection::TypeTables);   // the framing is broken: the tables after this point are lost
 				break;
 			}
-			const int32 typeIndex = findTypeIndex(name);
-			const std::optional<reflect::TypeId> type = CAssetTypeRegistry::FindExact(name);
+			const int32 typeIndex = findTypeIndex(job.Name);
+			const std::optional<reflect::TypeId> type = CAssetTypeRegistry::FindExact(job.Name);
 			if (typeIndex < 0 || !type)
 			{
 				continue;   // a type this build does not know: its records are frt.Unknown anyway
 			}
-			const SAssetTypeInfo& info = CAssetTypeRegistry::Get(*type);
-			if (hash::Xxh3_64(payload) != checksum)
+			job.TypeIndex = static_cast<uint16>(typeIndex);
+			job.Info = &CAssetTypeRegistry::Get(*type);
+			jobs.push_back(std::move(job));
+		}
+		const uint32 imageNames = static_cast<uint32>(image.Names.size());
+		std::vector<uint32> bySize(jobs.size());
+		for (uint32 j = 0u; j < jobs.size(); ++j)
+		{
+			bySize[j] = j;
+		}
+		std::sort(bySize.begin(), bySize.end(), [&] (uint32 A, uint32 B) { return jobs[A].Payload.size() > jobs[B].Payload.size(); });
+		const std::vector<SChunkRange> chunks = SplitIntoChunks(Pool, static_cast<uint32>(jobs.size()), 1u);
+		RunChunks(Pool, chunks, [&] (uint32, uint32 Begin, uint32 End)
+		{
+			for (uint32 i = Begin; i < End; ++i)
 			{
-				Report.DroppedTypeTables.push_back(name);
+				STableJob& job = jobs[bySize[i]];
+				if (hash::Xxh3_64(job.Payload) != job.Checksum)
+				{
+					job.Result.State = STypeTableResult::EState::BadChecksum;
+				}
+				else if (job.SchemaHash != ComputeTagSchemaHash(*job.Info))
+				{
+					job.Result.State = STypeTableResult::EState::OtherSchema;   // this build declares other keys: gather the type again
+				}
+				else
+				{
+					DecodeTypeTable(job.Payload, *job.Info, job.TypeIndex, bStrings, imageNames, job.Result);
+				}
+			}
+		});
+		size_t tags = image.Tags.size();
+		for (const STableJob& job : jobs)
+		{
+			tags += job.Result.Tags.size();
+		}
+		image.Tags.reserve(tags);
+		for (STableJob& job : jobs)
+		{
+			STypeTableResult& result = job.Result;
+			// The key names it read go into the image's NAMES even when the rest failed.
+			const uint32 keyBase = static_cast<uint32>(image.Names.size());
+			for (FString& keyName : result.KeyNames)
+			{
+				image.Names.push_back(std::move(keyName));
+			}
+			if (result.State != STypeTableResult::EState::Decoded)
+			{
+				Report.DroppedTypeTables.push_back(job.Name);
 				continue;
 			}
-			if (schemaHash != ComputeTagSchemaHash(info))
+			const uint32 tagBase = static_cast<uint32>(image.Tags.size());
+			for (SImageTag& tag : result.Tags)
 			{
-				Report.DroppedTypeTables.push_back(name);   // this build declares other keys: gather the type again
-				continue;
+				tag.Key += keyBase;
+				image.Tags.push_back(tag);
 			}
-			if (!DecodeTypeTable(payload, info, static_cast<uint16>(typeIndex), bStrings))
+			for (const auto& [owner, range] : result.Owners)
 			{
-				Report.DroppedTypeTables.push_back(name);
-				continue;
+				const uint32 index = owner >> 1u;
+				((owner & 1u) != 0u ? image.SubEntries[index].Tags : image.Records[index].Tags) = SPoolRange { tagBase + range.Begin, range.Count };
 			}
-			taken[static_cast<uint32>(typeIndex)] = 1u;
+			taken[job.TypeIndex] = 1u;
 		}
 		// A section checksum that failed while every table passed its own: the damage is in bytes no table owns,
 		// and nothing was lost.
 		return taken;
 	}
 
-	bool DecodeTypeTable (std::span<const uint8> Payload, const SAssetTypeInfo& Info, uint16 TypeIndex, bool bStrings)
+	/**
+	 * One type table into Out, reading the image (the sections before TYPETABLES) without changing it: the key
+	 * names as read (until a failure), and when the whole table is right its tags (Key: the key's index in the
+	 * table) and the range of each row whose owner is of this type. A Name value indexes the image's own NAMES
+	 * (ImageNames: before any type table's keys were added), which is all the encoder writes.
+	 */
+	bool DecodeTypeTable (std::span<const uint8> Payload, const SAssetTypeInfo& Info, uint16 TypeIndex, bool bStrings, uint32 ImageNames,
+		STypeTableResult& Out) const
 	{
-		SRegistryImage& image = *Image;
+		const SRegistryImage& image = *Image;
+		Out.State = STypeTableResult::EState::Malformed;
 		CByteReader reader(Payload);
 		uint32 keyCount = 0u;
 		if (!ReadCount(reader, 3u, keyCount) || keyCount != Info.Keys.size())
 		{
 			return false;
 		}
-		std::vector<uint32> keyNames(keyCount);
 		std::vector<EValueForm> forms(keyCount);
 		for (uint32 k = 0u; k < keyCount; ++k)
 		{
@@ -1057,8 +1186,7 @@ private:
 				return false;   // its values index the lost STRINGS
 			}
 			forms[k] = GetValueForm(keyType);
-			keyNames[k] = static_cast<uint32>(image.Names.size());
-			image.Names.push_back(std::move(keyName));
+			Out.KeyNames.push_back(std::move(keyName));
 		}
 		// A row costs at least its owner varint and one count varint per key: that bounds the count, so a forged
 		// one cannot make the tables below many times the payload's size.
@@ -1081,7 +1209,7 @@ private:
 			ownerOk[r] = bSub ? (index < image.SubEntries.size() && image.SubEntries[index].Type == TypeIndex)
 				: (index < image.Records.size() && image.Records[index].Type == TypeIndex);
 		}
-		// Column by column into per-key value lists, then row by row into the image's tag pool (key order).
+		// Column by column into per-key value lists, then row by row into the table's tags (key order).
 		// counts: key-major, one per key and row (keyCount * rowCount, bounded above); values are added as read.
 		struct SValue { uint64 Bits = 0u; uint32 Text = ~0u; };
 		std::vector<uint32> counts(static_cast<size_t>(keyCount) * rowCount);
@@ -1117,7 +1245,7 @@ private:
 						}
 						break;
 					case EValueForm::Name:
-						if (!ReadU32Varint(reader, value.Text) || value.Text >= image.Names.size())
+						if (!ReadU32Varint(reader, value.Text) || value.Text >= ImageNames)
 						{
 							return false;
 						}
@@ -1137,11 +1265,12 @@ private:
 		{
 			return false;
 		}
-		image.Tags.reserve(image.Tags.size() + totalValues);
+		Out.Tags.reserve(totalValues);
+		Out.Owners.reserve(rowCount);
 		std::vector<size_t> cursor(keyCount, 0u);
 		for (uint32 r = 0u; r < rowCount; ++r)
 		{
-			SPoolRange range { static_cast<uint32>(image.Tags.size()), 0u };
+			SPoolRange range { static_cast<uint32>(Out.Tags.size()), 0u };
 			for (uint32 k = 0u; k < keyCount; ++k)
 			{
 				for (uint32 v = 0u; v < counts[static_cast<size_t>(k) * rowCount + r]; ++v)
@@ -1150,21 +1279,21 @@ private:
 					if (ownerOk[r] != 0u)
 					{
 						SImageTag tag;
-						tag.Key = keyNames[k];
+						tag.Key = k;
 						tag.Type = Info.Keys[k].Type;
 						tag.Bits = value.Bits;
 						tag.Text = value.Text;
-						image.Tags.push_back(tag);
+						Out.Tags.push_back(tag);
 					}
 				}
 			}
-			range.Count = static_cast<uint32>(image.Tags.size()) - range.Begin;
+			range.Count = static_cast<uint32>(Out.Tags.size()) - range.Begin;
 			if (ownerOk[r] != 0u)
 			{
-				const uint32 index = owners[r] >> 1u;
-				((owners[r] & 1u) != 0u ? image.SubEntries[index].Tags : image.Records[index].Tags) = range;
+				Out.Owners.emplace_back(owners[r], range);
 			}
 		}
+		Out.State = STypeTableResult::EState::Decoded;
 		return true;
 	}
 };
@@ -1458,42 +1587,78 @@ bool WriteSnapshot (const CRegistryView& View, std::span<const MountId> Mounts, 
 
 // ---------------- Loading ----------------
 
-SLoadedSnapshots ReadSnapshots (std::span<const SSnapshotSource> Sources, std::span<const SMountUpsert> Mounts)
+SLoadedSnapshots ReadSnapshots (std::span<const SSnapshotSource> Sources, std::span<const SMountUpsert> Mounts, jobs::CWorkerPool* Pool)
 {
 	FRT_CPU_SCOPE("Assets.Snapshot.Read");
+	const uint64 begin = platform::ReadTimestamp();
 	SLoadedSnapshots loaded;
+
+	// Every file read, decoded and its journal read at once (a file a task, each decoding its sections on the
+	// pool too); then merged in the order given, which decides which file a shared mount comes from.
+	struct SFileWork
+	{
+		SSnapshotFileReport Report;
+		SRegistryImage Image;
+		SGuid ProjectId;
+		SJournalContents Journal;
+		double ReadMs = 0.0;
+		bool bDecoded = false;
+	};
+	std::vector<SFileWork> work(Sources.size());
+	const std::vector<SChunkRange> chunks = SplitIntoChunks(Pool, static_cast<uint32>(Sources.size()), 1u);
+	RunChunks(Pool, chunks, [&] (uint32, uint32 Begin, uint32 End)
+	{
+		for (uint32 i = Begin; i < End; ++i)
+		{
+			const SSnapshotSource& source = Sources[i];
+			SFileWork& file = work[i];
+			SSnapshotFileReport& report = file.Report;
+			report.Path = source.Path;
+			std::error_code ec;
+			const uint64 start = platform::ReadTimestamp();
+			if (!std::filesystem::exists(source.Path, ec))
+			{
+				report.State = ESnapshotFileState::Missing;
+				continue;
+			}
+			FString error;
+			const std::optional<std::vector<uint8>> bytes = platform::ReadFileBytes(source.Path, &error);
+			file.ReadMs = platform::TimestampToMilliseconds(platform::ReadTimestamp() - start);
+			if (!bytes)
+			{
+				report.State = ESnapshotFileState::Unreadable;
+				report.Message = std::move(error);
+				continue;
+			}
+			report.Bytes = bytes->size();
+			CSnapshotDecoder decoder(*bytes, report, Pool);
+			if (!decoder.Decode(source.ProjectId, source.bAnyProject, file.Image))
+			{
+				continue;
+			}
+			file.bDecoded = true;
+			file.ProjectId = decoder.GetProjectId();
+			file.Journal = ReadJournal(GetJournalPath(source.Path));
+		}
+	});
+	double readMs = 0.0;
+	for (const SFileWork& file : work)
+	{
+		readMs = Pool != nullptr ? (std::max)(readMs, file.ReadMs) : readMs + file.ReadMs;   // reads overlap on a pool
+	}
+
 	std::vector<FString> takenMounts;
 	std::vector<MountId> takenIds;
-	for (const SSnapshotSource& source : Sources)
+	for (uint32 i = 0u; i < Sources.size(); ++i)
 	{
-		SSnapshotFileReport& report = loaded.Files.emplace_back();
-		report.Path = source.Path;
-		std::error_code ec;
-		uint64 start = platform::ReadTimestamp();
-		if (!std::filesystem::exists(source.Path, ec))
+		const SSnapshotSource& source = Sources[i];
+		SFileWork& file = work[i];
+		SSnapshotFileReport& report = loaded.Files.emplace_back(std::move(file.Report));
+		if (!file.bDecoded)
 		{
-			report.State = ESnapshotFileState::Missing;
 			continue;
 		}
-		FString error;
-		const std::optional<std::vector<uint8>> bytes = platform::ReadFileBytes(source.Path, &error);
-		loaded.ReadMs += platform::TimestampToMilliseconds(platform::ReadTimestamp() - start);
-		if (!bytes)
-		{
-			report.State = ESnapshotFileState::Unreadable;
-			report.Message = std::move(error);
-			continue;
-		}
-		report.Bytes = bytes->size();
-
-		start = platform::ReadTimestamp();
-		SRegistryImage image;
-		CSnapshotDecoder decoder(*bytes, report);
-		if (!decoder.Decode(source.ProjectId, source.bAnyProject, image))
-		{
-			loaded.DecodeMs += platform::TimestampToMilliseconds(platform::ReadTimestamp() - start);
-			continue;
-		}
+		SRegistryImage& image = file.Image;
 
 		// Records evaluated against other rules semantics, or another engine fallback file, than this process
 		// has: as if RULEFILES were lost, so the file's mounts re-evaluate (Snapshot.h).
@@ -1555,7 +1720,6 @@ SLoadedSnapshots ReadSnapshots (std::span<const SSnapshotSource> Sources, std::s
 		{
 			report.State = ESnapshotFileState::Rejected;
 			report.Message = "none of its mounts is loaded";
-			loaded.DecodeMs += platform::TimestampToMilliseconds(platform::ReadTimestamp() - start);
 			continue;
 		}
 		for (const SImageMount& mount : image.Mounts)
@@ -1580,7 +1744,7 @@ SLoadedSnapshots ReadSnapshots (std::span<const SSnapshotSource> Sources, std::s
 		}
 
 		// Its journal, when it continues this snapshot: the deltas for the mounts loaded from this file.
-		const SJournalContents journal = ReadJournal(GetJournalPath(source.Path));
+		const SJournalContents& journal = file.Journal;
 		report.bJournalFound = journal.bFound;
 		report.JournalBytes = journal.FileBytes;
 		if (journal.bFound)
@@ -1589,7 +1753,7 @@ SLoadedSnapshots ReadSnapshots (std::span<const SSnapshotSource> Sources, std::s
 			{
 				report.JournalMessage = journal.Message;
 			}
-			else if (journal.ProjectId != decoder.GetProjectId() || journal.JournalBase != report.JournalBase)
+			else if (journal.ProjectId != file.ProjectId || journal.JournalBase != report.JournalBase)
 			{
 				report.JournalMessage = FString::Format("it continues revision {} of project {}, not this snapshot (revision {})", journal.JournalBase,
 					journal.ProjectId.ToString(), report.JournalBase);
@@ -1623,12 +1787,13 @@ SLoadedSnapshots ReadSnapshots (std::span<const SSnapshotSource> Sources, std::s
 		}
 		loaded.Revision = (std::max)(loaded.Revision, report.JournalBase);
 		AppendImage(loaded.Image, std::move(image));
-		loaded.DecodeMs += platform::TimestampToMilliseconds(platform::ReadTimestamp() - start);
 	}
+	loaded.ReadMs = readMs;
+	loaded.DecodeMs = (std::max)(0.0, platform::TimestampToMilliseconds(platform::ReadTimestamp() - begin) - readMs);
 	return loaded;
 }
 
-SSnapshotLoadResult AdoptSnapshots (CRegistryStore& Store, SLoadedSnapshots&& Loaded)
+SSnapshotLoadResult AdoptSnapshots (CRegistryStore& Store, SLoadedSnapshots&& Loaded, jobs::CWorkerPool* Pool)
 {
 	FRT_CPU_SCOPE("Assets.Snapshot.Adopt");
 	SSnapshotLoadResult result;
@@ -1636,7 +1801,7 @@ SSnapshotLoadResult AdoptSnapshots (CRegistryStore& Store, SLoadedSnapshots&& Lo
 	result.DecodeMs = Loaded.DecodeMs;
 	if (!Loaded.Image.Mounts.empty())
 	{
-		Store.AdoptImage(std::move(Loaded.Image), Loaded.Revision);
+		Store.AdoptImage(std::move(Loaded.Image), Loaded.Revision, Pool);
 		result.AdoptMs = Store.GetLastCommitStats().Milliseconds;
 		result.bAdoptedInBulk = !Store.GetLastCommitStats().bReplayedImage;
 	}
@@ -1652,10 +1817,11 @@ SSnapshotLoadResult AdoptSnapshots (CRegistryStore& Store, SLoadedSnapshots&& Lo
 	return result;
 }
 
-SSnapshotLoadResult LoadSnapshots (CRegistryStore& Store, std::span<const SSnapshotSource> Sources, std::span<const SMountUpsert> Mounts)
+SSnapshotLoadResult LoadSnapshots (CRegistryStore& Store, std::span<const SSnapshotSource> Sources, std::span<const SMountUpsert> Mounts,
+	jobs::CWorkerPool* Pool)
 {
 	const uint64 start = platform::ReadTimestamp();
-	SSnapshotLoadResult result = AdoptSnapshots(Store, ReadSnapshots(Sources, Mounts));
+	SSnapshotLoadResult result = AdoptSnapshots(Store, ReadSnapshots(Sources, Mounts, Pool), Pool);
 	result.TotalMs = platform::TimestampToMilliseconds(platform::ReadTimestamp() - start);
 	return result;
 }
