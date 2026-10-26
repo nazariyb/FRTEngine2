@@ -44,6 +44,23 @@ public:
 		return slot;
 	}
 
+	// Like Add, for an id space whose ids never share a text (NAMES is interned): no text hashing at all. The table
+	// must take texts from this space only.
+	uint32 AddDistinct (std::vector<uint32>& Space, uint32 Id, FStringView Text)
+	{
+		if (Id >= Space.size())
+		{
+			Space.resize((std::max)(static_cast<size_t>(Id) + 1u, Space.size() * 2u), ~0u);
+		}
+		uint32& slot = Space[Id];
+		if (slot == ~0u)
+		{
+			slot = static_cast<uint32>(Table.size());
+			Table.push_back(FString(Text));
+		}
+		return slot;
+	}
+
 	// A text with no id (a type or importer name).
 	uint32 AddText (FStringView Text)
 	{
@@ -92,7 +109,7 @@ SRegistryImage CRegistryView::ExportImage (std::span<const MountId> Mounts) cons
 	std::vector<uint32> textIds;        // STRINGS id -> image string
 	std::vector<uint32> typeIds;        // TypeId -> image type name
 	std::vector<uint32> importerIds;    // importer index -> image importer name
-	const auto nameOf = [&] (uint32 NameId) { return names.Add(nameIds, NameId, tables.Names.Get(NameId)); };
+	const auto nameOf = [&] (uint32 NameId) { return names.AddDistinct(nameIds, NameId, tables.Names.Get(NameId)); };
 	const auto pathOf = [&] (uint32 PathId) { return strings.Add(pathIds, PathId, tables.Paths.Get(PathId)); };
 	const auto typeOf = [&] (reflect::TypeId Type) { return static_cast<uint16>(typeNames.Add(typeIds, Type, CAssetTypeRegistry::Get(Type).Name)); };
 
