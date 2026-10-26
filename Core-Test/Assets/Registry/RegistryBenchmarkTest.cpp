@@ -363,6 +363,67 @@ TEST(RegistryBenchmarkTest, TheStoreMeetsItsBudgetsAt10kAssets)
 	EXPECT_EQ(adopted.Live().GetRecordCount(), view->GetRecordCount());
 }
 
+namespace
+{
+/**
+ * GUID, AssetId64 and path lookups with the indices near their fullest: a lookup that visits every entry of its key
+ * (Find(SAssetId), the FILES path index) walks to the end of its probe cluster, whose length grows steeply with the
+ * load, so one benchmark size can hide the worst case. 8150 (131k) assets put the GUID index at its maximum, 1/2
+ * (RecordsByGuid), and AssetId64 at 0.70 of its 3/4; 12250 (196.5k) put the GUID index at 0.37, where the 3/4
+ * maximum it had before held 0.75. Each size is a fresh generated store (no rows). Measured (Release, i7-13700K,
+ * affinity 0xFFFFFC): GUID 23.4 ns at 8150 and 20.8 ns at 12250 (28.9 ns there at 3/4), AssetId64 8.6-9.8 ns,
+ * path 0.15-0.16 us.
+ */
+void MeasureLookupsAtFullLoad (std::initializer_list<uint32> AssetCounts, double GuidBudgetNs, double PathBudgetUs)
+{
+	SBudgetCheck budget;
+	for (const uint32 assets : AssetCounts)
+	{
+		CRegistryStore store;
+		query_bench::SGeneratorSpec spec;
+		spec.Assets = assets;
+		query_bench::Generate(store, spec);
+		const std::shared_ptr<const CRegistryView> view = store.Acquire();
+		const SRegistryIndices& indices = GetTables(*view).Indices;
+		const auto load = [] (const CPagedHashIndex& Index) { return Index.GetCapacity() == 0u ? 0.0 : static_cast<double>(Index.GetCount()) / Index.GetCapacity(); };
+		std::printf("[registry] %u assets: index loads GUID %.2f (max %u/8), AssetId64 %.2f, FILES path %.2f\n", assets, load(indices.RecordsByGuid),
+			indices.RecordsByGuid.GetMaxLoadEighths(), load(indices.RecordsById64), load(indices.FilesByPath));
+		std::vector<SAssetId> ids;
+		std::vector<SAssetId64> ids64;
+		std::vector<FString> paths;
+		view->ForEachRecord([&] (SRecordId Record)
+		{
+			SAssetData data;
+			view->GetRecord(Record, data);
+			ids.push_back(data.Id);
+			ids64.push_back(data.Id64);
+			paths.push_back(data.MountPath);
+		});
+		std::mt19937 random(42u);
+		std::shuffle(ids.begin(), ids.end(), random);
+		std::shuffle(ids64.begin(), ids64.end(), random);
+		std::shuffle(paths.begin(), paths.end(), random);
+		const uint32 count = static_cast<uint32>(ids.size());
+		budget.Check(FString::Format("GuidLookupNs@{}", assets).CStr(), TimeLookups(count, [&] (uint32 I) { return view->Find(ids[I]).has_value(); }),
+			GuidBudgetNs, "ns");
+		budget.Check(FString::Format("AssetId64LookupNs@{}", assets).CStr(), TimeLookups(count, [&] (uint32 I) { return view->Find(ids64[I]).has_value(); }),
+			GuidBudgetNs, "ns");
+		budget.Check(FString::Format("PathLookupUs@{}", assets).CStr(),
+			TimeLookups(count, [&] (uint32 I) { return view->FindByPath(paths[I]).has_value(); }) / 1000.0, PathBudgetUs, "us");
+	}
+}
+}
+
+TEST(RegistryBenchmarkTest, TheLookupsMeetTheirBudgetsWithTheIndicesAtTheirFullest)
+{
+	MeasureLookupsAtFullLoad({ 8150u, 12250u }, 50.0, 0.5);
+}
+
+TEST(RegistryBenchmarkTest, DISABLED_TheLookupsAt100kScaleWithTheIndicesAtTheirFullest)
+{
+	MeasureLookupsAtFullLoad({ 131000u, 196500u }, 50.0, 0.5);
+}
+
 TEST(RegistryBenchmarkTest, TheStoreMeetsItsBudgetsAt10kGeneratedAssets)
 {
 	SScaleBudgets budgets;

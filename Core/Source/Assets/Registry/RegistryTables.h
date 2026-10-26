@@ -641,7 +641,7 @@ struct SRegistryIndices
 	CPagedHashIndex FoldersByPath;            // FOLDERS, the mount's rule
 	CPagedHashIndex FoldersByPortablePath;    // FOLDERS, HashPortable (queries' dir:)
 	CPagedHashIndex RecordsByPortablePath;    // ASSETS, HashPortable of the file path; several records per key
-	CPagedHashIndex RecordsByGuid;            // ASSETS, HashGuid
+	CPagedHashIndex RecordsByGuid { 4u };     // ASSETS, HashGuid; at most half full: Find(SAssetId) visits every match
 	CPagedHashIndex RecordsById64;            // ASSETS and SUBENTRY: AssetId64 -> SRecordId value
 	CPagedHashIndex Aliases;                  // non-canonical SAssetId -> ASSETS row (§5.2; empty in M3)
 };

@@ -111,6 +111,34 @@ TEST(PagedColumnTest, TheHashIndexKeepsDuplicatesAndSurvivesErasesAndRehashes)
 	EXPECT_LE(index.GetCapacity(), 65536u);
 }
 
+TEST(PagedColumnTest, TheHashIndexStaysWithinItsMaximumLoadAndDoublesWhenItGrows)
+{
+	// The default index fills to 3/4; the GUID index (RecordsByGuid) to 1/2. Either doubles when an insert
+	// passes its maximum, and Reserve sizes it to the smallest table within the maximum.
+	for (const uint32 eighths : { CPagedHashIndex::DefaultMaxLoadEighths, 4u })
+	{
+		CPagedHashIndex index(eighths);
+		EXPECT_EQ(index.GetMaxLoadEighths(), eighths);
+		uint32 lastCapacity = 0u;
+		for (uint32 i = 0u; i < 20000u; ++i)
+		{
+			index.Insert(MixRegistryKey(i), i, 1u);
+			ASSERT_LE(static_cast<uint64>(index.GetCount()) * 8u, static_cast<uint64>(index.GetCapacity()) * eighths) << i;
+			if (index.GetCapacity() != lastCapacity)
+			{
+				EXPECT_TRUE(lastCapacity == 0u || index.GetCapacity() == lastCapacity * 2u) << i;
+				lastCapacity = index.GetCapacity();
+			}
+		}
+		CPagedHashIndex reserved(eighths);
+		reserved.Reserve(12200u, 1u);
+		EXPECT_EQ(reserved.GetCapacity(), eighths == 4u ? 32768u : 16384u);
+	}
+	const SRegistryIndices indices;
+	EXPECT_EQ(indices.RecordsByGuid.GetMaxLoadEighths(), 4u);
+	EXPECT_EQ(indices.RecordsById64.GetMaxLoadEighths(), CPagedHashIndex::DefaultMaxLoadEighths);
+}
+
 TEST(PagedColumnTest, TheStringPoolNeverMovesAString)
 {
 	CStringPool pool;

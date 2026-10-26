@@ -429,12 +429,26 @@ void RadixSortByKey (std::vector<TItem>& Items, std::vector<TItem>& Scratch, TKe
  * (multi-maps: FILES rows equal under a case-insensitive rule, records equal under the portable fold).
  *
  * A slot is the hash's upper 32 bits (the probe start, also after a rehash) and Value + 1; 0 is empty and
- * 1 << 32 a tombstone. The table grows (and drops its tombstones) at half load. The in-memory hashes used
- * here (wyhash) are never persisted: snapshots rebuild every index (§5.3).
+ * 1 << 32 a tombstone. The table grows (and drops its tombstones) past its maximum load (see Rehash). The
+ * in-memory hashes used here (wyhash) are never persisted: snapshots rebuild every index (§5.3).
  */
 class CPagedHashIndex
 {
 public:
+	// The default maximum load, in eighths: 3/4.
+	static constexpr uint32 DefaultMaxLoadEighths = 6u;
+
+	/**
+	 * MaxLoadEighths: the load the table never exceeds, in eighths (2 to 6). A lookup that visits every entry of
+	 * its key (a multi-map's ForEach that never stops early) always walks to the end of its cluster, the
+	 * unsuccessful probe of linear probing: about 2.5 slots at 1/2 and 8.5 at 3/4. An index looked up that way
+	 * on a hot path keeps a lower maximum at the cost of up to twice the slots.
+	 */
+	CPagedHashIndex () noexcept = default;
+	explicit CPagedHashIndex (uint32 InMaxLoadEighths) noexcept
+		: MaxLoadEighths(InMaxLoadEighths < 2u ? 2u : (InMaxLoadEighths > 6u ? 6u : InMaxLoadEighths))
+	{}
+
 	// Visit(uint32 Value) -> bool: false stops. Visits the entries whose stored hash bits equal Hash's.
 	template <typename TVisit>
 	void ForEach (uint64 Hash, TVisit&& Visit) const
@@ -465,7 +479,7 @@ public:
 	void Insert (uint64 Hash, uint32 Value, uint64 Epoch)
 	{
 		frt_assert(Value != ~0u);
-		if (static_cast<uint64>(Used + Tombstones + 1u) * 4u > static_cast<uint64>(Capacity) * 3u)
+		if (static_cast<uint64>(Used + Tombstones + 1u) * 8u > static_cast<uint64>(Capacity) * MaxLoadEighths)
 		{
 			Rehash(Used + 1u, true, Epoch);
 		}
@@ -547,7 +561,7 @@ public:
 	// maximum load.
 	void Reserve (uint32 Count, uint64 Epoch)
 	{
-		if (static_cast<uint64>(Count + Tombstones) * 4u > static_cast<uint64>(Capacity) * 3u)
+		if (static_cast<uint64>(Count + Tombstones) * 8u > static_cast<uint64>(Capacity) * MaxLoadEighths)
 		{
 			Rehash(Count, false, Epoch);
 		}
@@ -555,6 +569,7 @@ public:
 
 	[[nodiscard]] uint32 GetCount () const noexcept { return Used; }
 	[[nodiscard]] uint32 GetCapacity () const noexcept { return Capacity; }
+	[[nodiscard]] uint32 GetMaxLoadEighths () const noexcept { return MaxLoadEighths; }
 	// The slot a hash's probe starts at (for callers that order their lookups by it).
 	[[nodiscard]] uint32 GetHomeSlot (uint64 Hash) const noexcept { return Capacity == 0u ? 0u : MakeTag(Hash) & (Capacity - 1u); }
 	[[nodiscard]] uint64 GetResidentBytes () const noexcept { return Slots.GetResidentBytes(); }
@@ -570,16 +585,16 @@ private:
 	}
 
 	/**
-	 * The load stays at most 3/4: past it an insert grows the table to at most half full (bGrow: it doubles),
-	 * while Reserve sizes it to hold its entries within 3/4. An 8-byte slot per entry at loads of 3/8 to 3/4
+	 * The load stays at most MaxLoadEighths (3/4 by default): past it an insert grows the table to at most two
+	 * thirds of that (bGrow; at 3/4, half full: the table doubles, and the tombstones go), while Reserve sizes it
+	 * to hold its entries within the maximum. At the default an 8-byte slot per entry at loads of 3/8 to 3/4
 	 * costs 11-21 bytes per entry; linear probing over 32-bit tags stays within a cache line or two at 3/4.
 	 * (Loads of 1/4 to 1/2 cost 16-32 bytes per entry: 24 MB of §5.11's 150 at 100k assets and 500k rows.)
 	 */
 	void Rehash (uint32 MinEntries, bool bGrow, uint64 Epoch)
 	{
 		uint32 capacity = 16u;
-		while (bGrow ? static_cast<uint64>(capacity) < static_cast<uint64>(MinEntries) * 2u
-			: static_cast<uint64>(capacity) * 3u < static_cast<uint64>(MinEntries) * 4u)
+		while (static_cast<uint64>(capacity) * MaxLoadEighths < static_cast<uint64>(MinEntries) * (bGrow ? 12u : 8u))
 		{
 			capacity *= 2u;
 		}
@@ -611,6 +626,7 @@ private:
 	uint32 Capacity = 0u;
 	uint32 Used = 0u;
 	uint32 Tombstones = 0u;
+	uint32 MaxLoadEighths = DefaultMaxLoadEighths;
 };
 
 
