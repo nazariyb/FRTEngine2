@@ -98,12 +98,13 @@ class CWorkerPool;
  * Verification off the owner thread (§5.4 "Verification is level-triggered", §5.9). With a worker
  * pool (SetWorkerPool: CEngine's), the disk checks that decide what a settled path is - its Stat, the
  * writer probe, the hash an expected write is compared with, and the Stat that says what an event of
- * unknown entry type was about - run on the pool, in one group of tasks per Pump; a later Pump applies
- * the group whole (a group is never told in part, so a burst's batch stays one batch), and a path that
- * changed again meanwhile is checked again. Without a pool (tests, tool hosts) they run inline, as
- * they always did. Flush stays synchronous either way: it waits for the checks of everything its
- * fences cover (resolving them inline if the pool cannot get to them before its timeout) and tells
- * them before it returns.
+ * unknown entry type was about - run on the pool, in one group of High-priority tasks per Pump; a later
+ * Pump applies the group whole (a group is never told in part, so a burst's batch stays one batch), and
+ * a path that changed again meanwhile is checked again. Without a pool (tests, tool hosts) they run
+ * inline, as they always did. Flush stays synchronous either way: the checks of everything its fences
+ * cover go to the pool in a group of their own (taking over what older groups were checking of it),
+ * Flush waits a moment (0.1 s at most) for that group alone, resolves inline what the pool has not got
+ * to by then, and tells it all before it returns; the older groups are applied by a later Pump.
  *
  * Subscriptions that do not verify (SWatchFilter::bVerify false: the asset registry, which stats,
  * reads and retries files itself) are told a settled path as soon as it settles, with the kind its
@@ -115,7 +116,10 @@ class CWorkerPool;
  * A cap on how many settled paths one Pump resolves (SFileWatcherSettings::MaxChangesPerPump) keeps a
  * folder dropped into a mount from costing one frame everything at once; it never splits a held
  * release (a burst, an overflow, a busy VCS ending), a Flush, or the files found below one directory
- * that appeared, so no subscriber is told part of a tree.
+ * that appeared, so no subscriber is told part of a tree. With a pool it counts the checks a Pump
+ * applies and those still in flight: a Pump applies finished groups only up to the cap (the group that
+ * reaches it whole) and sends no new checks while the pool holds a cap's worth, so a slow pool delays
+ * changes instead of piling several Pumps' worth into one.
  *
  * Owner thread: the thread that constructed the service (CEngine's main thread); every member asserts
  * it. Nothing here allocates from the engine's memory pool: std containers and FString, on the CRT

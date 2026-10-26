@@ -19,9 +19,11 @@
 // names, and twice: with the disk checks inline (no worker pool, as tests and tool hosts run it) and on
 // a worker pool (as CEngine runs it), where they must come to the same answers. The pool's own rules
 // follow: checks told by a later Pump, a group the pool drops checked again, a path that changes while
-// its checks run checked again, a Flush that cannot wait for the pool resolving inline, the cap on
-// what one Pump resolves (never splitting a burst or a directory that appeared), and subscriptions that
-// do not verify (told at once what the events say: no writer probe, no self-write check).
+// its checks run checked again, a Flush that cannot wait for the pool resolving inline (and waiting for
+// no older group), checks that go ahead of Normal-priority work, groups applied together told in path
+// order, the cap on what one Pump resolves (never splitting a burst or a directory that appeared, and
+// holding while the pool is slow), and subscriptions that do not verify (told at once what the events
+// say: no writer probe, no self-write check).
 #include <gtest/gtest.h>
 
 #include "TestCommon.h"
@@ -342,6 +344,7 @@ protected:
 	}
 
 	std::atomic<bool> Release = false;
+	std::atomic<bool> Release2 = false;   // for a second blocking task of a test's own
 };
 }
 
@@ -1688,6 +1691,119 @@ TEST_F(FileWatcherPoolTest, FlushResolvesInlineWhatThePoolCannotCheckBeforeItsTi
 	Pool->CancelAllAndDrain();
 	Service->Pump();
 	EXPECT_EQ(Recorder.Changes.size(), 1u) << Recorder.Describe().CStr();
+}
+
+TEST_F(FileWatcherPoolTest, FlushWaitsForNoOlderGroupAndOnlyAMomentForItsOwn)
+{
+	BlockThePool();
+	assets::SFileWatcherSettings settings;
+	settings.SettleMs = 20u;
+	Start(settings);
+	SRecorder outside;
+	const SDelegateHandle outsideHandle = Service->Subscribe(Outside, {}, outside.MakeCallback());
+	ASSERT_EQ(Service->GetStats().Roots, 2u);
+
+	// Another root's checks, sent by a Pump, wait behind the blocker.
+	WriteText(Outside / FStringView("Інший.txt").ToPath(), "b");
+	ASSERT_TRUE(PumpUntil([this] { return Service->GetStats().VerifyTasks >= 1u; }));
+
+	// A Flush of Content neither waits for them nor for its own checks for long: inline it is.
+	WriteText(File("a.txt"), "a");
+	const auto start = std::chrono::steady_clock::now();
+	EXPECT_TRUE(Service->Flush(Content, 5.0));
+	EXPECT_LT(std::chrono::steady_clock::now() - start, 1500ms) << "M2's Flush took milliseconds";
+	EXPECT_TRUE(Recorder.HasOnly("a.txt", assets::EFileChange::Added)) << Recorder.Describe().CStr();
+	EXPECT_TRUE(outside.Changes.empty()) << outside.Describe().CStr();
+
+	// The older group is still in flight, and told by a Pump once the pool gets to it.
+	Release = true;
+	ASSERT_TRUE(PumpUntil([&outside, this] { return !outside.Changes.empty() && Service->IsIdle(); })) << outside.Describe().CStr();
+	EXPECT_TRUE(outside.HasOnly("Інший.txt", assets::EFileChange::Added)) << outside.Describe().CStr();
+	EXPECT_EQ(Recorder.Changes.size(), 1u) << Recorder.Describe().CStr();
+	Service->Unsubscribe(outsideHandle);
+}
+
+TEST_F(FileWatcherPoolTest, PumpChecksDoNotWaitBehindNormalPriorityWork)
+{
+	BlockThePool();
+	// Normal-priority work queued before the service's checks (a burst of texture decodes, say).
+	const auto normalDone = std::make_shared<std::atomic<bool>>(false);
+	Pool->Submit(jobs::EWorkPriority::Normal, jobs::NoCancelGroup, [this, normalDone]
+	{
+		while (!Release2.load() && !jobs::CWorkerPool::IsCancelled())
+		{
+			std::this_thread::sleep_for(1ms);
+		}
+		*normalDone = true;
+	});
+	assets::SFileWatcherSettings settings;
+	settings.SettleMs = 20u;
+	Start(settings);
+
+	WriteText(File("a.txt"), "a");
+	ASSERT_TRUE(PumpUntil([this] { return Service->GetStats().VerifyTasks >= 1u; }));
+	Release = true;   // the worker takes the next task: the checks, not the Normal work
+	EXPECT_TRUE(PumpUntil([this] { return !Recorder.Changes.empty(); }, 3s)) << Recorder.Describe().CStr();
+	EXPECT_FALSE(normalDone->load());
+	EXPECT_TRUE(Recorder.HasOnly("a.txt", assets::EFileChange::Added)) << Recorder.Describe().CStr();
+	Release2 = true;
+	Pool->PumpUntil([this] { return Pool->IsIdle(); }, 5.0);
+}
+
+TEST_F(FileWatcherPoolTest, TheCapHoldsWhileThePoolIsSlow)
+{
+	BlockThePool();
+	assets::SFileWatcherSettings settings;
+	settings.MaxChangesPerPump = 3u;
+	settings.SettleMs = 20u;
+	Start(settings);
+
+	for (uint32 i = 0u; i < 10u; ++i)
+	{
+		WriteText(File(FString::Format("Файл {:02}.txt", i)), "x");
+	}
+	ASSERT_TRUE(PumpUntil([this] { return Service->GetStats().VerifyTasks >= 1u; }));
+	// Pumps while the pool is stuck send no more than a cap's worth of checks.
+	PumpUntil([] { return false; }, 200ms);
+	EXPECT_LE(Service->GetStats().VerifyingPaths, 3u);
+	EXPECT_GE(Service->GetStats().CappedPumps, 1u);
+
+	// Every check the pool holds finishes before each Pump: none of them tells more than the cap.
+	Release = true;
+	for (uint32 i = 0u; i < 100u && !(Recorder.Changes.size() >= 10u && Service->IsIdle()); ++i)
+	{
+		Pool->PumpUntil([this] { return Pool->IsIdle(); }, 5.0);
+		Service->Pump();
+		std::this_thread::sleep_for(1ms);
+	}
+	EXPECT_EQ(Recorder.Changes.size(), 10u) << Recorder.Describe().CStr();
+	for (const SRecorder::SCall& call : Recorder.Calls)
+	{
+		EXPECT_LE(call.Changes, 3u) << Recorder.Describe().CStr();
+	}
+}
+
+TEST_F(FileWatcherPoolTest, GroupsAppliedInOnePumpAreToldInPathOrder)
+{
+	BlockThePool();
+	assets::SFileWatcherSettings settings;
+	settings.SettleMs = 20u;
+	Start(settings);
+
+	// Two groups, the later path's first, both waiting behind the blocker.
+	WriteText(File("z.txt"), "z");
+	ASSERT_TRUE(PumpUntil([this] { return Service->GetStats().VerifyTasks >= 1u; }));
+	WriteText(File("a.txt"), "a");
+	ASSERT_TRUE(PumpUntil([this] { return Service->GetStats().VerifyTasks >= 2u; }));
+	ASSERT_EQ(Service->GetStats().VerifyingPaths, 2u);
+
+	Release = true;
+	Pool->PumpUntil([this] { return Pool->IsIdle(); }, 5.0);
+	Service->Pump();
+	ASSERT_EQ(Recorder.Calls.size(), 1u) << Recorder.Describe().CStr();
+	ASSERT_EQ(Recorder.Changes.size(), 2u) << Recorder.Describe().CStr();
+	EXPECT_EQ(Recorder.Changes[0].RelativePath, "a.txt") << Recorder.Describe().CStr();
+	EXPECT_EQ(Recorder.Changes[1].RelativePath, "z.txt") << Recorder.Describe().CStr();
 }
 
 INSTANTIATE_TEST_SUITE_P(Checks, FileWatcherServiceTest, ::testing::Values(false, true),

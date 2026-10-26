@@ -116,6 +116,10 @@ FString MakeExpectedKey (const std::filesystem::path& Path)
 // that a burst's group spreads over the workers.
 constexpr size_t VerifyChunk = 64u;
 
+// How long a Flush waits for the pool to check what its fences cover before it checks inline: long
+// enough for an idle pool, short against a pool busy with a scan or a burst of decodes.
+constexpr double FlushPoolWaitSeconds = 0.1;
+
 // What the disk says about one path, now: what a settled entry is decided by (Resolve's facts).
 struct SDiskFacts
 {
@@ -1957,30 +1961,55 @@ struct CFileWatcherService::SState
 		SortReady(Out, first);
 	}
 
-	// Applies the groups in flight, oldest first, each whole, up to the first that is still running.
-	// WaitDeadline (Flush): waits for each until then instead, and resolves inline what a group still
-	// running at the deadline, or dropped by the pool's drain, would have checked.
-	void ApplyGroups (uint64 Now, std::vector<SReady>& Out, std::optional<uint64> WaitDeadline = std::nullopt)
+	// The paths in the groups in flight (stale ones included: they still occupy the pool).
+	[[nodiscard]] size_t CountInFlight () const
 	{
-		while (!InFlight.empty())
+		size_t count = 0u;
+		for (const std::shared_ptr<SVerifyGroup>& group : InFlight)
+		{
+			count += group->Items.size();
+		}
+		return count;
+	}
+
+	// The per-Pump cap (MaxChangesPerPump; 0 counts as 1).
+	[[nodiscard]] size_t GetCap () const
+	{
+		return Settings.MaxChangesPerPump > 0u ? Settings.MaxChangesPerPump : 1u;
+	}
+
+	// Pump: applies the finished groups in flight, oldest first, each whole, up to the first that is
+	// still running, and no more once Budget paths have been applied (the group that reaches it is
+	// applied whole). A group the pool's drain dropped is forgotten: its entries are checked again when
+	// the next Pump finds them due. Returns the paths applied.
+	size_t ApplyFinished (uint64 Now, std::vector<SReady>& Out, size_t Budget)
+	{
+		size_t applied = 0u;
+		while (!InFlight.empty() && applied < Budget)
 		{
 			const std::shared_ptr<SVerifyGroup> group = InFlight.front();
-			bool bDone = group->IsDone();
-			if (!bDone && WaitDeadline)
+			if (!group->IsDone())
 			{
-				const uint64 now = platform::ReadTimestamp();
-				const double remaining = now < *WaitDeadline
-					? static_cast<double>(*WaitDeadline - now) / static_cast<double>(platform::GetTimestampFrequency()) : 0.0;
-				bDone = group->WaitDone(remaining);
-			}
-			if (!bDone && !WaitDeadline)
-			{
-				return;
+				break;
 			}
 			InFlight.pop_front();
-			const bool bWhole = bDone && !group->IsAbandoned();
-			ApplyGroup(*group, Now, bWhole ? EApply::Facts : WaitDeadline ? EApply::Inline : EApply::Forget, Out);
+			const bool bWhole = !group->IsAbandoned();
+			applied += bWhole ? group->Items.size() : 0u;
+			ApplyGroup(*group, Now, bWhole ? EApply::Facts : EApply::Forget, Out);
 		}
+		return applied;
+	}
+
+	// Flush: its own group, waited for up to WaitSeconds, then applied by its checks, or - still running,
+	// or dropped by the pool's drain - resolved inline (which reads only what the owner wrote into the
+	// items, never the facts a worker may still be writing). The older groups stay in flight for a
+	// later Pump: what of theirs the fences cover was taken into this one, and their stale items are
+	// skipped when they are applied.
+	void ApplyFlushGroup (const std::shared_ptr<SVerifyGroup>& Group, uint64 Now, double WaitSeconds, std::vector<SReady>& Out)
+	{
+		const bool bDone = Group->WaitDone(WaitSeconds);
+		std::erase(InFlight, Group);
+		ApplyGroup(*Group, Now, bDone && !Group->IsAbandoned() ? EApply::Facts : EApply::Inline, Out);
 	}
 
 	// ---------------- Settling and resolving ----------------
@@ -1994,11 +2023,11 @@ struct CFileWatcherService::SState
 		bool bTaken = false;
 	};
 
-	// Takes every candidate, or at most MaxChangesPerPump of them: the whole ones, then the oldest
-	// (by first event, then key), then the rest of every directory walk one of those came from.
-	void SelectCandidates (std::vector<std::vector<SCandidate>>& Candidates, size_t Total)
+	// Takes every candidate, or at most Budget of them: the whole ones, then the oldest (by first event,
+	// then key), then the rest of every directory walk one of those came from.
+	void SelectCandidates (std::vector<std::vector<SCandidate>>& Candidates, size_t Total, size_t Budget)
 	{
-		const size_t cap = Settings.MaxChangesPerPump > 0u ? Settings.MaxChangesPerPump : 1u;
+		const size_t cap = Budget;
 		std::vector<SCandidate*> rest;
 		size_t taken = 0u;
 		for (std::vector<SCandidate>& ofRoot : Candidates)
@@ -2056,11 +2085,14 @@ struct CFileWatcherService::SState
 
 	// Everything that has settled (or that one of Fences covers), resolved, in root order and sorted by
 	// key within each root: told at once to the subscriptions that do not verify, and for the others
-	// checked against the disk - inline without a pool, else in one group submitted to it, applied by a
-	// later Pump (bFlush: at High priority, also taking what an older group is checking, which Flush
-	// waits for). At most MaxChangesPerPump entries (SelectCandidates).
-	std::vector<SReady> CollectReady (uint64 Now, std::span<const SFence> Fences, bool bFlush = false)
+	// checked against the disk - inline without a pool, else in one group submitted to it at High
+	// priority (a few stats a path, and what a hot reload waits for), applied by a later Pump. At most
+	// Budget entries besides the whole ones (SelectCandidates). OutFlushGroup (Flush): the fenced entries
+	// an older group is checking are taken too, and the group is handed back for Flush to wait for.
+	std::vector<SReady> CollectReady (uint64 Now, std::span<const SFence> Fences, size_t Budget,
+		std::shared_ptr<SVerifyGroup>* OutFlushGroup = nullptr)
 	{
+		const bool bFlush = OutFlushGroup != nullptr;
 		std::vector<SReady> ready;
 		bool bReleaseAll = false;
 		const bool bHold = UpdateHold(Now, bReleaseAll);
@@ -2114,7 +2146,7 @@ struct CFileWatcherService::SState
 				++total;
 			}
 		}
-		SelectCandidates(candidates, total);
+		SelectCandidates(candidates, total, Budget);
 
 		std::shared_ptr<SVerifyGroup> group;
 		std::vector<FString> done;
@@ -2184,7 +2216,11 @@ struct CFileWatcherService::SState
 		if (group)
 		{
 			InFlight.push_back(group);
-			Stats.VerifyTasks += SubmitGroup(*Pool, group, bFlush ? jobs::EWorkPriority::High : jobs::EWorkPriority::Normal);
+			Stats.VerifyTasks += SubmitGroup(*Pool, group, jobs::EWorkPriority::High);
+			if (bFlush)
+			{
+				*OutFlushGroup = group;
+			}
 		}
 		return ready;
 	}
@@ -2364,11 +2400,15 @@ struct CFileWatcherService::SState
 		const uint64 now = platform::ReadTimestamp();
 		PollRoots(now);
 		std::erase_if(Expected, [now] (const auto& Item) { return Item.second.Deadline <= now; });
-		// The checks earlier Pumps sent to the pool, then what has settled since: one delivery.
+		// The checks earlier Pumps sent to the pool, then what has settled since: one delivery. The cap
+		// counts both, and the checks still in flight: a slow pool holds changes back instead of
+		// piling them into one Pump.
 		std::vector<SReady> ready;
-		ApplyGroups(now, ready);
-		std::vector<SReady> collected = CollectReady(now, {});
+		const size_t cap = GetCap();
+		const size_t busy = ApplyFinished(now, ready, cap) + CountInFlight();
+		std::vector<SReady> collected = CollectReady(now, {}, busy < cap ? cap - busy : 0u);
 		ready.insert(ready.end(), std::make_move_iterator(collected.begin()), std::make_move_iterator(collected.end()));
+		SortReady(ready, 0u);
 		Deliver(ready);
 	}
 };
@@ -2647,11 +2687,21 @@ bool CFileWatcherService::Flush (const std::filesystem::path& Directory, double 
 	}
 	state.PollRoots(now);
 	std::erase_if(state.Expected, [now] (const auto& Item) { return Item.second.Deadline <= now; });
-	// With a pool, the checks of what the fences cover go to it in one group, and Flush waits for that
-	// group and every older one (inline for what they cannot finish by the deadline): synchronous all
-	// the same, one delivery.
-	std::vector<SState::SReady> ready = state.CollectReady(now, settled, true);
-	state.ApplyGroups(now, ready, deadline);
+	// With a pool, the checks of what the fences cover go to it in one group of their own, at the front
+	// of its queue; Flush waits a moment for that group (not for the older ones: what of theirs it
+	// covers is in it) and resolves inline what the pool has not got to by then: synchronous all the
+	// same, one delivery.
+	const size_t inFlight = state.CountInFlight();
+	const size_t cap = state.GetCap();
+	std::shared_ptr<SVerifyGroup> group;
+	std::vector<SState::SReady> ready = state.CollectReady(now, settled, inFlight < cap ? cap - inFlight : 0u, &group);
+	if (group)
+	{
+		const uint64 waitStart = platform::ReadTimestamp();
+		const double remaining = waitStart < deadline ? static_cast<double>(deadline - waitStart) / static_cast<double>(frequency) : 0.0;
+		state.ApplyFlushGroup(group, now, remaining < FlushPoolWaitSeconds ? remaining : FlushPoolWaitSeconds, ready);
+	}
+	state.SortReady(ready, 0u);
 	state.Deliver(ready);
 	for (const SWaiting& fence : waiting)
 	{
