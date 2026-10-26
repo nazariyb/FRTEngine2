@@ -19,7 +19,8 @@
  * -Assets:ReadOnly=1, the runtime) never take it.
  *
  * AssetTool takes it from M1 for every commandlet that writes; the editor takes the same lock from
- * M4, when it starts writing metas. The lock itself is platform::TryLockFileExclusive (the OS drops
+ * M3 (CEngine, SEngineDesc::bAssetWriter), for the registry's snapshot, journal, Rules.cache and
+ * ProjectId - and runs without writing them when another process holds it. The lock itself is platform::TryLockFileExclusive (the OS drops
  * it when the holder dies, so a crash never leaves a stale owner); this file is what the holder
  * writes into it - {pid, exe, start time} - and how a refused process reads that back.
  *

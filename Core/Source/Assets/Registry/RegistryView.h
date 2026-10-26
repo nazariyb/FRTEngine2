@@ -76,6 +76,7 @@ struct SDependencyView
 	FStringView FieldPath;
 	bool bAmbiguous = false;
 	bool bCompanion = false;            // the target is a companion file (no record, To invalid, not Unresolved)
+	bool bGuidTarget = false;           // declared by id (TargetId as declared), else by TargetPath
 };
 
 struct SMountInfo

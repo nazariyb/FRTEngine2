@@ -18,6 +18,7 @@
 #include "Exception.h"
 #include "GameInstance.h"
 #include "WorldScene.h"
+#include "Assets/AssetRegistry.h"
 #include "Engine/Automation.h"
 #include "Engine/Engine.h"
 #include "Engine/GameModule.h"
@@ -79,6 +80,12 @@ int RunGameLoop (CEngine& Engine, CGameModule& Module)
 		game->BeginPlay(makeContext());
 	};
 
+	// The first world waits for the registry's initial scan (design §5.4: game code never sees "unknown"); a hot
+	// reload's buildGame does not, the scan long done.
+	if (assets::CAssetRegistry* registry = Engine.GetAssetRegistry())
+	{
+		registry->WaitBeforeBuildWorld();
+	}
 	if (!buildGame())
 	{
 		std::cout << "The game module could not create its game" << std::endl;

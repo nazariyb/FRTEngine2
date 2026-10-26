@@ -771,6 +771,7 @@ SDependencyView CRegistryView::MakeDependencyView (uint32 Source, uint32 EdgeRef
 	if (target.Kind == ETargetKind::Guid)
 	{
 		view.TargetId = SAssetId { target.Guid, target.TargetSub };
+		view.bGuidTarget = true;
 	}
 	if (target.State == ETargetState::Resolved)
 	{

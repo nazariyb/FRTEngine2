@@ -31,4 +31,26 @@ namespace frt::assets
 {
 	return GetMountAssetsLocalDir(MountRoot) / "ProjectId";
 }
+
+// <EngineDir>/Local/Registry: the engine's registry snapshot and its journal (design §3.3 layout, §5.3). Apart from
+// Local/Assets so that every project's editor reads it and only the engine's owner (FRT.bat assets scan --engine in
+// M3) writes it.
+[[nodiscard]] inline std::filesystem::path GetEngineRegistryDir (const std::filesystem::path& EngineDir)
+{
+	return EngineDir / "Local" / "Registry";
+}
+
+// <EngineDir>/Local/Registry/Engine.snapshot: /Engine's records (Assets/Registry/Snapshot.h); its journal is
+// GetJournalPath of it. Only a holder of <EngineDir>/Local/Assets/Owner.lock writes either.
+[[nodiscard]] inline std::filesystem::path GetEngineSnapshotPath (const std::filesystem::path& EngineDir)
+{
+	return GetEngineRegistryDir(EngineDir) / "Engine.snapshot";
+}
+
+// <ProjectDir>/Local/Assets/AssetRegistry.snapshot: /Project's and its plugins' records. Only the holder of the
+// project's Owner.lock writes it and its journal.
+[[nodiscard]] inline std::filesystem::path GetRegistrySnapshotPath (const std::filesystem::path& ProjectDir)
+{
+	return GetMountAssetsLocalDir(ProjectDir) / "AssetRegistry.snapshot";
+}
 }

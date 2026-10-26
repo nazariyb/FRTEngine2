@@ -25,8 +25,10 @@ class CWindow;
 
 namespace frt::assets
 {
+class CAssetRegistry;
 class CDerivedDataCache;
 class CFileWatcherService;
+class CMountTable;
 }
 
 namespace frt::graphics
@@ -38,6 +40,11 @@ class CRenderer;
 namespace frt::jobs
 {
 class CWorkerPool;
+}
+
+namespace frt::platform
+{
+class CExclusiveFileLock;
 }
 
 
@@ -60,6 +67,11 @@ struct SEngineDesc
 	// standard output, which is the tool's (a --json stream). The frame calls and the services those
 	// steps would have made are not for it.
 	bool bToolHost = false;
+	// This host writes the project's registry files when it can (design §5.9, the M3 lock deviation): StartUp takes
+	// <project>/Local/Assets/Owner.lock and, holding it, lets the registry write its snapshot, journal, Rules.cache
+	// and ProjectId. Only the editor sets it, when it opens a project; [Assets] ReadOnly=1 (every scripted run) skips
+	// the attempt. Another process holding the lock is said once, and this host then writes nothing.
+	bool bAssetWriter = false;
 };
 
 // One view to render this frame and the camera to render it from.
@@ -76,8 +88,8 @@ struct SViewToRender
  * Owns every subsystem and brings them up and down explicitly, in dependency order (Gregory,
  * GEA "Subsystem Start-Up and Shut-Down") - never through static construction order:
  *   StartUp:  components, config (+ command line, user settings), memory, worker pool, derived-data
- *             cache and file watcher (dev builds), clock, window, renderer, input actions, UI; a tool
- *             host stops after the worker pool (SEngineDesc::bToolHost).
+ *             cache, file watcher, mounts and asset registry (dev builds), clock, window, renderer, input
+ *             actions, UI; a tool host stops after the worker pool (SEngineDesc::bToolHost).
  *   ShutDown: the exact reverse, after the GPU is idle.
  * Headless builds skip the window, renderer and UI, and resolve materials through a library
  * of their own; the class layout is the same either way.
@@ -144,6 +156,14 @@ public:
 	// destroyed later (CEngine's own members, the hosts' objects) unsubscribe before ShutDown or just
 	// drop their handles.
 	assets::CFileWatcherService* GetFileWatcher () { return FileWatcher.get(); }
+	// The asset registry (Assets/AssetRegistry.h): the project's mounts scanned, analyzed and kept current through the
+	// file watcher, read-only in M3. Started in StartUp (its scan overlaps the window and renderer coming up) and
+	// pumped in BeginFrame right after the worker completions; hosts wait for its initial scan before their first
+	// BuildWorld (CAssetRegistry::WaitBeforeBuildWorld). In Debug and Development with a project, headless too; null
+	// in Release, in tool hosts (AssetTool builds its own), without a project (the project manager) and with
+	// [Assets] Registry=0. Never reachable from game code. Valid from StartUp until ShutDown, which ends it before
+	// the file watcher and the worker pool.
+	assets::CAssetRegistry* GetAssetRegistry () { return AssetRegistry.get(); }
 	// The renderer's library, or a standalone one when headless.
 	graphics::CMaterialLibrary& GetMaterials ();
 
@@ -185,6 +205,12 @@ private:
 	// Dev builds only, created after the derived-data cache; destroyed in ShutDown after the renderer
 	// (whose libraries subscribe) and before the worker pool. A member in every build, like DerivedData.
 	std::unique_ptr<assets::CFileWatcherService> FileWatcher;
+	// Dev builds: the process's mounts (installed for paths::ToMountPath while the engine runs), the project's writer
+	// lock when this host holds it (SEngineDesc::bAssetWriter), and the registry, ended in ShutDown before the file
+	// watcher it subscribes to. Members in every build, like FileWatcher.
+	std::shared_ptr<const assets::CMountTable> MountTable;
+	std::unique_ptr<platform::CExclusiveFileLock> AssetOwnerLock;
+	std::unique_ptr<assets::CAssetRegistry> AssetRegistry;
 	std::unique_ptr<CTimer> Clock;
 	// Window, renderer, UI. One opaque block defined in Engine.cpp: headless builds compile none
 	// of them, yet the class layout must not depend on FRT_HEADLESS.

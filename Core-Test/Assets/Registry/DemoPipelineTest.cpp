@@ -16,8 +16,10 @@
 #include <vector>
 
 #include "../Discovery/DiscoveryTestUtils.h"
+#include "TemplateTestUtils.h"
 
 #include "Assets/AssetDiagnosticCodes.h"
+#include "Assets/AssetRegistry.h"
 #include "Assets/AssetTypes.h"
 #include "Assets/Discovery/Mounts.h"
 #include "Assets/Discovery/MountScanner.h"
@@ -41,55 +43,7 @@ using frt::test::discovery::CDiscoveryTree;
 
 namespace
 {
-// Copies Source into Destination, every file, skipping the directories named in Skip (relative to Source).
-void CopyTree (const std::filesystem::path& Source, const std::filesystem::path& Destination, std::span<const FStringView> Skip = {})
-{
-	std::error_code ec;
-	std::filesystem::create_directories(Destination, ec);
-	for (std::filesystem::recursive_directory_iterator it(Source, ec), end; it != end; it.increment(ec))
-	{
-		const std::filesystem::path relative = std::filesystem::relative(it->path(), Source, ec);
-		const FString relativeText = FString::FromPath(relative, EPathStyle::Generic);
-		if (it->is_directory(ec))
-		{
-			if (std::any_of(Skip.begin(), Skip.end(), [&] (FStringView S) { return relativeText.View() == S; }))
-			{
-				it.disable_recursion_pending();
-				continue;
-			}
-			std::filesystem::create_directories(Destination / relative, ec);
-			continue;
-		}
-		std::filesystem::copy_file(it->path(), Destination / relative, std::filesystem::copy_options::overwrite_existing, ec);
-		const FString copied = FString::FromPath(it->path());
-		ASSERT_FALSE(ec) << copied.CStr();
-	}
-}
-
-// The Demo project and the engine content as F3 would mount them, in a temp tree of their own (the runtime may write
-// Content/, so the test never scans the checkout itself).
-class CDemoCopy
-{
-public:
-	CDemoCopy ()
-		: Tree("DemoPipeline")
-	{
-		const FStringView skipShaderBinaries[] = { "Shaders/Bin" };
-		CopyTree(paths::GetEngineContentDir(), Tree.EngineContent(), skipShaderBinaries);
-		std::error_code ec;
-		std::filesystem::create_directories(Tree.EngineConfig(), ec);
-		std::filesystem::copy_file(paths::GetEngineConfigPath().parent_path() / "Assets.yml", Tree.EngineConfig() / "Assets.yml", ec);
-		const std::filesystem::path demo = paths::GetEngineDir() / "Templates" / "Demo";
-		CopyTree(demo / "Content", Tree.ProjectContent());
-		std::filesystem::create_directories(Tree.ProjectDir() / "Config", ec);
-		std::filesystem::copy_file(demo / "Config" / "Assets.yml", Tree.ProjectDir() / "Config" / "Assets.yml", ec);
-		Mounts = CMountTable::Resolve(Tree.EngineContent(), Tree.EngineConfig(), Tree.ProjectDir(), &MountDiagnostics);
-	}
-
-	CDiscoveryTree Tree;
-	CMountTable Mounts;
-	std::vector<SDiagnostic> MountDiagnostics;
-};
+using frt::test::registry::CTemplateCopy;
 
 struct SPipelineRun
 {
@@ -244,7 +198,7 @@ struct SExpected
 	uint32 Buffers = 0u;
 };
 
-SExpected CountByExtension (const CDemoCopy& Copy)
+SExpected CountByExtension (const CTemplateCopy& Copy)
 {
 	SExpected expected;
 	const auto count = [&] (const std::filesystem::path& Root, bool bEngine)
@@ -304,7 +258,7 @@ std::set<FString> FilesOf (const CRegistryView& View, const std::vector<SRecordI
 
 TEST(DemoPipelineTest, TheDemoTemplateGoesThroughEveryM3PieceAsTheFilesSay)
 {
-	const CDemoCopy copy;
+	const CTemplateCopy copy("DemoPipeline");
 	ASSERT_EQ(copy.Mounts.GetMounts().size(), 2u) << Describe(copy.MountDiagnostics).CStr();
 	EXPECT_TRUE(copy.MountDiagnostics.empty()) << Describe(copy.MountDiagnostics).CStr();
 
@@ -442,4 +396,30 @@ TEST(DemoPipelineTest, TheDemoTemplateGoesThroughEveryM3PieceAsTheFilesSay)
 	EXPECT_EQ(FilesOf(view, found), naming);
 	ASSERT_TRUE(view.RunText("dep:/Project/Models/Duck/Duck.gltf", found, &queryError).has_value()) << queryError.Message.CStr();
 	EXPECT_TRUE(FilesOf(view, found).contains(FString(Texture)));
+}
+
+// The registry service (Assets/AssetRegistry.h) runs this pipeline with Analyze on workers, per-batch commits and
+// RULE002 per folder after the companions: a cold start of it commits exactly what the reference sequence above does.
+TEST(DemoPipelineTest, TheRegistryServiceCommitsWhatTheReferencePipelineCommits)
+{
+	const CTemplateCopy copy("DemoService");
+	const SPipelineRun reference = RunPipeline(copy.Mounts, 4u);
+
+	jobs::SWorkerPoolDesc poolDesc;
+	poolDesc.ThreadCount = 4u;
+	poolDesc.Name = "Demo Service";
+	jobs::CWorkerPool pool(poolDesc);
+	SAssetRegistryDesc desc;
+	desc.Mounts = std::make_shared<const CMountTable>(copy.Mounts);
+	desc.Pool = &pool;
+	CAssetRegistry registry(std::move(desc));
+	registry.Start();
+	ASSERT_TRUE(registry.WaitForInitialScan(120.0));
+	EXPECT_EQ(DumpOf(registry.Live()), DumpOf(reference.Store->Live()));
+	EXPECT_EQ(registry.GetCounters().Analyzed, reference.Analyzed);
+	registry.ShutDown();
+	// A reader writes nothing: no Local/ appears in the project or the engine copy.
+	std::error_code ec;
+	EXPECT_FALSE(std::filesystem::exists(copy.Tree.ProjectDir() / "Local", ec));
+	EXPECT_FALSE(std::filesystem::exists(copy.Tree.EngineDir() / "Local", ec));
 }

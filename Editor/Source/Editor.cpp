@@ -9,6 +9,7 @@
 
 #include "EnginePaths.h"
 #include "GameInstance.h"
+#include "Assets/AssetRegistry.h"
 #include "Window.h"
 #include "WorldScene.h"
 #include "Engine/Engine.h"
@@ -72,6 +73,12 @@ bool CEditor::StartUp ()
 	config::CConfig& config = Engine.GetConfig();
 	graphics::CRenderer& renderer = *Engine.GetRenderer();
 
+	// Game code never sees "unknown" (design §5.4): the first world is built once the registry's initial scan is
+	// complete. A module reload builds again without waiting, the scan long done.
+	if (assets::CAssetRegistry* registry = Engine.GetAssetRegistry())
+	{
+		registry->WaitBeforeBuildWorld();
+	}
 	if (!BuildEditWorld())
 	{
 		return false;

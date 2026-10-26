@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <optional>
 #include <system_error>
+#include <vector>
 
 #if defined(_WINDOWS)
 #include <Windows.h>
@@ -11,8 +12,11 @@
 
 #include "BuildConfig.h"
 #include "EnginePaths.h"
+#include "Assets/AssetRegistry.h"
 #include "Assets/DerivedDataCache.h"
+#include "Assets/Discovery/Mounts.h"
 #include "Assets/FileWatcherService.h"
+#include "Assets/OwnerLock.h"
 #include "ECS/CoreComponents.h"
 #include "Engine/Automation.h"
 #include "Graphics/GraphicsComponents.h"
@@ -20,6 +24,7 @@
 #include "Jobs/WorkerPool.h"
 #include "Log/Log.h"
 #include "Memory/Memory.h"
+#include "Platform/FileLock.h"
 #include "Platform/Platform.h"
 #include "Profiler/CpuProfiler.h"
 
@@ -123,15 +128,60 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 	// Its disk checks (stat, writer probe, self-write hash) run on the workers, off the frame; the pool
 	// outlives it (ShutDown resets the watcher first).
 	FileWatcher->SetWorkerPool(WorkerPool.get());
-	// The roots it watches from (gap-watch-meta §5 "Roots"), before anything subscribes: one handle per
-	// mount, so that the folders below stay free to rename while the editor runs.
-	FileWatcher->AddMount(paths::GetEngineContentDir());
-	if (paths::HasProject())
+	// The mounts (design §5.4 step 1), resolved once: /Engine, /Project and every plugin, the table that
+	// paths::ToMountPath and paths::FromMountPath answer from while the engine runs. Each mount's content and
+	// rule-file directory is a root the watcher watches from (gap-watch-meta §5 "Roots"), added before anything
+	// subscribes: one handle per mount, so that the folders below stay free to rename while the editor runs.
 	{
-		FileWatcher->AddMount(paths::GetProjectContentDir());
-		FileWatcher->AddMount(paths::GetProjectConfigPath().parent_path());
+		std::vector<SDiagnostic> diagnostics;
+		MountTable = std::make_shared<const assets::CMountTable>(assets::CMountTable::Resolve(paths::GetEngineContentDir(),
+			paths::GetEngineConfigPath().parent_path(), paths::HasProject() ? paths::GetProjectDir() : std::filesystem::path(), &diagnostics));
+		for (const SDiagnostic& diagnostic : diagnostics)
+		{
+			log::Warning(log::Assets, "{}: {}", assets::ToDisplayText(diagnostic.Subject), diagnostic.Message);
+		}
+		for (const assets::SMount& mount : MountTable->GetMounts())
+		{
+			FileWatcher->AddMount(mount.ContentDir);
+			FileWatcher->AddMount(mount.RulesFile.parent_path());
+		}
+		paths::SetMountTable(MountTable);
 	}
 	InputActions.SetFileWatcher(FileWatcher.get());
+
+	// 4d. The asset registry, for a project (design §5.4): its snapshots load and its scans run on the workers
+	//     while the window and the renderer come up; hosts wait for the initial scan only before their first
+	//     BuildWorld. Only a host that asked to write (the editor) takes the project's writer lock, and only
+	//     outside read-only runs; without the lock the registry writes nothing.
+	if (paths::HasProject() && Config.Get("Assets", "Registry", true))
+	{
+		assets::SAssetRegistryDesc registry;
+		registry.Mounts = MountTable;
+		registry.Pool = WorkerPool.get();
+		registry.Watcher = FileWatcher.get();
+		registry.Owner = assets::EAssetRegistryOwner::Project;
+		if (Desc.bAssetWriter && !Config.Get("Assets", "ReadOnly", false))
+		{
+			FString owner;
+			FString error;
+			std::optional<platform::CExclusiveFileLock> lock = assets::TryTakeOwnerLock(paths::GetProjectDir(), &owner, &error);
+			if (lock.has_value())
+			{
+				AssetOwnerLock = std::make_unique<platform::CExclusiveFileLock>(std::move(*lock));
+				registry.bWriter = true;
+			}
+			else if (!owner.IsEmpty())
+			{
+				log::Info(log::Assets, "{} owns /Project: this editor writes no registry files", owner);
+			}
+			else
+			{
+				log::Warning(log::Assets, "cannot take the writer lock of /Project ({}): this editor writes no registry files", error);
+			}
+		}
+		AssetRegistry = std::make_unique<assets::CAssetRegistry>(std::move(registry));
+		AssetRegistry->Start();
+	}
 #endif
 
 	// 5. Real-time clock.
@@ -241,12 +291,25 @@ void CEngine::ShutDown ()
 	}
 #endif
 	HeadlessMaterials.reset();
+	// Before the file watcher it subscribes to and the worker pool whose drain would drop its exit snapshot
+	// unwritten (CAssetRegistry::ShutDown waits for it); the lock goes once nothing writes any more.
+	if (AssetRegistry)
+	{
+		AssetRegistry->ShutDown();
+		AssetRegistry.reset();
+	}
+	AssetOwnerLock.reset();
 	// After the renderer, whose libraries subscribe to it; the input actions (a member, destroyed
 	// later) end theirs first. Ends every subscription left.
 	InputActions.SetFileWatcher(nullptr);
 	FileWatcher.reset();
 #if FRT_WITH_DEV_TOOLS
 	paths::SetShaderRootOverride({});
+	if (MountTable)
+	{
+		paths::SetMountTable(nullptr);
+		MountTable.reset();
+	}
 #endif
 	Clock.reset();
 	// After the renderer, whose decodes it may still be running: drains (drops what is queued, waits
@@ -304,6 +367,15 @@ float CEngine::BeginFrame ()
 		FRT_CPU_SCOPE("Engine.WorkerCompletions");
 		WorkerPool->PumpCompletions();
 	}
+#if FRT_WITH_DEV_TOOLS
+	if (AssetRegistry)
+	{
+		// What those completions brought the registry (scan batches, Analyze results) is committed this frame,
+		// at most its frame budget of it (Assets/AssetRegistry.h).
+		FRT_CPU_SCOPE("Assets.Registry");
+		AssetRegistry->Pump();
+	}
+#endif
 
 #if !defined(FRT_HEADLESS)
 	// Waits for this frame's GPU slot and retires what it used. Before the UI, so everything the
