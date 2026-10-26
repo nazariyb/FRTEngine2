@@ -1,5 +1,6 @@
 #include "Assets/Pipeline/Importers/AssetImporter.h"
 
+#include <algorithm>
 #include <type_traits>
 #include <utility>
 
@@ -353,6 +354,37 @@ bool AnalyzeFile (const SAnalyzeInput& In, const SEffectiveFileSettings& Setting
 	}
 #endif
 	return bAnalyzed;
+}
+
+void RemoveSubEntries (SAnalyzeResult& Result, FStringView FileMountPath, TFunctionRef<bool (reflect::TypeId)> Keep)
+{
+	std::vector<uint64> removed;
+	std::vector<FString> removedSubjects;
+	std::erase_if(Result.SubEntries, [&] (const SSubEntryDecl& Sub)
+	{
+		if (Keep(Sub.Type))
+		{
+			return false;
+		}
+		removed.push_back(Sub.SubId);
+		removedSubjects.push_back(FString(FileMountPath) + "#" + Sub.Label);
+		return true;
+	});
+	if (removed.empty())
+	{
+		return;
+	}
+	for (SEdgeDecl& edge : Result.Edges)
+	{
+		if (edge.FromSub != 0u && std::find(removed.begin(), removed.end(), edge.FromSub) != removed.end())
+		{
+			edge.FromSub = 0u;
+		}
+	}
+	std::erase_if(Result.Diagnostics, [&] (const SDiagnostic& Diagnostic)
+	{
+		return std::find(removedSubjects.begin(), removedSubjects.end(), Diagnostic.Subject) != removedSubjects.end();
+	});
 }
 
 void AppendRecordUpsert (const SAnalyzeResult& Result, const SEffectiveFileSettings& Settings, FStringView FileMountPath, SRegistryDelta& Delta)

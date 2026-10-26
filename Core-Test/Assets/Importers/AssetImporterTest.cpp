@@ -303,3 +303,57 @@ TEST(AssetImporterTest, AnalyzedDemoFilesCommitWithResolvedEdges)
 	});
 	EXPECT_EQ(notices, 1u);
 }
+
+TEST(AssetImporterTest, RemovingAnExcludedSubAssetTypeKeepsTheResultConsistent)
+{
+	// The Types filter after Analyze (Types: { Exclude: [frt.Texture] }): the Duck's image sub-entry goes, its edge
+	// to DuckCM.png moves to the record (the file still reads it), its diagnostics go, and the commit raises no
+	// contract violation for an edge from an undeclared SubId.
+	const CMountTable mounts = ResolveDemoMounts();
+	constexpr FStringLiteral Model = "/Project/Models/Duck/Duck.gltf";
+	constexpr FStringLiteral Texture = "/Project/Models/Duck/DuckCM.png";
+	SAnalyzeResult result = AnalyzeAt(mounts, Model);
+	ASSERT_EQ(result.Status, EImportStatus::Analyzed) << DescribeDiagnostics(result).CStr();
+	SDiagnostic onImage;
+	onImage.Severity = ESeverity::Warning;
+	onImage.Subject = FString(Model) + "#image:#0";
+	onImage.Message = "about the image";
+	result.Diagnostics.push_back(onImage);
+	SDiagnostic onFile = onImage;
+	onFile.Subject = FString(Model);
+	result.Diagnostics.push_back(onFile);
+
+	RemoveSubEntries(result, Model, [] (reflect::TypeId Type) { return Type != asset_types::Texture; });
+	EXPECT_EQ(result.SubEntries.size(), 2u);   // mesh and material
+	for (const SSubEntryDecl& sub : result.SubEntries)
+	{
+		EXPECT_NE(sub.Type, asset_types::Texture);
+	}
+	ASSERT_EQ(result.Edges.size(), 1u);
+	EXPECT_EQ(result.Edges[0].TargetPath, Texture);
+	EXPECT_EQ(result.Edges[0].FromSub, 0u);
+	ASSERT_EQ(result.Diagnostics.size(), 1u);
+	EXPECT_EQ(result.Diagnostics[0].Subject, Model);
+
+	SRegistryDelta delta;
+	delta.Mounts.push_back(SMountUpsert { "Engine", false, EngineMountId });
+	delta.Mounts.push_back(SMountUpsert { "Project", false, ProjectMountId });
+	delta.FileUpserts.push_back(MakeFileRow(Model, EFileClass::Asset));
+	delta.FileUpserts.push_back(MakeFileRow(Texture, EFileClass::Asset));
+	AppendRecordUpsert(std::move(result), MakeSettings(FindImporter("Model.Gltf")), Model, delta);
+	SAnalyzeResult texture = AnalyzeAt(mounts, Texture);
+	AppendRecordUpsert(std::move(texture), MakeSettings(FindImporter("Texture")), Texture, delta);
+	CRegistryStore store;
+	store.Commit(std::move(delta));
+	const CRegistryView& view = store.Live();
+	bool bViolation = false;
+	view.ForEachProblem([&] (FStringView, EProblemSource Source, const SDiagnostic&) { bViolation = bViolation || Source == EProblemSource::Registry; });
+	EXPECT_FALSE(bViolation);
+	uint32 resolved = 0u;
+	view.ForEachDependency(*view.FindByPath(Model), EDepFlags {}, EDepFlags {}, [&] (const SDependencyView& Edge)
+	{
+		resolved += Edge.TargetPath == Texture && (Edge.Flags & EDepFlags::Unresolved) == EDepFlags {} && Edge.FromSub == 0u ? 1u : 0u;
+	});
+	EXPECT_EQ(resolved, 1u);
+	EXPECT_FALSE(view.FindByPath(FString(Model) + "#image:#0").has_value());
+}

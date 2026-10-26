@@ -15,6 +15,7 @@
 #include "Assets/Registry/RegistryTypes.h"
 #include "Containers/String.h"
 #include "Diagnostics/Diagnostics.h"
+#include "Functional/FunctionRef.h"
 #include "Hash/StableHash.h"
 
 
@@ -124,12 +125,24 @@ public:
 FRT_CORE_API bool AnalyzeFile (const SAnalyzeInput& In, const SEffectiveFileSettings& Settings, SAnalyzeResult& Out);
 
 /**
+ * Removes the sub-entries whose type Keep rejects - the rules engine's Types filter after Analyze (§3.5.2: "an
+ * excluded sub-asset type is not registered"; Keep = CRulesEngine::IsTypeIncluded with the file's folder scope) -
+ * so the result stays consistent: an edge a removed sub-entry declared moves to the record (FromSub 0; the file
+ * still reads that reference, so the dependency stays), and the diagnostics about a removed sub-entry (Subject
+ * FileMountPath#label) go with it. A sub-entry removed by hand would leave edges from a SubId the record does not
+ * declare, which the store drops with a contract violation. The caller does this before AppendRecordUpsert.
+ */
+FRT_CORE_API void RemoveSubEntries (SAnalyzeResult& Result, FStringView FileMountPath, TFunctionRef<bool (reflect::TypeId)> Keep);
+
+/**
  * Appends the record of FileMountPath to Delta: an SRecordUpsert (provisional GUID, Type, importer name, flags,
  * cook rule, chunk, rule labels from Settings; status, AnalyzeStamp, tags, sub-entries, edges and companions from
  * Result), then the file's Analyze problems - an SProblemsClear of the Analyze source at the file (its sub-entries'
  * subjects included), and one SProblemsSet per subject Result's diagnostics name - so problems an earlier Analyze
  * reported do not survive. File rows are the caller's (Result.ContentHash can fill the SFileUpsert). The rvalue
- * form moves Result's vectors instead of copying them.
+ * form moves Result's vectors instead of copying them. Severities are stored as given: the caller applies a rule
+ * file's Validation: overrides to Result.Diagnostics first (CRulesEngine::ApplyValidation with the file's folder
+ * scope), as it does for the scan's and RULE002 diagnostics.
  */
 FRT_CORE_API void AppendRecordUpsert (const SAnalyzeResult& Result, const SEffectiveFileSettings& Settings, FStringView FileMountPath, SRegistryDelta& Delta);
 FRT_CORE_API void AppendRecordUpsert (SAnalyzeResult&& Result, const SEffectiveFileSettings& Settings, FStringView FileMountPath, SRegistryDelta& Delta);
