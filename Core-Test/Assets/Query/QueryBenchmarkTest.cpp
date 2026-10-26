@@ -178,6 +178,7 @@ void RunSuite (uint32 Assets, uint32 Rows, EBudgetColumn Column)
 		const STimedRun text = TimeQuery(*view, "rock_detail_1");
 		budget.Check("TextTermMs", text.TotalMs, -1.0, -1.0, "ms", Detail(text).CStr());
 		// The same search as a bare loop over ASSETS (no engine): the floor the engine's overhead is measured from.
+		const FString needle("rock_detail_1");
 		double loopMs = 1e30;
 		uint32 loopHits = 0u;
 		for (uint32 round = 0u; round < 10u; ++round)
@@ -186,7 +187,7 @@ void RunSuite (uint32 Assets, uint32 Rows, EBudgetColumn Column)
 			loopHits = 0u;
 			for (uint32 row = 0u; row < tables.Assets.File.Size(); ++row)
 			{
-				loopHits += tables.Assets.File[row] != InvalidRow && tables.Names.GetFolded(tables.Assets.Name[row]).Contains("rock_detail_1") ? 1u : 0u;
+				loopHits += tables.Assets.File[row] != InvalidRow && tables.Names.GetFolded(tables.Assets.Name[row]).Contains(needle.View()) ? 1u : 0u;
 			}
 			loopMs = (std::min)(loopMs, platform::TimestampToMilliseconds(platform::ReadTimestamp() - start));
 		}

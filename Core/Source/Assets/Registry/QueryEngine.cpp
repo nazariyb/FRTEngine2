@@ -1160,6 +1160,8 @@ struct SRowContext
 	uint32 File = InvalidRow;
 	reflect::TypeId Type = 0u;
 	uint32 TypeRow = InvalidRow;
+	uint32 Name = InvalidRow;      // NAMES id of $Name when the scan has read it already
+	FStringView FoldedPath;        // the file's folded path when the scan has it at hand (the previous row's file)
 };
 
 [[nodiscard]] SRowContext MakeContext (const SRegistryTables& Tables, uint32 Value) noexcept
@@ -1542,17 +1544,24 @@ struct SGraphSet
 	bool bTransitive = false;
 };
 
+/**
+ * A hit as the sort sees it, kept small (the sort moves these): the order key (a number in Bits, or folded text)
+ * and, when the path is the primary order, the folded file path. Everything else - the path under an order key,
+ * a sub-entry's label, the raw spelling that breaks a tie of folded texts - is read on the rare compare that
+ * needs it.
+ */
 struct SResult
 {
 	uint32 Value = InvalidRow;
 	uint32 Asset = InvalidRow;
+	uint64 Bits = 0u;                   // Int: int64; Real: double bits; Text from a pool: the NAMES / STRINGS id
+	FStringView Text;                   // Text: the folded order text; without an order key, a sub-entry's folded label
+	FStringView FoldedPath;             // empty until needed under an order key
 	uint8 Class = 0u;                   // EOrderClass
-	uint64 Bits = 0u;                   // Int: int64; Real: double bits
-	FStringView FoldedText;
-	FStringView RawText;
-	FStringView FoldedPath;
-	FStringView FoldedLabel;            // a sub-entry's label, folded; empty for an asset record
+	uint8 TextSource = 0u;              // ETextSource: where the raw spelling of Text comes from
 };
+
+enum ETextSource : uint8 { TextIsRaw = 0u, TextFromNames = 1u, TextFromStrings = 2u, TextFromColumn = 3u };
 
 enum EOrderClass : uint8 { OrderInt = 0u, OrderReal = 1u, OrderText = 2u, OrderPath = 3u, OrderAbsent = 255u };
 
@@ -1832,7 +1841,7 @@ private:
 
 	[[nodiscard]] bool MatchesText (const SQueryNode& Node, const SRowContext& Context) const noexcept
 	{
-		const FStringView path = GetFoldedFilePath(Tables, Context.File);
+		const FStringView path = !Context.FoldedPath.IsEmpty() ? Context.FoldedPath : GetFoldedFilePath(Tables, Context.File);
 		const FStringView label = Context.Sub != InvalidRow ? Tables.Names.GetFolded(Tables.SubEntries.Key[Context.Sub]) : FStringView();
 		for (const FString& text : Node.Texts)
 		{
@@ -2093,8 +2102,12 @@ private:
 				bMatch = test.Kind == EValueKind::Text ? TestText(op, test.Values, Plan.FoldedTypeNames[Context.Type].View()) : TestBits(op, test.Values, Context.Type);
 				break;
 			case ESystemColumn::Name:
-				bMatch = TestText(op, test.Values, Tables.Names.GetFolded(Context.Sub != InvalidRow ? Tables.SubEntries.Key[Context.Sub] : Tables.Assets.Name[Context.Asset]));
+			{
+				const uint32 name = Context.Name != InvalidRow ? Context.Name
+					: (Context.Sub != InvalidRow ? Tables.SubEntries.Key[Context.Sub] : Tables.Assets.Name[Context.Asset]);
+				bMatch = TestText(op, test.Values, Tables.Names.GetFolded(name));
 				break;
+			}
 			case ESystemColumn::Size:
 				bMatch = test.Kind == EValueKind::Real ? TestReal(op, test.Values, static_cast<double>(Tables.Files.Size[Context.File]))
 					: TestInt(op, test.Values, static_cast<int64>(Tables.Files.Size[Context.File]));
@@ -2144,35 +2157,57 @@ private:
 	void ScanAssets (std::vector<SResult>& Out, uint32& OutCandidates)
 	{
 		const SQueryNode& root = Plan.Root;
+		if (!root.bHasRowTests)
+		{
+			Out.reserve(Out.size() + Tables.LiveRecords);   // every record of an allowed type is a hit
+		}
+		const bool bReadNames = std::any_of(root.SystemTests.begin(), root.SystemTests.end(),
+			[] (const SSystemTest& Test) { return Test.bCheap && Test.Column == ESystemColumn::Name; });
+		ScanAssetsWith(Out, OutCandidates, bReadNames, [&] (const SRowContext& Context)
+		{
+			return !root.bHasRowTests || (PassesCheapTests(root, Context) && (root.bOnlyCheapRowTests || MatchesNode(root, Context, true)));
+		});
+	}
+
+	template <typename TFilter>
+	void ScanAssetsWith (std::vector<SResult>& Out, uint32& OutCandidates, bool bReadNames, TFilter&& Filter)
+	{
+		const SQueryNode& root = Plan.Root;
 		const SAssetsTable& assets = Tables.Assets;
 		// Only tag tests read a type row: AnyOf alternatives' and a tag order key's.
 		const bool bNeedTypeRow = !root.AnyOf.empty() || Plan.Order.Kind == EOrderKind::Tag;
+		const uint8* const allowed = root.AllowedTypes.data();
+		const size_t allowedCount = root.AllowedTypes.size();
+		uint32 candidates = 0u;
 		for (uint32 page = 0u; page < assets.File.GetPageCount(); ++page)
 		{
 			const std::span<const uint32> files = assets.File.GetPage(page);
 			const std::span<const reflect::TypeId> types = assets.Type.GetPage(page);
-			for (uint32 i = 0u; i < files.size(); ++i)
+			const std::span<const uint32> names = bReadNames ? assets.Name.GetPage(page) : std::span<const uint32>();
+			const uint32 rows = static_cast<uint32>(files.size());
+			for (uint32 i = 0u; i < rows; ++i)
 			{
 				const uint32 file = files[i];
 				const reflect::TypeId type = types[i];
-				if (file == InvalidRow || type >= root.AllowedTypes.size() || root.AllowedTypes[type] == 0u)
+				if (file == InvalidRow || type >= allowedCount || allowed[type] == 0u)
 				{
 					continue;
 				}
-				++OutCandidates;
+				++candidates;
 				SRowContext context;
 				context.Value = page * RegistryPageRows + i;
 				context.Asset = context.Value;
 				context.File = file;
 				context.Type = type;
 				context.TypeRow = bNeedTypeRow ? assets.TypeRow[context.Value] : InvalidRow;
-				if (root.bHasRowTests && (!PassesCheapTests(root, context) || (!root.bOnlyCheapRowTests && !MatchesNode(root, context, true))))
+				context.Name = bReadNames ? names[i] : InvalidRow;
+				if (Filter(context))
 				{
-					continue;
+					Out.push_back(MakeResult(context));
 				}
-				Out.push_back(MakeResult(context));
 			}
 		}
+		OutCandidates += candidates;
 	}
 
 	void ScanTypeTable (reflect::TypeId Type, std::vector<SResult>& Out, uint32& OutCandidates)
@@ -2247,6 +2282,16 @@ private:
 			ApplyColumnTest(table, test, masks);
 		}
 
+		uint32 survivors = 0u;
+		for (const uint64 mask : masks)
+		{
+			survivors += static_cast<uint32>(std::popcount(mask));
+		}
+		Out.reserve(Out.size() + survivors);
+		// Rows of one table record are contiguous: the previous row's file is usually this row's.
+		uint32 lastAsset = InvalidRow;
+		uint32 lastFile = InvalidRow;
+		FStringView lastFoldedPath;
 		for (uint32 word = 0u; word < masks.size(); ++word)
 		{
 			uint64 remaining = masks[word];
@@ -2274,7 +2319,14 @@ private:
 				{
 					context.Asset = value;
 				}
-				context.File = Tables.Assets.File[context.Asset];
+				if (context.Asset != lastAsset)
+				{
+					lastAsset = context.Asset;
+					lastFile = Tables.Assets.File[context.Asset];
+					lastFoldedPath = GetFoldedFilePath(Tables, lastFile);
+				}
+				context.File = lastFile;
+				context.FoldedPath = lastFoldedPath;
 				if (root.bHasRowTests && (!PassesCheapTests(root, context) || (!root.bOnlyCheapRowTests && !MatchesNode(root, context, true))))
 				{
 					continue;
@@ -2291,13 +2343,18 @@ private:
 		SResult result;
 		result.Value = Context.Value;
 		result.Asset = Context.Asset;
-		result.FoldedPath = GetFoldedFilePath(Tables, Context.File);
-		if (Context.Sub != InvalidRow)
-		{
-			result.FoldedLabel = Tables.Names.GetFolded(Tables.SubEntries.Key[Context.Sub]);
-		}
 		result.Class = OrderAbsent;
 		const SOrderSpec& order = Plan.Order;
+		if (order.Kind == EOrderKind::None)
+		{
+			// The path is the order: keep it, and a sub-entry's label, at hand for the sort.
+			result.FoldedPath = !Context.FoldedPath.IsEmpty() ? Context.FoldedPath : GetFoldedFilePath(Tables, Context.File);
+			if (Context.Sub != InvalidRow)
+			{
+				result.Text = Tables.Names.GetFolded(Tables.SubEntries.Key[Context.Sub]);
+			}
+			return result;
+		}
 		if (order.Kind == EOrderKind::Tag)
 		{
 			const uint32 key = Context.Type < order.KeyPerType.size() ? order.KeyPerType[Context.Type] : InvalidRow;
@@ -2316,13 +2373,15 @@ private:
 						break;
 					case ETagType::Name:
 						result.Class = OrderText;
-						result.FoldedText = Tables.Names.GetFolded(static_cast<uint32>(bits));
-						result.RawText = Tables.Names.Get(static_cast<uint32>(bits));
+						result.Bits = bits;
+						result.Text = Tables.Names.GetFolded(static_cast<uint32>(bits));
+						result.TextSource = TextFromNames;
 						break;
 					case ETagType::String:
 						result.Class = OrderText;
-						result.FoldedText = Tables.Strings.GetFolded(static_cast<uint32>(bits));
-						result.RawText = Tables.Strings.Get(static_cast<uint32>(bits));
+						result.Bits = bits;
+						result.Text = Tables.Strings.GetFolded(static_cast<uint32>(bits));
+						result.TextSource = TextFromStrings;
 						break;
 					default:
 						result.Class = OrderInt;
@@ -2362,15 +2421,16 @@ private:
 			case ESystemColumn::CookRule:
 				// By name, so the order reads alphabetically in a result table.
 				Result.Class = OrderText;
-				Result.FoldedText = column == ESystemColumn::Type ? Plan.FoldedTypeNames[Context.Type].View() : Cell.Text;
-				Result.RawText = Result.FoldedText;
+				Result.Text = column == ESystemColumn::Type ? Plan.FoldedTypeNames[Context.Type].View() : Cell.Text;
+				Result.TextSource = TextIsRaw;
 				break;
 			case ESystemColumn::Name:
 			case ESystemColumn::Folder:
 			case ESystemColumn::Labels:
 			case ESystemColumn::PrimaryName:
 				Result.Class = OrderText;
-				Result.FoldedText = Cell.Text;
+				Result.Text = Cell.Text;
+				Result.TextSource = TextFromColumn;
 				break;
 			default:
 				Result.Class = OrderInt;
@@ -2378,18 +2438,38 @@ private:
 				break;
 			}
 		});
-		if (Result.Class == OrderText && Result.RawText.IsEmpty() && !Result.FoldedText.IsEmpty())
+	}
+
+	// The raw spelling of a text order key: the tie-break between texts equal under the fold.
+	[[nodiscard]] FStringView GetRawText (const SResult& Result) const
+	{
+		switch (Result.TextSource)
 		{
-			// Raw spelling as the tie-break between texts equal under the fold.
+		case TextFromNames:
+			return Tables.Names.Get(static_cast<uint32>(Result.Bits));
+		case TextFromStrings:
+			return Tables.Strings.Get(static_cast<uint32>(Result.Bits));
+		case TextFromColumn:
+		{
+			FStringView raw;
 			FString scratch;
-			ForEachSystemValue(Tables, &Plan, Context, column, false, scratch, [&] (const SCell& Cell)
+			ForEachSystemValue(Tables, &Plan, MakeContext(Tables, Result.Value), Plan.Order.Column, false, scratch, [&] (const SCell& Cell)
 			{
-				if (Result.RawText.IsEmpty())
+				if (raw.IsEmpty())
 				{
-					Result.RawText = Cell.Text;   // views into the pools (never into scratch for these columns)
+					raw = Cell.Text;   // a view into the pools: $Name, $Folder, $Labels and $PrimaryName never compose text
 				}
 			});
+			return raw;
 		}
+		default:
+			return Result.Text;
+		}
+	}
+
+	[[nodiscard]] FStringView GetFoldedPath (const SResult& Result) const noexcept
+	{
+		return !Result.FoldedPath.IsEmpty() ? Result.FoldedPath : GetFoldedFilePath(Tables, Tables.Assets.File[Result.Asset]);
 	}
 
 	// File path (fold, then bytes), then the label (the asset record first).
@@ -2397,7 +2477,7 @@ private:
 	{
 		if (A.Asset != B.Asset)
 		{
-			int32 compared = A.FoldedPath.Compare(B.FoldedPath);
+			int32 compared = GetFoldedPath(A).Compare(GetFoldedPath(B));
 			if (compared != 0)
 			{
 				return compared;
@@ -2419,10 +2499,12 @@ private:
 		{
 			return 0;
 		}
-		int32 compared = A.FoldedLabel.Compare(B.FoldedLabel);
+		const auto key = [this] (const SResult& Result) { return Tables.SubEntries.Key[Result.Value & ~SubEntryBit]; };
+		int32 compared = Plan.Order.Kind == EOrderKind::None ? A.Text.Compare(B.Text)
+			: Tables.Names.GetFolded(key(A)).Compare(Tables.Names.GetFolded(key(B)));
 		if (compared == 0)
 		{
-			compared = Tables.Names.Get(Tables.SubEntries.Key[A.Value & ~SubEntryBit]).Compare(Tables.Names.Get(Tables.SubEntries.Key[B.Value & ~SubEntryBit]));
+			compared = Tables.Names.Get(key(A)).Compare(Tables.Names.Get(key(B)));
 		}
 		if (compared == 0 && A.Value != B.Value)
 		{
@@ -2461,10 +2543,10 @@ private:
 		{
 			return direction(A.Class < B.Class ? -1 : 1);
 		}
-		int32 compared = Sign(A.FoldedText.Compare(B.FoldedText));
+		int32 compared = Sign(A.Text.Compare(B.Text));
 		if (compared == 0)
 		{
-			compared = Sign(A.RawText.Compare(B.RawText));
+			compared = Sign(GetRawText(A).Compare(GetRawText(B)));
 		}
 		return direction(compared);
 	}
