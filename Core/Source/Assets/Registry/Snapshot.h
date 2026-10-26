@@ -62,10 +62,11 @@
  *
  * Each snapshot file has a journal beside it (GetJournalPath, Journal.h): the deltas committed since the
  * snapshot's JournalBase. ReadSnapshots replays it when its header names the snapshot's ProjectId and
- * JournalBase, and drops it otherwise; a torn tail is dropped. Loading is two steps so the reading runs on
- * a worker and the store keeps its owner thread: ReadSnapshots (read, checksum, decode; any thread) and
- * AdoptSnapshots (AdoptImage, then the journal's deltas committed in order; the store's owner thread).
- * LoadSnapshots does both.
+ * JournalBase, and drops it otherwise; a torn tail is dropped. Loading is two steps: ReadSnapshots (read,
+ * checksum, decode; any thread) and AdoptSnapshots (AdoptImage, then the journal's deltas committed in order;
+ * the store's owner thread). LoadSnapshots does both. The whole load runs on a worker at start-up: the
+ * worker becomes the store's owner for it and calls CRegistryStore::ReleaseOwner when it is done, and the job's
+ * completion hands the store back to the thread that commits from then on (§5.4 step 2).
  *
  * ProjectId: random, generated once per owner root into <root>/Local/Assets/ProjectId (never in the
  * .frtproject), so a snapshot copied from another project or engine checkout is not taken for this one's.

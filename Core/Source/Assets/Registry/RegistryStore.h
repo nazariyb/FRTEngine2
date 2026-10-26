@@ -19,8 +19,8 @@
  * Analyze and the watcher; AssetTool and tests use it directly.
  *
  * Threading. Commit, Live, AdoptImage, CompactGraph and ForEachChangeSince belong to the owner thread (the
- * thread of the first Commit or AdoptImage; checked in builds with assertions). Acquire may be called from
- * any thread at any time. Views are published through std::atomic<std::shared_ptr<const CRegistryView>>;
+ * thread of the first Commit or AdoptImage after construction or ReleaseOwner; checked in builds with
+ * assertions). Acquire may be called from any thread at any time. Views are published through std::atomic<std::shared_ptr<const CRegistryView>>;
  * on MSVC its load is not lock-free - an internal spin bit is held while the reference count is raised - and
  * that is the accepted meaning of "Acquire never blocks": it never waits for a commit or for another
  * reader's work. (The deprecated std::atomic_load free functions are not used.) A commit copies only the
@@ -87,6 +87,17 @@ public:
 	[[nodiscard]] std::shared_ptr<const CRegistryView> Acquire () const noexcept;
 
 	[[nodiscard]] uint64 GetRevision () const noexcept;
+
+	/**
+	 * Hands the writer side to another thread: the next Commit, AdoptImage or compaction pins the thread that
+	 * makes it. For the start-up load on a worker (§5.4 step 2): the owner thread creates the store, a worker
+	 * runs ReadSnapshots and AdoptSnapshots on it (becoming its owner) and calls ReleaseOwner, and the job's
+	 * completion hands the store back to the owner thread, which commits from then on - so the load costs the
+	 * owner thread nothing. Only the current owner (or, before any write, anyone) calls it, and nothing touches
+	 * the writer side until the hand-over is ordered by something like a job completion. Readers may Acquire
+	 * throughout: they see the empty view until the adoption publishes.
+	 */
+	void ReleaseOwner () noexcept;
 
 	// Every record change with a revision above Revision, oldest first. False when the bounded ring has
 	// dropped some of them (64k entries): refresh everything instead. Owner thread.

@@ -2828,6 +2828,12 @@ void CRegistryStore::CheckOwnerThread ()
 	frt_assert(OwnerThread == thread);
 }
 
+void CRegistryStore::ReleaseOwner () noexcept
+{
+	frt_assert(OwnerThread == 0u || OwnerThread == platform::GetCurrentThreadId());
+	OwnerThread = 0u;
+}
+
 void CRegistryStore::Publish ()
 {
 	Published.store(std::make_shared<const CRegistryView>(LiveView), std::memory_order_release);

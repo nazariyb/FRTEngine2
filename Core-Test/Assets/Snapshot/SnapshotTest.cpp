@@ -13,6 +13,7 @@
 
 #include "Assets/AssetTypes.h"
 #include "Assets/MountPaths.h"
+#include "Jobs/WorkerPool.h"
 #include "SnapshotTestUtils.h"
 
 using namespace frt;
@@ -98,6 +99,40 @@ TEST_F(SnapshotRoundTripTest, AStoreLoadedFromASnapshotWritesTheSameBytes)
 	// One image gives one byte sequence.
 	const SRegistryImage image = Original.Live().ExportImage({});
 	EXPECT_EQ(EncodeSnapshot(image, ProjectId, 7u, 0u), EncodeSnapshot(image, ProjectId, 7u, 0u));
+}
+
+TEST_F(SnapshotRoundTripTest, AWorkerLoadsTheStoreAndHandsItBackToTheOwnerThread)
+{
+	// §5.4 step 2 as F3 runs it: the owner thread makes the store, a worker reads and adopts the snapshot and
+	// releases the writer side, and the completion hands the store back; the owner thread commits from then on.
+	jobs::SWorkerPoolDesc desc;
+	desc.ThreadCount = 1u;
+	desc.Name = "Snapshot Test";
+	jobs::CWorkerPool pool(desc);
+	CRegistryStore loaded;
+	const std::shared_ptr<const CRegistryView> before = loaded.Acquire();
+	bool bDone = false;
+	SSnapshotLoadResult result;
+	pool.Submit(jobs::EWorkPriority::Normal, 0u, [&]
+	{
+		result = Load(loaded, Path, ProjectId);
+		loaded.ReleaseOwner();
+	}, [&] { bDone = true; });
+	ASSERT_TRUE(pool.PumpUntil([&] { return bDone; }, 60.0));
+	EXPECT_TRUE(result.AnyLoaded());
+	EXPECT_EQ(before->GetRecordCount(), 0u) << "a view acquired before the load stays as it was";
+	EXPECT_EQ(loaded.Acquire()->GetRecordCount(), Original.Live().GetRecordCount());
+	ExpectSameContent(Original.Live(), loaded.Live());
+
+	const auto edit = [] (CRegistryStore& Store)
+	{
+		SRegistryDelta delta;
+		AddTexture(delta, "/Project/T/after.png");
+		Store.Commit(std::move(delta));
+	};
+	edit(Original);
+	edit(loaded);
+	ExpectSameContent(Original.Live(), loaded.Live());
 }
 
 TEST_F(SnapshotTest, EngineAndProjectFilesLoadedTogetherEqualOneFreshCommit)
