@@ -241,6 +241,8 @@ std::vector<uint8> EncodeSection (const SRegistryImage& Image, ESnapshotSection 
 		uint32 tableCount = 0u;
 		std::vector<uint8> tables;
 		std::vector<uint8> payload;
+		std::vector<int32> keyOfTag(Image.Tags.size(), -1);   // per image tag: its key in its owner's type, -1 none
+		std::vector<std::pair<uint32, int32>> keyOfName;      // per type: image name -> key (a type has a few keys)
 		for (uint32 t = 0u; t < Image.TypeNames.size(); ++t)
 		{
 			const std::optional<reflect::TypeId> type = CAssetTypeRegistry::FindExact(Image.TypeNames[t]);
@@ -250,6 +252,34 @@ std::vector<uint8> EncodeSection (const SRegistryImage& Image, ESnapshotSection 
 			}
 			const SAssetTypeInfo& info = CAssetTypeRegistry::Get(*type);
 			const std::vector<SRow>& rows = rowsByType[t];
+			// Each tag's key, by name and type, once: the columns below compare key indices.
+			keyOfName.clear();
+			for (const SRow& row : rows)
+			{
+				for (uint32 i = row.Tags.Begin; i < row.Tags.Begin + row.Tags.Count && i < Image.Tags.size(); ++i)
+				{
+					const SImageTag& tag = Image.Tags[i];
+					const auto known = std::find_if(keyOfName.begin(), keyOfName.end(), [&] (const auto& Entry) { return Entry.first == tag.Key; });
+					int32 key = -1;
+					if (known != keyOfName.end())
+					{
+						key = known->second;
+					}
+					else
+					{
+						for (uint32 k = 0u; k < info.Keys.size() && tag.Key < Image.Names.size(); ++k)
+						{
+							if (Image.Names[tag.Key].View() == FStringView(info.Keys[k].Name))
+							{
+								key = static_cast<int32>(k);
+								break;
+							}
+						}
+						keyOfName.emplace_back(tag.Key, key);
+					}
+					keyOfTag[i] = key >= 0 && tag.Type == info.Keys[key].Type ? key : -1;
+				}
+			}
 			payload.clear();
 			AppendVarint(payload, info.Keys.size());
 			for (const SStaticTagKey& key : info.Keys)
@@ -263,22 +293,22 @@ std::vector<uint8> EncodeSection (const SRegistryImage& Image, ESnapshotSection 
 			{
 				AppendVarint(payload, row.Owner);
 			}
-			for (const SStaticTagKey& key : info.Keys)
+			for (uint32 k = 0u; k < info.Keys.size(); ++k)
 			{
-				const EValueForm form = GetValueForm(key.Type);
+				const EValueForm form = GetValueForm(info.Keys[k].Type);
 				for (const SRow& row : rows)
 				{
+					const uint32 end = (std::min)(row.Tags.Begin + row.Tags.Count, static_cast<uint32>(Image.Tags.size()));
 					uint32 count = 0u;
-					for (uint32 i = row.Tags.Begin; i < row.Tags.Begin + row.Tags.Count && i < Image.Tags.size(); ++i)
+					for (uint32 i = row.Tags.Begin; i < end; ++i)
 					{
-						const SImageTag& tag = Image.Tags[i];
-						count += tag.Key < Image.Names.size() && Image.Names[tag.Key].View() == FStringView(key.Name) && tag.Type == key.Type ? 1u : 0u;
+						count += keyOfTag[i] == static_cast<int32>(k) ? 1u : 0u;
 					}
 					AppendVarint(payload, count);
-					for (uint32 i = row.Tags.Begin; count > 0u && i < row.Tags.Begin + row.Tags.Count && i < Image.Tags.size(); ++i)
+					for (uint32 i = row.Tags.Begin; count > 0u && i < end; ++i)
 					{
 						const SImageTag& tag = Image.Tags[i];
-						if (tag.Key >= Image.Names.size() || Image.Names[tag.Key].View() != FStringView(key.Name) || tag.Type != key.Type)
+						if (keyOfTag[i] != static_cast<int32>(k))
 						{
 							continue;
 						}

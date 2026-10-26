@@ -1,7 +1,6 @@
 #include "Assets/Registry/RegistryView.h"
 
 #include <algorithm>
-#include <unordered_map>
 
 #include "Assets/AssetTypes.h"
 #include "Containers/StringMap.h"
@@ -17,41 +16,85 @@ namespace frt::assets
 {
 namespace
 {
-// Image-local string tables, deduplicated.
-class CImageStrings
+/**
+ * An image table of texts filled in first-use order, deduplicated by text, from texts the store addresses by id:
+ * a dense table per id space answers every use after the first without hashing, and only the first use of an id
+ * hashes its text (two ids of one space may spell the same text - PATHS is not interned - and two spaces share
+ * the table). The image is the one a text-keyed map would build, so snapshots keep their bytes.
+ */
+class CImageTexts
 {
 public:
-	explicit CImageStrings (std::vector<FString>& InTable)
+	explicit CImageTexts (std::vector<FString>& InTable)
 		: Table(InTable)
 	{}
 
-	uint32 Add (FStringView Text)
+	// Space: a dense table over one id space, grown on demand; Id: the text's id there.
+	uint32 Add (std::vector<uint32>& Space, uint32 Id, FStringView Text)
 	{
-		const auto found = Index.find(Text);
-		if (found != Index.end())
+		if (Id >= Space.size())
 		{
-			return found->second;
+			Space.resize((std::max)(static_cast<size_t>(Id) + 1u, Space.size() * 2u), ~0u);
 		}
-		const uint32 index = static_cast<uint32>(Table.size());
-		Table.push_back(FString(Text));
-		Index.try_emplace(FString(Text), index);
-		return index;
+		uint32& slot = Space[Id];
+		if (slot == ~0u)
+		{
+			slot = AddText(Text);
+		}
+		return slot;
+	}
+
+	// A text with no id (a type or importer name).
+	uint32 AddText (FStringView Text)
+	{
+		const uint64 hash = HashExact(Text);
+		uint32 found = ~0u;
+		Index.ForEach(hash, [&] (uint32 Entry)
+		{
+			if (Table[Entry].View() == Text)
+			{
+				found = Entry;
+				return false;
+			}
+			return true;
+		});
+		if (found == ~0u)
+		{
+			found = static_cast<uint32>(Table.size());
+			Table.push_back(FString(Text));
+			Index.Insert(hash, found, 0u);
+		}
+		return found;
 	}
 
 private:
 	std::vector<FString>& Table;
-	TStringMap<uint32> Index;
+	CPagedHashIndex Index;
 };
 }
 
+/**
+ * The image of the given mounts, read straight from the tables (row by row, column by column) rather than through
+ * the record accessors, with every text added to the image's tables through CImageTexts. The order of first uses -
+ * folders in pre-order, files, rule files, then each record's primary name, labels, tags, sub-entries, edges and
+ * companions, then problems - fixes the image's indices, as before.
+ */
 SRegistryImage CRegistryView::ExportImage (std::span<const MountId> Mounts) const
 {
 	const SRegistryTables& tables = Tables;
 	SRegistryImage image;
-	CImageStrings names(image.Names);
-	CImageStrings strings(image.Strings);
-	CImageStrings typeNames(image.TypeNames);
-	CImageStrings importerNames(image.ImporterNames);
+	CImageTexts names(image.Names);
+	CImageTexts strings(image.Strings);
+	CImageTexts typeNames(image.TypeNames);
+	CImageTexts importerNames(image.ImporterNames);
+	std::vector<uint32> nameIds;        // NAMES id -> image name
+	std::vector<uint32> pathIds;        // PATHS id -> image string
+	std::vector<uint32> textIds;        // STRINGS id -> image string
+	std::vector<uint32> typeIds;        // TypeId -> image type name
+	std::vector<uint32> importerIds;    // importer index -> image importer name
+	const auto nameOf = [&] (uint32 NameId) { return names.Add(nameIds, NameId, tables.Names.Get(NameId)); };
+	const auto pathOf = [&] (uint32 PathId) { return strings.Add(pathIds, PathId, tables.Paths.Get(PathId)); };
+	const auto typeOf = [&] (reflect::TypeId Type) { return static_cast<uint16>(typeNames.Add(typeIds, Type, CAssetTypeRegistry::Get(Type).Name)); };
 
 	std::vector<int32> mountIndex(tables.Mounts->size(), -1);
 	for (const SMountRow& mount : *tables.Mounts)
@@ -67,131 +110,175 @@ SRegistryImage CRegistryView::ExportImage (std::span<const MountId> Mounts) cons
 	const auto isExported = [&] (MountId Mount) { return Mount < mountIndex.size() && mountIndex[Mount] >= 0; };
 
 	// Folders in pre-order (parents first), mount by mount.
-	std::vector<uint32> folderRows;
-	ForEachFolder([&] (uint32 Row)
+	const uint32 folderRows = tables.Folders.Mount.Size();
+	std::vector<uint32> folders;
+	for (uint32 row = 0u; row < folderRows; ++row)
 	{
-		if (isExported(tables.Folders.Mount[Row]))
+		if (tables.Folders.Mount[row] != InvalidMountId && isExported(tables.Folders.Mount[row]))
 		{
-			folderRows.push_back(Row);
+			folders.push_back(row);
 		}
-	});
-	std::sort(folderRows.begin(), folderRows.end(), [&] (uint32 A, uint32 B)
+	}
+	std::sort(folders.begin(), folders.end(), [&] (uint32 A, uint32 B)
 	{
 		const MountId mountA = tables.Folders.Mount[A];
 		const MountId mountB = tables.Folders.Mount[B];
 		return mountA != mountB ? mountA < mountB : tables.Folders.PreorderBegin[A] < tables.Folders.PreorderBegin[B];
 	});
-	std::unordered_map<uint32, uint32> folderIndex;
-	for (const uint32 row : folderRows)
+	std::vector<uint32> folderIndex(folderRows, ~0u);
+	image.Folders.reserve(folders.size());
+	for (const uint32 row : folders)
 	{
 		SImageFolder folder;
 		folder.Mount = static_cast<uint16>(mountIndex[tables.Folders.Mount[row]]);
 		const uint32 parent = tables.Folders.Parent[row];
-		folder.Parent = parent != InvalidRow ? folderIndex.at(parent) : ~0u;
-		folder.Name = names.Add(tables.Names.Get(tables.Folders.Name[row]));
-		folderIndex.emplace(row, static_cast<uint32>(image.Folders.size()));
+		folder.Parent = parent != InvalidRow ? folderIndex[parent] : ~0u;
+		folder.Name = nameOf(tables.Folders.Name[row]);
+		folderIndex[row] = static_cast<uint32>(image.Folders.size());
 		image.Folders.push_back(folder);
 	}
 
-	std::unordered_map<uint32, uint32> fileIndex;
-	ForEachFile([&] (uint32 Row)
+	const SFilesTable& files = tables.Files;
+	const uint32 fileRows = files.Folder.Size();
+	std::vector<uint32> fileIndex(fileRows, ~0u);
+	image.Files.reserve(tables.LiveFiles);
+	for (uint32 row = 0u; row < fileRows; ++row)
 	{
-		if (!isExported(tables.Files.Mount[Row]))
+		if (files.Folder[row] == InvalidRow || !isExported(files.Mount[row]))
 		{
-			return;
+			continue;
 		}
 		SImageFile file;
-		file.Folder = folderIndex.at(tables.Files.Folder[Row]);
-		file.LeafName = names.Add(tables.Names.Get(tables.Files.LeafName[Row]));
-		file.Size = tables.Files.Size[Row];
-		file.MTime = tables.Files.MTime[Row];
-		file.Identity = tables.Files.Identity[Row];
-		file.ContentHash = tables.Files.ContentHash[Row];
-		file.MetaHash = tables.Files.MetaHash[Row];
-		file.Class = tables.Files.BaseClass[Row];
-		file.MetaState = tables.Files.MetaState[Row];
-		fileIndex.emplace(Row, static_cast<uint32>(image.Files.size()));
+		file.Folder = folderIndex[files.Folder[row]];
+		file.LeafName = nameOf(files.LeafName[row]);
+		file.Size = files.Size[row];
+		file.MTime = files.MTime[row];
+		file.Identity = files.Identity[row];
+		file.ContentHash = files.ContentHash[row];
+		file.MetaHash = files.MetaHash[row];
+		file.Class = files.BaseClass[row];
+		file.MetaState = files.MetaState[row];
+		fileIndex[row] = static_cast<uint32>(image.Files.size());
 		image.Files.push_back(file);
-	});
+	}
 
-	ForEachRuleFile([&] (uint32 Row)
+	const uint32 ruleFileRows = tables.RuleFiles.Mount.Size();
+	for (uint32 row = 0u; row < ruleFileRows; ++row)
 	{
-		const MountId mount = tables.RuleFiles.Mount[Row];
-		if (!isExported(mount))
+		const MountId mount = tables.RuleFiles.Mount[row];
+		if (mount == InvalidMountId || !isExported(mount))
 		{
-			return;
+			continue;
 		}
-		const uint32 folder = tables.RuleFiles.Folder[Row];
-		image.RuleFiles.push_back(SImageRuleFile { static_cast<uint16>(mountIndex[mount]), folder != InvalidRow ? folderIndex.at(folder) : ~0u,
-			tables.RuleFiles.RulesHash[Row] });
-	});
+		const uint32 folder = tables.RuleFiles.Folder[row];
+		image.RuleFiles.push_back(SImageRuleFile { static_cast<uint16>(mountIndex[mount]), folder != InvalidRow ? folderIndex[folder] : ~0u,
+			tables.RuleFiles.RulesHash[row] });
+	}
 
-	const auto exportTags = [&] (SRecordId Record) -> SPoolRange
+	// A type row's present values, key by key in the type's key order (a MultiValue key's list in order).
+	const auto exportTags = [&] (reflect::TypeId Type, uint32 TypeRow) -> SPoolRange
 	{
 		SPoolRange range { static_cast<uint32>(image.Tags.size()), 0u };
-		ForEachTag(Record, [&] (FStringView Key, const STagValue& Value)
+		if (Type >= tables.Types.size() || TypeRow == InvalidRow)
 		{
-			SImageTag tag;
-			tag.Key = names.Add(Key);
-			tag.Type = Value.Type;
-			tag.Bits = Value.Bits;
-			if (Value.Type == ETagType::Name)
+			return range;
+		}
+		const CTypeTable& table = tables.Types[Type];
+		for (uint32 key = 0u; key < table.Keys.size(); ++key)
+		{
+			const STagColumn& column = table.Columns[key];
+			if (!column.PresentBits.Test(TypeRow))
 			{
-				tag.Text = names.Add(Value.Text);
-				tag.Bits = 0u;
+				continue;
 			}
-			else if (Value.Type == ETagType::String)
+			const STagKeyDesc& desc = table.Keys[key];
+			const uint32 keyName = nameOf(desc.NameId);
+			const auto add = [&] (uint64 Bits)
 			{
-				tag.Text = strings.Add(Value.Text);
-				tag.Bits = 0u;
+				SImageTag tag;
+				tag.Key = keyName;
+				tag.Type = desc.Type;
+				tag.Bits = Bits;
+				if (desc.Type == ETagType::Name)
+				{
+					tag.Text = nameOf(static_cast<uint32>(Bits));
+					tag.Bits = 0u;
+				}
+				else if (desc.Type == ETagType::String)
+				{
+					tag.Text = strings.Add(textIds, static_cast<uint32>(Bits), tables.Strings.Get(static_cast<uint32>(Bits)));
+					tag.Bits = 0u;
+				}
+				image.Tags.push_back(tag);
+			};
+			if (HasAnyFlags(desc.Flags, ETagFlags::MultiValue))
+			{
+				const SPoolRange values = column.MultiRanges[TypeRow];
+				for (uint32 i = 0u; i < values.Count; ++i)
+				{
+					add(column.Multi[values.Begin + i]);
+				}
 			}
-			image.Tags.push_back(tag);
-		});
+			else
+			{
+				add(column.Values[TypeRow]);
+			}
+		}
 		range.Count = static_cast<uint32>(image.Tags.size()) - range.Begin;
 		return range;
 	};
 
-	ForEachRecord([&] (SRecordId Record)
+	const SAssetsTable& assets = tables.Assets;
+	const SSubEntryTable& subs = tables.SubEntries;
+	const uint32 assetRows = assets.File.Size();
+	image.Records.reserve(tables.LiveRecords);
+	for (uint32 row = 0u; row < assetRows; ++row)
 	{
-		const uint32 row = Record.Value;
-		const SAssetsTable& assets = tables.Assets;
 		const uint32 fileRow = assets.File[row];
-		if (!isExported(tables.Files.Mount[fileRow]))
+		if (fileRow == InvalidRow || !isExported(files.Mount[fileRow]))
 		{
-			return;
+			continue;
 		}
 		SImageRecord record;
-		record.File = fileIndex.at(fileRow);
+		record.File = fileIndex[fileRow];
 		record.Guid = assets.Guid[row];
-		record.Type = static_cast<uint16>(typeNames.Add(CAssetTypeRegistry::Get(assets.Type[row]).Name));
-		const FStringView importer = GetImporterName(Record);
-		record.Importer = importer.IsEmpty() ? uint16(0xFFFFu) : static_cast<uint16>(importerNames.Add(importer));
+		record.Type = typeOf(assets.Type[row]);
+		const uint16 importer = assets.Importer[row];
+		record.Importer = importer < tables.Importers->size() && !(*tables.Importers)[importer].IsEmpty()
+			? static_cast<uint16>(importerNames.Add(importerIds, importer, (*tables.Importers)[importer]))
+			: uint16(0xFFFFu);
 		record.Flags = assets.Flags[row] & ~ERecordFlags::HasProblems;
 		record.CookRule = assets.CookRule[row];
 		record.Chunk = assets.Chunk[row];
-		record.PrimaryName = assets.PrimaryName[row] != InvalidRow ? names.Add(tables.Names.Get(assets.PrimaryName[row])) : ~0u;
+		record.PrimaryName = assets.PrimaryName[row] != InvalidRow ? nameOf(assets.PrimaryName[row]) : ~0u;
 		record.ImportStatus = assets.ImportStatus[row];
 		record.AnalyzeStamp = assets.AnalyzeStamp[row];
 
 		record.Labels.Begin = static_cast<uint32>(image.Labels.size());
-		ForEachLabel(Record, [&] (FStringView Label, bool bRule) { image.Labels.push_back(names.Add(Label) | (bRule ? RuleLabelBit : 0u)); });
-		record.Labels.Count = static_cast<uint32>(image.Labels.size()) - record.Labels.Begin;
+		const SPoolRange labels = assets.Labels[row];
+		for (uint32 i = 0u; i < labels.Count; ++i)
+		{
+			const uint32 label = tables.Labels[labels.Begin + i];
+			image.Labels.push_back(nameOf(label & ~RuleLabelBit) | (label & RuleLabelBit));
+		}
+		record.Labels.Count = labels.Count;
 
-		record.Tags = exportTags(Record);
+		record.Tags = exportTags(assets.Type[row], assets.TypeRow[row]);
 
 		record.SubEntries.Begin = static_cast<uint32>(image.SubEntries.size());
-		ForEachSubEntry(Record, [&] (SRecordId Sub)
+		const uint32 firstSub = assets.FirstSub[row];
+		for (uint32 i = 0u; i < assets.NumSubs[row]; ++i)
 		{
-			const uint32 sub = Sub.Value & ~SubEntryBit;
+			const uint32 sub = firstSub + i;
 			SImageSubEntry entry;
-			entry.Label = names.Add(tables.Names.Get(tables.SubEntries.Key[sub]));
-			entry.SubId = tables.SubEntries.SubId[sub];
-			entry.Type = static_cast<uint16>(typeNames.Add(CAssetTypeRegistry::Get(tables.SubEntries.Type[sub]).Name));
-			entry.Flags = tables.SubEntries.Flags[sub];
-			entry.Tags = exportTags(Sub);
+			entry.Label = nameOf(subs.Key[sub]);
+			entry.SubId = subs.SubId[sub];
+			entry.Type = typeOf(subs.Type[sub]);
+			entry.Flags = subs.Flags[sub];
+			entry.Tags = exportTags(subs.Type[sub], subs.TypeRow[sub]);
 			image.SubEntries.push_back(entry);
-		});
-		record.SubEntries.Count = static_cast<uint32>(image.SubEntries.size()) - record.SubEntries.Begin;
+		}
+		record.SubEntries.Count = assets.NumSubs[row];
 
 		record.Edges.Begin = static_cast<uint32>(image.Edges.size());
 		ForEachLiveEdge(tables, row, [&] (uint32 EdgeRef)
@@ -201,24 +288,24 @@ SRegistryImage CRegistryView::ExportImage (std::span<const MountId> Mounts) cons
 			SImageEdge edge;
 			edge.FromSub = edgeRow.FromSub;
 			edge.Flags = edgeRow.Flags;
-			edge.FieldPath = edgeRow.FieldPath != InvalidRow ? names.Add(tables.Names.Get(edgeRow.FieldPath)) : ~0u;
+			edge.FieldPath = edgeRow.FieldPath != InvalidRow ? nameOf(edgeRow.FieldPath) : ~0u;
 			if (target.Kind == ETargetKind::Path)
 			{
-				edge.TargetPath = strings.Add(tables.Paths.Get(target.Text));
+				edge.TargetPath = pathOf(target.Text);
 			}
-			else if (target.State == ETargetState::Resolved && !isExported(tables.Files.Mount[tables.Assets.File[target.Resolved]]))
+			else if (target.State == ETargetState::Resolved && !isExported(files.Mount[assets.File[target.Resolved]]))
 			{
 				// Leaves the image's mounts: by the target's mount path, re-resolved wherever it is loaded.
-				FString path(tables.Paths.Get(tables.Files.Path[tables.Assets.File[target.Resolved]]));
+				FString path(tables.Paths.Get(files.Path[assets.File[target.Resolved]]));
 				const uint32 sub = target.TargetSub != 0u ? FindSubEntryRow(tables, target.Resolved, target.TargetSub) : InvalidRow;
 				if (sub != InvalidRow)
 				{
 					path += '#';
-					path += tables.Names.Get(tables.SubEntries.Key[sub]);
+					path += tables.Names.Get(subs.Key[sub]);
 				}
 				if (target.TargetSub == 0u || sub != InvalidRow)
 				{
-					edge.TargetPath = strings.Add(path);
+					edge.TargetPath = strings.AddText(path);
 				}
 				else
 				{
@@ -228,18 +315,22 @@ SRegistryImage CRegistryView::ExportImage (std::span<const MountId> Mounts) cons
 			else
 			{
 				edge.Target = SAssetId { target.Guid, target.TargetSub };
-				edge.TargetPath = target.Text != InvalidRow ? strings.Add(tables.Paths.Get(target.Text)) : ~0u;
+				edge.TargetPath = target.Text != InvalidRow ? pathOf(target.Text) : ~0u;
 			}
 			image.Edges.push_back(edge);
 		});
 		record.Edges.Count = static_cast<uint32>(image.Edges.size()) - record.Edges.Begin;
 
 		record.Companions.Begin = static_cast<uint32>(image.Companions.size());
-		ForEachCompanion(Record, [&] (FStringView Companion) { image.Companions.push_back(strings.Add(Companion)); });
-		record.Companions.Count = static_cast<uint32>(image.Companions.size()) - record.Companions.Begin;
+		const SPoolRange companions = assets.Companions[row];
+		for (uint32 i = 0u; i < companions.Count; ++i)
+		{
+			image.Companions.push_back(pathOf(tables.Companions[companions.Begin + i]));
+		}
+		record.Companions.Count = companions.Count;
 
 		image.Records.push_back(record);
-	});
+	}
 
 	const uint32 subjects = tables.Problems.Subject.Size();
 	for (uint32 subject = 0u; subject < subjects; ++subject)
@@ -264,7 +355,7 @@ SRegistryImage CRegistryView::ExportImage (std::span<const MountId> Mounts) cons
 			const FProblemList& list = tables.Problems.Lists[source][subject];
 			if (list != nullptr && !list->empty())
 			{
-				image.Problems.push_back(SImageProblems { strings.Add(text), static_cast<EProblemSource>(source), *list });
+				image.Problems.push_back(SImageProblems { pathOf(tables.Problems.Subject[subject]), static_cast<EProblemSource>(source), *list });
 			}
 		}
 	}

@@ -2367,17 +2367,34 @@ private:
 		subs.AssetId64.Grow(size, Epoch);
 	}
 
-	// A path target the image names for the first time (bulk: every image string is distinct, so it is new).
+	// The path target of an image string met for the first time: new, unless another string of the image spells the
+	// same path (an image need not deduplicate its strings).
 	uint32 CreatePathTarget (FStringView TargetPath)
 	{
 		SGraphTables& graph = T.Graph;
+		const uint64 exact = HashExact(TargetPath);
+		uint32 existing = InvalidRow;
+		graph.TargetsByKey.ForEach(exact, [&] (uint32 Row)
+		{
+			const STargetRow& other = graph.Targets[Row];
+			if (other.Kind == ETargetKind::Path && T.Paths.Get(other.Text) == TargetPath)
+			{
+				existing = Row;
+				return false;
+			}
+			return true;
+		});
+		if (existing != InvalidRow)
+		{
+			return existing;
+		}
 		STargetRow target;
 		target.Kind = ETargetKind::Path;
 		const uint32 file = FindFileRowExact(T, TargetPath);   // most references spell a file's path exactly
 		target.Text = file != InvalidRow ? T.Files.Path[file] : T.Paths.Add(TargetPath, Epoch);
 		const uint32 row = graph.Targets.Append(target, Epoch);
 		graph.OverflowReverseHead.Append(InvalidRow, Epoch);
-		graph.TargetsByKey.Insert(HashExact(TargetPath), row, Epoch);
+		graph.TargetsByKey.Insert(exact, row, Epoch);
 		const uint64 portable = HashPortable(TargetPath);
 		W.PathTargetCandidates.Insert(portable, row, WriterEpoch);
 		ForEachLabelSplit(TargetPath, [&] (uint32 Split)
