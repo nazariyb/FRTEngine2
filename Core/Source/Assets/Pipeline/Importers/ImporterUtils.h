@@ -29,12 +29,17 @@ namespace frt::assets::importers
 // A diagnostic about In's file (Subject its mount path, File its source file), code 0 unless given.
 [[nodiscard]] SDiagnostic MakeFileDiagnostic (const SAnalyzeInput& In, ESeverity Severity, FString Message, uint32 Code = 0u);
 
+// The most a legacy text source (.frtmat.yml, .frtinputmap, .frtinputaction) is read whole for: real ones are a
+// few KiB; anything bigger is misnamed, and up to 16 workers buffering it at once must not exhaust memory.
+inline constexpr uint64 MaxSourceTextBytes = 16ull * 1024u * 1024u;
+
 /**
  * The whole file in one stable pass (platform::ReadFileChunksStable), hashed with BLAKE3-160 as it is read
- * (the registry's content hash, the same as HashFileStable gives). On anything but Stable, adds the error to
- * Out (code 0), sets Out.bSourceChanged for Changed, and returns nullopt.
+ * (the registry's content hash, the same as HashFileStable gives). A file larger than MaxBytes is not read: a
+ * code-0 error says so (Analyze fails, the record stays). On anything but Stable, adds the error to Out (code 0),
+ * sets Out.bSourceChanged for Changed, and returns nullopt.
  */
-[[nodiscard]] std::optional<std::vector<uint8>> ReadWholeFileHashed (const SAnalyzeInput& In, SAnalyzeResult& Out);
+[[nodiscard]] std::optional<std::vector<uint8>> ReadWholeFileHashed (const SAnalyzeInput& In, SAnalyzeResult& Out, uint64 MaxBytes);
 
 // The text of a file read with ReadWholeFileHashed, decoded as platform::ReadFileText's Detect decodes it (a BOM
 // stripped, UTF-16 transcoded); nullopt (with an error in Out) for UTF-16 with an odd byte count.

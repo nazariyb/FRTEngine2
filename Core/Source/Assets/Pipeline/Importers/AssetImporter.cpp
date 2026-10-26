@@ -53,15 +53,34 @@ SDiagnostic MakeFileDiagnostic (const SAnalyzeInput& In, ESeverity Severity, FSt
 	return diagnostic;
 }
 
-std::optional<std::vector<uint8>> ReadWholeFileHashed (const SAnalyzeInput& In, SAnalyzeResult& Out)
+std::optional<std::vector<uint8>> ReadWholeFileHashed (const SAnalyzeInput& In, SAnalyzeResult& Out, uint64 MaxBytes)
 {
+	const auto tooLarge = [&] (uint64 Size)
+	{
+		Out.Diagnostics.push_back(MakeFileDiagnostic(In, ESeverity::Error, FString::Format("the file is {} bytes, more than the {} bytes this "
+			"importer reads whole: not analyzed (a file of another kind under this extension?)", Size, MaxBytes)));
+		return std::nullopt;
+	};
+	if (const std::optional<platform::SFileStat> stat = platform::Stat(In.Path); stat.has_value() && !stat->bDirectory && stat->Size > MaxBytes)
+	{
+		return tooLarge(stat->Size);
+	}
 	std::vector<uint8> bytes;
 	hash::CContentHasher hasher;
+	uint64 total = 0u;
 	const platform::EStableRead read = platform::ReadFileChunksStable(In.Path, [&] (std::span<const uint8> Chunk)
 	{
-		bytes.insert(bytes.end(), Chunk.begin(), Chunk.end());
+		total += Chunk.size();
+		if (total <= MaxBytes)   // a file that grew past the cap after the stat is not buffered further
+		{
+			bytes.insert(bytes.end(), Chunk.begin(), Chunk.end());
+		}
 		hasher.Update(Chunk);
 	});
+	if (read == platform::EStableRead::Stable && total > MaxBytes)
+	{
+		return tooLarge(total);
+	}
 	if (read == platform::EStableRead::Stable)
 	{
 		Out.ContentHash = hasher.Finalize();
@@ -82,6 +101,12 @@ std::optional<std::vector<uint8>> ReadWholeFileHashed (const SAnalyzeInput& In, 
 
 std::optional<FString> DecodeSourceText (std::vector<uint8>&& Bytes, const SAnalyzeInput& In, SAnalyzeResult& Out)
 {
+	if (Bytes.size() > 0xFFFFFFFFull)
+	{
+		// FString's length is 32-bit: never parse a truncated text that was hashed whole.
+		Out.Diagnostics.push_back(MakeFileDiagnostic(In, ESeverity::Error, "the file is larger than 4 GiB: not analyzed"));
+		return std::nullopt;
+	}
 	FString raw(FStringView(reinterpret_cast<const char*>(Bytes.data()), static_cast<uint32>(Bytes.size())));
 	Bytes = {};
 	std::optional<FString> text = platform::DecodeTextFile(std::move(raw));

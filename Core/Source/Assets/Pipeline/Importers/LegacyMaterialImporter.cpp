@@ -87,7 +87,7 @@ public:
 
 	bool Analyze (const SAnalyzeInput& In, const SResolvedSettings& /*Settings*/, SAnalyzeResult& Out) const override
 	{
-		std::optional<std::vector<uint8>> bytes = ReadWholeFileHashed(In, Out);
+		std::optional<std::vector<uint8>> bytes = ReadWholeFileHashed(In, Out, MaxSourceTextBytes);
 		if (!bytes)
 		{
 			return false;

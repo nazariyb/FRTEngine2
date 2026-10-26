@@ -326,7 +326,8 @@ public:
 		}
 		else
 		{
-			std::optional<std::vector<uint8>> bytes = ReadWholeFileHashed(In, Out);
+			// A .gltf is its JSON: capped as a .glb's JSON chunk is (cgltf's token array grows with it).
+			std::optional<std::vector<uint8>> bytes = ReadWholeFileHashed(In, Out, MaxGlbJsonChunkBytes);
 			if (!bytes)
 			{
 				return false;

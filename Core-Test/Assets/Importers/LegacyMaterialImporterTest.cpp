@@ -12,6 +12,7 @@
 #include "ImporterTestUtils.h"
 
 #include "Assets/FileHash.h"
+#include "Assets/Pipeline/Importers/ImporterUtils.h"
 #include "BuildConfig.h"
 
 using namespace frt;
@@ -123,6 +124,30 @@ TEST(LegacyMaterialImporterTest, LineFormatWithManyKeysStaysLinear)
 #if !FRT_BUILD_DEBUG
 	EXPECT_LT(seconds, 2.0);   // the quadratic reader made ~5e9 key comparisons here
 #endif
+}
+
+TEST(LegacyMaterialImporterTest, ATextSourceOverTheCapIsNotReadAndKeepsItsRecord)
+{
+	// Up to 16 workers read sources whole: a misnamed huge file must not be buffered (MaxSourceTextBytes), and an
+	// input file the same way. Analyze fails with a code-0 error that says why; the record and its type stay.
+	FString text("version = 2\n");
+	while (text.Len() <= importers::MaxSourceTextBytes)
+	{
+		text += "# padding padding padding padding padding padding padding padding padding padding padding padding\n";
+	}
+	const CImporterTree tree("TooLarge");
+	tree.Write("huge.frtmat.yml", text);
+	tree.Write("Input/huge.frtinputaction", text);
+	for (const FStringView file : { FStringView("huge.frtmat.yml"), FStringView("Input/huge.frtinputaction") })
+	{
+		const SAnalyzeResult result = tree.Analyze(file);
+		EXPECT_EQ(result.Status, EImportStatus::AnalyzeFailed) << file.GetData();
+		EXPECT_FALSE(result.ContentHash.has_value());
+		ASSERT_EQ(result.Diagnostics.size(), 1u) << DescribeDiagnostics(result).CStr();
+		EXPECT_EQ(result.Diagnostics[0].Code, 0u);
+		EXPECT_TRUE(result.Diagnostics[0].Message.Contains("bytes this importer reads whole")) << result.Diagnostics[0].Message.CStr();
+	}
+	EXPECT_EQ(tree.Analyze("huge.frtmat.yml").Type, asset_types::Material);
 }
 
 TEST(LegacyMaterialImporterTest, ReferencesTheRuntimeReadsAsMachinePathsAreWarnings)
