@@ -627,7 +627,7 @@ TEST(SharedTypesTest, RegistryEnumsHaveTextNames)
 	ExpectNamesRoundTrip<ECompare>(false, 12u);
 	ExpectNamesRoundTrip<EExists>(false, 3u);
 	ExpectNamesRoundTrip<ERecordScope>(false, 4u);
-	ExpectNamesRoundTrip<EProblemSource>(false, 4u);
+	ExpectNamesRoundTrip<EProblemSource>(false, 5u);
 	ExpectNamesRoundTrip<EScanFileState>(false, 4u);
 	ExpectNamesRoundTrip<ERecordFlags>(true, 11u);
 	ExpectNamesRoundTrip<ETagFlags>(true, 5u);
