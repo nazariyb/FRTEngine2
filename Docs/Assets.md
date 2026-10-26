@@ -3,8 +3,8 @@
 FRTEngine2's asset system is being built in milestones (M0-M13). This file describes what exists, briefly and
 structurally; every milestone updates it. Today, after **M2 (one file watcher)**, the infrastructure exists and its
 first client runs: shaders are compiled once and served from the derived-data cache, and everything that reloads files
-in dev builds learns about changes from one file watcher. Materials, textures, models and input files still load as
-before.
+in dev builds learns about changes from one file watcher. M3's registry service already catalogs the mounts in dev
+hosts (read-only). Materials, textures, models and input files still load as before.
 
 ## Where it is going
 
@@ -17,6 +17,30 @@ before.
 - **Runtime.** Loads are asynchronous, through generational handles and reference-counted pointers, with deterministic
   publication so scripted captures stay byte-exact.
 - **Packages.** A cook turns content into paks of final, GPU-ready data plus a runtime registry.
+
+## Registry service (M3, `Assets/AssetRegistry.h`)
+
+`CAssetRegistry` keeps the registry store (`Assets/Registry/RegistryStore.h`) current from the disk. `CEngine` owns one in
+Debug and Development hosts with a project, headless too (`GetAssetRegistry()`; null in Release, in tool hosts, in the
+project manager and with `[Assets] Registry=0`); game code never reaches it. Start-up (design §5.4): `CEngine` resolves
+the mounts once (`CMountTable`: `/Engine`, `/Project`, `/Plugin.<Name>`), adds every mount's content and rule-file
+directory to the watcher and installs the table for `paths::ToMountPath`; the registry reads the mount rule files,
+subscribes to the watcher (changes are buffered until the initial scan is complete), loads the snapshots on a worker
+while every mount is stat-scanned, and turns each scan into one delta on a worker. A file is analyzed when it is new or
+changed, has no record or a `StaleTags` one, or its `AnalyzeStamp` or importer changed; a file whose rule chain changed
+(its folder's or an ancestor's `Assets.yml`, its mount's `Config/Assets.yml`, the engine's for every other mount, or a
+snapshot whose `RulesBasis` differs) is re-evaluated in memory; anything else costs a stat. `RULE002` is computed per
+folder once companions are known. The editor and the dev Launcher wait for the initial scan before their first
+`BuildWorld` and log `[assets] initial scan: <files> files, <records> records, <ms> ms; BuildWorld waited <ms> ms
+(analyzed <a>, hashed <h>)`. `Pump` (in `BeginFrame`, right after the worker completions) commits at most 2 ms of
+deltas per frame; panels poll `GetRevision()`, engine systems may subscribe to `OnAssetsChanged`.
+
+Writes are the lock holder's alone. The editor (`SEngineDesc::bAssetWriter`) takes `<project>/Local/Assets/Owner.lock`
+unless the run is read-only; holding it, the registry writes `Local/Assets/AssetRegistry.snapshot` (`/Project` and its
+plugins) with its journal, `Rules.cache` and `ProjectId`, the snapshot after 1000 records, after 60 s idle and at a clean
+exit. A second editor logs the holder and writes nothing (an M3 deviation: the spec's default is to exit). Without the
+lock nothing is written at all. `/Engine` lives in `<engine>/Local/Registry/Engine.snapshot`, written only by an
+engine-owner registry; an editor analyzes engine files changed since then in memory at every start and says so once.
 
 ## One file watcher (M2)
 
@@ -84,7 +108,8 @@ A removed file keeps what was loaded. The game module's DLL keeps its own exclus
 
 Automation runs (an `[Automation]` key that makes a run scripted) and the editor's smoke tests are scripted:
 `CEngine::StartUp` forces `[Assets] Watch=0` (nothing reloads behind a capture's back) and `[Assets] ReadOnly=1`
-(the asset system writes nothing; the switch is for M4) (`CAutomation::IsScriptedRun`, `ApplyScriptedRunRules`). A
+(the asset system writes nothing: no writer lock, so no registry file) (`CAutomation::IsScriptedRun`,
+`ApplyScriptedRunRules`). A
 smoke step that needs the watcher turns it on for its own directories only (the input overrides' `Local/SmokeTest`; the
 scratch copy and its shader copy) and flushes it after writing, so its result never depends on timing and nothing of the
 checkout it runs in reloads behind its back. With `-Editor:SmokeTestEdits=1` the smoke test also edits files - a
@@ -111,7 +136,7 @@ Options: `--json` (one object per line), `--ci` or `-Assets:ReadOnly=1` (read-on
 `--project=<file>`, `--engine`. Exit codes: 0 success, 1 problems found, 2 usage error, 3 internal error, 4 the mount is
 owned by another process. **One writer per mount**: a writing run takes `<mount>/Local/Assets/Owner.lock` (an exclusive
 handle the OS releases when the process dies; its text names the holder), and a second writer exits with code 4 naming
-the owner. The editor takes the same lock from M4, when it starts writing metas.
+the owner. The editor takes the same lock from M3, for the registry's files (below).
 
 ### Worker pool (`Jobs/WorkerPool.h`)
 
