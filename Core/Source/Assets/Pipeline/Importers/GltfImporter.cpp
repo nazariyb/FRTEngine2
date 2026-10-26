@@ -10,8 +10,8 @@
 
 #include "Assets/Pipeline/GltfParse.h"
 #include "Containers/StringMap.h"
-#include "Graphics/AssimpWideIO.h"
 #include "Platform/FileSystem.h"
+#include "Text/Uri.h"
 #include "Unicode/Unicode.h"
 
 
@@ -258,7 +258,7 @@ std::optional<FString> ResolveUri (const SAnalyzeInput& In, FStringView Uri, FSt
 	{
 		return asWritten;
 	}
-	const std::optional<FString> decoded = graphics::DecodeUriEscapes(Uri);
+	const std::optional<FString> decoded = text::DecodeUriEscapes(Uri);
 	if (!decoded)
 	{
 		if (!asWritten)

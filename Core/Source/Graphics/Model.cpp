@@ -17,6 +17,7 @@
 #include "Containers/String.h"
 #include "Graphics/AssimpWideIO.h"
 #include "Memory/Memory.h"
+#include "Text/Uri.h"
 
 // stb never sees a file name: images are opened by their UTF-16 names (_wfopen_s) and decoded with
 // stbi_load_from_file (TextureManager.cpp), so there is no STBI_WINDOWS_UTF8.
@@ -38,7 +39,7 @@ std::filesystem::path ToTexturePath (FStringView Uri, const std::filesystem::pat
 {
 	std::filesystem::path path = Uri.ToPath();
 	std::error_code ec;
-	if (const std::optional<FString> decoded = DecodeUriEscapes(Uri); decoded && !std::filesystem::exists(ModelDir / path, ec))
+	if (const std::optional<FString> decoded = text::DecodeUriEscapes(Uri); decoded && !std::filesystem::exists(ModelDir / path, ec))
 	{
 		std::filesystem::path decodedPath = decoded->ToPath();
 		if (std::filesystem::exists(ModelDir / decodedPath, ec))

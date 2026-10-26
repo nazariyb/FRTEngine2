@@ -19,7 +19,7 @@ namespace frt::graphics
  * file. This one decodes WTF-8 (FStringView::ToPath) and opens with _wfsopen, so every name
  * Windows allows works - side files (.bin buffers, textures) resolve through it too. Files are
  * shared as DefaultIOSystem shares them (_SH_DENYNO). A name that names no file but whose URI
- * escapes decode to one (DecodeUriEscapes) is opened decoded.
+ * escapes decode to one (text::DecodeUriEscapes, Text/Uri.h) is opened decoded.
  *
  * Usage: Importer.SetIOHandler(new CAssimpWideIOSystem()); (the importer owns and deletes it),
  * then Importer.ReadFile(FString::FromPath(File).CStr(), Flags).
@@ -38,16 +38,4 @@ public:
 	bool CreateDirectory (const std::string& Path) override;
 	bool DeleteFile (const std::string& File) override;
 };
-
-/**
- * Uri with its %XX escapes replaced by the bytes they stand for; a '%' without two hex digits after
- * it is kept. nullopt when there is no escape, or one stands for NUL (the name would end there).
- *
- * glTF names its buffers and images by URI, and exporters escape what a URI cannot hold (Blender
- * writes "Brick Wall.png" as "Brick%20Wall.png", "Текстура.png" as "%D0%A2%D0%B5..."). Assimp
- * passes the URI on as written: its own fallback (FileSystemFilter::Cleanup) means to decode it but
- * tests the '%' itself for a hex digit, so it never does. Callers decode only to find a file the
- * name as written does not name: a file called "Raw%41.png" is still found as itself.
- */
-std::optional<FString> DecodeUriEscapes (FStringView Uri);
 }
