@@ -7,7 +7,8 @@
 // writer lock writes nothing; Validation: reaches the scan's and RULE002's severities; the tri-state Exists and the
 // change notification; a pass cut short after its conversion (a clean exit while Analyze is pending, a crash) persists
 // nothing that claims work it did not do; a broken journal is mended by the full write its break triggers, and loses no
-// commit. Every tree has non-ASCII names and lives in the temp directory.
+// commit; a mount-rule edit over many files is committed in deltas of bounded size. Every tree has non-ASCII names and
+// lives in the temp directory.
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -902,4 +903,42 @@ TEST(AssetRegistry, ABrokenJournalIsRestartedByTheFullWriteItTriggersAndLosesNoC
 	ASSERT_NE(report, nullptr);
 	EXPECT_TRUE(report->bJournalUsed) << report->JournalMessage.CStr();
 	EXPECT_GT(report->JournalCommits, 0u);
+}
+
+TEST(AssetRegistry, AMountRuleEditOverManyFilesCommitsInDeltasOfBoundedSize)
+{
+	const CServiceTree tree("Bounded Deltas");
+	for (uint32 i = 0u; i < 700u; ++i)
+	{
+		tree.WriteProjectPng(FString::Format("Багато/Файл_{:03}.png", i));
+	}
+	jobs::CWorkerPool pool(MakePoolDesc(4u));
+	(void)WriteBothSnapshots(pool, tree);
+	// Every texture's labels change: every record of the pass is committed again, none analyzed.
+	tree.WriteProjectRules(FString(ProjectRulesText) + "Rules:\n  - { Match: \"**/*.png\", Labels: [ Усі ] }\n");
+	SAssetRegistryDesc desc;
+	desc.Mounts = tree.Project();
+	desc.Pool = &pool;
+	desc.FrameBudgetMs = 0.0;   // one delta per Pump: each change set below is one delta's
+	CAssetRegistry registry(std::move(desc));
+	size_t largest = 0u;
+	size_t changed = 0u;
+	const SDelegateHandle handle = registry.OnAssetsChanged().Add([&] (const SAssetChangeSet& Changes)
+	{
+		if (!Changes.bRefreshAll)
+		{
+			const size_t size = Changes.Added.size() + Changes.Removed.size() + Changes.Modified.size();
+			largest = std::max(largest, size);
+			changed += size;
+		}
+	});
+	registry.Start();
+	ASSERT_TRUE(PumpFramesUntil(pool, registry, [&] { return registry.IsInitialScanComplete(); }, 120.0));
+	registry.OnAssetsChanged().Remove(handle);
+	EXPECT_EQ(registry.GetCounters().Analyzed, 0u);
+	EXPECT_GE(changed, 700u);
+	EXPECT_LE(largest, 256u) << "a frame commits a bounded delta, never a whole pass";
+	const FString dump = DumpOf(registry.Live());
+	registry.ShutDown();
+	EXPECT_EQ(dump, FreshDump(pool, tree.Project()));
 }

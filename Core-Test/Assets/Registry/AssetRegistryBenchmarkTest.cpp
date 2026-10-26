@@ -1,7 +1,7 @@
 // §5.11's start-up rows, end to end through the registry service (Assets/AssetRegistry.h): the Demo template's warm
 // start, a warm start of 20k files with the snapshot load, the same after a mount-rule edit (0 Analyze, 0 hashes), a cold
-// full scan with Analyze at 10k files on 16 threads, and the owner-thread cost of one watcher-delivered edit (its
-// commits and journal appends). A warm start is a reader's whole start - snapshots read and adopted on a worker, every
+// full scan with Analyze at 10k files on 16 threads, the owner-thread cost of one watcher-delivered edit (its
+// commits and journal appends), and the longest frame of a watcher-delivered mount-rule edit. A warm start is a reader's whole start - snapshots read and adopted on a worker, every
 // mount stat-scanned against them, the deltas committed - after a writer's run left Engine.snapshot (an engine-owner
 // registry, as FRT.bat assets scan --engine) and AssetRegistry.snapshot. The 200k-file warm start and the 100k cold scan
 // are DISABLED_ (nightly: --gtest_also_run_disabled_tests). How a row is judged: BenchmarkBudget.h; Debug scales the
@@ -216,9 +216,38 @@ void MeasureWarmStart (uint32 Files, const SBudget& Warm, const SBudget& AfterEd
 		EXPECT_EQ(after.Analyzed - before.Analyzed, 1u);
 		best = std::min(best, after.CommitMs - before.CommitMs);
 	}
+
+	// A mount-rule edit delivered by the watcher that relabels every texture, run frame by frame as the editor runs it:
+	// the longest Pump (its commits within FrameBudgetMs, the rules reload, the pass's last delta with RULE002) and the
+	// owner thread's time over all of them. Workers' scan and conversion not included.
+	tree.WriteProjectRules(FString(ProjectRulesText) + "Rules:\n  - { Match: \"**/*.png\", Labels: [ Watched ] }\n");
+	const uint64 revision = registry.GetRevision();
+	const uint64 committed = registry.GetCounters().Committed;
+	const uint64 analyzed = registry.GetCounters().Analyzed;
+	double longest = 0.0;
+	double total = 0.0;
+	uint32 frames = 0u;
+	const uint64 deadline = platform::MakeDeadline(120.0);
+	while ((registry.GetRevision() == revision || !registry.IsIdle()) && platform::ReadTimestamp() < deadline)
+	{
+		watcher.Pump();
+		pool.PumpCompletions();
+		const uint64 start = platform::ReadTimestamp();
+		registry.Pump();
+		const double milliseconds = platform::TimestampToMilliseconds(platform::ReadTimestamp() - start);
+		longest = std::max(longest, milliseconds);
+		total += milliseconds;
+		++frames;
+		pool.WaitForCompletions(0.002);
+	}
+	EXPECT_GT(registry.GetRevision(), revision) << "the edit was delivered and committed";
+	EXPECT_EQ(registry.GetCounters().Analyzed, analyzed) << "re-evaluated, never analyzed";
+	const uint64 deltas = registry.GetCounters().Committed - committed;
 	registry.ShutDown();
 	CheckBudget(Prefix, "WatchedEditCommitMs", best, SBudget { 2.0, -1.0, 2.0, 2.0 }, "ms",
 		"(owner thread: the edit's commits and journal appends, settle not included; best of 3)");
+	const FString ruleEditNote = FString::Format("(every texture relabelled: {} deltas over {} frames, {:.2f} ms of Pump in all)", deltas, frames, total);
+	CheckBudget(Prefix, "WatchedRuleEditLongestPumpMs", longest, SBudget {}, "ms", ruleEditNote.CStr(), false);
 }
 }
 

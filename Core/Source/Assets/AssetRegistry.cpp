@@ -305,9 +305,67 @@ struct SUnclaimedFolder
 	std::vector<std::pair<FString, bool>> Candidates;
 };
 
+/**
+ * RULE002 for a pass's folders, once companions are known (§3.5.2): the Unclaimed lists that changed. Reads only an
+ * acquired view (every delta of the pass committed) and the folders' immutable scopes, so it runs on a worker.
+ */
+SRegistryDelta MakeUnclaimedDelta (const CRegistryView& View, const CRulesEngine& Rules, std::span<const SUnclaimedFolder> Folders)
+{
+	SRegistryDelta delta;
+	std::vector<SUnclaimedFile> files;
+	for (const SUnclaimedFolder& folder : Folders)
+	{
+		files.clear();
+		for (const auto& [path, bQuiet] : folder.Candidates)
+		{
+			const std::optional<SStoredFile> stored = FindStoredFile(View, path);
+			if (stored.has_value() && stored->Class == EFileClass::Unclaimed)
+			{
+				files.push_back(SUnclaimedFile { path.View(), bQuiet });
+			}
+		}
+		std::vector<SDiagnostic> diagnostics = ReportUnclaimedFiles(files);
+		for (SDiagnostic& diagnostic : diagnostics)
+		{
+			if (folder.Scope != nullptr)
+			{
+				Rules.ApplyValidation(*folder.Scope, diagnostic);
+			}
+		}
+		// Only a list that changed is set: a warm start rewrites nothing.
+		std::vector<SDiagnostic> stored;
+		View.ForEachDiagnosticAt(folder.Path, [&] (EProblemSource Source, const SDiagnostic& Diagnostic)
+		{
+			if (Source == EProblemSource::Unclaimed)
+			{
+				stored.push_back(Diagnostic);
+			}
+		});
+		if (stored != diagnostics)
+		{
+			delta.Problems.push_back(SProblemsSet { folder.Path, EProblemSource::Unclaimed, std::move(diagnostics) });
+		}
+	}
+	return delta;
+}
+
+struct SUnclaimedJob
+{
+	std::shared_ptr<const CRegistryView> View;
+	std::vector<SUnclaimedFolder> Folders;
+	SRegistryDelta Delta;
+	double Milliseconds = 0.0;
+};
+
+// Files (or folders) per conversion delta: a pass of a whole mount is committed in pieces, each well inside a frame's
+// commit budget (FrameBudgetMs), never in one delta.
+constexpr uint32 ConversionDeltaFiles = 256u;
+
 struct SConversion
 {
-	SRegistryDelta Delta;
+	// In commit order: the removals first, then the new folders, then the files' rows and records in batch order
+	// (each file's in one delta), the subtree's Scan and Rules problems in the last.
+	std::vector<SRegistryDelta> Deltas;
 	// The RULEFILES rows the batch changed (the mount's Config/Assets.yml included): committed last, with RULE002,
 	// once every record they cover is committed (CheckPassDone), never by a pass cut short.
 	SRegistryDelta RuleFiles;
@@ -335,8 +393,8 @@ struct SConvertInput
 };
 
 /**
- * A scan batch as one delta and the work that follows it (the header comment's step 2). Reads only the view the
- * scan compared against and the immutable rules scopes the batch carries, so it runs on a worker.
+ * A scan batch as deltas of bounded size and the work that follows them (the header comment's step 2). Reads only
+ * the view the scan compared against and the immutable rules scopes the batch carries, so it runs on a worker.
  */
 SConversion ConvertBatch (SConvertInput& In)
 {
@@ -348,8 +406,8 @@ SConversion ConvertBatch (SConvertInput& In)
 	const SMount& mount = *In.Mount;
 	const FString& root = batch.RootMountPath;
 	const std::span<const FString> failed = batch.FailedFolders;
-	SRegistryDelta& delta = out.Delta;
 	SRegistryDelta& ruleFiles = out.RuleFiles;
+	std::vector<SFolderUpsert> folderUpserts;
 
 	if (In.MountRulesHash.has_value() && *In.MountRulesHash != GetStoredMountRulesHash(view, mount.Name))
 	{
@@ -411,14 +469,15 @@ SConversion ConvertBatch (SConvertInput& In)
 		}
 		if (!bKnown)
 		{
-			delta.FolderUpserts.push_back(SFolderUpsert { folder.MountPath });
+			folderUpserts.push_back(SFolderUpsert { folder.MountPath });
 		}
 		knownFolders += bKnown ? 1u : 0u;
 		out.Folders.push_back(SUnclaimedFolder { folder.MountPath, folder.Scope, {} });
 	}
 
 	// Files, in chunks on the pool (each file's decision reads only the view and its folder's scope); the chunks'
-	// results are joined in batch order, so the delta is the same whatever the thread count.
+	// results are joined in batch order into one delta per ConversionDeltaFiles files of the batch, so the deltas are
+	// the same whatever the thread count.
 	std::vector<uint32> unclaimedFolderOf(batch.Folders.size(), ~0u);   // batch folder -> index in out.Folders
 	for (uint32 i = 0u, next = 0u; i < batch.Folders.size(); ++i)
 	{
@@ -429,9 +488,8 @@ SConversion ConvertBatch (SConvertInput& In)
 	}
 	struct SChunkOut
 	{
-		std::vector<SFileUpsert> FileUpserts;
-		std::vector<FString> RecordRemoves;
-		std::vector<SRecordUpsert> RecordUpserts;
+		uint32 FirstPart = 0u;                              // Parts[i] is the batch's delta FirstPart + i
+		std::vector<SRegistryDelta> Parts;                  // file rows, record removals and upserts
 		std::vector<SAnalyzeRequest> Analyze;
 		std::vector<std::pair<uint32, uint32>> Unclaimed;   // (index in out.Folders, file index)
 		uint32 ReEvaluated = 0u;
@@ -443,8 +501,11 @@ SConversion ConvertBatch (SConvertInput& In)
 	RunChunks(In.Pool, chunks, [&] (uint32 Chunk, uint32 Begin, uint32 End)
 	{
 		SChunkOut& chunkOut = chunkOuts[Chunk];
+		chunkOut.FirstPart = Begin / ConversionDeltaFiles;
+		chunkOut.Parts.resize(End > Begin ? (End - 1u) / ConversionDeltaFiles - chunkOut.FirstPart + 1u : 0u);
 		for (uint32 index = Begin; index < End; ++index)
 		{
+			SRegistryDelta& part = chunkOut.Parts[index / ConversionDeltaFiles - chunkOut.FirstPart];
 			const SScanFile& file = batch.Files[index];
 			const SScanFolder& folder = batch.Folders[file.Folder];
 			paths[index] = MakeChildMountPath(folder.MountPath, file.Name);
@@ -482,7 +543,7 @@ SConversion ConvertBatch (SConvertInput& In)
 			const bool bRowChanged = !stored.has_value() || bStatChanged || stored->BaseClass != fileClass;
 			const auto addRow = [&]
 			{
-				SFileUpsert& row = chunkOut.FileUpserts.emplace_back();
+				SFileUpsert& row = part.FileUpserts.emplace_back();
 				row.MountPath = path;
 				row.Size = file.Size;
 				row.MTime = file.MTime;
@@ -503,7 +564,7 @@ SConversion ConvertBatch (SConvertInput& In)
 				}
 				if (bHasRecord)
 				{
-					chunkOut.RecordRemoves.push_back(path);   // its importer went away (Importers.Exclude, a rule)
+					part.RecordRemoves.push_back(path);   // its importer went away (Importers.Exclude, a rule)
 				}
 				continue;
 			}
@@ -540,17 +601,19 @@ SConversion ConvertBatch (SConvertInput& In)
 				const ERecordFlags flags = (stored->Flags & ~ERecordFlags::TypeExcluded) | (bTypeIncluded ? ERecordFlags::None : ERecordFlags::TypeExcluded);
 				if (RuleOutputsDiffer(view, stored->Record, settings, flags))
 				{
-					chunkOut.RecordUpserts.push_back(MakeRecordUpsertFromView(view, stored->Record, settings, flags));
+					part.RecordUpserts.push_back(MakeRecordUpsertFromView(view, stored->Record, settings, flags));
 				}
 			}
 		}
 	});
 	uint32 knownFiles = 0u;
+	std::vector<SRegistryDelta> fileDeltas((batch.Files.size() + ConversionDeltaFiles - 1u) / ConversionDeltaFiles);
 	for (SChunkOut& chunkOut : chunkOuts)
 	{
-		AppendMoved(delta.FileUpserts, chunkOut.FileUpserts);
-		AppendMoved(delta.RecordRemoves, chunkOut.RecordRemoves);
-		AppendMoved(delta.RecordUpserts, chunkOut.RecordUpserts);
+		for (uint32 i = 0u; i < chunkOut.Parts.size(); ++i)
+		{
+			MergeDelta(fileDeltas[chunkOut.FirstPart + i], std::move(chunkOut.Parts[i]));
+		}
 		AppendMoved(out.Analyze, chunkOut.Analyze);
 		for (const auto& [folder, file] : chunkOut.Unclaimed)
 		{
@@ -611,8 +674,30 @@ SConversion ConvertBatch (SConvertInput& In)
 					out.RemovedFiles.emplace_back(data.MountPath);   // else its folder's removal takes it
 				}
 			});
-			delta.FolderRemoves = out.RemovedFolders;
-			delta.FileRemoves = out.RemovedFiles;
+		}
+	}
+
+	// The deltas, in commit order. Removals first, as within one delta: a folder or file the batch spells otherwise
+	// (a case-only rename) is removed before its new spelling is added. Then the new folders (parents first), then
+	// the files.
+	if (!out.RemovedFolders.empty() || !out.RemovedFiles.empty())
+	{
+		SRegistryDelta& removals = out.Deltas.emplace_back();
+		removals.FolderRemoves = out.RemovedFolders;
+		removals.FileRemoves = out.RemovedFiles;
+	}
+	for (size_t i = 0u; i < folderUpserts.size(); i += ConversionDeltaFiles)
+	{
+		const size_t end = std::min(folderUpserts.size(), i + ConversionDeltaFiles);
+		SRegistryDelta& folders = out.Deltas.emplace_back();
+		folders.FolderUpserts.assign(std::make_move_iterator(folderUpserts.begin() + static_cast<ptrdiff_t>(i)),
+			std::make_move_iterator(folderUpserts.begin() + static_cast<ptrdiff_t>(end)));
+	}
+	for (SRegistryDelta& files : fileDeltas)
+	{
+		if (!files.IsEmpty())
+		{
+			out.Deltas.push_back(std::move(files));
 		}
 	}
 
@@ -629,8 +714,17 @@ SConversion ConvertBatch (SConvertInput& In)
 			rules.ApplyValidation(*it->second, diagnostic);
 		}
 	}
-	ReplaceSubtreeProblems(delta, view, root, EProblemSource::Scan, std::move(batch.Diagnostics));
-	ReplaceSubtreeProblems(delta, view, root, EProblemSource::Rules, std::move(batch.RuleDiagnostics));
+	SRegistryDelta problems;
+	ReplaceSubtreeProblems(problems, view, root, EProblemSource::Scan, std::move(batch.Diagnostics));
+	ReplaceSubtreeProblems(problems, view, root, EProblemSource::Rules, std::move(batch.RuleDiagnostics));
+	if (!problems.IsEmpty())
+	{
+		if (out.Deltas.empty())
+		{
+			out.Deltas.emplace_back();
+		}
+		MergeDelta(out.Deltas.back(), std::move(problems));
+	}
 	out.Milliseconds = MillisecondsSince(start);
 	return out;
 }
@@ -664,6 +758,8 @@ struct CAssetRegistry::SImpl
 		std::optional<SScanBatch> Batch;               // scanned while the snapshots loaded: converted once they are
 		std::optional<uint64> MountRulesHash;
 		bool bConverted = false;
+		bool bUnclaimedRunning = false;  // RULE002 on a worker
+		bool bUnclaimedDone = false;     // ... asked for, or not needed
 		bool bFinalQueued = false;       // the RULEFILES rows and RULE002 (CheckPassDone)
 		bool bLost = false;              // cut short: a conversion or Analyze work dropped unrun
 		bool bRuleFilesChanged = false;
@@ -672,6 +768,7 @@ struct CAssetRegistry::SImpl
 		uint32 OutstandingAnalyze = 0u;  // tasks in the pool or waiting to be retried
 		std::vector<SUnclaimedFolder> Folders;
 		SRegistryDelta RuleFiles;        // SConversion::RuleFiles
+		SRegistryDelta Unclaimed;        // RULE002's lists that changed
 	};
 
 	struct SQueuedDelta
@@ -1219,9 +1316,12 @@ struct CAssetRegistry::SImpl
 		{
 			LastRequested[file] = NextRequest++;   // a result still in flight for it is stale now
 		}
-		pass.bFilesChanged = pass.bFilesChanged || ChangesFiles(Conversion.Delta);
-		Queue.push_back(SQueuedDelta { std::move(Conversion.Delta), PassId });
-		++pass.PendingDeltas;
+		for (SRegistryDelta& delta : Conversion.Deltas)
+		{
+			pass.bFilesChanged = pass.bFilesChanged || ChangesFiles(delta);
+			Queue.push_back(SQueuedDelta { std::move(delta), PassId });
+			++pass.PendingDeltas;
+		}
 
 		std::vector<SAnalyzeRequest> chunk;
 		const uint32 chunkSize = std::max(Desc.AnalyzeBatchFiles, 1u);
@@ -1350,8 +1450,34 @@ struct CAssetRegistry::SImpl
 	void CheckPassDone (uint64 PassId)
 	{
 		SPass& pass = Passes.at(PassId);
-		if (!pass.bConverted || pass.PendingDeltas != 0u || pass.OutstandingAnalyze != 0u)
+		if (!pass.bConverted || pass.PendingDeltas != 0u || pass.OutstandingAnalyze != 0u || pass.bUnclaimedRunning)
 		{
+			return;
+		}
+		// RULE002 can only differ when files or records changed, or the rules did (a Validation: severity, Scan.Quiet).
+		// It is recomputed on a worker from the view every delta of the pass is in (a whole mount's folders take
+		// milliseconds), then goes into the pass's last delta.
+		const bool bUnclaimedMayDiffer = pass.bFilesChanged || pass.bRuleFilesChanged || pass.bReEvaluateAll;
+		if (!pass.bUnclaimedDone && !pass.bLost && bUnclaimedMayDiffer)
+		{
+			pass.bUnclaimedDone = true;
+			pass.bUnclaimedRunning = true;
+			++UnclaimedTasksInFlight;
+			auto job = std::make_shared<SUnclaimedJob>();
+			job->View = Store->Acquire();
+			job->Folders = std::move(pass.Folders);
+			Pool.Submit(jobs::EWorkPriority::High, jobs::NoCancelGroup,
+				[job, rules = Rules.get()] ()
+				{
+					const uint64 start = platform::ReadTimestamp();
+					job->Delta = MakeUnclaimedDelta(*job->View, *rules, job->Folders);
+					job->Milliseconds = MillisecondsSince(start);
+				},
+				[this, PassId, job, guard = CLostGuard([this, PassId] { OnUnclaimed(PassId, nullptr); })] () mutable
+				{
+					guard.Dismiss();
+					OnUnclaimed(PassId, job.get());
+				});
 			return;
 		}
 		if (!pass.bFinalQueued)
@@ -1364,17 +1490,7 @@ struct CAssetRegistry::SImpl
 			if (!pass.bLost)
 			{
 				delta = std::move(pass.RuleFiles);
-			}
-			// RULE002 can only differ when files or records changed, or the rules did (a Validation: severity, Scan.Quiet).
-			const bool bUnclaimedMayDiffer = pass.bFilesChanged || pass.bRuleFilesChanged || pass.bReEvaluateAll;
-			if (!pass.bLost && bUnclaimedMayDiffer)
-			{
-				const uint64 start = platform::ReadTimestamp();
-				MergeDelta(delta, MakeUnclaimedDelta(pass));
-				if (!Initial.bComplete)
-				{
-					Initial.UnclaimedMs += MillisecondsSince(start);
-				}
+				MergeDelta(delta, std::move(pass.Unclaimed));
 			}
 			if (!delta.IsEmpty())
 			{
@@ -1386,46 +1502,25 @@ struct CAssetRegistry::SImpl
 		FinishPass(PassId);
 	}
 
-	// RULE002 for the pass's folders, once companions are known (§3.5.2): the Unclaimed lists that changed.
-	SRegistryDelta MakeUnclaimedDelta (const SPass& Pass) const
+	// Job: null when the pool dropped it unrun (it is in no cancel group: only a drain does that).
+	void OnUnclaimed (uint64 PassId, SUnclaimedJob* Job)
 	{
-		SRegistryDelta delta;
-		const CRegistryView& view = Store->Live();
-		std::vector<SUnclaimedFile> files;
-		for (const SUnclaimedFolder& folder : Pass.Folders)
+		--UnclaimedTasksInFlight;
+		SPass& pass = Passes.at(PassId);
+		pass.bUnclaimedRunning = false;
+		if (Job == nullptr)
 		{
-			files.clear();
-			for (const auto& [path, bQuiet] : folder.Candidates)
+			pass.bLost = true;
+		}
+		else
+		{
+			pass.Unclaimed = std::move(Job->Delta);
+			if (!Initial.bComplete)
 			{
-				const std::optional<SStoredFile> stored = FindStoredFile(view, path);
-				if (stored.has_value() && stored->Class == EFileClass::Unclaimed)
-				{
-					files.push_back(SUnclaimedFile { path.View(), bQuiet });
-				}
-			}
-			std::vector<SDiagnostic> diagnostics = ReportUnclaimedFiles(files);
-			for (SDiagnostic& diagnostic : diagnostics)
-			{
-				if (folder.Scope != nullptr)
-				{
-					Rules->ApplyValidation(*folder.Scope, diagnostic);
-				}
-			}
-			// Only a list that changed is set: a warm start rewrites nothing.
-			std::vector<SDiagnostic> stored;
-			view.ForEachDiagnosticAt(folder.Path, [&] (EProblemSource Source, const SDiagnostic& Diagnostic)
-			{
-				if (Source == EProblemSource::Unclaimed)
-				{
-					stored.push_back(Diagnostic);
-				}
-			});
-			if (stored != diagnostics)
-			{
-				delta.Problems.push_back(SProblemsSet { folder.Path, EProblemSource::Unclaimed, std::move(diagnostics) });
+				Initial.UnclaimedMs += Job->Milliseconds;
 			}
 		}
-		return delta;
+		CheckPassDone(PassId);
 	}
 
 	void FinishPass (uint64 PassId)
@@ -1545,7 +1640,7 @@ struct CAssetRegistry::SImpl
 
 	[[nodiscard]] bool HasWorkInFlight () const noexcept
 	{
-		return bLoading || ScansInFlight != 0u || ConversionsInFlight != 0u || AnalyzeTasksInFlight != 0u;
+		return bLoading || ScansInFlight != 0u || ConversionsInFlight != 0u || AnalyzeTasksInFlight != 0u || UnclaimedTasksInFlight != 0u;
 	}
 
 	[[nodiscard]] bool IsIdle () const noexcept
@@ -1623,6 +1718,12 @@ struct CAssetRegistry::SImpl
 		const uint64 revision = Store->GetRevision();
 		if (revision == BroadcastRevision && !bScanCompletedPending)
 		{
+			return;
+		}
+		if (AssetsChanged.IsEmpty())
+		{
+			BroadcastRevision = revision;   // nobody listens: no change set is built
+			bScanCompletedPending = false;
 			return;
 		}
 		SAssetChangeSet changes;
@@ -1835,6 +1936,7 @@ struct CAssetRegistry::SImpl
 	uint32 ScansInFlight = 0u;
 	uint32 ConversionsInFlight = 0u;
 	uint32 AnalyzeTasksInFlight = 0u;
+	uint32 UnclaimedTasksInFlight = 0u;
 
 	std::vector<SDelegateHandle> Subscriptions;
 	std::vector<SWatchEvent> WatchEvents;

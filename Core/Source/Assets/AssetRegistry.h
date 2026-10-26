@@ -36,7 +36,9 @@ class CWorkerPool;
  * The pipeline per scan (a "pass" of one mount, or of one subtree of it):
  *	1. CMountScanner lists the subtree on the worker pool: nothing is opened or hashed. The start-up's scans run
  *	   while the snapshots load.
- *	2. The batch becomes one delta on a worker (ConvertBatch in the .cpp), each file compared with the view by the
+ *	2. The batch becomes deltas of at most 256 files (or folders) each on a worker (ConvertBatch in the .cpp: the
+ *	   removals first, then new folders, then the files in batch order), so that a commit fits a frame's budget
+ *	   whatever the subtree's size, each file compared with the view by the
  *	   scan's Unchanged test (ScanTypes.h; byte-exact, as IKnownFiles would - done here rather than in the scan so
  *	   that the initial scans need not wait for the loaded view): folders, changed file rows (ContentHash kept for
  *	   an identity-only change; a file analyzed below that has a record gets its row with its Analyze result
@@ -50,8 +52,8 @@ class CWorkerPool;
  *	   one delta per task. A file that changed while it was read is retried after the watcher's settle window, three
  *	   times, then committed AnalyzeFailed with a code-0 problem saying so, so a wait always ends.
  *	4. Once every delta of the pass is committed, one last delta: the pass's RULEFILES rows (the mount's
- *	   Config/Assets.yml row included) and RULE002 recomputed for its folders (companions are known by then) under
- *	   EProblemSource::Unclaimed. The rows go in only when nothing of the pass was dropped (ShutDown cancels
+ *	   Config/Assets.yml row included) and RULE002 recomputed for its folders on a worker (companions are known by
+ *	   then) under EProblemSource::Unclaimed. The rows go in only when nothing of the pass was dropped (ShutDown cancels
  *	   Analyze work): a pass cut short leaves the old rows, and the next start evaluates that interval again.
  * A file's rule chain counts as changed when its folder or an ancestor has a RulesHash in the batch other than its
  * RULEFILES row (absent = 0, so a rule file added or deleted offline is a change), when its mount's Config/Assets.yml
@@ -59,9 +61,9 @@ class CWorkerPool;
  * RulesBasis: a rebuilt Core.dll with other importer semantics, an edited engine fallback).
  *
  * Threading. One owner thread - the thread that constructs it, which owns the worker pool: the engine's main thread,
- * AssetTool's, a test's. Workers never touch the store: they produce deltas, which the owner commits in Pump (at most
- * FrameBudgetMs of commits per call interactively) or inside the unbounded waits (WaitForInitialScan,
- * ScanPathsSynchronous, Flush). Commits follow the pool's commit order (jobs::ECommitOrder: completion order
+ * AssetTool's, a test's. Workers never touch the store: they produce deltas, which the owner commits in Pump (until
+ * FrameBudgetMs of commits per call interactively, checked between deltas) or inside the unbounded waits
+ * (WaitForInitialScan, ScanPathsSynchronous, Flush). Commits follow the pool's commit order (jobs::ECommitOrder: completion order
  * interactively, strict sequence where a tool sets it), with one pass per mount at a time, so no result can land
  * after a newer one of the same file. The pool's completions and the watcher's callbacks only queue work. Other
  * threads Acquire views and never wait for a commit.
@@ -196,7 +198,7 @@ struct SInitialScanReport
 	double ScanMs = 0.0;          // the mounts' stat scans (workers), summed
 	double ConvertMs = 0.0;       // batches made deltas (workers), summed
 	double CommitMs = 0.0;        // commits and journal appends (the owner thread)
-	double UnclaimedMs = 0.0;     // RULE002 recomputed (the owner thread; skipped where no file, record or rule changed)
+	double UnclaimedMs = 0.0;     // RULE002 recomputed (workers, summed; skipped where no file, record or rule changed)
 	double TotalMs = 0.0;         // Start to complete
 	uint64 Analyzed = 0u;         // during the initial scan
 	uint64 Hashed = 0u;
