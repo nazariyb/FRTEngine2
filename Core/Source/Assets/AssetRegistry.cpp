@@ -1745,7 +1745,8 @@ struct CAssetRegistry::SImpl
 			{
 				return false;
 			}
-			if (!HasWorkInFlight() && !bSnapshotWriteInFlight && Queue.empty() && Retries.empty() && !Pool.GetStats().CompletionsWaiting
+			if (!HasWorkInFlight() && !bSnapshotWriteInFlight && !bRulesCacheWriteInFlight && Queue.empty() && Retries.empty()
+				&& !Pool.GetStats().CompletionsWaiting
 				&& Pool.IsIdle())
 			{
 				return Done();   // nothing could change any more
@@ -1808,17 +1809,47 @@ struct CAssetRegistry::SImpl
 
 	// ---- writes (the writer only) ----
 
+	/**
+	 * Rules.cache, written on a worker like the snapshot (a flushed atomic write costs a frame on the owner thread): the
+	 * worker takes the listing itself (CRulesEngine is thread-safe), so a write asked for while one runs is coalesced into
+	 * one more write of the newest listing once it ends. Waits (Flush, ShutDown) count it as work in flight.
+	 */
 	void WriteRulesCache ()
 	{
 		if (!Desc.bWriter)
 		{
 			return;
 		}
-		FString error;
-		if (!assets::WriteRulesCache(GetRulesCachePath(OwnerRoot), Rules->GetListing(), &error))
+		if (bRulesCacheWriteInFlight)
 		{
-			log::Warning(LogCategory, "Rules.cache not written: {}", error);
+			bRulesCacheDirty = true;
+			return;
 		}
+		bRulesCacheWriteInFlight = true;
+		bRulesCacheDirty = false;
+		auto error = std::make_shared<std::optional<FString>>();
+		Pool.Submit(jobs::EWorkPriority::Low, jobs::NoCancelGroup,
+			[error, rules = Rules.get(), path = GetRulesCachePath(OwnerRoot)] ()
+			{
+				FString text;
+				if (!assets::WriteRulesCache(path, rules->GetListing(), &text))
+				{
+					*error = std::move(text);
+				}
+			},
+			[this, error, guard = CLostGuard([this] { bRulesCacheWriteInFlight = false; })] () mutable
+			{
+				guard.Dismiss();
+				bRulesCacheWriteInFlight = false;
+				if (error->has_value())
+				{
+					log::Warning(LogCategory, "Rules.cache not written: {}", **error);
+				}
+				if (bRulesCacheDirty)
+				{
+					WriteRulesCache();
+				}
+			});
 	}
 
 	void MaybeWriteSnapshot (bool bIdle)
@@ -1935,13 +1966,17 @@ struct CAssetRegistry::SImpl
 		}
 		Pool.Cancel(CancelGroup);
 		// Scans and the snapshot load cannot be cancelled; the cancelled tasks' completions report themselves lost.
-		WaitUntil([&] { return !HasWorkInFlight() && Retries.empty() && Passes.empty() && !bSnapshotWriteInFlight; }, -1.0);
+		WaitUntil([&] { return !HasWorkInFlight() && Retries.empty() && Passes.empty() && !bSnapshotWriteInFlight && !bRulesCacheWriteInFlight; },
+			-1.0);
 		CommitQueued(true);
 		if (bWasComplete && Desc.bSnapshotAtShutDown && Desc.bWriter && ProjectId.IsValid() && bSnapshotDirty)
 		{
 			BeginSnapshotWrite(jobs::EWorkPriority::High);
 			WaitUntil([&] { return !bSnapshotWriteInFlight; }, -1.0);
 		}
+		// The last commits may have finished a pass that asked for Rules.cache: its write (and its completion, which
+		// holds this) ends before the registry does.
+		WaitUntil([&] { return !bRulesCacheWriteInFlight; }, -1.0);
 		if (Journal.has_value())
 		{
 			Journal->Close();
@@ -1996,6 +2031,8 @@ struct CAssetRegistry::SImpl
 
 	bool bSnapshotWriteInFlight = false;
 	bool bSnapshotDirty = false;
+	bool bRulesCacheWriteInFlight = false;
+	bool bRulesCacheDirty = false;     // asked for again while one was written
 	uint64 RecordsSinceSnapshot = 0u;
 	uint64 LastCommitTimestamp = 0u;
 	SSnapshotWriteStats LastSnapshotStats;

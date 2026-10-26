@@ -582,7 +582,17 @@ TEST(AssetRegistry, TypesAndValidationEditsReachTheSubEntriesAndProblemsOfStored
 		EXPECT_EQ(registry->GetCounters().Analyzed - analyzed, step.Analyzed) << step.Name;
 		EXPECT_EQ(DumpOf(view), FreshDump(freshPool, tree.Project())) << step.Name;
 	}
+	// The writer's Rules.cache (written on a worker after each rule edit, coalesced) holds the newest listing once it
+	// shut down.
+	SRulesListing expected = registry->GetRules().GetListing();
+	for (SRuleFileListing& file : expected.Files)
+	{
+		file.Diagnostics.clear();   // not stored
+	}
 	(void)Close(registry);
+	const std::optional<SRulesListing> listing = ReadRulesCache(GetRulesCachePath(tree.Tree.ProjectDir()));
+	ASSERT_TRUE(listing.has_value());
+	EXPECT_TRUE(*listing == expected) << FormatRulesCache(*listing).CStr() << "\n---\n" << FormatRulesCache(expected).CStr();
 }
 
 TEST(AssetRegistry, AFileInAnotherFolderGetsItsRule002WhenNoRecordNamesItAsACompanionAndLosesItWhenOneDoes)
