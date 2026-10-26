@@ -29,6 +29,10 @@ Templates/*/Plugins/*/Content/** -text
 # Every shader file, Shared/*.h included, is hashed into the keys of the programs that use it.
 Core/Content/Shaders/** text eol=lf
 
+# The registry's golden dumps (FRT.bat verify --update-goldens writes them with LF): Core-Test and verify compare
+# them line for line, and LF keeps them byte-identical to the dump in every working copy.
+Core-Test/Assets/Golden/** text eol=lf
+
 # Text formats the engine only imports reach the importer byte for byte as committed.
 *.gltf -text
 

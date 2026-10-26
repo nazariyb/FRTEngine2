@@ -1,0 +1,13 @@
+mount /Engine
+  rules Config/Assets.yml 3d443bdc2fe3284f
+  folder /Engine/Fonts
+  file /Engine/Fonts/NotoEmoji-Medium-Subset.ttf Raw size=754232
+    record type=frt.Raw importer=Raw status=Analyzed stamp=507c2be7c06a6ee5 cook=Auto chunk=0 flags=-
+  file /Engine/Fonts/NotoSansCJKsc-Medium-Subset.otf Raw size=6377520
+    record type=frt.Raw importer=Raw status=Analyzed stamp=507c2be7c06a6ee5 cook=Auto chunk=0 flags=-
+  file /Engine/Fonts/NotoSansSymbols2-Regular-Subset.ttf Raw size=380176
+    record type=frt.Raw importer=Raw status=Analyzed stamp=507c2be7c06a6ee5 cook=Auto chunk=0 flags=-
+  file /Engine/Fonts/OFL.txt Unclaimed size=4880
+  file /Engine/Fonts/README.md Unclaimed size=4161
+  file /Engine/Fonts/Roboto-Medium.ttf Raw size=162588
+    record type=frt.Raw importer=Raw status=Analyzed stamp=507c2be7c06a6ee5 cook=Auto chunk=0 flags=-

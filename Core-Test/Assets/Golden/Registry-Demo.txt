@@ -1,0 +1,999 @@
+mount /Project
+  rules Config/Assets.yml 7957cf35de564e01
+  folder /Project/Input
+  folder /Project/Light
+  folder /Project/Models
+  folder /Project/Models/Cube
+  folder /Project/Models/Duck
+  folder /Project/Models/Floor
+  folder /Project/Models/Fox
+  folder /Project/Models/Lantern
+  folder /Project/Models/Pillar
+  folder /Project/Models/Skull
+  folder /Project/Models/Skull/textures
+  folder /Project/Models/Sponza
+  file /Project/Input/IA_EnableMove.frtinputaction Asset size=66
+    record type=frt.InputAction importer=Input.Legacy status=Analyzed stamp=ae3217c5d659c9ad cook=Auto chunk=0 flags=-
+    tag ValueType = Button
+  file /Project/Input/IA_MoveForward.frtinputaction Asset size=67
+    record type=frt.InputAction importer=Input.Legacy status=Analyzed stamp=ae3217c5d659c9ad cook=Auto chunk=0 flags=-
+    tag ValueType = Button
+  file /Project/Input/IA_MoveLeft.frtinputaction Asset size=65
+    record type=frt.InputAction importer=Input.Legacy status=Analyzed stamp=ae3217c5d659c9ad cook=Auto chunk=0 flags=-
+    tag ValueType = Button
+  file /Project/Input/IA_MoveUp.frtinputaction Asset size=62
+    record type=frt.InputAction importer=Input.Legacy status=Analyzed stamp=ae3217c5d659c9ad cook=Auto chunk=0 flags=-
+    tag ValueType = Button
+  file /Project/Input/IAM_Editor.frtinputmap Asset size=351
+    record type=frt.InputActionMap importer=Input.Legacy status=Analyzed stamp=ae3217c5d659c9ad cook=Auto chunk=0 flags=Primary primary=IAM_Editor
+    tag Actions = IA_EnableMove
+    tag Actions = IA_MoveForward
+    tag Actions = IA_MoveLeft
+    tag Actions = IA_MoveUp
+    edge /Project/Input/IA_EnableMove.frtinputaction sub=0000000000000000 flags=Path field=actions.0.action Resolved
+    edge /Project/Input/IA_MoveForward.frtinputaction sub=0000000000000000 flags=Path field=actions.1.action Resolved
+    edge /Project/Input/IA_MoveLeft.frtinputaction sub=0000000000000000 flags=Path field=actions.2.action Resolved
+    edge /Project/Input/IA_MoveUp.frtinputaction sub=0000000000000000 flags=Path field=actions.3.action Resolved
+  file /Project/Light/light_mat0.frtmat.yml Asset size=92
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=-
+  file /Project/Light/light_mat2.frtmat.yml Asset size=85
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=-
+  file /Project/Models/Cube/Cube.bin Companion size=1800
+  file /Project/Models/Cube/Cube.gltf Asset size=3671
+    record type=frt.Model importer=Model.Gltf status=Analyzed stamp=1dfcee76ba4b4b55 cook=Auto chunk=0 flags=-
+    tag ImageCount = 2
+    tag MaterialCount = 1
+    tag MeshCount = 1
+    tag TriangleCount = 12
+    tag VertexCount = 36
+    sub image:#0 type=frt.Texture flags=-
+    sub image:#1 type=frt.Texture flags=-
+    sub material:Cube type=frt.Material flags=-
+    sub mesh:Cube type=frt.Mesh flags=-
+      tag TriangleCount = 12
+      tag VertexCount = 36
+    edge /Project/Models/Cube/Cube_BaseColor.png sub=0000000000000000 flags=Build|Declared|Path field=images.0.uri from=image:#0 Resolved
+    edge /Project/Models/Cube/Cube_MetallicRoughness.png sub=0000000000000000 flags=Build|Declared|Path field=images.1.uri from=image:#1 Resolved
+    companion /Project/Models/Cube/Cube.bin
+  file /Project/Models/Cube/Cube_BaseColor.png Asset size=891995
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 4
+    tag HasAlpha = true
+    tag Height = 512
+    tag Width = 512
+  file /Project/Models/Cube/cube_mat0.frtmat.yml Asset size=191
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+    edge /Project/Models/Cube/Cube_BaseColor.png sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
+  file /Project/Models/Cube/Cube_MetallicRoughness.png Asset size=319
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 512
+    tag Width = 512
+  file /Project/Models/Duck/Duck.gltf Asset size=4964
+    record type=frt.Model importer=Model.Gltf status=Analyzed stamp=1dfcee76ba4b4b55 cook=Auto chunk=0 flags=-
+    tag ImageCount = 1
+    tag MaterialCount = 1
+    tag MeshCount = 1
+    tag TriangleCount = 4212
+    tag VertexCount = 2399
+    sub image:#0 type=frt.Texture flags=-
+    sub material:blinn3-fx type=frt.Material flags=-
+    sub mesh:LOD3spShape type=frt.Mesh flags=-
+      tag TriangleCount = 4212
+      tag VertexCount = 2399
+    edge /Project/Models/Duck/DuckCM.png sub=0000000000000000 flags=Build|Declared|Path field=images.0.uri from=image:#0 Resolved
+    companion /Project/Models/Duck/Duck0.bin
+  file /Project/Models/Duck/Duck0.bin Companion size=102040
+  file /Project/Models/Duck/Duck_mat0.frtmat.yml Asset size=128
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+    edge /Project/Models/Duck/DuckCM.png sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
+  file /Project/Models/Duck/Duck_mat1.frtmat.yml Asset size=152
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=-
+  file /Project/Models/Duck/DuckCM.png Asset size=16302
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 512
+    tag Width = 512
+  file /Project/Models/Floor/floor_mat0.frtmat.yml Asset size=79
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=-
+  file /Project/Models/Fox/Fox.bin Companion size=119904
+  file /Project/Models/Fox/Fox.gltf Asset size=45064
+    record type=frt.Model importer=Model.Gltf status=Analyzed stamp=1dfcee76ba4b4b55 cook=Auto chunk=0 flags=-
+    tag ImageCount = 1
+    tag MaterialCount = 1
+    tag MeshCount = 1
+    tag TriangleCount = 576
+    tag VertexCount = 1728
+    sub image:#0 type=frt.Texture flags=-
+    sub material:fox_material type=frt.Material flags=-
+    sub mesh:fox1 type=frt.Mesh flags=-
+      tag TriangleCount = 576
+      tag VertexCount = 1728
+    edge /Project/Models/Fox/Texture.png sub=0000000000000000 flags=Build|Declared|Path field=images.0.uri from=image:#0 Resolved
+    companion /Project/Models/Fox/Fox.bin
+  file /Project/Models/Fox/Texture.png Asset size=26764
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Lantern/Lantern.bin Companion size=231324
+  file /Project/Models/Lantern/Lantern.gltf Asset size=5970
+    record type=frt.Model importer=Model.Gltf status=Analyzed stamp=1dfcee76ba4b4b55 cook=Auto chunk=0 flags=-
+    tag ImageCount = 4
+    tag MaterialCount = 1
+    tag MeshCount = 3
+    tag TriangleCount = 5394
+    tag VertexCount = 4145
+    sub image:#0 type=frt.Texture flags=-
+    sub image:#1 type=frt.Texture flags=-
+    sub image:#2 type=frt.Texture flags=-
+    sub image:#3 type=frt.Texture flags=-
+    sub material:LanternPost_Mat type=frt.Material flags=-
+    sub mesh:LanternPole_Body type=frt.Mesh flags=-
+      tag TriangleCount = 872
+      tag VertexCount = 926
+    sub mesh:LanternPole_Chain type=frt.Mesh flags=-
+      tag TriangleCount = 1248
+      tag VertexCount = 756
+    sub mesh:LanternPole_Lantern type=frt.Mesh flags=-
+      tag TriangleCount = 3274
+      tag VertexCount = 2463
+    edge /Project/Models/Lantern/Lantern_baseColor.png sub=0000000000000000 flags=Build|Declared|Path field=images.0.uri from=image:#0 Resolved
+    edge /Project/Models/Lantern/Lantern_emissive.png sub=0000000000000000 flags=Build|Declared|Path field=images.3.uri from=image:#3 Resolved
+    edge /Project/Models/Lantern/Lantern_normal.png sub=0000000000000000 flags=Build|Declared|Path field=images.2.uri from=image:#2 Resolved
+    edge /Project/Models/Lantern/Lantern_roughnessMetallic.png sub=0000000000000000 flags=Build|Declared|Path field=images.1.uri from=image:#1 Resolved
+    companion /Project/Models/Lantern/Lantern.bin
+  file /Project/Models/Lantern/Lantern_baseColor.png Asset size=4461532
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 4
+    tag HasAlpha = true
+    tag Height = 2048
+    tag Width = 2048
+  file /Project/Models/Lantern/Lantern_emissive.png Asset size=169335
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 2048
+    tag Width = 2048
+  file /Project/Models/Lantern/Lantern_normal.png Asset size=2928441
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 2048
+    tag Width = 2048
+  file /Project/Models/Lantern/Lantern_roughnessMetallic.png Asset size=2078597
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 2048
+    tag Width = 2048
+  file /Project/Models/Pillar/pillar_mat0.frtmat.yml Asset size=110
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=-
+  file /Project/Models/Skull/license.txt Unclaimed size=704
+  file /Project/Models/Skull/scene.bin Companion size=1205376
+  file /Project/Models/Skull/scene.gltf Asset size=4187
+    record type=frt.Model importer=Model.Gltf status=Analyzed stamp=1dfcee76ba4b4b55 cook=Auto chunk=0 flags=-
+    tag ImageCount = 2
+    tag MaterialCount = 1
+    tag MeshCount = 1
+    tag TriangleCount = 31016
+    tag VertexCount = 17358
+    sub image:#0 type=frt.Texture flags=-
+    sub image:#1 type=frt.Texture flags=-
+    sub material:defaultMat type=frt.Material flags=-
+    sub mesh:Object_0 type=frt.Mesh flags=-
+      tag TriangleCount = 31016
+      tag VertexCount = 17358
+    edge /Project/Models/Skull/textures/defaultMat_baseColor.jpeg sub=0000000000000000 flags=Build|Declared|Path field=images.0.uri from=image:#0 Resolved
+    edge /Project/Models/Skull/textures/defaultMat_normal.jpeg sub=0000000000000000 flags=Build|Declared|Path field=images.1.uri from=image:#1 Resolved
+    companion /Project/Models/Skull/scene.bin
+  file /Project/Models/Skull/scene_mat0.frtmat.yml Asset size=221
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+    edge /Project/Models/Skull/textures/defaultMat_baseColor.jpeg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
+  file /Project/Models/Skull/scene_mat1.frtmat.yml Asset size=82
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=-
+  file /Project/Models/Skull/textures/defaultMat_baseColor.jpeg Asset size=885714
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 2048
+    tag Width = 2048
+  file /Project/Models/Skull/textures/defaultMat_normal.jpeg Asset size=1980805
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 2048
+    tag Width = 2048
+  file /Project/Models/Sponza/10381718147657362067.jpg Asset size=881980
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/10388182081421875623.jpg Asset size=917202
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/11474523244911310074.jpg Asset size=1079152
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/11490520546946913238.jpg Asset size=321375
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/11872827283454512094.jpg Asset size=668962
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/11968150294050148237.jpg Asset size=530384
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/1219024358953944284.jpg Asset size=329124
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/12501374198249454378.jpg Asset size=418235
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/13196865903111448057.jpg Asset size=281980
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/13824894030729245199.jpg Asset size=313460
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/13982482287905699490.jpg Asset size=347538
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/14118779221266351425.jpg Asset size=1611314
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/14170708867020035030.jpg Asset size=140738
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/14267839433702832875.jpg Asset size=711217
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/14650633544276105767.jpg Asset size=521947
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/15295713303328085182.jpg Asset size=520162
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/15722799267630235092.jpg Asset size=560258
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/16275776544635328252.png Asset size=1077432
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 4
+    tag HasAlpha = true
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/16299174074766089871.jpg Asset size=322693
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/16885566240357350108.jpg Asset size=12575
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/17556969131407844942.jpg Asset size=370061
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/17876391417123941155.jpg Asset size=1151448
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/2051777328469649772.jpg Asset size=206618
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/2185409758123873465.jpg Asset size=780166
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/2299742237651021498.jpg Asset size=772672
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/2374361008830720677.jpg Asset size=852079
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/2411100444841994089.jpg Asset size=399963
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/2775690330959970771.jpg Asset size=785678
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/2969916736137545357.jpg Asset size=822373
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/332936164838540657.jpg Asset size=852079
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/3371964815757888145.jpg Asset size=682743
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/3455394979645218238.jpg Asset size=551432
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/3628158980083700836.jpg Asset size=527788
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/3827035219084910048.jpg Asset size=608394
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/4477655471536070370.jpg Asset size=211322
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/4601176305987539675.jpg Asset size=1043152
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/466164707995436622.jpg Asset size=486634
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/4675343432951571524.jpg Asset size=764529
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/4871783166746854860.jpg Asset size=570081
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/4910669866631290573.jpg Asset size=1043152
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/4975155472559461469.jpg Asset size=399027
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/5061699253647017043.png Asset size=2427921
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 4
+    tag HasAlpha = true
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/5792855332885324923.jpg Asset size=564801
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/5823059166183034438.jpg Asset size=573157
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/6047387724914829168.jpg Asset size=518310
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/6151467286084645207.jpg Asset size=643517
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/6593109234861095314.jpg Asset size=1043152
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/6667038893015345571.jpg Asset size=703420
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/6772804448157695701.jpg Asset size=599959
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/7056944414013900257.jpg Asset size=852079
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/715093869573992647.jpg Asset size=280745
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/7268504077753552595.jpg Asset size=572245
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/7441062115984513793.jpg Asset size=665796
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/755318871556304029.jpg Asset size=302363
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/759203620573749278.jpg Asset size=509411
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/7645212358685992005.jpg Asset size=656995
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/7815564343179553343.jpg Asset size=623144
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/8006627369776289000.png Asset size=1225157
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 4
+    tag HasAlpha = true
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/8051790464816141987.jpg Asset size=260119
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/8114461559286000061.jpg Asset size=193077
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/8481240838833932244.jpg Asset size=531156
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/8503262930880235456.jpg Asset size=104626
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/8747919177698443163.jpg Asset size=872255
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/8750083169368950601.jpg Asset size=362437
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/8773302468495022225.jpg Asset size=413837
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/8783994986360286082.jpg Asset size=388462
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/9288698199695299068.jpg Asset size=1044330
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/9916269861720640319.jpg Asset size=608687
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 1024
+    tag Width = 1024
+  file /Project/Models/Sponza/Sponza.bin Companion size=9528220
+  file /Project/Models/Sponza/Sponza.gltf Asset size=167176
+    record type=frt.Model importer=Model.Gltf status=Analyzed stamp=1dfcee76ba4b4b55 cook=Auto chunk=0 flags=-
+    tag ImageCount = 69
+    tag MaterialCount = 25
+    tag MeshCount = 1
+    tag TriangleCount = 262267
+    tag VertexCount = 192496
+    sub image:#0 type=frt.Texture flags=-
+    sub image:#1 type=frt.Texture flags=-
+    sub image:#10 type=frt.Texture flags=-
+    sub image:#11 type=frt.Texture flags=-
+    sub image:#12 type=frt.Texture flags=-
+    sub image:#13 type=frt.Texture flags=-
+    sub image:#14 type=frt.Texture flags=-
+    sub image:#15 type=frt.Texture flags=-
+    sub image:#16 type=frt.Texture flags=-
+    sub image:#17 type=frt.Texture flags=-
+    sub image:#18 type=frt.Texture flags=-
+    sub image:#19 type=frt.Texture flags=-
+    sub image:#2 type=frt.Texture flags=-
+    sub image:#20 type=frt.Texture flags=-
+    sub image:#21 type=frt.Texture flags=-
+    sub image:#22 type=frt.Texture flags=-
+    sub image:#23 type=frt.Texture flags=-
+    sub image:#24 type=frt.Texture flags=-
+    sub image:#25 type=frt.Texture flags=-
+    sub image:#26 type=frt.Texture flags=-
+    sub image:#27 type=frt.Texture flags=-
+    sub image:#28 type=frt.Texture flags=-
+    sub image:#29 type=frt.Texture flags=-
+    sub image:#3 type=frt.Texture flags=-
+    sub image:#30 type=frt.Texture flags=-
+    sub image:#31 type=frt.Texture flags=-
+    sub image:#32 type=frt.Texture flags=-
+    sub image:#33 type=frt.Texture flags=-
+    sub image:#34 type=frt.Texture flags=-
+    sub image:#35 type=frt.Texture flags=-
+    sub image:#36 type=frt.Texture flags=-
+    sub image:#37 type=frt.Texture flags=-
+    sub image:#38 type=frt.Texture flags=-
+    sub image:#39 type=frt.Texture flags=-
+    sub image:#4 type=frt.Texture flags=-
+    sub image:#40 type=frt.Texture flags=-
+    sub image:#41 type=frt.Texture flags=-
+    sub image:#42 type=frt.Texture flags=-
+    sub image:#43 type=frt.Texture flags=-
+    sub image:#44 type=frt.Texture flags=-
+    sub image:#45 type=frt.Texture flags=-
+    sub image:#46 type=frt.Texture flags=-
+    sub image:#47 type=frt.Texture flags=-
+    sub image:#48 type=frt.Texture flags=-
+    sub image:#49 type=frt.Texture flags=-
+    sub image:#5 type=frt.Texture flags=-
+    sub image:#50 type=frt.Texture flags=-
+    sub image:#51 type=frt.Texture flags=-
+    sub image:#52 type=frt.Texture flags=-
+    sub image:#53 type=frt.Texture flags=-
+    sub image:#54 type=frt.Texture flags=-
+    sub image:#55 type=frt.Texture flags=-
+    sub image:#56 type=frt.Texture flags=-
+    sub image:#57 type=frt.Texture flags=-
+    sub image:#58 type=frt.Texture flags=-
+    sub image:#59 type=frt.Texture flags=-
+    sub image:#6 type=frt.Texture flags=-
+    sub image:#60 type=frt.Texture flags=-
+    sub image:#61 type=frt.Texture flags=-
+    sub image:#62 type=frt.Texture flags=-
+    sub image:#63 type=frt.Texture flags=-
+    sub image:#64 type=frt.Texture flags=-
+    sub image:#65 type=frt.Texture flags=-
+    sub image:#66 type=frt.Texture flags=-
+    sub image:#67 type=frt.Texture flags=-
+    sub image:#68 type=frt.Texture flags=-
+    sub image:#7 type=frt.Texture flags=-
+    sub image:#8 type=frt.Texture flags=-
+    sub image:#9 type=frt.Texture flags=-
+    sub material:#0 type=frt.Material flags=-
+    sub material:#1 type=frt.Material flags=-
+    sub material:#10 type=frt.Material flags=-
+    sub material:#11 type=frt.Material flags=-
+    sub material:#12 type=frt.Material flags=-
+    sub material:#13 type=frt.Material flags=-
+    sub material:#14 type=frt.Material flags=-
+    sub material:#15 type=frt.Material flags=-
+    sub material:#16 type=frt.Material flags=-
+    sub material:#17 type=frt.Material flags=-
+    sub material:#18 type=frt.Material flags=-
+    sub material:#19 type=frt.Material flags=-
+    sub material:#2 type=frt.Material flags=-
+    sub material:#20 type=frt.Material flags=-
+    sub material:#21 type=frt.Material flags=-
+    sub material:#22 type=frt.Material flags=-
+    sub material:#23 type=frt.Material flags=-
+    sub material:#24 type=frt.Material flags=-
+    sub material:#3 type=frt.Material flags=-
+    sub material:#4 type=frt.Material flags=-
+    sub material:#5 type=frt.Material flags=-
+    sub material:#6 type=frt.Material flags=-
+    sub material:#7 type=frt.Material flags=-
+    sub material:#8 type=frt.Material flags=-
+    sub material:#9 type=frt.Material flags=-
+    sub mesh:#0 type=frt.Mesh flags=-
+      tag TriangleCount = 262267
+      tag VertexCount = 192496
+    edge /Project/Models/Sponza/10381718147657362067.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.59.uri from=image:#59 Resolved
+    edge /Project/Models/Sponza/10388182081421875623.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.18.uri from=image:#18 Resolved
+    edge /Project/Models/Sponza/11474523244911310074.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.50.uri from=image:#50 Resolved
+    edge /Project/Models/Sponza/11490520546946913238.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.31.uri from=image:#31 Resolved
+    edge /Project/Models/Sponza/11872827283454512094.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.2.uri from=image:#2 Resolved
+    edge /Project/Models/Sponza/11968150294050148237.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.14.uri from=image:#14 Resolved
+    edge /Project/Models/Sponza/1219024358953944284.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.55.uri from=image:#55 Resolved
+    edge /Project/Models/Sponza/12501374198249454378.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.3.uri from=image:#3 Resolved
+    edge /Project/Models/Sponza/13196865903111448057.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.64.uri from=image:#64 Resolved
+    edge /Project/Models/Sponza/13824894030729245199.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.26.uri from=image:#26 Resolved
+    edge /Project/Models/Sponza/13982482287905699490.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.9.uri from=image:#9 Resolved
+    edge /Project/Models/Sponza/14118779221266351425.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.65.uri from=image:#65 Resolved
+    edge /Project/Models/Sponza/14170708867020035030.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.53.uri from=image:#53 Resolved
+    edge /Project/Models/Sponza/14267839433702832875.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.24.uri from=image:#24 Resolved
+    edge /Project/Models/Sponza/14650633544276105767.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.16.uri from=image:#16 Resolved
+    edge /Project/Models/Sponza/15295713303328085182.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.19.uri from=image:#19 Resolved
+    edge /Project/Models/Sponza/15722799267630235092.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.21.uri from=image:#21 Resolved
+    edge /Project/Models/Sponza/16275776544635328252.png sub=0000000000000000 flags=Build|Declared|Path field=images.54.uri from=image:#54 Resolved
+    edge /Project/Models/Sponza/16299174074766089871.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.12.uri from=image:#12 Resolved
+    edge /Project/Models/Sponza/16885566240357350108.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.11.uri from=image:#11 Resolved
+    edge /Project/Models/Sponza/17556969131407844942.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.61.uri from=image:#61 Resolved
+    edge /Project/Models/Sponza/17876391417123941155.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.47.uri from=image:#47 Resolved
+    edge /Project/Models/Sponza/2051777328469649772.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.15.uri from=image:#15 Resolved
+    edge /Project/Models/Sponza/2185409758123873465.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.45.uri from=image:#45 Resolved
+    edge /Project/Models/Sponza/2299742237651021498.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.36.uri from=image:#36 Resolved
+    edge /Project/Models/Sponza/2374361008830720677.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.42.uri from=image:#42 Resolved
+    edge /Project/Models/Sponza/2411100444841994089.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.58.uri from=image:#58 Resolved
+    edge /Project/Models/Sponza/2775690330959970771.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.43.uri from=image:#43 Resolved
+    edge /Project/Models/Sponza/2969916736137545357.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.66.uri from=image:#66 Resolved
+    edge /Project/Models/Sponza/332936164838540657.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.44.uri from=image:#44 Resolved
+    edge /Project/Models/Sponza/3371964815757888145.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.38.uri from=image:#38 Resolved
+    edge /Project/Models/Sponza/3455394979645218238.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.32.uri from=image:#32 Resolved
+    edge /Project/Models/Sponza/3628158980083700836.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.30.uri from=image:#30 Resolved
+    edge /Project/Models/Sponza/3827035219084910048.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.56.uri from=image:#56 Resolved
+    edge /Project/Models/Sponza/4477655471536070370.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.6.uri from=image:#6 Resolved
+    edge /Project/Models/Sponza/4601176305987539675.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.49.uri from=image:#49 Resolved
+    edge /Project/Models/Sponza/466164707995436622.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.48.uri from=image:#48 Resolved
+    edge /Project/Models/Sponza/4675343432951571524.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.40.uri from=image:#40 Resolved
+    edge /Project/Models/Sponza/4871783166746854860.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.17.uri from=image:#17 Resolved
+    edge /Project/Models/Sponza/4910669866631290573.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.51.uri from=image:#51 Resolved
+    edge /Project/Models/Sponza/4975155472559461469.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.37.uri from=image:#37 Resolved
+    edge /Project/Models/Sponza/5061699253647017043.png sub=0000000000000000 flags=Build|Declared|Path field=images.1.uri from=image:#1 Resolved
+    edge /Project/Models/Sponza/5792855332885324923.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.13.uri from=image:#13 Resolved
+    edge /Project/Models/Sponza/5823059166183034438.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.25.uri from=image:#25 Resolved
+    edge /Project/Models/Sponza/6047387724914829168.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.22.uri from=image:#22 Resolved
+    edge /Project/Models/Sponza/6151467286084645207.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.34.uri from=image:#34 Resolved
+    edge /Project/Models/Sponza/6593109234861095314.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.46.uri from=image:#46 Resolved
+    edge /Project/Models/Sponza/6667038893015345571.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.27.uri from=image:#27 Resolved
+    edge /Project/Models/Sponza/6772804448157695701.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.63.uri from=image:#63 Resolved
+    edge /Project/Models/Sponza/7056944414013900257.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.39.uri from=image:#39 Resolved
+    edge /Project/Models/Sponza/715093869573992647.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.5.uri from=image:#5 Resolved
+    edge /Project/Models/Sponza/7268504077753552595.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.7.uri from=image:#7 Resolved
+    edge /Project/Models/Sponza/7441062115984513793.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.28.uri from=image:#28 Resolved
+    edge /Project/Models/Sponza/755318871556304029.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.57.uri from=image:#57 Resolved
+    edge /Project/Models/Sponza/759203620573749278.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.62.uri from=image:#62 Resolved
+    edge /Project/Models/Sponza/7645212358685992005.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.33.uri from=image:#33 Resolved
+    edge /Project/Models/Sponza/7815564343179553343.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.41.uri from=image:#41 Resolved
+    edge /Project/Models/Sponza/8006627369776289000.png sub=0000000000000000 flags=Build|Declared|Path field=images.4.uri from=image:#4 Resolved
+    edge /Project/Models/Sponza/8051790464816141987.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.23.uri from=image:#23 Resolved
+    edge /Project/Models/Sponza/8114461559286000061.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.29.uri from=image:#29 Resolved
+    edge /Project/Models/Sponza/8481240838833932244.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.60.uri from=image:#60 Resolved
+    edge /Project/Models/Sponza/8503262930880235456.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.8.uri from=image:#8 Resolved
+    edge /Project/Models/Sponza/8747919177698443163.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.67.uri from=image:#67 Resolved
+    edge /Project/Models/Sponza/8750083169368950601.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.10.uri from=image:#10 Resolved
+    edge /Project/Models/Sponza/8773302468495022225.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.0.uri from=image:#0 Resolved
+    edge /Project/Models/Sponza/8783994986360286082.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.35.uri from=image:#35 Resolved
+    edge /Project/Models/Sponza/9288698199695299068.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.52.uri from=image:#52 Resolved
+    edge /Project/Models/Sponza/9916269861720640319.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.20.uri from=image:#20 Resolved
+    edge /Project/Models/Sponza/white.png sub=0000000000000000 flags=Build|Declared|Path field=images.68.uri from=image:#68 Resolved
+    companion /Project/Models/Sponza/Sponza.bin
+  file /Project/Models/Sponza/Sponza_mat0.frtmat.yml Asset size=599
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+    edge /Project/Models/Sponza/11872827283454512094.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
+    edge /Project/Models/Sponza/5061699253647017043.png sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
+    edge /Project/Models/Sponza/8773302468495022225.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
+  file /Project/Models/Sponza/Sponza_mat1.frtmat.yml Asset size=598
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+    edge /Project/Models/Sponza/12501374198249454378.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
+    edge /Project/Models/Sponza/715093869573992647.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
+    edge /Project/Models/Sponza/8006627369776289000.png sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
+  file /Project/Models/Sponza/Sponza_mat10.frtmat.yml Asset size=603
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+    edge /Project/Models/Sponza/11490520546946913238.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
+    edge /Project/Models/Sponza/3455394979645218238.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
+    edge /Project/Models/Sponza/3628158980083700836.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
+  file /Project/Models/Sponza/Sponza_mat11.frtmat.yml Asset size=602
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+    edge /Project/Models/Sponza/6151467286084645207.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
+    edge /Project/Models/Sponza/7645212358685992005.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
+    edge /Project/Models/Sponza/8783994986360286082.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
+  file /Project/Models/Sponza/Sponza_mat12.frtmat.yml Asset size=546
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+    edge /Project/Models/Sponza/white.png sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
+  file /Project/Models/Sponza/Sponza_mat13.frtmat.yml Asset size=602
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+    edge /Project/Models/Sponza/2299742237651021498.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
+    edge /Project/Models/Sponza/3371964815757888145.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
+    edge /Project/Models/Sponza/4975155472559461469.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
+  file /Project/Models/Sponza/Sponza_mat14.frtmat.yml Asset size=602
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+    edge /Project/Models/Sponza/4675343432951571524.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
+    edge /Project/Models/Sponza/7056944414013900257.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
+    edge /Project/Models/Sponza/7815564343179553343.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
+  file /Project/Models/Sponza/Sponza_mat15.frtmat.yml Asset size=602
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+    edge /Project/Models/Sponza/2374361008830720677.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
+    edge /Project/Models/Sponza/2775690330959970771.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
+    edge /Project/Models/Sponza/7815564343179553343.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
+  file /Project/Models/Sponza/Sponza_mat16.frtmat.yml Asset size=601
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+    edge /Project/Models/Sponza/2185409758123873465.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
+    edge /Project/Models/Sponza/332936164838540657.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
+    edge /Project/Models/Sponza/7815564343179553343.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
+  file /Project/Models/Sponza/Sponza_mat17.frtmat.yml Asset size=602
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+    edge /Project/Models/Sponza/17876391417123941155.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
+    edge /Project/Models/Sponza/466164707995436622.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
+    edge /Project/Models/Sponza/6593109234861095314.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
+  file /Project/Models/Sponza/Sponza_mat18.frtmat.yml Asset size=602
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+    edge /Project/Models/Sponza/11474523244911310074.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
+    edge /Project/Models/Sponza/4601176305987539675.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
+    edge /Project/Models/Sponza/466164707995436622.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
+  file /Project/Models/Sponza/Sponza_mat19.frtmat.yml Asset size=601
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+    edge /Project/Models/Sponza/466164707995436622.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
+    edge /Project/Models/Sponza/4910669866631290573.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
+    edge /Project/Models/Sponza/9288698199695299068.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
+  file /Project/Models/Sponza/Sponza_mat2.frtmat.yml Asset size=601
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+    edge /Project/Models/Sponza/4477655471536070370.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
+    edge /Project/Models/Sponza/7268504077753552595.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
+    edge /Project/Models/Sponza/8503262930880235456.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
+  file /Project/Models/Sponza/Sponza_mat20.frtmat.yml Asset size=601
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+    edge /Project/Models/Sponza/1219024358953944284.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
+    edge /Project/Models/Sponza/14170708867020035030.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
+    edge /Project/Models/Sponza/16275776544635328252.png sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
+  file /Project/Models/Sponza/Sponza_mat21.frtmat.yml Asset size=601
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+    edge /Project/Models/Sponza/2411100444841994089.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
+    edge /Project/Models/Sponza/3827035219084910048.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
+    edge /Project/Models/Sponza/755318871556304029.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
+  file /Project/Models/Sponza/Sponza_mat22.frtmat.yml Asset size=604
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+    edge /Project/Models/Sponza/10381718147657362067.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
+    edge /Project/Models/Sponza/17556969131407844942.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
+    edge /Project/Models/Sponza/8481240838833932244.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
+  file /Project/Models/Sponza/Sponza_mat23.frtmat.yml Asset size=602
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+    edge /Project/Models/Sponza/13196865903111448057.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
+    edge /Project/Models/Sponza/6772804448157695701.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
+    edge /Project/Models/Sponza/759203620573749278.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
+  file /Project/Models/Sponza/Sponza_mat24.frtmat.yml Asset size=603
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+    edge /Project/Models/Sponza/14118779221266351425.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
+    edge /Project/Models/Sponza/2969916736137545357.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
+    edge /Project/Models/Sponza/8747919177698443163.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
+  file /Project/Models/Sponza/Sponza_mat25.frtmat.yml Asset size=527
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/Sponza_mat3.frtmat.yml Asset size=603
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+    edge /Project/Models/Sponza/13982482287905699490.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
+    edge /Project/Models/Sponza/16885566240357350108.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
+    edge /Project/Models/Sponza/8750083169368950601.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
+  file /Project/Models/Sponza/Sponza_mat4.frtmat.yml Asset size=603
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+    edge /Project/Models/Sponza/11968150294050148237.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
+    edge /Project/Models/Sponza/16299174074766089871.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
+    edge /Project/Models/Sponza/5792855332885324923.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
+  file /Project/Models/Sponza/Sponza_mat5.frtmat.yml Asset size=602
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+    edge /Project/Models/Sponza/14650633544276105767.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
+    edge /Project/Models/Sponza/2051777328469649772.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
+    edge /Project/Models/Sponza/4871783166746854860.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
+  file /Project/Models/Sponza/Sponza_mat6.frtmat.yml Asset size=603
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+    edge /Project/Models/Sponza/10388182081421875623.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
+    edge /Project/Models/Sponza/15295713303328085182.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
+    edge /Project/Models/Sponza/9916269861720640319.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
+  file /Project/Models/Sponza/Sponza_mat7.frtmat.yml Asset size=602
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+    edge /Project/Models/Sponza/15722799267630235092.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
+    edge /Project/Models/Sponza/6047387724914829168.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
+    edge /Project/Models/Sponza/8051790464816141987.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
+  file /Project/Models/Sponza/Sponza_mat8.frtmat.yml Asset size=603
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+    edge /Project/Models/Sponza/13824894030729245199.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
+    edge /Project/Models/Sponza/14267839433702832875.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
+    edge /Project/Models/Sponza/5823059166183034438.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
+  file /Project/Models/Sponza/Sponza_mat9.frtmat.yml Asset size=601
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+    edge /Project/Models/Sponza/6667038893015345571.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
+    edge /Project/Models/Sponza/7441062115984513793.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
+    edge /Project/Models/Sponza/8114461559286000061.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
+  file /Project/Models/Sponza/white.png Asset size=951
+    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+    tag Channels = 3
+    tag HasAlpha = false
+    tag Height = 4
+    tag Width = 4
+  problem REF007 info Analyze /Project/Models/Cube/cube_mat0.frtmat.yml at Content/Models/Cube/cube_mat0.frtmat.yml:10:12 field albedo.texture: legacy path reference 'Cube_BaseColor.png' in albedo.texture (resolves to /Project/Models/Cube/Cube_BaseColor.png); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Duck/Duck_mat0.frtmat.yml at Content/Models/Duck/Duck_mat0.frtmat.yml:9:12 field albedo.texture: legacy path reference 'DuckCM.png' in albedo.texture (resolves to /Project/Models/Duck/DuckCM.png); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Skull/scene_mat0.frtmat.yml at Content/Models/Skull/scene_mat0.frtmat.yml:10:12 field albedo.texture: legacy path reference 'textures/defaultMat_baseColor.jpeg' in albedo.texture (resolves to /Project/Models/Skull/textures/defaultMat_baseColor.jpeg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat0.frtmat.yml at Content/Models/Sponza/Sponza_mat0.frtmat.yml:15:27 field metallicRoughnessTexture: legacy path reference '11872827283454512094.jpg' in metallicRoughnessTexture (resolves to /Project/Models/Sponza/11872827283454512094.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat0.frtmat.yml at Content/Models/Sponza/Sponza_mat0.frtmat.yml:8:12 field albedo.texture: legacy path reference '5061699253647017043.png' in albedo.texture (resolves to /Project/Models/Sponza/5061699253647017043.png); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat0.frtmat.yml at Content/Models/Sponza/Sponza_mat0.frtmat.yml:17:12 field normal.texture: legacy path reference '8773302468495022225.jpg' in normal.texture (resolves to /Project/Models/Sponza/8773302468495022225.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat1.frtmat.yml at Content/Models/Sponza/Sponza_mat1.frtmat.yml:17:12 field normal.texture: legacy path reference '12501374198249454378.jpg' in normal.texture (resolves to /Project/Models/Sponza/12501374198249454378.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat1.frtmat.yml at Content/Models/Sponza/Sponza_mat1.frtmat.yml:15:27 field metallicRoughnessTexture: legacy path reference '715093869573992647.jpg' in metallicRoughnessTexture (resolves to /Project/Models/Sponza/715093869573992647.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat1.frtmat.yml at Content/Models/Sponza/Sponza_mat1.frtmat.yml:8:12 field albedo.texture: legacy path reference '8006627369776289000.png' in albedo.texture (resolves to /Project/Models/Sponza/8006627369776289000.png); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat10.frtmat.yml at Content/Models/Sponza/Sponza_mat10.frtmat.yml:8:12 field albedo.texture: legacy path reference '11490520546946913238.jpg' in albedo.texture (resolves to /Project/Models/Sponza/11490520546946913238.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat10.frtmat.yml at Content/Models/Sponza/Sponza_mat10.frtmat.yml:15:27 field metallicRoughnessTexture: legacy path reference '3455394979645218238.jpg' in metallicRoughnessTexture (resolves to /Project/Models/Sponza/3455394979645218238.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat10.frtmat.yml at Content/Models/Sponza/Sponza_mat10.frtmat.yml:17:12 field normal.texture: legacy path reference '3628158980083700836.jpg' in normal.texture (resolves to /Project/Models/Sponza/3628158980083700836.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat11.frtmat.yml at Content/Models/Sponza/Sponza_mat11.frtmat.yml:8:12 field albedo.texture: legacy path reference '6151467286084645207.jpg' in albedo.texture (resolves to /Project/Models/Sponza/6151467286084645207.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat11.frtmat.yml at Content/Models/Sponza/Sponza_mat11.frtmat.yml:17:12 field normal.texture: legacy path reference '7645212358685992005.jpg' in normal.texture (resolves to /Project/Models/Sponza/7645212358685992005.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat11.frtmat.yml at Content/Models/Sponza/Sponza_mat11.frtmat.yml:15:27 field metallicRoughnessTexture: legacy path reference '8783994986360286082.jpg' in metallicRoughnessTexture (resolves to /Project/Models/Sponza/8783994986360286082.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat12.frtmat.yml at Content/Models/Sponza/Sponza_mat12.frtmat.yml:8:12 field albedo.texture: legacy path reference 'white.png' in albedo.texture (resolves to /Project/Models/Sponza/white.png); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat13.frtmat.yml at Content/Models/Sponza/Sponza_mat13.frtmat.yml:17:12 field normal.texture: legacy path reference '2299742237651021498.jpg' in normal.texture (resolves to /Project/Models/Sponza/2299742237651021498.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat13.frtmat.yml at Content/Models/Sponza/Sponza_mat13.frtmat.yml:15:27 field metallicRoughnessTexture: legacy path reference '3371964815757888145.jpg' in metallicRoughnessTexture (resolves to /Project/Models/Sponza/3371964815757888145.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat13.frtmat.yml at Content/Models/Sponza/Sponza_mat13.frtmat.yml:8:12 field albedo.texture: legacy path reference '4975155472559461469.jpg' in albedo.texture (resolves to /Project/Models/Sponza/4975155472559461469.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat14.frtmat.yml at Content/Models/Sponza/Sponza_mat14.frtmat.yml:8:12 field albedo.texture: legacy path reference '4675343432951571524.jpg' in albedo.texture (resolves to /Project/Models/Sponza/4675343432951571524.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat14.frtmat.yml at Content/Models/Sponza/Sponza_mat14.frtmat.yml:17:12 field normal.texture: legacy path reference '7056944414013900257.jpg' in normal.texture (resolves to /Project/Models/Sponza/7056944414013900257.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat14.frtmat.yml at Content/Models/Sponza/Sponza_mat14.frtmat.yml:15:27 field metallicRoughnessTexture: legacy path reference '7815564343179553343.jpg' in metallicRoughnessTexture (resolves to /Project/Models/Sponza/7815564343179553343.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat15.frtmat.yml at Content/Models/Sponza/Sponza_mat15.frtmat.yml:17:12 field normal.texture: legacy path reference '2374361008830720677.jpg' in normal.texture (resolves to /Project/Models/Sponza/2374361008830720677.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat15.frtmat.yml at Content/Models/Sponza/Sponza_mat15.frtmat.yml:8:12 field albedo.texture: legacy path reference '2775690330959970771.jpg' in albedo.texture (resolves to /Project/Models/Sponza/2775690330959970771.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat15.frtmat.yml at Content/Models/Sponza/Sponza_mat15.frtmat.yml:15:27 field metallicRoughnessTexture: legacy path reference '7815564343179553343.jpg' in metallicRoughnessTexture (resolves to /Project/Models/Sponza/7815564343179553343.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat16.frtmat.yml at Content/Models/Sponza/Sponza_mat16.frtmat.yml:8:12 field albedo.texture: legacy path reference '2185409758123873465.jpg' in albedo.texture (resolves to /Project/Models/Sponza/2185409758123873465.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat16.frtmat.yml at Content/Models/Sponza/Sponza_mat16.frtmat.yml:17:12 field normal.texture: legacy path reference '332936164838540657.jpg' in normal.texture (resolves to /Project/Models/Sponza/332936164838540657.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat16.frtmat.yml at Content/Models/Sponza/Sponza_mat16.frtmat.yml:15:27 field metallicRoughnessTexture: legacy path reference '7815564343179553343.jpg' in metallicRoughnessTexture (resolves to /Project/Models/Sponza/7815564343179553343.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat17.frtmat.yml at Content/Models/Sponza/Sponza_mat17.frtmat.yml:8:12 field albedo.texture: legacy path reference '17876391417123941155.jpg' in albedo.texture (resolves to /Project/Models/Sponza/17876391417123941155.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat17.frtmat.yml at Content/Models/Sponza/Sponza_mat17.frtmat.yml:15:27 field metallicRoughnessTexture: legacy path reference '466164707995436622.jpg' in metallicRoughnessTexture (resolves to /Project/Models/Sponza/466164707995436622.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat17.frtmat.yml at Content/Models/Sponza/Sponza_mat17.frtmat.yml:17:12 field normal.texture: legacy path reference '6593109234861095314.jpg' in normal.texture (resolves to /Project/Models/Sponza/6593109234861095314.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat18.frtmat.yml at Content/Models/Sponza/Sponza_mat18.frtmat.yml:8:12 field albedo.texture: legacy path reference '11474523244911310074.jpg' in albedo.texture (resolves to /Project/Models/Sponza/11474523244911310074.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat18.frtmat.yml at Content/Models/Sponza/Sponza_mat18.frtmat.yml:17:12 field normal.texture: legacy path reference '4601176305987539675.jpg' in normal.texture (resolves to /Project/Models/Sponza/4601176305987539675.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat18.frtmat.yml at Content/Models/Sponza/Sponza_mat18.frtmat.yml:15:27 field metallicRoughnessTexture: legacy path reference '466164707995436622.jpg' in metallicRoughnessTexture (resolves to /Project/Models/Sponza/466164707995436622.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat19.frtmat.yml at Content/Models/Sponza/Sponza_mat19.frtmat.yml:15:27 field metallicRoughnessTexture: legacy path reference '466164707995436622.jpg' in metallicRoughnessTexture (resolves to /Project/Models/Sponza/466164707995436622.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat19.frtmat.yml at Content/Models/Sponza/Sponza_mat19.frtmat.yml:17:12 field normal.texture: legacy path reference '4910669866631290573.jpg' in normal.texture (resolves to /Project/Models/Sponza/4910669866631290573.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat19.frtmat.yml at Content/Models/Sponza/Sponza_mat19.frtmat.yml:8:12 field albedo.texture: legacy path reference '9288698199695299068.jpg' in albedo.texture (resolves to /Project/Models/Sponza/9288698199695299068.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat2.frtmat.yml at Content/Models/Sponza/Sponza_mat2.frtmat.yml:17:12 field normal.texture: legacy path reference '4477655471536070370.jpg' in normal.texture (resolves to /Project/Models/Sponza/4477655471536070370.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat2.frtmat.yml at Content/Models/Sponza/Sponza_mat2.frtmat.yml:8:12 field albedo.texture: legacy path reference '7268504077753552595.jpg' in albedo.texture (resolves to /Project/Models/Sponza/7268504077753552595.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat2.frtmat.yml at Content/Models/Sponza/Sponza_mat2.frtmat.yml:15:27 field metallicRoughnessTexture: legacy path reference '8503262930880235456.jpg' in metallicRoughnessTexture (resolves to /Project/Models/Sponza/8503262930880235456.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat20.frtmat.yml at Content/Models/Sponza/Sponza_mat20.frtmat.yml:15:27 field metallicRoughnessTexture: legacy path reference '1219024358953944284.jpg' in metallicRoughnessTexture (resolves to /Project/Models/Sponza/1219024358953944284.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat20.frtmat.yml at Content/Models/Sponza/Sponza_mat20.frtmat.yml:17:12 field normal.texture: legacy path reference '14170708867020035030.jpg' in normal.texture (resolves to /Project/Models/Sponza/14170708867020035030.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat20.frtmat.yml at Content/Models/Sponza/Sponza_mat20.frtmat.yml:8:12 field albedo.texture: legacy path reference '16275776544635328252.png' in albedo.texture (resolves to /Project/Models/Sponza/16275776544635328252.png); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat21.frtmat.yml at Content/Models/Sponza/Sponza_mat21.frtmat.yml:15:27 field metallicRoughnessTexture: legacy path reference '2411100444841994089.jpg' in metallicRoughnessTexture (resolves to /Project/Models/Sponza/2411100444841994089.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat21.frtmat.yml at Content/Models/Sponza/Sponza_mat21.frtmat.yml:17:12 field normal.texture: legacy path reference '3827035219084910048.jpg' in normal.texture (resolves to /Project/Models/Sponza/3827035219084910048.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat21.frtmat.yml at Content/Models/Sponza/Sponza_mat21.frtmat.yml:8:12 field albedo.texture: legacy path reference '755318871556304029.jpg' in albedo.texture (resolves to /Project/Models/Sponza/755318871556304029.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat22.frtmat.yml at Content/Models/Sponza/Sponza_mat22.frtmat.yml:17:12 field normal.texture: legacy path reference '10381718147657362067.jpg' in normal.texture (resolves to /Project/Models/Sponza/10381718147657362067.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat22.frtmat.yml at Content/Models/Sponza/Sponza_mat22.frtmat.yml:15:27 field metallicRoughnessTexture: legacy path reference '17556969131407844942.jpg' in metallicRoughnessTexture (resolves to /Project/Models/Sponza/17556969131407844942.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat22.frtmat.yml at Content/Models/Sponza/Sponza_mat22.frtmat.yml:8:12 field albedo.texture: legacy path reference '8481240838833932244.jpg' in albedo.texture (resolves to /Project/Models/Sponza/8481240838833932244.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat23.frtmat.yml at Content/Models/Sponza/Sponza_mat23.frtmat.yml:15:27 field metallicRoughnessTexture: legacy path reference '13196865903111448057.jpg' in metallicRoughnessTexture (resolves to /Project/Models/Sponza/13196865903111448057.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat23.frtmat.yml at Content/Models/Sponza/Sponza_mat23.frtmat.yml:8:12 field albedo.texture: legacy path reference '6772804448157695701.jpg' in albedo.texture (resolves to /Project/Models/Sponza/6772804448157695701.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat23.frtmat.yml at Content/Models/Sponza/Sponza_mat23.frtmat.yml:17:12 field normal.texture: legacy path reference '759203620573749278.jpg' in normal.texture (resolves to /Project/Models/Sponza/759203620573749278.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat24.frtmat.yml at Content/Models/Sponza/Sponza_mat24.frtmat.yml:17:12 field normal.texture: legacy path reference '14118779221266351425.jpg' in normal.texture (resolves to /Project/Models/Sponza/14118779221266351425.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat24.frtmat.yml at Content/Models/Sponza/Sponza_mat24.frtmat.yml:8:12 field albedo.texture: legacy path reference '2969916736137545357.jpg' in albedo.texture (resolves to /Project/Models/Sponza/2969916736137545357.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat24.frtmat.yml at Content/Models/Sponza/Sponza_mat24.frtmat.yml:15:27 field metallicRoughnessTexture: legacy path reference '8747919177698443163.jpg' in metallicRoughnessTexture (resolves to /Project/Models/Sponza/8747919177698443163.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat3.frtmat.yml at Content/Models/Sponza/Sponza_mat3.frtmat.yml:17:12 field normal.texture: legacy path reference '13982482287905699490.jpg' in normal.texture (resolves to /Project/Models/Sponza/13982482287905699490.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat3.frtmat.yml at Content/Models/Sponza/Sponza_mat3.frtmat.yml:15:27 field metallicRoughnessTexture: legacy path reference '16885566240357350108.jpg' in metallicRoughnessTexture (resolves to /Project/Models/Sponza/16885566240357350108.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat3.frtmat.yml at Content/Models/Sponza/Sponza_mat3.frtmat.yml:8:12 field albedo.texture: legacy path reference '8750083169368950601.jpg' in albedo.texture (resolves to /Project/Models/Sponza/8750083169368950601.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat4.frtmat.yml at Content/Models/Sponza/Sponza_mat4.frtmat.yml:15:27 field metallicRoughnessTexture: legacy path reference '11968150294050148237.jpg' in metallicRoughnessTexture (resolves to /Project/Models/Sponza/11968150294050148237.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat4.frtmat.yml at Content/Models/Sponza/Sponza_mat4.frtmat.yml:17:12 field normal.texture: legacy path reference '16299174074766089871.jpg' in normal.texture (resolves to /Project/Models/Sponza/16299174074766089871.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat4.frtmat.yml at Content/Models/Sponza/Sponza_mat4.frtmat.yml:8:12 field albedo.texture: legacy path reference '5792855332885324923.jpg' in albedo.texture (resolves to /Project/Models/Sponza/5792855332885324923.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat5.frtmat.yml at Content/Models/Sponza/Sponza_mat5.frtmat.yml:8:12 field albedo.texture: legacy path reference '14650633544276105767.jpg' in albedo.texture (resolves to /Project/Models/Sponza/14650633544276105767.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat5.frtmat.yml at Content/Models/Sponza/Sponza_mat5.frtmat.yml:17:12 field normal.texture: legacy path reference '2051777328469649772.jpg' in normal.texture (resolves to /Project/Models/Sponza/2051777328469649772.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat5.frtmat.yml at Content/Models/Sponza/Sponza_mat5.frtmat.yml:15:27 field metallicRoughnessTexture: legacy path reference '4871783166746854860.jpg' in metallicRoughnessTexture (resolves to /Project/Models/Sponza/4871783166746854860.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat6.frtmat.yml at Content/Models/Sponza/Sponza_mat6.frtmat.yml:17:12 field normal.texture: legacy path reference '10388182081421875623.jpg' in normal.texture (resolves to /Project/Models/Sponza/10388182081421875623.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat6.frtmat.yml at Content/Models/Sponza/Sponza_mat6.frtmat.yml:8:12 field albedo.texture: legacy path reference '15295713303328085182.jpg' in albedo.texture (resolves to /Project/Models/Sponza/15295713303328085182.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat6.frtmat.yml at Content/Models/Sponza/Sponza_mat6.frtmat.yml:15:27 field metallicRoughnessTexture: legacy path reference '9916269861720640319.jpg' in metallicRoughnessTexture (resolves to /Project/Models/Sponza/9916269861720640319.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat7.frtmat.yml at Content/Models/Sponza/Sponza_mat7.frtmat.yml:17:12 field normal.texture: legacy path reference '15722799267630235092.jpg' in normal.texture (resolves to /Project/Models/Sponza/15722799267630235092.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat7.frtmat.yml at Content/Models/Sponza/Sponza_mat7.frtmat.yml:8:12 field albedo.texture: legacy path reference '6047387724914829168.jpg' in albedo.texture (resolves to /Project/Models/Sponza/6047387724914829168.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat7.frtmat.yml at Content/Models/Sponza/Sponza_mat7.frtmat.yml:15:27 field metallicRoughnessTexture: legacy path reference '8051790464816141987.jpg' in metallicRoughnessTexture (resolves to /Project/Models/Sponza/8051790464816141987.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat8.frtmat.yml at Content/Models/Sponza/Sponza_mat8.frtmat.yml:15:27 field metallicRoughnessTexture: legacy path reference '13824894030729245199.jpg' in metallicRoughnessTexture (resolves to /Project/Models/Sponza/13824894030729245199.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat8.frtmat.yml at Content/Models/Sponza/Sponza_mat8.frtmat.yml:17:12 field normal.texture: legacy path reference '14267839433702832875.jpg' in normal.texture (resolves to /Project/Models/Sponza/14267839433702832875.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat8.frtmat.yml at Content/Models/Sponza/Sponza_mat8.frtmat.yml:8:12 field albedo.texture: legacy path reference '5823059166183034438.jpg' in albedo.texture (resolves to /Project/Models/Sponza/5823059166183034438.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat9.frtmat.yml at Content/Models/Sponza/Sponza_mat9.frtmat.yml:17:12 field normal.texture: legacy path reference '6667038893015345571.jpg' in normal.texture (resolves to /Project/Models/Sponza/6667038893015345571.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat9.frtmat.yml at Content/Models/Sponza/Sponza_mat9.frtmat.yml:8:12 field albedo.texture: legacy path reference '7441062115984513793.jpg' in albedo.texture (resolves to /Project/Models/Sponza/7441062115984513793.jpg); `FRT.bat assets migrate material-refs` will convert it
+  problem REF007 info Analyze /Project/Models/Sponza/Sponza_mat9.frtmat.yml at Content/Models/Sponza/Sponza_mat9.frtmat.yml:15:27 field metallicRoughnessTexture: legacy path reference '8114461559286000061.jpg' in metallicRoughnessTexture (resolves to /Project/Models/Sponza/8114461559286000061.jpg); `FRT.bat assets migrate material-refs` will convert it

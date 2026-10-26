@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <memory>
 #include <span>
 #include <system_error>
 #include <vector>
@@ -78,6 +79,46 @@ public:
 
 	discovery::CDiscoveryTree Tree;
 	assets::CMountTable Mounts;
+	std::vector<SDiagnostic> MountDiagnostics;
+};
+
+/**
+ * The same content in the checkout's own layout - <root>/Engine/Core/Content, <root>/Engine/Core/Config/Assets.yml,
+ * <root>/Engine/Templates/<Template>/{Content,Config/Assets.yml} - so that everything the registry derives from where
+ * a file lies (a diagnostic's File, "Core/Config/Assets.yml" or "Content/Models/x.frtmat.yml") reads as it does for
+ * the checkout itself: the registry's golden dumps, which `FRT.bat assets dump registry` makes in place, compare
+ * byte for byte. Template empty: the engine alone.
+ */
+class CCheckoutCopy
+{
+public:
+	explicit CCheckoutCopy (FStringView Name, FStringView Template = {})
+		: Tree(Name)
+	{
+		const FStringView skipShaderBinaries[] = { "Shaders/Bin" };
+		CopyTree(paths::GetEngineContentDir(), EngineDir() / "Core" / "Content", skipShaderBinaries);
+		std::error_code ec;
+		std::filesystem::create_directories(EngineDir() / "Core" / "Config", ec);
+		std::filesystem::copy_file(paths::GetEngineConfigPath().parent_path() / "Assets.yml", EngineDir() / "Core" / "Config" / "Assets.yml", ec);
+		assets::SMountRoots roots;
+		roots.EngineDir = EngineDir();
+		roots.EngineContentDir = EngineDir() / "Core" / "Content";
+		roots.EngineConfigDir = EngineDir() / "Core" / "Config";
+		if (!Template.IsEmpty())
+		{
+			const std::filesystem::path source = paths::GetEngineDir() / "Templates" / Template.ToPath();
+			roots.ProjectDir = EngineDir() / "Templates" / Template.ToPath();
+			CopyTree(source / "Content", roots.ProjectDir / "Content");
+			std::filesystem::create_directories(roots.ProjectDir / "Config", ec);
+			std::filesystem::copy_file(source / "Config" / "Assets.yml", roots.ProjectDir / "Config" / "Assets.yml", ec);
+		}
+		Mounts = std::make_shared<const assets::CMountTable>(assets::CMountTable::Resolve(roots, &MountDiagnostics));
+	}
+
+	[[nodiscard]] std::filesystem::path EngineDir () const { return Tree.Root / "Engine"; }
+
+	discovery::CDiscoveryTree Tree;
+	std::shared_ptr<const assets::CMountTable> Mounts;
 	std::vector<SDiagnostic> MountDiagnostics;
 };
 }

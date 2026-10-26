@@ -1,0 +1,9 @@
+mount /Project
+  rules Config/Assets.yml 3ddf6cc363d15501
+  folder /Project/Materials
+  file /Project/Materials/Floor.frtmat.yml Asset size=77
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=-
+  file /Project/Materials/Light.frtmat.yml Asset size=87
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=-
+  file /Project/Materials/Shape.frtmat.yml Asset size=76
+    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=-
