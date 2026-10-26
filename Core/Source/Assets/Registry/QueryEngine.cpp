@@ -82,7 +82,25 @@ struct SSystemTest
 	EOp Op = EOp::Eq;
 	EValueKind Kind = EValueKind::Int;
 	SCompiledValues Values;
+	bool bCheap = false;            // one value read straight from a column: tested in the scan loop (IsCheapColumn)
 };
+
+// The system columns that hold exactly one value read from one or two columns.
+[[nodiscard]] bool IsCheapColumn (ESystemColumn Column) noexcept
+{
+	switch (Column)
+	{
+	case ESystemColumn::Type:
+	case ESystemColumn::Name:
+	case ESystemColumn::Size:
+	case ESystemColumn::ImportStatus:
+	case ESystemColumn::CookRule:
+	case ESystemColumn::Chunk:
+		return true;
+	default:
+		return false;
+	}
+}
 
 // A folder of a dir: term: its subtree (the mount's pre-order interval) or the folder alone.
 struct SFolderRange
@@ -132,6 +150,7 @@ struct SQueryNode
 	bool bHasTables = false;
 	bool bMatchesNothing = false;
 	bool bHasRowTests = false;          // anything but types and tag predicates
+	bool bOnlyCheapRowTests = false;    // every row test is a cheap system test (PassesCheapTests is all of them)
 };
 
 enum class EOrderKind : uint8 { None, Tag, System };
@@ -175,11 +194,6 @@ namespace
 [[nodiscard]] bool IsRowLabel (FStringView Label) noexcept
 {
 	return !Label.Contains(':');
-}
-
-[[nodiscard]] bool IsSubEntryRow (const SRegistryTables& Tables, uint32 Sub) noexcept
-{
-	return IsRowLabel(Tables.Names.Get(Tables.SubEntries.Key[Sub]));
 }
 
 [[nodiscard]] FStringLiteral GetOpName (EOp Op) noexcept
@@ -498,8 +512,11 @@ private:
 			Describe += ')';
 		}
 
-		Out.bHasRowTests = !Out.SystemTests.empty() || !Out.Folders.empty() || !Out.Labels.empty() || Out.bHasGuids || Out.bHasTables
-			|| !Out.Texts.empty() || !Out.Graph.empty() || !Out.Is.empty() || !Out.AnyOf.empty();
+		const bool bOtherRowTests = !Out.Folders.empty() || !Out.Labels.empty() || Out.bHasGuids || Out.bHasTables || !Out.Texts.empty()
+			|| !Out.Graph.empty() || !Out.Is.empty() || !Out.AnyOf.empty();
+		const bool bAllCheap = std::all_of(Out.SystemTests.begin(), Out.SystemTests.end(), [] (const SSystemTest& Test) { return Test.bCheap; });
+		Out.bHasRowTests = !Out.SystemTests.empty() || bOtherRowTests;
+		Out.bOnlyCheapRowTests = Out.bHasRowTests && !bOtherRowTests && bAllCheap;
 		return true;
 	}
 
@@ -555,6 +572,7 @@ private:
 			AppendSeparator(Describe);
 			Describe.AppendFormat("where:{} {}", GetSystemColumnName(*column), GetOpName(test.Op));
 			AppendValues(Describe, test.Kind, test.Values);
+			test.bCheap = IsCheapColumn(*column);
 			Out.SystemTests.push_back(std::move(test));
 			return true;
 		}
@@ -1533,6 +1551,7 @@ struct SResult
 	FStringView FoldedText;
 	FStringView RawText;
 	FStringView FoldedPath;
+	FStringView FoldedLabel;            // a sub-entry's label, folded; empty for an asset record
 };
 
 enum EOrderClass : uint8 { OrderInt = 0u, OrderReal = 1u, OrderText = 2u, OrderPath = 3u, OrderAbsent = 255u };
@@ -1573,6 +1592,11 @@ public:
 			return;
 		}
 
+		if (CanScanAssets())
+		{
+			ScanAssets(Out, OutCandidates);
+			return;
+		}
 		const uint32 typeCount = static_cast<uint32>((std::min)(Tables.Types.size(), static_cast<size_t>(GetTypeCount())));
 		for (uint32 type = 0u; type < typeCount; ++type)
 		{
@@ -1599,21 +1623,38 @@ private:
 	const SRegistryTables& Tables;
 	const SQueryPlan& Plan;
 	std::vector<SGraphSet> GraphSets;
+	std::vector<uint8> RowLabels;       // per NAMES id: 0 not yet known, 1 a row key, 2 an importer label
 	FString Scratch;
 
 	// ---- Scope ----
 
-	[[nodiscard]] bool InScope (const SRowContext& Context) const noexcept
+	// IsRowLabel of a sub-entry, remembered per label: rows of different tables share their keys.
+	[[nodiscard]] bool IsRow (uint32 Sub)
+	{
+		const uint32 key = Tables.SubEntries.Key[Sub];
+		if (RowLabels.empty())
+		{
+			RowLabels.assign(Tables.Names.Size(), 0u);
+		}
+		uint8& known = RowLabels[key];
+		if (known == 0u)
+		{
+			known = IsRowLabel(Tables.Names.Get(key)) ? 1u : 2u;
+		}
+		return known == 1u;
+	}
+
+	[[nodiscard]] bool InScope (const SRowContext& Context)
 	{
 		const bool bSub = Context.Sub != InvalidRow;
 		switch (Plan.Records)
 		{
 		case ERecordScope::Assets:
-			return !bSub || (Plan.AdmittedSubAssets[Context.Type] != 0u && !IsSubEntryRow(Tables, Context.Sub));
+			return !bSub || (Plan.AdmittedSubAssets[Context.Type] != 0u && !IsRow(Context.Sub));
 		case ERecordScope::Rows:
-			return bSub && IsSubEntryRow(Tables, Context.Sub);
+			return bSub && IsRow(Context.Sub);
 		case ERecordScope::SubAssets:
-			return bSub && !IsSubEntryRow(Tables, Context.Sub);
+			return bSub && !IsRow(Context.Sub);
 		case ERecordScope::All:
 			return true;
 		}
@@ -1897,6 +1938,10 @@ private:
 		}
 		for (const SSystemTest& test : Node.SystemTests)
 		{
+			if (bSkipTags && test.bCheap)
+			{
+				continue;   // the scan loop tested it (PassesCheapTests)
+			}
 			if (!TestSystem(Tables, Plan, test, Context, Scratch))
 			{
 				return false;
@@ -2023,6 +2068,113 @@ private:
 		}
 	}
 
+	// The root's cheap system tests (one direct column read each), before the generic per-row terms.
+	[[nodiscard]] bool PassesCheapTests (const SQueryNode& Root, const SRowContext& Context) const noexcept
+	{
+		for (const SSystemTest& test : Root.SystemTests)
+		{
+			if (!test.bCheap)
+			{
+				continue;
+			}
+			if (test.Op == EOp::Exists || test.Op == EOp::Missing)
+			{
+				if (test.Op == EOp::Missing)
+				{
+					return false;   // a cheap column always has its value
+				}
+				continue;
+			}
+			const EOp op = GetPositiveOp(test.Op);
+			bool bMatch = false;
+			switch (test.Column)
+			{
+			case ESystemColumn::Type:
+				bMatch = test.Kind == EValueKind::Text ? TestText(op, test.Values, Plan.FoldedTypeNames[Context.Type].View()) : TestBits(op, test.Values, Context.Type);
+				break;
+			case ESystemColumn::Name:
+				bMatch = TestText(op, test.Values, Tables.Names.GetFolded(Context.Sub != InvalidRow ? Tables.SubEntries.Key[Context.Sub] : Tables.Assets.Name[Context.Asset]));
+				break;
+			case ESystemColumn::Size:
+				bMatch = test.Kind == EValueKind::Real ? TestReal(op, test.Values, static_cast<double>(Tables.Files.Size[Context.File]))
+					: TestInt(op, test.Values, static_cast<int64>(Tables.Files.Size[Context.File]));
+				break;
+			case ESystemColumn::ImportStatus:
+				bMatch = TestBits(op, test.Values, static_cast<uint64>(Tables.Assets.ImportStatus[Context.Asset]));
+				break;
+			case ESystemColumn::CookRule:
+				bMatch = TestBits(op, test.Values, static_cast<uint64>(Tables.Assets.CookRule[Context.Asset]));
+				break;
+			case ESystemColumn::Chunk:
+				bMatch = test.Kind == EValueKind::Real ? TestReal(op, test.Values, static_cast<double>(Tables.Assets.Chunk[Context.Asset]))
+					: TestInt(op, test.Values, static_cast<int64>(Tables.Assets.Chunk[Context.Asset]));
+				break;
+			default:
+				break;
+			}
+			if (bMatch == (test.Op == EOp::Ne))
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/**
+	 * The narrowest start for a query of main asset records without tag predicates: the ASSETS table itself
+	 * (one row per asset) rather than every type table, which also hold the sub-entries and rows.
+	 */
+	[[nodiscard]] bool CanScanAssets () const noexcept
+	{
+		if (Plan.Records != ERecordScope::Assets)
+		{
+			return false;
+		}
+		const SQueryNode& root = Plan.Root;
+		for (size_t type = 0u; type < root.AllowedTypes.size(); ++type)
+		{
+			if (root.AllowedTypes[type] != 0u && (Plan.AdmittedSubAssets[type] != 0u || !root.TypeTests[type].empty()))
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
+	void ScanAssets (std::vector<SResult>& Out, uint32& OutCandidates)
+	{
+		const SQueryNode& root = Plan.Root;
+		const SAssetsTable& assets = Tables.Assets;
+		// Only tag tests read a type row: AnyOf alternatives' and a tag order key's.
+		const bool bNeedTypeRow = !root.AnyOf.empty() || Plan.Order.Kind == EOrderKind::Tag;
+		for (uint32 page = 0u; page < assets.File.GetPageCount(); ++page)
+		{
+			const std::span<const uint32> files = assets.File.GetPage(page);
+			const std::span<const reflect::TypeId> types = assets.Type.GetPage(page);
+			for (uint32 i = 0u; i < files.size(); ++i)
+			{
+				const uint32 file = files[i];
+				const reflect::TypeId type = types[i];
+				if (file == InvalidRow || type >= root.AllowedTypes.size() || root.AllowedTypes[type] == 0u)
+				{
+					continue;
+				}
+				++OutCandidates;
+				SRowContext context;
+				context.Value = page * RegistryPageRows + i;
+				context.Asset = context.Value;
+				context.File = file;
+				context.Type = type;
+				context.TypeRow = bNeedTypeRow ? assets.TypeRow[context.Value] : InvalidRow;
+				if (root.bHasRowTests && (!PassesCheapTests(root, context) || (!root.bOnlyCheapRowTests && !MatchesNode(root, context, true))))
+				{
+					continue;
+				}
+				Out.push_back(MakeResult(context));
+			}
+		}
+	}
+
 	void ScanTypeTable (reflect::TypeId Type, std::vector<SResult>& Out, uint32& OutCandidates)
 	{
 		const SQueryNode& root = Plan.Root;
@@ -2102,13 +2254,28 @@ private:
 			{
 				const uint32 bit = static_cast<uint32>(std::countr_zero(remaining));
 				remaining &= remaining - 1u;
-				const uint32 value = table.Records[word * 64u + bit];
-				if ((value & SubEntryBit) != 0u && bClassify && IsSubEntryRow(Tables, value & ~SubEntryBit) != bWantRows)
+				const uint32 row = word * 64u + bit;
+				const uint32 value = table.Records[row];
+				// The context from what the scan knows: the type and its row are this table's.
+				SRowContext context;
+				context.Value = value;
+				context.Type = Type;
+				context.TypeRow = row;
+				if ((value & SubEntryBit) != 0u)
 				{
-					continue;
+					context.Sub = value & ~SubEntryBit;
+					if (bClassify && IsRow(context.Sub) != bWantRows)
+					{
+						continue;
+					}
+					context.Asset = Tables.SubEntries.Owner[context.Sub];
 				}
-				const SRowContext context = MakeContext(Tables, value);
-				if (root.bHasRowTests && !MatchesNode(root, context, true))
+				else
+				{
+					context.Asset = value;
+				}
+				context.File = Tables.Assets.File[context.Asset];
+				if (root.bHasRowTests && (!PassesCheapTests(root, context) || (!root.bOnlyCheapRowTests && !MatchesNode(root, context, true))))
 				{
 					continue;
 				}
@@ -2125,6 +2292,10 @@ private:
 		result.Value = Context.Value;
 		result.Asset = Context.Asset;
 		result.FoldedPath = GetFoldedFilePath(Tables, Context.File);
+		if (Context.Sub != InvalidRow)
+		{
+			result.FoldedLabel = Tables.Names.GetFolded(Tables.SubEntries.Key[Context.Sub]);
+		}
 		result.Class = OrderAbsent;
 		const SOrderSpec& order = Plan.Order;
 		if (order.Kind == EOrderKind::Tag)
@@ -2248,12 +2419,10 @@ private:
 		{
 			return 0;
 		}
-		const uint32 keyA = Tables.SubEntries.Key[A.Value & ~SubEntryBit];
-		const uint32 keyB = Tables.SubEntries.Key[B.Value & ~SubEntryBit];
-		int32 compared = Tables.Names.GetFolded(keyA).Compare(Tables.Names.GetFolded(keyB));
+		int32 compared = A.FoldedLabel.Compare(B.FoldedLabel);
 		if (compared == 0)
 		{
-			compared = Tables.Names.Get(keyA).Compare(Tables.Names.Get(keyB));
+			compared = Tables.Names.Get(Tables.SubEntries.Key[A.Value & ~SubEntryBit]).Compare(Tables.Names.Get(Tables.SubEntries.Key[B.Value & ~SubEntryBit]));
 		}
 		if (compared == 0 && A.Value != B.Value)
 		{
