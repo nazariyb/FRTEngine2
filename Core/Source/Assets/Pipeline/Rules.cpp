@@ -2675,10 +2675,7 @@ void CRulesEngine::ForgetFolders (FStringView SubtreeMountPath)
 	std::scoped_lock lock(Mutex);
 	for (auto it = FolderFiles.begin(); it != FolderFiles.end();)
 	{
-		const FStringView path = it->first;
-		const bool bBelow = path == SubtreeMountPath || (path.StartsWith(SubtreeMountPath) && path.Len() > SubtreeMountPath.Len()
-			&& path[SubtreeMountPath.Len()] == '/');
-		it = bBelow ? FolderFiles.erase(it) : std::next(it);
+		it = IsMountPathAtOrBelow(it->first, SubtreeMountPath) ? FolderFiles.erase(it) : std::next(it);
 	}
 }
 
@@ -3379,10 +3376,7 @@ SRulesListing CRulesEngine::GetListing () const
 		{
 			return A.first < B.first;
 		}
-		const FStringView a = A.second->Origin.FolderMountPath;
-		const FStringView b = B.second->Origin.FolderMountPath;
-		const int32 folded = a.Compare<ESearchCase::IgnoreCase>(b);
-		return folded != 0 ? folded < 0 : a < b;
+		return LessPortableThenBytes(A.second->Origin.FolderMountPath, B.second->Origin.FolderMountPath);
 	});
 
 	uint32 next = 0u;

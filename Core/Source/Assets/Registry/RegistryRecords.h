@@ -4,6 +4,7 @@
 
 #include "Core.h"
 #include "CoreTypes.h"
+#include "Assets/Discovery/ScanTypes.h"
 #include "Assets/Pipeline/RuleTypes.h"
 #include "Assets/Registry/RegistryDelta.h"
 #include "Assets/Registry/RegistryTypes.h"
@@ -29,10 +30,8 @@ struct SStoredFile
 	uint32 FileRow = InvalidRow;
 	EFileClass Class = EFileClass::Unclaimed;       // effective (Companion while a record names the file)
 	EFileClass BaseClass = EFileClass::Unclaimed;   // as the last SFileUpsert gave it
-	uint64 Size = 0u;
-	int64 MTime = 0;
-	platform::SFileIdentity Identity;
-	SRecordId Record;                               // invalid without a record
+	SKnownFile Stat;                                // what a scan's Unchanged test compares with (ClassifyKnown)
+	SRecordId Record;                              // invalid without a record
 	reflect::TypeId Type = reflect::InvalidTypeId;
 	ERecordFlags Flags = ERecordFlags::None;        // the producer's flags (HasProblems left out)
 	FStringView Importer;                           // views the view's importer table

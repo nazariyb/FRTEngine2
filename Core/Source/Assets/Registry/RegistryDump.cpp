@@ -22,44 +22,6 @@ using json::CJsonObject;
 
 namespace
 {
-template <typename E>
-void AppendFlags (FString& Out, E Flags)
-{
-	using U = std::underlying_type_t<E>;
-	bool bAny = false;
-	for (const auto& entry : enum_::TEnumTraits<E>::Entries)
-	{
-		if ((static_cast<U>(Flags) & static_cast<U>(entry.first)) != 0u)
-		{
-			if (bAny)
-			{
-				Out += '|';
-			}
-			Out += entry.second;
-			bAny = true;
-		}
-	}
-	if (!bAny)
-	{
-		Out += '-';
-	}
-}
-
-template <typename E>
-std::vector<FString> FlagNames (E Flags)
-{
-	using U = std::underlying_type_t<E>;
-	std::vector<FString> names;
-	for (const auto& entry : enum_::TEnumTraits<E>::Entries)
-	{
-		if ((static_cast<U>(Flags) & static_cast<U>(entry.first)) != 0u)
-		{
-			names.emplace_back(entry.second);
-		}
-	}
-	return names;
-}
-
 void AppendHex64 (FString& Out, uint64 Value)
 {
 	Out.AppendFormat("{:016x}", Value);
@@ -249,7 +211,7 @@ std::vector<SDumpProblem> CollectProblems (const CRegistryView& View)
 
 bool IsAtOrBelowMountRoot (FStringView Subject, FStringView Root) noexcept
 {
-	return Subject.StartsWith(Root) && (Subject.Len() == Root.Len() || Subject[Root.Len()] == '/' || Subject[Root.Len()] == '#');
+	return IsMountPathAtOrBelow(Subject, Root, true);
 }
 
 bool IsDumped (std::span<const MountId> Mounts, MountId Id) noexcept
@@ -556,7 +518,7 @@ void AppendMountText (FString& Out, const SDumpMount& Mount)
 		Out += " chunk=";
 		Out.AppendNumber(record.Chunk);
 		Out += " flags=";
-		AppendFlags(Out, record.Flags);
+		Out += enum_::FormatFlags(record.Flags);
 		if (record.bPrimary)
 		{
 			Out += " primary=";
@@ -583,7 +545,7 @@ void AppendMountText (FString& Out, const SDumpMount& Mount)
 			Out += " type=";
 			Out += sub.Type;
 			Out += " flags=";
-			AppendFlags(Out, sub.Flags);
+			Out += enum_::FormatFlags(sub.Flags);
 			Out += '\n';
 			AppendTagLines(Out, sub.Tags, "      ");
 		}
@@ -594,7 +556,7 @@ void AppendMountText (FString& Out, const SDumpMount& Mount)
 			Out += " sub=";
 			AppendHex64(Out, edge.TargetSub);
 			Out += " flags=";
-			AppendFlags(Out, edge.Flags);
+			Out += enum_::FormatFlags(edge.Flags);
 			if (!edge.FieldPath.IsEmpty())
 			{
 				Out += " field=";
@@ -682,7 +644,7 @@ void EmitMountJson (const SDumpMount& Mount, TEmit&& Emit)
 		std::vector<CJsonObject> subs;
 		for (const SDumpSub& sub : record.Subs)
 		{
-			const std::vector<FString> flags = FlagNames(sub.Flags);
+			const std::vector<FString> flags = enum_::GetFlagNames(sub.Flags);
 			const std::vector<CJsonObject> tags = TagObjects(sub.Tags);
 			subs.push_back(CJsonObject().AddString("label", sub.Label).AddString("type", sub.Type).AddStringArray("flags", flags)
 				.AddObjectArray("tags", tags));
@@ -690,12 +652,12 @@ void EmitMountJson (const SDumpMount& Mount, TEmit&& Emit)
 		std::vector<CJsonObject> edges;
 		for (const SDumpEdge& edge : record.Edges)
 		{
-			const std::vector<FString> flags = FlagNames(edge.Flags);
+			const std::vector<FString> flags = enum_::GetFlagNames(edge.Flags);
 			edges.push_back(CJsonObject().AddString("target", edge.Target).AddString("sub", Hex64(edge.TargetSub)).AddStringArray("flags", flags)
 				.AddString("field", edge.FieldPath).AddString("from", edge.From).AddString("state", edge.State));
 		}
 		std::vector<FString> companions(record.Companions.begin(), record.Companions.end());
-		const std::vector<FString> flags = FlagNames(record.Flags);
+		const std::vector<FString> flags = enum_::GetFlagNames(record.Flags);
 		const std::vector<CJsonObject> tags = TagObjects(record.Tags);
 		Emit(CJsonObject().AddString("kind", "record").AddString("mount", mount).AddString("path", file.Path).AddString("type", record.Type)
 			.AddString("importer", record.Importer).AddString("status", enum_::ToString(record.Status)).AddString("stamp", Hex64(record.Stamp))

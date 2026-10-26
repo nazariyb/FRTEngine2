@@ -1,5 +1,7 @@
 #include "Assets/Discovery/BuiltinExcludes.h"
 
+#include "Assets/Registry/RegistryTypes.h"
+
 
 namespace frt::assets
 {
@@ -70,7 +72,6 @@ bool IsPreferredRuleFileName (FStringView Candidate, FStringView Current) noexce
 	{
 		return true;
 	}
-	const int32 folded = Candidate.Compare<ESearchCase::IgnoreCase>(Current);
-	return folded != 0 ? folded < 0 : Candidate < Current;
+	return LessPortableThenBytes(Candidate, Current);
 }
 }

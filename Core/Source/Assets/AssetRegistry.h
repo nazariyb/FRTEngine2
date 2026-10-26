@@ -38,9 +38,9 @@ class CWorkerPool;
  *	   while the snapshots load.
  *	2. The batch becomes deltas of at most 256 files (or folders) each on a worker (ConvertBatch in the .cpp: the
  *	   removals first, then new folders, then the files in batch order), so that a commit fits a frame's budget
- *	   whatever the subtree's size, each file compared with the view by the
- *	   scan's Unchanged test (ScanTypes.h; byte-exact, as IKnownFiles would - done here rather than in the scan so
- *	   that the initial scans need not wait for the loaded view): folders, changed file rows (ContentHash kept for
+ *	   whatever the subtree's size, each file compared with the view by the scan's Unchanged test (ClassifyKnown,
+ *	   ScanTypes.h; byte-exact - done here rather than in the scan, which gets no IKnownFiles, so that the initial
+ *	   scans need not wait for the loaded view): folders, changed file rows (ContentHash kept for
  *	   an identity-only change; a file analyzed below that has a record gets its row with its Analyze result
  *	   instead, so nothing persisted pairs a new stat with the old record), removals (known files and folders at
  *	   or below the root that the batch does not hold, outside its failed folders), the Scan and Rules problem

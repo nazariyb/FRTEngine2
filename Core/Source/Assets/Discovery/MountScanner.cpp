@@ -29,13 +29,6 @@ struct SListedEntry
 	bool bNameSurrogate = false;
 };
 
-// The batch order (ScanTypes.h): SStringLessIgnoreCase, ties broken by byte order.
-bool IsNameBefore (FStringView A, FStringView B) noexcept
-{
-	const int32 folded = A.Compare<ESearchCase::IgnoreCase>(B);
-	return folded != 0 ? folded < 0 : A < B;
-}
-
 SDiagnostic MakeDiagnostic (ESeverity Severity, uint32 Code, FStringView Subject, FString Message)
 {
 	SDiagnostic diagnostic;
@@ -57,21 +50,7 @@ uint32 GetRelativeLength (FStringView MountPath, uint32 MountNameLength) noexcep
 
 EScanFileState CompareWithKnown (const IKnownFiles* Known, FStringView FileMountPath, const platform::SFileStat& Stat)
 {
-	if (Known == nullptr)
-	{
-		return EScanFileState::New;
-	}
-	const std::optional<SKnownFile> known = Known->Find(FileMountPath);
-	if (!known.has_value())
-	{
-		return EScanFileState::New;
-	}
-	// Inequality, never "newer than": tunnelling and CopyFile restore older times (§5.4).
-	if (known->Size != Stat.Size || known->MTime != Stat.LastWriteTime)
-	{
-		return EScanFileState::Changed;
-	}
-	return known->Identity == Stat.Identity ? EScanFileState::Unchanged : EScanFileState::IdentityChanged;
+	return Known == nullptr ? EScanFileState::New : ClassifyKnown(Known->Find(FileMountPath), Stat.Size, Stat.LastWriteTime, Stat.Identity);
 }
 
 // The PATH002 and PATH003 checks of one recorded entry (PATH001 needs its siblings).
@@ -198,7 +177,7 @@ void ScanFolder (SScanState& State, SFolderNode& Node)
 		return;
 	}
 	State.FoldersListed.fetch_add(1u, std::memory_order_relaxed);
-	std::sort(entries.begin(), entries.end(), [] (const SListedEntry& A, const SListedEntry& B) { return IsNameBefore(A.Name, B.Name); });
+	std::sort(entries.begin(), entries.end(), [] (const SListedEntry& A, const SListedEntry& B) { return LessPortableThenBytes(A.Name, B.Name); });
 
 	// The folder's rule file goes to the oracle before anything is classified. Under the portable fold;
 	// a case-sensitive folder can hold two spellings (IsPreferredRuleFileName picks, as the rules engine does).
@@ -517,7 +496,7 @@ void RunRoot (const FScanStatePtr& State)
 		});
 		if (bParentListed && !bFound && !otherSpellings.empty())
 		{
-			std::sort(otherSpellings.begin(), otherSpellings.end(), [] (const FString& A, const FString& B) { return IsNameBefore(A, B); });
+			std::sort(otherSpellings.begin(), otherSpellings.end(), [] (const FString& A, const FString& B) { return LessPortableThenBytes(A, B); });
 			state.Batch.FailedFolders.push_back(state.Batch.RootMountPath);
 			state.Batch.Diagnostics.push_back(MakeDiagnostic(ESeverity::Warning, 0u, rootPath, FString::Format("not scanned: the folder is "
 				"spelled '{}' on disk, and a scan keys files by their on-disk spelling; scan it under that spelling",
@@ -545,7 +524,7 @@ void RunRoot (const FScanStatePtr& State)
 		}
 		if (!collisions.empty())
 		{
-			std::sort(collisions.begin(), collisions.end(), [] (const FString& A, const FString& B) { return IsNameBefore(A, B); });
+			std::sort(collisions.begin(), collisions.end(), [] (const FString& A, const FString& B) { return LessPortableThenBytes(A, B); });
 			std::vector<FStringView> others(collisions.begin(), collisions.end());
 			state.Batch.Diagnostics.push_back(MakeCaseCollision(rootPath, rootName, others));
 		}

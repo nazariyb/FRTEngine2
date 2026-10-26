@@ -186,13 +186,6 @@ inline std::optional<bool> EqualAsciiIgnoreCase (FStringView A, FStringView B) n
 	return MixRegistryKey(low ^ (high * 0x9E3779B97F4A7C15ull));
 }
 
-// Records first ordered by the portable fold, then by bytes (§5.3 dump order, FOLDERS sibling order).
-[[nodiscard]] inline bool LessPortableThenBytes (FStringView A, FStringView B) noexcept
-{
-	const int32 folded = A.Compare<ESearchCase::IgnoreCase>(B);
-	return folded != 0 ? folded < 0 : A < B;
-}
-
 
 // ---------------- Pools ----------------
 

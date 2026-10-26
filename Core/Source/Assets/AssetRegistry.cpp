@@ -35,15 +35,9 @@ double MillisecondsSince (uint64 Start) noexcept
 	return platform::TimestampToMilliseconds(platform::ReadTimestamp() - Start);
 }
 
-// Path is Ancestor or lies below it ('/' separated, byte-exact: mount paths are keyed by their on-disk spelling).
-bool IsAtOrBelow (FStringView Path, FStringView Ancestor) noexcept
-{
-	return Path == Ancestor || (Path.Len() > Ancestor.Len() && Path.StartsWith(Ancestor) && Path[Ancestor.Len()] == '/');
-}
-
 bool IsAtOrBelowAny (FStringView Path, std::span<const FString> Ancestors) noexcept
 {
-	return std::any_of(Ancestors.begin(), Ancestors.end(), [Path] (const FString& Ancestor) { return IsAtOrBelow(Path, Ancestor.View()); });
+	return std::any_of(Ancestors.begin(), Ancestors.end(), [Path] (const FString& Ancestor) { return IsMountPathAtOrBelow(Path, Ancestor.View()); });
 }
 
 // The folder a scan of a changed path covers: its parent, or the mount root for the root itself.
@@ -114,8 +108,7 @@ void ReplaceSubtreeProblems (SRegistryDelta& Delta, const CRegistryView& View, F
 	FProblemsBySubject stored;
 	View.ForEachProblem([&] (FStringView Subject, EProblemSource ProblemSource, const SDiagnostic& Diagnostic)
 	{
-		if (ProblemSource == Source && Subject.StartsWith(Root)
-			&& (Subject.Len() == Root.Len() || Subject[Root.Len()] == '/' || Subject[Root.Len()] == '#'))
+		if (ProblemSource == Source && IsMountPathAtOrBelow(Subject, Root, true))
 		{
 			stored[FString(Subject)].push_back(Diagnostic);
 		}
@@ -522,11 +515,9 @@ SConversion ConvertBatch (SConvertInput& In)
 			}
 			const std::optional<SStoredFile> stored = FindStoredFile(view, path);
 			chunkOut.Known += stored.has_value() ? 1u : 0u;
-			// The scan's Unchanged test (ScanTypes.h), against the view: size and mtime equal (never "newer than");
-			// only the identity differing is refreshed without a hash.
-			const EScanFileState state = !stored.has_value() ? EScanFileState::New
-				: stored->Size != file.Size || stored->MTime != file.MTime ? EScanFileState::Changed
-				: !(stored->Identity == file.Identity) ? EScanFileState::IdentityChanged : EScanFileState::Unchanged;
+			// The scan's Unchanged test (ScanTypes.h), against the view.
+			const EScanFileState state = ClassifyKnown(stored.has_value() ? std::optional<SKnownFile>(stored->Stat) : std::nullopt, file.Size,
+				file.MTime, file.Identity);
 			const bool bHasRecord = stored.has_value() && stored->Record.IsValid();
 			const bool bContentChanged = state == EScanFileState::New || state == EScanFileState::Changed;
 			const bool bStatChanged = state != EScanFileState::Unchanged;
@@ -666,7 +657,7 @@ SConversion ConvertBatch (SConvertInput& In)
 			std::sort(goneFolders.begin(), goneFolders.end(), [] (const FString& A, const FString& B) { return A.View() < B.View(); });
 			for (FString& folder : goneFolders)
 			{
-				if (out.RemovedFolders.empty() || !IsAtOrBelow(folder.View(), out.RemovedFolders.back().View()))
+				if (out.RemovedFolders.empty() || !IsMountPathAtOrBelow(folder.View(), out.RemovedFolders.back().View()))
 				{
 					out.RemovedFolders.push_back(std::move(folder));
 				}
@@ -1192,7 +1183,7 @@ struct CAssetRegistry::SImpl
 		std::deque<SScanRequest>& requests = MountQueues[MountIndex].Requests;
 		for (SScanRequest& request : requests)
 		{
-			if (IsAtOrBelow(Root, request.Root.View()))
+			if (IsMountPathAtOrBelow(Root, request.Root.View()))
 			{
 				request.bReEvaluateAll = request.bReEvaluateAll || bReEvaluateAll;
 				request.bUnclaimed = request.bUnclaimed || bUnclaimed;
@@ -1204,7 +1195,7 @@ struct CAssetRegistry::SImpl
 		bool bMergedUnclaimed = bUnclaimed;
 		std::erase_if(requests, [&] (const SScanRequest& Request)
 		{
-			if (!IsAtOrBelow(Request.Root.View(), Root))
+			if (!IsMountPathAtOrBelow(Request.Root.View(), Root))
 			{
 				return false;
 			}
@@ -1669,7 +1660,7 @@ struct CAssetRegistry::SImpl
 			const FStringView folder = GetMountPathParent(file);
 			FStringView mountName;
 			FStringView relative;
-			if ((pass != Passes.end() && IsAtOrBelow(folder, pass->second.Root.View())) || !SplitMountPath(file, mountName, relative))
+			if ((pass != Passes.end() && IsMountPathAtOrBelow(folder, pass->second.Root.View())) || !SplitMountPath(file, mountName, relative))
 			{
 				continue;
 			}

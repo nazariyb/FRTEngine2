@@ -4,6 +4,8 @@
 // RegistryTables.h answer as the general functions they stand in for: the caseless hashes, the fold, the stem.
 #include <gtest/gtest.h>
 
+#include <iterator>
+#include <random>
 #include <set>
 #include <vector>
 
@@ -201,6 +203,46 @@ TEST(PagedColumnTest, TheRegistrysFastCaseHashesAreTheContainersHashes)
 			EXPECT_EQ(EqualPortable(a, b), SStringEqualIgnoreCase {}(a, b)) << a.CStr() << " / " << b.CStr();
 			EXPECT_EQ(EqualMountRule(a, b, false), SPathEqual {}(a, b)) << a.CStr() << " / " << b.CStr();
 		}
+	}
+
+	// Seeded random texts of every length up to past the fast buffer, ASCII and not, each against its ASCII case swap
+	// (equal under every fold) and its neighbour.
+	constexpr const char* pieces[] = { "a", "Z", "k", "K", "_", "/", "#", "@", "[", "`", "{", ".", "0", "\xC3\x9F", "\xD0\x9A", "\xD0\xBA",
+		"\xE2\x84\xAA", "\xC4\xB0", "\xF0\x9F\x98\x80" };
+	std::mt19937 random(5112026u);
+	FString previous;
+	for (uint32 i = 0u; i < 2000u; ++i)
+	{
+		FString a;
+		FString swapped;
+		const uint32 count = random() % 300u;
+		for (uint32 n = 0u; n < count; ++n)
+		{
+			const char* piece = pieces[random() % std::size(pieces)];
+			a += piece;
+			const char c = piece[0];
+			if (piece[1] == '\0' && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')))
+			{
+				swapped += char(c ^ 0x20);
+			}
+			else
+			{
+				swapped += piece;
+			}
+		}
+		ASSERT_EQ(HashPortable(a), static_cast<uint64>(SStringHashIgnoreCase {}(a))) << a.CStr();
+		ASSERT_EQ(HashPortable(swapped), HashPortable(a)) << a.CStr();
+		ASSERT_EQ(HashMountRule(a, false), static_cast<uint64>(SPathHash {}(a))) << a.CStr();
+		ASSERT_EQ(HashMountRule(a, true), static_cast<uint64>(SStringHash {}(a))) << a.CStr();
+		char buffer[256];
+		FString heap;
+		ASSERT_EQ(FoldPortable(a, buffer, heap), FString(a).FoldCase().View()) << a.CStr();
+		for (const FString* b : { &swapped, &previous })
+		{
+			ASSERT_EQ(EqualPortable(a, *b), SStringEqualIgnoreCase {}(a, *b)) << a.CStr() << " / " << b->CStr();
+			ASSERT_EQ(EqualMountRule(a, *b, false), SPathEqual {}(a, *b)) << a.CStr() << " / " << b->CStr();
+		}
+		previous = std::move(a);
 	}
 }
 

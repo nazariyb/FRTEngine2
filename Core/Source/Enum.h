@@ -3,8 +3,10 @@
 #include <array>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include "CoreTypes.h"
+#include "Containers/String.h"
 #include "Containers/StringView.h"
 
 
@@ -276,6 +278,38 @@ bool TryParse (FStringView Text, E* OutValue, bool bIgnoreCase = true)
 		}
 	}
 	return false;
+}
+
+// The names of the flags set in a reflected flag enum, in declaration order (a name whose value is 0 never matches).
+template <ReflectedEnum E>
+std::vector<FString> GetFlagNames (E Flags)
+{
+	using U = std::underlying_type_t<E>;
+	std::vector<FString> names;
+	for (const auto& entry : TEnumTraits<E>::Entries)
+	{
+		if ((static_cast<U>(Flags) & static_cast<U>(entry.first)) != 0u)
+		{
+			names.emplace_back(entry.second);
+		}
+	}
+	return names;
+}
+
+// Those names joined by Separator, None when no flag is set ("Build|Path", "-"): one spelling for every text form.
+template <ReflectedEnum E>
+FString FormatFlags (E Flags, char Separator = '|', FStringView None = "-")
+{
+	FString text;
+	for (const FString& name : GetFlagNames(Flags))
+	{
+		if (!text.IsEmpty())
+		{
+			text += Separator;
+		}
+		text += name;
+	}
+	return text.IsEmpty() ? FString(None) : text;
 }
 
 template <ReflectedEnum E>

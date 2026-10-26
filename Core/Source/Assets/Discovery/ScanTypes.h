@@ -16,7 +16,8 @@
  * What the mount scanner (design §5.4 steps 1 and 4) takes and produces. The scanner lists directories and
  * stats nothing beyond the listing; it never opens or hashes a file. Two seams keep it independent of the
  * registry and of the rules engine:
- *	- IKnownFiles answers "what did we know about this file": size, mtime and identity, for the Unchanged test.
+ *	- IKnownFiles answers "what did we know about this file": size, mtime and identity, for the Unchanged test
+ *	  (ClassifyKnown). The registry passes none and applies the same test to its view as it converts a batch.
  *	- IScanMembership is the oracle that decides, per folder and file, what the rules say (the rules engine
  *	  implements it; CDefaultScanMembership applies the built-in excludes only).
  *
@@ -40,7 +41,7 @@ class IKnownFiles   // called concurrently from workers
 {
 public:
 	virtual ~IKnownFiles () = default;
-	virtual std::optional<SKnownFile> Find (FStringView FileMountPath) const = 0;   // F3: over an acquired view; tests: a map
+	virtual std::optional<SKnownFile> Find (FStringView FileMountPath) const = 0;   // tools and tests: a map
 };
 struct SScanScope { virtual ~SScanScope () = default; };          // the oracle's immutable per-folder state (its rule chain)
 struct SFileVerdict   // Asset (claimed), Raw or Unclaimed
@@ -82,6 +83,25 @@ public:
 	virtual std::optional<SFileVerdict> Classify (const SScanScope& Scope, FStringView FileMountPath) const = 0;
 };
 enum class EScanFileState : uint8 { New, Changed, IdentityChanged, Unchanged };   // Changed: size or mtime differ (inequality)
+/**
+ * The Unchanged test (§5.4 step 4), the one implementation of it: a listed file against what is known of it (nullopt:
+ * nothing, New). Changed when its size or mtime differs - inequality, never "newer than": tunnelling and CopyFile
+ * restore older times; IdentityChanged when only its identity does (refreshed without a hash). The scanner applies it
+ * through IKnownFiles, the registry against its view.
+ */
+[[nodiscard]] inline EScanFileState ClassifyKnown (const std::optional<SKnownFile>& Known, uint64 Size, int64 MTime,
+	const platform::SFileIdentity& Identity) noexcept
+{
+	if (!Known.has_value())
+	{
+		return EScanFileState::New;
+	}
+	if (Known->Size != Size || Known->MTime != MTime)
+	{
+		return EScanFileState::Changed;
+	}
+	return Known->Identity == Identity ? EScanFileState::Unchanged : EScanFileState::IdentityChanged;
+}
 struct SScanFolder   // Parent: index; ~0u = root. Scope: what EnterFolder returned for it (immutable, shareable)
 {
 	FString MountPath; uint32 Parent = ~0u; bool bHasRuleFile = false; uint64 RulesHash = 0;

@@ -134,11 +134,7 @@ std::vector<FString> FindPlugins (const std::filesystem::path& PluginsDir, std::
 		}
 		names.push_back(std::move(name));
 	}
-	std::sort(names.begin(), names.end(), [] (const FString& A, const FString& B)
-	{
-		const int32 folded = A.View().Compare<ESearchCase::IgnoreCase>(B.View());
-		return folded != 0 ? folded < 0 : A < B;
-	});
+	std::sort(names.begin(), names.end(), [] (const FString& A, const FString& B) { return LessPortableThenBytes(A, B); });
 
 	// Plugins equal under the portable fold (Foo and foo in a case-sensitive Plugins folder, U+212A KELVIN
 	// SIGN and 'K' anywhere) are both mounted, but Find by a typed name reaches only the first and their

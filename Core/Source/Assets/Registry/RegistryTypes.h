@@ -324,6 +324,31 @@ struct STagValue
 	return path;
 }
 
+/**
+ * Path is Ancestor or lies below it, byte-exact (mount paths are keyed by their on-disk spelling): Ancestor itself, or
+ * Ancestor followed by '/' and more. bLabels: Ancestor followed by '#' counts too - a sub-entry "<file>#<label>" of the
+ * file Ancestor, the Subject of its problems.
+ */
+[[nodiscard]] inline bool IsMountPathAtOrBelow (FStringView Path, FStringView Ancestor, bool bLabels = false) noexcept
+{
+	if (Path.Len() <= Ancestor.Len())
+	{
+		return Path == Ancestor;
+	}
+	const char next = Path[Ancestor.Len()];
+	return (next == '/' || (bLabels && next == '#')) && Path.StartsWith(Ancestor);
+}
+
+/**
+ * The registry's deterministic order of mount paths and names: the portable fold (FString::FoldCase), ties broken by
+ * byte order - a scan batch's order (ScanTypes.h), FOLDERS' sibling order, the dump's and Rules.cache's order (§5.3).
+ */
+[[nodiscard]] inline bool LessPortableThenBytes (FStringView A, FStringView B) noexcept
+{
+	const int32 folded = A.Compare<ESearchCase::IgnoreCase>(B);
+	return folded != 0 ? folded < 0 : A < B;
+}
+
 // A leading '/', no trailing '/', and no empty, "." or ".." segment ("/Project" and "/Project/A/b.png" are
 // well-formed; "", "/", "Project/A", "/Project/", "/Project//A", "/Project/./A" and "/Project/../A" are not).
 [[nodiscard]] inline bool IsWellFormedMountPath (FStringView Path) noexcept

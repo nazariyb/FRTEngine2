@@ -212,7 +212,7 @@ public:
 	// ---- Mounts, files, folders, rule files ----
 	[[nodiscard]] std::vector<SMountInfo> GetMounts () const;
 	[[nodiscard]] std::optional<SMountInfo> FindMount (FStringView Name) const;
-	// Byte-exact (what a scan compares against, IKnownFiles).
+	// Byte-exact (what a scan's Unchanged test compares against: ClassifyKnown, ScanTypes.h).
 	[[nodiscard]] std::optional<uint32> FindFileExact (FStringView MountPath) const noexcept;
 	// The file the OS means: exact, else the single row equal under the mount's file-system rule.
 	[[nodiscard]] std::optional<uint32> FindFile (FStringView MountPath) const noexcept;

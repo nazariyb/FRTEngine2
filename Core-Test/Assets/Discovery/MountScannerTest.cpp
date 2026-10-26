@@ -478,6 +478,22 @@ TEST(MountScannerTest, KnownFilesDecideUnchangedChangedAndIdentityOnly)
 
 // ---------------- The membership protocol ----------------
 
+// ClassifyKnown is the one Unchanged test: the scanner applies it through IKnownFiles, the registry against its view.
+TEST(MountScannerTest, ClassifyKnownComparesByInequalityAndRefreshesAnIdentityAlone)
+{
+	platform::SFileIdentity identity;
+	identity.Bytes[0] = 1u;
+	platform::SFileIdentity other = identity;
+	other.Bytes[23] = 7u;
+	const SKnownFile known { 100u, 5000, identity };
+	EXPECT_EQ(ClassifyKnown(std::nullopt, 100u, 5000, identity), EScanFileState::New);
+	EXPECT_EQ(ClassifyKnown(known, 100u, 5000, identity), EScanFileState::Unchanged);
+	EXPECT_EQ(ClassifyKnown(known, 101u, 5000, identity), EScanFileState::Changed);
+	EXPECT_EQ(ClassifyKnown(known, 100u, 4000, identity), EScanFileState::Changed) << "an older time is a change too";
+	EXPECT_EQ(ClassifyKnown(known, 100u, 5000, other), EScanFileState::IdentityChanged);
+	EXPECT_EQ(ClassifyKnown(known, 100u, 6000, other), EScanFileState::Changed);
+}
+
 TEST(MountScannerTest, ExcludedFoldersAreNeverListedAndTheirRuleFilesNeverRead)
 {
 	CDiscoveryTree tree("Excluded");

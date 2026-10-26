@@ -53,37 +53,6 @@ namespace
 {
 using assets::ToDisplayText;
 
-template <typename E>
-FString FlagText (E Flags)
-{
-	using U = std::underlying_type_t<E>;
-	FString text;
-	for (const auto& entry : enum_::TEnumTraits<E>::Entries)
-	{
-		if ((static_cast<U>(Flags) & static_cast<U>(entry.first)) != 0u)
-		{
-			text += text.IsEmpty() ? "" : "|";
-			text += entry.second;
-		}
-	}
-	return text.IsEmpty() ? FString("-") : text;
-}
-
-template <typename E>
-std::vector<FString> FlagNames (E Flags)
-{
-	using U = std::underlying_type_t<E>;
-	std::vector<FString> names;
-	for (const auto& entry : enum_::TEnumTraits<E>::Entries)
-	{
-		if ((static_cast<U>(Flags) & static_cast<U>(entry.first)) != 0u)
-		{
-			names.emplace_back(entry.second);
-		}
-	}
-	return names;
-}
-
 // A diagnostic's position in a query text, as the search box shows it: the message, then the text with a caret.
 void PrintQueryError (const CCommandletContext& Context, FStringView Verb, FStringView Text, const SDiagnostic& Error)
 {
@@ -703,14 +672,14 @@ void PrintEdges (const CCommandletContext& Context, std::vector<SEdgeLine>& Edge
 		{
 			text += FString::Format(" (= {})", ToDisplayText(edge.Resolved));
 		}
-		text += FString::Format("  flags={}", FlagText(edge.Flags));
+		text += FString::Format("  flags={}", enum_::FormatFlags(edge.Flags));
 		if (!edge.Field.IsEmpty())
 		{
 			text += FString::Format(" field={}", edge.Field);
 		}
 		text += FString::Format("  {}", edge.State);
 		Context.Print(text);
-		const std::vector<FString> flags = FlagNames(edge.Flags);
+		const std::vector<FString> flags = enum_::GetFlagNames(edge.Flags);
 		Context.PrintJson(CJsonObject().AddString("from", edge.From).AddString("target", edge.Target).AddString("resolved", edge.Resolved)
 			.AddStringArray("flags", flags).AddString("field", edge.Field).AddString("state", edge.State));
 	}
