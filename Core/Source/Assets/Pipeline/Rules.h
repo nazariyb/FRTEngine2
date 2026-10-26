@@ -47,10 +47,10 @@
  *	  over the chain and always wins: a folder an exclude covers is never descended, its rule files never read.
  *	- Importer: `Scan.Raw` (any chain file) gives `Raw`; else the first matching `Match`-only rule that sets
  *	  `Importer:`; else the extension claim (FindImporterForFile). An importer in `Importers.Exclude` (any chain
- *	  file) leaves the file Unclaimed and quiet (the user disabled it on purpose); a rule naming an importer that is
- *	  not available in M3 (Document, Texture.Psd, Texture.Krita, Model.Blender, DataTable.Csv) leaves it Unclaimed.
- *	  `Scan.Quiet` (any chain file) marks an Unclaimed file quiet: it raises no RULE002 (bQuiet is computed for
- *	  Unclaimed files only; a claimed file is never quiet).
+ *	  file) leaves the file Unclaimed (explain names the exclusion), and so does a rule naming an importer that is
+ *	  not available in M3 (Document, Texture.Psd, Texture.Krita, Model.Blender, DataTable.Csv). Only `Scan.Quiet`
+ *	  (any chain file) marks an Unclaimed file quiet, so that it raises no RULE002 (§3.5.2: unclaimed files are
+ *	  never silently dropped; bQuiet is computed for Unclaimed files only; a claimed file is never quiet).
  *	- Rules: evaluated deepest file first, inside a file in order; every matching rule contributes and, per field,
  *	  the first rule that sets it wins. A rule matches when all its selectors do: `Match` (any of its globs),
  *	  `Type` (the record's type, known after Analyze: SFileFacts) and `Label` (an authored label). `Type`/`Label`

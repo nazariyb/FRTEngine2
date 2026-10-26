@@ -2119,9 +2119,9 @@ namespace
 /**
  * The version of this engine's own semantics (CRulesEngine::GetSemanticsHash). Bump it when a rule text would
  * classify or resolve differently with no change to ImporterTable: precedence, Final, the importer order (Raw,
- * Importer rules, extension claims), Quiet, the `Auto` alias, or IsBuiltinExcludedName's list.
+ * Importer rules, extension claims), Quiet, the meaning of a Cook: value, or IsBuiltinExcludedName's list.
  */
-constexpr uint32 RulesEngineVersion = 1u;
+constexpr uint32 RulesEngineVersion = 2u;   // 2: Importers.Exclude no longer makes a file quiet
 
 uint64 ComputeSemanticsHash (FStringView Target)
 {
@@ -2900,8 +2900,9 @@ void ClassifyFile (const SScope& Scope, FStringView FileMountPath, CFileMatcher&
 		{
 			if (excluded.Importer == importer)
 			{
+				// Unclaimed and reported like any unclaimed file (RULE002) unless Scan.Quiet lists it (§3.5.2).
 				Out.Class = EFileClass::Unclaimed;
-				Out.bQuiet = true;
+				markQuiet();
 				if (bExplain)
 				{
 					Out.ImporterNote = FString::Format("the importer {} is disabled by Importers.Exclude ({})", importer->Name,

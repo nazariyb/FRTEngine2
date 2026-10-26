@@ -451,7 +451,12 @@ TEST(RulesEngine, MembershipFollowsIncludeExcludeRawQuietAndTheImporterClaims)
 	EXPECT_EQ(verdict("/Project/Notes/todo.txt"), (SFileVerdict { EFileClass::Unclaimed, false }));
 	EXPECT_EQ(verdict("/Project/Data/Raw/blob.png"), (SFileVerdict { EFileClass::Raw, false })) << "Scan.Raw beats the extension claim";
 	EXPECT_EQ(verdict("/Project/Tables/Ammo.csv"), (SFileVerdict { EFileClass::Raw, false })) << "a rule's Importer";
-	EXPECT_EQ(verdict("/Project/Models/Fox.gltf"), (SFileVerdict { EFileClass::Unclaimed, true })) << "a disabled importer leaves the file quiet";
+	// §3.5.2: only Scan.Quiet silences RULE002; a disabled importer leaves the file Unclaimed and reported.
+	EXPECT_EQ(verdict("/Project/Models/Fox.gltf"), (SFileVerdict { EFileClass::Unclaimed, false })) << "a disabled importer is not quiet";
+	EXPECT_EQ(verdict("/Project/Models/license.txt"), (SFileVerdict { EFileClass::Unclaimed, true }));
+	const auto quietGltf = fixture.Enter(root, "/Project/Quiet", FStringView("FormatVersion: 1\nScan: { Quiet: [ \"*.gltf\" ] }\n"));
+	EXPECT_EQ(engine.Classify(*quietGltf, "/Project/Quiet/Fox.gltf"), (SFileVerdict { EFileClass::Unclaimed, true })) << "unless Scan.Quiet lists it";
+	EXPECT_NE(engine.Explain(*root, "/Project/Models/Fox.gltf").Settings.Class, EFileClass::Asset);
 	EXPECT_EQ(verdict("/Project/Models/Fox.blend"), (SFileVerdict { EFileClass::Unclaimed, false })) << "Model.Blender is not available in M3";
 	EXPECT_EQ(verdict("/Project/Thumbs.db"), std::nullopt) << "built-in excludes";
 	EXPECT_EQ(verdict("/Project/README.md"), (SFileVerdict { EFileClass::Unclaimed, true })) << "the engine's Quiet is every mount's fallback";
