@@ -1,17 +1,22 @@
-// The registry store's rows of the §5.11 budget table at 10k assets: a one-edit commit's main-thread time,
-// GUID / AssetId64 / path lookups, transitive referencers, a substring search over names and the resident
-// memory of the store (its view's tables, the writer's state and a full change ring). Timings mean
-// something in optimized builds only: Debug measures and prints, never judges. In the whole suite the
-// machine is busy, so the checks fail on a clear regression (twice a budget) and hold the exact budgets
-// only with FRT_PERF_STRICT=1. The fixture is this test's own small generator (textures, materials, models
-// with sub-entries, input files) with §5.3's density of about 4.5 edges per asset and rule labels on every
-// record; the full §5.11 generator is G3's. (No M3 type has a String key, so there are no STRINGS values.)
+// The registry store's rows of the §5.11 budget table: a one-edit commit's main-thread time, GUID / AssetId64 /
+// path lookups, transitive referencers, a substring search over names and the resident memory of the store (its
+// view's tables, the writer's state and a full change ring). Timings mean something in optimized builds only:
+// Debug measures and prints, never judges. In the whole suite the machine is busy, so the checks fail on a clear
+// regression (twice a budget) and hold the exact budgets only with FRT_PERF_STRICT=1.
+//
+// Two fixtures. TheStoreMeetsItsBudgetsAt10kAssets uses this test's own small generator (textures, materials,
+// models with sub-entries, input files) with §5.3's density of about 4.5 edges per asset and rule labels on every
+// record. The scale tests run G3's §5.11 generator (Query/QueryBenchmarkGenerator.h, the exact §5.2 schema): 10k
+// assets without rows in Core-Test (the 10k memory cell is "no rows", as the load row says), and on demand
+// (--gtest_also_run_disabled_tests) 100k, 100k + 500k rows (every row field a column) and 1M + 5M rows, whose
+// memory §5.11 reports without a budget. (No M3 type has a String key, so there are no STRINGS values.)
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <cstdio>
 #include <random>
 
+#include "../Query/QueryBenchmarkGenerator.h"
 #include "Assets/Registry/RegistryTables.h"
 #include "Platform/Platform.h"
 #include "Platform/Timestamp.h"
@@ -105,16 +110,142 @@ struct SBudgetCheck
 	bool bOptimized = !FRT_BUILD_DEBUG;
 	double Slack = platform::GetEnvironmentValue("FRT_PERF_STRICT").value_or(FString()) == "1" ? 1.0 : 2.0;
 
+	// Budget < 0: printed only (no §5.11 figure at this size).
 	void Check (const char* Name, double Measured, double Budget, const char* Unit)
 	{
-		std::printf("[registry] %-36s %10.3f %s (budget %.3f %s)\n", Name, Measured, Unit, Budget, Unit);
+		if (Budget < 0.0)
+		{
+			std::printf("[registry] %-36s %10.3f %s (not budgeted)\n", Name, Measured, Unit);
+		}
+		else
+		{
+			std::printf("[registry] %-36s %10.3f %s (budget %.3f %s)\n", Name, Measured, Unit, Budget, Unit);
+		}
 		::testing::Test::RecordProperty(Name, FString::Format("{:.3f}", Measured).CStr());
-		if (bOptimized)
+		if (bOptimized && Budget >= 0.0)
 		{
 			EXPECT_LE(Measured, Budget * Slack) << Name;
 		}
 	}
 };
+
+// The best of five timed loops over Count items, in nanoseconds per item; every item must be found.
+template <typename TBody>
+double TimeLookups (uint32 Count, TBody&& Body)
+{
+	double best = 1e30;
+	for (uint32 round = 0u; round < 5u; ++round)
+	{
+		const uint64 begin = platform::ReadTimestamp();
+		uint32 found = 0u;
+		for (uint32 i = 0u; i < Count; ++i)
+		{
+			found += Body(i) ? 1u : 0u;
+		}
+		const double ns = platform::TimestampToMilliseconds(platform::ReadTimestamp() - begin) * 1e6 / Count;
+		EXPECT_EQ(found, Count);
+		best = (std::min)(best, ns);
+	}
+	return best;
+}
+
+void PrintMemory (const SRegistryMemoryStats& Memory)
+{
+	std::printf("[registry] resident: files %.2f, folders %.2f, rule files %.2f, assets %.2f, sub-entries %.2f, type tables %.2f, "
+		"graph %.2f, names %.2f, strings %.2f, labels %.2f, problems %.2f, indices %.2f, writer %.2f, change ring %.2f MB\n",
+		Memory.Files / 1048576.0, Memory.Folders / 1048576.0, Memory.RuleFiles / 1048576.0, Memory.Assets / 1048576.0,
+		Memory.SubEntries / 1048576.0, Memory.TypeTables / 1048576.0, Memory.Graph / 1048576.0, Memory.Names / 1048576.0,
+		Memory.Strings / 1048576.0, Memory.Labels / 1048576.0, Memory.Problems / 1048576.0, Memory.Indices / 1048576.0,
+		Memory.Writer / 1048576.0, Memory.ChangeRing / 1048576.0);
+}
+
+// The §5.11 budgets of one scale; < 0: printed only.
+struct SScaleBudgets
+{
+	double OneEditCommitMs = 2.0;
+	double GuidLookupNs = 50.0;
+	double PathLookupUs = 0.5;
+	double ResidentMemoryMB = -1.0;
+	bool bTimings = true;          // false: every timing printed only (1M + 5M rows, which §5.11 does not budget)
+};
+
+/**
+ * The store's rows at one scale of G3's generator: the generated project committed, the graph compacted (as after a
+ * snapshot load), then a one-edit commit (a material re-analyzed with other textures, the median of 51; journal
+ * appends are H3's), GUID / AssetId64 / path lookups over every asset record in a shuffled order (and AssetId64 over
+ * a fifth of the sub-entries, printed), and the resident memory (§5.11: the view's tables, the writer's state and
+ * the change ring).
+ */
+void MeasureStoreAtScale (uint32 Assets, uint32 Rows, const SScaleBudgets& Budgets)
+{
+	SBudgetCheck budget;
+	const auto timed = [&] (double Budget) { return Budgets.bTimings ? Budget : -1.0; };
+	CRegistryStore store;
+	query_bench::SGeneratorSpec spec;
+	spec.Assets = Assets;
+	spec.Rows = Rows;
+	const query_bench::SGeneratorReport report = query_bench::Generate(store, spec);
+	store.CompactGraph();
+	std::printf("[registry] generated %u assets, %u rows: %u records, %u sub-entries, %u files, %u edges; %u commits %.0f ms\n", Assets, Rows,
+		store.Live().GetRecordCount(), store.Live().GetSubEntryCount(), store.Live().GetFileCount(), GetTables(store.Live()).Graph.LiveEdges,
+		report.Commits, report.CommitMilliseconds);
+	ASSERT_EQ(store.Live().GetRecordCount(), Assets);
+
+	// One edit: a material re-analyzed with a changed texture list. Median of 51 commits.
+	std::vector<double> commits;
+	const FString material = query_bench::GetMaterialPath(7u);
+	for (uint32 i = 0u; i < 51u; ++i)
+	{
+		SRegistryDelta edit;
+		const FString textures[] = { query_bench::GetTexturePath(i), query_bench::GetTexturePath(i + 1u), query_bench::GetTexturePath(i + 2u) };
+		AddMaterial(edit, material, { textures[0].View(), textures[1].View(), textures[2].View() });
+		store.Commit(std::move(edit));
+		commits.push_back(store.GetLastCommitStats().Milliseconds);
+	}
+	std::sort(commits.begin(), commits.end());
+	budget.Check("OneEditCommitMs", commits[commits.size() / 2u], timed(Budgets.OneEditCommitMs), "ms");
+
+	const std::shared_ptr<const CRegistryView> view = store.Acquire();
+	const SRegistryTables& tables = GetTables(*view);
+	std::vector<SAssetId> ids;
+	std::vector<SAssetId64> ids64;
+	std::vector<FString> paths;
+	view->ForEachRecord([&] (SRecordId Record)
+	{
+		SAssetData data;
+		view->GetRecord(Record, data);
+		ids.push_back(data.Id);
+		ids64.push_back(data.Id64);
+		paths.push_back(data.MountPath);
+	});
+	std::vector<SAssetId64> subIds64;
+	for (uint32 sub = 0u; sub < tables.SubEntries.Owner.Size(); sub += 5u)
+	{
+		if (tables.SubEntries.Owner[sub] != InvalidRow)
+		{
+			subIds64.push_back(SAssetId64 { tables.SubEntries.AssetId64[sub] });
+		}
+	}
+	std::mt19937 random(42u);
+	std::shuffle(ids.begin(), ids.end(), random);
+	std::shuffle(ids64.begin(), ids64.end(), random);
+	std::shuffle(paths.begin(), paths.end(), random);
+	std::shuffle(subIds64.begin(), subIds64.end(), random);
+	const uint32 count = static_cast<uint32>(ids.size());
+	budget.Check("GuidLookupNs", TimeLookups(count, [&] (uint32 I) { return view->Find(ids[I]).has_value(); }), timed(Budgets.GuidLookupNs), "ns");
+	budget.Check("AssetId64LookupNs", TimeLookups(count, [&] (uint32 I) { return view->Find(ids64[I]).has_value(); }), timed(Budgets.GuidLookupNs), "ns");
+	if (!subIds64.empty())
+	{
+		budget.Check("SubEntryId64LookupNs", TimeLookups(static_cast<uint32>(subIds64.size()), [&] (uint32 I) { return view->Find(subIds64[I]).has_value(); }),
+			-1.0, "ns");
+	}
+	budget.Check("PathLookupUs", TimeLookups(count, [&] (uint32 I) { return view->FindByPath(paths[I]).has_value(); }) / 1000.0,
+		timed(Budgets.PathLookupUs), "us");
+
+	const SRegistryMemoryStats memory = store.GetMemoryStats();
+	PrintMemory(memory);
+	budget.Check("ResidentMemoryMB", memory.Total / 1048576.0, Budgets.ResidentMemoryMB, "MB");
+}
 }
 
 TEST(RegistryBenchmarkTest, TheStoreMeetsItsBudgetsAt10kAssets)
@@ -175,27 +306,10 @@ TEST(RegistryBenchmarkTest, TheStoreMeetsItsBudgetsAt10kAssets)
 	std::shuffle(ids64.begin(), ids64.end(), random);
 	std::shuffle(paths.begin(), paths.end(), random);
 
-	const auto timeLoop = [] (uint32 Count, auto&& Body)
-	{
-		double best = 1e30;
-		for (uint32 round = 0u; round < 5u; ++round)
-		{
-			const uint64 begin = platform::ReadTimestamp();
-			uint32 found = 0u;
-			for (uint32 i = 0u; i < Count; ++i)
-			{
-				found += Body(i) ? 1u : 0u;
-			}
-			const double ns = platform::TimestampToMilliseconds(platform::ReadTimestamp() - begin) * 1e6 / Count;
-			EXPECT_EQ(found, Count);
-			best = (std::min)(best, ns);
-		}
-		return best;
-	};
 	const uint32 count = static_cast<uint32>(ids.size());
-	budget.Check("GuidLookupNs", timeLoop(count, [&] (uint32 I) { return view->Find(ids[I]).has_value(); }), 50.0, "ns");
-	budget.Check("AssetId64LookupNs", timeLoop(count, [&] (uint32 I) { return view->Find(ids64[I]).has_value(); }), 50.0, "ns");
-	budget.Check("PathLookupUs", timeLoop(count, [&] (uint32 I) { return view->FindByPath(paths[I]).has_value(); }) / 1000.0, 0.5, "us");
+	budget.Check("GuidLookupNs", TimeLookups(count, [&] (uint32 I) { return view->Find(ids[I]).has_value(); }), 50.0, "ns");
+	budget.Check("AssetId64LookupNs", TimeLookups(count, [&] (uint32 I) { return view->Find(ids64[I]).has_value(); }), 50.0, "ns");
+	budget.Check("PathLookupUs", TimeLookups(count, [&] (uint32 I) { return view->FindByPath(paths[I]).has_value(); }) / 1000.0, 0.5, "us");
 
 	// Transitive referencers of the most used texture: its materials, and the models that use those.
 	const SRecordId texture = view->FindByPath(TexturePath(0u)).value_or(SRecordId {});
@@ -234,12 +348,7 @@ TEST(RegistryBenchmarkTest, TheStoreMeetsItsBudgetsAt10kAssets)
 	budget.Check("NameSubstringMs", substringMs, 0.2, "ms");
 
 	const SRegistryMemoryStats memory = store.GetMemoryStats();
-	std::printf("[registry] resident: files %.2f, folders %.2f, rule files %.2f, assets %.2f, sub-entries %.2f, type tables %.2f, "
-		"graph %.2f, names %.2f, strings %.2f, labels %.2f, problems %.2f, indices %.2f, writer %.2f, change ring %.2f MB\n",
-		memory.Files / 1048576.0, memory.Folders / 1048576.0, memory.RuleFiles / 1048576.0, memory.Assets / 1048576.0,
-		memory.SubEntries / 1048576.0, memory.TypeTables / 1048576.0, memory.Graph / 1048576.0, memory.Names / 1048576.0,
-		memory.Strings / 1048576.0, memory.Labels / 1048576.0, memory.Problems / 1048576.0, memory.Indices / 1048576.0,
-		memory.Writer / 1048576.0, memory.ChangeRing / 1048576.0);
+	PrintMemory(memory);
 	EXPECT_EQ(memory.Total, ComputeMemoryStats(GetTables(store.Live())).Total + memory.Writer + memory.ChangeRing);
 	budget.Check("ResidentMemoryMB", memory.Total / 1048576.0, 15.0, "MB");
 
@@ -252,4 +361,30 @@ TEST(RegistryBenchmarkTest, TheStoreMeetsItsBudgetsAt10kAssets)
 	std::printf("[registry] image: export %.2f ms, adopt (every index rebuilt, targets resolved, CSR built) %.2f ms\n",
 		exportMs, adopted.GetLastCommitStats().Milliseconds);
 	EXPECT_EQ(adopted.Live().GetRecordCount(), view->GetRecordCount());
+}
+
+TEST(RegistryBenchmarkTest, TheStoreMeetsItsBudgetsAt10kGeneratedAssets)
+{
+	SScaleBudgets budgets;
+	budgets.ResidentMemoryMB = 15.0;
+	MeasureStoreAtScale(10000u, 0u, budgets);
+}
+
+TEST(RegistryBenchmarkTest, DISABLED_TheStoreAt100kAssets)
+{
+	MeasureStoreAtScale(100000u, 0u, SScaleBudgets {});
+}
+
+TEST(RegistryBenchmarkTest, DISABLED_TheStoreAt100kAssetsAnd500kRows)
+{
+	SScaleBudgets budgets;
+	budgets.ResidentMemoryMB = 150.0;
+	MeasureStoreAtScale(100000u, 500000u, budgets);
+}
+
+TEST(RegistryBenchmarkTest, DISABLED_TheStoreAt1MAssetsAnd5MRows)
+{
+	SScaleBudgets budgets;
+	budgets.bTimings = false;
+	MeasureStoreAtScale(1000000u, 5000000u, budgets);
 }
