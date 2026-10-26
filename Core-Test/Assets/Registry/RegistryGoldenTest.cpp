@@ -84,6 +84,14 @@ FString DescribeFirstDifference (FStringView Golden, FStringView Dumped)
 void ExpectGoldenDump (const CCheckoutCopy& Copy, FStringView Name, std::span<const FStringView> MountNames)
 {
 	ASSERT_TRUE(Copy.MountDiagnostics.empty()) << Copy.MountDiagnostics.front().Message.CStr();
+	// The mounts first: an ASSERT returns, and must never leave a started registry behind.
+	std::vector<MountId> mounts;
+	for (const FStringView mountName : MountNames)
+	{
+		const SMount* mount = Copy.Mounts->Find(mountName);
+		ASSERT_NE(mount, nullptr) << FString(mountName).CStr();
+		mounts.push_back(mount->Id);
+	}
 	jobs::SWorkerPoolDesc poolDesc;
 	poolDesc.ThreadCount = 4u;
 	poolDesc.Name = "Registry Golden Test";
@@ -97,16 +105,16 @@ void ExpectGoldenDump (const CCheckoutCopy& Copy, FStringView Name, std::span<co
 		: EAssetRegistryOwner::Project;
 	desc.bLoadSnapshots = false;
 	CAssetRegistry registry(std::move(desc));
-	registry.Start();
-	ASSERT_TRUE(registry.WaitForInitialScan(300.0));
-
-	std::vector<MountId> mounts;
-	for (const FStringView mountName : MountNames)
+	// Shut down on every way out, a failed ASSERT included: ~CAssetRegistry asserts (a breakpoint that ends Core-Test
+	// without a debugger) on a registry still running, whose scan tasks would outlive it on the pool.
+	struct SShutDownOnExit
 	{
-		const SMount* mount = Copy.Mounts->Find(mountName);
-		ASSERT_NE(mount, nullptr) << FString(mountName).CStr();
-		mounts.push_back(mount->Id);
-	}
+		CAssetRegistry& Registry;
+		~SShutDownOnExit () { Registry.ShutDown(); }
+	} shutDownOnExit { registry };
+	registry.Start();
+	ASSERT_TRUE(registry.WaitForInitialScan(300.0)) << "the initial scan of " << FString(Name).CStr() << " did not end";
+
 	FString dump;
 	registry.Live().DumpText(dump, EDumpFlags::None, mounts);
 
