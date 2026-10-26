@@ -213,8 +213,9 @@ void MeasureSnapshot (const std::filesystem::path& Dir, uint32 Assets, uint32 Ro
 		}
 		const SRegistryMemoryStats memory = loaded.GetMemoryStats();
 		Check("LoadedMemoryMB", afterLoadMB, SBudget {}, "MB", "(right after the load)");
-		Check("LoadedMemoryFullRingMB", memory.Total / 1048576.0, Budgets.Memory, "MB",
-			FString::Format("(change ring full: {:.2f} MB of it)", memory.ChangeRing / 1048576.0).CStr());
+		const double ringMB = memory.ChangeRing / 1048576.0;
+		const FString note = FString::Format("(change ring full: {:.2f} MB of it)", ringMB);
+		Check("LoadedMemoryFullRingMB", memory.Total / 1048576.0, Budgets.Memory, "MB", note.CStr());
 	}
 
 	// The journal restart after a full write (§5.3: writing never stalls the owner thread; F3's Pump has 2 ms a

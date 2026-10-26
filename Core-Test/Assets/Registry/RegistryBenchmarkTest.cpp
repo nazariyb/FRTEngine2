@@ -188,8 +188,9 @@ void MeasureNewFileCommits (CRegistryStore& Store, const SScaleBudgets& Budgets)
 	}
 	const double slowest = *std::max_element(burst.begin(), burst.end());
 	std::sort(burst.begin(), burst.end());
-	Check("NewFileBurstSlowestMs", slowest, Budgets.RenumberCommit, "ms",
-		FString::Format("(64 commits into one gap; median {:.3f} ms)", burst[burst.size() / 2u]).CStr(), Budgets.bJudge);
+	const double median = burst[burst.size() / 2u];
+	const FString note = FString::Format("(64 commits into one gap; median {:.3f} ms)", median);
+	Check("NewFileBurstSlowestMs", slowest, Budgets.RenumberCommit, "ms", note.CStr(), Budgets.bJudge);
 }
 
 /**

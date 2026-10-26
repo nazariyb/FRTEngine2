@@ -213,8 +213,10 @@ void RunSuite (uint32 Assets, uint32 Rows, EBudgetColumn Column)
 		memory.SubEntries / 1048576.0, memory.Graph / 1048576.0, memory.Names / 1048576.0, memory.Strings / 1048576.0, memory.Indices / 1048576.0);
 	// §5.11's 10k memory cell has no row count (the load row's reads "no rows"; RegistryBenchmarkTest and
 	// SnapshotBenchmarkTest judge it so): with this suite's 50k rows it is printed against 15 MB, unjudged.
+	const double ringMB = memory.ChangeRing / 1048576.0;
+	const FString note = FString::Format("({} assets, {} rows; generated, change ring {:.2f} MB)", Assets, Rows, ringMB);
 	CheckBudget("[query]", "ResidentMemoryWithRowsMB", memory.Total / 1048576.0, SBudget { Assets == 10000u ? 15.0 : (Rows == 500000u ? 150.0 : -1.0) },
-		"MB", FString::Format("({} assets, {} rows; generated, change ring {:.2f} MB)", Assets, Rows, memory.ChangeRing / 1048576.0).CStr(), false);
+		"MB", note.CStr(), false);
 }
 }
 
