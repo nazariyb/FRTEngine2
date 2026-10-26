@@ -15,6 +15,7 @@
 #include "Assets/Pipeline/ImporterTable.h"
 #include "Assets/Pipeline/Importers/AssetImporter.h"
 #include "Assets/Registry/Journal.h"
+#include "Assets/Registry/RegistryParallel.h"
 #include "Assets/Registry/RegistryRecords.h"
 #include "Containers/StringMap.h"
 #include "Jobs/WorkerPool.h"
@@ -52,28 +53,6 @@ FString ScanRootOf (FStringView MountPath)
 	return FString(parent.IsEmpty() ? MountPath : parent);
 }
 
-// IKnownFiles over one immutable view (byte-exact, as the scanner compares): what the scan treats as known.
-class CKnownFilesOfView final : public IKnownFiles
-{
-public:
-	explicit CKnownFilesOfView (std::shared_ptr<const CRegistryView> InView)
-		: View(std::move(InView))
-	{}
-
-	std::optional<SKnownFile> Find (FStringView FileMountPath) const override
-	{
-		const std::optional<uint32> row = View->FindFileExact(FileMountPath);
-		SFileData data;
-		if (!row.has_value() || !View->GetFile(*row, data))
-		{
-			return std::nullopt;
-		}
-		return SKnownFile { data.Size, data.MTime, data.Identity };
-	}
-
-	std::shared_ptr<const CRegistryView> View;
-};
-
 /**
  * Runs OnLost when destroyed before Dismiss: held by a pool completion, so work the pool drops (a cancelled group)
  * still tells the registry, which counts what is outstanding. The pool destroys completions on its owner thread,
@@ -104,15 +83,50 @@ private:
 	TUniqueFunction<void ()> OnLost;
 };
 
-// Groups diagnostics by Subject into one SProblemsSet each, under Source.
-void AddProblemSets (SRegistryDelta& Delta, EProblemSource Source, std::vector<SDiagnostic>&& Diagnostics)
+using FProblemsBySubject = std::map<FString, std::vector<SDiagnostic>, std::less<>>;
+
+FProblemsBySubject GroupBySubject (std::vector<SDiagnostic>&& Diagnostics)
 {
-	std::map<FString, std::vector<SDiagnostic>, std::less<>> bySubject;
+	FProblemsBySubject bySubject;
 	for (SDiagnostic& diagnostic : Diagnostics)
 	{
 		bySubject[diagnostic.Subject].push_back(std::move(diagnostic));
 	}
-	for (auto& [subject, list] : bySubject)
+	return bySubject;
+}
+
+// Groups diagnostics by Subject into one SProblemsSet each, under Source.
+void AddProblemSets (SRegistryDelta& Delta, EProblemSource Source, std::vector<SDiagnostic>&& Diagnostics)
+{
+	for (auto& [subject, list] : GroupBySubject(std::move(Diagnostics)))
+	{
+		Delta.Problems.push_back(SProblemsSet { subject, Source, std::move(list) });
+	}
+}
+
+/**
+ * Replaces Source's lists at or below Root (SProblemsClear's reach) with Diagnostics - nothing at all when the view
+ * holds exactly those lists already, so a warm start commits no problem it had.
+ */
+void ReplaceSubtreeProblems (SRegistryDelta& Delta, const CRegistryView& View, FStringView Root, EProblemSource Source,
+	std::vector<SDiagnostic>&& Diagnostics)
+{
+	FProblemsBySubject stored;
+	View.ForEachProblem([&] (FStringView Subject, EProblemSource ProblemSource, const SDiagnostic& Diagnostic)
+	{
+		if (ProblemSource == Source && Subject.StartsWith(Root)
+			&& (Subject.Len() == Root.Len() || Subject[Root.Len()] == '/' || Subject[Root.Len()] == '#'))
+		{
+			stored[FString(Subject)].push_back(Diagnostic);
+		}
+	});
+	FProblemsBySubject found = GroupBySubject(std::move(Diagnostics));
+	if (found == stored)
+	{
+		return;
+	}
+	Delta.ProblemClears.push_back(SProblemsClear { FString(Root), Source });
+	for (auto& [subject, list] : found)
 	{
 		Delta.Problems.push_back(SProblemsSet { subject, Source, std::move(list) });
 	}
@@ -124,6 +138,13 @@ uint64 GetStoredMountRulesHash (const CRegistryView& View, FStringView MountName
 	SRuleFileData data;
 	const std::optional<uint32> row = View.FindRuleFile(MountName, FStringView());
 	return row.has_value() && View.GetRuleFile(*row, data) ? data.RulesHash : 0u;
+}
+
+// Whether a delta changes what RULE002 is computed from: file rows, records (their companions) or folders.
+bool ChangesFiles (const SRegistryDelta& Delta) noexcept
+{
+	return !Delta.FileUpserts.empty() || !Delta.FileRemoves.empty() || !Delta.FolderRemoves.empty() || !Delta.FolderUpserts.empty()
+		|| !Delta.RecordUpserts.empty() || !Delta.RecordRemoves.empty();
 }
 
 template <typename T>
@@ -285,6 +306,7 @@ struct SConversion
 	std::vector<FString> RemovedFiles;
 	uint32 ReEvaluated = 0u;
 	bool bRuleFilesChanged = false;
+	double Milliseconds = 0.0;
 };
 
 struct SConvertInput
@@ -293,6 +315,7 @@ struct SConvertInput
 	std::shared_ptr<const CRegistryView> View;          // the view the scan compared against
 	const CRulesEngine* Rules = nullptr;
 	const SMount* Mount = nullptr;
+	jobs::CWorkerPool* Pool = nullptr;                  // the files are decided in chunks on it
 	uint32 MountIndex = 0u;
 	bool bReEvaluateAll = false;                        // the mount's chain changed (mount file, engine file, RulesBasis)
 	// A scan of the mount root: the RulesHash of the mount's Config/Assets.yml the scan's scopes were made with, whose
@@ -306,6 +329,7 @@ struct SConvertInput
  */
 SConversion ConvertBatch (SConvertInput& In)
 {
+	const uint64 start = platform::ReadTimestamp();
 	SConversion out;
 	SScanBatch& batch = In.Batch;
 	const CRegistryView& view = *In.View;
@@ -330,6 +354,7 @@ SConversion ConvertBatch (SConvertInput& In)
 
 	// Folders: rows the view lacks, RULEFILES rows, and which folders' rule chains changed (inherited downwards).
 	std::vector<uint8> dirty(batch.Folders.size(), uint8(0));
+	size_t knownFolders = 0u;   // batch folders the view holds (byte-exact)
 	TStringMap<std::shared_ptr<const SScanScope>> scopeOf;
 	FStringSet batchFolders;
 	scopeOf.reserve(batch.Folders.size());
@@ -376,145 +401,193 @@ SConversion ConvertBatch (SConvertInput& In)
 		{
 			delta.FolderUpserts.push_back(SFolderUpsert { folder.MountPath });
 		}
+		knownFolders += bKnown ? 1u : 0u;
 		out.Folders.push_back(SUnclaimedFolder { folder.MountPath, folder.Scope, {} });
 	}
 
-	// Files.
-	TStringMap<uint32> unclaimedFolderOf;   // folder path -> index in out.Folders
-	for (uint32 i = 0u; i < out.Folders.size(); ++i)
+	// Files, in chunks on the pool (each file's decision reads only the view and its folder's scope); the chunks'
+	// results are joined in batch order, so the delta is the same whatever the thread count.
+	std::vector<uint32> unclaimedFolderOf(batch.Folders.size(), ~0u);   // batch folder -> index in out.Folders
+	for (uint32 i = 0u, next = 0u; i < batch.Folders.size(); ++i)
 	{
-		unclaimedFolderOf.emplace(out.Folders[i].Path, i);
-	}
-	FStringSet batchFiles;
-	batchFiles.reserve(batch.Files.size());
-	for (const SScanFile& file : batch.Files)
-	{
-		const SScanFolder& folder = batch.Folders[file.Folder];
-		FString path = MakeChildMountPath(folder.MountPath, file.Name);
-		const bool bDirty = dirty[file.Folder] != 0u;
-		if (file.Verdict.Class == EFileClass::Unclaimed)
+		if (next < out.Folders.size() && out.Folders[next].Path == batch.Folders[i].MountPath)
 		{
-			if (const auto it = unclaimedFolderOf.find(folder.MountPath); it != unclaimedFolderOf.end())
-			{
-				out.Folders[it->second].Candidates.emplace_back(path, file.Verdict.bQuiet);
-			}
-		}
-		const std::optional<SStoredFile> stored = FindStoredFile(view, path);
-		const bool bHasRecord = stored.has_value() && stored->Record.IsValid();
-		const bool bContentChanged = file.State == EScanFileState::New || file.State == EScanFileState::Changed;
-		const bool bStatChanged = file.State != EScanFileState::Unchanged;
-		const bool bStale = bHasRecord && HasAnyFlags(stored->Flags, ERecordFlags::StaleTags);
-		const bool bTypeExcluded = bHasRecord && HasAnyFlags(stored->Flags, ERecordFlags::TypeExcluded);
-		const bool bClassDiffers = stored.has_value() && stored->BaseClass != file.Verdict.Class
-			&& !(bTypeExcluded && stored->BaseClass == EFileClass::Excluded);
-		const bool bMissingRecord = stored.has_value() && !bHasRecord && file.Verdict.Class != EFileClass::Unclaimed;
-		batchFiles.insert(path);
-		if (!bStatChanged && stored.has_value() && !bDirty && !bStale && !bClassDiffers && !bMissingRecord)
-		{
-			continue;   // unchanged file, unchanged rule chain: nothing to do (the warm start's path)
-		}
-
-		const SScanScope& scope = *folder.Scope;
-		const SFileFacts facts { bHasRecord ? stored->Type : reflect::InvalidTypeId, {} };
-		SEffectiveFileSettings settings = rules.ResolveFile(scope, path, facts, false);
-		const bool bTypeIncluded = !bHasRecord || rules.IsTypeIncluded(scope, stored->Type);
-		const EFileClass fileClass = bTypeIncluded ? settings.Class : EFileClass::Excluded;
-		if (!stored.has_value() || bStatChanged || stored->BaseClass != fileClass)
-		{
-			SFileUpsert row;
-			row.MountPath = path;
-			row.Size = file.Size;
-			row.MTime = file.MTime;
-			row.Identity = file.Identity;
-			if (!stored.has_value() || bContentChanged)
-			{
-				row.ContentHash = hash::SContentHash {};   // changed, not hashed (hashes are lazy, §5.4 step 5)
-			}
-			row.Class = fileClass;
-			delta.FileUpserts.push_back(std::move(row));
-		}
-
-		const SImporterDesc* importer = settings.Importer;
-		if (importer == nullptr || settings.Class == EFileClass::Excluded || settings.Class == EFileClass::Unclaimed)
-		{
-			if (bHasRecord)
-			{
-				delta.RecordRemoves.push_back(path);   // its importer went away (Importers.Exclude, a rule)
-			}
-			continue;
-		}
-		const uint64 stamp = MakeAnalyzeStamp(importer->AnalyzeVersion, settings.Settings.AnalyzeHash);
-		const bool bAnalyze = !bHasRecord || bContentChanged || bStale || stored->AnalyzeStamp != stamp || stored->Importer != importer->Name.View();
-		if (bAnalyze)
-		{
-			SAnalyzeRequest& request = out.Analyze.emplace_back();
-			request.Path = std::move(path);
-			request.Mount = In.MountIndex;
-			request.Settings = std::move(settings);
-			request.Scope = folder.Scope;
-			request.Size = file.Size;
-			request.MTime = file.MTime;
-			request.Identity = file.Identity;
-			request.Class = file.Verdict.Class;
-			continue;
-		}
-		if (bDirty || bClassDiffers)
-		{
-			++out.ReEvaluated;
-			const ERecordFlags flags = (stored->Flags & ~ERecordFlags::TypeExcluded) | (bTypeIncluded ? ERecordFlags::None : ERecordFlags::TypeExcluded);
-			if (RuleOutputsDiffer(view, stored->Record, settings, flags))
-			{
-				delta.RecordUpserts.push_back(MakeRecordUpsertFromView(view, stored->Record, settings, flags));
-			}
+			unclaimedFolderOf[i] = next++;
 		}
 	}
+	struct SChunkOut
+	{
+		std::vector<SFileUpsert> FileUpserts;
+		std::vector<FString> RecordRemoves;
+		std::vector<SRecordUpsert> RecordUpserts;
+		std::vector<SAnalyzeRequest> Analyze;
+		std::vector<std::pair<uint32, uint32>> Unclaimed;   // (index in out.Folders, file index)
+		uint32 ReEvaluated = 0u;
+		uint32 Known = 0u;                                  // files the view holds (byte-exact)
+	};
+	std::vector<FString> paths(batch.Files.size());
+	const std::vector<SChunkRange> chunks = SplitIntoChunks(In.Pool, static_cast<uint32>(batch.Files.size()), 256u);
+	std::vector<SChunkOut> chunkOuts(chunks.size());
+	RunChunks(In.Pool, chunks, [&] (uint32 Chunk, uint32 Begin, uint32 End)
+	{
+		SChunkOut& chunkOut = chunkOuts[Chunk];
+		for (uint32 index = Begin; index < End; ++index)
+		{
+			const SScanFile& file = batch.Files[index];
+			const SScanFolder& folder = batch.Folders[file.Folder];
+			paths[index] = MakeChildMountPath(folder.MountPath, file.Name);
+			const FString& path = paths[index];
+			const bool bDirty = dirty[file.Folder] != 0u;
+			if (file.Verdict.Class == EFileClass::Unclaimed && unclaimedFolderOf[file.Folder] != ~0u)
+			{
+				chunkOut.Unclaimed.emplace_back(unclaimedFolderOf[file.Folder], index);
+			}
+			const std::optional<SStoredFile> stored = FindStoredFile(view, path);
+			chunkOut.Known += stored.has_value() ? 1u : 0u;
+			// The scan's Unchanged test (ScanTypes.h), against the view: size and mtime equal (never "newer than");
+			// only the identity differing is refreshed without a hash.
+			const EScanFileState state = !stored.has_value() ? EScanFileState::New
+				: stored->Size != file.Size || stored->MTime != file.MTime ? EScanFileState::Changed
+				: !(stored->Identity == file.Identity) ? EScanFileState::IdentityChanged : EScanFileState::Unchanged;
+			const bool bHasRecord = stored.has_value() && stored->Record.IsValid();
+			const bool bContentChanged = state == EScanFileState::New || state == EScanFileState::Changed;
+			const bool bStatChanged = state != EScanFileState::Unchanged;
+			const bool bStale = bHasRecord && HasAnyFlags(stored->Flags, ERecordFlags::StaleTags);
+			const bool bTypeExcluded = bHasRecord && HasAnyFlags(stored->Flags, ERecordFlags::TypeExcluded);
+			const bool bClassDiffers = stored.has_value() && stored->BaseClass != file.Verdict.Class
+				&& !(bTypeExcluded && stored->BaseClass == EFileClass::Excluded);
+			const bool bMissingRecord = stored.has_value() && !bHasRecord && file.Verdict.Class != EFileClass::Unclaimed;
+			if (!bStatChanged && stored.has_value() && !bDirty && !bStale && !bClassDiffers && !bMissingRecord)
+			{
+				continue;   // unchanged file, unchanged rule chain: nothing to do (the warm start's path)
+			}
 
-	// Removals: what the view knows at or below the root that the batch does not hold, outside failed folders.
+			const SScanScope& scope = *folder.Scope;
+			const SFileFacts facts { bHasRecord ? stored->Type : reflect::InvalidTypeId, {} };
+			SEffectiveFileSettings settings = rules.ResolveFile(scope, path, facts, false);
+			const bool bTypeIncluded = !bHasRecord || rules.IsTypeIncluded(scope, stored->Type);
+			const EFileClass fileClass = bTypeIncluded ? settings.Class : EFileClass::Excluded;
+			if (!stored.has_value() || bStatChanged || stored->BaseClass != fileClass)
+			{
+				SFileUpsert& row = chunkOut.FileUpserts.emplace_back();
+				row.MountPath = path;
+				row.Size = file.Size;
+				row.MTime = file.MTime;
+				row.Identity = file.Identity;
+				if (!stored.has_value() || bContentChanged)
+				{
+					row.ContentHash = hash::SContentHash {};   // changed, not hashed (hashes are lazy, §5.4 step 5)
+				}
+				row.Class = fileClass;
+			}
+
+			const SImporterDesc* importer = settings.Importer;
+			if (importer == nullptr || settings.Class == EFileClass::Excluded || settings.Class == EFileClass::Unclaimed)
+			{
+				if (bHasRecord)
+				{
+					chunkOut.RecordRemoves.push_back(path);   // its importer went away (Importers.Exclude, a rule)
+				}
+				continue;
+			}
+			const uint64 stamp = MakeAnalyzeStamp(importer->AnalyzeVersion, settings.Settings.AnalyzeHash);
+			const bool bAnalyze = !bHasRecord || bContentChanged || bStale || stored->AnalyzeStamp != stamp || stored->Importer != importer->Name.View();
+			if (bAnalyze)
+			{
+				SAnalyzeRequest& request = chunkOut.Analyze.emplace_back();
+				request.Path = path;
+				request.Mount = In.MountIndex;
+				request.Settings = std::move(settings);
+				request.Scope = folder.Scope;
+				request.Size = file.Size;
+				request.MTime = file.MTime;
+				request.Identity = file.Identity;
+				request.Class = file.Verdict.Class;
+				continue;
+			}
+			if (bDirty || bClassDiffers)
+			{
+				++chunkOut.ReEvaluated;
+				const ERecordFlags flags = (stored->Flags & ~ERecordFlags::TypeExcluded) | (bTypeIncluded ? ERecordFlags::None : ERecordFlags::TypeExcluded);
+				if (RuleOutputsDiffer(view, stored->Record, settings, flags))
+				{
+					chunkOut.RecordUpserts.push_back(MakeRecordUpsertFromView(view, stored->Record, settings, flags));
+				}
+			}
+		}
+	});
+	uint32 knownFiles = 0u;
+	for (SChunkOut& chunkOut : chunkOuts)
+	{
+		AppendMoved(delta.FileUpserts, chunkOut.FileUpserts);
+		AppendMoved(delta.RecordRemoves, chunkOut.RecordRemoves);
+		AppendMoved(delta.RecordUpserts, chunkOut.RecordUpserts);
+		AppendMoved(out.Analyze, chunkOut.Analyze);
+		for (const auto& [folder, file] : chunkOut.Unclaimed)
+		{
+			out.Folders[folder].Candidates.emplace_back(paths[file], batch.Files[file].Verdict.bQuiet);
+		}
+		out.ReEvaluated += chunkOut.ReEvaluated;
+		knownFiles += chunkOut.Known;
+	}
+
+	// Removals: what the view knows at or below the root that the batch does not hold, outside failed folders. Every
+	// batch entry the view knows is a distinct row below the root, so when the counts agree nothing is gone and the
+	// lists are not compared (a warm start).
 	SFolderData rootData;
 	const std::optional<uint32> rootRow = view.FindFolder(root);
 	if (rootRow.has_value() && view.GetFolder(*rootRow, rootData) && rootData.MountPath == root.View() && !IsAtOrBelowAny(root, failed))
 	{
-		std::vector<FString> goneFolders;
+		std::vector<uint32> folderRows;
 		view.ForEachFolder([&] (uint32 Row)
 		{
 			SFolderData data;
-			if (!view.GetFolder(Row, data) || data.Mount != rootData.Mount || data.PreorderBegin < rootData.PreorderBegin
-				|| data.PreorderBegin >= rootData.PreorderEnd)
+			if (view.GetFolder(Row, data) && data.Mount == rootData.Mount && data.PreorderBegin >= rootData.PreorderBegin
+				&& data.PreorderBegin < rootData.PreorderEnd)
 			{
-				return;
-			}
-			if (!batchFolders.contains(data.MountPath) && !IsAtOrBelowAny(data.MountPath, failed))
-			{
-				goneFolders.emplace_back(data.MountPath);
+				folderRows.push_back(Row);
 			}
 		});
-		std::sort(goneFolders.begin(), goneFolders.end(), [] (const FString& A, const FString& B) { return A.View() < B.View(); });
-		for (FString& folder : goneFolders)
+		uint32 viewFiles = 0u;
+		view.ForEachFileUnder(*rootRow, [&] (uint32) { ++viewFiles; });
+		if (!failed.empty() || folderRows.size() != knownFolders || viewFiles != knownFiles)
 		{
-			if (out.RemovedFolders.empty() || !IsAtOrBelow(folder.View(), out.RemovedFolders.back().View()))
+			const FStringSet batchFiles(paths.begin(), paths.end());
+			std::vector<FString> goneFolders;
+			for (const uint32 row : folderRows)
 			{
-				out.RemovedFolders.push_back(std::move(folder));
+				SFolderData data;
+				if (view.GetFolder(row, data) && !batchFolders.contains(data.MountPath) && !IsAtOrBelowAny(data.MountPath, failed))
+				{
+					goneFolders.emplace_back(data.MountPath);
+				}
 			}
+			std::sort(goneFolders.begin(), goneFolders.end(), [] (const FString& A, const FString& B) { return A.View() < B.View(); });
+			for (FString& folder : goneFolders)
+			{
+				if (out.RemovedFolders.empty() || !IsAtOrBelow(folder.View(), out.RemovedFolders.back().View()))
+				{
+					out.RemovedFolders.push_back(std::move(folder));
+				}
+			}
+			view.ForEachFileUnder(*rootRow, [&] (uint32 Row)
+			{
+				SFileData data;
+				if (!view.GetFile(Row, data) || batchFiles.contains(data.MountPath) || IsAtOrBelowAny(data.MountPath, failed))
+				{
+					return;
+				}
+				if (batchFolders.contains(GetMountPathParent(data.MountPath)))
+				{
+					out.RemovedFiles.emplace_back(data.MountPath);   // else its folder's removal takes it
+				}
+			});
+			delta.FolderRemoves = out.RemovedFolders;
+			delta.FileRemoves = out.RemovedFiles;
 		}
-		view.ForEachFileUnder(*rootRow, [&] (uint32 Row)
-		{
-			SFileData data;
-			if (!view.GetFile(Row, data) || batchFiles.contains(data.MountPath) || IsAtOrBelowAny(data.MountPath, failed))
-			{
-				return;
-			}
-			if (batchFolders.contains(GetMountPathParent(data.MountPath)))
-			{
-				out.RemovedFiles.emplace_back(data.MountPath);   // else its folder's removal takes it
-			}
-		});
-		delta.FolderRemoves = out.RemovedFolders;
-		delta.FileRemoves = out.RemovedFiles;
 	}
 
 	// Problems of the subtree: the scan's own (with Validation: severities) and the rule files'.
-	delta.ProblemClears.push_back(SProblemsClear { root, EProblemSource::Scan });
-	delta.ProblemClears.push_back(SProblemsClear { root, EProblemSource::Rules });
 	for (SDiagnostic& diagnostic : batch.Diagnostics)
 	{
 		auto it = scopeOf.find(diagnostic.Subject);
@@ -527,8 +600,9 @@ SConversion ConvertBatch (SConvertInput& In)
 			rules.ApplyValidation(*it->second, diagnostic);
 		}
 	}
-	AddProblemSets(delta, EProblemSource::Scan, std::move(batch.Diagnostics));
-	AddProblemSets(delta, EProblemSource::Rules, std::move(batch.RuleDiagnostics));
+	ReplaceSubtreeProblems(delta, view, root, EProblemSource::Scan, std::move(batch.Diagnostics));
+	ReplaceSubtreeProblems(delta, view, root, EProblemSource::Rules, std::move(batch.RuleDiagnostics));
+	out.Milliseconds = MillisecondsSince(start);
 	return out;
 }
 }
@@ -557,12 +631,14 @@ struct CAssetRegistry::SImpl
 		FString Root;
 		bool bInitial = false;
 		bool bReEvaluateAll = false;
-		std::shared_ptr<CKnownFilesOfView> Known;
+		std::shared_ptr<const CRegistryView> View;     // what the conversion compares the batch with
+		std::optional<SScanBatch> Batch;               // scanned while the snapshots loaded: converted once they are
 		std::optional<uint64> MountRulesHash;
 		bool bConverted = false;
 		bool bUnclaimedQueued = false;
 		bool bLost = false;
 		bool bRuleFilesChanged = false;
+		bool bFilesChanged = false;      // a delta of it changed files or records (RULE002 may differ)
 		uint32 PendingDeltas = 0u;       // queued, not committed
 		uint32 OutstandingAnalyze = 0u;  // tasks in the pool or waiting to be retried
 		std::vector<SUnclaimedFolder> Folders;
@@ -683,6 +759,13 @@ struct CAssetRegistry::SImpl
 			sources.push_back(SSnapshotSource { SnapshotPath, ProjectId, false, Rules->GetRulesBasis(bWithEngineFallback) });
 		}
 
+		// The initial scan of every mount: the scans run while the snapshots load (a batch is compared with the loaded
+		// view only when it is converted), so the start-up costs the longer of the two, not their sum.
+		InitialPassesLeft = static_cast<uint32>(Mounts->GetMounts().size());
+		for (const SMount& mount : Mounts->GetMounts())
+		{
+			MountQueues[mount.Id].Requests.push_back(SScanRequest { mount.GetRootMountPath(), false, true });
+		}
 		const bool bAnyId = std::any_of(sources.begin(), sources.end(), [] (const SSnapshotSource& Source) { return Source.ProjectId.IsValid(); });
 		if (!bAnyId)
 		{
@@ -712,6 +795,7 @@ struct CAssetRegistry::SImpl
 				job->Milliseconds = MillisecondsSince(start);
 			},
 			[this, job] () { OnLoaded(std::move(job->Result), job->Milliseconds); });
+		StartPasses();
 	}
 
 	[[nodiscard]] std::vector<SMountUpsert> MakeMountUpserts () const
@@ -789,16 +873,38 @@ struct CAssetRegistry::SImpl
 		AddProblemSets(delta, EProblemSource::Rules, std::move(MountRuleDiagnostics));
 		MountRuleDiagnostics.clear();
 		CommitDelta(std::move(delta));
-		if (bStopping)
-		{
-			return;
-		}
 
 		State = EScanState::Scanning;
-		InitialPassesLeft = static_cast<uint32>(Mounts->GetMounts().size());
-		for (const SMount& mount : Mounts->GetMounts())
+		std::vector<uint64> parked;
+		for (auto& [id, pass] : Passes)
 		{
-			MountQueues[mount.Id].Requests.push_back(SScanRequest { mount.GetRootMountPath(), reEvaluate[mount.Id] != 0u, true });
+			pass.bReEvaluateAll = pass.bReEvaluateAll || (pass.bInitial && reEvaluate[pass.Mount] != 0u);
+			pass.View = Store->Acquire();
+			if (pass.Batch.has_value())
+			{
+				parked.push_back(id);
+			}
+		}
+		for (SMountQueue& queue : MountQueues)
+		{
+			for (SScanRequest& request : queue.Requests)
+			{
+				request.bReEvaluateAll = request.bReEvaluateAll || (request.bInitial && reEvaluate[&queue - MountQueues.data()] != 0u);
+			}
+		}
+		for (const uint64 id : parked)
+		{
+			SPass& pass = Passes.at(id);
+			SScanBatch batch = std::move(*pass.Batch);
+			pass.Batch.reset();
+			if (bStopping)
+			{
+				pass.bConverted = true;
+				pass.bLost = true;
+				CheckPassDone(id);
+				continue;
+			}
+			SubmitConversion(id, std::move(batch));
 		}
 		StartPasses();
 	}
@@ -972,7 +1078,7 @@ struct CAssetRegistry::SImpl
 
 	void StartPasses ()
 	{
-		if (bLoading || State == EScanState::NotStarted || State == EScanState::ShutDown || bStopping)
+		if (State == EScanState::ShutDown || bStopping)
 		{
 			return;
 		}
@@ -991,7 +1097,7 @@ struct CAssetRegistry::SImpl
 			pass.Root = std::move(request.Root);
 			pass.bInitial = request.bInitial;
 			pass.bReEvaluateAll = request.bReEvaluateAll;
-			pass.Known = std::make_shared<CKnownFilesOfView>(Store->Acquire());
+			pass.View = Store->Acquire();   // the published view (the empty one while loading: refreshed by OnLoaded)
 			const SMount& mount = Mounts->GetMounts()[index];
 			if (pass.Root == mount.GetRootMountPath())
 			{
@@ -999,7 +1105,7 @@ struct CAssetRegistry::SImpl
 			}
 			queue.ActivePass = id;
 			++ScansInFlight;
-			CMountScanner::ScanAsync(Pool, Mounts->GetMounts()[index], pass.Root, *Rules, pass.Known.get(), [this, id] (SScanBatch&& Batch)
+			CMountScanner::ScanAsync(Pool, Mounts->GetMounts()[index], pass.Root, *Rules, nullptr, [this, id] (SScanBatch&& Batch)
 			{
 				OnScanned(id, std::move(Batch));
 			});
@@ -1011,15 +1117,38 @@ struct CAssetRegistry::SImpl
 		--ScansInFlight;
 		SPass& pass = Passes.at(PassId);
 		Counters.Scanned += Batch.Files.size();
+		if (!Initial.bComplete)
+		{
+			Initial.ScanMs += Batch.Milliseconds;
+		}
+		if (bStopping)
+		{
+			pass.bConverted = true;
+			pass.bLost = true;
+			CheckPassDone(PassId);
+			return;
+		}
+		if (bLoading)
+		{
+			pass.Batch = std::move(Batch);
+			return;
+		}
+		SubmitConversion(PassId, std::move(Batch));
+	}
+
+	void SubmitConversion (uint64 PassId, SScanBatch&& Batch)
+	{
+		SPass& pass = Passes.at(PassId);
 		auto job = std::make_shared<std::pair<SConvertInput, SConversion>>();
 		job->first.Batch = std::move(Batch);
-		job->first.View = pass.Known->View;
+		job->first.View = pass.View;
 		job->first.Rules = Rules.get();
 		job->first.Mount = &Mounts->GetMounts()[pass.Mount];
 		job->first.MountIndex = pass.Mount;
+		job->first.Pool = &Pool;
 		job->first.bReEvaluateAll = pass.bReEvaluateAll;
 		job->first.MountRulesHash = pass.MountRulesHash;
-		pass.Known.reset();
+		pass.View.reset();
 		++ConversionsInFlight;
 		Pool.Submit(jobs::EWorkPriority::High, CancelGroup,
 			[job] () { job->second = ConvertBatch(job->first); },
@@ -1047,6 +1176,10 @@ struct CAssetRegistry::SImpl
 		pass.bRuleFilesChanged = Conversion.bRuleFilesChanged;
 		pass.Folders = std::move(Conversion.Folders);
 		Counters.ReEvaluated += Conversion.ReEvaluated;
+		if (!Initial.bComplete)
+		{
+			Initial.ConvertMs += Conversion.Milliseconds;
+		}
 		for (const FString& folder : Conversion.RemovedFolders)
 		{
 			Rules->ForgetFolders(folder);
@@ -1055,6 +1188,7 @@ struct CAssetRegistry::SImpl
 		{
 			LastRequested[file] = NextRequest++;   // a result still in flight for it is stale now
 		}
+		pass.bFilesChanged = pass.bFilesChanged || ChangesFiles(Conversion.Delta);
 		Queue.push_back(SQueuedDelta { std::move(Conversion.Delta), PassId });
 		++pass.PendingDeltas;
 
@@ -1128,6 +1262,7 @@ struct CAssetRegistry::SImpl
 		}
 		if (!delta.IsEmpty())
 		{
+			pass.bFilesChanged = pass.bFilesChanged || ChangesFiles(delta);
 			Queue.push_back(SQueuedDelta { std::move(delta), PassId });
 			++pass.PendingDeltas;
 		}
@@ -1186,10 +1321,17 @@ struct CAssetRegistry::SImpl
 		{
 			return;
 		}
-		if (!pass.bUnclaimedQueued && !pass.bLost && !bStopping)
+		// RULE002 can only differ when files or records changed, or the rules did (a Validation: severity, Scan.Quiet).
+		const bool bUnclaimedMayDiffer = pass.bFilesChanged || pass.bRuleFilesChanged || pass.bReEvaluateAll;
+		if (!pass.bUnclaimedQueued && !pass.bLost && !bStopping && bUnclaimedMayDiffer)
 		{
 			pass.bUnclaimedQueued = true;
+			const uint64 start = platform::ReadTimestamp();
 			SRegistryDelta delta = MakeUnclaimedDelta(pass);
+			if (!Initial.bComplete)
+			{
+				Initial.UnclaimedMs += MillisecondsSince(start);
+			}
 			if (!delta.IsEmpty())
 			{
 				Queue.push_back(SQueuedDelta { std::move(delta), PassId });
@@ -1225,12 +1367,16 @@ struct CAssetRegistry::SImpl
 					Rules->ApplyValidation(*folder.Scope, diagnostic);
 				}
 			}
-			bool bHad = false;
-			view.ForEachDiagnosticAt(folder.Path, [&] (EProblemSource Source, const SDiagnostic&)
+			// Only a list that changed is set: a warm start rewrites nothing.
+			std::vector<SDiagnostic> stored;
+			view.ForEachDiagnosticAt(folder.Path, [&] (EProblemSource Source, const SDiagnostic& Diagnostic)
 			{
-				bHad = bHad || Source == EProblemSource::Unclaimed;
+				if (Source == EProblemSource::Unclaimed)
+				{
+					stored.push_back(Diagnostic);
+				}
 			});
-			if (bHad || !diagnostics.empty())
+			if (stored != diagnostics)
 			{
 				delta.Problems.push_back(SProblemsSet { folder.Path, EProblemSource::Unclaimed, std::move(diagnostics) });
 			}
@@ -1304,7 +1450,12 @@ struct CAssetRegistry::SImpl
 		}
 		Store->Commit(std::move(Delta));
 		++Counters.Committed;
-		Counters.CommitMs += MillisecondsSince(start);
+		const double milliseconds = MillisecondsSince(start);
+		Counters.CommitMs += milliseconds;
+		if (!Initial.bComplete)
+		{
+			Initial.CommitMs += milliseconds;
+		}
 		PublishedRevision.store(Store->GetRevision(), std::memory_order_release);
 		RecordsSinceSnapshot += Store->GetLastCommitStats().RecordsChanged;
 		bSnapshotDirty = true;

@@ -34,10 +34,12 @@ class CWorkerPool;
  * this class. Never reachable through SGameContext (the game ABI does not change).
  *
  * The pipeline per scan (a "pass" of one mount, or of one subtree of it):
- *	1. CMountScanner lists the subtree on the worker pool, comparing every file with what the last published view
- *	   knew (IKnownFiles, byte-exact): nothing is opened or hashed.
- *	2. The batch becomes one delta on a worker (ConvertBatch in the .cpp): folders, changed file rows (ContentHash
- *	   kept for an identity-only change), removals (known files and folders at or below the root that the batch does
+ *	1. CMountScanner lists the subtree on the worker pool: nothing is opened or hashed. The start-up's scans run
+ *	   while the snapshots load.
+ *	2. The batch becomes one delta on a worker (ConvertBatch in the .cpp), each file compared with the view by the
+ *	   scan's Unchanged test (ScanTypes.h; byte-exact, as IKnownFiles would - done here rather than in the scan so
+ *	   that the initial scans need not wait for the loaded view): folders, changed file rows (ContentHash kept for
+ *	   an identity-only change), removals (known files and folders at or below the root that the batch does
  *	   not hold, outside its failed folders), RULEFILES rows, the Scan and Rules problem lists of the subtree (with
  *	   the rule files' Validation: severities). Each file is then one of: analyzed (new, changed, no record, StaleTags,
  *	   another AnalyzeStamp or importer), re-evaluated in memory (its folder's rule chain changed: committed again from
@@ -186,6 +188,10 @@ struct SInitialScanReport
 	uint32 Files = 0u;            // FILES rows when it completed
 	uint32 Records = 0u;          // asset records when it completed
 	double LoadMs = 0.0;          // snapshot read + adoption (on a worker)
+	double ScanMs = 0.0;          // the mounts' stat scans (workers), summed
+	double ConvertMs = 0.0;       // batches made deltas (workers), summed
+	double CommitMs = 0.0;        // commits and journal appends (the owner thread)
+	double UnclaimedMs = 0.0;     // RULE002 recomputed (the owner thread; skipped where no file, record or rule changed)
 	double TotalMs = 0.0;         // Start to complete
 	uint64 Analyzed = 0u;         // during the initial scan
 	uint64 Hashed = 0u;

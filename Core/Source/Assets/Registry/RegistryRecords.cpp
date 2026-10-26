@@ -17,6 +17,9 @@ std::optional<SStoredFile> FindStoredFile (const CRegistryView& View, FStringVie
 	stored.FileRow = row;
 	stored.Class = tables.Files.Class[row];
 	stored.BaseClass = tables.Files.BaseClass[row];
+	stored.Size = tables.Files.Size[row];
+	stored.MTime = tables.Files.MTime[row];
+	stored.Identity = tables.Files.Identity[row];
 	const uint32 record = tables.Files.Record[row];
 	if (record == InvalidRow)
 	{

@@ -29,6 +29,7 @@
 #include "Assets/Registry/QueryEngine.h"
 #include "Jobs/WorkerPool.h"
 #include "Platform/FileSystem.h"
+#include "Platform/Timestamp.h"
 
 using namespace frt;
 using namespace frt::assets;
@@ -658,4 +659,75 @@ TEST(AssetRegistry, ExistsIsUnknownUntilTheInitialScanAndTheChangeSetSaysItCompl
 	EXPECT_EQ(report.Records, registry.Live().GetRecordCount());
 	registry.OnAssetsChanged().Remove(handle);
 	registry.ShutDown();
+}
+
+TEST(AssetRegistry, CompactionKeepsTheDumpAndTheJournalReplay)
+{
+	const CServiceTree tree("Compaction");
+	// Ten models of fifty meshes, renamed every round: every re-analysis leaves fifty dead sub-entry rows behind.
+	const auto writeModels = [&] (uint32 Round)
+	{
+		for (uint32 model = 0u; model < 10u; ++model)
+		{
+			FString meshes;
+			for (uint32 mesh = 0u; mesh < 50u; ++mesh)
+			{
+				meshes.AppendFormat("{}{{\"name\":\"Сітка_{}_{}\",\"primitives\":[]}}", mesh == 0u ? "" : ",", Round, mesh);
+			}
+			const FString text = FString::Format("{{\"asset\":{{\"version\":\"2.0\"}},\"meshes\":[{}]}}{:>{}}", meshes, "", Round);
+			tree.WriteProjectContent(FString::Format("Models/Many/Модель_{}.gltf", model), text);
+		}
+	};
+	writeModels(0u);
+	jobs::CWorkerPool pool(MakePoolDesc(4u));
+	(void)WriteBothSnapshots(pool, tree);
+
+	SOpen writer;
+	writer.bWriter = true;
+	writer.bSnapshotAtShutDown = false;   // what it committed stays in the journal: the replay is checked below
+	std::unique_ptr<CAssetRegistry> registry = Open(pool, tree.Project(), writer);
+	const FString folder[] = { "/Project/Models/Many" };
+	for (uint32 round = 1u; round <= 12u && registry->GetCounters().Compactions == 0u; ++round)
+	{
+		writeModels(round);
+		ASSERT_TRUE(registry->ScanPathsSynchronous(folder, 60.0));
+	}
+	EXPECT_GT(registry->GetCounters().Compactions, 0u);
+	const SRun live = Close(registry);
+	const FString fresh = FreshDump(pool, tree.Project());
+	EXPECT_EQ(live.Dump, fresh);
+	const SRun replayed = RunOnce(pool, tree.Project());
+	EXPECT_EQ(replayed.Dump, fresh);
+	EXPECT_EQ(replayed.Counters.Analyzed, 0u);
+}
+
+TEST(AssetRegistry, AWriterWritesItsSnapshotAfterABatchAndWhenIdle)
+{
+	const CServiceTree tree("Snapshot Triggers");
+	jobs::CWorkerPool pool(MakePoolDesc(4u));
+	for (const bool bBatch : { true, false })
+	{
+		SAssetRegistryDesc desc;
+		desc.Mounts = tree.Project();
+		desc.Pool = &pool;
+		desc.bWriter = true;
+		desc.bLoadSnapshots = false;
+		desc.SnapshotBatchRecords = bBatch ? 1u : 1000000u;
+		desc.SnapshotIdleSeconds = bBatch ? 3600.0 : 0.0;
+		CAssetRegistry registry(std::move(desc));
+		registry.Start();
+		ASSERT_TRUE(registry.WaitForInitialScan(60.0));
+		const uint64 deadline = platform::MakeDeadline(30.0);
+		while (registry.GetCounters().SnapshotsWritten == 0u && platform::ReadTimestamp() < deadline)
+		{
+			pool.PumpCompletions();
+			registry.Pump();
+			pool.WaitForCompletions(0.05);
+		}
+		EXPECT_GT(registry.GetCounters().SnapshotsWritten, 0u) << (bBatch ? "after a batch" : "when idle");
+		registry.ShutDown();
+		std::error_code ec;
+		EXPECT_TRUE(std::filesystem::exists(GetRegistrySnapshotPath(tree.Tree.ProjectDir()), ec));
+		std::filesystem::remove(GetRegistrySnapshotPath(tree.Tree.ProjectDir()), ec);
+	}
 }
