@@ -68,7 +68,9 @@ FStringView GetRecordStem (FStringView LeafName) noexcept
 	// extension's bytes, with at least one byte before it.
 	const uint32 tail = (std::min)(LeafName.Len(), extensions.Longest);
 	char lowered[SStemExtensions::MaxBytes];
-	if ((registry_detail::LowerAscii(LeafName.Right(tail), lowered) & 0x80u) != 0u || LeafName.Contains('/'))
+	// The last bytes as bytes (they may begin inside a code point, which only sends the name to GetAssetStem).
+	const FStringView last(LeafName.GetData() + (LeafName.Len() - tail), tail);
+	if ((registry_detail::LowerAscii(last, lowered) & 0x80u) != 0u || LeafName.Contains('/'))
 	{
 		return GetAssetStem(LeafName);
 	}
