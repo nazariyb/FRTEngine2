@@ -471,6 +471,28 @@ TEST(RulesEngine, MembershipFollowsIncludeExcludeRawQuietAndTheImporterClaims)
 	EXPECT_EQ(engine.Classify(*root, "/Project/Fonts/Roboto.ttf"), (SFileVerdict { EFileClass::Unclaimed, false }));
 }
 
+TEST(RulesEngine, TheGlobQuickRejectNeverChangesAnAnswer)
+{
+	// Literal runs are checked under the portable fold before a glob runs; a match in any segment, a folder match
+	// and a non-ASCII run must still be found, and a near miss rejected.
+	SEngineFixture fixture("QuickReject");
+	fixture.Tree.WriteProjectRules("FormatVersion: 1\nScan:\n  Exclude: [ \"**/REFERENCE/**\", \"*_Ä.*\", \"Temp\", \"Σx?.png\", \"Src/*.{psd,KRA}\", "
+		"\"{Old,Bak}/**\", \"Tex{,_old}.png\", \"[Zz]ip/*\" ]\n");
+	CRulesEngine& engine = fixture.Start();
+	const auto project = fixture.Open("/Project");
+	const std::pair<FStringView, bool> cases[] = {
+		{ "/Project/Art/reference/x.png", true }, { "/Project/Art/Referenc/x.png", false }, { "/Project/Art/x_ä.png", true },
+		{ "/Project/Art/x_a.png", false }, { "/Project/X_Ä.dir/y.png", true }, { "/Project/Old/TEMP/y.png", true },
+		{ "/Project/Keep/Temporary/y.png", false }, { "/Project/ςxy.png", true }, { "/Project/σx.png", false },
+		{ "/Project/Src/a.kra", true }, { "/Project/Src/a.kr", false }, { "/Project/bak/x.png", true }, { "/Project/Back/x.png", false },
+		{ "/Project/Docs/tex.png", true }, { "/Project/TEX_OLD.png", true }, { "/Project/Tex_new.png", false }, { "/Project/zip/a.png", true },
+	};
+	for (const auto& [path, bExcluded] : cases)
+	{
+		EXPECT_EQ(engine.Classify(*project, path) == std::nullopt, bExcluded) << path.GetData();
+	}
+}
+
 TEST(RulesEngine, FieldsTakeTheFirstMatchingRuleDeepestFileFirstWithProvenance)
 {
 	SEngineFixture fixture("Precedence");

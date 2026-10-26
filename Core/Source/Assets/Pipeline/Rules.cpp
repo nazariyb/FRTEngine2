@@ -28,16 +28,90 @@ namespace frt::assets
 
 namespace
 {
-// A glob of a Scan list, a `Match:` or a `Directories:` entry. OnlyMount: the mount an absolute pattern
-// ("/Engine/Fonts/*.ttf" in a mount file) is restricted to; empty: the evaluated file's own mount.
+/**
+ * A glob of a Scan list, a `Match:` or a `Directories:` entry. OnlyMount: the mount an absolute pattern
+ * ("/Engine/Fonts/*.ttf" in a mount file) is restricted to; empty: the evaluated file's own mount.
+ *
+ * RequiredRuns: a quick reject before the glob runs. For a pattern without sets or escapes, every literal run
+ * between its wildcards and separators ("_n." in "*_n.*", "art" and "reference" in "Art/Reference") must match path
+ * characters one for one under the portable fold, so each run, folded, occurs in the folded path whenever the glob
+ * matches - whichever segment it matches in. A pattern with one brace group (not nested) is its alternatives, each
+ * with its runs, and a path must hold every run of at least one of them. A path that cannot match skips CPathGlob's
+ * backtracking, which is most of what re-evaluating a subtree costs. Empty: no reject, the glob decides alone.
+ */
 struct SGlobEntry
 {
 	CPathGlob Glob;
 	FString Text;        // as written, mount prefix included
 	FString OnlyMount;
 	FString OnlyMountFolded;
+	std::vector<std::vector<FString>> RequiredRuns;   // per alternative, folded
 	uint32 Line = 0u;
 };
+
+// The folded literal runs of a pattern without braces, sets or escapes.
+std::vector<FString> GetLiteralRuns (FStringView Pattern)
+{
+	std::vector<FString> runs;
+	uint32 start = 0u;
+	for (uint32 i = 0u; i <= Pattern.Len(); ++i)
+	{
+		const bool bBreak = i == Pattern.Len() || Pattern[i] == '*' || Pattern[i] == '?' || Pattern[i] == '/';
+		if (!bBreak)
+		{
+			continue;
+		}
+		if (i > start)
+		{
+			runs.push_back(FString(Pattern.Mid(start, i - start)).FoldCase());
+		}
+		start = i + 1u;
+	}
+	return runs;
+}
+
+// SGlobEntry::RequiredRuns of a pattern CPathGlob compiled: none for sets, escapes, nested or several brace groups,
+// or when an alternative has no literal run at all (it could match any path).
+std::vector<std::vector<FString>> GetRequiredRuns (FStringView Pattern)
+{
+	std::vector<std::vector<FString>> alternatives;
+	if (Pattern.Contains('[') || Pattern.Contains('\\'))
+	{
+		return alternatives;
+	}
+	const uint32 open = Pattern.Find('{');
+	if (open == FStringView::NotFound)
+	{
+		alternatives.push_back(GetLiteralRuns(Pattern));
+	}
+	else
+	{
+		const uint32 close = Pattern.Find('}', open);
+		if (close == FStringView::NotFound || Pattern.Find('{', open + 1u) != FStringView::NotFound
+			|| Pattern.Find('}', close + 1u) != FStringView::NotFound)
+		{
+			return alternatives;
+		}
+		const FStringView prefix = Pattern.Left(open);
+		const FStringView suffix = Pattern.RightChop(close + 1u);
+		FStringView choices = Pattern.Mid(open + 1u, close - open - 1u);
+		for (;;)
+		{
+			const SStringSplit split = choices.SplitFirst(',');
+			alternatives.push_back(GetLiteralRuns(FString(prefix) + split.Left + suffix));
+			if (!split.bFound)
+			{
+				break;
+			}
+			choices = split.Right;
+		}
+	}
+	if (std::any_of(alternatives.begin(), alternatives.end(), [] (const std::vector<FString>& Runs) { return Runs.empty(); }))
+	{
+		alternatives.clear();
+	}
+	return alternatives;
+}
 
 // One setting value: Field indexes its table's Fields; Text is the normalised rule-file text.
 struct SSettingDef
@@ -687,6 +761,7 @@ private:
 			return std::nullopt;
 		}
 		entry.Glob = std::move(*glob);
+		entry.RequiredRuns = GetRequiredRuns(pattern);
 		return entry;
 	}
 
@@ -1907,12 +1982,12 @@ public:
 	[[nodiscard]] FStringView GetRelative () const noexcept { return Relative; }
 
 	// The first entry of List (link Link's) that applies to the scope's mount and matches the file, or null.
-	[[nodiscard]] const SGlobEntry* FindMatch (std::span<const SGlobEntry> List, uint32 Link) const noexcept
+	[[nodiscard]] const SGlobEntry* FindMatch (std::span<const SGlobEntry> List, uint32 Link) noexcept
 	{
 		const SLink& link = GetLinks()[Link];
 		for (const SGlobEntry& entry : List)
 		{
-			if (!Applies(entry, Scope))
+			if (!Applies(entry, Scope) || !HasRequiredRuns(entry))
 			{
 				continue;
 			}
@@ -1968,12 +2043,32 @@ private:
 		bool bMatchBelow = false;
 	};
 
+	// The quick reject of SGlobEntry: every required run occurs in the folded path (folded once, on first use).
+	[[nodiscard]] bool HasRequiredRuns (const SGlobEntry& Entry) noexcept
+	{
+		if (Entry.RequiredRuns.empty())
+		{
+			return true;
+		}
+		if (!bFolded)
+		{
+			FoldedRelative = FString(Relative).FoldCase();
+			bFolded = true;
+		}
+		return std::any_of(Entry.RequiredRuns.begin(), Entry.RequiredRuns.end(), [this] (const std::vector<FString>& Runs)
+		{
+			return std::all_of(Runs.begin(), Runs.end(), [this] (const FString& Run) { return FoldedRelative.Contains(Run); });
+		});
+	}
+
 	[[nodiscard]] SLink* GetLinks () noexcept { return HeapLinks.empty() ? InlineLinkData.data() : HeapLinks.data(); }
 	[[nodiscard]] const SLink* GetLinks () const noexcept { return HeapLinks.empty() ? InlineLinkData.data() : HeapLinks.data(); }
 	[[nodiscard]] int8* GetRules () noexcept { return HeapRules.empty() ? InlineRuleData.data() : HeapRules.data(); }
 
 	const SScope& Scope;
 	FStringView Relative;
+	FString FoldedRelative;
+	bool bFolded = false;
 	std::array<SLink, InlineLinks> InlineLinkData {};
 	std::array<int8, InlineRules> InlineRuleData {};
 	std::vector<SLink> HeapLinks;
