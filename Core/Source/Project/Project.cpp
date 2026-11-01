@@ -109,6 +109,7 @@ bool SProjectDescriptor::Load (const std::filesystem::path& InFile, SProjectDesc
 	project.Name = Get(file, ProjectSection, "Name");
 	project.Module = Get(file, ProjectSection, "Module");
 	project.Engine = Get(file, ProjectSection, "Engine");
+	project.AssetSalt = Get(file, ProjectSection, "AssetSalt");
 	if (project.Name.IsEmpty())
 	{
 		if (Error)
@@ -145,6 +146,10 @@ bool SProjectDescriptor::Save () const
 	file.Set(ProjectSection, "Name", Name);
 	file.Set(ProjectSection, "Module", Module);
 	file.Set(ProjectSection, "Engine", Engine);
+	if (!AssetSalt.IsEmpty())
+	{
+		file.Set(ProjectSection, "AssetSalt", AssetSalt);
+	}
 	return file.SaveToFile(File);
 }
 

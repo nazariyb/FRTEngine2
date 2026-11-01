@@ -667,7 +667,7 @@ private:
 				{
 					if (!ReadU32Varint(Reader, file.Folder) || !ReadU32Varint(Reader, file.LeafName) || !Reader.ReadVarint(file.Size)
 						|| !ReadSignedVarint(Reader, file.MTime) || !ReadIdentity(Reader, file.Identity) || !Reader.ReadHash(file.ContentHash)
-						|| !ReadU64(Reader, file.MetaHash) || !ReadEnum(Reader, EFileClass::Excluded, file.Class)
+						|| !ReadU64(Reader, file.MetaHash) || !ReadEnum(Reader, EFileClass::Meta, file.Class)
 						|| !ReadEnum(Reader, EMetaState::MissingMeta, file.MetaState) || file.Folder >= image.Folders.size()
 						|| file.LeafName >= image.Names.size())
 					{
@@ -862,7 +862,7 @@ private:
 			image.Problems.resize(count);
 			for (SImageProblems& problems : image.Problems)
 			{
-				if (!ReadU32Varint(Reader, problems.Subject) || !ReadEnum(Reader, EProblemSource::Unclaimed, problems.Source)
+				if (!ReadU32Varint(Reader, problems.Subject) || !ReadEnum(Reader, EProblemSource::Lifecycle, problems.Source)
 					|| !ReadDiagnostics(Reader, problems.Diagnostics) || problems.Subject >= image.Strings.size())
 				{
 					return false;

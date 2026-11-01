@@ -25,6 +25,9 @@ inline constexpr FStringLiteral PackageFileExtension = ".frtpackage";
  *     Module=MyGame          the game module, Source/ built as <Module>[-<Configuration>].dll
  *     Engine=FRTEngine2      a registered engine's name (FRT.bat setup), or a path relative
  *                            to this file (an engine submodule: Engine=Engine)
+ *     AssetSalt=MyGame       optional: salts the GUIDs tools derive for metas (Assets/AssetId.h);
+ *                            defaults to Name. Set it before renaming a project whose metas are not
+ *                            all committed, so a metaless file keeps the id every machine derives.
  *
  * Never an absolute path or anything machine-specific: the file is shared by everyone working
  * on the game. Reserved for code shared between projects (a module directory several projects
@@ -39,8 +42,10 @@ struct FRT_CORE_API SProjectDescriptor
 	FString Name;
 	FString Module;                      // defaults to Name
 	FString Engine;
+	FString AssetSalt;                   // usually empty: GetAssetSalt
 
 	std::filesystem::path GetDir () const { return File.parent_path(); }
+	FStringView GetAssetSalt () const { return AssetSalt.IsEmpty() ? Name.View() : AssetSalt.View(); }
 
 	// False, with a reason, when the file cannot be read or names no project.
 	static bool Load (const std::filesystem::path& File, SProjectDescriptor& Out, FString* Error = nullptr);

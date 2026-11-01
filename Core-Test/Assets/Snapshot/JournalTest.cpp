@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <filesystem>
 
+#include "Assets/AssetDiagnosticCodes.h"
 #include "Assets/AssetTypes.h"
 #include "Assets/RecordFrames.h"
 #include "JournalTestAccess.h"
@@ -97,6 +98,40 @@ protected:
 
 
 // ---------------- Encoding ----------------
+
+// The readers bound a stored enum by its last value: a value appended for M4 must not read as a corrupt frame.
+TEST(JournalEncodingTest, TheLastValuesOfTheStoredEnumsSurviveEncoding)
+{
+	SRegistryDelta delta;
+	delta.FileUpserts.push_back(MakeStatFile("/Project/T/Rock.png.meta", 90u, 1u, EFileClass::Meta));
+	delta.FileUpserts[0].MetaState = EMetaState::MissingMeta;
+	delta.ProblemClears = { SProblemsClear { "/Project/T", EProblemSource::Lifecycle } };
+	delta.Problems.push_back(SProblemsSet { "/Project/T/Rock.png", EProblemSource::Lifecycle, { MakeWarning("/Project/T/Rock.png", "no meta", Meta001) } });
+
+	const std::optional<SRegistryDelta> decoded = DecodeRegistryDelta(Encode(delta));
+	ASSERT_TRUE(decoded.has_value());
+	ASSERT_EQ(decoded->FileUpserts.size(), 1u);
+	EXPECT_EQ(decoded->FileUpserts[0].Class, EFileClass::Meta);
+	EXPECT_EQ(decoded->FileUpserts[0].MetaState, EMetaState::MissingMeta);
+	ASSERT_EQ(decoded->ProblemClears.size(), 1u);
+	EXPECT_EQ(decoded->ProblemClears[0].Source, EProblemSource::Lifecycle);
+	ASSERT_EQ(decoded->Problems.size(), 1u);
+	EXPECT_EQ(decoded->Problems[0].Source, EProblemSource::Lifecycle);
+}
+
+// And one past them still does: the bound moved, it did not go away.
+TEST(JournalEncodingTest, AValuePastTheLastOfAStoredEnumIsACorruptFrame)
+{
+	SRegistryDelta delta;
+	delta.ProblemClears = { SProblemsClear { "/Project/T", EProblemSource::Lifecycle } };
+	std::vector<uint8> bytes = Encode(delta);
+	// Only empty lists follow the clear: its source is the last byte that holds this value.
+	const auto source = std::find(bytes.rbegin(), bytes.rend(), static_cast<uint8>(EProblemSource::Lifecycle));
+	ASSERT_NE(source, bytes.rend());
+	EXPECT_TRUE(DecodeRegistryDelta(bytes).has_value());
+	*source = static_cast<uint8>(EProblemSource::Lifecycle) + 1u;
+	EXPECT_FALSE(DecodeRegistryDelta(bytes).has_value());
+}
 
 TEST(JournalEncodingTest, EveryMemberOfADeltaSurvivesItsEncoding)
 {

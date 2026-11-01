@@ -644,7 +644,7 @@ void ExpectNamesRoundTrip (bool bFlags, size_t ExpectedCount)
 
 TEST(SharedTypesTest, RegistryEnumsHaveTextNames)
 {
-	ExpectNamesRoundTrip<EFileClass>(false, 5u);
+	ExpectNamesRoundTrip<EFileClass>(false, 6u);
 	ExpectNamesRoundTrip<EMetaState>(false, 5u);
 	ExpectNamesRoundTrip<ETagType>(false, 9u);
 	ExpectNamesRoundTrip<ECookRule>(false, 5u);
@@ -652,7 +652,7 @@ TEST(SharedTypesTest, RegistryEnumsHaveTextNames)
 	ExpectNamesRoundTrip<ECompare>(false, 12u);
 	ExpectNamesRoundTrip<EExists>(false, 3u);
 	ExpectNamesRoundTrip<ERecordScope>(false, 4u);
-	ExpectNamesRoundTrip<EProblemSource>(false, 5u);
+	ExpectNamesRoundTrip<EProblemSource>(false, 6u);
 	ExpectNamesRoundTrip<EScanFileState>(false, 4u);
 	ExpectNamesRoundTrip<ERecordFlags>(true, 11u);
 	ExpectNamesRoundTrip<ETagFlags>(true, 5u);

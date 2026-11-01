@@ -97,7 +97,7 @@ Each problem has a `Subject` (the mount path of the file or folder, as spelled o
 file relative to the mount's owner root: `Config/Assets.yml`, `Core/Config/Assets.yml`, `Content/Art/Assets.yml`),
 line and column; absolute paths appear only in messages. They are kept per subject and source: `Scan` (PATH001-003,
 unlistable folders, skipped links), `Rules` (RULE001), `Analyze` (importer diagnostics, REF007, a failed Analyze with
-code 0), `Unclaimed` (RULE002, recomputed once companions are known) and `Registry` (REF006 and PATH001 of edges).
+code 0), `Unclaimed` (RULE002, recomputed once companions are known) and `Registry` (REF006 and PATH001 of edges). `Lifecycle` holds what M4's meta lifecycle reports (META*, VCS00x).
 A rule file's `Validation:` overrides the severity of every source but `Rules` (a file cannot silence its own RULE001)
 and `Registry`, whose severities are fixed in M3.
 
@@ -110,6 +110,21 @@ and `Registry`, whose severities are fixed in M3.
 | `RULE002` | an unclaimed file not in `Scan.Quiet`, once per folder and extension | warning | Unclaimed |
 | `REF006` | a reference that resolved through a path spelled differently from the file on disk | info | Registry |
 | `REF007` | a legacy path reference in data (a material's texture path), until `migrate material-refs` | info | Analyze |
+| `META001` | an included file without a `.meta` after the creation delay | from M4: error with `--ci`, guests or `Safety.AutoRepairMetas: false`; otherwise the owner creates the meta | Lifecycle |
+| `META002` | an orphan `.meta`: its source is gone | from M4: warning | Lifecycle |
+| `META003` | a duplicate GUID | from M4: error; with `Safety.AutoResolveDuplicates` the owner re-GUIDs the losers | Lifecycle |
+| `META004` | a broken meta: a parse error, conflict markers, two `Guid:` lines | from M4: error | Lifecycle |
+| `META005` | a meta that is not canonical (it would be rewritten) | from M4: warning | `validate` |
+| `META006` | a meta whose case differs from its source's | from M4: error | Lifecycle |
+| `META007` | an excluded file that still has a meta | from M4: warning | `validate` |
+| `META008` | a meta missing and not restorable from a verified copy (`MissingMeta`) | from M4: error | Lifecycle |
+| `META009` | an orphan meta that matches a new file by content outside the move window, or at all with `Safety.OrphanPairing: false` | from M4: info | Lifecycle |
+| `VCS001` | CRLF in a hashed FRT text file (detected only in M4; blocking DDC writes arrives with the first asset builder) | from M4: error | Lifecycle |
+| `VCS002` | the VCS refused a write (`CheckOut`, `Move` or `Delete` failed); the command wrote nothing | from M4: error | the command |
+| `VCS003` | an asset and its meta tracked differently ("generated locally: commit it") | from M4: warning | `validate` |
+| `VCS004` | a Git LFS pointer file where a source is expected; never imported or hashed into a GUID | from M4: error | Lifecycle |
+| `MIG001` | project content format behind the engine: `Schemas/Migrations.yml` misses a step | from M4: error | Lifecycle |
+| `MIG002` | a leftover legacy pattern, such as `<stem>_mat<N>` beside a model without `SubAssets.Remap` | from M4: warning | Lifecycle |
 
 The engine and the templates are clean of PATH001-003, RULE001-002 and errors; the golden dumps assert it.
 
@@ -216,7 +231,7 @@ wrong answer.
 
 | Rule | |
 |---|---|
-| Settling | a path is told after 200 ms without events, at most 2 s after its first; a removal waits 1 s longer |
+| Settling | a path is told after 200 ms without events, at most 2 s after its first; a removal waits `[AssetsEditor] RemoveGraceMs` (1000) longer |
 | Coalescing | `Removed` then `Added` is `Modified` (git's unlink and write, atomic saves), `Added` then `Removed` is nothing |
 | Moves | the two halves pair by identity within 150 ms into one `Moved`; a case-only rename is a `Moved` |
 | Directories | one moved or copied in is enumerated once it settles (every file `Added`); one renamed is one directory `Moved` from where it was when the window began; one removed is one directory `Removed` (then an `Added` if a file took its place); without entry types (FAT, ReFS, shares) the disk is asked, a directory's own `Modified` is dropped, and a removal is told as a directory `Removed` |

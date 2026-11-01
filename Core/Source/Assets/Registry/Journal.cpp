@@ -483,7 +483,7 @@ std::optional<SRegistryDelta> DecodeRegistryDelta (std::span<const uint8> Bytes)
 	delta.ProblemClears.resize(count);
 	for (SProblemsClear& clear : delta.ProblemClears)
 	{
-		if (!reader.ReadText(clear.MountPath) || !ReadEnum(reader, EProblemSource::Unclaimed, clear.Source))
+		if (!reader.ReadText(clear.MountPath) || !ReadEnum(reader, EProblemSource::Lifecycle, clear.Source))
 		{
 			return std::nullopt;
 		}
@@ -522,7 +522,7 @@ std::optional<SRegistryDelta> DecodeRegistryDelta (std::span<const uint8> Bytes)
 			}
 			file.ContentHash = contentHash;
 		}
-		if (!ReadEnum(reader, EFileClass::Excluded, file.Class) || !ReadEnum(reader, EMetaState::MissingMeta, file.MetaState)
+		if (!ReadEnum(reader, EFileClass::Meta, file.Class) || !ReadEnum(reader, EMetaState::MissingMeta, file.MetaState)
 			|| !ReadU64(reader, file.MetaHash))
 		{
 			return std::nullopt;
@@ -560,7 +560,7 @@ std::optional<SRegistryDelta> DecodeRegistryDelta (std::span<const uint8> Bytes)
 	delta.Problems.resize(count);
 	for (SProblemsSet& problems : delta.Problems)
 	{
-		if (!reader.ReadText(problems.Subject) || !ReadEnum(reader, EProblemSource::Unclaimed, problems.Source)
+		if (!reader.ReadText(problems.Subject) || !ReadEnum(reader, EProblemSource::Lifecycle, problems.Source)
 			|| !ReadDiagnostics(reader, problems.Diagnostics))
 		{
 			return std::nullopt;

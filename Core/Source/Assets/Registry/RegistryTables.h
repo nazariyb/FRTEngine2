@@ -613,8 +613,8 @@ public:
 // ---------------- Problems ----------------
 
 using FProblemList = std::shared_ptr<const std::vector<SDiagnostic>>;
-inline constexpr uint32 ProblemSourceCount = 5u;   // EProblemSource
-static_assert(ProblemSourceCount == static_cast<uint32>(EProblemSource::Unclaimed) + 1u, "a list per EProblemSource");
+inline constexpr uint32 ProblemSourceCount = 6u;   // EProblemSource
+static_assert(ProblemSourceCount == static_cast<uint32>(EProblemSource::Lifecycle) + 1u, "a list per EProblemSource");
 
 // Per (subject, source) lists (RegistryDelta.h). A subject row is never removed; its lists empty instead.
 struct SProblemTables

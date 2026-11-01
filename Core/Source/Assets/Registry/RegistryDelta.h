@@ -46,7 +46,9 @@
  *	               list erases the other;
  *	    Analyze  - an importer's diagnostics for its file (Subject: the file, or file#label);
  *	    Registry - what the store itself finds at commit (REF006, PATH001 on edges, contract violations). Their
- *	               severities are fixed: a rule file's Validation: overrides do not reach them in M3.
+ *	               severities are fixed: a rule file's Validation: overrides do not reach them in M3;
+ *	    Lifecycle - the meta lifecycle's META* and VCS00x (Assets/Meta/LifecycleTypes.h, M4), cleared and set per
+ *	               subject. A rule file's Validation: can override them.
  *	- An edge with an invalid Target resolves at commit by TargetPath, through the record path index under
  *	  the portable fold (§5.2). No match: the edge is kept with EDepFlags::Unresolved against an unresolved
  *	  slot keyed by the folded path (or by the GUID for a Target id nothing has), and is rebound - reverse
@@ -94,7 +96,7 @@ struct SRecordUpsert     // replaces the whole record of FileMountPath: tags, la
 	std::vector<STagDecl> Tags; std::vector<SSubEntryDecl> SubEntries; std::vector<SEdgeDecl> Edges;
 	std::vector<FString> Companions;                 // mount paths this record's importer reads besides the file (glTF .bin)
 };
-enum class EProblemSource : uint8 { Scan, Rules, Analyze, Registry, Unclaimed };   // values are stored: append only
+enum class EProblemSource : uint8 { Scan, Rules, Analyze, Registry, Unclaimed, Lifecycle };   // values are stored: append only
 struct SProblemsSet { FString Subject; EProblemSource Source = EProblemSource::Scan; std::vector<SDiagnostic> Diagnostics; };  // replaces that pair's list; empty clears
 // Clears every list of Source whose Subject equals MountPath or continues it with '/' or '#' (byte-exact).
 struct SProblemsClear { FString MountPath; EProblemSource Source = EProblemSource::Scan; };
@@ -130,4 +132,5 @@ FRT_DECLARE_ENUM_REFLECTION(
 	FRT_ENUM_ENTRY(frt::assets::EProblemSource, Rules),
 	FRT_ENUM_ENTRY(frt::assets::EProblemSource, Analyze),
 	FRT_ENUM_ENTRY(frt::assets::EProblemSource, Registry),
-	FRT_ENUM_ENTRY(frt::assets::EProblemSource, Unclaimed));
+	FRT_ENUM_ENTRY(frt::assets::EProblemSource, Unclaimed),
+	FRT_ENUM_ENTRY(frt::assets::EProblemSource, Lifecycle));

@@ -95,6 +95,7 @@ namespace frt::assets
 {
 class CFileWatcherService;
 class CRegistryJournal;
+struct SLifecycleDesc;
 
 // Which owner root's files a writer writes, and which mounts it holds.
 enum class EAssetRegistryOwner : uint8
@@ -142,6 +143,9 @@ struct SAssetRegistryDesc
 	uint32 RetryDelayMs = 200u;
 	// Files per Analyze task (one delta each).
 	uint32 AnalyzeBatchFiles = 16u;
+	// The meta lifecycle (Assets/Meta/AssetRepairs.h); the registry keeps the pointer. Null: none, nothing is reported or
+	// written. No host sets it yet, and nothing reads it yet: M4's pieces wire it, and its last one switches the hosts on.
+	const SLifecycleDesc* Lifecycle = nullptr;
 };
 
 // What the registry did since construction.

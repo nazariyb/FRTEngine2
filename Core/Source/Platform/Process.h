@@ -1,7 +1,11 @@
 #pragma once
 
+#include <filesystem>
+#include <vector>
+
 #include "Core.h"
 #include "CoreTypes.h"
+#include "Containers/String.h"
 
 
 /**
@@ -10,6 +14,10 @@
  *
  * The project writer lock names its holder by these (Assets/OwnerLock.h): a PID alone may be reused
  * by the time someone reads it, the PID with the process's start time is one process for good.
+ *
+ * Also a console tool run to its end (RunToolProcess), which is all the VCS providers need. It blocks, so
+ * it belongs on a worker, never on a frame. The long-lived SpawnToolProcess and IToolPipe of the design
+ * wait for their first client, the Blender bridge (M9c).
  */
 namespace frt::platform
 {
@@ -38,4 +46,34 @@ namespace frt::platform
  * _CrtSetReportMode / _CrtSetReportFile.
  */
 FRT_CORE_API void ExitOnCrash (int32 ExitCode) noexcept;
+
+struct SToolProcessDesc
+{
+	std::filesystem::path Executable;   // absolute: FindOnPath, never a bare name
+	std::vector<FString> Arguments;
+	std::filesystem::path WorkingDir;
+	uint32 TimeoutMs = 30000u;
+};
+
+struct SToolProcessResult
+{
+	bool bStarted = false;
+	bool bTimedOut = false;
+	int32 ExitCode = -1;
+	std::vector<uint8> Stdout;
+	FString Stderr;
+};
+
+/**
+ * Runs Executable to its end, or until TimeoutMs, when it is killed. No shell and no window. Both streams are drained
+ * while it runs, so a chatty tool cannot block on a full pipe (`git status` easily exceeds a pipe's buffer). It runs in
+ * a job that kills it when this process goes, so a killed host does not leave a git behind holding index.lock. Worker-safe.
+ */
+[[nodiscard]] FRT_CORE_API SToolProcessResult RunToolProcess (const SToolProcessDesc& Desc);
+
+/**
+ * The executable Name resolves to on PATH alone, or empty. Never the working directory: CreateProcess's own search
+ * would look there first, so a git.exe in a project folder would run.
+ */
+[[nodiscard]] FRT_CORE_API std::filesystem::path FindOnPath (FStringView Name);
 }

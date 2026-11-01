@@ -13,6 +13,7 @@
 
 #include "Asserts.h"
 #include "Assets/FileHash.h"
+#include "Assets/Meta/Safety.h"
 #include "Config/Config.h"
 #include "Containers/StringMap.h"
 #include "Jobs/WorkerPool.h"
@@ -277,7 +278,9 @@ SFileWatcherSettings SFileWatcherSettings::FromConfig (const config::CConfig& Co
 {
 	SFileWatcherSettings settings;
 	settings.bEnabled = Config.Get("Assets", "Watch", settings.bEnabled);
-	settings.VcsSettleMs = Config.Get("AssetsEditor", "VcsSettleMs", settings.VcsSettleMs);
+	const SAssetEditorSettings editor = SAssetEditorSettings::FromConfig(Config);
+	settings.RemoveGraceMs = editor.RemoveGraceMs;
+	settings.VcsSettleMs = editor.VcsSettleMs;
 	return settings;
 }
 

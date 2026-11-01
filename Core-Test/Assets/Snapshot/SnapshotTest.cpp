@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <filesystem>
 
+#include "Assets/AssetDiagnosticCodes.h"
 #include "Assets/AssetTypes.h"
 #include "Assets/MountPaths.h"
 #include "Jobs/WorkerPool.h"
@@ -86,6 +87,36 @@ TEST_F(SnapshotRoundTripTest, ARoundTripKeepsEveryTableAndDumpsIdentically)
 	edit(Original);
 	edit(loaded);
 	ExpectSameContent(Original.Live(), loaded.Live());
+}
+
+// The readers bound a stored enum by its last value: M4's appended values must not read as a corrupt section.
+TEST_F(SnapshotRoundTripTest, TheLastValuesOfTheStoredEnumsSurviveASnapshot)
+{
+	SRegistryDelta delta;
+	delta.FileUpserts.push_back(MakeStatFile("/Project/T/Rock.png.meta", 90u, 700u, EFileClass::Meta));
+	delta.FileUpserts[0].MetaState = EMetaState::MissingMeta;
+	delta.Problems.push_back(SProblemsSet { "/Project/T/Rock.png", EProblemSource::Lifecycle, { MakeWarning("/Project/T/Rock.png", "no meta", Meta001) } });
+	Original.Commit(std::move(delta));
+	ASSERT_TRUE(WriteSnapshot(Original.Live(), {}, Path, ProjectId, 0u));
+
+	CRegistryStore loaded;
+	const SSnapshotLoadResult result = Load(loaded, Path, ProjectId);
+	ASSERT_EQ(result.Files.size(), 1u);
+	EXPECT_EQ(result.Files[0].State, ESnapshotFileState::Loaded) << result.Files[0].Message.CStr();
+	EXPECT_TRUE(result.Files[0].DroppedSections.empty()) << result.Files[0].Message.CStr();
+	ExpectSameContent(Original.Live(), loaded.Live());
+
+	bool bFound = false;
+	loaded.Live().ForEachDiagnosticAt("/Project/T/Rock.png", [&] (EProblemSource Source, const SDiagnostic& Diagnostic)
+	{
+		bFound = bFound || (Source == EProblemSource::Lifecycle && Diagnostic.Code == Meta001);
+	});
+	EXPECT_TRUE(bFound);
+	SFileData file;
+	const std::optional<uint32> row = loaded.Live().FindFileExact("/Project/T/Rock.png.meta");
+	ASSERT_TRUE(row.has_value() && loaded.Live().GetFile(*row, file));
+	EXPECT_EQ(file.Class, EFileClass::Meta);
+	EXPECT_EQ(file.MetaState, EMetaState::MissingMeta);
 }
 
 TEST_F(SnapshotRoundTripTest, AStoreLoadedFromASnapshotWritesTheSameBytes)
