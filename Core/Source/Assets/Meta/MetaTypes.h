@@ -69,7 +69,7 @@ struct SMetaParseResult
 {
 	EMetaParseState State = EMetaParseState::Broken;
 	SAssetMeta Meta;
-	std::vector<SGuid> SalvagedGuids;            // Broken: every `Guid:` line's, in file order (two: "keep A, alias B")
+	std::vector<SGuid> SalvagedGuids;            // Broken: what the `Guid:` lines say, distinct, in file order (two: "keep A, alias B")
 	std::vector<SDiagnostic> Diagnostics;        // why it is Broken; unknown keys
 	bool bHasBom = false;
 	bool bHasCrLf = false;
