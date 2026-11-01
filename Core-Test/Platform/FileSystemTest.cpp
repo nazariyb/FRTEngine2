@@ -2,7 +2,8 @@
 // and tell a copy apart, directory listings agree with Stat, WriteFileAtomic never leaves a torn
 // file - not even when the writing process is killed at a random moment - and works on every path
 // WriteFileBytes can write, every call reads, stats and lists what the layer writes past MAX_PATH,
-// and ReadFileChunksStable never calls a read stable when the file
+// appends from several handles never tear each other, RemoveFile frees a name a reader still holds,
+// TouchFile moves only the write time, and ReadFileChunksStable never calls a read stable when the file
 // changed underneath it, and retries a file a writer still holds. Everything runs in directories
 // with non-ASCII names, which every path conversion on the way has to survive, and nothing is left
 // behind - not even in the Recycle Bin.
@@ -13,6 +14,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <optional>
@@ -391,6 +393,27 @@ TEST_F(FileSystemTest, AtomicWritesGiveANewIdentityInPlaceWritesKeepIt)
 	EXPECT_NE(*replaced, *first);
 }
 
+TEST(PathContainment, NamesBelowADirectoryCompareAsNtfsDoesAndKeepTheirSpelling)
+{
+	const std::filesystem::path root = std::filesystem::temp_directory_path() / FStringView("Корінь 根").ToPath();
+	EXPECT_EQ(platform::NormalizePath(root / "a" / ".." / "b" / ""), root / "b") << "absolute, normal, no trailing separator";
+	EXPECT_EQ(platform::NormalizePath(L"C:\\"), std::filesystem::path(L"C:\\")) << "a volume root keeps its own";
+
+	EXPECT_EQ(platform::GetRelativePath(root / FStringView("Під/Файл.txt").ToPath(), root), std::optional<FString>("Під/Файл.txt"));
+	EXPECT_EQ(platform::GetRelativePath(root / FStringView("ПІД/файл.TXT").ToPath(), root / FStringView("під").ToPath()),
+		std::optional<FString>("файл.TXT")) << "ignoring case, in the path's own spelling";
+	EXPECT_EQ(platform::GetRelativePath(root, root / ""), std::optional<FString>(""));
+	EXPECT_FALSE(platform::GetRelativePath(root / FStringView("Під").ToPath(), root / FStringView("Пі").ToPath()).has_value())
+		<< "a name that starts like the directory's is not below it";
+	EXPECT_FALSE(platform::GetRelativePath(root / FStringView("s/x").ToPath(), root / FStringView("\u017f").ToPath()).has_value())
+		<< "'s' and U+017F are two names on NTFS";
+	EXPECT_FALSE(platform::GetRelativePath(root / FStringView("Під/x").ToPath(), root / FStringView("під").ToPath(), true).has_value())
+		<< "case-sensitive when asked";
+	EXPECT_EQ(platform::GetRelativePath(L"C:\\x\\y", L"C:\\"), std::optional<FString>("x/y"));
+	EXPECT_TRUE(platform::IsAtOrBelow(root / "a", root));
+	EXPECT_FALSE(platform::IsAtOrBelow(root, root / "a"));
+}
+
 TEST_F(FileSystemTest, StatDescribesFilesAndDirectories)
 {
 	const std::filesystem::path file = File("Стат 統計.bin");
@@ -552,6 +575,25 @@ TEST_F(FileSystemTest, WriteFileBytesRoundTrip)
 
 	FString error;
 	EXPECT_FALSE(platform::WriteFileBytes(File("Немає") / "a.bin", AsBytes("x"), false, &error));
+	EXPECT_FALSE(error.IsEmpty());
+}
+
+TEST_F(FileSystemTest, AnUncachedReadGivesTheFilesBytes)
+{
+	// Past the cache, in whole sectors: sizes that are not a sector's multiple, larger than one 4 MiB chunk,
+	// empty; a missing file fails with the reason.
+	for (const size_t size : { size_t(0u), size_t(1u), size_t(4095u), size_t(70000u), size_t((4u << 20u) + 4097u) })
+	{
+		const std::filesystem::path file = File("Без кешу") / FString::Format("{}.bin", size).ToPath();
+		const std::vector<uint8> bytes = MakeBytes(size, 9u);
+		ASSERT_TRUE(platform::WriteFileAtomic(file, bytes));
+		FString error;
+		const std::optional<std::vector<uint8>> read = platform::ReadFileBytesUncached(file, &error);
+		ASSERT_TRUE(read.has_value()) << error.CStr();
+		EXPECT_EQ(*read, bytes) << size;
+	}
+	FString error;
+	EXPECT_FALSE(platform::ReadFileBytesUncached(File("Немає.bin"), &error).has_value());
 	EXPECT_FALSE(error.IsEmpty());
 }
 
@@ -750,9 +792,22 @@ TEST_F(FileSystemTest, WriteFileAtomicSurvivesAKilledWriter)
 	std::mt19937 random(seed);
 	std::uniform_int_distribution<uint32> extraMs(0u, 40u);
 
-	constexpr uint32 Rounds = 16u;
+	// At least MinRounds kills, and more until one has landed mid-write (a temporary file is left), so the
+	// test proves what it claims however the scheduler times the kills: random 0-40 ms delays usually hit
+	// a write in progress within a few rounds, but not always within a fixed count.
+	constexpr uint32 MinRounds = 16u;
+	constexpr uint32 MaxRounds = 64u;
+	const auto countTemporaryFiles = [this, &target] ()
+	{
+		uint32 count = 0u;
+		for (const FString& name : ListNames(Dir))
+		{
+			count += name != FString::FromPath(target.filename()) && IsTemporaryName(name) ? 1u : 0u;
+		}
+		return count;
+	};
 	uint32 version = 0u;
-	for (uint32 round = 0u; round < Rounds; ++round)
+	for (uint32 round = 0u; round < MaxRounds && (round < MinRounds || countTemporaryFiles() == 0u); ++round)
 	{
 		const std::optional<platform::SFileIdentity> identityBefore = platform::GetFileIdentity(target);
 		ASSERT_TRUE(identityBefore.has_value());
@@ -810,6 +865,192 @@ TEST_F(FileSystemTest, WriteFileAtomicSurvivesAKilledWriter)
 	EXPECT_GT(temporaryFiles, 0u);
 	RecordProperty("LastVersion", static_cast<int>(version));
 	RecordProperty("TemporaryFilesLeft", static_cast<int>(temporaryFiles));
+}
+
+
+TEST_F(FileSystemTest, WriteFileAtomicViaWritesThroughTheGivenTemporaryFile)
+{
+	const std::filesystem::path target = File("Ціль 目标") / FStringView("Запис.bin").ToPath();
+	const std::filesystem::path tmpDir = File("Тимчасові");
+	const std::vector<uint8> first = MakeBytes(5000u, 31u);
+	FString error;
+	ASSERT_TRUE(platform::WriteFileAtomicVia(target, tmpDir / FStringView("один.tmp").ToPath(), first, true, &error)) << error.CStr();
+	EXPECT_EQ(ReadBytes(target), first);
+	EXPECT_TRUE(ListNames(tmpDir).empty());   // renamed into place
+	EXPECT_EQ(ListNames(target.parent_path()), std::vector<FString>{ FString("Запис.bin") });
+
+	const std::vector<uint8> second = MakeBytes(100u, 32u);
+	ASSERT_TRUE(platform::WriteFileAtomicVia(target, tmpDir / FStringView("два.tmp").ToPath(), second, true, &error)) << error.CStr();
+	EXPECT_EQ(ReadBytes(target), second);
+
+	// A temporary name that is taken (another writer's, or a crashed one's) is refused, never shared:
+	// the target and the other file stay as they were.
+	const std::filesystem::path taken = tmpDir / FStringView("зайнятий.tmp").ToPath();
+	ASSERT_TRUE(platform::WriteFileBytes(taken, AsBytes("someone else's")));
+	EXPECT_FALSE(platform::WriteFileAtomicVia(target, taken, MakeBytes(10u, 33u), true, &error));
+	EXPECT_TRUE(error.Contains("зайнятий.tmp")) << error.CStr();
+	EXPECT_EQ(ReadBytes(target), second);
+	EXPECT_EQ(platform::ReadFileText(taken).value_or("<unreadable>"), "someone else's");
+}
+
+TEST_F(FileSystemTest, AppendFileAppendsAtTheEndAndReportsItsSize)
+{
+	const std::filesystem::path file = File("Журнал 日志") / FStringView("записи.log").ToPath();
+	platform::CAppendFile log;
+	EXPECT_FALSE(log.IsOpen());
+	FString error;
+	EXPECT_FALSE(log.Append(AsBytes("x"), &error));
+	ASSERT_TRUE(log.Open(file, true, &error)) << error.CStr();   // creates the directory and the file
+	EXPECT_EQ(log.GetSize(), 0u);
+	ASSERT_TRUE(log.Append(AsBytes("перший\n"), &error)) << error.CStr();
+	ASSERT_TRUE(log.Append({}, &error)) << error.CStr();
+	ASSERT_TRUE(log.Append(AsBytes("second\n"), &error)) << error.CStr();
+	EXPECT_TRUE(log.Flush(&error)) << error.CStr();
+	EXPECT_EQ(log.GetSize(), FStringView("перший\nsecond\n").Len());
+
+	// Readers are never refused while it is open, and see every append at once.
+	EXPECT_EQ(platform::ReadFileText(file).value_or("<unreadable>"), "перший\nsecond\n");
+
+	// Opening again appends after what is there; a write from another handle lands at the end too.
+	platform::CAppendFile other;
+	ASSERT_TRUE(other.Open(file, false, &error)) << error.CStr();
+	ASSERT_TRUE(other.Append(AsBytes("third\n"), &error)) << error.CStr();
+	ASSERT_TRUE(log.Append(AsBytes("fourth\n"), &error)) << error.CStr();
+	EXPECT_EQ(platform::ReadFileText(file).value_or("<unreadable>"), "перший\nsecond\nthird\nfourth\n");
+
+	// Moves keep the handle; an atomic replace of the file goes through while it is open.
+	platform::CAppendFile moved = std::move(log);
+	EXPECT_FALSE(log.IsOpen());
+	EXPECT_TRUE(moved.IsOpen());
+	EXPECT_TRUE(platform::WriteFileAtomic(file, AsBytes("compacted\n"), false, &error)) << error.CStr();
+	moved.Close();
+	other.Close();
+	ASSERT_TRUE(moved.Open(file, false, &error)) << error.CStr();
+	ASSERT_TRUE(moved.Append(AsBytes("after\n"), &error)) << error.CStr();
+	EXPECT_EQ(platform::ReadFileText(file).value_or("<unreadable>"), "compacted\nafter\n");
+
+	EXPECT_FALSE(platform::CAppendFile().Open(File("Немає") / "a.log", false, &error));
+	EXPECT_FALSE(error.IsEmpty());
+}
+
+// Appenders on separate handles - as separate processes would hold them - never tear each other's
+// records: every record is found whole, each exactly once.
+TEST_F(FileSystemTest, ConcurrentAppendsNeverInterleave)
+{
+	const std::filesystem::path file = File("Спільний.log");
+	constexpr uint32 Writers = 4u;
+	constexpr uint32 RecordsPerWriter = 500u;
+	std::vector<std::thread> threads;
+	for (uint32 writer = 0u; writer < Writers; ++writer)
+	{
+		threads.emplace_back([&file, writer]
+		{
+			platform::CAppendFile log;
+			if (!log.Open(file))
+			{
+				return;
+			}
+			for (uint32 i = 0u; i < RecordsPerWriter; ++i)
+			{
+				// Records of different lengths, up to 3 KB: "<writer> <i> <filler>\n".
+				FString record = FString::Format("{} {} ", writer, i) + FString::Repeat("x", (writer * 997u + i * 31u) % 3000u) + "\n";
+				log.Append(record.AsBytes());
+			}
+		});
+	}
+	for (std::thread& thread : threads)
+	{
+		thread.join();
+	}
+
+	const FString text = platform::ReadFileText(file).value_or("");
+	std::set<std::pair<uint32, uint32>> seen;
+	for (const FStringView line : text.Lines())
+	{
+		FStringView rest = line;
+		const std::optional<uint32> writer = rest.ConsumeToken(' ').TryParse<uint32>();
+		const std::optional<uint32> i = rest.ConsumeToken(' ').TryParse<uint32>();
+		ASSERT_TRUE(writer.has_value() && i.has_value()) << "a torn record";
+		EXPECT_EQ(rest, FString::Repeat("x", (*writer * 997u + *i * 31u) % 3000u)) << "record " << *writer << " " << *i;
+		EXPECT_TRUE(seen.emplace(*writer, *i).second);
+	}
+	EXPECT_EQ(seen.size(), Writers * RecordsPerWriter);
+}
+
+TEST_F(FileSystemTest, RemoveFileDeletesAFileEvenWhileAReaderHasItOpen)
+{
+	const std::filesystem::path file = File("Видалити 删除.bin");
+	ASSERT_TRUE(platform::WriteFileBytes(file, MakeBytes(1000u, 41u)));
+	FString error;
+	EXPECT_TRUE(platform::RemoveFile(file, &error)) << error.CStr();
+	EXPECT_FALSE(std::filesystem::exists(file));
+	// Already gone: nothing to do, and that is success.
+	EXPECT_TRUE(platform::RemoveFile(file, &error)) << error.CStr();
+	EXPECT_TRUE(platform::RemoveFile(File("Немає") / "a.bin", &error)) << error.CStr();
+
+	// A reader keeps its bytes; the name is free at once for a new file.
+	const std::vector<uint8> bytes = MakeBytes(4096u, 42u);
+	ASSERT_TRUE(platform::WriteFileBytes(file, bytes));
+	platform::CBlockingFileReader reader;
+	ASSERT_TRUE(reader.Open(file));
+	EXPECT_TRUE(platform::RemoveFile(file, &error)) << error.CStr();
+	EXPECT_FALSE(std::filesystem::exists(file));
+	ASSERT_TRUE(platform::WriteFileBytes(file, AsBytes("new")));
+	std::vector<uint8> read(bytes.size());
+	EXPECT_TRUE(reader.ReadExactAt(0u, read));
+	EXPECT_EQ(read, bytes);
+	reader.Close();
+	EXPECT_EQ(platform::ReadFileText(file).value_or("<unreadable>"), "new");
+
+	// Never a directory, and not a read-only file.
+	const std::filesystem::path directory = File("Тека");
+	std::error_code ec;
+	ASSERT_TRUE(std::filesystem::create_directory(directory, ec));
+	EXPECT_FALSE(platform::RemoveFile(directory, &error));
+	EXPECT_TRUE(std::filesystem::exists(directory));
+	const FWideString wideFile(FString::FromPath(file));
+	ASSERT_TRUE(SetFileAttributesW(wideFile.CStr(), FILE_ATTRIBUTE_READONLY));
+	EXPECT_FALSE(platform::RemoveFile(file, &error));
+	SetFileAttributesW(wideFile.CStr(), FILE_ATTRIBUTE_NORMAL);
+	EXPECT_TRUE(std::filesystem::exists(file));
+	EXPECT_TRUE(platform::RemoveFile(file, &error)) << error.CStr();
+}
+
+// What the derived-data cache's collector relies on: a touched file's write time is now - also while
+// a reader holds it open - and nothing else about it changes.
+TEST_F(FileSystemTest, TouchFileMovesTheWriteTimeToNowAndKeepsTheFile)
+{
+	const std::filesystem::path file = File("Торкнутися 触摸.bin");
+	const std::vector<uint8> bytes = MakeBytes(5000u, 43u);
+	ASSERT_TRUE(platform::WriteFileBytes(file, bytes));
+	std::error_code ec;
+	std::filesystem::last_write_time(file, std::filesystem::file_time_type::clock::now() - 3h, ec);
+	ASSERT_FALSE(ec) << FString::FromUtf8Lossy(ec.message()).CStr();
+	const std::optional<platform::SFileStat> before = platform::Stat(file);
+	ASSERT_TRUE(before.has_value());
+
+	platform::CBlockingFileReader reader;
+	ASSERT_TRUE(reader.Open(file));
+	FString error;
+	ASSERT_TRUE(platform::TouchFile(file, &error)) << error.CStr();
+	reader.Close();
+
+	const std::optional<platform::SFileStat> after = platform::Stat(file);
+	ASSERT_TRUE(after.has_value());
+	const int64 now = std::filesystem::file_time_type::clock::now().time_since_epoch().count();
+	constexpr int64 Minute = 60ll * 10'000'000ll;
+	EXPECT_GT(after->LastWriteTime, before->LastWriteTime + 2ll * 60ll * Minute);
+	EXPECT_LE(std::abs(now - after->LastWriteTime), Minute);
+	EXPECT_EQ(after->Size, before->Size);
+	EXPECT_EQ(after->Identity, before->Identity);
+	EXPECT_EQ(after->CreationTime, before->CreationTime);
+	EXPECT_EQ(platform::ReadFileBytes(file).value_or(std::vector<uint8>()), bytes);
+
+	// No file, or a directory: nothing to touch.
+	EXPECT_FALSE(platform::TouchFile(File("Немає"), &error));
+	EXPECT_FALSE(error.IsEmpty());
+	EXPECT_FALSE(std::filesystem::exists(File("Немає")));
+	EXPECT_FALSE(platform::TouchFile(Dir, &error));
 }
 
 

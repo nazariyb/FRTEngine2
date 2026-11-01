@@ -12,7 +12,7 @@ are scanned too, so no Win32 type leaks into a platform signature.
 
 Prints every hit, then a count per gate; exit code 1 when there is any. Comments are not checked;
 string literals are. Standard library only. Later milestones add their directories to SCANNED (the
-registry, the DDC, the loader, AssetTool).
+registry, the DDC, the loader).
 """
 import glob
 import os
@@ -26,11 +26,11 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from CheckStrings import strip_comments  # noqa: E402
 
-# Directories scanned recursively, then single files (globs) scanned as they are: the asset system,
-# and the M0 infrastructure it calls (path globs, diagnostics, the log, functions, CPU scopes, the
-# memory pool).
+# Directories scanned recursively, then single files (globs) scanned as they are: the asset system
+# (AssetTool, its host, included), and the infrastructure it calls (path globs, diagnostics, the log,
+# functions, CPU scopes, the memory pool, the worker pool).
 SCANNED_DIRS = ['Core/Source/Assets', 'Core/Source/Hash', 'Core/Source/Diagnostics', 'Core/Source/Log',
-                'Core/Source/Functional']
+                'Core/Source/Functional', 'Core/Source/Jobs', 'AssetTool/Source']
 SCANNED_FILES = ['Core/Source/Platform/*.h', 'Core/Source/Containers/PathGlob.*', 'Core/Source/Profiler/CpuProfiler.*',
                  'Core/Source/Memory/MemoryPool.*']
 EXTENSIONS = ('.h', '.hpp', '.cpp', '.inl')

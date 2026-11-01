@@ -19,6 +19,31 @@
 
 namespace frt
 {
+namespace
+{
+// The keys that make a run scripted (IsActive), as Configure reads them.
+bool HasAutomationKeys (const config::CConfig& Config)
+{
+	Vector3f vector = Vector3f::ZeroVector;
+	return Config.Get("Automation", "CaptureFrame", -1) >= 0
+		|| Config.Get("Automation", "ExitFrame", -1) >= 0
+		|| ParseVector3(Config.Get("Automation", "CameraMove", ""), vector)
+		|| ParseVector3(Config.Get("Automation", "CameraTurn", ""), vector)
+		|| Config.Get("Automation", "TimeOfDayFrame", -1) >= 0;
+}
+}
+
+bool CAutomation::IsScriptedRun (const config::CConfig& Config)
+{
+	return HasAutomationKeys(Config) || Config.Get("Editor", "SmokeTest", false);
+}
+
+void CAutomation::ApplyScriptedRunRules (config::CConfig& Config)
+{
+	Config.SetOverride("Assets", "Watch", "0");
+	Config.SetOverride("Assets", "ReadOnly", "1");
+}
+
 void CAutomation::Configure (CEngine& Engine, const CWorldScene& World)
 {
 	const config::CConfig& Config = Engine.GetConfig();
@@ -36,6 +61,8 @@ void CAutomation::Configure (CEngine& Engine, const CWorldScene& World)
 	const FString capturePath = Config.Get("Automation", "CapturePath", "");
 	CapturePath = capturePath.IsEmpty() ? (paths::GetCaptureDir() / "automation") : capturePath.ToPath();
 	bActive = CaptureFrame >= 0 || ExitFrame >= 0 || bMotion || TimeOfDayFrame >= 0;
+	// The engine applied the scripted-run rules at start-up from the same keys.
+	frt_assert(!bActive || HasAutomationKeys(Config));
 
 #if !defined(FRT_HEADLESS)
 	if (graphics::CRenderer* renderer = Engine.GetRenderer())

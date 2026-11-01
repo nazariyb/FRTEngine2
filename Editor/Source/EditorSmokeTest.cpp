@@ -4,11 +4,15 @@
 #include <cmath>
 #include <cstdio>
 #include <fstream>
+#include <optional>
 #include <system_error>
 
 #include "EnginePaths.h"
 #include "Timer.h"
 #include "Window.h"
+#include "Assets/AssetRegistry.h"
+#include "Assets/FileWatcherService.h"
+#include "Assets/Registry/RegistryView.h"
 #include "Config/Config.h"
 #include "Containers/String.h"
 #include "Engine/Engine.h"
@@ -16,6 +20,7 @@
 #include "Entity.h"
 #include "WorldScene.h"
 #include "Graphics/Camera.h"
+#include "Graphics/Render/MaterialLibrary.h"
 #include "Graphics/Render/Renderer.h"
 #include "Platform/Platform.h"
 #include "UI/DebugTools.h"
@@ -96,6 +101,17 @@ bool Near (float A, float B, float Tolerance = 1e-4f)
 {
 	return std::abs(A - B) <= Tolerance;
 }
+
+// Path is Directory or below it (both made canonical as far as they exist, so spelling and case
+// do not matter).
+bool IsInside (const std::filesystem::path& Path, const std::filesystem::path& Directory)
+{
+	std::error_code ec;
+	const std::filesystem::path path = std::filesystem::weakly_canonical(Path, ec);
+	const std::filesystem::path directory = std::filesystem::weakly_canonical(Directory, ec);
+	const std::filesystem::path relative = path.lexically_relative(directory);
+	return !relative.empty() && *relative.begin() != "..";
+}
 }
 
 CEditorSmokeTest::CEditorSmokeTest (const config::CConfig& Config)
@@ -106,6 +122,7 @@ CEditorSmokeTest::CEditorSmokeTest (const config::CConfig& Config)
 	// overrides in the working directory, and the run would pass.
 	const std::optional<std::filesystem::path> configuredDir = dir.IsEmpty() ? std::nullopt : dir.TryToPath();
 	OutputDir = configuredDir.value_or(paths::GetLocalDir() / "SmokeTest");
+	bEditFiles = Config.Get("Editor", "SmokeTestEdits", false);
 	std::error_code ec;
 	std::filesystem::create_directories(OutputDir, ec);
 	std::ofstream(OutputDir / "SmokeTest.log", std::ios::trunc);
@@ -138,6 +155,132 @@ void CEditorSmokeTest::TouchGameBuild (CEditor& Editor)
 	std::filesystem::last_write_time(build, std::filesystem::file_time_type::clock::now(), ec);
 	Check(!ec, "the game module's DLL takes a newer write time");
 	Editor.PollGameModuleNow();
+}
+
+void CEditorSmokeTest::WatchFiles (CEngine& Engine, bool bOn, std::initializer_list<std::filesystem::path> OnlyUnder)
+{
+	assets::CFileWatcherService* watcher = Engine.GetFileWatcher();
+	if (watcher)
+	{
+		watcher->SetEnabled(bOn, std::span<const std::filesystem::path>(OnlyUnder.begin(), OnlyUnder.size()));
+	}
+	Check(watcher != nullptr && watcher->IsEnabled() == bOn, bOn ? "the file watcher is on for the steps that need it" : "the file watcher is off again");
+}
+
+void CEditorSmokeTest::FlushWatcher (CEngine& Engine, const std::filesystem::path& Directory, FStringView What)
+{
+	assets::CFileWatcherService* watcher = Engine.GetFileWatcher();
+	Check(watcher != nullptr && watcher->Flush(Directory), FString::Format("the file watcher has seen {}", What));
+}
+
+void CEditorSmokeTest::BeginFileEdits (CEngine& Engine)
+{
+	if (!bEditFiles)
+	{
+		Log("  skip  file edits: not asked for ([Editor] SmokeTestEdits=1, on a scratch copy only)");
+		return;
+	}
+	// Never the engine checkout's files: the project must be a copy outside it (FRT.bat new), and
+	// the shaders a copy named by [Render] ShaderRoot.
+	const std::filesystem::path& engineDir = paths::GetEngineDir();
+	const bool bProjectOutside = !paths::GetProjectDir().empty() && !IsInside(paths::GetProjectDir(), engineDir);
+	const bool bShadersOutside = !IsInside(paths::GetShaderRootDir(), engineDir);
+	Check(bProjectOutside, "the project is a copy outside the engine checkout: " + FString::FromPath(paths::GetProjectDir()));
+	Check(bShadersOutside, "the shaders are a copy outside the engine checkout ([Render] ShaderRoot): " + FString::FromPath(paths::GetShaderRootDir()));
+	bCanEditFiles = bProjectOutside && bShadersOutside;
+	if (!bCanEditFiles)
+	{
+		Log("  refusing to edit files of the engine checkout");
+		return;
+	}
+
+	// The project's material with the first path, so that every run edits the same one.
+	const std::filesystem::path content = paths::GetProjectContentDir();
+	Engine.GetMaterials().ForEachMaterial([&] (const memory::TRefShared<graphics::SMaterial>& Material)
+	{
+		std::error_code ec;
+		if (!Material->SourcePath.empty() && IsInside(Material->SourcePath, content) && std::filesystem::is_regular_file(Material->SourcePath, ec)
+			&& (EditedMaterial == nullptr || Material->SourcePath < EditedMaterial->SourcePath))
+		{
+			EditedMaterial = Material.GetRawIgnoringLifetime();
+		}
+	});
+	Check(EditedMaterial != nullptr, "the project has a material loaded from its Content/");
+	// The copies alone: the engine checkout's files (its Editor/Config, say) stay unwatched.
+	WatchFiles(Engine, true, { paths::GetProjectDir(), paths::GetShaderRootDir() });
+}
+
+void CEditorSmokeTest::EditMaterial (CEngine& Engine)
+{
+	if (!bCanEditFiles || EditedMaterial == nullptr)
+	{
+		return;
+	}
+	// Rewritten as the editor would save it: the whole document, one value changed.
+	graphics::SMaterial edited = *EditedMaterial;
+	edited.Roughness = EditedMaterial->Roughness < 0.5f ? 0.75f : 0.25f;
+	MaterialVersion = EditedMaterial->Version;
+	EditedRoughness = edited.Roughness;
+	const assets::ISerializer<graphics::SMaterial>* writer = Engine.GetMaterials().GetSerializers().PickWriter();
+	Check(writer != nullptr && writer->Write(edited.SourcePath, edited),
+		FString::Format("{} rewritten with roughness {}", FString::FromPath(edited.SourcePath.filename()), edited.Roughness));
+	FlushWatcher(Engine, edited.SourcePath.parent_path(), "the material's change");
+}
+
+void CEditorSmokeTest::CheckMaterialReloaded ()
+{
+	if (!bCanEditFiles || EditedMaterial == nullptr)
+	{
+		return;
+	}
+	Check(EditedMaterial->Version > MaterialVersion && EditedMaterial->Roughness == EditedRoughness,
+		FString::Format("{} reloaded: version {} -> {}, roughness {}", FString::FromPath(EditedMaterial->SourcePath.filename()),
+			MaterialVersion, EditedMaterial->Version, EditedMaterial->Roughness));
+}
+
+void CEditorSmokeTest::EditShaderInclude (CEngine& Engine)
+{
+	if (!bCanEditFiles)
+	{
+		return;
+	}
+	// The include the fewest programs read (then the first by path): the shortest rebuild.
+	graphics::rhi::CPipelineLibrary& pipelines = Engine.GetRenderer()->GetPipelines();
+	const std::filesystem::path shaderRoot = paths::GetShaderRootDir();
+	for (const auto& [file, programs] : pipelines.GetWatchedFiles())
+	{
+		if (FString::FromPath(file.extension()).Equals<ESearchCase::IgnoreCaseAscii>(".hlsli") && IsInside(file, shaderRoot)
+			&& (EditedInclude.empty() || programs < IncludePrograms))
+		{
+			EditedInclude = file;
+			IncludePrograms = programs;
+		}
+	}
+	if (EditedInclude.empty())
+	{
+		Check(false, "a program reads an include from the shaders' copy");
+		return;
+	}
+	HotReloads = pipelines.GetHotReloadCount();
+	// A comment changes the file's hash - so the shader cache misses and compiles - and none of its code.
+	{
+		std::ofstream include(EditedInclude, std::ios::app | std::ios::binary);
+		include << "\n// FRT editor smoke test: a comment changes this file's hash, not its code\n";
+		Check(include.good(), "a comment appended to " + FString::FromPath(EditedInclude.filename()));
+	}
+	FlushWatcher(Engine, shaderRoot, "the include's change");
+}
+
+void CEditorSmokeTest::CheckProgramsRebuilt (CEngine& Engine)
+{
+	if (!bCanEditFiles || EditedInclude.empty())
+	{
+		return;
+	}
+	const graphics::rhi::CPipelineLibrary& pipelines = Engine.GetRenderer()->GetPipelines();
+	Check(pipelines.GetHotReloadCount() == HotReloads + IncludePrograms && pipelines.GetErrors().empty(),
+		FString::Format("exactly the {} program(s) that read {} were rebuilt ({}), without errors ({})", IncludePrograms,
+			FString::FromPath(EditedInclude.filename()), pipelines.GetHotReloadCount() - HotReloads, pipelines.GetErrors().size()));
 }
 
 void CEditorSmokeTest::CheckCameraController ()
@@ -326,6 +469,10 @@ void CEditorSmokeTest::Update (CEditor& Editor, CEngine& Engine)
 	static const SStep steps[] =
 	{
 		{ 2u, "camera controller", [] (CEditorSmokeTest& T, CEditor&, CEngine&) { T.CheckCameraController(); } },
+		// The asset registry's initial scan was complete before the first BuildWorld; the Assets panel lists what a
+		// query of it matches (read-only, nothing here writes).
+		{ 3u, "asset registry", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G) { T.CheckAssetRegistry(E, G); } },
+		{ 6u, "Assets panel", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G) { T.CheckAssetsPanel(E, G); } },
 		{ 30u, "docked", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G)
 		{
 			T.Check(E.GetViewport(EViewportTarget::Scene).GetFrame().bVisible, "the Scene view is visible");
@@ -446,6 +593,12 @@ void CEditorSmokeTest::Update (CEditor& Editor, CEngine& Engine)
 			T.Check(input.GetShortcutText(EEditorCommand::TogglePlay) == "Ctrl+P" && input.GetShortcutText(EEditorCommand::ExitFullscreen) == "Escape",
 				"TogglePlay is Ctrl+P, ExitFullscreen is Escape");
 			T.InputGeneration = input.GetGeneration();
+			// Overrides are re-read when the file watcher reports them: on for these steps, and for the
+			// overrides' directory alone - the run may be in the engine checkout, whose shaders, materials
+			// and input a developer may be editing meanwhile.
+			T.WatchFiles(G, true, { T.OutputDir });
+			const assets::CFileWatcherService* watcher = G.GetFileWatcher();
+			T.Check(watcher != nullptr && watcher->GetStats().Roots == 1u, "... watching the overrides' directory and nothing else");
 			PostCtrlP(G, true);
 		} },
 		{ 335u, "Ctrl+P", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G)
@@ -459,7 +612,7 @@ void CEditorSmokeTest::Update (CEditor& Editor, CEngine& Engine)
 			T.Check(!E.GetPlaySession().IsPlaying(), "... and stops it");
 			PostCtrlP(G, false);
 			T.WriteInputOverrides("[Commands]\nTogglePlay=F5\n");
-			E.GetInput().PollNow();
+			T.FlushWatcher(G, T.OutputDir, "the override written");
 		} },
 		{ 400u, "user override", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G)
 		{
@@ -486,9 +639,9 @@ void CEditorSmokeTest::Update (CEditor& Editor, CEngine& Engine)
 			T.Check(!E.GetPlaySession().IsPlaying(), "the overridden chord no longer plays");
 			PostCtrlP(G, false);
 			T.WriteInputOverrides("[Commands]\nTogglePlay=Bogus\n[Nonsense]\nX=1\n");
-			E.GetInput().PollNow();
+			T.FlushWatcher(G, T.OutputDir, "the bad override written");
 		} },
-		{ 470u, "bad override", [] (CEditorSmokeTest& T, CEditor& E, CEngine&)
+		{ 470u, "bad override", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G)
 		{
 			const CEditorInput& input = E.GetInput();
 			T.Check(input.GetGeneration() > T.InputGeneration && input.GetProblems().size() == 2u && input.GetChords(EEditorCommand::TogglePlay).empty(),
@@ -496,13 +649,14 @@ void CEditorSmokeTest::Update (CEditor& Editor, CEngine& Engine)
 			T.InputGeneration = input.GetGeneration();
 			std::error_code ec;
 			std::filesystem::remove(T.OutputDir / "EditorInput.ini", ec);
-			E.GetInput().PollNow();
+			T.FlushWatcher(G, T.OutputDir, "the override removed");
 		} },
-		{ 530u, "override removed", [] (CEditorSmokeTest& T, CEditor& E, CEngine&)
+		{ 530u, "override removed", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G)
 		{
 			const CEditorInput& input = E.GetInput();
 			T.Check(input.GetGeneration() > T.InputGeneration && input.GetProblems().empty() && input.GetShortcutText(EEditorCommand::TogglePlay) == "Ctrl+P",
 				"removing the override restores the shipped binding");
+			T.WatchFiles(G, false);
 			E.Execute(EEditorCommand::ResetLayout);
 		} },
 		{ 550u, "keyboard navigation", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G)
@@ -598,6 +752,19 @@ void CEditorSmokeTest::Update (CEditor& Editor, CEngine& Engine)
 		{ 1031u, "third such name", [] (CEditorSmokeTest& T, CEditor& E, CEngine&) { T.SelectNamedEntity(E, 2u); } },
 		{ 1040u, "third such name, shown", [] (CEditorSmokeTest& T, CEditor&, CEngine& G) { T.CaptureNamedEntity(G, 2u, "20_entity_name_3"); } },
 		{ 1041u, "names done", [] (CEditorSmokeTest&, CEditor& E, CEngine&) { E.GetTools().SelectEntity(-1); } },
+		// ---- [Editor] SmokeTestEdits: a scratch copy's files edited, and reloaded through the watcher ----
+		{ 1050u, "file edits", [] (CEditorSmokeTest& T, CEditor&, CEngine& G) { T.BeginFileEdits(G); } },
+		{ 1051u, "edit a material", [] (CEditorSmokeTest& T, CEditor&, CEngine& G) { T.EditMaterial(G); } },
+		{ 1060u, "material reloaded", [] (CEditorSmokeTest& T, CEditor&, CEngine&) { T.CheckMaterialReloaded(); } },
+		{ 1061u, "edit a shader include", [] (CEditorSmokeTest& T, CEditor&, CEngine& G) { T.EditShaderInclude(G); } },
+		{ 1070u, "programs rebuilt", [] (CEditorSmokeTest& T, CEditor&, CEngine& G)
+		{
+			T.CheckProgramsRebuilt(G);
+			if (T.bCanEditFiles)
+			{
+				T.WatchFiles(G, false);
+			}
+		} },
 	};
 
 	// Hitches: the longest frame between two steps goes into the log with the next step.
@@ -620,6 +787,41 @@ void CEditorSmokeTest::Update (CEditor& Editor, CEngine& Engine)
 		Log(Failures == 0u ? "PASSED" : FString::Format("FAILED: {} check(s)", Failures));
 		Engine.RequestQuit(Failures == 0u ? 0 : 2);
 	}
+}
+
+void CEditorSmokeTest::CheckAssetRegistry (CEditor& Editor, CEngine& Engine)
+{
+	assets::CAssetRegistry* registry = Engine.GetAssetRegistry();
+	if (registry == nullptr)
+	{
+		Log("  skip  no asset registry runs ([Assets] Registry=0)");
+		return;
+	}
+	const assets::SInitialScanReport& report = registry->GetInitialScanReport();
+	Check(registry->IsInitialScanComplete() && report.bComplete, FString::Format("registry: {} records, initial scan {:.0f} ms",
+		registry->Live().GetRecordCount(), report.TotalMs));
+	// Recorded by the first BuildWorld itself: a scan that completes by this frame anyway (the Demo's takes less than
+	// the window's start-up) proves nothing about the wait before it.
+	Check(Editor.WasInitialScanCompleteAtFirstBuildWorld(), "the initial scan was complete when the first BuildWorld ran");
+	Check(registry->Exists(assets::SAssetId {}) == assets::EExists::No, "the registry answers Exists with Yes or No once its scan is complete");
+	Editor.GetAssetsPanel().SetQuery(AssetsPanelQuery);
+}
+
+void CEditorSmokeTest::CheckAssetsPanel (CEditor& Editor, CEngine& Engine)
+{
+	assets::CAssetRegistry* registry = Engine.GetAssetRegistry();
+	if (registry == nullptr)
+	{
+		return;
+	}
+	// What the registry itself answers, against what the panel shows (its tab may be behind Stats: its state, not
+	// ImGui's, is checked).
+	std::vector<assets::SRecordId> records;
+	const std::optional<uint32> matched = registry->Live().RunText(AssetsPanelQuery, records);
+	const CAssetsPanel& panel = Editor.GetAssetsPanel();
+	Check(panel.GetError().IsEmpty() && panel.GetShownRevision() == registry->GetRevision(), "the Assets panel ran its query on the current revision");
+	Check(matched.has_value() && panel.GetResultCount() == *matched && panel.GetShownCount() == std::min(*matched, CAssetsPanel::DefaultLimit),
+		FString::Format("the Assets panel shows {} of {} record(s) of {}", panel.GetShownCount(), panel.GetResultCount(), AssetsPanelQuery));
 }
 
 void CEditorSmokeTest::SelectNamedEntity (CEditor& Editor, uint32 Which)

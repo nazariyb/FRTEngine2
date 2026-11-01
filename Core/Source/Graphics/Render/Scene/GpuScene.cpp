@@ -177,11 +177,11 @@ bool IsMaterialNonOpaque (const SMaterial* Material)
 }
 
 
-void CGpuScene::Initialize (rhi::CDevice& InDevice, rhi::CPipelineLibrary& InPipelines)
+void CGpuScene::Initialize (rhi::CDevice& InDevice, rhi::CPipelineLibrary& InPipelines, jobs::CWorkerPool& WorkerPool)
 {
 	Device = &InDevice;
 	Pipelines = &InPipelines;
-	Textures.Initialize(InDevice);
+	Textures.Initialize(InDevice, WorkerPool);
 
 	SkyBakePipeline = Pipelines->CreateCompute("SkyBake", MakeShaderDesc("Scene/SkyBake.hlsl", "BakeEnvironment", "cs_6_6"));
 	SkyPyramidPipeline = Pipelines->CreateCompute("SkyPyramid", MakeShaderDesc("Scene/SkyBake.hlsl", "BuildPyramid", "cs_6_6"));

@@ -1,7 +1,8 @@
 // CMemoryPool's diagnostics (AssetManager-Design I8): the allocated-bytes counter and its peak follow
 // every allocation, reallocation and free exactly; the high-water callback fires once per upward
-// crossing of its threshold; and a thread that does not own the pool is reported, once per thread,
-// while what its allocations do stays unchanged.
+// crossing of its threshold; and a thread that does not own the pool stops a Debug build at its first
+// allocation, while Development reports it, once per thread, and leaves what its allocations do
+// unchanged.
 #include <gtest/gtest.h>
 
 #include <thread>
@@ -259,6 +260,33 @@ TEST(MemoryPoolOwnerThread, TheConstructingThreadOwnsThePool)
 	EXPECT_TRUE(entries.empty()) << entries.front().Line.CStr();
 }
 
+#if FRT_BUILD_DEBUG
+// Debug: the first allocation or free from another thread asserts, after the report. Development and
+// Release report and keep running (the #else branch).
+TEST(MemoryPoolOwnerThreadDeathTest, AnotherThreadAllocatingStopsADebugBuild)
+{
+	CMemoryPool pool(1_Mb);
+	EXPECT_DEATH(
+		{
+			std::thread worker([&pool] () { pool.Free(pool.Allocate(16)); });
+			worker.join();
+		},
+		"ASSERT FAILED");
+}
+
+TEST(MemoryPoolOwnerThreadDeathTest, AnotherThreadFreeingStopsADebugBuild)
+{
+	CMemoryPool pool(1_Mb);
+	void* block = pool.Allocate(16);
+	EXPECT_DEATH(
+		{
+			std::thread worker([&pool, block] () { pool.Free(block); });
+			worker.join();
+		},
+		"Free on thread");
+	pool.Free(block);
+}
+#else
 TEST(MemoryPoolOwnerThread, AnotherThreadIsReportedOnceAndStillAllocates)
 {
 	CMemoryPool pool(1_Mb);
@@ -297,6 +325,7 @@ TEST(MemoryPoolOwnerThread, AnotherThreadIsReportedOnceAndStillAllocates)
 	EXPECT_EQ(bytesSeenByWorker, BlockBytes(64));
 	EXPECT_EQ(pool.GetAllocatedBytes(), 0u);
 }
+#endif
 
 TEST(MemoryPoolOwnerThread, MakingThePoolPrimaryMakesTheCallingThreadItsOwner)
 {

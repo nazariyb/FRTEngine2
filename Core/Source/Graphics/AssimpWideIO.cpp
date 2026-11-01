@@ -11,6 +11,7 @@
 
 #include "Containers/String.h"
 #include "Containers/WideString.h"
+#include "Text/Uri.h"
 
 
 namespace frt::graphics
@@ -37,34 +38,6 @@ FILE* OpenShared (FStringView Name, const char* Mode)
 }
 }
 
-std::optional<FString> DecodeUriEscapes (FStringView Uri)
-{
-	FString decoded;
-	uint32 copied = 0u;         // Uri[0, copied) is in decoded
-	for (uint32 i = Uri.Find('%'); i != FStringView::NotFound; i = Uri.Find('%', i + 1u))
-	{
-		uint8 byte = 0u;
-		if (!Uri.Mid(i + 1u, 2u).DecodeHex(std::span(&byte, 1u)))
-		{
-			continue;
-		}
-		if (byte == 0u)
-		{
-			return std::nullopt;
-		}
-		decoded.Append(Uri.Mid(copied, i - copied)).AppendChar(static_cast<char>(byte));
-		i += 2u;
-		copied = i + 1u;
-	}
-
-	if (copied == 0u)
-	{
-		return std::nullopt;
-	}
-	decoded.Append(Uri.RightChop(copied));
-	return decoded;
-}
-
 bool CAssimpWideIOSystem::Exists (const char* Name) const
 {
 	if (Name == nullptr)
@@ -76,7 +49,7 @@ bool CAssimpWideIOSystem::Exists (const char* Name) const
 	{
 		return true;
 	}
-	const std::optional<FString> decoded = DecodeUriEscapes(Name);
+	const std::optional<FString> decoded = text::DecodeUriEscapes(Name);
 	return decoded && std::filesystem::exists(decoded->ToPath(), ec);
 }
 
@@ -91,7 +64,7 @@ Assimp::IOStream* CAssimpWideIOSystem::Open (const char* Name, const char* Mode)
 	FILE* file = OpenShared(Name, Mode);
 	if (file == nullptr)
 	{
-		if (const std::optional<FString> decoded = DecodeUriEscapes(Name))
+		if (const std::optional<FString> decoded = text::DecodeUriEscapes(Name))
 		{
 			file = OpenShared(*decoded, Mode);
 		}

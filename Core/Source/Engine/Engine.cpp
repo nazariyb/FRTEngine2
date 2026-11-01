@@ -1,6 +1,10 @@
 #include "Engine/Engine.h"
 
 #include <cstdio>
+#include <filesystem>
+#include <optional>
+#include <system_error>
+#include <vector>
 
 #if defined(_WINDOWS)
 #include <Windows.h>
@@ -8,10 +12,19 @@
 
 #include "BuildConfig.h"
 #include "EnginePaths.h"
+#include "Assets/AssetRegistry.h"
+#include "Assets/DerivedDataCache.h"
+#include "Assets/Discovery/Mounts.h"
+#include "Assets/FileWatcherService.h"
+#include "Assets/OwnerLock.h"
 #include "ECS/CoreComponents.h"
+#include "Engine/Automation.h"
 #include "Graphics/GraphicsComponents.h"
 #include "Graphics/Render/MaterialLibrary.h"
+#include "Jobs/WorkerPool.h"
+#include "Log/Log.h"
 #include "Memory/Memory.h"
+#include "Platform/FileLock.h"
 #include "Platform/Platform.h"
 #include "Profiler/CpuProfiler.h"
 
@@ -20,6 +33,7 @@
 #include "Window.h"
 #include "Graphics/Render/GraphicsUtility.h"
 #include "Graphics/Render/Renderer.h"
+#include "Graphics/Render/RHI/ShaderCache.h"
 #include "UI/ImGuiLayer.h"
 #endif
 
@@ -61,9 +75,16 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 	//    library, and everything below may read settings. Layers, weakest first: engine,
 	//    project, user, then -Section:Key=Value launch arguments (never saved).
 	Config.LoadDefaultLayers();
-	if (const uint32 applied = Config.ApplyCommandLineArguments(platform::GetCommandLineArguments()); applied > 0u)
+	if (const uint32 applied = Config.ApplyCommandLineArguments(platform::GetCommandLineArguments()); applied > 0u
+		&& !Desc.bToolHost)
 	{
 		std::printf("[config] %u command-line override(s)\n", applied);
+	}
+	// Scripted runs (captures, smoke tests) reload nothing behind their back and write nothing:
+	// forced before anything below is created from the config (Engine/Automation.h).
+	if (!Desc.bToolHost && CAutomation::IsScriptedRun(Config))
+	{
+		CAutomation::ApplyScriptedRunRules(Config);
 	}
 	LoadUserSettings(Config, UserSettings);
 
@@ -71,12 +92,104 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 	MemoryPool = memory::CMemoryPool(2_Gb);
 	MemoryPool.MakeThisPrimaryInstance();
 
-	// 4. Real-time clock.
+	// 4. Worker threads, owned by this (the main) thread: the renderer's texture streaming decodes on
+	//    them, and BeginFrame pumps their completions.
+	WorkerPool = std::make_unique<jobs::CWorkerPool>();
+	if (Desc.bToolHost)
+	{
+		// A tool host has what it needs (SEngineDesc::bToolHost).
+		bStarted = true;
+		return true;
+	}
+
+	// 4b. The derived-data cache, for the renderer's shader cache - its only client - in dev builds
+	//     with a renderer: Release builds nothing at run time (shaders still compile there until the
+	//     cook ships DXIL, M12), and headless builds have no shaders, so they neither resolve the
+	//     store nor create one. A store that cannot be opened costs speed, never correctness:
+	//     everything is built as without one.
+#if FRT_WITH_DEV_TOOLS && !defined(FRT_HEADLESS)
+	{
+		DerivedData = std::make_unique<assets::CDerivedDataCache>();
+		FString error;
+		if (!DerivedData->OpenDefault(&Config, &error))
+		{
+			log::Warning("ddc", "no derived-data cache: {}", error);
+			DerivedData.reset();
+		}
+	}
+#endif
+
+	// 4c. The file watcher, in dev builds, headless too: the systems that reload files subscribe to it
+	//     (Assets/FileWatcherService.h) - the input actions here, the renderer's materials and shader
+	//     programs below, the editor's input files. It watches nothing until they do - no thread, no
+	//     handle - and nothing at all with [Assets] Watch=0 (scripted runs).
+#if FRT_WITH_DEV_TOOLS
+	FileWatcher = std::make_unique<assets::CFileWatcherService>(assets::SFileWatcherSettings::FromConfig(Config));
+	// Its disk checks (stat, writer probe, self-write hash) run on the workers, off the frame; the pool
+	// outlives it (ShutDown resets the watcher first).
+	FileWatcher->SetWorkerPool(WorkerPool.get());
+	// The mounts (design §5.4 step 1), resolved once: /Engine, /Project and every plugin, the table that
+	// paths::ToMountPath and paths::FromMountPath answer from while the engine runs. Each mount's content and
+	// rule-file directory is a root the watcher watches from (gap-watch-meta §5 "Roots"), added before anything
+	// subscribes: one handle per mount, so that the folders below stay free to rename while the editor runs.
+	{
+		std::vector<SDiagnostic> diagnostics;
+		MountTable = std::make_shared<const assets::CMountTable>(assets::CMountTable::Resolve(paths::GetEngineContentDir(),
+			paths::GetEngineConfigPath().parent_path(), paths::HasProject() ? paths::GetProjectDir() : std::filesystem::path(), &diagnostics));
+		for (const SDiagnostic& diagnostic : diagnostics)
+		{
+			log::Warning(log::Assets, "{}: {}", assets::ToDisplayText(diagnostic.Subject), diagnostic.Message);
+		}
+		for (const assets::SMount& mount : MountTable->GetMounts())
+		{
+			FileWatcher->AddMount(mount.ContentDir);
+			FileWatcher->AddMount(mount.RulesFile.parent_path());
+		}
+		paths::SetMountTable(MountTable);
+	}
+	InputActions.SetFileWatcher(FileWatcher.get());
+
+	// 4d. The asset registry, for a project (design §5.4): its snapshots load and its scans run on the workers
+	//     while the window and the renderer come up; hosts wait for the initial scan only before their first
+	//     BuildWorld. Only a host that asked to write (the editor) takes the project's writer lock, and only
+	//     outside read-only runs; without the lock the registry writes nothing.
+	if (paths::HasProject() && Config.Get("Assets", "Registry", true))
+	{
+		assets::SAssetRegistryDesc registry;
+		registry.Mounts = MountTable;
+		registry.Pool = WorkerPool.get();
+		registry.Watcher = FileWatcher.get();
+		registry.Owner = assets::EAssetRegistryOwner::Project;
+		if (Desc.bAssetWriter && !Config.Get("Assets", "ReadOnly", false))
+		{
+			FString owner;
+			FString error;
+			std::optional<platform::CExclusiveFileLock> lock = assets::TryTakeOwnerLock(paths::GetProjectDir(), &owner, &error);
+			if (lock.has_value())
+			{
+				AssetOwnerLock = std::make_unique<platform::CExclusiveFileLock>(std::move(*lock));
+				registry.bWriter = true;
+			}
+			else if (!owner.IsEmpty())
+			{
+				log::Info(log::Assets, "{} owns /Project: this editor writes no registry files", owner);
+			}
+			else
+			{
+				log::Warning(log::Assets, "cannot take the writer lock of /Project ({}): this editor writes no registry files", error);
+			}
+		}
+		AssetRegistry = std::make_unique<assets::CAssetRegistry>(std::move(registry));
+		AssetRegistry->Start();
+	}
+#endif
+
+	// 5. Real-time clock.
 	Clock = std::make_unique<CTimer>();
 	Clock->Reset();
 
 #if !defined(FRT_HEADLESS)
-	// 5. Window. DPI awareness must precede its creation: otherwise the process stays
+	// 6. Window. DPI awareness must precede its creation: otherwise the process stays
 	//    DPI-unaware and Windows bitmap-stretches the swap chain on scaled monitors.
 	SDisplaySettings& display = UserSettings.DisplaySettings;
 	if (!Desc.bAllowExclusiveFullscreen && display.FullscreenMode == EFullscreenMode::Fullscreen)
@@ -104,8 +217,31 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 	Graphics->Window->PostRestoreFromMinimizeEvent += [this] () { OnRestoreFromMinimize(); };
 	Input.SetDefaultWindow(static_cast<input::WindowId>(reinterpret_cast<uintptr_t>(Graphics->Window->GetHandle())));
 
-	// 6. Renderer, and the display modes the adapter offers.
-	Graphics->Renderer = std::make_unique<graphics::CRenderer>(Graphics->Window.get());
+	// 7. Renderer, and the display modes the adapter offers. Its programs come from the shader cache:
+	//    -Ddc:Verify=<percent> compiles that share of the hits again and compares the bytes (BUILD002
+	//    on a difference). Dev builds read the shaders from [Render] ShaderRoot when it is set, a copy
+	//    a scripted run may edit (EnginePaths.h). Materials and programs hot reload through the file
+	//    watcher.
+	graphics::rhi::SShaderCacheSettings shaderCache;
+	shaderCache.Cache = DerivedData.get();
+	shaderCache.VerifyPercent = Config.Get("Ddc", "Verify", 0.0f);
+#if FRT_WITH_DEV_TOOLS
+	if (const FString shaderRoot = Config.Get("Render", "ShaderRoot", ""); !shaderRoot.IsEmpty())
+	{
+		const std::optional<std::filesystem::path> root = shaderRoot.TryToPath();
+		std::error_code ec;
+		if (root && std::filesystem::is_directory(*root, ec))
+		{
+			paths::SetShaderRootOverride(*root);
+			log::Info("shader", "sources from {} ([Render] ShaderRoot)", FString::FromPath(paths::GetShaderRootDir()));
+		}
+		else
+		{
+			log::Warning("shader", "[Render] ShaderRoot \"{}\" is no directory; the engine's shaders are used", FString::FromUtf8Lossy(shaderRoot));
+		}
+	}
+#endif
+	Graphics->Renderer = std::make_unique<graphics::CRenderer>(Graphics->Window.get(), *WorkerPool, shaderCache, FileWatcher.get());
 	Graphics->Renderer->Resize(display.FullscreenMode == EFullscreenMode::Fullscreen);
 	DisplayOptions = graphics::GetDisplayOptions(Graphics->Renderer->GetAdapter());
 	// Clamp the config's monitor index before anything indexes per-monitor data with it.
@@ -121,7 +257,7 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 	HeadlessMaterials = std::make_unique<graphics::CMaterialLibrary>();
 #endif
 
-	// 7. UI.
+	// 8. UI.
 #if !defined(FRT_HEADLESS)
 	Graphics->Ui = std::make_unique<CImGuiLayer>();
 	Graphics->Ui->StartUp(*Graphics->Window, *Graphics->Renderer, Desc.UiIniPath);
@@ -129,6 +265,17 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 
 	bStarted = true;
 	return true;
+}
+
+void CEngine::EndAssetRegistry ()
+{
+	if (AssetRegistry)
+	{
+		AssetRegistry->ShutDown();
+		AssetRegistry.reset();
+	}
+	// The lock goes once nothing writes any more.
+	AssetOwnerLock.reset();
 }
 
 void CEngine::ShutDown ()
@@ -155,7 +302,27 @@ void CEngine::ShutDown ()
 	}
 #endif
 	HeadlessMaterials.reset();
+	// Before the file watcher it subscribes to and the worker pool whose drain would drop its exit snapshot
+	// unwritten (CAssetRegistry::ShutDown waits for it).
+	EndAssetRegistry();
+	// After the renderer, whose libraries subscribe to it; the input actions (a member, destroyed
+	// later) end theirs first. Ends every subscription left.
+	InputActions.SetFileWatcher(nullptr);
+	FileWatcher.reset();
+#if FRT_WITH_DEV_TOOLS
+	paths::SetShaderRootOverride({});
+	if (MountTable)
+	{
+		paths::SetMountTable(nullptr);
+		MountTable.reset();
+	}
+#endif
 	Clock.reset();
+	// After the renderer, whose decodes it may still be running: drains (drops what is queued, waits
+	// for what runs, destroys every completion left) and joins the threads.
+	WorkerPool.reset();
+	// After the pool's drain: nothing can be reading or filling it any more (DerivedDataCache.h).
+	DerivedData.reset();
 }
 
 bool CEngine::PumpMessages ()
@@ -189,10 +356,32 @@ float CEngine::BeginFrame ()
 
 	Input.Update(deltaSeconds);
 #if FRT_WITH_DEV_TOOLS
-	InputActions.ReloadModifiedActions();
-	InputActions.ReloadModifiedActionMaps();
+	// Files that changed on disk and have settled: their subscribers reload them now - input actions
+	// and maps right here, before this frame's input is evaluated; materials and shader programs are
+	// marked and read again before the scene is drawn - before the host's simulation and extraction
+	// see the frame.
+	if (FileWatcher)
+	{
+		FileWatcher->Pump();
+	}
 #endif
 	InputActions.EvaluateActionMaps(Input);
+
+	{
+		// What the workers finished since the last frame, before the host's simulation and extraction
+		// see the frame: the frame's one completion pump (waits pump as well, see Jobs/WorkerPool.h).
+		FRT_CPU_SCOPE("Engine.WorkerCompletions");
+		WorkerPool->PumpCompletions();
+	}
+#if FRT_WITH_DEV_TOOLS
+	if (AssetRegistry)
+	{
+		// What those completions brought the registry (scan batches, Analyze results) is committed this frame,
+		// at most its frame budget of it (Assets/AssetRegistry.h).
+		FRT_CPU_SCOPE("Assets.Registry");
+		AssetRegistry->Pump();
+	}
+#endif
 
 #if !defined(FRT_HEADLESS)
 	// Waits for this frame's GPU slot and retires what it used. Before the UI, so everything the

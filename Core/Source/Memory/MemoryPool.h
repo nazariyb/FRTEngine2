@@ -23,7 +23,7 @@ namespace frt::memory
  * data race on the free lists; code that runs on worker threads or before the pool exists uses
  * std::vector and the CRT heap instead. The pool compares thread ids on every call (one compare,
  * AssetManager-Design I8) and reports the first offence of each thread through frt::log (category
- * "memory", a warning).
+ * "memory", a warning); Debug builds then assert, Development builds carry on.
  *
  * It also counts the bytes in its allocated blocks, with their peak, and can call a function when
  * that count first reaches a threshold: plain integers, never atomics, for the same reason.

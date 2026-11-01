@@ -1,0 +1,1845 @@
+#include "Assets/Registry/Snapshot.h"
+
+#include <algorithm>
+#include <array>
+#include <system_error>
+
+#include "Assets/AssetTypes.h"
+#include "Assets/MountPaths.h"
+#include "Assets/Registry/Journal.h"
+#include "Assets/Registry/RegistryBinary.h"
+#include "Assets/Registry/RegistryParallel.h"
+#include "Assets/Registry/RegistryStore.h"
+#include "Assets/Registry/RegistryView.h"
+#include "Platform/Platform.h"
+#include "Platform/Timestamp.h"
+#include "Profiler/CpuProfiler.h"
+
+
+namespace frt::assets
+{
+namespace
+{
+using binary::AppendLittleEndian;
+using binary::AppendText;
+using binary::AppendVarint;
+using binary::CByteReader;
+using namespace registry_binary;
+
+// Every section is at layout 1 in M3; a section's layout changes alone (its readers drop it, nothing else).
+constexpr uint32 SectionLayoutVersion = 1u;
+
+constexpr std::array<ESnapshotSection, 17u> SectionOrder = {
+	ESnapshotSection::Mounts, ESnapshotSection::Strings, ESnapshotSection::Names, ESnapshotSection::Folders, ESnapshotSection::Files,
+	ESnapshotSection::RuleFiles, ESnapshotSection::Assets, ESnapshotSection::SubEntry, ESnapshotSection::Labels, ESnapshotSection::Types,
+	ESnapshotSection::TypeTables, ESnapshotSection::Deps, ESnapshotSection::Aliases, ESnapshotSection::FormerPaths, ESnapshotSection::Metas,
+	ESnapshotSection::Tombstones, ESnapshotSection::Problems };
+
+constexpr size_t SectionSlot (ESnapshotSection Section) noexcept { return static_cast<size_t>(Section) - 1u; }
+
+[[nodiscard]] size_t AlignUp16 (size_t Value) noexcept { return (Value + 15u) & ~size_t(15u); }
+
+bool HasKeys (FStringView TypeName) noexcept
+{
+	const std::optional<reflect::TypeId> type = CAssetTypeRegistry::FindExact(TypeName);
+	return type && !CAssetTypeRegistry::Get(*type).Keys.empty();
+}
+
+// Tag values per key type: numbers and references as 8 bytes, bools and enums as varints, Name and String
+// as indices into NAMES / STRINGS.
+enum class EValueForm : uint8 { Fixed, Varint, Name, String };
+
+EValueForm GetValueForm (ETagType Type) noexcept
+{
+	switch (Type)
+	{
+	case ETagType::Bool:
+	case ETagType::Enum:
+		return EValueForm::Varint;
+	case ETagType::Name:
+		return EValueForm::Name;
+	case ETagType::String:
+		return EValueForm::String;
+	default:
+		return EValueForm::Fixed;
+	}
+}
+
+
+// ---------------- Encoding ----------------
+
+void AppendTextTable (CFastByteWriter& Out, const std::vector<FString>& Texts)
+{
+	Out.Varint(Texts.size());
+	for (const FString& text : Texts)
+	{
+		Out.Text(text);
+	}
+}
+
+// A generous estimate of a section's bytes, so its writer grows once.
+size_t EstimateSectionBytes (const SRegistryImage& Image, ESnapshotSection Section) noexcept
+{
+	const auto textBytes = [] (const std::vector<FString>& Texts)
+	{
+		size_t bytes = 10u;
+		for (const FString& text : Texts)
+		{
+			bytes += text.Len() + 5u;
+		}
+		return bytes;
+	};
+	switch (Section)
+	{
+	case ESnapshotSection::Strings: return textBytes(Image.Strings);
+	case ESnapshotSection::Names: return textBytes(Image.Names);
+	case ESnapshotSection::Folders: return 16u + Image.Folders.size() * 13u;
+	case ESnapshotSection::Files: return 16u + Image.Files.size() * 96u;
+	case ESnapshotSection::Assets: return textBytes(Image.ImporterNames) + Image.Records.size() * 80u;
+	case ESnapshotSection::SubEntry: return 16u + Image.SubEntries.size() * 26u;
+	case ESnapshotSection::Labels: return 16u + Image.Labels.size() * 5u;
+	case ESnapshotSection::Deps: return 32u + Image.Edges.size() * 48u + Image.Companions.size() * 5u;
+	case ESnapshotSection::TypeTables: return 64u + Image.Tags.size() * 15u + (Image.Records.size() + Image.SubEntries.size()) * 6u;
+	default: return 256u;
+	}
+}
+
+void EncodeSection (const SRegistryImage& Image, ESnapshotSection Section, CFastByteWriter& out)
+{
+	out.Reserve(EstimateSectionBytes(Image, Section));
+	switch (Section)
+	{
+	case ESnapshotSection::Mounts:
+		out.Varint(Image.Mounts.size());
+		for (const SImageMount& mount : Image.Mounts)
+		{
+			out.Text(mount.Name);
+			out.Varint(mount.Id);
+			out.U8(mount.bCaseSensitive ? 1u : 0u);
+		}
+		break;
+	case ESnapshotSection::Strings:
+		AppendTextTable(out, Image.Strings);
+		break;
+	case ESnapshotSection::Names:
+		AppendTextTable(out, Image.Names);
+		break;
+	case ESnapshotSection::Folders:
+		out.Varint(Image.Folders.size());
+		for (const SImageFolder& folder : Image.Folders)
+		{
+			out.Varint(folder.Mount);
+			out.OptionalIndex(folder.Parent);
+			out.Varint(folder.Name);
+		}
+		break;
+	case ESnapshotSection::Files:
+		out.Varint(Image.Files.size());
+		for (const SImageFile& file : Image.Files)
+		{
+			out.Varint(file.Folder);
+			out.Varint(file.LeafName);
+			out.Varint(file.Size);
+			out.SignedVarint(file.MTime);
+			out.Identity(file.Identity);
+			out.Hash(file.ContentHash);
+			out.LittleEndian(file.MetaHash, 8u);
+			out.Enum(file.Class);
+			out.Enum(file.MetaState);
+		}
+		break;
+	case ESnapshotSection::RuleFiles:
+		out.Varint(Image.RuleFiles.size());
+		for (const SImageRuleFile& ruleFile : Image.RuleFiles)
+		{
+			out.Varint(ruleFile.Mount);
+			out.OptionalIndex(ruleFile.Folder);
+			out.LittleEndian(ruleFile.RulesHash, 8u);
+		}
+		break;
+	case ESnapshotSection::Assets:
+		// The importer-name table first (only ASSETS refers to it), then the records. A record's labels,
+		// sub-entries, edges and companions follow its predecessor's in their sections: counts only.
+		AppendTextTable(out, Image.ImporterNames);
+		out.Varint(Image.Records.size());
+		for (const SImageRecord& record : Image.Records)
+		{
+			out.Varint(record.File);
+			out.Guid(record.Guid);
+			out.Varint(record.Type);
+			out.OptionalIndex(record.Importer == 0xFFFFu ? ~0u : record.Importer);
+			out.Flags(record.Flags);
+			out.Enum(record.CookRule);
+			out.Varint(record.Chunk);
+			out.OptionalIndex(record.PrimaryName);
+			out.Enum(record.ImportStatus);
+			out.LittleEndian(record.AnalyzeStamp, 8u);
+			out.Varint(record.Labels.Count);
+			out.Varint(record.SubEntries.Count);
+			out.Varint(record.Edges.Count);
+			out.Varint(record.Companions.Count);
+		}
+		break;
+	case ESnapshotSection::SubEntry:
+		out.Varint(Image.SubEntries.size());
+		for (const SImageSubEntry& sub : Image.SubEntries)
+		{
+			out.Varint(sub.Label);
+			out.LittleEndian(sub.SubId, 8u);
+			out.Varint(sub.Type);
+			out.Flags(sub.Flags);
+		}
+		break;
+	case ESnapshotSection::Labels:
+		out.Varint(Image.Labels.size());
+		for (const uint32 label : Image.Labels)
+		{
+			out.Varint((static_cast<uint64>(label & ~RuleLabelBit) << 1u) | ((label & RuleLabelBit) != 0u ? 1u : 0u));
+		}
+		break;
+	case ESnapshotSection::Types:
+		AppendTextTable(out, Image.TypeNames);
+		break;
+	case ESnapshotSection::Deps:
+		out.Varint(Image.Edges.size());
+		for (const SImageEdge& edge : Image.Edges)
+		{
+			out.LittleEndian(edge.FromSub, 8u);
+			out.U8(edge.Target.IsValid() ? 1u : 0u);
+			if (edge.Target.IsValid())
+			{
+				out.Guid(edge.Target.Guid);
+				out.LittleEndian(edge.Target.SubId, 8u);
+			}
+			out.OptionalIndex(edge.TargetPath);
+			out.Flags(edge.Flags);
+			out.OptionalIndex(edge.FieldPath);
+		}
+		out.Varint(Image.Companions.size());
+		for (const uint32 companion : Image.Companions)
+		{
+			out.Varint(companion);
+		}
+		break;
+	case ESnapshotSection::Problems:
+		out.Varint(Image.Problems.size());
+		for (const SImageProblems& problems : Image.Problems)
+		{
+			out.Varint(problems.Subject);
+			out.Enum(problems.Source);
+			out.Append([&] (std::vector<uint8>& Bytes) { AppendDiagnostics(Bytes, problems.Diagnostics); });
+		}
+		break;
+	case ESnapshotSection::TypeTables:
+	{
+		/**
+		 * One table per known type with keys that some record or sub-entry of the image has (a table with no
+		 * rows too, so "no table" always means "lost"): its name, TagSchemaHash, then its payload framed with
+		 * its own size and checksum, so one damaged table is dropped alone. Payload: the keys by name, the rows
+		 * (record index << 1, or sub-entry index << 1 | 1, for rows with tags), then column by column the
+		 * number of values per row and the values.
+		 */
+		struct SRow { uint32 Owner = 0u; SPoolRange Tags; };
+		std::vector<std::vector<SRow>> rowsByType(Image.TypeNames.size());
+		std::vector<uint8> used(Image.TypeNames.size(), 0u);
+		for (uint32 i = 0u; i < Image.Records.size(); ++i)
+		{
+			const SImageRecord& record = Image.Records[i];
+			if (record.Type < used.size())
+			{
+				used[record.Type] = 1u;
+				if (record.Tags.Count > 0u)
+				{
+					rowsByType[record.Type].push_back(SRow { i << 1u, record.Tags });
+				}
+			}
+		}
+		for (uint32 i = 0u; i < Image.SubEntries.size(); ++i)
+		{
+			const SImageSubEntry& sub = Image.SubEntries[i];
+			if (sub.Type < used.size())
+			{
+				used[sub.Type] = 1u;
+				if (sub.Tags.Count > 0u)
+				{
+					rowsByType[sub.Type].push_back(SRow { (i << 1u) | 1u, sub.Tags });
+				}
+			}
+		}
+		uint32 tableCount = 0u;
+		std::vector<uint8> tables;
+		std::vector<uint8> payload;
+		std::vector<int32> keyOfTag(Image.Tags.size(), -1);   // per image tag: its key in its owner's type, -1 none
+		std::vector<std::pair<uint32, int32>> keyOfName;      // per type: image name -> key (a type has a few keys)
+		CFastByteWriter tableWriter(tables);
+		for (uint32 t = 0u; t < Image.TypeNames.size(); ++t)
+		{
+			const std::optional<reflect::TypeId> type = CAssetTypeRegistry::FindExact(Image.TypeNames[t]);
+			if (used[t] == 0u || !type || CAssetTypeRegistry::Get(*type).Keys.empty())
+			{
+				continue;
+			}
+			const SAssetTypeInfo& info = CAssetTypeRegistry::Get(*type);
+			const std::vector<SRow>& rows = rowsByType[t];
+			// Each tag's key, by name and type, once: the columns below compare key indices.
+			keyOfName.clear();
+			size_t tagCount = 0u;
+			for (const SRow& row : rows)
+			{
+				for (uint32 i = row.Tags.Begin; i < row.Tags.Begin + row.Tags.Count && i < Image.Tags.size(); ++i)
+				{
+					const SImageTag& tag = Image.Tags[i];
+					const auto known = std::find_if(keyOfName.begin(), keyOfName.end(), [&] (const auto& Entry) { return Entry.first == tag.Key; });
+					int32 key = -1;
+					if (known != keyOfName.end())
+					{
+						key = known->second;
+					}
+					else
+					{
+						for (uint32 k = 0u; k < info.Keys.size() && tag.Key < Image.Names.size(); ++k)
+						{
+							if (Image.Names[tag.Key].View() == FStringView(info.Keys[k].Name))
+							{
+								key = static_cast<int32>(k);
+								break;
+							}
+						}
+						keyOfName.emplace_back(tag.Key, key);
+					}
+					keyOfTag[i] = key >= 0 && tag.Type == info.Keys[key].Type ? key : -1;
+					++tagCount;
+				}
+			}
+			payload.clear();
+			{
+				CFastByteWriter writer(payload);
+				writer.Reserve(64u + rows.size() * (5u + info.Keys.size()) + tagCount * 10u);
+				writer.Varint(info.Keys.size());
+				for (const SStaticTagKey& key : info.Keys)
+				{
+					writer.Text(key.Name);
+					writer.Enum(key.Type);
+					writer.Flags(key.Flags);
+				}
+				writer.Varint(rows.size());
+				for (const SRow& row : rows)
+				{
+					writer.Varint(row.Owner);
+				}
+				for (uint32 k = 0u; k < info.Keys.size(); ++k)
+				{
+					const EValueForm form = GetValueForm(info.Keys[k].Type);
+					for (const SRow& row : rows)
+					{
+						const uint32 end = (std::min)(row.Tags.Begin + row.Tags.Count, static_cast<uint32>(Image.Tags.size()));
+						uint32 count = 0u;
+						for (uint32 i = row.Tags.Begin; i < end; ++i)
+						{
+							count += keyOfTag[i] == static_cast<int32>(k) ? 1u : 0u;
+						}
+						writer.Varint(count);
+						for (uint32 i = row.Tags.Begin; count > 0u && i < end; ++i)
+						{
+							const SImageTag& tag = Image.Tags[i];
+							if (keyOfTag[i] != static_cast<int32>(k))
+							{
+								continue;
+							}
+							switch (form)
+							{
+							case EValueForm::Fixed: writer.LittleEndian(tag.Bits, 8u); break;
+							case EValueForm::Varint: writer.Varint(tag.Bits); break;
+							case EValueForm::Name:
+							case EValueForm::String: writer.Varint(tag.Text); break;
+							}
+						}
+					}
+				}
+			}
+			tableWriter.Text(info.Name);
+			tableWriter.LittleEndian(ComputeTagSchemaHash(info), 8u);
+			tableWriter.Varint(payload.size());
+			tableWriter.LittleEndian(hash::Xxh3_64(payload), 8u);
+			tableWriter.Raw(payload);
+			++tableCount;
+		}
+		tableWriter.Finish();
+		out.Varint(tableCount);
+		out.Raw(tables);
+		break;
+	}
+	case ESnapshotSection::Aliases:
+	case ESnapshotSection::FormerPaths:
+	case ESnapshotSection::Metas:
+	case ESnapshotSection::Tombstones:
+		out.Varint(0u);   // M4 fills them
+		break;
+	}
+}
+
+
+// ---------------- Decoding ----------------
+
+// A section as the table names it: its bytes when its layout and checksum are right.
+struct SSectionSpan
+{
+	bool bPresent = false;       // listed in the table and inside the file
+	bool bValid = false;         // ... with this build's layout and a matching checksum
+	std::span<const uint8> Bytes;
+};
+
+bool ReadTextTable (CByteReader& Reader, std::vector<FString>& Out)
+{
+	uint32 count = 0u;
+	if (!ReadCount(Reader, 1u, count))
+	{
+		return false;
+	}
+	Out.resize(count);
+	for (FString& text : Out)
+	{
+		if (!Reader.ReadText(text))
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
+// Per-record counts from ASSETS (the ranges are their prefix sums).
+struct SRecordCounts
+{
+	uint32 Labels = 0u;
+	uint32 SubEntries = 0u;
+	uint32 Edges = 0u;
+	uint32 Companions = 0u;
+};
+
+// A type table decoded on its own (CSnapshotDecoder::DecodeTypeTable), before it goes into the image.
+struct STypeTableResult
+{
+	enum class EState : uint8 { Malformed, BadChecksum, OtherSchema, Decoded };
+	EState State = EState::Malformed;
+	std::vector<FString> KeyNames;                        // as read, up to a failure
+	std::vector<SImageTag> Tags;                          // Key: the key's index in the table
+	std::vector<std::pair<uint32, SPoolRange>> Owners;    // per row of this type: owner (index << 1 | sub), its range in Tags
+};
+
+/**
+ * One snapshot file decoded into an image of its own (indices local to it). Applies §5.3's per-section rules
+ * (the header comment of Snapshot.h): drops what a bad section takes with it and flags what must be analyzed
+ * or re-evaluated again.
+ */
+class CSnapshotDecoder
+{
+public:
+	CSnapshotDecoder (std::span<const uint8> InBytes, SSnapshotFileReport& InReport, jobs::CWorkerPool* InPool)
+		: Bytes(InBytes)
+		, Report(InReport)
+		, Pool(InPool)
+	{}
+
+	// The ProjectId the header names (after Decode).
+	[[nodiscard]] const SGuid& GetProjectId () const noexcept { return ProjectId; }
+
+	// False: the file is rejected (Report says why).
+	bool Decode (const SGuid& ExpectedProjectId, bool bAnyProject, SRegistryImage& Out)
+	{
+		if (!ReadHeader(ExpectedProjectId, bAnyProject))
+		{
+			return false;
+		}
+		Image = &Out;
+		// STRINGS and TYPES depend on no other section: parsed while the required ones are.
+		std::optional<ESnapshotSection> failed;
+		const auto required = [&]
+		{
+			for (const ESnapshotSection section : { ESnapshotSection::Mounts, ESnapshotSection::Names, ESnapshotSection::Folders, ESnapshotSection::Files })
+			{
+				if (!DecodeRequired(section))
+				{
+					failed = section;
+					return;
+				}
+			}
+		};
+		const auto strings = [&] { bStringsParsed = Parse(ESnapshotSection::Strings, [&] (CByteReader& Reader) { return ReadTextTable(Reader, Out.Strings); }); };
+		const auto types = [&] { bTypesParsed = Parse(ESnapshotSection::Types, [&] (CByteReader& Reader) { return ReadTextTable(Reader, Out.TypeNames); }); };
+		const TFunctionRef<void ()> tasks[] = { required, strings, types };
+		RunTasks(Pool, tasks);
+		if (failed)
+		{
+			Report.State = ESnapshotFileState::Rejected;
+			Report.Message = FString::Format("its {} section is damaged or of another layout; the file was not used", enum_::ToString(*failed));
+			Report.DroppedSections.push_back(*failed);
+			return false;
+		}
+		DecodeOptional();
+		return true;
+	}
+
+private:
+	std::span<const uint8> Bytes;
+	SSnapshotFileReport& Report;
+	jobs::CWorkerPool* Pool = nullptr;
+	SRegistryImage* Image = nullptr;
+	std::array<SSectionSpan, SectionOrder.size()> Sections {};
+	std::vector<SRecordCounts> Counts;
+	SGuid ProjectId;
+	bool bStringsParsed = false;            // STRINGS parsed (Decode)
+	bool bTypesParsed = false;              // TYPES parsed (Decode)
+
+	bool Reject (FString Message)
+	{
+		Report.State = ESnapshotFileState::Rejected;
+		Report.Message = std::move(Message);
+		return false;
+	}
+
+	bool ReadHeader (const SGuid& ExpectedProjectId, bool bAnyProject)
+	{
+		CByteReader reader(Bytes);
+		uint64 version = 0u;
+		uint64 sectionCount = 0u;
+		SGuid projectId;
+		uint64 journalBase = 0u;
+		uint64 rulesBasis = 0u;
+		if (Bytes.size() < SnapshotHeaderBytes || !reader.Expect(SnapshotMagic))
+		{
+			return Reject("not a registry snapshot");
+		}
+		if (!reader.ReadLittleEndian(version, 4u) || !reader.ReadLittleEndian(sectionCount, 4u) || !ReadGuid(reader, projectId)
+			|| !ReadU64(reader, journalBase) || !ReadU64(reader, rulesBasis))
+		{
+			return Reject("its header is cut short");
+		}
+		if (version != SnapshotFormatVersion)
+		{
+			return Reject(FString::Format("snapshot format {} (this build reads {})", version, SnapshotFormatVersion));
+		}
+		if (!bAnyProject && !ExpectedProjectId.IsValid())
+		{
+			return Reject("this process has no ProjectId for its root, so no snapshot of it is taken");
+		}
+		if (!bAnyProject && projectId != ExpectedProjectId)
+		{
+			return Reject(FString::Format("it belongs to project {}, not {}", projectId.ToString(), ExpectedProjectId.ToString()));
+		}
+		Report.JournalBase = journalBase;
+		Report.RulesBasis = rulesBasis;
+		ProjectId = projectId;
+		if (sectionCount > (Bytes.size() - SnapshotHeaderBytes) / SnapshotSectionEntryBytes)
+		{
+			return Reject("its section table runs past the end of the file");
+		}
+		std::array<uint64, SectionOrder.size()> checksums {};
+		for (uint64 i = 0u; i < sectionCount; ++i)
+		{
+			const size_t at = SnapshotHeaderBytes + static_cast<size_t>(i) * SnapshotSectionEntryBytes;
+			const uint64 id = binary::ReadLittleEndianAt(Bytes, at, 4u);
+			const uint64 layout = binary::ReadLittleEndianAt(Bytes, at + 4u, 4u);
+			const uint64 offset = binary::ReadLittleEndianAt(Bytes, at + 8u, 8u);
+			const uint64 size = binary::ReadLittleEndianAt(Bytes, at + 16u, 8u);
+			if (id == 0u || id > SectionOrder.size() || Sections[id - 1u].bPresent || offset > Bytes.size() || size > Bytes.size() - offset)
+			{
+				continue;   // unknown (a later build's) or out of the file: as if absent
+			}
+			SSectionSpan& section = Sections[id - 1u];
+			section.bPresent = true;
+			section.Bytes = Bytes.subspan(static_cast<size_t>(offset), static_cast<size_t>(size));
+			section.bValid = layout == SectionLayoutVersion;
+			checksums[id - 1u] = binary::ReadLittleEndianAt(Bytes, at + 24u, 8u);
+		}
+		// The checksums, a section a task (the sections are independent; XXH3 of one is not split).
+		std::vector<uint32> listed;
+		for (uint32 slot = 0u; slot < Sections.size(); ++slot)
+		{
+			if (Sections[slot].bValid)
+			{
+				listed.push_back(slot);
+			}
+		}
+		std::sort(listed.begin(), listed.end(), [&] (uint32 A, uint32 B) { return Sections[A].Bytes.size() > Sections[B].Bytes.size(); });
+		const std::vector<SChunkRange> chunks = SplitIntoChunks(Pool, static_cast<uint32>(listed.size()), 1u);
+		RunChunks(Pool, chunks, [&] (uint32, uint32 Begin, uint32 End)
+		{
+			for (uint32 i = Begin; i < End; ++i)
+			{
+				SSectionSpan& section = Sections[listed[i]];
+				section.bValid = hash::Xxh3_64(section.Bytes) == checksums[listed[i]];
+			}
+		});
+		return true;
+	}
+
+	void Drop (ESnapshotSection Section)
+	{
+		if (std::find(Report.DroppedSections.begin(), Report.DroppedSections.end(), Section) == Report.DroppedSections.end())
+		{
+			Report.DroppedSections.push_back(Section);
+		}
+	}
+
+	// Runs Parse over a valid section; a parse that fails or leaves bytes over makes it invalid.
+	template <typename TParse>
+	bool Parse (ESnapshotSection Section, TParse&& ParseBody)
+	{
+		SSectionSpan& section = Sections[SectionSlot(Section)];
+		if (!section.bValid)
+		{
+			return false;
+		}
+		CByteReader reader(section.Bytes);
+		if (!ParseBody(reader) || !reader.IsAtEnd())
+		{
+			section.bValid = false;
+			return false;
+		}
+		return true;
+	}
+
+	bool DecodeRequired (ESnapshotSection Section)
+	{
+		SRegistryImage& image = *Image;
+		switch (Section)
+		{
+		case ESnapshotSection::Mounts:
+			return Parse(Section, [&] (CByteReader& Reader)
+			{
+				uint32 count = 0u;
+				if (!ReadCount(Reader, 3u, count))
+				{
+					return false;
+				}
+				image.Mounts.resize(count);
+				for (uint32 i = 0u; i < count; ++i)
+				{
+					SImageMount& mount = image.Mounts[i];
+					uint8 caseSensitive = 0u;
+					if (!Reader.ReadText(mount.Name) || !ReadU16Varint(Reader, mount.Id) || !Reader.ReadU8(caseSensitive) || caseSensitive > 1u
+						|| mount.Name.IsEmpty())
+					{
+						return false;
+					}
+					mount.bCaseSensitive = caseSensitive != 0u;
+					for (uint32 j = 0u; j < i; ++j)
+					{
+						if (image.Mounts[j].Name == mount.Name)
+						{
+							return false;
+						}
+					}
+				}
+				return true;
+			});
+		case ESnapshotSection::Names:
+			return Parse(Section, [&] (CByteReader& Reader) { return ReadTextTable(Reader, image.Names); });
+		case ESnapshotSection::Folders:
+			return Parse(Section, [&] (CByteReader& Reader)
+			{
+				uint32 count = 0u;
+				if (!ReadCount(Reader, 3u, count))
+				{
+					return false;
+				}
+				image.Folders.resize(count);
+				for (SImageFolder& folder : image.Folders)
+				{
+					if (!ReadU16Varint(Reader, folder.Mount) || !ReadOptionalIndex(Reader, folder.Parent) || !ReadU32Varint(Reader, folder.Name)
+						|| folder.Mount >= image.Mounts.size() || (folder.Parent != ~0u && folder.Parent >= count) || folder.Name >= image.Names.size())
+					{
+						return false;
+					}
+				}
+				return true;
+			});
+		case ESnapshotSection::Files:
+			return Parse(Section, [&] (CByteReader& Reader)
+			{
+				uint32 count = 0u;
+				if (!ReadCount(Reader, 58u, count))
+				{
+					return false;
+				}
+				image.Files.resize(count);
+				for (SImageFile& file : image.Files)
+				{
+					if (!ReadU32Varint(Reader, file.Folder) || !ReadU32Varint(Reader, file.LeafName) || !Reader.ReadVarint(file.Size)
+						|| !ReadSignedVarint(Reader, file.MTime) || !ReadIdentity(Reader, file.Identity) || !Reader.ReadHash(file.ContentHash)
+						|| !ReadU64(Reader, file.MetaHash) || !ReadEnum(Reader, EFileClass::Excluded, file.Class)
+						|| !ReadEnum(Reader, EMetaState::MissingMeta, file.MetaState) || file.Folder >= image.Folders.size()
+						|| file.LeafName >= image.Names.size())
+					{
+						return false;
+					}
+				}
+				return true;
+			});
+		default:
+			return false;
+		}
+	}
+
+	void DecodeOptional ()
+	{
+		SRegistryImage& image = *Image;
+		const bool bStrings = bStringsParsed;
+		const bool bTypes = bTypesParsed;
+
+		if (!bStrings)
+		{
+			image.Strings.clear();
+		}
+		if (!bTypes)
+		{
+			image.TypeNames.clear();
+		}
+
+		// RULEFILES and ASSETS at once, then the sections that need ASSETS' counts at once; each writes its own
+		// image vectors and only reads the sections before it.
+		bool bRuleFiles = false;
+		bool bAssets = false;
+		const auto parseRuleFiles = [&] { bRuleFiles = Parse(ESnapshotSection::RuleFiles, [&] (CByteReader& Reader)
+		{
+			uint32 count = 0u;
+			if (!ReadCount(Reader, 10u, count))
+			{
+				return false;
+			}
+			image.RuleFiles.resize(count);
+			for (SImageRuleFile& ruleFile : image.RuleFiles)
+			{
+				if (!ReadU16Varint(Reader, ruleFile.Mount) || !ReadOptionalIndex(Reader, ruleFile.Folder) || !ReadU64(Reader, ruleFile.RulesHash)
+					|| ruleFile.Mount >= image.Mounts.size() || (ruleFile.Folder != ~0u && ruleFile.Folder >= image.Folders.size()))
+				{
+					return false;
+				}
+			}
+			return true;
+		}); };
+
+		// Records. Without TYPES, every type index is meaningless: they all point at an empty name, which no
+		// type has (frt.Unknown, Schemaless | StaleTags), and the records are analyzed again.
+		const auto parseAssets = [&] { bAssets = Parse(ESnapshotSection::Assets, [&] (CByteReader& Reader)
+		{
+			uint32 count = 0u;
+			if (!ReadTextTable(Reader, image.ImporterNames) || !ReadCount(Reader, 33u, count))
+			{
+				return false;
+			}
+			image.Records.resize(count);
+			Counts.resize(count);
+			for (uint32 i = 0u; i < count; ++i)
+			{
+				SImageRecord& record = image.Records[i];
+				SRecordCounts& counts = Counts[i];
+				uint32 importer = ~0u;
+				if (!ReadU32Varint(Reader, record.File) || !ReadGuid(Reader, record.Guid) || !ReadU16Varint(Reader, record.Type)
+					|| !ReadOptionalIndex(Reader, importer) || !ReadFlags(Reader, record.Flags) || !ReadEnum(Reader, ECookRule::DevelopmentOnly, record.CookRule)
+					|| !ReadU16Varint(Reader, record.Chunk) || !ReadOptionalIndex(Reader, record.PrimaryName)
+					|| !ReadEnum(Reader, EImportStatus::ImporterUnavailable, record.ImportStatus) || !ReadU64(Reader, record.AnalyzeStamp)
+					|| !ReadU32Varint(Reader, counts.Labels) || !ReadU32Varint(Reader, counts.SubEntries) || !ReadU32Varint(Reader, counts.Edges)
+					|| !ReadU32Varint(Reader, counts.Companions) || record.File >= image.Files.size()
+					|| (bTypes && record.Type >= image.TypeNames.size()) || (importer != ~0u && importer >= image.ImporterNames.size())
+					|| (record.PrimaryName != ~0u && record.PrimaryName >= image.Names.size()))
+				{
+					return false;
+				}
+				record.Importer = importer == ~0u ? uint16(0xFFFFu) : static_cast<uint16>(importer);
+			}
+			return true;
+		}); };
+		{
+			const TFunctionRef<void ()> tasks[] = { parseAssets, parseRuleFiles };
+			RunTasks(Pool, tasks);
+		}
+		if (!bAssets)
+		{
+			image.Records.clear();
+			image.ImporterNames.clear();
+			Counts.clear();
+			Drop(ESnapshotSection::Assets);
+		}
+
+		const auto sumOf = [&] (uint32 SRecordCounts::* Member)
+		{
+			uint64 sum = 0u;
+			for (const SRecordCounts& counts : Counts)
+			{
+				sum += counts.*Member;
+			}
+			return sum;
+		};
+
+		bool bSubs = false;
+		bool bLabels = false;
+		bool bDeps = false;
+		bool bProblems = false;
+		const auto parseSubs = [&] { bSubs = bAssets && Parse(ESnapshotSection::SubEntry, [&] (CByteReader& Reader)
+		{
+			uint32 count = 0u;
+			if (!ReadCount(Reader, 11u, count) || count != sumOf(&SRecordCounts::SubEntries))
+			{
+				return false;
+			}
+			image.SubEntries.resize(count);
+			for (SImageSubEntry& sub : image.SubEntries)
+			{
+				if (!ReadU32Varint(Reader, sub.Label) || !ReadU64(Reader, sub.SubId) || !ReadU16Varint(Reader, sub.Type) || !ReadFlags(Reader, sub.Flags)
+					|| sub.Label >= image.Names.size() || (bTypes && sub.Type >= image.TypeNames.size()))
+				{
+					return false;
+				}
+			}
+			return true;
+		}); };
+		const auto parseLabels = [&] { bLabels = bAssets && Parse(ESnapshotSection::Labels, [&] (CByteReader& Reader)
+		{
+			uint32 count = 0u;
+			if (!ReadCount(Reader, 1u, count) || count != sumOf(&SRecordCounts::Labels))
+			{
+				return false;
+			}
+			image.Labels.resize(count);
+			for (uint32& label : image.Labels)
+			{
+				uint64 value = 0u;
+				if (!Reader.ReadVarint(value) || (value >> 1u) >= image.Names.size())
+				{
+					return false;
+				}
+				label = static_cast<uint32>(value >> 1u) | ((value & 1u) != 0u ? RuleLabelBit : 0u);
+			}
+			return true;
+		}); };
+		const auto parseDeps = [&] { bDeps = bAssets && bStrings && Parse(ESnapshotSection::Deps, [&] (CByteReader& Reader)
+		{
+			uint32 count = 0u;
+			if (!ReadCount(Reader, 12u, count) || count != sumOf(&SRecordCounts::Edges))
+			{
+				return false;
+			}
+			image.Edges.resize(count);
+			for (SImageEdge& edge : image.Edges)
+			{
+				uint8 hasTarget = 0u;
+				if (!ReadU64(Reader, edge.FromSub) || !Reader.ReadU8(hasTarget) || hasTarget > 1u)
+				{
+					return false;
+				}
+				if (hasTarget != 0u && (!ReadGuid(Reader, edge.Target.Guid) || !ReadU64(Reader, edge.Target.SubId)))
+				{
+					return false;
+				}
+				if (!ReadOptionalIndex(Reader, edge.TargetPath) || !ReadFlags(Reader, edge.Flags) || !ReadOptionalIndex(Reader, edge.FieldPath)
+					|| (edge.TargetPath != ~0u && edge.TargetPath >= image.Strings.size()) || (edge.FieldPath != ~0u && edge.FieldPath >= image.Names.size()))
+				{
+					return false;
+				}
+			}
+			if (!ReadCount(Reader, 1u, count) || count != sumOf(&SRecordCounts::Companions))
+			{
+				return false;
+			}
+			image.Companions.resize(count);
+			for (uint32& companion : image.Companions)
+			{
+				if (!ReadU32Varint(Reader, companion) || companion >= image.Strings.size())
+				{
+					return false;
+				}
+			}
+			return true;
+		}); };
+		const auto parseProblems = [&] { bProblems = bStrings && Parse(ESnapshotSection::Problems, [&] (CByteReader& Reader)
+		{
+			uint32 count = 0u;
+			if (!ReadCount(Reader, 3u, count))
+			{
+				return false;
+			}
+			image.Problems.resize(count);
+			for (SImageProblems& problems : image.Problems)
+			{
+				if (!ReadU32Varint(Reader, problems.Subject) || !ReadEnum(Reader, EProblemSource::Unclaimed, problems.Source)
+					|| !ReadDiagnostics(Reader, problems.Diagnostics) || problems.Subject >= image.Strings.size())
+				{
+					return false;
+				}
+			}
+			return true;
+		}); };
+		{
+			const TFunctionRef<void ()> tasks[] = { parseDeps, parseSubs, parseLabels, parseProblems };
+			RunTasks(Pool, tasks);
+		}
+		if (!bSubs)
+		{
+			image.SubEntries.clear();
+		}
+		if (!bLabels)
+		{
+			image.Labels.clear();
+		}
+		if (!bDeps)
+		{
+			image.Edges.clear();
+			image.Companions.clear();
+		}
+		if (!bProblems)
+		{
+			image.Problems.clear();
+		}
+
+		// Ranges: each record's slice follows its predecessor's.
+		uint32 labelAt = 0u;
+		uint32 subAt = 0u;
+		uint32 edgeAt = 0u;
+		uint32 companionAt = 0u;
+		std::vector<uint8> stale(image.Records.size(), 0u);
+		for (uint32 i = 0u; i < image.Records.size(); ++i)
+		{
+			SImageRecord& record = image.Records[i];
+			const SRecordCounts& counts = Counts[i];
+			record.Labels = bLabels ? SPoolRange { labelAt, counts.Labels } : SPoolRange {};
+			record.SubEntries = bSubs ? SPoolRange { subAt, counts.SubEntries } : SPoolRange {};
+			// An edge may name one of the record's sub-entries: without them, its edges go too.
+			const bool bEdges = bDeps && (bSubs || counts.SubEntries == 0u);
+			record.Edges = bEdges ? SPoolRange { edgeAt, counts.Edges } : SPoolRange {};
+			record.Companions = bDeps ? SPoolRange { companionAt, counts.Companions } : SPoolRange {};
+			record.Tags = SPoolRange {};
+			labelAt += counts.Labels;
+			subAt += counts.SubEntries;
+			edgeAt += counts.Edges;
+			companionAt += counts.Companions;
+			if ((!bSubs && counts.SubEntries > 0u) || (!bEdges && counts.Edges > 0u) || (!bDeps && counts.Companions > 0u))
+			{
+				stale[i] = 1u;
+			}
+		}
+
+		// Without TYPES every record and sub-entry names the empty type (none has it).
+		if (!bTypes)
+		{
+			image.TypeNames.assign(1u, FString());
+			for (SImageRecord& record : image.Records)
+			{
+				record.Type = 0u;
+			}
+			for (SImageSubEntry& sub : image.SubEntries)
+			{
+				sub.Type = 0u;
+			}
+		}
+
+		const std::vector<uint8> tablesOk = DecodeTypeTables(bTypes, bStrings);
+
+		// A record whose type (or one of whose sub-entries' types) has keys but no table lost its tags.
+		const auto lostTags = [&] (uint16 Type) { return Type < tablesOk.size() && tablesOk[Type] == 0u && HasKeys(image.TypeNames[Type]); };
+		for (uint32 i = 0u; i < image.Records.size(); ++i)
+		{
+			const SImageRecord& record = image.Records[i];
+			bool bLost = lostTags(record.Type);
+			for (uint32 s = record.SubEntries.Begin; !bLost && s < record.SubEntries.Begin + record.SubEntries.Count; ++s)
+			{
+				bLost = lostTags(image.SubEntries[s].Type);
+			}
+			if (bLost)
+			{
+				stale[i] = 1u;
+			}
+		}
+
+		// Losses (Snapshot.h): Analyze outputs make records stale, rule outputs drop the rule hashes.
+		const bool bAllStale = !bTypes || !bProblems;
+		const bool bDropRuleFiles = !bRuleFiles || (bAssets && !bLabels) || !bProblems;
+		for (uint32 i = 0u; i < image.Records.size(); ++i)
+		{
+			if (bAllStale || stale[i] != 0u)
+			{
+				image.Records[i].Flags |= ERecordFlags::StaleTags;
+				image.Records[i].AnalyzeStamp = 0u;
+				++Report.StaleRecords;
+			}
+		}
+		if (bDropRuleFiles)
+		{
+			image.RuleFiles.clear();
+			Report.bRuleFilesDropped = true;
+		}
+		Report.Records = static_cast<uint32>(image.Records.size());
+
+		for (const auto& [section, bOk] : { std::pair(ESnapshotSection::Strings, bStrings), std::pair(ESnapshotSection::Types, bTypes),
+			std::pair(ESnapshotSection::RuleFiles, !bDropRuleFiles), std::pair(ESnapshotSection::SubEntry, bSubs || !bAssets),
+			std::pair(ESnapshotSection::Labels, bLabels || !bAssets), std::pair(ESnapshotSection::Deps, bDeps || !bAssets),
+			std::pair(ESnapshotSection::Problems, bProblems) })
+		{
+			if (!bOk)
+			{
+				Drop(section);
+			}
+		}
+		if (!bAssets)
+		{
+			for (const ESnapshotSection section : { ESnapshotSection::SubEntry, ESnapshotSection::Labels, ESnapshotSection::Deps, ESnapshotSection::TypeTables })
+			{
+				Drop(section);
+			}
+		}
+	}
+
+	/**
+	 * TYPETABLES: per table its own checksum, so a section whose checksum fails still gives the tables that are
+	 * intact (its framing permitting). Returns, per image type index, whether that type's table was taken.
+	 */
+	std::vector<uint8> DecodeTypeTables (bool bTypes, bool bStrings)
+	{
+		SRegistryImage& image = *Image;
+		std::vector<uint8> taken(image.TypeNames.size(), 0u);
+		const SSectionSpan& section = Sections[SectionSlot(ESnapshotSection::TypeTables)];
+		if (image.Records.empty())
+		{
+			return taken;
+		}
+		if (!bTypes)
+		{
+			Drop(ESnapshotSection::TypeTables);   // its rows cannot be matched to types: the records are analyzed again
+			return taken;
+		}
+		if (!section.bPresent)
+		{
+			Drop(ESnapshotSection::TypeTables);
+			return taken;
+		}
+		// The layout is checked even when the checksum failed: another layout means nothing in it is ours.
+		{
+			const size_t entry = [&]
+			{
+				const uint64 count = binary::ReadLittleEndianAt(Bytes, 12u, 4u);
+				for (uint64 i = 0u; i < count; ++i)
+				{
+					const size_t at = SnapshotHeaderBytes + static_cast<size_t>(i) * SnapshotSectionEntryBytes;
+					if (binary::ReadLittleEndianAt(Bytes, at, 4u) == static_cast<uint32>(ESnapshotSection::TypeTables))
+					{
+						return at;
+					}
+				}
+				return size_t(0u);
+			}();
+			if (entry == 0u || binary::ReadLittleEndianAt(Bytes, entry + 4u, 4u) != SectionLayoutVersion)
+			{
+				Drop(ESnapshotSection::TypeTables);
+				return taken;
+			}
+		}
+
+		// The image's type index of a name, by linear search (a handful of types).
+		const auto findTypeIndex = [&] (FStringView Name) -> int32
+		{
+			for (uint32 t = 0u; t < image.TypeNames.size(); ++t)
+			{
+				if (image.TypeNames[t].View() == Name)
+				{
+					return static_cast<int32>(t);
+				}
+			}
+			return -1;
+		};
+
+		// The framing first (one pass over the section), then the tables, a table a task: each is checked and
+		// decoded into a table of its own (STypeTableResult) against the image as the sections before left it,
+		// and the results go into the image in table order, as decoding one table after the other would.
+		struct STableJob
+		{
+			FString Name;
+			uint16 TypeIndex = 0u;
+			const SAssetTypeInfo* Info = nullptr;
+			uint64 SchemaHash = 0u;
+			uint64 Checksum = 0u;
+			std::span<const uint8> Payload;
+			STypeTableResult Result;
+		};
+		std::vector<STableJob> jobs;
+		CByteReader reader(section.Bytes);
+		uint32 tableCount = 0u;
+		if (!ReadCount(reader, 18u, tableCount))
+		{
+			Drop(ESnapshotSection::TypeTables);
+			return taken;
+		}
+		for (uint32 t = 0u; t < tableCount; ++t)
+		{
+			STableJob job;
+			uint64 size = 0u;
+			if (!reader.ReadText(job.Name) || !ReadU64(reader, job.SchemaHash) || !reader.ReadVarint(size) || !ReadU64(reader, job.Checksum)
+				|| !reader.ReadSpan(size, job.Payload))
+			{
+				Drop(ESnapshotSection::TypeTables);   // the framing is broken: the tables after this point are lost
+				break;
+			}
+			const int32 typeIndex = findTypeIndex(job.Name);
+			const std::optional<reflect::TypeId> type = CAssetTypeRegistry::FindExact(job.Name);
+			if (typeIndex < 0 || !type)
+			{
+				continue;   // a type this build does not know: its records are frt.Unknown anyway
+			}
+			job.TypeIndex = static_cast<uint16>(typeIndex);
+			job.Info = &CAssetTypeRegistry::Get(*type);
+			jobs.push_back(std::move(job));
+		}
+		const uint32 imageNames = static_cast<uint32>(image.Names.size());
+		std::vector<uint32> bySize(jobs.size());
+		for (uint32 j = 0u; j < jobs.size(); ++j)
+		{
+			bySize[j] = j;
+		}
+		std::sort(bySize.begin(), bySize.end(), [&] (uint32 A, uint32 B) { return jobs[A].Payload.size() > jobs[B].Payload.size(); });
+		const std::vector<SChunkRange> chunks = SplitIntoChunks(Pool, static_cast<uint32>(jobs.size()), 1u);
+		RunChunks(Pool, chunks, [&] (uint32, uint32 Begin, uint32 End)
+		{
+			for (uint32 i = Begin; i < End; ++i)
+			{
+				STableJob& job = jobs[bySize[i]];
+				if (hash::Xxh3_64(job.Payload) != job.Checksum)
+				{
+					job.Result.State = STypeTableResult::EState::BadChecksum;
+				}
+				else if (job.SchemaHash != ComputeTagSchemaHash(*job.Info))
+				{
+					job.Result.State = STypeTableResult::EState::OtherSchema;   // this build declares other keys: gather the type again
+				}
+				else
+				{
+					DecodeTypeTable(job.Payload, *job.Info, job.TypeIndex, bStrings, imageNames, job.Result);
+				}
+			}
+		});
+		size_t tags = image.Tags.size();
+		for (const STableJob& job : jobs)
+		{
+			tags += job.Result.Tags.size();
+		}
+		image.Tags.reserve(tags);
+		for (STableJob& job : jobs)
+		{
+			STypeTableResult& result = job.Result;
+			// The key names it read go into the image's NAMES even when the rest failed.
+			const uint32 keyBase = static_cast<uint32>(image.Names.size());
+			for (FString& keyName : result.KeyNames)
+			{
+				image.Names.push_back(std::move(keyName));
+			}
+			if (result.State != STypeTableResult::EState::Decoded)
+			{
+				Report.DroppedTypeTables.push_back(job.Name);
+				continue;
+			}
+			const uint32 tagBase = static_cast<uint32>(image.Tags.size());
+			for (SImageTag& tag : result.Tags)
+			{
+				tag.Key += keyBase;
+				image.Tags.push_back(tag);
+			}
+			for (const auto& [owner, range] : result.Owners)
+			{
+				const uint32 index = owner >> 1u;
+				((owner & 1u) != 0u ? image.SubEntries[index].Tags : image.Records[index].Tags) = SPoolRange { tagBase + range.Begin, range.Count };
+			}
+			taken[job.TypeIndex] = 1u;
+		}
+		// A section checksum that failed while every table passed its own: the damage is in bytes no table owns,
+		// and nothing was lost.
+		return taken;
+	}
+
+	/**
+	 * One type table into Out, reading the image (the sections before TYPETABLES) without changing it: the key
+	 * names as read (until a failure), and when the whole table is right its tags (Key: the key's index in the
+	 * table) and the range of each row whose owner is of this type. A Name value indexes the image's own NAMES
+	 * (ImageNames: before any type table's keys were added), which is all the encoder writes.
+	 */
+	bool DecodeTypeTable (std::span<const uint8> Payload, const SAssetTypeInfo& Info, uint16 TypeIndex, bool bStrings, uint32 ImageNames,
+		STypeTableResult& Out) const
+	{
+		const SRegistryImage& image = *Image;
+		Out.State = STypeTableResult::EState::Malformed;
+		CByteReader reader(Payload);
+		uint32 keyCount = 0u;
+		if (!ReadCount(reader, 3u, keyCount) || keyCount != Info.Keys.size())
+		{
+			return false;
+		}
+		std::vector<EValueForm> forms(keyCount);
+		for (uint32 k = 0u; k < keyCount; ++k)
+		{
+			FString keyName;
+			ETagType keyType = ETagType::None;
+			ETagFlags keyFlags = ETagFlags::None;
+			if (!reader.ReadText(keyName) || !ReadEnum(reader, ETagType::RowRef, keyType) || !ReadFlags(reader, keyFlags)
+				|| keyName.View() != FStringView(Info.Keys[k].Name) || keyType != Info.Keys[k].Type)
+			{
+				return false;
+			}
+			if (keyType == ETagType::String && !bStrings)
+			{
+				return false;   // its values index the lost STRINGS
+			}
+			forms[k] = GetValueForm(keyType);
+			Out.KeyNames.push_back(std::move(keyName));
+		}
+		// A row costs at least its owner varint and one count varint per key: that bounds the count, so a forged
+		// one cannot make the tables below many times the payload's size.
+		uint32 rowCount = 0u;
+		if (!ReadCount(reader, 1u + uint64(keyCount), rowCount))
+		{
+			return false;
+		}
+		// Rows whose owner is not of this type (a damaged image) keep no tags; their indices are still read.
+		std::vector<uint32> owners(rowCount);
+		std::vector<uint8> ownerOk(rowCount, 0u);
+		for (uint32 r = 0u; r < rowCount; ++r)
+		{
+			if (!ReadU32Varint(reader, owners[r]))
+			{
+				return false;
+			}
+			const uint32 index = owners[r] >> 1u;
+			const bool bSub = (owners[r] & 1u) != 0u;
+			ownerOk[r] = bSub ? (index < image.SubEntries.size() && image.SubEntries[index].Type == TypeIndex)
+				: (index < image.Records.size() && image.Records[index].Type == TypeIndex);
+		}
+		// Column by column into per-key value lists, then row by row into the table's tags (key order).
+		// counts: key-major, one per key and row (keyCount * rowCount, bounded above); values are added as read.
+		struct SValue { uint64 Bits = 0u; uint32 Text = ~0u; };
+		std::vector<uint32> counts(static_cast<size_t>(keyCount) * rowCount);
+		std::vector<std::vector<SValue>> values(keyCount);
+		size_t totalValues = 0u;
+		for (uint32 k = 0u; k < keyCount; ++k)
+		{
+			values[k].reserve(rowCount);   // single-valued keys: at most one a row
+			for (uint32 r = 0u; r < rowCount; ++r)
+			{
+				uint32 count = 0u;
+				if (!ReadCount(reader, 1u, count))
+				{
+					return false;
+				}
+				counts[static_cast<size_t>(k) * rowCount + r] = count;
+				totalValues += count;
+				for (uint32 v = 0u; v < count; ++v)
+				{
+					SValue value;
+					switch (forms[k])
+					{
+					case EValueForm::Fixed:
+						if (!ReadU64(reader, value.Bits))
+						{
+							return false;
+						}
+						break;
+					case EValueForm::Varint:
+						if (!reader.ReadVarint(value.Bits))
+						{
+							return false;
+						}
+						break;
+					case EValueForm::Name:
+						if (!ReadU32Varint(reader, value.Text) || value.Text >= ImageNames)
+						{
+							return false;
+						}
+						break;
+					case EValueForm::String:
+						if (!ReadU32Varint(reader, value.Text) || value.Text >= image.Strings.size())
+						{
+							return false;
+						}
+						break;
+					}
+					values[k].push_back(value);
+				}
+			}
+		}
+		if (!reader.IsAtEnd())
+		{
+			return false;
+		}
+		Out.Tags.reserve(totalValues);
+		Out.Owners.reserve(rowCount);
+		std::vector<size_t> cursor(keyCount, 0u);
+		for (uint32 r = 0u; r < rowCount; ++r)
+		{
+			SPoolRange range { static_cast<uint32>(Out.Tags.size()), 0u };
+			for (uint32 k = 0u; k < keyCount; ++k)
+			{
+				for (uint32 v = 0u; v < counts[static_cast<size_t>(k) * rowCount + r]; ++v)
+				{
+					const SValue& value = values[k][cursor[k]++];
+					if (ownerOk[r] != 0u)
+					{
+						SImageTag tag;
+						tag.Key = k;
+						tag.Type = Info.Keys[k].Type;
+						tag.Bits = value.Bits;
+						tag.Text = value.Text;
+						Out.Tags.push_back(tag);
+					}
+				}
+			}
+			range.Count = static_cast<uint32>(Out.Tags.size()) - range.Begin;
+			if (ownerOk[r] != 0u)
+			{
+				Out.Owners.emplace_back(owners[r], range);
+			}
+		}
+		Out.State = STypeTableResult::EState::Decoded;
+		return true;
+	}
+};
+
+
+// ---------------- Merging ----------------
+
+// Keeps only the mounts Keep marks (by image mount index), with everything below them; pools stay (unreferenced
+// entries are never read).
+void FilterImageMounts (SRegistryImage& Image, const std::vector<uint8>& Keep)
+{
+	std::vector<uint16> mountIndex(Image.Mounts.size(), 0xFFFFu);
+	std::vector<SImageMount> mounts;
+	std::vector<FString> keptNames;
+	for (uint32 m = 0u; m < Image.Mounts.size(); ++m)
+	{
+		if (Keep[m] != 0u)
+		{
+			mountIndex[m] = static_cast<uint16>(mounts.size());
+			keptNames.push_back(Image.Mounts[m].Name);
+			mounts.push_back(std::move(Image.Mounts[m]));
+		}
+	}
+	Image.Mounts = std::move(mounts);
+
+	std::vector<uint32> folderIndex(Image.Folders.size(), ~0u);
+	std::vector<SImageFolder> folders;
+	for (uint32 f = 0u; f < Image.Folders.size(); ++f)
+	{
+		SImageFolder folder = Image.Folders[f];
+		if (mountIndex[folder.Mount] == 0xFFFFu)
+		{
+			continue;
+		}
+		folderIndex[f] = static_cast<uint32>(folders.size());
+		folder.Mount = mountIndex[folder.Mount];
+		folders.push_back(folder);
+	}
+	for (SImageFolder& folder : folders)
+	{
+		folder.Parent = folder.Parent != ~0u ? folderIndex[folder.Parent] : ~0u;
+	}
+	Image.Folders = std::move(folders);
+
+	std::vector<uint32> fileIndex(Image.Files.size(), ~0u);
+	std::vector<SImageFile> files;
+	for (uint32 i = 0u; i < Image.Files.size(); ++i)
+	{
+		SImageFile file = Image.Files[i];
+		if (folderIndex[file.Folder] == ~0u)
+		{
+			continue;
+		}
+		fileIndex[i] = static_cast<uint32>(files.size());
+		file.Folder = folderIndex[file.Folder];
+		files.push_back(file);
+	}
+	Image.Files = std::move(files);
+
+	std::erase_if(Image.RuleFiles, [&] (const SImageRuleFile& RuleFile) { return mountIndex[RuleFile.Mount] == 0xFFFFu; });
+	for (SImageRuleFile& ruleFile : Image.RuleFiles)
+	{
+		ruleFile.Mount = mountIndex[ruleFile.Mount];
+		ruleFile.Folder = ruleFile.Folder != ~0u ? folderIndex[ruleFile.Folder] : ~0u;
+	}
+	std::erase_if(Image.Records, [&] (const SImageRecord& Record) { return fileIndex[Record.File] == ~0u; });
+	for (SImageRecord& record : Image.Records)
+	{
+		record.File = fileIndex[record.File];
+	}
+	std::erase_if(Image.Problems, [&] (const SImageProblems& Problems)
+	{
+		const FStringView mount = GetMountNameOf(Image.Strings[Problems.Subject]);
+		return std::none_of(keptNames.begin(), keptNames.end(), [&] (const FString& Name) { return Name.View() == mount; });
+	});
+}
+
+// Appends From to Into with every index shifted past Into's tables.
+void AppendImage (SRegistryImage& Into, SRegistryImage&& From)
+{
+	if (Into.Mounts.empty() && Into.Names.empty() && Into.Strings.empty() && Into.Records.empty())
+	{
+		Into = std::move(From);
+		return;
+	}
+	// The smaller image goes after the larger one, whichever came first (Engine.snapshot's few hundred files
+	// before the project's hundred thousand would otherwise copy all of the project's): the merged image's order
+	// is only its indices - which file gave a shared mount was decided before - and the bulk adoption merges the
+	// two sorted runs of files this leaves.
+	if (Into.Files.size() + Into.Records.size() + Into.Tags.size() < From.Files.size() + From.Records.size() + From.Tags.size())
+	{
+		std::swap(Into, From);
+	}
+	const uint16 mountBase = static_cast<uint16>(Into.Mounts.size());
+	const uint32 nameBase = static_cast<uint32>(Into.Names.size());
+	const uint32 stringBase = static_cast<uint32>(Into.Strings.size());
+	const uint16 typeBase = static_cast<uint16>(Into.TypeNames.size());
+	const uint16 importerBase = static_cast<uint16>(Into.ImporterNames.size());
+	const uint32 folderBase = static_cast<uint32>(Into.Folders.size());
+	const uint32 fileBase = static_cast<uint32>(Into.Files.size());
+	const uint32 labelBase = static_cast<uint32>(Into.Labels.size());
+	const uint32 subBase = static_cast<uint32>(Into.SubEntries.size());
+	const uint32 tagBase = static_cast<uint32>(Into.Tags.size());
+	const uint32 edgeBase = static_cast<uint32>(Into.Edges.size());
+	const uint32 companionBase = static_cast<uint32>(Into.Companions.size());
+	const auto shift = [] (uint32 Index, uint32 Base) { return Index != ~0u ? Index + Base : ~0u; };
+	const auto moveAll = [] (auto& To, auto& Items)
+	{
+		To.insert(To.end(), std::make_move_iterator(Items.begin()), std::make_move_iterator(Items.end()));
+	};
+	const auto reserveFor = [] (auto& To, const auto& Items) { To.reserve(To.size() + Items.size()); };
+	reserveFor(Into.Folders, From.Folders);
+	reserveFor(Into.Files, From.Files);
+	reserveFor(Into.Records, From.Records);
+	reserveFor(Into.Labels, From.Labels);
+	reserveFor(Into.SubEntries, From.SubEntries);
+	reserveFor(Into.Tags, From.Tags);
+	reserveFor(Into.Edges, From.Edges);
+	reserveFor(Into.Companions, From.Companions);
+
+	for (SImageMount& mount : From.Mounts)
+	{
+		Into.Mounts.push_back(std::move(mount));
+	}
+	moveAll(Into.Names, From.Names);
+	moveAll(Into.Strings, From.Strings);
+	moveAll(Into.TypeNames, From.TypeNames);
+	moveAll(Into.ImporterNames, From.ImporterNames);
+	for (SImageFolder folder : From.Folders)
+	{
+		folder.Mount = static_cast<uint16>(folder.Mount + mountBase);
+		folder.Parent = shift(folder.Parent, folderBase);
+		folder.Name += nameBase;
+		Into.Folders.push_back(folder);
+	}
+	for (SImageFile file : From.Files)
+	{
+		file.Folder += folderBase;
+		file.LeafName += nameBase;
+		Into.Files.push_back(file);
+	}
+	for (SImageRuleFile ruleFile : From.RuleFiles)
+	{
+		ruleFile.Mount = static_cast<uint16>(ruleFile.Mount + mountBase);
+		ruleFile.Folder = shift(ruleFile.Folder, folderBase);
+		Into.RuleFiles.push_back(ruleFile);
+	}
+	for (SImageRecord record : From.Records)
+	{
+		record.File += fileBase;
+		record.Type = static_cast<uint16>(record.Type + typeBase);
+		record.Importer = record.Importer != 0xFFFFu ? static_cast<uint16>(record.Importer + importerBase) : uint16(0xFFFFu);
+		record.PrimaryName = shift(record.PrimaryName, nameBase);
+		record.Labels.Begin += labelBase;
+		record.SubEntries.Begin += subBase;
+		record.Tags.Begin += tagBase;
+		record.Edges.Begin += edgeBase;
+		record.Companions.Begin += companionBase;
+		Into.Records.push_back(record);
+	}
+	for (const uint32 label : From.Labels)
+	{
+		Into.Labels.push_back(((label & ~RuleLabelBit) + nameBase) | (label & RuleLabelBit));
+	}
+	for (SImageSubEntry sub : From.SubEntries)
+	{
+		sub.Label += nameBase;
+		sub.Type = static_cast<uint16>(sub.Type + typeBase);
+		sub.Tags.Begin += tagBase;
+		Into.SubEntries.push_back(std::move(sub));
+	}
+	for (SImageTag tag : From.Tags)
+	{
+		tag.Key += nameBase;
+		if (tag.Type == ETagType::Name)
+		{
+			tag.Text = shift(tag.Text, nameBase);
+		}
+		else if (tag.Type == ETagType::String)
+		{
+			tag.Text = shift(tag.Text, stringBase);
+		}
+		Into.Tags.push_back(tag);
+	}
+	for (SImageEdge edge : From.Edges)
+	{
+		edge.TargetPath = shift(edge.TargetPath, stringBase);
+		edge.FieldPath = shift(edge.FieldPath, nameBase);
+		Into.Edges.push_back(std::move(edge));
+	}
+	for (const uint32 companion : From.Companions)
+	{
+		Into.Companions.push_back(companion + stringBase);
+	}
+	for (SImageProblems& problems : From.Problems)
+	{
+		problems.Subject += stringBase;
+		Into.Problems.push_back(std::move(problems));
+	}
+}
+}
+
+
+// ---------------- Project ids and paths ----------------
+
+std::optional<SGuid> ReadProjectId (const std::filesystem::path& OwnerRoot)
+{
+	const std::optional<FString> text = platform::ReadFileText(GetProjectIdPath(OwnerRoot));
+	if (!text)
+	{
+		return std::nullopt;
+	}
+	const std::optional<SGuid> id = SGuid::Parse(text->TrimStartAndEnd());
+	return id && id->IsValid() ? id : std::nullopt;
+}
+
+std::optional<SGuid> ReadOrCreateProjectId (const std::filesystem::path& OwnerRoot, FString* OutError)
+{
+	if (const std::optional<SGuid> existing = ReadProjectId(OwnerRoot))
+	{
+		return existing;
+	}
+	const SGuid id = SGuid::NewRandom();
+	FString text = id.ToString();
+	text += '\n';
+	if (!platform::WriteFileAtomic(GetProjectIdPath(OwnerRoot), text.View(), true, OutError))
+	{
+		return std::nullopt;
+	}
+	return id;
+}
+
+std::filesystem::path GetJournalPath (const std::filesystem::path& SnapshotPath)
+{
+	std::filesystem::path path = SnapshotPath;
+	path.replace_extension(".journal");
+	return path;
+}
+
+
+// ---------------- Writing ----------------
+
+std::vector<uint8> EncodeSnapshot (const SRegistryImage& Image, const SGuid& ProjectId, uint64 JournalBase, uint64 RulesBasis)
+{
+	FRT_CPU_SCOPE("Assets.Snapshot.Encode");
+	// The sections are written in place after the header and the section table (each 16-byte aligned), into one
+	// buffer sized ahead, and checksummed where they lie.
+	size_t estimate = AlignUp16(SnapshotHeaderBytes + SectionOrder.size() * SnapshotSectionEntryBytes);
+	for (const ESnapshotSection section : SectionOrder)
+	{
+		estimate += EstimateSectionBytes(Image, section) + 16u;
+	}
+	std::vector<uint8> bytes;
+	bytes.reserve(estimate);
+	binary::AppendRaw(bytes, SnapshotMagic);
+	AppendLittleEndian(bytes, SnapshotFormatVersion, 4u);
+	AppendLittleEndian(bytes, SectionOrder.size(), 4u);
+	AppendGuid(bytes, ProjectId);
+	AppendLittleEndian(bytes, JournalBase, 8u);
+	AppendLittleEndian(bytes, RulesBasis, 8u);
+	const size_t table = bytes.size();
+	bytes.resize(AlignUp16(table + SectionOrder.size() * SnapshotSectionEntryBytes), 0u);
+	for (size_t i = 0u; i < SectionOrder.size(); ++i)
+	{
+		const size_t offset = bytes.size();
+		{
+			CFastByteWriter out(bytes);
+			EncodeSection(Image, SectionOrder[i], out);
+		}
+		const size_t size = bytes.size() - offset;
+		const size_t entry = table + i * SnapshotSectionEntryBytes;
+		binary::WriteLittleEndianAt(bytes, entry, static_cast<uint32>(SectionOrder[i]), 4u);
+		binary::WriteLittleEndianAt(bytes, entry + 4u, SectionLayoutVersion, 4u);
+		binary::WriteLittleEndianAt(bytes, entry + 8u, offset, 8u);
+		binary::WriteLittleEndianAt(bytes, entry + 16u, size, 8u);
+		binary::WriteLittleEndianAt(bytes, entry + 24u, hash::Xxh3_64(std::span<const uint8>(bytes.data() + offset, size)), 8u);
+		bytes.resize(AlignUp16(bytes.size()), 0u);
+	}
+	return bytes;
+}
+
+bool WriteSnapshot (const CRegistryView& View, std::span<const MountId> Mounts, const std::filesystem::path& Path, const SGuid& ProjectId,
+	uint64 RulesBasis, FString* OutError, SSnapshotWriteStats* OutStats)
+{
+	FRT_CPU_SCOPE("Assets.Snapshot.Write");
+	SSnapshotWriteStats stats;
+	uint64 start = platform::ReadTimestamp();
+	const SRegistryImage image = View.ExportImage(Mounts);
+	stats.ExportMs = platform::TimestampToMilliseconds(platform::ReadTimestamp() - start);
+	stats.Records = static_cast<uint32>(image.Records.size());
+	stats.JournalBase = View.GetRevision();
+
+	start = platform::ReadTimestamp();
+	const std::vector<uint8> bytes = EncodeSnapshot(image, ProjectId, stats.JournalBase, RulesBasis);
+	stats.EncodeMs = platform::TimestampToMilliseconds(platform::ReadTimestamp() - start);
+	stats.Bytes = bytes.size();
+
+	start = platform::ReadTimestamp();
+	const bool bWritten = platform::WriteFileAtomic(Path, bytes, true, OutError);
+	stats.WriteMs = platform::TimestampToMilliseconds(platform::ReadTimestamp() - start);
+	if (OutStats != nullptr)
+	{
+		*OutStats = stats;
+	}
+	return bWritten;
+}
+
+
+// ---------------- Loading ----------------
+
+SLoadedSnapshots ReadSnapshots (std::span<const SSnapshotSource> Sources, std::span<const SMountUpsert> Mounts, jobs::CWorkerPool* Pool)
+{
+	FRT_CPU_SCOPE("Assets.Snapshot.Read");
+	const uint64 begin = platform::ReadTimestamp();
+	SLoadedSnapshots loaded;
+
+	// Every file read, decoded and its journal read at once (a file a task, each decoding its sections on the
+	// pool too); then merged in the order given, which decides which file a shared mount comes from.
+	struct SFileWork
+	{
+		SSnapshotFileReport Report;
+		SRegistryImage Image;
+		SGuid ProjectId;
+		SJournalContents Journal;
+		double ReadMs = 0.0;
+		bool bDecoded = false;
+	};
+	std::vector<SFileWork> work(Sources.size());
+	const std::vector<SChunkRange> chunks = SplitIntoChunks(Pool, static_cast<uint32>(Sources.size()), 1u);
+	RunChunks(Pool, chunks, [&] (uint32, uint32 Begin, uint32 End)
+	{
+		for (uint32 i = Begin; i < End; ++i)
+		{
+			const SSnapshotSource& source = Sources[i];
+			SFileWork& file = work[i];
+			SSnapshotFileReport& report = file.Report;
+			report.Path = source.Path;
+			std::error_code ec;
+			const uint64 start = platform::ReadTimestamp();
+			if (!std::filesystem::exists(source.Path, ec))
+			{
+				report.State = ESnapshotFileState::Missing;
+				continue;
+			}
+			FString error;
+			const std::optional<std::vector<uint8>> bytes = platform::ReadFileBytes(source.Path, &error);
+			file.ReadMs = platform::TimestampToMilliseconds(platform::ReadTimestamp() - start);
+			if (!bytes)
+			{
+				report.State = ESnapshotFileState::Unreadable;
+				report.Message = std::move(error);
+				continue;
+			}
+			report.Bytes = bytes->size();
+			CSnapshotDecoder decoder(*bytes, report, Pool);
+			if (!decoder.Decode(source.ProjectId, source.bAnyProject, file.Image))
+			{
+				continue;
+			}
+			file.bDecoded = true;
+			file.ProjectId = decoder.GetProjectId();
+			file.Journal = ReadJournal(GetJournalPath(source.Path));
+		}
+	});
+	double readMs = 0.0;
+	for (const SFileWork& file : work)
+	{
+		readMs = Pool != nullptr ? (std::max)(readMs, file.ReadMs) : readMs + file.ReadMs;   // reads overlap on a pool
+	}
+
+	std::vector<FString> takenMounts;
+	std::vector<MountId> takenIds;
+	for (uint32 i = 0u; i < Sources.size(); ++i)
+	{
+		const SSnapshotSource& source = Sources[i];
+		SFileWork& file = work[i];
+		SSnapshotFileReport& report = loaded.Files.emplace_back(std::move(file.Report));
+		if (!file.bDecoded)
+		{
+			continue;
+		}
+		SRegistryImage& image = file.Image;
+
+		// Records evaluated against other rules semantics, or another engine fallback file, than this process
+		// has: as if RULEFILES were lost, so the file's mounts re-evaluate (Snapshot.h).
+		if (source.RulesBasis != 0u && report.RulesBasis != source.RulesBasis)
+		{
+			image.RuleFiles.clear();
+			report.bRulesBasisChanged = true;
+			if (!report.bRuleFilesDropped)
+			{
+				report.bRuleFilesDropped = true;
+				report.DroppedSections.push_back(ESnapshotSection::RuleFiles);
+			}
+		}
+
+		// Mounts by name: this process's ids, or the file's own when none are given.
+		std::vector<uint8> keep(image.Mounts.size(), 1u);
+		bool bAllKept = true;
+		for (uint32 m = 0u; m < image.Mounts.size(); ++m)
+		{
+			SImageMount& mount = image.Mounts[m];
+			FStringView reason;
+			if (std::find(takenMounts.begin(), takenMounts.end(), mount.Name) != takenMounts.end())
+			{
+				reason = "an earlier file gave it";
+			}
+			else if (!Mounts.empty())
+			{
+				const auto current = std::find_if(Mounts.begin(), Mounts.end(), [&] (const SMountUpsert& Mount) { return Mount.Name == mount.Name; });
+				if (current == Mounts.end())
+				{
+					reason = "not mounted now";
+				}
+				else if (current->bCaseSensitive != mount.bCaseSensitive)
+				{
+					reason = "its volume's case rule changed";
+				}
+				else
+				{
+					mount.Id = current->Id;
+				}
+			}
+			else if (std::find(takenIds.begin(), takenIds.end(), mount.Id) != takenIds.end())
+			{
+				reason = "an earlier file has its MountId";
+			}
+			if (!reason.IsEmpty())
+			{
+				keep[m] = 0u;
+				bAllKept = false;
+				report.SkippedMounts.push_back(FString::Format("{} ({})", mount.Name, reason));
+			}
+		}
+		if (!bAllKept)
+		{
+			FilterImageMounts(image, keep);
+			report.Records = static_cast<uint32>(image.Records.size());
+		}
+		if (image.Mounts.empty())
+		{
+			report.State = ESnapshotFileState::Rejected;
+			report.Message = "none of its mounts is loaded";
+			continue;
+		}
+		for (const SImageMount& mount : image.Mounts)
+		{
+			report.Mounts.push_back(mount.Name);
+			takenMounts.push_back(mount.Name);
+			takenIds.push_back(mount.Id);
+		}
+		report.State = ESnapshotFileState::Loaded;
+		if (!report.DroppedSections.empty() || !report.DroppedTypeTables.empty())
+		{
+			FString message = "dropped:";
+			for (const ESnapshotSection section : report.DroppedSections)
+			{
+				message.AppendFormat(" {}", enum_::ToString(section));
+			}
+			for (const FString& table : report.DroppedTypeTables)
+			{
+				message.AppendFormat(" TYPETABLES[{}]", table);
+			}
+			report.Message = std::move(message);
+		}
+
+		// Its journal, when it continues this snapshot: the deltas for the mounts loaded from this file.
+		const SJournalContents& journal = file.Journal;
+		report.bJournalFound = journal.bFound;
+		report.JournalBytes = journal.FileBytes;
+		if (journal.bFound)
+		{
+			if (!journal.bHeaderValid)
+			{
+				report.JournalMessage = journal.Message;
+			}
+			else if (journal.ProjectId != file.ProjectId || journal.JournalBase != report.JournalBase)
+			{
+				report.JournalMessage = FString::Format("it continues revision {} of project {}, not this snapshot (revision {})", journal.JournalBase,
+					journal.ProjectId.ToString(), report.JournalBase);
+			}
+			else
+			{
+				report.bJournalUsed = true;
+				report.bJournalTornTail = journal.bTornTail;
+				report.JournalMessage = journal.Message;
+				for (const SRegistryDelta& delta : journal.Deltas)
+				{
+					SRegistryDelta part = FilterDeltaByMount(delta, [&] (FStringView MountName)
+					{
+						return std::any_of(report.Mounts.begin(), report.Mounts.end(), [&] (const FString& Name) { return Name.View() == MountName; });
+					});
+					part.Mounts.clear();   // the image made them, with this process's ids
+					if (report.bRuleFilesDropped)
+					{
+						// The snapshot lost its rule outputs, so every record of its mounts is re-evaluated: a
+						// journal's RulesHash would mark a folder current whose records' labels are gone.
+						part.RuleFileUpserts.clear();
+						part.RuleFileRemoves.clear();
+					}
+					if (!part.IsEmpty())
+					{
+						loaded.JournalDeltas.push_back(std::move(part));
+					}
+					++report.JournalCommits;
+				}
+			}
+		}
+		loaded.Revision = (std::max)(loaded.Revision, report.JournalBase);
+		AppendImage(loaded.Image, std::move(image));
+	}
+	loaded.ReadMs = readMs;
+	loaded.DecodeMs = (std::max)(0.0, platform::TimestampToMilliseconds(platform::ReadTimestamp() - begin) - readMs);
+	return loaded;
+}
+
+SSnapshotLoadResult AdoptSnapshots (CRegistryStore& Store, SLoadedSnapshots&& Loaded, jobs::CWorkerPool* Pool)
+{
+	FRT_CPU_SCOPE("Assets.Snapshot.Adopt");
+	SSnapshotLoadResult result;
+	result.ReadMs = Loaded.ReadMs;
+	result.DecodeMs = Loaded.DecodeMs;
+	if (!Loaded.Image.Mounts.empty())
+	{
+		Store.AdoptImage(std::move(Loaded.Image), Loaded.Revision, Pool);
+		result.AdoptMs = Store.GetLastCommitStats().Milliseconds;
+		result.bAdoptedInBulk = !Store.GetLastCommitStats().bReplayedImage;
+	}
+	const uint64 start = platform::ReadTimestamp();
+	for (SRegistryDelta& delta : Loaded.JournalDeltas)
+	{
+		Store.Commit(std::move(delta));
+	}
+	result.ReplayMs = platform::TimestampToMilliseconds(platform::ReadTimestamp() - start);
+	result.Files = std::move(Loaded.Files);
+	result.Records = Store.Live().GetRecordCount();
+	result.TotalMs = result.ReadMs + result.DecodeMs + result.AdoptMs + result.ReplayMs;
+	return result;
+}
+
+SSnapshotLoadResult LoadSnapshots (CRegistryStore& Store, std::span<const SSnapshotSource> Sources, std::span<const SMountUpsert> Mounts,
+	jobs::CWorkerPool* Pool)
+{
+	const uint64 start = platform::ReadTimestamp();
+	SSnapshotLoadResult result = AdoptSnapshots(Store, ReadSnapshots(Sources, Mounts, Pool), Pool);
+	result.TotalMs = platform::TimestampToMilliseconds(platform::ReadTimestamp() - start);
+	return result;
+}
+}

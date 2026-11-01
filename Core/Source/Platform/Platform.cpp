@@ -7,6 +7,7 @@
 #include <shellapi.h>
 
 #include "Containers/WideString.h"
+#include "Platform/BlockingFileReader.h"
 #include "Platform/FileSystem.h"
 #include "Platform/Windows/WindowsCommon.h"
 
@@ -22,7 +23,7 @@ constexpr uint32 MaxEnvironmentUnits = 32767u;
 // Windows paths are at most 32767 UTF-16 units, whatever the long-path setting.
 constexpr size_t MaxPathUnits = 32768u;
 
-// Longest file the read functions return: the most an FString holds.
+// Longest file ReadFileText returns: the most an FString holds.
 constexpr int64 MaxFileBytes = FString::MaxLength;
 
 
@@ -117,23 +118,13 @@ void SetBufferLength (FString& Buffer, uint32 Length) noexcept
 	Buffer.ResizeUninitialized(Length);
 }
 
-void SetBufferLength (std::vector<uint8>& Buffer, uint32 Length)
-{
-	Buffer.resize(Length);
-}
-
 void* GetWritableData (FString& Buffer) noexcept
 {
 	return Buffer.GetData();
 }
 
-void* GetWritableData (std::vector<uint8>& Buffer) noexcept
-{
-	return Buffer.data();
-}
-
-// The whole file into Out. Shares read, write and delete access as the C++ streams do, so a file
-// another process holds open for writing (an editor saving it) can still be read.
+// The whole file into Out (ReadFileText). Shares read, write and delete access as the C++ streams do,
+// so a file another process holds open for writing (an editor saving it) can still be read.
 template <typename TBuffer>
 bool ReadWholeFile (const std::filesystem::path& Path, TBuffer& Out)
 {
@@ -173,27 +164,6 @@ bool ReadWholeFile (const std::filesystem::path& Path, TBuffer& Out)
 	CloseHandle(file);
 	return bRead;
 }
-
-// The bytes after a UTF-16 BOM, as canonical WTF-8. nullopt for an odd byte count: not UTF-16 at
-// all, or cut off.
-std::optional<FString> DecodeUtf16File (FStringView Bytes, bool bBigEndian)
-{
-	if (Bytes.Len() % 2u != 0u)
-	{
-		return std::nullopt;
-	}
-
-	const auto* bytes = reinterpret_cast<const unsigned char*>(Bytes.GetData());
-	std::vector<wchar_t> units(Bytes.Len() / 2u);
-	for (size_t i = 0u; i < units.size(); ++i)
-	{
-		const uint32 first = bytes[2u * i];
-		const uint32 second = bytes[2u * i + 1u];
-		units[i] = static_cast<wchar_t>(bBigEndian ? (first << 8u) | second : (second << 8u) | first);
-	}
-	return FString::FromWide(std::wstring_view(units.data(), units.size()));
-}
-
 
 // ---------------- System text ----------------
 
@@ -442,6 +412,12 @@ std::filesystem::path GetExecutablePath ()
 	return GetModulePath(nullptr);
 }
 
+std::filesystem::path GetLoadedModulePath (FStringView Name)
+{
+	HMODULE module = Name.IsEmpty() ? nullptr : GetModuleHandleW(ToWide(Name).CStr());
+	return module ? GetModulePath(module) : std::filesystem::path();
+}
+
 FString DecodeToolOutput (FStringView Bytes)
 {
 	FString result;
@@ -491,27 +467,26 @@ std::optional<FString> ReadFileText (const std::filesystem::path& Path, ETextFil
 	{
 		return text;
 	}
-
-	if (text.RemoveFromStart(Utf8Bom))
-	{
-		return text;
-	}
-	const FStringView bytes = text.View();
-	if (bytes.StartsWith("\xFF\xFE"))
-	{
-		return DecodeUtf16File(bytes.RightChop(2u), false);
-	}
-	if (bytes.StartsWith("\xFE\xFF"))
-	{
-		return DecodeUtf16File(bytes.RightChop(2u), true);
-	}
-	return text;
+	return DecodeTextFile(std::move(text));
 }
 
-std::optional<std::vector<uint8>> ReadFileBytes (const std::filesystem::path& Path)
+std::optional<std::vector<uint8>> ReadFileBytes (const std::filesystem::path& Path, FString* OutError, EFileFailure* OutFailure)
 {
+	CBlockingFileReader reader;
 	std::vector<uint8> bytes;
-	if (!ReadWholeFile(Path, bytes))
+	bool bRead = reader.Open(Path, OutError);
+	if (bRead)
+	{
+		bytes.resize(static_cast<size_t>(reader.GetSize()));
+		bRead = bytes.empty() || reader.ReadExactAt(0u, bytes, OutError);
+	}
+	if (OutFailure != nullptr)
+	{
+		// A short read (the file shrank since it was opened) is no failure of the reader's.
+		*OutFailure = bRead ? EFileFailure::None
+			: (reader.GetLastFailure() != EFileFailure::None ? reader.GetLastFailure() : EFileFailure::Other);
+	}
+	if (!bRead)
 	{
 		return std::nullopt;
 	}

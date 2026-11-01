@@ -3,27 +3,17 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
-#include <semaphore>
-#include <thread>
 
 #include <stb_image.h>
 
 #include "Containers/String.h"
+#include "Jobs/WorkerPool.h"
 
 
 namespace frt::graphics
 {
 namespace
 {
-// Bounded decode concurrency: stb_image + mip generation is CPU-heavy and a large scene
-// requests every texture in the same frame.
-std::counting_semaphore<64>& DecodeSlots ()
-{
-	static std::counting_semaphore<64> slots(
-		static_cast<std::ptrdiff_t>(std::clamp<uint32>(std::thread::hardware_concurrency() > 2u ? std::thread::hardware_concurrency() - 2u : 1u, 1u, 16u)));
-	return slots;
-}
-
 struct SSrgbTables
 {
 	float ToLinear[256];
@@ -129,19 +119,23 @@ void Downsample (const uint8* Src, uint32 SrcW, uint32 SrcH, uint8* Dst, uint32 
 }
 
 
-void CTextureManager::Initialize (rhi::CDevice& InDevice)
+void CTextureManager::Initialize (rhi::CDevice& InDevice, jobs::CWorkerPool& InWorkerPool)
 {
 	Device = &InDevice;
+	WorkerPool = &InWorkerPool;
+	DecodeGroup = WorkerPool->CreateCancelGroup();
 }
 
 void CTextureManager::Shutdown ()
 {
+	// Queued decodes are dropped and running ones see the cancel; a decode writes only its own slot,
+	// never its entry, so the entries can go.
+	if (WorkerPool != nullptr)
+	{
+		WorkerPool->Cancel(DecodeGroup);
+	}
 	for (std::unique_ptr<SEntry>& entry : Entries)
 	{
-		if (entry->Pending.valid())
-		{
-			entry->Pending.wait();
-		}
 		if (entry->Texture.IsValid())
 		{
 			Device->Destroy(entry->Texture);
@@ -155,18 +149,15 @@ void CTextureManager::Shutdown ()
 	ResidentBytes = 0u;
 }
 
-std::shared_ptr<CTextureManager::SDecoded> CTextureManager::Decode (std::filesystem::path Path, ETextureColorSpace ColorSpace)
+void CTextureManager::Decode (const std::filesystem::path& Path, ETextureColorSpace ColorSpace, SDecoded& Out)
 {
-	DecodeSlots().acquire();
-	auto result = std::make_shared<SDecoded>();
-
 	// Opened by its UTF-16 name: stbi_load would take narrow text, which cannot name every file.
 	FILE* file = nullptr;
 	if (_wfopen_s(&file, Path.c_str(), L"rb") != 0 || file == nullptr)
 	{
 		std::fprintf(stderr, "[texture] failed to open %s\n", FString::FromPath(Path).CStr());
-		DecodeSlots().release();
-		return result;
+		Out.bFinished = true;
+		return;
 	}
 	int width = 0;
 	int height = 0;
@@ -180,43 +171,122 @@ std::shared_ptr<CTextureManager::SDecoded> CTextureManager::Decode (std::filesys
 		{
 			stbi_image_free(pixels);
 		}
-		DecodeSlots().release();
-		return result;
+		Out.bFinished = true;
+		return;
+	}
+	if (jobs::CWorkerPool::IsCancelled())
+	{
+		// The manager shut down or the pool is draining: no answer, the texture is decoded again if
+		// anyone still wants it.
+		stbi_image_free(pixels);
+		return;
 	}
 
-	result->Width = static_cast<uint32>(width);
-	result->Height = static_cast<uint32>(height);
-	const uint32 mipCount = (std::min)(rhi::ComputeMipCount(result->Width, result->Height), rhi::MaxTextureMips);
-	result->Mips.resize(mipCount);
-	result->Mips[0].assign(pixels, pixels + static_cast<size_t>(width) * height * 4u);
+	Out.Width = static_cast<uint32>(width);
+	Out.Height = static_cast<uint32>(height);
+	const uint32 mipCount = (std::min)(rhi::ComputeMipCount(Out.Width, Out.Height), rhi::MaxTextureMips);
+	Out.Mips.resize(mipCount);
+	Out.Mips[0].assign(pixels, pixels + static_cast<size_t>(width) * height * 4u);
 	stbi_image_free(pixels);
 
-	uint32 w = result->Width;
-	uint32 h = result->Height;
+	uint32 w = Out.Width;
+	uint32 h = Out.Height;
 	for (uint32 mip = 1; mip < mipCount; ++mip)
 	{
 		const uint32 nw = (std::max)(1u, w / 2u);
 		const uint32 nh = (std::max)(1u, h / 2u);
-		result->Mips[mip].resize(static_cast<size_t>(nw) * nh * 4u);
-		Downsample(result->Mips[mip - 1].data(), w, h, result->Mips[mip].data(), nw, nh, ColorSpace);
+		Out.Mips[mip].resize(static_cast<size_t>(nw) * nh * 4u);
+		Downsample(Out.Mips[mip - 1].data(), w, h, Out.Mips[mip].data(), nw, nh, ColorSpace);
 		w = nw;
 		h = nh;
 	}
 
 	// The 1x1 mip is the texture mean (in the filtering space).
-	const uint8* top = result->Mips.back().data();
+	const uint8* top = Out.Mips.back().data();
 	if (ColorSpace == ETextureColorSpace::Srgb)
 	{
 		const SSrgbTables& srgb = SrgbTables();
-		result->Average = { srgb.ToLinear[top[0]], srgb.ToLinear[top[1]], srgb.ToLinear[top[2]], top[3] / 255.0f };
+		Out.Average = { srgb.ToLinear[top[0]], srgb.ToLinear[top[1]], srgb.ToLinear[top[2]], top[3] / 255.0f };
 	}
 	else
 	{
-		result->Average = { top[0] / 255.0f, top[1] / 255.0f, top[2] / 255.0f, top[3] / 255.0f };
+		Out.Average = { top[0] / 255.0f, top[1] / 255.0f, top[2] / 255.0f, top[3] / 255.0f };
 	}
-	result->bValid = true;
-	DecodeSlots().release();
-	return result;
+	Out.bValid = true;
+	Out.bFinished = true;
+}
+
+bool CTextureManager::SubmitDecode (SEntry& Entry)
+{
+	// The work holds the slot through a guard that marks it done when the work callable dies: on the
+	// worker right after the decode, or wherever the pool drops the task unrun. No completion: the
+	// slot is the hand-over, so Update sees a decode without waiting for a pump. The work holds no
+	// pointer to the entry, so a decode still running after Shutdown writes only its own slot.
+	struct SSlotGuard
+	{
+		std::shared_ptr<SDecoded> Slot;
+
+		explicit SSlotGuard (std::shared_ptr<SDecoded> InSlot) : Slot(std::move(InSlot)) {}
+		SSlotGuard (SSlotGuard&&) noexcept = default;
+		SSlotGuard& operator= (SSlotGuard&&) = delete;
+		~SSlotGuard ()
+		{
+			if (Slot)
+			{
+				Slot->bDone.store(true, std::memory_order_release);
+			}
+		}
+	};
+
+	Entry.Pending = std::make_shared<SDecoded>();
+	const uint64 sequence = WorkerPool->Submit(jobs::EWorkPriority::Normal, DecodeGroup,
+		[guard = SSlotGuard(Entry.Pending), path = Entry.Path, colorSpace = Entry.ColorSpace] ()
+		{
+			Decode(path, colorSpace, *guard.Slot);
+		});
+	return sequence != 0u;
+}
+
+bool CTextureManager::PollDecode (SEntry& Entry)
+{
+	if (Entry.Ready)
+	{
+		return true;
+	}
+	if (Entry.Pending && !Entry.Pending->bDone.load(std::memory_order_acquire))
+	{
+		return false;
+	}
+	if (Entry.Pending && Entry.Pending->bFinished)
+	{
+		Entry.Ready = std::move(Entry.Pending);
+		return true;
+	}
+	// Cancelled while it ran, or dropped before it started (a drain): decode it again.
+	SubmitDecode(Entry);
+	return false;
+}
+
+void CTextureManager::WaitForDecode (SEntry& Entry)
+{
+	for (;;)
+	{
+		const std::shared_ptr<SDecoded> slot = Entry.Pending;
+		const bool bBack = WorkerPool->PumpUntil([&slot] () { return slot->bDone.load(std::memory_order_acquire); });
+		if (bBack && slot->bFinished)
+		{
+			Entry.Ready = std::move(Entry.Pending);
+			return;
+		}
+		if (!bBack || !SubmitDecode(Entry))
+		{
+			// The pool went idle without filling the slot, or will not take the decode again (it is
+			// draining): the texture fails instead of the frame waiting forever.
+			Entry.Pending.reset();
+			Entry.Ready = std::make_shared<SDecoded>();
+			return;
+		}
+	}
 }
 
 CTextureManager::HTexture CTextureManager::Request (const std::filesystem::path& Path, ETextureColorSpace ColorSpace)
@@ -239,7 +309,7 @@ CTextureManager::HTexture CTextureManager::Request (const std::filesystem::path&
 	auto entry = std::make_unique<SEntry>();
 	entry->Path = resolved;
 	entry->ColorSpace = ColorSpace;
-	entry->Pending = std::async(std::launch::async, &CTextureManager::Decode, entry->Path, ColorSpace);
+	SubmitDecode(*entry);
 	const HTexture handle = static_cast<HTexture>(Entries.size());
 	Entries.push_back(std::move(entry));
 	byPath.emplace(std::move(key), handle);
@@ -295,15 +365,15 @@ bool CTextureManager::Update (ID3D12GraphicsCommandList* CommandList, uint64 Upl
 		{
 			continue;
 		}
-		if (!entry->Ready)
+		// Interactive: the decode is taken once its slot is done, as the std::future's wait_for(0) took
+		// it. Deterministic: wait for it, pumping.
+		if (!PollDecode(*entry))
 		{
-			// Deterministic: get() below waits for the decode.
-			if (!entry->Pending.valid() ||
-				(!bDeterministic && entry->Pending.wait_for(std::chrono::seconds(0)) != std::future_status::ready))
+			if (!bDeterministic)
 			{
 				continue;
 			}
-			entry->Ready = entry->Pending.get();
+			WaitForDecode(*entry);
 		}
 		if (!entry->Ready || !entry->Ready->bValid)
 		{

@@ -56,8 +56,12 @@ int32 GetTextAssetVersion (const std::filesystem::path& Path)
 	{
 		return 0;
 	}
+	return GetTextAssetVersionFromText(*text);
+}
 
-	for (const FStringView line : text->Lines())
+int32 GetTextAssetVersionFromText (FStringView Text)
+{
+	for (const FStringView line : Text.Lines())
 	{
 		FStringView key;
 		FStringView value;

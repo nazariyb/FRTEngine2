@@ -1,13 +1,21 @@
 #pragma once
 
 #include <filesystem>
+#include <memory>
+#include <optional>
 
 #include "Core.h"
+#include "Containers/String.h"
 
 
 namespace frt::project
 {
 struct SProjectDescriptor;
+}
+
+namespace frt::assets
+{
+class CMountTable;
 }
 
 
@@ -52,8 +60,13 @@ FRT_CORE_API std::filesystem::path GetProjectDir ();
 
 // ---- engine ----
 FRT_CORE_API std::filesystem::path GetEngineContentDir ();           // <engine>/Core/Content
-// Root of every HLSL source and of Shared/*.h.
-FRT_CORE_API std::filesystem::path GetShaderRootDir ();              // <engine>/Core/Content/Shaders
+// Root of every HLSL source and of Shared/*.h: <engine>/Core/Content/Shaders, unless overridden.
+FRT_CORE_API std::filesystem::path GetShaderRootDir ();
+// Dev builds: where the renderer reads its shaders from instead ([Render] ShaderRoot, which
+// CEngine::StartUp applies before the renderer exists), so that a scripted run can edit a copy of
+// them and never the engine checkout. Empty restores the default. The C++ side's Shared/*.h are
+// compiled in and do not follow.
+FRT_CORE_API void SetShaderRootOverride (const std::filesystem::path& Directory);
 
 // ---- project ----
 FRT_CORE_API std::filesystem::path GetProjectContentDir ();          // <project>/Content
@@ -75,4 +88,15 @@ FRT_CORE_API std::filesystem::path GetUserConfigPath ();             // <local>/
 // ---- the editor's ----
 // Its own files, whatever the project (layout, input overrides, project manager): <engine>/Local/Editor.
 FRT_CORE_API std::filesystem::path GetEditorUserDir ();
+
+// ---- mounts (design §3.1) ----
+// The only conversion points between absolute paths and mount paths ("/Project/Textures/Rock.png"):
+// thin wrappers over the process's mount table, which CEngine resolves and installs at start-up in dev
+// builds - not in tool hosts (AssetTool resolves its own table) or Release (assets::CMountTable,
+// Assets/Discovery/Mounts.h, says what each conversion accepts). Until one is installed, and after
+// SetMountTable(nullptr), both return nullopt. Any thread: the table is immutable and swapped whole.
+FRT_CORE_API void SetMountTable (std::shared_ptr<const assets::CMountTable> Table);
+[[nodiscard]] FRT_CORE_API std::shared_ptr<const assets::CMountTable> GetMountTable ();
+[[nodiscard]] FRT_CORE_API std::optional<FString> ToMountPath (const std::filesystem::path& Absolute);
+[[nodiscard]] FRT_CORE_API std::optional<std::filesystem::path> FromMountPath (FStringView MountPath);
 }

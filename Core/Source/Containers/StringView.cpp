@@ -11,6 +11,7 @@
 #endif
 
 #include "Containers/String.h"
+#include "Containers/StringMap.h"
 #include "Unicode/UnicodeTablesInternal.h"
 
 #include <Windows.h>
@@ -999,6 +1000,25 @@ bool DecodeHex (FStringView Text, std::span<uint8> Out) noexcept
 
 namespace frt
 {
+FString MakePathKey (FStringView Path)
+{
+	FString key;
+	key.Reserve(Path.Len());
+	for (uint32 i = 0u; i < Path.Len();)
+	{
+		const uint32 unit = NextPathKey(Path, i);
+		if (unit >= IllFormedKeyBase)
+		{
+			key.AppendChar(static_cast<char>(unit - IllFormedKeyBase));
+			continue;
+		}
+		char bytes[4] = {};
+		const uint32 count = unicode::EncodeWtf8(static_cast<char32_t>(unit), bytes);
+		key.Append(FStringView(bytes, count));
+	}
+	return key;
+}
+
 std::ostream& operator<< (std::ostream& Out, FStringView Text)
 {
 	return Out.write(Text.GetData(), static_cast<std::streamsize>(Text.Len()));

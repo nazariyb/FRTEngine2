@@ -1,0 +1,9 @@
+# Asset pipeline rules for this project's /Project mount (design §3.5), layered over the engine's
+# Core/Config/Assets.yml. Hand-written and tracked: FRT reads this file and never rewrites it.
+# "FRT.bat assets explain <file>" shows where every effective setting of a file comes from, and
+# "FRT.bat assets list-rules" lists every rule file the project sees. Any folder under Content/ may add
+# its own Assets.yml for its subtree.
+#
+# Sections (all optional): Scan (Include, Exclude, Quiet, Raw), Importers (Exclude), Types (Include,
+# Exclude), Presets, Rules, Validation.
+FormatVersion: 1

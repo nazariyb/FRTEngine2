@@ -9,10 +9,16 @@
 #include "Enum.h"
 #include "Config/IniFile.h"
 #include "Containers/String.h"
+#include "Functional/MulticastDelegate.h"
 #include "Input/InputChord.h"
 
 #include "EditorCommands.h"
 
+
+namespace frt::assets
+{
+class CFileWatcherService;
+}
 
 namespace frt::input
 {
@@ -66,20 +72,30 @@ struct SViewportCameraSettings
  *   - <engine>/Local/Editor/EditorInput.ini  the user's overrides (untracked; the engine
  *                                         checkout's Local/, never a project's), key by key - a
  *                                         key present there wins, an empty value unbinds.
- * Both are re-read when either changes on disk, so a binding can be tried while the editor
- * runs. Problems - unknown names, chords that do not parse - are logged and listed, and never
- * stop the editor: a bad entry is simply skipped.
+ * Both are re-read when either changes on disk - the engine's file watcher reports it (one
+ * subscription per file, on its directory, which need not exist yet) - so a binding can be tried
+ * while the editor runs. Problems - unknown names, chords that do not parse - are logged and
+ * listed, and never stop the editor: a bad entry is simply skipped.
  *
  * Mouse navigation is fixed, as in Unreal; only its settings are configurable.
  */
 class CEditorInput
 {
 public:
-	void Load (const std::filesystem::path& DefaultsPath, const std::filesystem::path& UserPath);
-	// Re-reads both files if either changed since the last read. Polls a few times a second.
+	CEditorInput () = default;
+	// Ends the watcher subscriptions.
+	~CEditorInput ();
+	// Pinned: its watcher subscriptions call back into it.
+	CEditorInput (const CEditorInput&) = delete;
+	CEditorInput& operator= (const CEditorInput&) = delete;
+
+	// Reads both files, and subscribes to Watcher (the engine's, which must outlive this object; null
+	// re-reads nothing) for changes of either.
+	void Load (const std::filesystem::path& DefaultsPath, const std::filesystem::path& UserPath,
+		assets::CFileWatcherService* Watcher);
+	// Re-reads both files if the watcher reported either changed since the last read (or a read
+	// could not open one: then again every 250 ms until it can). True when it read them.
 	bool ReloadIfChanged ();
-	// The next ReloadIfChanged checks the files whenever it last did (after writing one).
-	void PollNow ();
 
 	// ---- commands ----
 	// A chord bound to the command was pressed this frame, with exactly its modifiers.
@@ -106,8 +122,9 @@ private:
 	{
 		std::filesystem::path Path;
 		config::CIniFile File;
-		std::filesystem::file_time_type WriteTime = {};
 		bool bExists = false;
+		// The file exists but could not be read (its writer holds it, say): tried again.
+		bool bUnreadable = false;
 	};
 
 	void Read ();
@@ -116,9 +133,15 @@ private:
 	std::vector<input::SInputChord> ReadChords (FStringView Section, FStringView Key, bool bKeysOnly);
 	void Report (FString Problem);
 
+	void Unwatch ();
+
 	SLayer Defaults;
 	SLayer User;
-	std::chrono::steady_clock::time_point LastPoll = {};
+	assets::CFileWatcherService* FileWatcher = nullptr;
+	SDelegateHandle WatchHandles[2];
+	// The watcher reported a change of either file since the last read.
+	bool bChanged = false;
+	std::chrono::steady_clock::time_point LastRead = {};
 
 	std::array<std::vector<input::SInputChord>, static_cast<size_t>(EEditorCommand::Count)> CommandChords;
 	std::array<FString, static_cast<size_t>(EEditorCommand::Count)> ShortcutTexts;

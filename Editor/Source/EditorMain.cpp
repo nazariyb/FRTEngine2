@@ -102,6 +102,9 @@ int RunEditor ()
 	desc.bMaximizeWindow = bOpenProject;
 	// Exclusive fullscreen minimises on every focus change; tools need the desktop.
 	desc.bAllowExclusiveFullscreen = false;
+	// The editor of a project writes its registry files (snapshot, journal, Rules.cache) when no other process
+	// owns the project; the project manager has no registry.
+	desc.bAssetWriter = bOpenProject;
 
 	CEngine engine;
 	if (!engine.StartUp(desc))
@@ -128,6 +131,9 @@ int RunEditor ()
 	}
 	if (bRunManager)
 	{
+		// The project manager uses no registry; the project's writer lock must be free for the editor its "Build and
+		// Open" starts (it takes the lock at once, while this process is still running).
+		engine.EndAssetRegistry();
 		CProjectManager projects(engine, std::move(manager));
 		exitCode = projects.Run();
 	}

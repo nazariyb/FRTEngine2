@@ -1,0 +1,17 @@
+cgltf 1.15, tag v1.15 of https://github.com/jkuhlmann/cgltf (commit 360db1a95480fe102ae9c69b27c5d101167ff5ba)
+Tarball https://github.com/jkuhlmann/cgltf/archive/refs/tags/v1.15.tar.gz,
+SHA-256 84e352092e5cd6aab7f66de62ddb66beb5e6f18d412ca9d12950d7a55bfef25a
+
+Vendored, unmodified: cgltf.h and LICENSE (MIT). Left out: cgltf_write.h (FRT never writes glTF),
+test/, fuzz/, README.md and the build files.
+
+Header-only, wired like Stb (Premake/thirdparty.lua useCgltf, called by Premake/Projects/core.lua
+only): Core compiles the implementation once, in Core/Source/Assets/Pipeline/Cgltf.cpp
+(CGLTF_IMPLEMENTATION), and no Core header includes cgltf.h - Pipeline/GltfParse.h forward-declares
+cgltf_data. It is not a library of thirdPartyLibraries: nothing links, packages or stamps it, so
+prebuilt third-party archives are unaffected. FRT parses bytes it read itself through Platform/
+(cgltf_parse with cgltf_file_type_gltf); cgltf_parse_file and cgltf_load_buffers are never used.
+
+Updating: copy cgltf.h and LICENSE from the new tag over these and update this file. The glTF
+tests in Core-Test/Assets/DataTree/GltfParseTest.cpp (all Demo models, the GLB header) must still
+pass.

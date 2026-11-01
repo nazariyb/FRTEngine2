@@ -4,8 +4,10 @@
 #include <atomic>
 #include <cstring>
 #include <system_error>
+#include <utility>
 #include <vector>
 
+#include "Containers/StringMap.h"
 #include "Containers/WideString.h"
 #include "Platform/Windows/WindowsCommon.h"
 
@@ -231,6 +233,50 @@ bool IsUnsupportedRename (DWORD Error) noexcept
 		|| Error == ERROR_INVALID_LEVEL;
 }
 
+// Path has a name and is not read-only (the replace would fail at the end: say so before writing).
+bool CheckAtomicTarget (const std::filesystem::path& Path, FString* OutError)
+{
+	if (!Path.has_filename())
+	{
+		windows::SetErrorText(OutError, "Cannot write", Path, "no file name");
+		return false;
+	}
+	if (HasAttribute(Path, FILE_ATTRIBUTE_READONLY))
+	{
+		windows::SetErrorText(OutError, "Cannot write", Path, "the file is read-only");
+		return false;
+	}
+	return true;
+}
+
+// The second half of every atomic write: Bytes into the new temporary file open in File, flushed,
+// closed, then renamed over Path. Deletes the temporary file on any failure.
+bool WriteFlushAndReplace (CScopedHandle& File, const std::filesystem::path& Temp, const std::filesystem::path& Path,
+	std::span<const uint8> Bytes, FString* OutError)
+{
+	bool bWritten = WriteAll(File.Get(), Bytes, Temp, OutError);
+	// On disk before the rename makes it visible: otherwise a power loss could leave the new name
+	// pointing at bytes that were never written.
+	if (bWritten && !FlushFileBuffers(File.Get()))
+	{
+		windows::SetError(OutError, "Cannot flush", Temp, GetLastError());
+		bWritten = false;
+	}
+	if (!File.Reset() && bWritten)
+	{
+		windows::SetError(OutError, "Cannot close", Temp, GetLastError());
+		bWritten = false;
+	}
+
+	if (!bWritten || !ReplaceFileAtomic(Temp, Path, OutError))
+	{
+		// Gone already when the replace went through but could not be flushed.
+		DeleteFileW(windows::ToWin32Path(Temp).c_str());
+		return false;
+	}
+	return true;
+}
+
 
 // ---------------- Volumes ----------------
 
@@ -288,6 +334,45 @@ std::filesystem::path GetVolumeRoot (const std::filesystem::path& Path)
 
 
 // ---------------- Stat ----------------
+
+std::filesystem::path NormalizePath (const std::filesystem::path& Path)
+{
+	std::error_code ec;
+	std::filesystem::path path = std::filesystem::absolute(Path, ec);
+	if (ec)
+	{
+		path = Path;
+	}
+	path = path.lexically_normal();
+	if (!path.has_filename() && path.has_relative_path())
+	{
+		path = path.parent_path();
+	}
+	return path;
+}
+
+std::optional<FString> GetRelativePath (const std::filesystem::path& Path, const std::filesystem::path& Directory, bool bCaseSensitive)
+{
+	// Generic text, compared by key: the keys of equal names are byte-equal and keep every '/' where it
+	// was, so Directory's names are a prefix of Path's exactly when its key is a prefix of Path's key
+	// ending at a '/', and what follows is Path's own names after as many as Directory has.
+	const FString path = FString::FromPath(Path, EPathStyle::Generic);
+	const FString directoryFull = FString::FromPath(Directory, EPathStyle::Generic);
+	const FString directoryText(directoryFull.View().TrimEnd("/"));
+	const FString pathKey = bCaseSensitive ? path : MakePathKey(path);
+	const FString directoryKey = bCaseSensitive ? directoryText : MakePathKey(directoryText);
+	if (!pathKey.View().StartsWith(directoryKey) || (pathKey.Len() > directoryKey.Len() && pathKey.View()[directoryKey.Len()] != '/'))
+	{
+		return std::nullopt;
+	}
+	FStringView below = path.View();
+	for (uint32 names = directoryText.CountOccurrences("/") + 1u; names > 0u; --names)
+	{
+		const uint32 slash = below.Find('/');
+		below = slash == FStringView::NotFound ? FStringView() : below.RightChop(slash + 1u);
+	}
+	return FString(below.TrimStart("/"));
+}
 
 std::optional<SFileStat> Stat (const std::filesystem::path& Path, FString* OutError)
 {
@@ -389,6 +474,8 @@ bool EnumerateDirectory (const std::filesystem::path& Directory, TFunctionRef<bo
 				entry.Stat.CreationTime = windows::ToFileTime(record->CreationTime);
 				entry.Stat.Identity = MakeIdentity(directoryIds.VolumeSerial, record->FileId.Identifier);
 				entry.bReparsePoint = (record->FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0u;
+				// The record's ReparsePointTag means something only when the attribute is set.
+				entry.bNameSurrogate = entry.bReparsePoint && IsReparseTagNameSurrogate(record->ReparsePointTag);
 				if (!OnEntry(entry))
 				{
 					return true;
@@ -405,6 +492,61 @@ bool EnumerateDirectory (const std::filesystem::path& Directory, TFunctionRef<bo
 
 
 // ---------------- Writing ----------------
+
+std::optional<std::vector<uint8>> ReadFileBytesUncached (const std::filesystem::path& Path, FString* OutError)
+{
+	CScopedHandle file(CreateFileW(windows::ToWin32Path(Path).c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+		nullptr, OPEN_EXISTING, FILE_FLAG_NO_BUFFERING | FILE_FLAG_SEQUENTIAL_SCAN, nullptr));
+	if (!file.IsValid())
+	{
+		windows::SetError(OutError, "Cannot open", Path, GetLastError());
+		return std::nullopt;
+	}
+	LARGE_INTEGER size {};
+	if (!GetFileSizeEx(file.Get(), &size))
+	{
+		windows::SetError(OutError, "Cannot size", Path, GetLastError());
+		return std::nullopt;
+	}
+	// Unbuffered reads take whole sectors into sector-aligned memory: a page-aligned block of whole MiB.
+	constexpr DWORD ChunkBytes = 4u << 20u;
+	void* const buffer = VirtualAlloc(nullptr, ChunkBytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+	if (buffer == nullptr)
+	{
+		windows::SetError(OutError, "Cannot allocate a read buffer for", Path, GetLastError());
+		return std::nullopt;
+	}
+	std::vector<uint8> bytes;
+	bytes.reserve(static_cast<size_t>(size.QuadPart));
+	bool bOk = true;
+	while (bytes.size() < static_cast<uint64>(size.QuadPart))
+	{
+		DWORD read = 0u;
+		if (!ReadFile(file.Get(), buffer, ChunkBytes, &read, nullptr))
+		{
+			windows::SetError(OutError, "Cannot read", Path, GetLastError());
+			bOk = false;
+			break;
+		}
+		if (read == 0u)
+		{
+			break;
+		}
+		const size_t take = (std::min)(static_cast<size_t>(read), static_cast<size_t>(size.QuadPart) - bytes.size());
+		bytes.insert(bytes.end(), static_cast<const uint8*>(buffer), static_cast<const uint8*>(buffer) + take);
+	}
+	VirtualFree(buffer, 0u, MEM_RELEASE);
+	if (!bOk)
+	{
+		return std::nullopt;
+	}
+	if (bytes.size() != static_cast<uint64>(size.QuadPart))
+	{
+		windows::SetErrorText(OutError, "Cannot read", Path, "the file is shorter than when it was opened");
+		return std::nullopt;
+	}
+	return bytes;
+}
 
 bool WriteFileBytes (const std::filesystem::path& Path, std::span<const uint8> Bytes, bool bCreateDirectories, FString* OutError)
 {
@@ -502,15 +644,8 @@ bool ReplaceFileAtomic (const std::filesystem::path& Temp, const std::filesystem
 
 bool WriteFileAtomic (const std::filesystem::path& Path, std::span<const uint8> Bytes, bool bCreateDirectories, FString* OutError)
 {
-	if (!Path.has_filename())
+	if (!CheckAtomicTarget(Path, OutError))
 	{
-		windows::SetErrorText(OutError, "Cannot write", Path, "no file name");
-		return false;
-	}
-	// Fails at the replace anyway: say so before writing the whole file.
-	if (HasAttribute(Path, FILE_ATTRIBUTE_READONLY))
-	{
-		windows::SetErrorText(OutError, "Cannot write", Path, "the file is read-only");
 		return false;
 	}
 	if (bCreateDirectories)
@@ -538,33 +673,209 @@ bool WriteFileAtomic (const std::filesystem::path& Path, std::span<const uint8> 
 		windows::SetError(OutError, "Cannot create a temporary file for", Path, GetLastError());
 		return false;
 	}
+	return WriteFlushAndReplace(file, temp, Path, Bytes, OutError);
+}
 
-	bool bWritten = WriteAll(file.Get(), Bytes, temp, OutError);
-	// On disk before the rename makes it visible: otherwise a power loss could leave the new name
-	// pointing at bytes that were never written.
-	if (bWritten && !FlushFileBuffers(file.Get()))
+bool WriteFileAtomicVia (const std::filesystem::path& Path, const std::filesystem::path& Temp, std::span<const uint8> Bytes,
+	bool bCreateDirectories, FString* OutError)
+{
+	if (!CheckAtomicTarget(Path, OutError))
 	{
-		windows::SetError(OutError, "Cannot flush", temp, GetLastError());
-		bWritten = false;
-	}
-	if (!file.Reset() && bWritten)
-	{
-		windows::SetError(OutError, "Cannot close", temp, GetLastError());
-		bWritten = false;
-	}
-
-	if (!bWritten || !ReplaceFileAtomic(temp, Path, OutError))
-	{
-		// Gone already when the replace went through but could not be flushed.
-		DeleteFileW(windows::ToWin32Path(temp).c_str());
 		return false;
 	}
-	return true;
+	if (bCreateDirectories)
+	{
+		CreateParentDirectories(Path);
+		CreateParentDirectories(Temp);
+	}
+
+	// CREATE_NEW: a name another writer is using (or a crashed one left) is refused, never shared.
+	CScopedHandle file(CreateFileW(windows::ToWin32Path(Temp).c_str(), GENERIC_WRITE, 0u, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL,
+		nullptr));
+	if (!file.IsValid())
+	{
+		windows::SetError(OutError, "Cannot create the temporary file", Temp, GetLastError());
+		return false;
+	}
+	return WriteFlushAndReplace(file, Temp, Path, Bytes, OutError);
 }
 
 bool WriteFileAtomic (const std::filesystem::path& Path, FStringView Text, bool bCreateDirectories, FString* OutError)
 {
 	return WriteFileAtomic(Path, Text.AsBytes(), bCreateDirectories, OutError);
+}
+
+
+// ---------------- Append-only files ----------------
+
+CAppendFile::~CAppendFile ()
+{
+	Close();
+}
+
+CAppendFile::CAppendFile (CAppendFile&& Other) noexcept
+	: Handle(std::exchange(Other.Handle, nullptr))
+	, Path(std::move(Other.Path))
+{}
+
+CAppendFile& CAppendFile::operator= (CAppendFile&& Other) noexcept
+{
+	if (this != &Other)
+	{
+		Close();
+		Handle = std::exchange(Other.Handle, nullptr);
+		Path = std::move(Other.Path);
+	}
+	return *this;
+}
+
+bool CAppendFile::Open (const std::filesystem::path& InPath, bool bCreateDirectories, FString* OutError)
+{
+	Close();
+	if (bCreateDirectories)
+	{
+		CreateParentDirectories(InPath);
+	}
+
+	// FILE_APPEND_DATA without FILE_WRITE_DATA: every write goes to the end of the file, whatever
+	// other appenders did meanwhile (see the header). FILE_READ_ATTRIBUTES for GetSize.
+	CScopedHandle file(CreateFileW(windows::ToWin32Path(InPath).c_str(), FILE_APPEND_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr));
+	if (!file.IsValid())
+	{
+		windows::SetError(OutError, "Cannot open for appending", InPath, GetLastError());
+		return false;
+	}
+	Handle = file.Release();
+	Path = InPath;
+	return true;
+}
+
+void CAppendFile::Close () noexcept
+{
+	if (Handle != nullptr)
+	{
+		CloseHandle(static_cast<HANDLE>(Handle));
+		Handle = nullptr;
+	}
+}
+
+bool CAppendFile::Append (std::span<const uint8> Bytes, FString* OutError)
+{
+	if (Handle == nullptr)
+	{
+		windows::SetErrorText(OutError, "Cannot append to", Path, "the file is not open");
+		return false;
+	}
+	if (Bytes.size() > MaxWritePerCall)
+	{
+		// Two writes could be split by another appender's record: refuse rather than tear.
+		windows::SetErrorText(OutError, "Cannot append to", Path, "a single append is limited to 1 GiB");
+		return false;
+	}
+	if (Bytes.empty())
+	{
+		return true;
+	}
+	DWORD written = 0u;
+	if (!WriteFile(static_cast<HANDLE>(Handle), Bytes.data(), static_cast<DWORD>(Bytes.size()), &written, nullptr))
+	{
+		windows::SetError(OutError, "Cannot append to", Path, GetLastError());
+		return false;
+	}
+	if (written != Bytes.size())
+	{
+		windows::SetErrorText(OutError, "Cannot append to", Path, "the write was cut short");
+		return false;
+	}
+	return true;
+}
+
+std::optional<uint64> CAppendFile::GetSize (FString* OutError) const
+{
+	LARGE_INTEGER size = {};
+	if (Handle == nullptr || !GetFileSizeEx(static_cast<HANDLE>(Handle), &size))
+	{
+		windows::SetError(OutError, "Cannot get the size of", Path, Handle == nullptr ? ERROR_INVALID_HANDLE : GetLastError());
+		return std::nullopt;
+	}
+	return static_cast<uint64>(size.QuadPart);
+}
+
+bool CAppendFile::Flush (FString* OutError)
+{
+	if (Handle == nullptr || !FlushFileBuffers(static_cast<HANDLE>(Handle)))
+	{
+		windows::SetError(OutError, "Cannot flush", Path, Handle == nullptr ? ERROR_INVALID_HANDLE : GetLastError());
+		return false;
+	}
+	return true;
+}
+
+
+// ---------------- Deleting ----------------
+
+bool RemoveFile (const std::filesystem::path& Path, FString* OutError)
+{
+	// DELETE access only, sharing everything: a reader that has the file open does not refuse it.
+	// FILE_FLAG_OPEN_REPARSE_POINT deletes a link itself, never its target; no backup semantics, so
+	// a directory does not open at all.
+	const CScopedHandle file(CreateFileW(windows::ToWin32Path(Path).c_str(), DELETE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+		nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+	if (!file.IsValid())
+	{
+		const DWORD error = GetLastError();
+		if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)
+		{
+			return true;
+		}
+		windows::SetError(OutError, "Cannot delete", Path, error);
+		return false;
+	}
+
+	FILE_DISPOSITION_INFO_EX posix = {};
+	posix.Flags = FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS;
+	if (SetFileInformationByHandle(file.Get(), FileDispositionInfoEx, &posix, sizeof(posix)))
+	{
+		return true;
+	}
+	DWORD error = GetLastError();
+	if (IsUnsupportedRename(error))
+	{
+		// No POSIX semantics here (FAT, older systems): deleted when the last handle closes.
+		FILE_DISPOSITION_INFO classic = {};
+		classic.DeleteFile = TRUE;
+		if (SetFileInformationByHandle(file.Get(), FileDispositionInfo, &classic, sizeof(classic)))
+		{
+			return true;
+		}
+		error = GetLastError();
+	}
+	windows::SetError(OutError, "Cannot delete", Path, error);
+	return false;
+}
+
+
+// ---------------- Times ----------------
+
+bool TouchFile (const std::filesystem::path& Path, FString* OutError)
+{
+	// Attribute access only, sharing everything; no backup semantics, so a directory does not open.
+	const CScopedHandle file(CreateFileW(windows::ToWin32Path(Path).c_str(), FILE_WRITE_ATTRIBUTES,
+		FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+	if (!file.IsValid())
+	{
+		windows::SetError(OutError, "Cannot open", Path, GetLastError());
+		return false;
+	}
+	FILETIME now = {};
+	GetSystemTimeAsFileTime(&now);
+	if (!SetFileTime(file.Get(), nullptr, nullptr, &now))
+	{
+		windows::SetError(OutError, "Cannot set the last write time of", Path, GetLastError());
+		return false;
+	}
+	return true;
 }
 
 

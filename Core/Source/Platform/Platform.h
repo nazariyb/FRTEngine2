@@ -28,6 +28,8 @@
  */
 namespace frt::platform
 {
+enum class EFileFailure : uint8;   // Platform/BlockingFileReader.h
+
 // SetConsoleOutputCP/SetConsoleCP(CP_UTF8), so UTF-8 printed with printf/fputs shows as such. The
 // console may be the parent cmd.exe or FRT.bat window, which outlives this process: the first call
 // saves the code pages it found and registers an std::atexit handler restoring them. Idempotent;
@@ -76,6 +78,9 @@ FRT_CORE_API void ShowErrorMessage (FStringView Title, FStringView Text) noexcep
 [[nodiscard]] FRT_CORE_API std::filesystem::path GetModulePath (void* Module = nullptr);
 // Its address range is GetModuleImage (Platform/ModuleImage.h, included above).
 [[nodiscard]] FRT_CORE_API std::filesystem::path GetExecutablePath ();
+// The file the loaded module of that name ("dxcompiler.dll") was loaded from. Empty if this process
+// has no module of that name loaded (never the executable's path, as GetModulePath(nullptr) is).
+[[nodiscard]] FRT_CORE_API std::filesystem::path GetLoadedModulePath (FStringView Name);
 
 // Output of a child tool (a compiler, a build) as UTF-8. Split on '\n' (terminators kept), each line
 // that is valid UTF-8 is kept as is; any other line is decoded with the system's OEM code page,
@@ -90,9 +95,17 @@ FRT_CORE_API void ShowErrorMessage (FStringView Title, FStringView Text) noexcep
 // anything else is returned unchanged - bytes are never validated or replaced here. Raw: the bytes
 // as stored. nullopt if the file cannot be read (missing, a directory, locked, over 2 GB).
 [[nodiscard]] FRT_CORE_API std::optional<FString> ReadFileText (const std::filesystem::path& Path, ETextFileEncoding Encoding = ETextFileEncoding::Detect);
-// A whole file as bytes (fonts, binary assets). A std::vector: usable before the memory pool
-// exists. nullopt as for ReadFileText.
-[[nodiscard]] FRT_CORE_API std::optional<std::vector<uint8>> ReadFileBytes (const std::filesystem::path& Path);
+// What ReadFileText(Detect) makes of a file's bytes as stored (ReadFileText(Raw)): for a reader that
+// also hashes the stored bytes, so the hash and the text it uses come from one read. In
+// Platform/TextDecoding.cpp, a source of the Shader.Dxil builder (its output is what DXC compiles).
+[[nodiscard]] FRT_CORE_API std::optional<FString> DecodeTextFile (FString Bytes);
+// A whole file as bytes (fonts, binary assets, the derived-data cache's files, build logs): the one
+// whole-file read of bytes, through a CBlockingFileReader (Platform/BlockingFileReader.h), so files
+// past 4 GB too. A std::vector: usable before the memory pool exists and on worker threads. nullopt if
+// the file cannot be opened or read whole (missing, a directory, locked, shorter than when opened),
+// with the reason in OutError and whether to retry in OutFailure (None after a success).
+[[nodiscard]] FRT_CORE_API std::optional<std::vector<uint8>> ReadFileBytes (const std::filesystem::path& Path,
+	FString* OutError = nullptr, EFileFailure* OutFailure = nullptr);
 // Replaces the file with Text's bytes: binary, so UTF-8 without a BOM and line endings as given.
 // Creates the parent directories first when bCreateDirectories. False if anything failed.
 // WriteFileBytes (Platform/FileSystem.h) with Text.AsBytes(), for callers that need no reason.

@@ -22,6 +22,7 @@
 #include "Graphics/Render/Passes/Upscaler.h"
 #include "Graphics/Render/RenderView.h"
 #include "Graphics/Render/Scene/GpuScene.h"
+#include "Log/Log.h"
 #include "Platform/Platform.h"
 #include "Profiler/Profiler.h"
 
@@ -188,7 +189,8 @@ uint64 HashBytes (uint64 Hash, const void* Data, size_t Size)
 }
 
 
-CRenderer::CRenderer (CWindow* InWindow)
+CRenderer::CRenderer (CWindow* InWindow, jobs::CWorkerPool& WorkerPool,
+	const rhi::SShaderCacheSettings& ShaderCacheSettings, assets::CFileWatcherService* FileWatcher)
 	: Window(InWindow)
 {
 	CreateDevice();
@@ -212,7 +214,11 @@ CRenderer::CRenderer (CWindow* InWindow)
 	}
 
 	ShaderCompiler.Init(paths::GetShaderRootDir());
-	Pipelines.Init(Rhi, ShaderCompiler);
+	ShaderCache.Init(ShaderCompiler, ShaderCacheSettings);
+	// Hot reload of programs and materials, through the engine's file watcher (dev builds; Release
+	// has none and reloads nothing).
+	Pipelines.Init(Rhi, ShaderCache, FileWatcher);
+	MaterialLibrary.SetFileWatcher(FileWatcher);
 #if !FRT_WITH_DEV_TOOLS
 	Pipelines.SetHotReloadEnabled(false);
 #endif
@@ -224,7 +230,7 @@ CRenderer::CRenderer (CWindow* InWindow)
 	Rhi.WriteBufferUav(RayCounterUav, RayCounters.GetResource(), rhi::EBufferViewKind::Raw, profiler::CRayCounters::GetBufferBytes(), 0u);
 
 	Scene = std::make_unique<CGpuScene>();
-	Scene->Initialize(Rhi, Pipelines);
+	Scene->Initialize(Rhi, Pipelines, WorkerPool);
 	PathTracerPrograms = std::make_unique<CPathTracerPrograms>();
 	PathTracerPrograms->Initialize(Rhi, Pipelines);
 	ReferenceResampler = CreateUpscaler(EUpscalerKind::None);
@@ -824,13 +830,15 @@ void CRenderer::ApplyProfile (CRenderView& View)
 void CRenderer::PrepareScene ()
 {
 	frt_assert(bCommandListRecording);
+	// What the file watcher reported changed (dev builds), read and built again before the scene
+	// and the views use it.
 #if FRT_WITH_DEV_TOOLS
 	if (MaterialLibrary.ReloadModifiedMaterials())
 	{
 		ResetAccumulation();
 	}
 #endif
-	if (Pipelines.PollHotReload())
+	if (Pipelines.RebuildChangedPrograms())
 	{
 		ResetAccumulation();
 	}
@@ -1139,6 +1147,25 @@ void CRenderer::EndFrame ()
 	CommandQueue->Signal(Fence.Get(), FenceValue);
 	Frames[FrameSlot].FenceValue = FenceValue;
 	++FrameNumber;
+
+	// Once, after the first frame: by then the views exist and their passes have created their
+	// programs, so the line covers the whole start-up (verify reads it: a warm start compiles 0).
+	if (!bShaderCacheReported)
+	{
+		bShaderCacheReported = true;
+		const rhi::SShaderCacheCounters counters = ShaderCache.GetCounters();
+		FString line = "cache: " + rhi::CShaderCache::FormatCounters(counters);
+		if (!ShaderCache.IsCaching())
+		{
+			line << " (no cache: every program compiled)";
+		}
+		if (counters.VerifyCompiles > 0u)
+		{
+			line << FString::Format(", {} verified, {} differed (BUILD002)", counters.VerifyCompiles,
+				counters.VerifyMismatches);
+		}
+		log::Info("shader", "{}", line);
+	}
 }
 
 

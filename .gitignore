@@ -6,6 +6,9 @@
 *.lo
 *.o
 *.obj
+# ... except in content folders, which hold assets, never build output: an .obj there is a Wavefront model.
+!/Core/Content/**/*.obj
+!/Templates/*/Content/**/*.obj
 
 # Compiled binaries
 /Binaries/*

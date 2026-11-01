@@ -15,6 +15,7 @@
 #include "Graphics/Render/RenderView.h"
 #include "Graphics/Render/RHI/Device.h"
 #include "Graphics/Render/RHI/Pipelines.h"
+#include "Graphics/Render/RHI/ShaderCache.h"
 #include "Graphics/Render/RHI/ShaderCompiler.h"
 #include "Profiler/GpuProfiler.h"
 #include "Profiler/RayCounters.h"
@@ -22,6 +23,16 @@
 namespace frt
 {
 class CWindow;
+}
+
+namespace frt::jobs
+{
+class CWorkerPool;
+}
+
+namespace frt::assets
+{
+class CFileWatcherService;
 }
 
 namespace frt::graphics
@@ -56,7 +67,12 @@ class FRT_CORE_API CRenderer
 {
 public:
 	CRenderer () = delete;
-	explicit CRenderer (CWindow* Window);
+	// WorkerPool: the engine's, which texture streaming decodes on; it outlives the renderer.
+	// ShaderCache: where programs come from (the engine's DDC in dev builds, else every one compiled);
+	// its store outlives the renderer too. FileWatcher: what materials and shader programs hot
+	// reload through (the engine's, in dev builds), outliving the renderer; null reloads nothing.
+	CRenderer (CWindow* Window, jobs::CWorkerPool& WorkerPool, const rhi::SShaderCacheSettings& ShaderCache = {},
+		assets::CFileWatcherService* FileWatcher = nullptr);
 	~CRenderer ();
 	CRenderer (const CRenderer&) = delete;
 	CRenderer& operator= (const CRenderer&) = delete;
@@ -118,6 +134,8 @@ public:
 	// Writes Profile.Upscaler if that kind is available; views switch on their next render.
 	void SetUpscalerKind (EUpscalerKind Kind);
 	rhi::CPipelineLibrary& GetPipelines () { return Pipelines; }
+	// Hits, compiles and their time since start-up: the Stats panel's, and the start-up line's.
+	const rhi::CShaderCache& GetShaderCache () const { return ShaderCache; }
 
 	profiler::CGpuProfiler& GetGpuProfiler () { return GpuProfiler; }
 	const profiler::CGpuProfiler& GetGpuProfiler () const { return GpuProfiler; }
@@ -185,6 +203,7 @@ private:
 
 	rhi::CDevice Rhi;
 	rhi::CShaderCompiler ShaderCompiler;
+	rhi::CShaderCache ShaderCache;
 	rhi::CPipelineLibrary Pipelines;
 	CMaterialLibrary MaterialLibrary;
 	profiler::CGpuProfiler GpuProfiler;
@@ -201,6 +220,7 @@ private:
 	uint64 SceneEpoch = 1u;                // bumped when PrepareScene finds the content changed:
 	                                       // a view's accumulation restarts when it last saw another
 	bool bBackBufferDrawn = false;         // a back-buffer view drew this frame: the UI composes over it
+	bool bShaderCacheReported = false;     // the shader cache's start-up line is printed (after the first frame)
 	const CRenderView* CountersView = nullptr;
 	std::vector<std::filesystem::path> BackBufferCaptures;
 

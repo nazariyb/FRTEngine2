@@ -14,6 +14,10 @@ project "Core-Test"
 	{
 		rootpath("%{prj.name}/**.h"),
 		rootpath("%{prj.name}/**.cpp"),
+		-- The part of AssetTool that tests check without running it (Core-Test/AssetTool): the
+		-- commandlet context's option and mount rules. Compiled in every configuration, Release
+		-- included, where there is no AssetTool to run.
+		rootpath("AssetTool/Source/CommandletContext.cpp"),
 	}
 	-- Core-TestModule's sources (below); the tests include its header and load the DLL.
 	removefiles { rootpath("%{prj.name}/TestModule/**.cpp") }
@@ -23,11 +27,13 @@ project "Core-Test"
 		-- Tests live directly under Core-Test/, not in a Source/ subdirectory, so the
 		-- project root is what makes TestCommon.h reachable from ECS/ and Math/.
 		rootpath("%{prj.name}"),
+		rootpath("AssetTool/Source"),
 	}
 
 	defines { "_CONSOLE" }
 
-	dependson { "Core-TestModule" }
+	-- AssetTool: its tests run the executable beside Core-Test (Core-Test/AssetTool).
+	dependson { "Core-TestModule", "AssetTool" }
 
 	useCore()
 	useGoogleTest()

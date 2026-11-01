@@ -21,6 +21,11 @@ namespace frt::graphics
 class CRenderView;
 }
 
+namespace frt::config
+{
+class CConfig;
+}
+
 
 namespace frt
 {
@@ -48,10 +53,24 @@ namespace frt
  * identical binaries are bit-identical; path-traced ones still vary very slightly, as the
  * radiance cache inserts with GPU atomics. A capture waits for streaming to finish: it is taken
  * on the first frame from CaptureFrame on with no texture still loading.
+ *
+ * Scripted runs see only what they were started with (design §5.4, §13.5): CEngine::StartUp applies
+ * ApplyScriptedRunRules to every run IsScriptedRun recognises - one with an [Automation] key that
+ * makes it scripted, or the editor's smoke test ([Editor] SmokeTest) - before anything is created
+ * from the config. [Assets] Watch=0: no file is reloaded behind the run's back (the file watcher
+ * starts disabled; a smoke step that edits files turns it on for itself). [Assets] ReadOnly=1: the
+ * asset system writes nothing (nothing writes yet; the switch is there for M4's metas).
  */
 class FRT_CORE_API CAutomation
 {
 public:
+	// The run Config describes is scripted: an [Automation] key that makes a run scripted (IsActive),
+	// or [Editor] SmokeTest.
+	[[nodiscard]] static bool IsScriptedRun (const config::CConfig& Config);
+	// Forces what every scripted run runs with, as overrides (never saved): [Assets] Watch=0 and
+	// [Assets] ReadOnly=1. Before anything reads them (CEngine::StartUp, right after the command line).
+	static void ApplyScriptedRunRules (config::CConfig& Config);
+
 	// Reads the [Automation] keys; a scripted run also switches the renderer to deterministic
 	// texture streaming.
 	void Configure (CEngine& Engine, const CWorldScene& World);

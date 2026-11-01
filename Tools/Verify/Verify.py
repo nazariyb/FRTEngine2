@@ -7,26 +7,51 @@ script, behind FRT.bat verify (Premake/tools.lua). A milestone branch merges onl
      source files by glob, so a solution older than the sources would build without the new ones), then
      the engine in Debug and Development (FRT.bat build), and the templates' game modules in both;
   2. Core-Test in Debug and Development;
-  3. the lints: Tools/Lint/CheckStrings.py, Tools/Lint/CheckPlatform.py when it exists, and line endings:
-     every file .gitattributes makes LF is LF in the index and in the working tree, every -text file is
-     checked out as committed (FRT.bat check-line-endings: the rules FRT.bat setup applies, in
-     Premake/tools.lua only);
-  4. the editor's smoke test (-Editor:SmokeTest=1) over Templates/Demo and Templates/Blank, in place, in
-     Debug and Development;
-  5. automation captures of Templates/Demo through the launcher, in Debug and in Development: one raster,
+  3. the lints: Tools/Lint/CheckStrings.py, Tools/Lint/CheckPipeline.py (the builder contract, over the
+     files the build listed in Local/Build/PipelineSources.txt), Tools/Lint/CheckPlatform.py when it exists,
+     line endings: every file .gitattributes makes LF is LF in the index and in the working tree, every
+     -text file is checked out as committed (FRT.bat check-line-endings: the rules FRT.bat setup applies, in
+     Premake/tools.lua only), and the builder source guard: no builder's sources changed without a new
+     version GUID (FRT.bat check-builders, BUILD003);
+  4. AssetTool through FRT.bat assets: newguid --json exits with 0, and its standard output is JSON objects,
+     one per line, and nothing else; -Project= names the project, and arguments reach AssetTool unchanged;
+     every asset registry verb with --json over Templates/Demo, read-only (scan --ci, status, query, refs,
+     referencers, explain, list-rules, dump registry); the registry's golden dumps: dump registry --text --ci
+     of the engine (/Engine) and of each template (/Project) in place, on a tree git says is unchanged there,
+     equal to Core-Test/Assets/Golden/Registry-*.txt and clean of PATH001-003, RULE001-002 and errors (Core-Test
+     compares the same files over temp copies); and every verb of FRT.bat assets help --json and every code of
+     Core/Source/Assets/AssetDiagnosticCodes.h is named in Docs/Assets.md;
+  5. the editor's smoke test (-Editor:SmokeTest=1) over Templates/Demo and Templates/Blank, in place, in
+     Debug and Development, which also checks the asset registry's initial scan and the editor's Assets panel
+     (its "[smoke] ok registry:" line; in Demo the panel lists textures); then its steps that edit files, on a
+     scratch copy of Templates/Demo made with
+     FRT.bat new and a copy of the shaders (Gate.smoke_scratch): a material rewritten must reload and a
+     shader include edited must rebuild exactly the programs that include it, through the file watcher;
+  6. automation captures of Templates/Demo through the launcher, in Debug and in Development: one raster,
      compared byte for byte with its baseline, and one path traced, compared by relative RMSE - path
      tracing still varies a little from run to run, as its radiance cache inserts with GPU atomics, so a
-     path-traced capture beyond the tolerance is taken again (PATH_TRACED_ATTEMPTS);
-  6. the Release package baseline: FRT.bat package of both templates into a short scratch directory, and
+     path-traced capture beyond the tolerance is taken again (PATH_TRACED_ATTEMPTS). Every process of the
+     run shares one derived-data cache, emptied at the start: the first editor start compiles the shaders,
+     the second start of each configuration must compile none (its "[shader] cache:" line says so), and
+     the captures, taken from the warm cache, must still match (step 5's scratch copy is not counted: debug
+     information names the shader root, a copy there, so it compiles its own);
+  7. the Release package baseline: FRT.bat package of both templates into a short scratch directory, and
      the same two captures of each packaged game, against the Release baselines;
-  7. git status --porcelain is empty at the end: nothing it ran changed a tracked file.
+  8. git status --porcelain is empty at the end: nothing it ran changed a tracked file.
 Steps that later milestones bring print "skipped (M<n>)". It ends with a summary table and the timings a
-commit message reports, and exits with 1 when any step failed.
+commit message reports (the hosts' "[assets] initial scan:" lines among them: the scan and how long
+BuildWorld waited for it - a Debug or Development host must print it before its first BuildWorld - and their
+"[world] BuildWorld:" and "[module] reload:" times), and exits with 1 when any step failed. --nightly also builds Release and runs its
+Core-Test.exe over the asset system's benchmark suites, the DISABLED_ 100k/1M/100k + 500k ones included, with
+FRT_PERF_STRICT=1, which holds design 5.11's figures, or the proposed revisions, exactly - each test in a process of
+its own, as the figures are for a test run alone (Development's Core-Test step judges the 10k suites by its
+regression guards).
 
     python -I Tools/Verify/Verify.py [--quick | --nightly] [--record-baselines] [--baselines=<dir>]
                                      [--pt-tolerance=<rmse>]
+    python -I Tools/Verify/Verify.py --update-goldens
 
-  --quick             build Development, run its Core-Test and the lints: the pre-commit subset
+  --quick             build Development, run its Core-Test, the lints and AssetTool: the pre-commit subset
   --nightly           everything, and the long checks (placeholders until they exist)
   --record-baselines  record the captures as the baselines instead of comparing with them; a baseline is
                       kept only when two recordings agree, byte for byte for raster, and a configuration's
@@ -34,13 +59,17 @@ commit message reports, and exits with 1 when any step failed.
   --baselines=<dir>   where the baselines are (default <engine>/Local/Verify/Baselines): Debug/ and
                       Development/ for the in-place captures, Release/ for the packaged games'
   --pt-tolerance=<x>  the relative RMSE a path-traced capture may differ by (default 1e-4)
+  --update-goldens    write the registry's golden dumps again (Core-Test/Assets/Golden) from FRT.bat assets
+                      dump registry, show what changed, and run nothing else: for a commit that changes content
 
 Baselines belong to a machine: a capture depends on the GPU, its driver and the display's scaling, which
 sets the window's size. Baseline.ini beside them says what took them, and a comparison with baselines
 from another GPU or another recipe fails as such. What a run writes - logs, captures, the smoke tests'
 output, and a user-data directory (FRT_USER_DATA_DIR) of its own, new and empty, for every process it
-starts, so that no step sees what an earlier one left there - goes to <engine>/Local/Verify/Last, emptied
-first; packages go to %TEMP%/frtv-<hash of the engine path>.
+starts, so that no step sees what an earlier one left there, except the derived-data cache they share on
+purpose (FRT_DDC_DIR, Last/DDC) - goes to <engine>/Local/Verify/Last, emptied first; packages go to
+%TEMP%/frtv-<hash of the engine path>, the scratch copy to %TEMP%/frts-<the same hash> (short paths: MSBuild
+fails on paths beyond MAX_PATH), deleted once its step passed.
 
 The captures pin what would otherwise depend on the machine's state or on wall-clock time: the render
 mode, a windowed window, and manual exposure. Auto exposure adapts by measured frame times, and the
@@ -53,11 +82,14 @@ Standard library only.
 import argparse
 import array
 import datetime
+import difflib
 import hashlib
+import json
 import math
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -67,9 +99,41 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 BINARIES = ROOT / 'Binaries' / 'Win64'
 FRT = ROOT / 'FRT.bat'
+# What FRT.bat runs, for a check that must start Premake without a batch file in between.
+PREMAKE = ROOT / 'ThirdParty' / 'premake-5.0.0-beta2-windows' / 'premake5.exe'
 TEMPLATES = ('Demo', 'Blank')
 CAPTURED_IN_PLACE = ('Demo',)
+# The scratch copy's template, its name (FRT.bat new) and the configuration its smoke steps run in: one is
+# enough for steps that test the file watcher, and Development compiles the copy's shaders fastest.
+SCRATCH_TEMPLATE = 'Demo'
+SCRATCH_NAME = 'Scratch'
+SCRATCH_CONFIG = 'Development'
 CAPTURE_CONFIGS = ('Debug', 'Development')
+# The registry's golden dumps (design 5.3): (golden name, template or None for the engine, dump arguments). Each
+# dumps only its own mounts, so an engine content change touches only Registry-Engine.txt.
+GOLDEN_DIR = ROOT / 'Core-Test' / 'Assets' / 'Golden'
+GOLDENS = (
+    ('Engine', None, ('--engine', '--mount=Engine')),
+    ('Demo', 'Demo', ('--mount=Project',)),
+    ('Blank', 'Blank', ('--mount=Project',)),
+)
+# Templates whose in-place smoke test must see textures in the editor's Assets panel (type:Texture).
+SMOKE_TEXTURES = ('Demo',)
+# Core-Test's tests the gate relies on: they must exist and not be disabled (each Core-Test step runs them).
+REGISTRY_GATE_TESTS = (
+    'RegistryGoldenTest.*', 'AssetQueryParseTest.RandomTokenStreamsNeverCrashAndEveryErrorHasAPosition',
+    'QueryEngineTest.RandomQueriesNeverCrashAndEveryErrorHasAPosition',
+    'RegistryBenchmarkTest.TheStoreMeetsItsBudgetsAt10kAssets', 'QueryBenchmarkTest.TheQueryEngineMeetsItsBudgetsAt10kAssets',
+    'SnapshotTest.SnapshotAndJournalMeetTheirBudgetsAt10kAssets',
+    'AssetRegistryBudget.TwentyThousandFilesWarmStartWithinTheirBudgetAlsoAfterAMountRuleEdit',
+)
+# --nightly: the registry's benchmark suites in Release, the DISABLED_ ones included.
+NIGHTLY_REGISTRY_FILTER = ':'.join((
+    'RegistryBenchmarkTest.*', 'QueryBenchmarkTest.*', 'SnapshotTest.*AndJournal*', 'AssetRegistryBudget.*',
+    'RegistryRulesEditBenchmark.*', 'DataTreeYamlTest.*Rate*', 'MountScannerTest.*Budget*', 'AnalyzeBenchmarkTest.*',
+    'RulesScan.*Budget*',
+))
+NIGHTLY_TIMEOUT = 7200
 SMOKE_CONFIGS = ('Debug', 'Development')
 CAPTURE_FRAME = 400
 # ||capture - baseline|| / ||baseline|| over every channel of every pixel of the linear HDR capture. Two
@@ -78,7 +142,7 @@ CAPTURE_FRAME = 400
 # the tolerance is taken again, up to PATH_TRACED_ATTEMPTS times. A real change moves the image by far
 # more than the noise, so it fails every attempt; the summary shows the attempts a pass needed.
 PATH_TRACED_TOLERANCE = 1e-4
-PATH_TRACED_ATTEMPTS = 3
+PATH_TRACED_ATTEMPTS = 5
 
 # Every capture: frame-indexed, manual exposure, windowed.
 #
@@ -136,22 +200,23 @@ def kill_tree(process):
                    stderr=subprocess.DEVNULL)
 
 
-def run(command, log, cwd=None, env=None, timeout=None, on_line=None):
+def run(command, log, cwd=None, env=None, timeout=None, on_line=None, stdout=None):
     """Runs Command (a list) with its output appended to Log. Returns (exit code, seconds); the code is None
     when it ran past Timeout and was killed. OnLine(line bytes, seconds since start) sees each line, a
-    little after it was written.
+    little after it was written. With Stdout (a path), standard output goes to that file instead, emptied
+    first, and only standard error to Log: for a command whose standard output is data.
 
     The output goes straight into the file, never through a pipe: a build leaves processes behind
     (mspdbsrv, MSBuild nodes) that inherit the output handle, and a pipe would stay open as long as they
     live. A file is read back while the process runs instead."""
     command = [str(part) for part in command]
     start = time.monotonic()
-    with open(log, 'ab') as out:
-        out.write(f'$ {subprocess.list2cmdline(command)}\n'.encode('utf-8'))
+    with open(log, 'ab') as out, open(stdout or os.devnull, 'wb') as data:
+        out.write(f'$ {subprocess.list2cmdline(command)}{f" > {stdout}" if stdout else ""}\n'.encode('utf-8'))
         out.flush()
         offset = out.tell()
-        process = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=out,
-                                   stderr=subprocess.STDOUT)
+        process = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=data if stdout else out,
+                                   stderr=out if stdout else subprocess.STDOUT)
         timed_out = False
         pending = b''
         with open(log, 'rb') as reader:
@@ -205,6 +270,24 @@ def tail(log, since=0, lines=12, pattern=None):
 
 def git(*arguments):
     return output_of(['git', '-C', ROOT, *arguments])
+
+
+def remove_tree(path):
+    """Deletes the directory Path with everything in it, read-only files included (git makes its objects
+    read-only, and a scratch copy is a git repository). Nothing when it does not exist."""
+    def make_writable_and_retry(function, failed, *_):
+        try:
+            os.chmod(failed, stat.S_IWRITE)
+            function(failed)
+        except OSError:
+            pass
+
+    if not Path(path).exists():
+        return
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(path, onexc=make_writable_and_retry)
+    else:
+        shutil.rmtree(path, onerror=make_writable_and_retry)
 
 
 # ---------------------------------------------------------------------------------------------------------
@@ -279,17 +362,29 @@ class Gate:
         self.baselines = Path(options.baselines) if options.baselines else ROOT / 'Local' / 'Verify' / 'Baselines'
         self.run_dir = ROOT / 'Local' / 'Verify' / 'Last'
         self.logs = self.run_dir / 'Logs'
-        self.package_root = Path(tempfile.gettempdir()) / (
-            'frtv-' + hashlib.sha1(os.path.normcase(str(ROOT)).encode('utf-8')).hexdigest()[:8])
+        engine_hash = hashlib.sha1(os.path.normcase(str(ROOT)).encode('utf-8')).hexdigest()[:8]
+        self.package_root = Path(tempfile.gettempdir()) / ('frtv-' + engine_hash)
+        self.scratch_root = Path(tempfile.gettempdir()) / ('frts-' + engine_hash)
         self.results = []    # (name, status, seconds, detail)
         self.timings = []    # (what, text)
         self.broken = set()  # what failed and so cannot be used: ('engine', config), (template, config)
         self.gpu = None
         self.step_number = 0
+        # (what, files, records, scan ms, BuildWorld wait ms) of every host start that logged its initial scan.
+        self.initial_scans = []
 
         env = dict(os.environ)
         # Never the user's own; every process gets a directory of its own below this one (env_for).
         env['FRT_USER_DATA_DIR'] = str(self.run_dir / 'UserData')
+        # One derived-data cache for every process of the run, never the machine's (and not below a
+        # process's own user-data directory): emptied with run_dir at the start, so the first editor start
+        # compiles every shader and the later ones read them back - which check_shader_cache checks, and
+        # under which the captures must still match their baselines byte for byte.
+        self.ddc_dir = self.run_dir / 'DDC'
+        env['FRT_DDC_DIR'] = str(self.ddc_dir)
+        # The [shader] cache: line of every editor or game start that printed one, per configuration, in
+        # the order they ran: (what, hits, compiled, milliseconds).
+        self.shader_starts = {}
         # The templates find the engine they are in; an override would send them to another one.
         env.pop('FRT_ENGINE_DIR', None)
         # GoogleTest reads its flags from the environment too: a GTEST_FILTER, GTEST_REPEAT or
@@ -366,11 +461,13 @@ class Gate:
         if not self.step(f'generate {name}', self.generate, f'--project={project}'):
             self.broken.add(('generate', name))
 
-    def build(self, log, *arguments):
+    def build(self, log, *arguments, env=None):
+        """FRT.bat build with Arguments, retried when the compiler crashed (FLAKY_COMPILER). Env: the
+        environment of every attempt; by default each gets a new user-data directory (env_for)."""
         retries = []
         for attempt in range(BUILD_ATTEMPTS):
             since = log.stat().st_size if log.exists() else 0
-            code, _ = run([FRT, 'build', *arguments], log, cwd=ROOT, env=self.env_for(log), timeout=BUILD_TIMEOUT)
+            code, _ = run([FRT, 'build', *arguments], log, cwd=ROOT, env=env or self.env_for(log), timeout=BUILD_TIMEOUT)
             if code == 0:
                 return f'after {len(retries)} retr{"y" if len(retries) == 1 else "ies"} ({", ".join(retries)})' \
                     if retries else ''
@@ -419,7 +516,25 @@ class Gate:
             names = re.findall(r'\[  FAILED  \] (\S+)', text)
             raise StepFailed(('timed out; ' if code is None else '') + counts +
                              (f', {failed[-1]} failed: ' + ', '.join(names[:5]) if failed else f', exit code {code}'))
+        missing = self.missing_gate_tests(exe, log)
+        if missing:
+            raise StepFailed(counts + "; the gate's tests are missing or disabled: " + ', '.join(missing))
         return counts
+
+    def missing_gate_tests(self, exe, log):
+        """The REGISTRY_GATE_TESTS patterns that name no enabled test of Exe: the golden dumps, the query fuzz test
+        and the 10k registry budgets must run in every Core-Test step, so a rename or a DISABLED_ fails the step."""
+        listing = Path(log).with_suffix('.tests')
+        missing = []
+        for pattern in REGISTRY_GATE_TESTS:
+            code, _ = run([exe, '--gtest_list_tests', f'--gtest_filter={pattern}'], listing, cwd=ROOT, env=self.env_for(log),
+                          timeout=LINT_TIMEOUT)
+            names = [line for line in listing.read_bytes().decode('utf-8', errors='replace').splitlines()
+                     if line.startswith('  ') and not line.strip().startswith('DISABLED_')]
+            if code != 0 or not names:
+                missing.append(pattern)
+            listing.unlink(missing_ok=True)
+        return missing
 
     def lint(self, log, script):
         code, _ = run([sys.executable, '-I', ROOT / script], log, cwd=ROOT, env=self.env_for(log), timeout=LINT_TIMEOUT)
@@ -437,6 +552,351 @@ class Gate:
             raise StepFailed(('timed out; ' if code is None else '') + '; '.join(tail(log, lines=4)))
         summary = re.findall(r'Line endings: (.*?)\.?\s*$', text, re.MULTILINE)
         return summary[-1] if summary else ''
+
+    def check_builders(self, log):
+        """FRT.bat check-builders (BUILD003): every builder whose sources changed since the hash committed with
+        its version has a new version GUID and the new hash recorded. Lua in Premake/tools.lua, beside the
+        builder-hashes step every build runs, so the hash is computed in one place."""
+        code, _ = run([FRT, 'check-builders'], log, cwd=ROOT, env=self.env_for(log), timeout=LINT_TIMEOUT)
+        text = Path(log).read_bytes().decode('utf-8', errors='replace')
+        if code != 0:
+            problems = re.findall(r'^(BUILD003 \S+|\S+ \(Core/Source/Assets/BuilderVersions\.inl:\d+\))', text, re.MULTILINE)
+            raise StepFailed(('timed out; ' if code is None else '') +
+                             ('; '.join(problems[:3]) if problems else '; '.join(tail(log, lines=3))))
+        summary = re.findall(r'Builders: (.*?)\.?\s*$', text, re.MULTILINE)
+        return summary[-1] if summary else ''
+
+    # ---- AssetTool ----
+
+    def assets_json(self, log, command, expected_code, timeout=BUILD_TIMEOUT):
+        """Runs Command, an FRT.bat assets command with --json, the way a script runs it: standard output to a
+        file of its own, standard error to Log. Raises StepFailed unless it exits with Expected Code and every
+        line of its standard output is one JSON object - nothing else, not a line from Premake or from a build
+        of AssetTool (those belong on standard error). Returns the objects."""
+        output = Path(log).with_suffix('.stdout')
+        code, _ = run(command, log, cwd=ROOT, env=self.env_for(log), timeout=timeout, stdout=output)
+        text = output.read_bytes().decode('utf-8', errors='replace')
+        if code != expected_code:
+            raise StepFailed(('timed out; ' if code is None else f'exit code {code}, not {expected_code}; ') +
+                             '; '.join(tail(log, lines=3) + text.splitlines()[:2]))
+        objects = []
+        for line in text.splitlines():
+            try:
+                value = json.loads(line)
+            except ValueError as error:
+                raise StepFailed(f'standard output has a line that is no JSON: {line[:80]!r} ({error})')
+            if not isinstance(value, dict):
+                raise StepFailed(f'standard output has a line that is no JSON object: {line[:80]!r}')
+            objects.append(value)
+        return objects
+
+    def assets_newguid(self, log):
+        """FRT.bat assets newguid 3 --json: exit code 0, and standard output is three lines, each a JSON object
+        with the stable fields "guid" (32 lowercase hex digits, all different) and "cpp"."""
+        objects = self.assets_json(log, [FRT, 'assets', 'newguid', '3', '--json'], 0)
+        if len(objects) != 3:
+            raise StepFailed(f'{len(objects)} lines of standard output instead of 3')
+        for value in objects:
+            if not isinstance(value.get('guid'), str) or not re.fullmatch(r'[0-9a-f]{32}', value['guid']) or \
+                    not isinstance(value.get('cpp'), str):
+                raise StepFailed(f'no "guid" and "cpp" in {json.dumps(value)[:80]}')
+        if len({value['guid'] for value in objects}) != 3:
+            raise StepFailed('the same GUID twice')
+        return '3 GUIDs as JSON lines'
+
+    # The text of an argument that cmd.exe would change on its way from Premake to AssetTool unless it is
+    # escaped for it: variables (%OS% is set everywhere), carets, &, quotes - one after backslashes - a
+    # pipe, redirections, parentheses, !NAME! and non-ASCII text.
+    CMD_SPECIAL_ARGUMENT = '%OS% 50%% ^caret& "quoted" back\\"slash (a|b) <c> !OS! ї 资产'
+
+    def assets_arguments(self, log):
+        """How FRT.bat assets hands its arguments to AssetTool:
+          - -Project=<file or directory>, AssetTool's own spelling of --project, names the project (here
+            Templates/Blank, which lock locks and lets go of at once, as its input is empty);
+          - an argument reaches AssetTool with its text unchanged, through the cmd.exe that Premake starts
+            it with: help '<CMD_SPECIAL_ARGUMENT>' --json exits with 2 and names that text in its error.
+            Premake runs directly, with no FRT.bat: a batch file expands %NAME% itself, before Premake gets
+            to the text, as it does for every command."""
+        locked = self.assets_json(log, [FRT, 'assets', '-Project=Templates/Blank', 'lock', '--json'], 0)
+        lock_file = str(ROOT / 'Templates' / 'Blank' / 'Local' / 'Assets' / 'Owner.lock')
+        if len(locked) != 2 or locked[0].get('locked') != '/Project' or \
+                os.path.normcase(locked[0].get('lockFile', '')) != os.path.normcase(lock_file):
+            raise StepFailed(f'-Project= did not lock Templates/Blank: {json.dumps(locked)[:120]}')
+
+        argument = self.CMD_SPECIAL_ARGUMENT
+        refused = self.assets_json(log, [PREMAKE, f'--file={ROOT / "premake5.lua"}', 'assets', 'help', argument, '--json'], 2)
+        expected = f"help: no verb '{argument}' (FRT.bat assets help lists them)"
+        if len(refused) != 1 or refused[0].get('error') != expected or refused[0].get('exitCode') != 2:
+            raise StepFailed(f'the argument changed on its way: {json.dumps(refused, ensure_ascii=False)[:160]}')
+        return '-Project= and an argument cmd.exe would change'
+
+    # ---- the asset registry ----
+
+    def assets_registry_verbs(self, log):
+        """Every asset registry verb of FRT.bat assets with --json over Templates/Demo, in place and read-only (--ci:
+        only scan could write, and with --ci it writes nothing): each exits with 0 and prints JSON lines with its
+        stable fields. The files it asks about come from a query, so nothing here names a file of the template."""
+        def verb(*arguments):
+            return self.assets_json(log, [FRT, 'assets', '-Project=Templates/Demo', *arguments, '--json', '--ci'], 0)
+
+        scan = verb('scan')
+        if len(scan) != 1 or scan[0].get('verb') != 'scan' or scan[0].get('writer') is not False or not scan[0].get('records'):
+            raise StepFailed(f'scan --ci: {json.dumps(scan)[:160]}')
+        status = verb('status')
+        if not any(o.get('kind') == 'summary' for o in status) or not any(o.get('kind') == 'ddc' for o in status):
+            raise StepFailed(f'status: no "summary" or "ddc" line in {json.dumps(status)[:160]}')
+        textures = verb('query', 'type:Texture', '--columns=$Path,Width')
+        if len(textures) < 2 or not textures[-1].get('matched') or 'path' not in textures[0]:
+            raise StepFailed(f'query type:Texture: {json.dumps(textures)[:160]}')
+        texture = textures[0]['path']
+        models = verb('query', 'type:Model', '--columns=$Path,$Dependencies')
+        model = next((o['path'] for o in models if o.get('dependencies', 0) > 0), None)
+        if model is None:
+            raise StepFailed(f'query type:Model: no model with dependencies in {json.dumps(models)[:160]}')
+        refs = verb('refs', model)
+        if not refs or any(set(o) != {'from', 'target', 'resolved', 'flags', 'field', 'state'} for o in refs):
+            raise StepFailed(f'refs {model}: {json.dumps(refs)[:160]}')
+        referencers = verb('referencers', texture, '--transitive')
+        if any(set(o) != {'path', 'type'} for o in referencers):
+            raise StepFailed(f'referencers {texture} --transitive: {json.dumps(referencers)[:160]}')
+        explain = verb('explain', texture)
+        if len(explain) != 1 or explain[0].get('importer') != 'Texture' or not explain[0].get('chain'):
+            raise StepFailed(f'explain {texture}: {json.dumps(explain)[:160]}')
+        rules = verb('list-rules')
+        if not rules or rules[0] != {'format': 'frt.rules.cache', 'version': 1}:
+            raise StepFailed(f'list-rules: {json.dumps(rules)[:160]}')
+        dump = verb('dump', 'registry', '--mount=Project')
+        records = sum(1 for o in dump if o.get('kind') == 'record')
+        if not records or dump[0] != {'kind': 'mount', 'mount': '/Project'}:
+            raise StepFailed(f'dump registry --mount=Project: {json.dumps(dump[:2])[:160]}')
+        return (f'8 verbs: {scan[0]["records"]} records, {textures[-1]["matched"]} textures, {len(refs)} edge(s) of a model, '
+                f'{records} records dumped')
+
+    def golden_dump(self, log, name, template, arguments):
+        """FRT.bat assets dump registry --text --ci for one golden dump (GOLDENS), in place, with LF line endings."""
+        output = Path(log).with_suffix(f'.{name}.txt')
+        command = [FRT, 'assets', *([f'-Project=Templates/{template}'] if template else []), 'dump', 'registry', '--text', '--ci', *arguments]
+        code, _ = run(command, log, cwd=ROOT, env=self.env_for(log), timeout=BUILD_TIMEOUT, stdout=output)
+        if code != 0:
+            raise StepFailed(f'{name}: ' + ('timed out' if code is None else f'exit code {code}') + '; ' + '; '.join(tail(log, lines=2)))
+        return output.read_bytes().decode('utf-8', errors='replace').replace('\r\n', '\n')
+
+    @staticmethod
+    def golden_sources(template):
+        """What a golden dump reads, and nothing else (an edit of Game.ini or Engine.ini changes no dump): the engine's
+        content and rule file, and a template's, with its plugins' content and rule files (mounted when they exist).
+        The engine's shaders are left out: its rules exclude them from the scan (and their Bin/ is ignored output)."""
+        sources = ['Core/Content', 'Core/Config/Assets.yml', ':(exclude)Core/Content/Shaders']
+        if template:
+            root = f'Templates/{template}'
+            sources += [f'{root}/Content', f'{root}/Config/Assets.yml',
+                        f':(glob){root}/Plugins/*/Content/**', f':(glob){root}/Plugins/*/Config/Assets.yml']
+        return sources
+
+    # A dump line that breaks design 1.1 G11 (the engine and the templates are clean of portable-path and rule
+    # problems) or that reports an error.
+    G11_PROBLEM = re.compile(r'^  problem (?:(?:PATH00[123]|RULE00[12]) |\S+ error )', re.MULTILINE)
+
+    @classmethod
+    def golden_source_status(cls, template):
+        """git status of what a golden dump reads (golden_sources), ignored files included: a file .gitignore hides (a
+        .d or .o beside a model) is scanned and dumped all the same, and no other checkout has it. None outside git."""
+        return git('status', '--porcelain', '--ignored', '--untracked-files=all', '--', *cls.golden_sources(template))
+
+    def registry_goldens(self, log):
+        """The registry's golden dumps (GOLDENS): dump registry --text --ci in place, on a tree whose dumped content
+        git says is unchanged, ignored files included (the runtime can write Content/), equals
+        Core-Test/Assets/Golden/Registry-<name>.txt and passes G11. The difference goes into the log;
+        --update-goldens writes the files again."""
+        compared = []
+        for name, template, arguments in GOLDENS:
+            changed = self.golden_source_status(template)
+            if changed is None:
+                raise StepFailed('not a git checkout: the dumped content cannot be checked unchanged')
+            if changed.strip():
+                raise StepFailed(f'{name}: its content has uncommitted or ignored files, so the dump says nothing about the commit: '
+                                 + '; '.join(changed.decode('utf-8', errors='replace').splitlines()[:3]))
+            dumped = self.golden_dump(log, name, template, arguments)
+            golden_path = GOLDEN_DIR / f'Registry-{name}.txt'
+            if not golden_path.exists():
+                raise StepFailed(f'no {golden_path.relative_to(ROOT)}: FRT.bat verify --update-goldens writes it')
+            golden = golden_path.read_bytes().decode('utf-8', errors='replace').replace('\r\n', '\n')
+            if dumped != golden:
+                diff = list(difflib.unified_diff(golden.splitlines(), dumped.splitlines(), f'golden/{golden_path.name}',
+                                                 f'dumped/{golden_path.name}', lineterm='', n=1))
+                with open(log, 'a', encoding='utf-8') as f:
+                    f.write('\n'.join(diff[:400]) + '\n')
+                first = next((line for line in diff[2:] if line[:1] in '-+'), '')
+                raise StepFailed(f'{name}: the dump differs from {golden_path.name} (first: {first[:100]!r}; the diff is in the log); '
+                                 f'content changed on purpose: FRT.bat verify --update-goldens')
+            broken = self.G11_PROBLEM.findall(dumped)
+            if broken:
+                raise StepFailed(f'{name}: {len(broken)} problem(s) G11 forbids, first: ' +
+                                 next(line for line in dumped.splitlines() if self.G11_PROBLEM.match(line + '\n')).strip()[:120])
+            compared.append(name)
+        return 'equal to the golden files of ' + ', '.join(compared)
+
+    def update_goldens(self):
+        """--update-goldens: each golden dump written again from FRT.bat assets dump registry, what changed shown,
+        nothing else run (so no git status step counts the rewritten files)."""
+        shutil.rmtree(self.run_dir, ignore_errors=True)
+        self.logs.mkdir(parents=True, exist_ok=True)
+        (self.run_dir / 'UserData').mkdir(parents=True, exist_ok=True)
+        GOLDEN_DIR.mkdir(parents=True, exist_ok=True)
+        failed = False
+        for name, template, arguments in GOLDENS:
+            log = self.log_path(f'golden {name}')
+            golden_path = GOLDEN_DIR / f'Registry-{name}.txt'
+            changed = self.golden_source_status(template)
+            ignored = [line for line in (changed or b'').decode('utf-8', errors='replace').splitlines() if line.startswith('!! ')]
+            if ignored:
+                # No other checkout has them, so a golden written with them would fail RegistryGoldenTest everywhere.
+                print(f'[verify] {name}: not written: its content holds files git ignores ({"; ".join(ignored[:3])})')
+                failed = True
+                continue
+            if changed and changed.strip():
+                print(f'[verify] {name}: its content has uncommitted changes; the golden file will hold them')
+            try:
+                dumped = self.golden_dump(log, name, template, arguments)
+            except StepFailed as failure:
+                print(f'[verify] {name}: FAILED: {failure}')
+                failed = True
+                continue
+            old = golden_path.read_bytes().decode('utf-8', errors='replace').replace('\r\n', '\n') if golden_path.exists() else ''
+            if old == dumped:
+                print(f'[verify] {golden_path.relative_to(ROOT)}: unchanged')
+                continue
+            golden_path.write_bytes(dumped.encode('utf-8'))
+            diff = list(difflib.unified_diff(old.splitlines(), dumped.splitlines(), f'a/{golden_path.name}', f'b/{golden_path.name}',
+                                             lineterm='', n=1))
+            print(f'[verify] {golden_path.relative_to(ROOT)}: written ({len(dumped.splitlines())} lines)')
+            for line in diff[:80]:
+                print('  ' + line)
+            if len(diff) > 80:
+                print(f'  ... {len(diff) - 80} more diff lines (git diff shows them)')
+        return 1 if failed else 0
+
+    def docs_coverage(self, log):
+        """Design 16.1 item 10: every verb FRT.bat assets help --json lists and every diagnostic code of
+        Core/Source/Assets/AssetDiagnosticCodes.h is named in Docs/Assets.md (a verb in backquotes)."""
+        verbs = [o['verb'] for o in self.assets_json(log, [FRT, 'assets', 'help', '--json'], 0) if 'verb' in o]
+        codes = re.findall(r'DiagnosticCode\("([A-Z]+[0-9]+)"\)',
+                           (ROOT / 'Core' / 'Source' / 'Assets' / 'AssetDiagnosticCodes.h').read_text(encoding='utf-8'))
+        docs = (ROOT / 'Docs' / 'Assets.md').read_text(encoding='utf-8')
+        missing = [f'the verb {v}' for v in verbs if not re.search('`' + re.escape(v) + r'(?![\w-])', docs)]
+        missing += [f'the code {c}' for c in codes if not re.search(r'\b' + c + r'\b', docs)]
+        if not verbs or not codes:
+            raise StepFailed(f'{len(verbs)} verbs and {len(codes)} codes found: nothing to check')
+        if missing:
+            raise StepFailed('Docs/Assets.md does not name ' + ', '.join(missing))
+        return f'{len(verbs)} verbs and {len(codes)} codes named'
+
+    @staticmethod
+    def list_tests(exe, gtest_filter):
+        """The names (Suite.Test) of Exe's tests that Filter selects, the DISABLED_ ones included; None when the
+        listing fails."""
+        listing = output_of([exe, '--gtest_list_tests', '--gtest_also_run_disabled_tests', f'--gtest_filter={gtest_filter}'])
+        if listing is None:
+            return None
+        tests, suite = [], None
+        for line in listing.decode('utf-8', errors='replace').splitlines():
+            name = line.split('#', 1)[0].rstrip()
+            if not name:
+                continue
+            if not line.startswith(' ') and name.endswith('.'):
+                suite = name
+            elif line.startswith('  ') and suite:
+                tests.append(suite + name.strip())
+        return tests
+
+    def nightly_registry(self, log):
+        """--nightly: Release's Core-Test.exe over the asset system's benchmark suites (NIGHTLY_REGISTRY_FILTER), the
+        DISABLED_ 100k/1M/100k + 500k ones included, with FRT_PERF_STRICT=1: design 5.11's figures, or the proposed
+        revisions where they exist, held exactly. Each test runs in a Core-Test process of its own, as those figures
+        hold for a test run alone - not after another test built 1.5 GB of fixtures in the same process. Run with
+        nothing else on the machine: the figures are for a quiet one."""
+        exe = BINARIES / 'Core-Test.exe'
+        if not exe.exists():
+            raise StepFailed(f'no {exe.name}')
+        tests = self.list_tests(exe, NIGHTLY_REGISTRY_FILTER)
+        if not tests:
+            raise StepFailed(f'{exe.name} lists no test for {NIGHTLY_REGISTRY_FILTER}')
+        env = dict(self.env_for(log), FRT_PERF_STRICT='1')
+        failed, timed_out, total = [], [], 0.0
+        start = Path(log).stat().st_size if Path(log).exists() else 0
+        for test in tests:
+            code, seconds = run([exe, '--gtest_brief=1', '--gtest_also_run_disabled_tests', f'--gtest_filter={test}'],
+                                log, cwd=ROOT, env=env, timeout=NIGHTLY_TIMEOUT)
+            total += seconds
+            if code is None:
+                timed_out.append(test)
+            elif code != 0:
+                failed.append(test)
+        with open(log, 'rb') as f:
+            f.seek(start)
+            text = f.read().decode('utf-8', errors='replace')
+        missed = len(re.findall(r'\bMISSED\b', text))
+        self.timings.append(('registry benchmarks, Release with the DISABLED_ suites, a process per test', f'{total:.1f} s'))
+        passed = len(tests) - len(failed) - len(timed_out)
+        if failed or timed_out:
+            raise StepFailed(f'{passed} of {len(tests)} passed; failed: ' + ', '.join((failed + [f'{t} (timed out)' for t in timed_out])[:5]))
+        return f'{passed} tests passed, each alone; {missed} row(s) print MISSED against 5.11 (see the log)'
+
+    # The hosts' start-up line (CAssetRegistry::WaitBeforeBuildWorld).
+    INITIAL_SCAN_LINE = re.compile(r'\[assets\] initial scan: (\d+) files, (\d+) records, ([\d.]+) ms; BuildWorld waited ([\d.]+) ms')
+
+    # The hosts' own timings: the game's BuildWorld, and a module reload (unload, load, BuildWorld of the new world).
+    BUILD_WORLD_LINE = re.compile(r'\[world\] BuildWorld: ([\d.]+) ms')
+    MODULE_RELOAD_LINE = re.compile(r'\[module\] reload: ([\d.]+) ms')
+
+    def read_initial_scan(self, what, log, required):
+        """Records the "[assets] initial scan:" line a host start printed to Log, its first BuildWorld and any module
+        reload for the summary. Required (a Debug or Development host over a project: its registry runs): the line
+        must be there and come before the first "[world] BuildWorld:" line - the host waited for the scan before
+        building its world - or StepFailed. Returns the match, None without one (Release)."""
+        text = Path(log).read_bytes().decode('utf-8', errors='replace')
+        match = self.INITIAL_SCAN_LINE.search(text)
+        build = self.BUILD_WORLD_LINE.search(text)
+        if match:
+            self.initial_scans.append((what, int(match.group(1)), int(match.group(2)), float(match.group(3)), float(match.group(4))))
+        if build:
+            self.timings.append((f'BuildWorld, {what}', f'{float(build.group(1)):.1f} ms'))
+        for reload in self.MODULE_RELOAD_LINE.finditer(text):
+            self.timings.append((f'module reload, {what}', f'{float(reload.group(1)):.1f} ms'))
+        if required:
+            if not match:
+                raise StepFailed(f'no "[assets] initial scan:" line: the host did not wait for the asset registry before BuildWorld (log: {log})')
+            if build and build.start() < match.start():
+                raise StepFailed(f'BuildWorld ran before the initial scan was complete (log: {log})')
+        return match
+
+    # ---- the shader cache ----
+
+    SHADER_CACHE_LINE = re.compile(r'^\[shader\] cache: (\d+) hits, (\d+) compiled \((\d+) ms\)', re.MULTILINE)
+
+    def check_shader_cache(self, config, what, log):
+        """Reads the "[shader] cache: <hits> hits, <compiled> compiled (<ms> ms)" line that a start of Config
+        printed to Log after its first frame, and checks the warm start: every process of the run shares one
+        DDC (FRT_DDC_DIR, emptied at the start), so the first start of a configuration may compile, and its
+        second must compile nothing. Release opens no DDC (its shaders compile at start-up until the cook
+        ships DXIL), so its starts are not checked. Returns a detail text, or raises StepFailed."""
+        if config == 'Release':
+            return ''
+        text = Path(log).read_bytes().decode('utf-8', errors='replace')
+        match = self.SHADER_CACHE_LINE.search(text)
+        if not match:
+            raise StepFailed(f'no "[shader] cache:" line: the shader cache did not report (log: {log})')
+        hits, compiled, milliseconds = (int(group) for group in match.groups())
+        starts = self.shader_starts.setdefault(config, [])
+        starts.append((what, hits, compiled, milliseconds))
+        if len(starts) <= 2:
+            which = 'first' if len(starts) == 1 else 'second'
+            self.timings.append((f'shaders at the {which} start ({config}, {what})',
+                                 f'{hits} hits, {compiled} compiled, {milliseconds} ms'))
+        if len(starts) == 2 and (compiled != 0 or hits == 0):
+            raise StepFailed(f'the second start of {config} compiled {compiled} shader(s) ({hits} hits) from a warm '
+                             f'DDC ({self.ddc_dir}; the first start, {starts[0][0]}, compiled {starts[0][2]})')
+        return f'shaders: {hits} hits, {compiled} compiled'
 
     # ---- the editor's smoke test ----
 
@@ -463,12 +923,92 @@ class Gate:
             failures = re.findall(r'^\[smoke\]\s+FAIL\s+(.*)$', text, re.MULTILINE)
             raise StepFailed(('timed out' if code is None else f'exit code {code}') +
                              (': ' + '; '.join(f.strip() for f in failures[:3]) if failures else ''))
-        return f'{checks} checks passed' + (f', {skips} skipped' if skips else '') + f'; output in {output}'
+        shaders = self.check_shader_cache(config, f'smoke {name}', log)
+        registry = self.check_smoke_registry(name, config, text, log)
+        return f'{checks} checks passed' + (f', {skips} skipped' if skips else '') + f'; {shaders}; {registry}; output in {output}'
+
+    SMOKE_REGISTRY_LINE = re.compile(r'^\[smoke\]\s+ok\s+registry: (\d+) records, initial scan (\d+) ms', re.MULTILINE)
+    SMOKE_PANEL_LINE = re.compile(r'^\[smoke\]\s+ok\s+the Assets panel shows (\d+) of (\d+) record\(s\) of type:Texture', re.MULTILINE)
+
+    def check_smoke_registry(self, name, config, text, log):
+        """The smoke test's registry check: the initial scan completed (its "[smoke] ok registry:" line) and the
+        editor's Assets panel shows what the registry holds; in SMOKE_TEXTURES templates it lists textures. Records
+        the host's "[assets] initial scan:" line, which must come before its first BuildWorld, for the summary. Returns
+        a detail text, or raises StepFailed."""
+        self.read_initial_scan(f'editor, {name} ({config})', log, required=True)
+        registry = self.SMOKE_REGISTRY_LINE.search(text)
+        if not registry:
+            raise StepFailed('no "[smoke] ok registry:" line: the asset registry check did not pass')
+        panel = self.SMOKE_PANEL_LINE.search(text)
+        if not panel:
+            raise StepFailed('no "[smoke] ok the Assets panel shows" line: the Assets panel check did not pass')
+        if name in SMOKE_TEXTURES and int(panel.group(1)) == 0:
+            raise StepFailed(f'the Assets panel of {name} lists no texture (type:Texture)')
+        return f'registry: {registry.group(1)} records, {panel.group(2)} textures, initial scan {registry.group(2)} ms'
+
+    # Lines of the smoke test's file edits that must have passed: without them the step tested nothing.
+    SCRATCH_EDIT_CHECKS = (
+        ('the material reload', re.compile(r'^\[smoke\]\s+ok\s+.* reloaded: version', re.MULTILINE)),
+        ('the shader rebuild', re.compile(r'^\[smoke\]\s+ok\s+exactly the \d+ program\(s\) that read ', re.MULTILINE)),
+    )
+
+    def smoke_scratch(self, log, config):
+        """The smoke steps that edit files, on a scratch copy (design 13.5, step 3), never on the engine
+        checkout: FRT.bat new copies Templates/Demo into a short directory of its own in %TEMP% (a git
+        repository, as every new project is), FRT.bat build builds its game module in Config, the shaders
+        are copied beside it, and the editor's smoke test runs over the copy with -Editor:SmokeTestEdits=1
+        and -Render:ShaderRoot=<the copy of the shaders>. Besides its usual steps it rewrites one of the
+        copy's materials and appends a comment to one shader include, and checks through the file watcher
+        (which a scripted run keeps off until those steps turn it on) that the material reloads and that
+        exactly the programs including that file are rebuilt. The three commands share one user-data
+        directory, where FRT.bat new registers this engine for the copy to find it. The copy is deleted
+        when the step passes, and kept for a look when it fails."""
+        root = self.scratch_root
+        remove_tree(root)
+        root.mkdir(parents=True, exist_ok=True)
+        env = self.env_for(log)
+        project_dir = root / SCRATCH_NAME
+        project = project_dir / f'{SCRATCH_NAME}.frtproject'
+
+        code, seconds = run([FRT, 'new', f'--name={SCRATCH_NAME}', f'--template={SCRATCH_TEMPLATE}', f'--location={root}'],
+                            log, cwd=ROOT, env=env, timeout=GENERATE_TIMEOUT)
+        self.timings.append((f'scratch copy of {SCRATCH_TEMPLATE} (FRT.bat new)', f'{seconds:.1f} s'))
+        if code != 0 or not project.exists():
+            errors = tail(log, lines=3, pattern=r'error|failed|cannot|new:')
+            raise StepFailed('FRT.bat new: ' + ('timed out' if code is None else
+                                                '; '.join(errors) if errors else f'exit code {code}'))
+        retries = self.build(log, f'--project={project}', f'--config={config}', env=env)
+
+        shaders = root / 'Shaders'
+        shutil.copytree(ROOT / 'Core' / 'Content' / 'Shaders', shaders, ignore=shutil.ignore_patterns('Bin'))
+
+        exe = BINARIES / f'Editor-{config}-Default.exe'
+        output = self.run_dir / 'Smoke' / f'{SCRATCH_NAME}-{config}'
+        code, seconds = run([exe, f'-Project={project}', '-Editor:SmokeTest=1', f'-Editor:SmokeTestDir={output}',
+                             '-Editor:SmokeTestEdits=1', f'-Render:ShaderRoot={shaders}'],
+                            log, cwd=project_dir, env=env, timeout=SMOKE_TIMEOUT)
+        self.timings.append((f'editor smoke test with file edits, scratch copy ({config})', f'{seconds:.1f} s'))
+        text = Path(log).read_bytes().decode('utf-8', errors='replace')
+        checks = len(re.findall(r'^\[smoke\]\s+ok\s', text, re.MULTILINE))
+        skips = len(re.findall(r'^\[smoke\]\s+skip\s', text, re.MULTILINE))
+        if code != 0:
+            failures = re.findall(r'^\[smoke\]\s+FAIL\s+(.*)$', text, re.MULTILINE)
+            raise StepFailed(('timed out' if code is None else f'exit code {code}') +
+                             (': ' + '; '.join(f.strip() for f in failures[:3]) if failures else '') +
+                             f' (the copy is kept: {root})')
+        missing = [what for what, pattern in self.SCRATCH_EDIT_CHECKS if not pattern.search(text)]
+        if missing:
+            raise StepFailed(f'no check of {" or ".join(missing)} passed (the copy is kept: {root})')
+        remove_tree(root)
+        return (f'{checks} checks passed' + (f', {skips} skipped' if skips else '') +
+                ', the material reloaded and the shader programs rebuilt' + (f'; build {retries}' if retries else '') +
+                f'; output in {output}')
 
     # ---- captures ----
 
-    def take_capture(self, exe, arguments, cwd, base, kind_arguments, label):
-        """Runs one scripted capture into Base(.png, .pfm); returns the GPU's name."""
+    def take_capture(self, config, exe, arguments, cwd, base, kind_arguments, label):
+        """Runs one scripted capture of Config into Base(.png, .pfm) and reads its shader cache line
+        (check_shader_cache); returns the GPU's name."""
         base.parent.mkdir(parents=True, exist_ok=True)
         for extension in ('.png', '.pfm'):
             base.with_suffix(extension).unlink(missing_ok=True)
@@ -489,6 +1029,8 @@ class Gate:
         for extension in ('.png', '.pfm'):
             if not base.with_suffix(extension).exists():
                 raise StepFailed(f'no {base.name}{extension} written (log: {log})')
+        self.check_shader_cache(config, f'capture {label}', log)
+        self.read_initial_scan(f'capture {label}', log, required=config != 'Release')
         return gpu[0] if gpu else 'unknown GPU'
 
     def capture_targets(self, config):
@@ -597,7 +1139,7 @@ class Gate:
         def take(index):
             base = captures / f'{name}-{kind}-{index}'
             label = f'{name} {kind} ({config})' + (f' #{index}' if self.record or index > 1 else '')
-            gpu = self.take_capture(exe, arguments, cwd, base, kind_arguments, label)
+            gpu = self.take_capture(config, exe, arguments, cwd, base, kind_arguments, label)
             if self.gpu and gpu != self.gpu:
                 raise StepFailed(f'{gpu} rendered this, {self.gpu} the other captures')
             self.gpu = gpu
@@ -695,7 +1237,7 @@ class Gate:
         (self.run_dir / 'UserData').mkdir(parents=True, exist_ok=True)
         status_before = git('status', '--porcelain')
         started = time.monotonic()
-        what = {'quick': 'quick (Development, Core-Test, lints)', 'full': 'full', 'nightly': 'nightly'}[self.mode]
+        what = {'quick': 'quick (Development, Core-Test, lints, AssetTool)', 'full': 'full', 'nightly': 'nightly'}[self.mode]
         print(f'[verify] {ROOT}: {what}{", recording baselines" if self.record else ""}')
         print(f'[verify] logs and captures: {self.run_dir}')
         print(f'[verify] baselines: {self.baselines}', flush=True)
@@ -715,6 +1257,8 @@ class Gate:
             self.step(f'Core-Test ({config})', self.core_test, config, needs=[('engine', config)])
 
         self.step('lint strings', self.lint, 'Tools/Lint/CheckStrings.py')
+        # Over the list the build writes (FRT.bat builder-hashes, Core's prebuild step).
+        self.step('lint pipeline', self.lint, 'Tools/Lint/CheckPipeline.py')
         if (ROOT / 'Tools' / 'Lint' / 'CheckPlatform.py').exists():
             self.step('lint platform', self.lint, 'Tools/Lint/CheckPlatform.py')
         else:
@@ -723,6 +1267,13 @@ class Gate:
             self.skip('line endings', 'skipped (not a git checkout)')
         else:
             self.step('line endings', self.line_endings)
+        self.step('builder source guard (BUILD003)', self.check_builders)
+        self.step('assets newguid --json', self.assets_newguid, needs=[('engine', 'Development')])
+        self.step('assets arguments', self.assets_arguments, needs=[('engine', 'Development')])
+        self.step('assets registry verbs --json', self.assets_registry_verbs, needs=[('engine', 'Development')])
+        # Before the steps that run the editor and games in place: their content as committed.
+        self.step('registry golden dumps', self.registry_goldens, needs=[('engine', 'Development')])
+        self.step('docs name every verb and code', self.docs_coverage, needs=[('engine', 'Development')])
 
         if self.mode != 'quick':
             self.skip('assets validate --ci', 'skipped (M4)')
@@ -730,7 +1281,8 @@ class Gate:
                 for name in TEMPLATES:
                     self.step(f'smoke {name} in place ({config})', self.smoke, name, config,
                               needs=[('engine', config), (name, config)])
-            self.skip('smoke on a scratch copy', 'skipped (M2)')
+            self.step(f'smoke on a scratch copy ({SCRATCH_CONFIG})', self.smoke_scratch, SCRATCH_CONFIG,
+                      needs=[('engine', SCRATCH_CONFIG)])
             for config in CAPTURE_CONFIGS:
                 self.captures(config)
             # Not a milestone's: a renderer fix first (CAPTURE_ARGUMENTS says which).
@@ -742,12 +1294,13 @@ class Gate:
                     self.broken.add((name, 'Release'))
             self.captures('Release')
             self.skip('packaged smoke run', 'skipped (M6)')
-            self.skip('builder source guard (BUILD003)', 'skipped (M1)')
-            self.skip('assets docs --check', 'skipped (M1)')
+            self.skip('assets docs --check', 'skipped (later: assets docs)')
         if self.mode == 'nightly':
             self.skip('assets build --determinism-check', 'skipped (M1)')
             self.skip('captures with -Ddc:Verify=100', 'skipped (M1)')
-            self.skip('100k/1M synthetic registry suite', 'skipped (M3)')
+            self.build_engine('Release')
+            self.step('registry benchmarks, DISABLED_ suites (Release, FRT_PERF_STRICT=1)', self.nightly_registry,
+                      needs=[('engine', 'Release')])
             self.skip('assets cook --verify', 'skipped (M6)')
             self.skip('cold-cache start after a reboot', 'skipped (manual)')
 
@@ -767,7 +1320,10 @@ class Gate:
             print('Timings (for the commit message):')
             for what, text in self.timings:
                 print(f'  {what}: {text}')
-            print('  BuildWorld: not logged yet')
+            for what, files, records, scan_ms, waited_ms in self.initial_scans:
+                print(f'  initial scan, {what}: {files} files, {records} records, {scan_ms:.1f} ms; BuildWorld waited {waited_ms:.1f} ms')
+            if not self.initial_scans:
+                print('  BuildWorld: no host logged "[assets] initial scan:"')
         verdict = 'FAILED' if failed else 'passed'
         counts = f'{len(self.results) - len(failed)} of {len(self.results)} steps ok or skipped'
         print(f'verify {verdict}: {counts}, {seconds / 60.0:.1f} min')
@@ -780,11 +1336,16 @@ def main():
     group = parser.add_mutually_exclusive_group()
     group.add_argument('--quick', action='store_true', help='build Development, its Core-Test and the lints')
     group.add_argument('--nightly', action='store_true', help='everything, and the long checks')
+    group.add_argument('--update-goldens', action='store_true',
+                       help='write the registry\'s golden dumps again from FRT.bat assets, show the diff, run nothing else')
     parser.add_argument('--record-baselines', action='store_true', help='record the captures as the baselines')
     parser.add_argument('--baselines', metavar='DIR', help='the baselines (default Local/Verify/Baselines)')
     parser.add_argument('--pt-tolerance', metavar='RMSE', type=float, default=PATH_TRACED_TOLERANCE,
                         help=f'the relative RMSE a path-traced capture may differ by ({PATH_TRACED_TOLERANCE:g})')
-    return Gate(parser.parse_args()).run()
+    options = parser.parse_args()
+    if options.update_goldens:
+        return Gate(options).update_goldens()
+    return Gate(options).run()
 
 
 if __name__ == '__main__':

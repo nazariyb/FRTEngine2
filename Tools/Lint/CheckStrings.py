@@ -4,7 +4,7 @@ The string types delete the overloads that would turn engine text into the wrong
 Win32 and third-party calls have no such overloads: `YAML::LoadFile(Path.string())`,
 `stbi_load(Name.CStr(), ...)` or `std::filesystem::path(Text.CStr())` compile, pass every ASCII test,
 and fail only for a project under a non-ASCII path. Each gate below is a pattern that must not appear
-in the engine, the editor, the launcher, the templates' game sources or Core-Test, outside the files
+in the engine, the editor, the launcher, AssetTool, the templates' game sources or Core-Test, outside the files
 listed with it, each for the reason given there. Comments are not checked; string literals are.
 
     python -I Tools/Lint/CheckStrings.py [--info]
@@ -20,7 +20,7 @@ import re
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-SCANNED = ['Core/Source', 'Editor/Source', 'Launcher/Source', 'Core-Test'] + sorted(
+SCANNED = ['Core/Source', 'Editor/Source', 'Launcher/Source', 'AssetTool/Source', 'Core-Test'] + sorted(
     os.path.relpath(p, ROOT).replace(os.sep, '/') for p in glob.glob(os.path.join(ROOT, 'Templates', '*', 'Source')))
 EXTENSIONS = ('.h', '.hpp', '.cpp', '.inl')
 
@@ -93,7 +93,8 @@ GATES = [
     # sets that must or must not accept it, the platform layer against the CRT).
     ('std-string', r'std::(w?string|w?string_view|u8string)\b',
      ['Containers/StringFwd.h', 'Containers/StringView.', 'Containers/String.', 'Containers/WideString.',
-      'Platform/Platform.cpp', 'Platform/Platform.h', 'Assets/Yaml/YamlString.h', 'Assets/Yaml/YamlArchive.cpp',
+      'Platform/Platform.cpp', 'Platform/Platform.h', 'Platform/TextDecoding.cpp', 'Assets/Yaml/YamlString.h',
+      'Assets/Yaml/YamlArchive.cpp', 'Reflect/DataTreeYaml.cpp',
       'Graphics/AssimpWideIO.', 'Core-Test/Containers/String', 'Core-Test/Unicode/', 'Core-Test/Platform/',
       'Core-Test/Assets/ArchiveTest.cpp']),
     # path.string() narrows through the code page: FString::FromPath(Path) instead.
@@ -103,10 +104,12 @@ GATES = [
     ('L-literal', r'\bL"',
      ['PathTracerPrograms.cpp', 'Platform/Platform.cpp', 'Platform/Windows/', 'ToolProcess.cpp', 'ProjectManager.cpp',
       'TextureManager.cpp', 'Core-Test/Containers/String', 'Core-Test/Unicode/', 'Core-Test/Platform/']),
-    # UTF-16 buffers belong in frt::platform (Platform/Platform.cpp and the Windows implementations in
-    # Platform/Windows/): a new one moves there instead of joining this list.
+    # UTF-16 buffers belong in frt::platform (Platform/Platform.cpp, its text-file decoding in
+    # Platform/TextDecoding.cpp, and the Windows implementations in Platform/Windows/): a new one moves there
+    # instead of joining this list.
     ('wchar_t', r'\bwchar_t\b',
-     ['Containers/String', 'Containers/WideString', 'Unicode/', 'Platform/Platform.cpp', 'Platform/Windows/',
+     ['Containers/String', 'Containers/WideString', 'Unicode/', 'Platform/Platform.cpp', 'Platform/TextDecoding.cpp',
+      'Platform/Windows/',
       'PathTracerPrograms.cpp', 'Core-Test/Containers/String', 'Core-Test/Unicode/', 'Core-Test/Platform/',
       'Core-Test/Assets/ArchiveTest.cpp']),
     # The converters and helpers the string types replaced.
