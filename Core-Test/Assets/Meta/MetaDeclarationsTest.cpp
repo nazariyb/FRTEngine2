@@ -2,12 +2,15 @@
 // defaults and the §3.5.3 timing defaults (and Engine.ini agreeing with them, since deleting a line there must change
 // nothing); the one reader of [AssetsEditor], which the file watcher also takes its values from; the §3.2 key order; the
 // names of every new enum, and that the stored enums only ever grew at their end; each new diagnostic code's text; the
-// meta path rules; the salt of each kind of mount; and the rule that the VCS provider's IsRewritingTree falls back to
-// IsBusy. Nothing here calls a function a later piece defines.
+// meta path rules; the salt of each kind of mount; the lifecycle's one clock; the rule that the VCS provider's
+// IsRewritingTree falls back to IsBusy, and that a provider without a command offers none. Nothing here calls a function a
+// later piece defines.
 #include <gtest/gtest.h>
 
 #include <array>
+#include <filesystem>
 #include <span>
+#include <type_traits>
 #include <vector>
 
 #include "Assets/AssetDiagnosticCodes.h"
@@ -26,6 +29,7 @@
 #include "Config/Config.h"
 #include "Diagnostics/Diagnostics.h"
 #include "EnginePaths.h"
+#include "Platform/FileMove.h"
 #include "Platform/Process.h"
 
 using namespace frt;
@@ -54,6 +58,7 @@ class CBusyProvider : public IVcsProvider
 public:
 	bool bBusy = false;
 
+	FStringView GetName () const override { return "Busy"; }
 	bool Detect (const FString&) override { return true; }
 	bool IsBusy () const override { return bBusy; }
 	SVcsResult CheckOut (std::span<const FString>) override { return {}; }
@@ -70,6 +75,24 @@ class COpenMergeProvider : public CBusyProvider
 {
 public:
 	bool IsRewritingTree () const override { return false; }
+};
+
+// A provider with something to tell a person.
+class CCommandsProvider : public CBusyProvider
+{
+public:
+	FString GetRestoreCommand (const FString& File) const override
+	{
+		FString command(FStringView("vcs restore "));
+		command += File.View();
+		return command;
+	}
+	FString GetAddCommand (const FString& File) const override
+	{
+		FString command(FStringView("vcs add "));
+		command += File.View();
+		return command;
+	}
 };
 
 SMount MakeMount (EMountKind Kind, FStringView Name)
@@ -198,7 +221,7 @@ TEST(MetaDeclarationsTest, AnEmptyMetaHasOnlyItsRequiredKeys)
 TEST(MetaDeclarationsTest, TheNewEnumsHaveTheirNames)
 {
 	ExpectNames<EMetaParseState>(std::array<FStringView, 2u> { "Ok", "Broken" });
-	ExpectNames<ELifecycleAction>(std::array<FStringView, 6u> { "CreateMeta", "RestoreMeta", "MoveMeta", "ReGuid", "RemapRefs", "KeepAliasB" });
+	ExpectNames<ELifecycleAction>(std::array<FStringView, 6u> { "CreateMeta", "RestoreMeta", "MoveMeta", "FixMetaCase", "ReGuid", "KeepAliasB" });
 	ExpectNames<EAssetOpStep>(std::array<FStringView, 4u> { "WriteFile", "CopyFile", "Move", "Trash" });
 	ExpectNames<EVcsError>(std::array<FStringView, 7u> { "None", "Busy", "ReadOnly", "LockedByOther", "NotLatest", "Offline", "Failed" });
 	ExpectNames<EVcsState>(std::array<FStringView, 9u> { "Untracked", "Clean", "Modified", "Added", "Deleted", "Conflicted", "OpenedByOther",
@@ -286,6 +309,27 @@ TEST(MetaDeclarationsTest, ALifecycleResultAsksForNothingAndNeverWakes)
 	EXPECT_EQ(source.Stored, EMetaState::PendingMeta);
 	EXPECT_FALSE(source.bWritable) << "nothing is writable until the caller says so";
 	EXPECT_EQ(source.MetaGoneMs, 0u);
+	EXPECT_TRUE(source.MetaSpelling.IsEmpty());
+
+	const SLifecycleMeta meta;
+	EXPECT_FALSE(meta.bSourceExcluded) << "an orphan until the scan says its source is excluded";
+}
+
+// The failure this guards: a persisted time ahead of NowMs, as an unsigned difference, reads as long past every grace.
+TEST(MetaDeclarationsTest, AnElapsedTimeNeverUnderflows)
+{
+	EXPECT_EQ(GetElapsedMs(5000u, 1000u), 4000u);
+	EXPECT_EQ(GetElapsedMs(1000u, 1000u), 0u);
+	EXPECT_EQ(GetElapsedMs(1000u, 5000u), 0u);
+}
+
+TEST(MetaDeclarationsTest, AFileTimeBecomesTheLifecyclesClock)
+{
+	EXPECT_EQ(FileTimeToLifecycleMs(116444736000000000ll), 0u) << "the Unix epoch";
+	EXPECT_EQ(FileTimeToLifecycleMs(132223104000000000ll), 1577836800000ull) << "2020-01-01 00:00:00 UTC";
+	EXPECT_EQ(FileTimeToLifecycleMs(116444736000019999ll), 1u) << "rounds down";
+	EXPECT_EQ(FileTimeToLifecycleMs(0), 0u) << "before 1970";
+	EXPECT_EQ(FileTimeToLifecycleMs(-1), 0u);
 }
 
 TEST(MetaDeclarationsTest, TheLifecycleIsOffUntilAHostAsksForIt)
@@ -295,15 +339,26 @@ TEST(MetaDeclarationsTest, TheLifecycleIsOffUntilAHostAsksForIt)
 	const SLifecycleDesc lifecycle;
 	EXPECT_FALSE(lifecycle.bRepairs) << "report only until the owner says otherwise";
 	EXPECT_TRUE(lifecycle.Providers.empty());
+	EXPECT_TRUE(lifecycle.ProjectSalt.IsEmpty());
+	EXPECT_FALSE(lifecycle.bProvidersPending) << "a tool host passes its providers complete";
 
 	const SRepairOptions options;
 	EXPECT_TRUE(options.bCommand);
 	EXPECT_FALSE(options.bDryRun);
 	EXPECT_TRUE(options.Paths.empty());
+	EXPECT_TRUE(options.Kinds.empty()) << "every kind, until a verb narrows it";
 
 	const SAssetWriterDesc writer;
 	EXPECT_FALSE(writer.bHoldsLock) << "a writer refuses until it holds the lock";
+	EXPECT_TRUE(writer.Providers.empty());
 }
+
+// One log per owner root and one provider per mount: a plugin that is its own work tree shares the project's writer.
+static_assert(std::is_same_v<decltype(SAssetWriterDesc::Providers), decltype(SLifecycleDesc::Providers)>);
+
+// Declared apart from FileSystem.h, whose includers B4 would otherwise rebuild. Its behaviour is B4's test.
+static_assert(std::is_same_v<decltype(static_cast<bool (*) (const std::filesystem::path&, const std::filesystem::path&, FString*)>(&platform::MoveFileNoReplace)),
+	bool (*) (const std::filesystem::path&, const std::filesystem::path&, FString*)>);
 
 TEST(MetaDeclarationsTest, ToolProcessDescriptionsDefaultToARunThatDidNotHappen)
 {
@@ -329,6 +384,19 @@ TEST(MetaDeclarationsTest, TheWatchersHoldFollowsBusyUnlessAProviderNarrowsIt)
 	openMerge.bBusy = true;
 	EXPECT_TRUE(openMerge.IsBusy()) << "an open merge holds repairs";
 	EXPECT_FALSE(openMerge.IsRewritingTree()) << "and never hot reload";
+}
+
+TEST(MetaDeclarationsTest, AProviderWithoutACommandOffersNone)
+{
+	const CBusyProvider plain;
+	EXPECT_EQ(plain.GetName(), "Busy");
+	EXPECT_TRUE(plain.GetRestoreCommand(FString(FStringView("C:/Game/Content/Rock.png.meta"))).IsEmpty()) << "empty: no such fix-it";
+	EXPECT_TRUE(plain.GetAddCommand(FString(FStringView("C:/Game/Content/Rock.png.meta"))).IsEmpty());
+
+	const FString nonAscii(FStringView("C:/Гра 游戏/Rock.png.meta"));
+	const CCommandsProvider commands;
+	EXPECT_EQ(commands.GetRestoreCommand(nonAscii), "vcs restore C:/Гра 游戏/Rock.png.meta");
+	EXPECT_EQ(commands.GetAddCommand(nonAscii), "vcs add C:/Гра 游戏/Rock.png.meta");
 }
 
 TEST(MetaDeclarationsTest, AVcsResultDefaultsToSuccess)

@@ -1,10 +1,13 @@
 #pragma once
 
 #include <filesystem>
+#include <utility>
+#include <vector>
 
 #include "Core.h"
 #include "CoreTypes.h"
 #include "Assets/Meta/OpJournal.h"
+#include "Assets/Registry/RegistryTypes.h"
 #include "Assets/Vcs/VcsProvider.h"
 #include "Containers/String.h"
 #include "Functional/FunctionRef.h"
@@ -15,10 +18,14 @@
  * The one way an asset and its meta are written (design §4.6, §4.7, §12.9): one op at a time, journalled before the first
  * disk touch, through the VCS provider as one operation. A refused call fails the op before any byte is written (VCS002).
  *
- * One instance and one log per owner root, because a project and /Engine are separate roots. It makes no watcher call and
- * is safe on a worker. ExpectWrite must be called on the watcher's owner thread, so the caller does that from
- * ForEachExpectedWrite before submitting the op. That serves verifying subscribers only: the registry subscribes without
- * verifying and sees the write as a Changed stat, so an echo costs it one folder rescan and no repair.
+ * One instance and one log per owner root, because a project and /Engine are separate roots. Providers are per mount, and
+ * /Project and every plugin share one owner root while a plugin can be its own work tree (a submodule), so one log serves N
+ * providers: Run splits each provider call by the mount of each path, and a case-only `git mv` runs in the right repository.
+ * A Move whose ends have different providers is refused with VCS002.
+ *
+ * It makes no watcher call and is safe on a worker. ExpectWrite must be called on the watcher's owner thread, so the caller
+ * does that from ForEachExpectedWrite before submitting the op. That serves verifying subscribers only: the registry
+ * subscribes without verifying and sees the write as a Changed stat, so an echo costs it one folder rescan and no repair.
  */
 namespace frt::assets
 {
@@ -28,7 +35,7 @@ struct SAssetWriterDesc
 {
 	const CMountTable* Mounts = nullptr;
 	std::filesystem::path OwnerRoot;
-	IVcsProvider* Vcs = nullptr;
+	std::vector<std::pair<MountId, IVcsProvider*>> Providers;   // as SLifecycleDesc's; absent or null: None
 	bool bHoldsLock = false;       // false: every op is refused
 };
 

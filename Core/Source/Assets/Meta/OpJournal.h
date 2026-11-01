@@ -15,8 +15,14 @@
  * journal must be able to write them again; a source's content never does (a copy names its source and is redone).
  *
  * Replay is idempotent, step by step: a WriteFile whose target already has Hash is skipped, a Move whose From is gone and
- * whose To exists is skipped, a Trash whose file is gone is skipped. PlannedGuids are what the command pre-allocated, so
- * that no identity it promised is lost to the crash.
+ * whose To exists is skipped, a Trash whose file is gone is skipped. For a Move, "gone" compares the on-disk spelling
+ * byte-exactly, by a listing of the folder: after a case-only Move the old spelling still opens on NTFS, and running that
+ * Move again would have `git mv` refuse a name the index no longer holds. PlannedGuids are what the command pre-allocated,
+ * so that no identity it promised is lost to the crash.
+ *
+ * A step names a file inside a mount, so `Schemas/Migrations.yml`, which lies outside every mount, is not a step: `migrate`
+ * writes it with WriteFileAtomic after its op completes. A crash in between leaves the project behind, and running `migrate
+ * metas` again skips the metas that exist and then records itself.
  */
 namespace frt::assets
 {

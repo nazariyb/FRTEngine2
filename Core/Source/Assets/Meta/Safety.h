@@ -17,8 +17,8 @@ class CConfig;
  * SSafetySwitches decides which identities and keys the tools write, so every machine must agree: it comes from a
  * mount's Config/Assets.yml `Safety:` section, and a switch's default is its safe position. Switching one off removes
  * the automatic action, never the detection: the condition is still reported, with the repair as a fix-it. Commands a
- * person runs (`new-meta`, `fix`, `migrate metas`) ignore the switches, except that DerivedAutoGuids still chooses the
- * GUID kind.
+ * person runs (`new-meta`, `fix`, `migrate metas`) ignore AutoRepairMetas and OrphanPairing. DerivedAutoGuids still chooses
+ * the GUID kind, and AutoResolveDuplicates still decides whether `fix` dedupes: off, a duplicate stays a fix-it.
  *
  * SAssetEditorSettings tunes a mechanism and never turns off an identity rule, so it can differ per user: it comes from
  * `[AssetsEditor]` through the CConfig layers, Core/Config/Engine.ini for the defaults and Local/UserSettings.ini per user.
