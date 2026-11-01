@@ -28,14 +28,17 @@ struct SDiagnostic;
  * What the bytes are, for any tree:
  * - **Keys of a map:** `$type`, `$version`, `$rowType`, `$rowVersion`, `$note`; then the rule's KeyOrder (a type's declared
  *   order, §3.2); then the rest in the order the tree has them, or all of the rest by key bytes with bSortKeys (table rows
- *   and keyed arrays: parallel additions merge). A reference (a map holding `$asset`) instead leads with `$asset`, `sub`,
- *   `row`, `id`, `path`.
+ *   and keyed arrays: parallel additions merge). A reference (a map below the root holding `$asset`; the root is the
+ *   document, whatever it holds) instead leads with `$asset`, `sub`, `row`, `id`, `path`. A rule's bKeyOrderOnly drops
+ *   either lead: a meta's order is §3.2's alone.
  * - **Style:** block, two spaces per level, sequence items indented under their key, one key per line. Flow, `{ a: 1 }`
  *   and `[ a, b ]`, for references and what a rule's bFlow names (reflection's `meta::Flow` arrives with M5), and always
  *   for what is below a flow node and for an empty map or sequence (`{}`, `[]`). The style the tree came in is ignored.
  * - **Scalars:** a plain integer in decimal, a plain float in std::to_chars' shortest form that reads back the same value
- *   (so `1.50` is `1.5` and `1.0` is `1`), `.inf`, `-.inf`, `.nan`, a null as `null`, booleans `true`/`false`. The text of
- *   `$type`, `$rowType`, `$note` and of every scalar of a reference is never read as a number: an id stays its digits.
+ *   (so `1.50` is `1.5` and `1.0` is `1`), `.inf`, `-.inf`, `.nan`, a null as `null`, booleans `true`/`false`. A plain
+ *   integer that decimal would lose digits of stays verbatim and plain: one past int64, or with leading zeros (`007`,
+ *   which may be no number at all until a descriptor says so). The text of `$type`, `$rowType`, `$note`, `$asset` and of
+ *   a reference's own keys is never read as a number: an id stays its digits. A reference's other keys are data like any.
  * - **Strings** (an enum's reflected name is one by the time it reaches a tree) are plain unless YAML (1.2 or 1.1) would
  *   type them (`yes`, `null`, `0x10`, `1e5`), they start with an indicator or a space, or end with a space, or hold `:`
  *   or `#` (so `"mesh:Body"`, always), a control character, a line break, or in flow a `,` `?` `[` `]` `{` `}`. Quoted
@@ -62,6 +65,7 @@ struct SEmitRule
 	std::span<const FStringLiteral> KeyOrder;   // a map: these keys come first, in this order
 	bool bFlow = false;                         // written in flow style, and everything below it
 	bool bSortKeys = false;                     // a map: the keys KeyOrder leaves are sorted by bytes (ordinal)
+	bool bKeyOrderOnly = false;                 // a map: no lead keys, for a format whose own order starts it (a meta, §3.2)
 };
 
 struct SEmitPolicy

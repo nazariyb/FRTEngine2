@@ -28,7 +28,7 @@ inline constexpr FStringLiteral MetaTopLevelKeys[] = {
 	"Aliases", "FormerPaths", "Cook", "Chunk", "RebuildNonce",
 };
 
-// A key of a meta this build does not know: preserved and reported, never dropped (§3.2).
+// A key of a meta this build does not know: preserved and reported, never dropped (§3.2). `$note` lives here too, unreported.
 struct SMetaUnknownKey
 {
 	FString Key;

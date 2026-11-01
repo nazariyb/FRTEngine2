@@ -26,8 +26,9 @@ using reflect::SDataChild;
 constexpr uint32 SupportedFormatVersion = 1u;
 constexpr FStringLiteral Bom = "\xEF\xBB\xBF";
 
-// The one rule of a meta's document: its top-level order. Unknown keys are not in it, so they follow in the tree's order.
-constexpr reflect::SEmitRule TopLevelRule = { .Path = "", .KeyOrder = MetaTopLevelKeys };
+// The one rule of a meta's document: its top-level order and nothing before it, so `$`-keys get no lead here. Unknown keys
+// are not in it, so they follow in the tree's order.
+constexpr reflect::SEmitRule TopLevelRule = { .Path = "", .KeyOrder = MetaTopLevelKeys, .bKeyOrderOnly = true };
 
 
 // ---------------- The line scan: what a broken file still says, without a parser ----------------
@@ -298,6 +299,11 @@ private:
 		CopySubtree(Child.Value, unknown.Value);
 		Meta.UnknownKeys.push_back(std::move(unknown));
 
+		// §3.7 tells authors to annotate with `$note`, so it travels with the unknown keys but is no finding.
+		if (Child.Key == "$note")
+		{
+			return;
+		}
 		SDiagnostic diagnostic;
 		diagnostic.Severity = ESeverity::Warning;
 		diagnostic.Line = Child.KeyLine;

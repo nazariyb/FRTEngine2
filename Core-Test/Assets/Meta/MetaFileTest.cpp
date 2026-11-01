@@ -459,6 +459,71 @@ TEST (MetaFileTest, ACanonicalFileWithAnUnknownKeyIsStillCanonicalAndStillReport
 	EXPECT_EQ(Emit(result.Meta).View(), bytes);
 }
 
+TEST (MetaFileTest, DollarKeysFollowTheKnownOnesSinceAMetaStartsWithItsFormatVersion)
+{
+	const SMetaParseResult result = Parse("$version: 2\nCook: Auto\nFormatVersion: 1\n$type: T\nGuid: 5d1e7a3b9c0f42d68e1a2b3c4d5e6f70\nTomorrow: 5\n");
+	ASSERT_EQ(result.State, EMetaParseState::Ok);
+	const FStringView canonical = "FormatVersion: 1\nGuid: 5d1e7a3b9c0f42d68e1a2b3c4d5e6f70\nCook: Auto\n$version: 2\n$type: T\nTomorrow: 5\n";
+	EXPECT_EQ(Emit(result.Meta).View(), canonical);
+	EXPECT_TRUE(Parse(canonical).bCanonical);
+	EXPECT_EQ(Reemit(canonical).View(), canonical);
+}
+
+TEST (MetaFileTest, ANoteIsKeptInFileOrderAndNotReportedSinceAuthorsAreToldToUseIt)
+{
+	const FStringView canonical = "FormatVersion: 1\nGuid: 5d1e7a3b9c0f42d68e1a2b3c4d5e6f70\nCook: Auto\nTomorrow: 5\n$note: \"1.50\"\n";
+	const SMetaParseResult result = Parse(canonical);
+	ASSERT_EQ(result.State, EMetaParseState::Ok);
+	EXPECT_TRUE(result.bCanonical);
+	EXPECT_EQ(Emit(result.Meta).View(), canonical);
+	ASSERT_EQ(result.Diagnostics.size(), 1u);
+	EXPECT_EQ(result.Diagnostics[0].FieldPath.View(), "Tomorrow");
+
+	const SMetaParseResult alone = Parse("$note: 1.50\nFormatVersion: 1\nGuid: 5d1e7a3b9c0f42d68e1a2b3c4d5e6f70\n");
+	ASSERT_EQ(alone.State, EMetaParseState::Ok);
+	EXPECT_EQ(Emit(alone.Meta).View(), "FormatVersion: 1\nGuid: 5d1e7a3b9c0f42d68e1a2b3c4d5e6f70\n$note: \"1.50\"\n");
+	EXPECT_EQ(FindCode(alone, 0u), nullptr);
+}
+
+TEST (MetaFileTest, AnAssetKeyAtTheTopLevelLeavesTheMetaLinePerKeyAndItsIdentityReadable)
+{
+	const FStringView bytes = "FormatVersion: 1\nGuid: 5d1e7a3b9c0f42d68e1a2b3c4d5e6f70\n$asset: x\nOther: 1\n";
+	const SMetaParseResult first = Parse(bytes);
+	ASSERT_EQ(first.State, EMetaParseState::Ok);
+	EXPECT_TRUE(first.bCanonical);
+	const FString out = Emit(first.Meta);
+	EXPECT_EQ(out.View(), bytes);
+
+	const SMetaParseResult second = Parse(out.View());
+	ASSERT_EQ(second.State, EMetaParseState::Ok);
+	EXPECT_EQ(second.Meta.Guid, MakeGuid(GuidA));
+	EXPECT_EQ(second.Meta.FormatVersion, 1u);
+
+	// A reference below the top level is still one, in Settings and in an unknown key alike.
+	const FStringView nested =
+		"FormatVersion: 1\nGuid: 5d1e7a3b9c0f42d68e1a2b3c4d5e6f70\n"
+		"Settings:\n  Source: { $asset: x, path: p }\n"
+		"Later: { $asset: z, scale: 1.5 }\n";
+	EXPECT_TRUE(Parse(nested).bCanonical);
+	EXPECT_EQ(Reemit(nested).View(), nested);
+}
+
+TEST (MetaFileTest, ALeadingZeroSurvivesARepairThatTouchesAnotherKey)
+{
+	const FStringView bytes = "FormatVersion: 1\nGuid: 5d1e7a3b9c0f42d68e1a2b3c4d5e6f70\nSettings:\n  Prefix: 007\nBuild: 007\n";
+	SMetaParseResult result = Parse(bytes);
+	ASSERT_EQ(result.State, EMetaParseState::Ok);
+	EXPECT_TRUE(result.bCanonical);
+	EXPECT_EQ(Emit(result.Meta).View(), bytes);
+
+	result.Meta.Aliases.push_back(MakeGuid(GuidB));
+	const SMetaParseResult repaired = Parse(Emit(result.Meta).View());
+	ASSERT_EQ(repaired.State, EMetaParseState::Ok);
+	EXPECT_EQ(repaired.Meta.Settings.Find("Prefix").AsText().value_or(FStringView()), "007");
+	ASSERT_EQ(repaired.Meta.UnknownKeys.size(), 1u);
+	EXPECT_EQ(repaired.Meta.UnknownKeys[0].Value.GetRoot().AsText().value_or(FStringView()), "007");
+}
+
 TEST (MetaFileTest, ANewerFormatVersionIsKeptAndReportedNotRefused)
 {
 	const FStringView bytes = "FormatVersion: 9\nGuid: 5d1e7a3b9c0f42d68e1a2b3c4d5e6f70\nCook: Auto\n";

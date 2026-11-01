@@ -157,6 +157,41 @@ TEST (CanonicalEmitterTest, AReferenceIsFlowWithItsKeysInTheirFixedOrderAnywhere
 		"List:\n  - { $asset: 1b2c3d4e5f604182a3b4c5d6e7f80912, row: Rifle556, id: abc, path: /Project/C.frt }\n");
 }
 
+TEST (CanonicalEmitterTest, TheRootIsADocumentEvenWhenItHoldsAnAssetKey)
+{
+	// $type stays the first line, since routing a .frt reads only that (§3.7), and the block form stays line per key.
+	ExpectText("$type: T\n$asset: x\n", "$type: T\n$asset: x\n");
+	ExpectText("$asset: x\npath: p\n$version: 2\n$type: T\nDamage: 24\n", "$type: T\n$version: 2\n$asset: x\npath: p\nDamage: 24\n");
+	// Only $asset's own value holds an id there: the root's other keys are not a reference's.
+	ExpectText("$asset: 1.50\nOther: 1.50\nid: 1.50\n", "$asset: \"1.50\"\nOther: 1.5\nid: 1.5\n");
+	// One level down it is a reference again, in a sequence item as under a key.
+	ExpectText("- path: p\n  $asset: x\n", "- { $asset: x, path: p }\n");
+	ExpectText("$asset: x\nRef:\n  path: p\n  $asset: z\n", "$asset: x\nRef: { $asset: z, path: p }\n");
+}
+
+TEST (CanonicalEmitterTest, OnlyAReferencesOwnKeysAreTextItsOtherValuesKeepTheirTypes)
+{
+	const FString out = EmitText("A: { count: 3, scale: 1.50, flag: true, row: 007, $asset: x, more: { v: 2.50 }, id: { v: 1.50 } }\n");
+	EXPECT_EQ(out.View(), "A: { $asset: x, row: \"007\", id: { v: \"1.50\" }, count: 3, scale: 1.5, flag: true, more: { v: 2.5 } }\n");
+
+	const CDataTree read = Parse(out.View());
+	EXPECT_EQ(read.Find("A.count").AsInt64().value_or(0), 3);
+	EXPECT_EQ(read.Find("A.scale").AsDouble().value_or(0.0), 1.5);
+	EXPECT_EQ(read.Find("A.flag").AsBool().value_or(false), true);
+
+	const CDataTree canonical = Parse("A: { $asset: x, path: p, scale: 1 }\n");
+	EXPECT_TRUE(IsSameContent(Parse(Emit(canonical).View()), canonical));
+}
+
+TEST (CanonicalEmitterTest, ARuleCanTakeAwayTheLeadKeysSoAFormatWithItsOwnOrderKeepsIt)
+{
+	static constexpr FStringLiteral Order[] = { "Alpha", "Beta" };
+	const SEmitRule rules[] = { { .Path = "", .KeyOrder = Order, .bKeyOrderOnly = true } };
+	ExpectText("$note: x\nZed: 1\nBeta: 2\n$type: T\nAlpha: 3\n", "Alpha: 3\nBeta: 2\n$note: x\nZed: 1\n$type: T\n", { .Rules = rules });
+	// Text keys are still text: the rule moves them and no more. And it ends where its path does.
+	ExpectText("Sub:\n  B: 1\n  $type: T\n$note: 1.50\n", "Sub:\n  $type: T\n  B: 1\n$note: \"1.50\"\n", { .Rules = rules });
+}
+
 TEST (CanonicalEmitterTest, ARuleCanMakeARecordFlowAndEverythingBelowItFollows)
 {
 	const SEmitRule rules[] = {
@@ -184,7 +219,7 @@ TEST (CanonicalEmitterTest, ARootOfAnyKindIsWritten)
 	ExpectText("[ a, b ]\n", "- a\n- b\n");
 	ExpectText("just text\n", "just text\n");
 	ExpectText("42\n", "42\n");
-	ExpectText("{ $asset: 1b2c3d4e5f604182a3b4c5d6e7f80912 }\n", "{ $asset: 1b2c3d4e5f604182a3b4c5d6e7f80912 }\n");
+	ExpectText("{ $asset: 1b2c3d4e5f604182a3b4c5d6e7f80912 }\n", "$asset: 1b2c3d4e5f604182a3b4c5d6e7f80912\n");
 }
 
 TEST (CanonicalEmitterTest, AnEmptyTreeIsNoBytesAtAll)
@@ -215,7 +250,7 @@ TEST (CanonicalEmitterTest, EachNumberHasOneSpelling)
 	};
 	// to_chars takes the shorter of fixed and exponent form, fixed on a tie: 1e5 as a float is "1e+05", 10000.0 "10000".
 	static constexpr SCase Cases[] = {
-		{ "0.1", "0.1" }, { "1.50", "1.5" }, { "1.0", "1" }, { "+5", "5" }, { "007", "7" }, { "-12", "-12" }, { "100000", "100000" },
+		{ "0.1", "0.1" }, { "1.50", "1.5" }, { "1.0", "1" }, { "+5", "5" }, { "-12", "-12" }, { "100000", "100000" },
 		{ "1e5", "1e+05" }, { "10000.0", "10000" }, { "2.5e-3", "0.0025" }, { ".5", "0.5" }, { "1.", "1" }, { "1e21", "1e+21" },
 		{ "1E-7", "1e-07" }, { "0.30000000000000004", "0.30000000000000004" },
 		{ "0.1000000000000000055", "0.1" }, { ".inf", ".inf" }, { "+.inf", ".inf" }, { "-.inf", "-.inf" }, { ".nan", ".nan" },
@@ -237,6 +272,25 @@ TEST (CanonicalEmitterTest, NegativeZeroKeepsItsSignAndIsAFixedPoint)
 TEST (CanonicalEmitterTest, AnIntegerPastInt64IsKeptVerbatimSinceNoNumberTypeHereHoldsItsDigits)
 {
 	EXPECT_EQ(EmitScalar("18446744073709551615", EScalarStyle::Plain).View(), "18446744073709551615");
+}
+
+TEST (CanonicalEmitterTest, AnIntegerWithLeadingZerosIsKeptVerbatimSinceNothingSaysItIsANumberAndTheyWouldGo)
+{
+	static constexpr FStringLiteral Spellings[] = { "007", "-007", "+007", "00", "-00", "0123456789" };
+	for (const FStringLiteral text : Spellings)
+	{
+		EXPECT_EQ(EmitScalar(text, EScalarStyle::Plain).View(), FStringView(text));
+	}
+	// Plain and with its digits, it still reads both ways: nothing retyped it.
+	const CDataTree source = Parse("Prefix: 007\n");
+	const CDataTree read = Parse(Emit(source).View());
+	EXPECT_TRUE(IsSameContent(read, source));
+	EXPECT_EQ(read.Find("Prefix").AsText().value_or(FStringView()), "007");
+	EXPECT_EQ(read.Find("Prefix").AsInt64().value_or(0), 7);
+	// Quoted, it was text and stays text; a lone zero and a plain number have one spelling as before.
+	EXPECT_EQ(EmitScalar("007", EScalarStyle::DoubleQuoted).View(), "\"007\"");
+	EXPECT_EQ(EmitScalar("0", EScalarStyle::Plain).View(), "0");
+	EXPECT_EQ(EmitScalar("70", EScalarStyle::Plain).View(), "70");
 }
 
 TEST (CanonicalEmitterTest, EveryDoubleSurvivesItsShortestFormBitForBit)

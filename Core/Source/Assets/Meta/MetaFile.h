@@ -24,12 +24,13 @@
  * - **VCS001** (error) when the bytes hold a CRLF, whatever else they hold.
  * - **META005** (warning) with State Ok and bCanonical false: the file reads, and the next write would change its bytes.
  * - An unknown key: a warning with Code 0 (§13.4 names none) and FieldPath set; the key stays in UnknownKeys and is written
- *   back after the known ones. So is a FormatVersion newer than this build's: the file is kept, nothing is migrated.
+ *   back after the known ones. `$note`, which §3.7 tells authors to annotate with, is kept the same way and not reported.
+ *   A FormatVersion newer than this build's is a warning too: the file is kept, nothing is migrated.
  * Callers keep what their context raises: gathering takes META004 and VCS001, `validate` adds META005 (§13.4 "Runs").
  *
  * EmitMeta writes the §3.2 layout through the canonical emitter (Reflect/CanonicalEmitter.h): the fixed top-level order
- * of MetaTopLevelKeys, then unknown keys in file order; sorted, unique labels; a GUID as 32 lowercase hex, however it was
- * spelled when read; `SettingsVersion` only with `Settings`. Settings, Targets and SubAssets keep their keys in the
+ * of MetaTopLevelKeys, then unknown keys in file order (`$`-keys too, so FormatVersion is always first); sorted, unique
+ * labels; a GUID as 32 lowercase hex, however it was spelled when read; `SettingsVersion` only with `Settings`. Settings, Targets and SubAssets keep their keys in the
  * order read, in canonical style: their declared order arrives with reflection (M5), when something first writes them.
  * An absent key stays absent, since a present key is an override (§3.2). Re-emitting a canonical file reproduces its
  * bytes: bCanonical is that comparison.

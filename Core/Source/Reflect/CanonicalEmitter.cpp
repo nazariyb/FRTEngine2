@@ -20,15 +20,17 @@ constexpr FStringLiteral ReferenceLeadKeys[] = { "$asset", "sub", "row", "id", "
 constexpr FStringLiteral ReferenceKey = "$asset";
 constexpr uint32 IndentWidth = 2u;
 
-[[nodiscard]] bool IsReference (const HDataNode& Node) noexcept
-{
-	return Node.FindKeyIndex(ReferenceKey).has_value();
-}
-
-// Keys that hold a name or free text whatever it spells: `$note: 1.50` is a note, not a number to shorten.
+// Keys that hold a name, an id or free text whatever it spells: `$note: 1.50` is a note, not a number to shorten.
 [[nodiscard]] bool IsTextKey (FStringView Key) noexcept
 {
-	return Key == "$type" || Key == "$rowType" || Key == "$note";
+	return Key == "$type" || Key == "$rowType" || Key == "$note" || Key == ReferenceKey;
+}
+
+// Whether what a key of a map holds is text, given whether that map is a reference: an id stays its digits, and the other
+// keys a reference happens to carry are data like any other.
+[[nodiscard]] bool IsTextChild (FStringView Key, bool bInReference) noexcept
+{
+	return IsTextKey(Key) || (bInReference && std::find(std::begin(ReferenceLeadKeys), std::end(ReferenceLeadKeys), Key) != std::end(ReferenceLeadKeys));
 }
 
 [[nodiscard]] bool IsDigit (char Ch) noexcept
@@ -36,10 +38,15 @@ constexpr uint32 IndentWidth = 2u;
 	return Ch >= '0' && Ch <= '9';
 }
 
+[[nodiscard]] FStringView SkipSign (FStringView Text) noexcept
+{
+	return Text.StartsWith('-') || Text.StartsWith('+') ? Text.RightChop(1u) : Text;
+}
+
 // [-+]?[0-9]+: what AsInt64 reads, in or out of its range.
 [[nodiscard]] bool HasIntegerSyntax (FStringView Text) noexcept
 {
-	const FStringView digits = Text.StartsWith('-') || Text.StartsWith('+') ? Text.RightChop(1u) : Text;
+	const FStringView digits = SkipSign(Text);
 	return !digits.IsEmpty() && std::all_of(digits.begin(), digits.end(), IsDigit);
 }
 
@@ -70,7 +77,7 @@ template <typename TIsSetDigit>
  */
 [[nodiscard]] bool SpellsNumber (FStringView Text) noexcept
 {
-	const FStringView body = Text.StartsWith('-') || Text.StartsWith('+') ? Text.RightChop(1u) : Text;
+	const FStringView body = SkipSign(Text);
 	if (body == ".inf" || body == ".Inf" || body == ".INF" || Text == ".nan" || Text == ".NaN" || Text == ".NAN")
 	{
 		return true;
@@ -295,9 +302,12 @@ struct SCanonicalScalar
 	}
 	if (HasIntegerSyntax(text))
 	{
-		// Outside int64 it is verbatim: a double, the only other reading, would not keep its digits.
+		// Verbatim where decimal would lose digits: outside int64, as a double, the only other reading, would not keep them;
+		// with leading zeros, as `Prefix: 007` has no descriptor to say it is a number at all. It stays plain, so both the
+		// text and the number still read.
 		const std::optional<int64> integer = Node.AsInt64();
-		if (!integer)
+		const FStringView digits = SkipSign(text);
+		if (!integer || (digits.Len() > 1u && digits[0] == '0'))
 		{
 			OutText = FString(text);
 		}
@@ -431,6 +441,13 @@ private:
 		return false;
 	}
 
+	// The node at Path. The root is the document even when it holds `$asset`: a `.frt` starts with `$type` and a meta stays
+	// line per key, or a stray top-level `$asset` would turn the file into one flow line of quoted text.
+	[[nodiscard]] bool IsReference (const HDataNode& Node) const noexcept
+	{
+		return !Path.empty() && Node.FindKeyIndex(ReferenceKey).has_value();
+	}
+
 	// Flow by itself, not by what is above it. A node that is no collection, or an empty one, has no block form.
 	[[nodiscard]] bool IsFlowNode (const HDataNode& Node) const noexcept
 	{
@@ -467,13 +484,16 @@ private:
 			}
 		};
 		const SEmitRule* const rule = FindRule();
-		if (IsReference(Map))
+		if (rule == nullptr || !rule->bKeyOrderOnly)
 		{
-			place(ReferenceLeadKeys);
-		}
-		else
-		{
-			place(DocumentLeadKeys);
+			if (IsReference(Map))
+			{
+				place(ReferenceLeadKeys);
+			}
+			else
+			{
+				place(DocumentLeadKeys);
+			}
 		}
 		if (rule != nullptr)
 		{
@@ -569,7 +589,7 @@ private:
 				WriteKey(child, true);
 				Out.AppendChar(' ');
 				Path.push_back(child.Key);
-				WriteInline(child.Value, bText || bReference || IsTextKey(child.Key), true);
+				WriteInline(child.Value, bText || IsTextChild(child.Key, bReference), true);
 				Path.pop_back();
 			}
 			Out.Append(" }");
@@ -697,7 +717,7 @@ private:
 				return Fail(child.Value, FString::Format("the key {} would not read back as written", child.Key.Truncate(40u)));
 			}
 			Path.push_back(child.Key);
-			const bool bOk = CheckNode(child.Value, read.Value, bText || bReference || IsTextKey(child.Key), bFlow);
+			const bool bOk = CheckNode(child.Value, read.Value, bText || IsTextChild(child.Key, bReference), bFlow);
 			Path.pop_back();
 			if (!bOk)
 			{
