@@ -24,7 +24,15 @@ namespace frt::assets
 	return GetMountAssetsLocalDir(MountRoot) / "Rules.cache";
 }
 
-// <MountRoot>/Local/Assets/ProjectId: the owner root's random id, generated once (design §5.3), which every
+// <MountRoot>/Local/Assets/OpJournal.log: the operation journal of the root's multi-file commands (design §4.6;
+// Assets/Meta/OpJournal.h). One per owner root, because a project and /Engine are separate roots; only the writer-lock
+// holder writes it, and it is empty whenever no operation is in flight.
+[[nodiscard]] inline std::filesystem::path GetOpJournalPath (const std::filesystem::path& MountRoot)
+{
+	return GetMountAssetsLocalDir(MountRoot) / "OpJournal.log";
+}
+
+// <MountRoot>/Local/Assets/ProjectId:the owner root's random id, generated once (design §5.3), which every
 // registry snapshot and journal of that root carries so a file copied from elsewhere is not taken for its own
 // (Assets/Registry/Snapshot.h ReadProjectId, ReadOrCreateProjectId). Machine-local, never in the .frtproject.
 [[nodiscard]] inline std::filesystem::path GetProjectIdPath (const std::filesystem::path& MountRoot)

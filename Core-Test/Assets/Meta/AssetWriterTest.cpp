@@ -1,0 +1,298 @@
+// The asset writer (Assets/Meta/AssetWriter.h, design §4.6, §4.7, §12.9), against the recording provider: nothing without
+// the writer lock; an asset and its meta in the same CheckOut, Move, Delete and Add; metas written before sources; bytes
+// that would not change are not rewritten and ask nobody; a refused CheckOut (ReadOnly, LockedByOther, Busy) or Move
+// writes, moves and logs nothing; a read-only file under None is refused and keeps its attribute; a Move across two
+// providers and a path outside the owner root are refused; a refused Add after the writes leaves the op for roll-forward,
+// which a process without the lock never does; and the expected writes are the meta bytes in hand.
+#include <gtest/gtest.h>
+
+#include "Assets/Meta/AssetWriterTestUtils.h"
+
+#include <algorithm>
+#include <filesystem>
+#include <vector>
+
+#include "Assets/Meta/AssetWriter.h"
+#include "Assets/Meta/MetaPaths.h"
+#include "Assets/Meta/OpJournal.h"
+#include "Containers/String.h"
+#include "Platform/FileSystem.h"
+#include "Platform/Platform.h"
+
+using namespace frt;
+using namespace frt::assets;
+using frt::test::CRecordingVcsProvider;
+using frt::test::meta::CWriterTree;
+using frt::test::meta::MakeMetaText;
+
+
+namespace
+{
+SAssetOpStep WriteStep (FStringView Path, FStringView Text)
+{
+	SAssetOpStep step;
+	step.Kind = EAssetOpStep::WriteFile;
+	step.Path = FString(Path);
+	step.Bytes.assign(Text.AsBytes().begin(), Text.AsBytes().end());
+	return step;
+}
+
+SAssetOpStep PathStep (EAssetOpStep Kind, FStringView Path, FStringView ToPath = FStringView())
+{
+	SAssetOpStep step;
+	step.Kind = Kind;
+	step.Path = FString(Path);
+	step.ToPath = FString(ToPath);
+	return step;
+}
+
+SAssetOp MakeOp (std::vector<SAssetOpStep> Steps)
+{
+	SAssetOp op;
+	op.Id = SGuid::NewRandom();
+	op.Verb = "test";
+	op.Steps = std::move(Steps);
+	return op;
+}
+
+std::vector<FString> Sorted (std::vector<FString> Files)
+{
+	std::sort(Files.begin(), Files.end(), [] (const FString& A, const FString& B)
+	{
+		return std::ranges::lexicographical_compare(A.View().AsBytes(), B.View().AsBytes());
+	});
+	return Files;
+}
+
+void SetReadOnly (const std::filesystem::path& File, bool bReadOnly)
+{
+	const std::filesystem::perms write = std::filesystem::perms::owner_write | std::filesystem::perms::group_write | std::filesystem::perms::others_write;
+	std::filesystem::permissions(File, write, bReadOnly ? std::filesystem::perm_options::remove : std::filesystem::perm_options::add);
+}
+}
+
+
+TEST(AssetWriterTest, NothingIsWrittenWithoutTheWriterLock)
+{
+	CWriterTree tree("Без замка");
+	tree.Write("/Project/Камінь.png", "png");
+	const std::unique_ptr<CAssetWriter> writer = tree.MakeWriter(false);
+	SAssetWriteReport report;
+	const SVcsResult result = writer->Run(MakeOp({ WriteStep("/Project/Камінь.png.meta", MakeMetaText(SGuid::NewRandom())) }), report);
+	EXPECT_NE(result.Error, EVcsError::None);
+	EXPECT_FALSE(report.bChangedDisk);
+	EXPECT_FALSE(tree.Exists("/Project/Камінь.png.meta"));
+	EXPECT_TRUE(tree.Vcs.GetCalls().empty());
+	std::error_code ec;
+	EXPECT_FALSE(std::filesystem::exists(writer->GetJournalPath(), ec));
+}
+
+TEST(AssetWriterTest, AnAssetAndItsMetaGoThroughEveryCallTogetherMetaFirst)
+{
+	CWriterTree tree("Пара");
+	tree.Write("/Project/Вхід/a.png", "png bytes");
+	const SGuid guid = SGuid::NewRandom();
+	// Planned source first: the writer puts the meta first.
+	const SAssetOp op = MakeOp({ PathStep(EAssetOpStep::CopyFile, "/Project/Вхід/a.png", "/Project/Б.png"),
+		WriteStep("/Project/Б.png.meta", MakeMetaText(guid)) });
+
+	tree.Writer->SetStopAfterStepForTest(1u);
+	SAssetWriteReport report;
+	EXPECT_NE(tree.Writer->Run(op, report).Error, EVcsError::None);
+	EXPECT_TRUE(report.bLeftUnfinished);
+	EXPECT_TRUE(tree.Exists("/Project/Б.png.meta")) << "the meta is written first";
+	EXPECT_FALSE(tree.Exists("/Project/Б.png"));
+
+	// Finish it, then look at the calls the whole op made.
+	ASSERT_TRUE(tree.Writer->RollForward());
+	EXPECT_EQ(tree.Read("/Project/Б.png"), "png bytes");
+	EXPECT_EQ(tree.ReadMeta("/Project/Б.png.meta").value_or(SAssetMeta()).Guid, guid);
+	EXPECT_FALSE(tree.JournalExists());
+
+	const std::vector<FString> pair = Sorted({ tree.VcsPath("/Project/Б.png"), tree.VcsPath("/Project/Б.png.meta") });
+	std::vector<CRecordingVcsProvider::SCall> writes = tree.Vcs.GetWriteCalls();
+	ASSERT_EQ(writes.size(), 3u) << "CheckOut by Run, CheckOut again by the roll-forward, Add";
+	EXPECT_EQ(writes[0].Name, "CheckOut");
+	EXPECT_EQ(Sorted(writes[0].Files), pair);
+	EXPECT_EQ(writes[2].Name, "Add");
+	EXPECT_EQ(Sorted(writes[2].Files), pair);
+}
+
+TEST(AssetWriterTest, BytesThatWouldNotChangeAreNotRewritten)
+{
+	CWriterTree tree("Без змін");
+	const FString meta = MakeMetaText(SGuid::NewRandom());
+	tree.Write("/Project/a.png", "png");
+	tree.Write("/Project/a.png.meta", meta);
+	const platform::SFileStat before = platform::Stat(tree.Abs("/Project/a.png.meta")).value();
+
+	SAssetWriteReport report;
+	EXPECT_EQ(tree.Writer->Run(MakeOp({ WriteStep("/Project/a.png.meta", meta) }), report).Error, EVcsError::None);
+	EXPECT_EQ(report.StepsSkipped, 1u);
+	EXPECT_FALSE(report.bChangedDisk);
+	EXPECT_TRUE(tree.Vcs.GetCalls().empty()) << "no check-out for a write that does not happen";
+	EXPECT_FALSE(tree.JournalExists());
+	EXPECT_EQ(platform::Stat(tree.Abs("/Project/a.png.meta")).value().Identity, before.Identity);
+}
+
+TEST(AssetWriterTest, ARefusedCheckOutWritesNothing)
+{
+	for (const EVcsError refusal : { EVcsError::ReadOnly, EVcsError::LockedByOther, EVcsError::Busy })
+	{
+		CWriterTree tree("Відмова");
+		tree.Write("/Project/a.png", "png");
+		tree.Write("/Project/a.png.meta", MakeMetaText(SGuid::NewRandom()));
+		const FString before = tree.Read("/Project/a.png.meta");
+		tree.Vcs.Refuse("CheckOut", refusal);
+
+		SAssetWriteReport report;
+		const SVcsResult result = tree.Writer->Run(MakeOp({ PathStep(EAssetOpStep::Move, "/Project/a.png", "/Project/b.png"),
+			PathStep(EAssetOpStep::Move, "/Project/a.png.meta", "/Project/b.png.meta"),
+			WriteStep("/Project/b.png.meta", MakeMetaText(SGuid::NewRandom())) }), report);
+		EXPECT_EQ(result.Error, refusal) << static_cast<int>(refusal);
+		EXPECT_TRUE(report.bRefusedByVcs);
+		EXPECT_FALSE(report.bChangedDisk);
+		EXPECT_EQ(tree.Read("/Project/a.png.meta"), before);
+		EXPECT_TRUE(tree.Exists("/Project/a.png"));
+		EXPECT_FALSE(tree.Exists("/Project/b.png"));
+		EXPECT_FALSE(tree.JournalExists());
+		const std::vector<CRecordingVcsProvider::SCall> writes = tree.Vcs.GetWriteCalls();
+		ASSERT_EQ(writes.size(), 1u) << "nothing after the refusal";
+		EXPECT_EQ(Sorted(writes[0].Files), Sorted({ tree.VcsPath("/Project/a.png"), tree.VcsPath("/Project/a.png.meta") }))
+			<< "the meta is checked out under its old name, with its source";
+	}
+}
+
+TEST(AssetWriterTest, AReadOnlyFileUnderNoneIsRefusedAndKeepsItsAttribute)
+{
+	CWriterTree tree("Лише читання");
+	tree.Write("/Project/a.png", "png");
+	tree.Write("/Project/a.png.meta", MakeMetaText(SGuid::NewRandom()));
+	const FString before = tree.Read("/Project/a.png.meta");
+	SetReadOnly(tree.Abs("/Project/a.png.meta"), true);
+
+	const std::unique_ptr<CAssetWriter> writer = tree.MakeNoneWriter();
+	SAssetWriteReport report;
+	const SVcsResult result = writer->Run(MakeOp({ WriteStep("/Project/a.png.meta", MakeMetaText(SGuid::NewRandom())) }), report);
+	EXPECT_EQ(result.Error, EVcsError::ReadOnly);
+	EXPECT_TRUE(report.bRefusedByVcs);
+	EXPECT_EQ(tree.Read("/Project/a.png.meta"), before);
+	EXPECT_TRUE(platform::Stat(tree.Abs("/Project/a.png.meta")).value().bReadOnly);
+	SetReadOnly(tree.Abs("/Project/a.png.meta"), false);
+}
+
+TEST(AssetWriterTest, ARefusedMoveMovesAndRewritesNothing)
+{
+	CWriterTree tree("Відмова руху");
+	tree.Write("/Project/a.png", "png");
+	tree.Write("/Project/a.png.meta", MakeMetaText(SGuid::NewRandom()));
+	const FString before = tree.Read("/Project/a.png.meta");
+	tree.Vcs.Refuse("Move", EVcsError::Busy);
+
+	SAssetWriteReport report;
+	const SVcsResult result = tree.Writer->Run(MakeOp({ PathStep(EAssetOpStep::Move, "/Project/a.png", "/Project/b.png"),
+		PathStep(EAssetOpStep::Move, "/Project/a.png.meta", "/Project/b.png.meta"),
+		WriteStep("/Project/b.png.meta", MakeMetaText(SGuid::NewRandom())) }), report);
+	EXPECT_EQ(result.Error, EVcsError::Busy);
+	EXPECT_TRUE(report.bRefusedByVcs);
+	EXPECT_FALSE(report.bChangedDisk);
+	EXPECT_FALSE(report.bLeftUnfinished);
+	EXPECT_EQ(tree.Read("/Project/a.png.meta"), before);
+	EXPECT_FALSE(tree.Exists("/Project/b.png"));
+	EXPECT_FALSE(tree.Exists("/Project/b.png.meta"));
+	EXPECT_FALSE(tree.JournalExists()) << "an op that changed nothing is given up";
+
+	const std::vector<CRecordingVcsProvider::SCall> writes = tree.Vcs.GetWriteCalls();
+	ASSERT_EQ(writes.size(), 2u);
+	EXPECT_EQ(writes[1].Name, "Move");
+	EXPECT_EQ(writes[1].Files, (std::vector<FString> { tree.VcsPath("/Project/a.png"), tree.VcsPath("/Project/b.png"),
+		tree.VcsPath("/Project/a.png.meta"), tree.VcsPath("/Project/b.png.meta") })) << "asset and meta in one call";
+}
+
+TEST(AssetWriterTest, AMoveAcrossProvidersAndAPathOutsideTheRootAreRefused)
+{
+	CWriterTree tree("Два сховища", true);
+	CRecordingVcsProvider pluginVcs;
+	const std::unique_ptr<CAssetWriter> writer = tree.MakeWriter(true, nullptr, &pluginVcs);
+	tree.Write("/Project/a.png", "png");
+	const FString plugin = FString::Format("/Plugin.{}/a.png", FStringView(test::meta::PluginName));
+
+	SAssetWriteReport report;
+	EXPECT_NE(writer->Run(MakeOp({ PathStep(EAssetOpStep::Move, "/Project/a.png", plugin) }), report).Error, EVcsError::None);
+	EXPECT_TRUE(report.bRefusedByVcs) << "VCS002: two repositories cannot move one file";
+	EXPECT_TRUE(tree.Exists("/Project/a.png"));
+	EXPECT_EQ(writer->FindProvider(plugin), &pluginVcs);
+	EXPECT_EQ(writer->FindProvider("/Project/a.png"), &tree.Vcs);
+
+	tree.Write("/Engine/x.png", "png");
+	EXPECT_EQ(writer->FindProvider("/Engine/x.png"), nullptr) << "/Engine has its own owner root";
+	EXPECT_NE(writer->Run(MakeOp({ WriteStep("/Engine/x.png.meta", MakeMetaText(SGuid::NewRandom())) }), report).Error, EVcsError::None);
+	EXPECT_FALSE(tree.Exists("/Engine/x.png.meta"));
+	EXPECT_TRUE(tree.Vcs.GetCalls().empty());
+	EXPECT_TRUE(pluginVcs.GetCalls().empty());
+}
+
+// Add comes after the writes, so a refusal there cannot unwrite them: the op stays for roll-forward, which only the lock
+// holder runs, and which adds them once the VCS takes them.
+TEST(AssetWriterTest, ARefusedAddLeavesTheOpForTheLockHoldersRollForward)
+{
+	CWriterTree tree("Додати");
+	tree.Write("/Project/a.png", "png");
+	const SGuid guid = SGuid::NewRandom();
+	tree.Vcs.Refuse("Add", EVcsError::Offline);
+	SAssetWriteReport report;
+	EXPECT_EQ(tree.Writer->Run(MakeOp({ WriteStep("/Project/a.png.meta", MakeMetaText(guid)) }), report).Error, EVcsError::Offline);
+	EXPECT_TRUE(report.bRefusedByVcs);
+	EXPECT_TRUE(report.bChangedDisk);
+	EXPECT_TRUE(report.bLeftUnfinished);
+	ASSERT_TRUE(tree.Writer->GetUnfinished().has_value());
+	EXPECT_EQ(tree.Writer->GetUnfinished()->AddFiles, (std::vector<FString> { "/Project/a.png.meta", "/Project/a.png" }));
+
+	tree.Vcs.Refuse("Add", EVcsError::None);
+	FString error;
+	EXPECT_FALSE(tree.MakeWriter(false)->RollForward(&error)) << "a process without the lock reports, never finishes";
+	EXPECT_FALSE(error.IsEmpty());
+	EXPECT_TRUE(tree.JournalExists());
+
+	tree.Vcs.ClearCalls();
+	ASSERT_TRUE(tree.Writer->RollForward(&error)) << error.CStr();
+	EXPECT_FALSE(tree.JournalExists());
+	const std::vector<CRecordingVcsProvider::SCall> writes = tree.Vcs.GetWriteCalls();
+	ASSERT_EQ(writes.size(), 2u);
+	EXPECT_EQ(writes[0].Name, "CheckOut");
+	EXPECT_EQ(writes[1].Name, "Add");
+	EXPECT_EQ(Sorted(writes[1].Files), Sorted({ tree.VcsPath("/Project/a.png"), tree.VcsPath("/Project/a.png.meta") }));
+	EXPECT_EQ(tree.ReadMeta("/Project/a.png.meta").value_or(SAssetMeta()).Guid, guid);
+}
+
+TEST(AssetWriterTest, RunFinishesAnUnfinishedOpBeforeItsOwn)
+{
+	CWriterTree tree("Спершу старе");
+	tree.Write("/Project/a.png", "png");
+	tree.Write("/Project/b.png", "png");
+	tree.Writer->SetStopAfterStepForTest(0u);
+	EXPECT_NE(tree.Writer->Run(MakeOp({ WriteStep("/Project/a.png.meta", MakeMetaText(SGuid::NewRandom())) })).Error, EVcsError::None);
+	EXPECT_FALSE(tree.Exists("/Project/a.png.meta"));
+	ASSERT_TRUE(tree.Writer->GetUnfinished().has_value());
+
+	EXPECT_EQ(tree.Writer->Run(MakeOp({ WriteStep("/Project/b.png.meta", MakeMetaText(SGuid::NewRandom())) })).Error, EVcsError::None);
+	EXPECT_TRUE(tree.Exists("/Project/a.png.meta"));
+	EXPECT_TRUE(tree.Exists("/Project/b.png.meta"));
+	EXPECT_FALSE(tree.JournalExists());
+}
+
+TEST(AssetWriterTest, TheExpectedWritesAreTheBytesInHand)
+{
+	const FString meta = MakeMetaText(SGuid::NewRandom());
+	const SAssetOp op = MakeOp({ PathStep(EAssetOpStep::Move, "/Project/a.png", "/Project/b.png"),
+		PathStep(EAssetOpStep::Move, "/Project/a.png.meta", "/Project/b.png.meta"), WriteStep("/Project/b.png.meta", meta),
+		PathStep(EAssetOpStep::CopyFile, "/Project/b.png", "/Project/c.png"), PathStep(EAssetOpStep::Trash, "/Project/d.png") });
+	std::vector<FString> visited;
+	ForEachExpectedWrite(op, [&] (FStringView Path, const hash::SContentHash& Hash, uint64 Size)
+	{
+		visited.emplace_back(Path);
+		EXPECT_EQ(Hash, hash::HashContent(meta.View().AsBytes()));
+		EXPECT_EQ(Size, meta.Len());
+	});
+	EXPECT_EQ(visited, std::vector<FString> { "/Project/b.png.meta" });
+}
