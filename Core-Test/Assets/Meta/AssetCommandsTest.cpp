@@ -4,7 +4,7 @@
 // FormerPaths (and drops the new one from it), records nothing for a case-only rename, renames a meta spelled in another
 // case to the asset's case, moves a broken meta unchanged, and refuses an occupied target, another file's meta, a
 // non-portable name and two files landing on one name before anything moves; a delete hands the source and its meta to one
-// Delete; a refusal is VCS002 on the asset with nothing written. Kill-mid-command: every crash point of each multi-file
+// Delete, and deletes a meta alone only when it is an orphan; a refusal is VCS002 on the asset with nothing written. Kill-mid-command: every crash point of each multi-file
 // command stops in-process and start-up roll-forward leaves a consistent pair with its planned GUID; then one real child
 // process per command is killed mid-op (three launches in all).
 #include <gtest/gtest.h>
@@ -404,6 +404,31 @@ TEST(AssetCommandsTest, ADeleteHandsSourceAndMetaToOneCallAndARefusalKeepsBoth)
 	EXPECT_EQ(writes[0].Name, "Delete");
 	EXPECT_EQ(writes[0].Files, (std::vector<FString> { tree.VcsPath(RockPath), tree.VcsPath(RockMeta), tree.VcsPath(RockBin) }))
 		<< "the source before its meta";
+}
+
+// Naming a meta deletes it alone only when it is an orphan: the meta of a file that exists, in this spelling or another,
+// is that asset's identity.
+TEST(AssetCommandsTest, AMetaIsDeletedAloneOnlyWhenItsSourceIsGone)
+{
+	CWriterTree tree("Видалити мету");
+	WriteRock(tree, SGuid::NewRandom());
+	tree.Write("/Project/Інша.PNG", "png");
+	tree.Write("/Project/Інша.png.meta", MakeMetaText(SGuid::NewRandom()));
+	tree.Write("/Project/Сирота.png.meta", MakeMetaText(SGuid::NewRandom()));
+
+	for (const FStringView meta : { FStringView(RockMeta), FStringView("/Project/Інша.png.meta") })
+	{
+		const std::vector<SAssetDelete> deletes = { SAssetDelete { FString(meta), {} } };
+		const SAssetCommandResult result = DeleteAssets(*tree.Writer, deletes);
+		EXPECT_FALSE(result.IsOk()) << FString(meta).CStr();
+		EXPECT_TRUE(tree.Exists(meta)) << FString(meta).CStr();
+	}
+	EXPECT_TRUE(tree.Vcs.GetCalls().empty());
+
+	const std::vector<SAssetDelete> orphan = { SAssetDelete { FString("/Project/Сирота.png.meta"), {} } };
+	const SAssetCommandResult result = DeleteAssets(*tree.Writer, orphan);
+	ASSERT_TRUE(result.IsOk()) << result.Vcs.Message.CStr();
+	EXPECT_FALSE(tree.Exists("/Project/Сирота.png.meta"));
 }
 
 

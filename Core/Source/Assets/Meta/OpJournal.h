@@ -21,7 +21,8 @@
  * Replay is idempotent, step by step: a WriteFile whose target already has Hash is skipped, a Move whose From is gone and
  * whose To exists is skipped, a Trash whose file is gone is skipped. For a Move, "gone" compares the on-disk spelling
  * byte-exactly, by a listing of the folder: after a case-only Move the old spelling still opens on NTFS, and running that
- * Move again would have `git mv` refuse a name the index no longer holds. PlannedGuids are what the command pre-allocated,
+ * Move again would have `git mv` refuse a name the index no longer holds. That makes each step idempotent, and the op as a
+ * whole only because CAssetWriter lets each path play one role per op (AssetWriter.h). PlannedGuids are what the command pre-allocated,
  * so that no identity it promised is lost to the crash.
  *
  * A step names a file inside a mount, so `Schemas/Migrations.yml`, which lies outside every mount, is not a step: `migrate`
@@ -30,7 +31,9 @@
  *
  * Steps, by Kind:
  *   WriteFile   Path: the file; Bytes: what it holds afterwards (metas only); Hash: hash::HashContent(Bytes)
- *   CopyFile    Path: the source to copy; ToPath: the new file; Hash: the source's content when the op was planned
+ *   CopyFile    Path: the source to copy; ToPath: the new file; Hash: the source's content when the op was planned.
+ *               Not run in M4: CAssetWriter refuses it until duplicate (M11) settles what a replay does when the new
+ *               name is taken meanwhile, since the copy must never replace another file.
  *   Move        Path: the file as spelled on disk; ToPath: its new path (a case-only rename included)
  *   Trash       Path: the file, which goes to the provider's Delete (the Recycle Bin under None and Git)
  */
@@ -95,7 +98,9 @@ public:
 
 	[[nodiscard]] const std::filesystem::path& GetPath () const noexcept { return File; }
 
-	// The Begin frame and one frame per step, durable when it returns true. Creates Local/Assets if needed.
+	// The Begin frame and one frame per step, durable when it returns true. Creates Local/Assets if needed. Fails, writing
+	// nothing, when a frame would be past what a reader takes. It appends: the caller empties a log that holds anything
+	// first, since a reader stops at a torn tail and would never reach the frames after it (CAssetWriter::Run does).
 	bool Begin (const SOpJournalEntry& Entry, FString* OutError = nullptr);
 	// The End frame of the op Begin logged, flushed, and then the log emptied.
 	bool End (const SGuid& OpId, FString* OutError = nullptr);
@@ -106,6 +111,10 @@ private:
 	std::filesystem::path File;
 	platform::CAppendFile Writer;
 };
+
+// Whether Step's frame stays within record_frames::MaxPayloadBytes, past which a reader takes it for garbage (a torn
+// tail). CAssetWriter refuses an op with a step that does not fit, and Begin fails one before writing anything.
+[[nodiscard]] FRT_CORE_API bool FitsOpJournalFrame (const SAssetOpStep& Step) noexcept;
 
 // The frames Begin appends, as bytes: for tests that tear or damage a log on purpose.
 [[nodiscard]] FRT_CORE_API std::vector<uint8> EncodeOpJournalBegin (const SOpJournalEntry& Entry);

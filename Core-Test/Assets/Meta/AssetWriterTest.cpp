@@ -3,7 +3,9 @@
 // that would not change are not rewritten and ask nobody; a refused CheckOut (ReadOnly, LockedByOther, Busy) or Move
 // writes, moves and logs nothing; a read-only file under None is refused and keeps its attribute; a Move across two
 // providers and a path outside the owner root are refused; a refused Add after the writes leaves the op for roll-forward,
-// which a process without the lock never does; and the expected writes are the meta bytes in hand.
+// which a process without the lock never does; a torn log is emptied before the next op is logged; an op in which a path
+// plays two roles (a swap, a write then a move of it), a copy and a write past the journal's frame limit are refused; and
+// the expected writes are the meta bytes in hand.
 #include <gtest/gtest.h>
 
 #include "Assets/Meta/AssetWriterTestUtils.h"
@@ -15,6 +17,7 @@
 #include "Assets/Meta/AssetWriter.h"
 #include "Assets/Meta/MetaPaths.h"
 #include "Assets/Meta/OpJournal.h"
+#include "Assets/RecordFrames.h"
 #include "Containers/String.h"
 #include "Platform/FileSystem.h"
 #include "Platform/Platform.h"
@@ -90,11 +93,9 @@ TEST(AssetWriterTest, NothingIsWrittenWithoutTheWriterLock)
 TEST(AssetWriterTest, AnAssetAndItsMetaGoThroughEveryCallTogetherMetaFirst)
 {
 	CWriterTree tree("Пара");
-	tree.Write("/Project/Вхід/a.png", "png bytes");
 	const SGuid guid = SGuid::NewRandom();
 	// Planned source first: the writer puts the meta first.
-	const SAssetOp op = MakeOp({ PathStep(EAssetOpStep::CopyFile, "/Project/Вхід/a.png", "/Project/Б.png"),
-		WriteStep("/Project/Б.png.meta", MakeMetaText(guid)) });
+	const SAssetOp op = MakeOp({ WriteStep("/Project/Б.png", "png bytes"), WriteStep("/Project/Б.png.meta", MakeMetaText(guid)) });
 
 	tree.Writer->SetStopAfterStepForTest(1u);
 	SAssetWriteReport report;
@@ -279,6 +280,78 @@ TEST(AssetWriterTest, RunFinishesAnUnfinishedOpBeforeItsOwn)
 	EXPECT_TRUE(tree.Exists("/Project/a.png.meta"));
 	EXPECT_TRUE(tree.Exists("/Project/b.png.meta"));
 	EXPECT_FALSE(tree.JournalExists());
+}
+
+// Begin appends, and a reader stops at a torn tail, so an op logged after one would be invisible to roll-forward: Run empties
+// whatever the log holds that is not an unfinished op before it logs its own.
+TEST(AssetWriterTest, ATornLogIsEmptiedBeforeTheNextOpIsLogged)
+{
+	CWriterTree tree("Рваний журнал");
+	tree.Write("/Project/a.png", "png");
+	tree.Write("/Project/b.png", "png");
+	SOpJournalEntry torn;
+	torn.Op = MakeOp({ WriteStep("/Project/a.png.meta", MakeMetaText(SGuid::NewRandom())) });
+	std::vector<uint8> bytes = EncodeOpJournalBegin(torn);
+	bytes.resize(bytes.size() - 5u);   // a crash during that Begin's append
+	std::error_code ec;
+	std::filesystem::create_directories(tree.Writer->GetJournalPath().parent_path(), ec);
+	ASSERT_TRUE(platform::WriteFileBytes(tree.Writer->GetJournalPath(), bytes));
+	ASSERT_FALSE(tree.Writer->GetUnfinished().has_value());
+
+	const SAssetOp op = MakeOp({ WriteStep("/Project/b.png.meta", MakeMetaText(SGuid::NewRandom())) });
+	tree.Writer->SetStopAfterStepForTest(0u);
+	EXPECT_NE(tree.Writer->Run(op).Error, EVcsError::None);
+	const std::optional<SOpJournalEntry> unfinished = tree.Writer->GetUnfinished();
+	ASSERT_TRUE(unfinished.has_value()) << "the new op is logged where a reader finds it";
+	EXPECT_EQ(unfinished->Op.Id, op.Id);
+
+	ASSERT_TRUE(tree.Writer->RollForward());
+	EXPECT_TRUE(tree.Exists("/Project/b.png.meta"));
+	EXPECT_FALSE(tree.Exists("/Project/a.png.meta")) << "the torn op had changed nothing and is dropped";
+	EXPECT_FALSE(tree.JournalExists());
+}
+
+// Each step replays idempotently; the op does only when no path comes back in a second role. A swap or a chain, a write
+// followed by a move of that file, and two writes of one file (in any case) are refused before anything is asked or
+// written, and so is a copy (M11) and a write past the journal's frame limit.
+TEST(AssetWriterTest, AnOpThatAReplayCouldNotRedoIsRefused)
+{
+	CWriterTree tree("Двічі");
+	tree.Write("/Project/x.png", "x");
+	tree.Write("/Project/y.png", "y");
+	const std::vector<SAssetOp> refused = {
+		MakeOp({ PathStep(EAssetOpStep::Move, "/Project/x.png", "/Project/t.png"), PathStep(EAssetOpStep::Move, "/Project/y.png", "/Project/x.png"),
+			PathStep(EAssetOpStep::Move, "/Project/t.png", "/Project/y.png") }),
+		MakeOp({ WriteStep("/Project/x.png.meta", MakeMetaText(SGuid::NewRandom())),
+			PathStep(EAssetOpStep::Move, "/Project/x.png.meta", "/Project/q.png.meta") }),
+		MakeOp({ WriteStep("/Project/x.png.meta", MakeMetaText(SGuid::NewRandom())), WriteStep("/Project/X.png.meta", MakeMetaText(SGuid::NewRandom())) }),
+		MakeOp({ PathStep(EAssetOpStep::Move, "/Project/x.png", "/Project/t.png"), PathStep(EAssetOpStep::Trash, "/Project/T.png") }),
+		MakeOp({ PathStep(EAssetOpStep::CopyFile, "/Project/x.png", "/Project/c.png") }),
+		MakeOp({ SAssetOpStep { EAssetOpStep::WriteFile, "/Project/x.png.meta", FString(), std::vector<uint8>(record_frames::MaxPayloadBytes, uint8('a')),
+			hash::SContentHash() } }),
+	};
+	for (size_t index = 0u; index < refused.size(); ++index)
+	{
+		SAssetWriteReport report;
+		EXPECT_NE(tree.Writer->Run(refused[index], report).Error, EVcsError::None) << index;
+		EXPECT_FALSE(report.bChangedDisk) << index;
+	}
+	EXPECT_EQ(tree.Read("/Project/x.png"), "x");
+	EXPECT_EQ(tree.Read("/Project/y.png"), "y");
+	EXPECT_FALSE(tree.Exists("/Project/t.png"));
+	EXPECT_FALSE(tree.Exists("/Project/c.png"));
+	EXPECT_FALSE(tree.Exists("/Project/x.png.meta"));
+	EXPECT_TRUE(tree.Vcs.GetCalls().empty());
+	EXPECT_FALSE(tree.JournalExists());
+
+	// A case-only rename, then the rewrite of its meta under the new spelling, is one file in each role.
+	tree.Write("/Project/x.png.meta", MakeMetaText(SGuid::NewRandom()));
+	EXPECT_EQ(tree.Writer->Run(MakeOp({ PathStep(EAssetOpStep::Move, "/Project/x.png", "/Project/X.png"),
+		PathStep(EAssetOpStep::Move, "/Project/x.png.meta", "/Project/X.png.meta"),
+		WriteStep("/Project/X.png.meta", MakeMetaText(SGuid::NewRandom(), { "/Project/old.png" })) })).Error, EVcsError::None);
+	EXPECT_TRUE(tree.IsSpelled("/Project/X.png"));
+	EXPECT_TRUE(tree.IsSpelled("/Project/X.png.meta"));
+	EXPECT_EQ(tree.ReadMeta("/Project/X.png.meta").value_or(SAssetMeta()).FormerPaths, std::vector<FString> { "/Project/old.png" });
 }
 
 TEST(AssetWriterTest, TheExpectedWritesAreTheBytesInHand)

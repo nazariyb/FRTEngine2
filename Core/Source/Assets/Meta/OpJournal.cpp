@@ -149,17 +149,55 @@ std::optional<SGuid> DecodeEnd (std::span<const uint8> Payload)
 	}
 	return id;
 }
+
+/**
+ * The Begin frame and the step frames into Out. False, with Out partial, when a payload is past what a reader takes: such
+ * a frame would read back as a torn tail, so the op that Begin reported durable would be dropped.
+ */
+bool EncodeBeginFrames (const SOpJournalEntry& Entry, std::vector<uint8>& Out, FString* OutError)
+{
+	const auto append = [&Out, OutError] (uint8 Kind, const std::vector<uint8>& Payload)
+	{
+		if (Payload.size() > record_frames::MaxPayloadBytes)
+		{
+			if (OutError != nullptr)
+			{
+				*OutError = FString::Format("a frame of {} bytes is past the journal's limit of {} bytes", Payload.size(), record_frames::MaxPayloadBytes);
+			}
+			return false;
+		}
+		record_frames::AppendFrame(Out, Kind, Payload);
+		return true;
+	};
+	if (!append(BeginKind, EncodeBeginPayload(Entry)))
+	{
+		return false;
+	}
+	for (size_t index = 0u; index < Entry.Op.Steps.size(); ++index)
+	{
+		if (!append(StepKind, EncodeStepPayload(Entry.Op.Id, index, Entry.Op.Steps[index])))
+		{
+			return false;
+		}
+	}
+	return true;
+}
 }
 
+
+bool FitsOpJournalFrame (const SAssetOpStep& Step) noexcept
+{
+	// EncodeStepPayload's layout, with every varint at its widest.
+	constexpr size_t VarintBytes = 10u;
+	const size_t size = 1u + SGuid::Size + VarintBytes + 1u + VarintBytes + Step.Path.View().AsBytes().size() + VarintBytes
+		+ Step.ToPath.View().AsBytes().size() + VarintBytes + Step.Bytes.size() + hash::SContentHash::Size;
+	return size <= record_frames::MaxPayloadBytes;
+}
 
 std::vector<uint8> EncodeOpJournalBegin (const SOpJournalEntry& Entry)
 {
 	std::vector<uint8> bytes;
-	record_frames::AppendFrame(bytes, BeginKind, EncodeBeginPayload(Entry));
-	for (size_t index = 0u; index < Entry.Op.Steps.size(); ++index)
-	{
-		record_frames::AppendFrame(bytes, StepKind, EncodeStepPayload(Entry.Op.Id, index, Entry.Op.Steps[index]));
-	}
+	(void)EncodeBeginFrames(Entry, bytes, nullptr);
 	return bytes;
 }
 
@@ -257,11 +295,15 @@ COpJournal::COpJournal (std::filesystem::path InFile)
 
 bool COpJournal::Begin (const SOpJournalEntry& Entry, FString* OutError)
 {
+	std::vector<uint8> bytes;
+	if (!EncodeBeginFrames(Entry, bytes, OutError))
+	{
+		return false;
+	}
 	if (!Writer.IsOpen() && !Writer.Open(File, true, OutError))
 	{
 		return false;
 	}
-	const std::vector<uint8> bytes = EncodeOpJournalBegin(Entry);
 	return Writer.Append(bytes, OutError) && Writer.Flush(OutError);
 }
 

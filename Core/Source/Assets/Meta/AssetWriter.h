@@ -31,8 +31,16 @@
  * subscribes without verifying and sees the write as a Changed stat, so an echo costs it one folder rescan and no repair.
  *
  * What Run does with an op, in order:
+ * 0. Settles the journal: an unfinished op is rolled forward (Op is refused when that fails), and anything else the log
+ *    holds, a finished op or a torn tail, is emptied, because Begin appends and a reader stops at a torn tail. So a host
+ *    that only calls Run never loses an op to an earlier crash.
  * 1. Refuses it without the writer lock, with a path outside this owner root's mounts, or with a Move across providers.
  *    A Move whose file is missing or whose target is taken by another file is refused here too, before anything moves.
+ *    So is an op that touches a path in two roles (each path is moved away or trashed, or moved to and then written at
+ *    most once, or written; folded): each step is idempotent, but a swap or chain, or a write of a file that a later
+ *    step moves, would replay wrongly. A meta swap is therefore two WriteFiles, whose bytes are in hand, never Moves.
+ *    A WriteFile whose frame is past the journal's limit (FitsOpJournalFrame) is refused, and so is any CopyFile until
+ *    duplicate (M11) settles its replay.
  *    Within each run of consecutive writes, metas go before sources (a crash between them then leaves an orphan meta,
  *    which pairs, rather than a metaless source, which the lifecycle would give a new identity). A WriteFile whose target
  *    already holds its bytes, and which no earlier step moves, is dropped: a file is rewritten only when its canonical
@@ -42,11 +50,16 @@
  *    pair exists or is written too. A refusal fails the op with nothing written.
  * 3. The journal's Begin, flushed.
  * 4. The steps in order. Consecutive Moves go to the provider as one call per provider, asset and meta in one span, and
- *    consecutive Trashes as one Delete. Every step is idempotent, as OpJournal.h says, so a replay is the same code.
+ *    consecutive Trashes as one Delete. Every step is idempotent, as OpJournal.h says, and so is the op by step 1's
+ *    one-role rule, so a replay is the same code.
  * 5. Add, one call per provider, of the files the op created and their pairs.
  * 6. The journal's End, which empties it.
  * A step that fails before anything changed gives the op up (the log is emptied); one that fails after leaves the op in
  * the log, and RollForward finishes it, through the provider as well.
+ *
+ * Edit [31]'s TakeOwnership(Root) (the Owner.lock, then RollForward, shared by CEngine and AssetTool) is F4's, which wires
+ * the hosts; since Run settles the journal itself, it is what lets a host finish an op at start-up rather than at its
+ * first write, not a condition of safety.
  */
 namespace frt::assets
 {
@@ -80,7 +93,8 @@ public:
 	CAssetWriter (const CAssetWriter&) = delete;
 	CAssetWriter& operator= (const CAssetWriter&) = delete;
 
-	// An op still unfinished in the log is rolled forward first; when that fails, Op is refused.
+	// An op still unfinished in the log is rolled forward first; when that fails, Op is refused. Whatever else the log holds
+	// is emptied before Begin; a log that cannot be read or emptied refuses Op.
 	[[nodiscard]] SVcsResult Run (const SAssetOp& Op);
 	[[nodiscard]] SVcsResult Run (const SAssetOp& Op, SAssetWriteReport& OutReport);
 	// Finishes an op the log holds unfinished, through the provider as well, and empties a log that holds nothing unfinished.

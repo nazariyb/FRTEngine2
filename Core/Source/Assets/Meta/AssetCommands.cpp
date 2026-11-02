@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <optional>
+#include <unordered_map>
 #include <utility>
 
 #include "Assets/AssetDiagnosticCodes.h"
@@ -76,34 +77,72 @@ struct SResolved
 }
 
 /**
+ * The folders one plan looks into, each listed once and kept by folded name: a folder move of N assets lists each folder
+ * once, not twice per asset. Nothing changes on disk while a plan is made, so a listing stays true for the whole plan.
+ */
+class CFolderListings
+{
+public:
+	struct SEntry
+	{
+		FString Name;
+		platform::SFileIdentity Identity;
+	};
+	using FEntries = std::unordered_multimap<FString, SEntry>;   // folded name -> the files so named (directories left out)
+
+	[[nodiscard]] const FEntries& Get (const std::filesystem::path& Folder)
+	{
+		const FString key = FString::FromPath(Folder);
+		auto found = Folders.find(key);
+		if (found == Folders.end())
+		{
+			FEntries entries;
+			platform::EnumerateDirectory(Folder, [&entries] (const platform::SDirectoryEntry& Entry)
+			{
+				if (!Entry.Stat.bDirectory)
+				{
+					entries.emplace(FString(Entry.Name).FoldCase(), SEntry { FString(Entry.Name), Entry.Stat.Identity });
+				}
+			});
+			found = Folders.emplace(key, std::move(entries)).first;
+		}
+		return found->second;
+	}
+
+private:
+	std::unordered_map<FString, FEntries> Folders;
+};
+
+/**
+ * The file named Leaf in Folder as the folder spells it: Leaf byte-exact first, else one equal under the portable fold
+ * (the first in byte order when a case-sensitive folder holds several).
+ */
+[[nodiscard]] std::optional<FString> FindSpelling (CFolderListings& Listings, const std::filesystem::path& Folder, FStringView Leaf)
+{
+	const auto [begin, end] = Listings.Get(Folder).equal_range(FString(Leaf).FoldCase());
+	std::optional<FString> found;
+	for (auto entry = begin; entry != end; ++entry)
+	{
+		if (entry->second.Name == Leaf)
+		{
+			return entry->second.Name;
+		}
+		if (!found.has_value() || std::ranges::lexicographical_compare(entry->second.Name.View().AsBytes(), found->View().AsBytes()))
+		{
+			found = entry->second.Name;
+		}
+	}
+	return found;
+}
+
+/**
  * The meta of Source as the folder spells it: "Rock.png.meta" byte-exact first, else one equal under the portable fold
  * ("Rock.PNG.meta", META006), which a move or delete must carry along all the same. A case-sensitive folder can hold
  * both; the exact one is the pair then.
  */
-[[nodiscard]] std::optional<FString> FindMetaSpelling (FStringView SourceMountPath, const std::filesystem::path& SourceAbsolute)
+[[nodiscard]] std::optional<FString> FindMetaSpelling (CFolderListings& Listings, FStringView SourceMountPath, const std::filesystem::path& SourceAbsolute)
 {
-	const FString wanted = GetMetaPath(GetMountPathLeaf(SourceMountPath));
-	const FString wantedFolded = wanted.FoldCase();
-	std::optional<FString> exact;
-	std::optional<FString> folded;
-	platform::EnumerateDirectory(SourceAbsolute.parent_path(), [&] (const platform::SDirectoryEntry& Entry)
-	{
-		if (Entry.Stat.bDirectory)
-		{
-			return true;
-		}
-		if (Entry.Name == wanted.View())
-		{
-			exact = FString(Entry.Name);
-			return false;
-		}
-		if (!folded.has_value() && FString(Entry.Name).FoldCase() == wantedFolded)
-		{
-			folded = FString(Entry.Name);
-		}
-		return true;
-	});
-	const std::optional<FString>& name = exact.has_value() ? exact : folded;
+	const std::optional<FString> name = FindSpelling(Listings, SourceAbsolute.parent_path(), GetMetaPath(GetMountPathLeaf(SourceMountPath)));
 	if (!name.has_value())
 	{
 		return std::nullopt;
@@ -116,7 +155,8 @@ struct SResolved
  * name in its folder equal to it under the portable fold that is another file (PATH001: Find by a typed name would reach
  * only one). Empty when it can.
  */
-[[nodiscard]] std::optional<std::pair<uint32, FString>> GetNewNameProblem (const SResolved& To, const platform::SFileIdentity& Self)
+[[nodiscard]] std::optional<std::pair<uint32, FString>> GetNewNameProblem (CFolderListings& Listings, const SResolved& To,
+	const platform::SFileIdentity& Self)
 {
 	const FStringView relative = To.Relative.View();
 	for (const FStringView segment : relative.Split('/'))
@@ -127,17 +167,15 @@ struct SResolved
 			return std::pair(Path002, FString::Format("'{}' is not a portable name: {}", ToDisplayText(segment), reason));
 		}
 	}
-	const FString leaf = FString(GetMountPathLeaf(relative)).FoldCase();
 	std::optional<FString> collision;
-	platform::EnumerateDirectory(To.Absolute.parent_path(), [&] (const platform::SDirectoryEntry& Entry)
+	const auto [begin, end] = Listings.Get(To.Absolute.parent_path()).equal_range(FString(GetMountPathLeaf(relative)).FoldCase());
+	for (auto entry = begin; entry != end && !collision.has_value(); ++entry)
 	{
-		if (!(Entry.Stat.Identity == Self) && FString(Entry.Name).FoldCase() == leaf)
+		if (!(entry->second.Identity == Self))
 		{
-			collision = FString(Entry.Name);
-			return false;
+			collision = entry->second.Name;
 		}
-		return true;
-	});
+	}
 	if (collision.has_value())
 	{
 		return std::pair(Path001, FString::Format("'{}' is taken in that folder, by '{}', in another case", ToDisplayText(To.Relative),
@@ -210,7 +248,8 @@ bool PlanCreateMeta (const CAssetWriter& Writer, const SCreateMetaRequest& Reque
 			ToDisplayText(FString::FromPath(source->Absolute)))));
 		return false;
 	}
-	if (const std::optional<FString> existing = FindMetaSpelling(Request.Source, source->Absolute))
+	CFolderListings listings;
+	if (const std::optional<FString> existing = FindMetaSpelling(listings, Request.Source, source->Absolute))
 	{
 		OutProblems.push_back(MakeProblem(Writer, ESeverity::Error, 0u, Request.Source, FString::Format("'{}' has a meta already: '{}'",
 			ToDisplayText(Request.Source), ToDisplayText(*existing))));
@@ -247,6 +286,7 @@ bool PlanMoveAssets (const CAssetWriter& Writer, std::span<const SAssetMove> Mov
 	const size_t problemsBefore = OutProblems.size();
 	std::vector<SAssetOpStep> rewrites;
 	std::vector<FString> targets;   // folded: two moves must not land on one name
+	CFolderListings listings;
 
 	const auto refuse = [&] (uint32 Code, FStringView Subject, FString Message)
 	{
@@ -316,7 +356,7 @@ bool PlanMoveAssets (const CAssetWriter& Writer, std::span<const SAssetMove> Mov
 			refuse(0u, move.From, FString::Format("cannot move '{}': '{}' exists", ToDisplayText(move.From), ToDisplayText(move.To)));
 			continue;
 		}
-		if (const std::optional<std::pair<uint32, FString>> nameProblem = GetNewNameProblem(*to, fromStat->Identity))
+		if (const std::optional<std::pair<uint32, FString>> nameProblem = GetNewNameProblem(listings, *to, fromStat->Identity))
 		{
 			refuse(nameProblem->first, move.To, nameProblem->second);
 			continue;
@@ -328,7 +368,7 @@ bool PlanMoveAssets (const CAssetWriter& Writer, std::span<const SAssetMove> Mov
 		OutOp.Steps.push_back(MakeStep(EAssetOpStep::Move, move.From, move.To));
 
 		const bool bCaseOnly = IsCaseOnly(move.From, move.To);
-		if (const std::optional<FString> meta = FindMetaSpelling(move.From, from->Absolute))
+		if (const std::optional<FString> meta = FindMetaSpelling(listings, move.From, from->Absolute))
 		{
 			const FString metaTo = GetMetaPath(move.To);
 			if (!planAlong(*meta, metaTo, move.From))
@@ -419,6 +459,7 @@ bool PlanDeleteAssets (const CAssetWriter& Writer, std::span<const SAssetDelete>
 	OutOp = MakeOp("delete");
 	bool bOk = true;
 	std::vector<FString> planned;
+	CFolderListings listings;
 	const auto add = [&] (FStringView Path)
 	{
 		if (std::find(planned.begin(), planned.end(), Path) == planned.end())
@@ -437,10 +478,25 @@ bool PlanDeleteAssets (const CAssetWriter& Writer, std::span<const SAssetDelete>
 			bOk = false;
 			continue;
 		}
-		add(request.Source);
-		if (!GetMetaSource(request.Source).has_value())
+		if (const std::optional<FStringView> metaOf = GetMetaSource(request.Source))
 		{
-			if (const std::optional<FString> meta = FindMetaSpelling(request.Source, source->Absolute))
+			// Only an orphan meta is deleted by naming it: the meta of a file that exists, in any spelling, is that asset's
+			// identity, and trashing it alone would leave a metaless source for the lifecycle to restore or remint.
+			if (const std::optional<FString> sourceName = FindSpelling(listings, source->Absolute.parent_path(), GetMountPathLeaf(*metaOf)))
+			{
+				const FString sourcePath = JoinChild(GetMountPathParent(request.Source), *sourceName);
+				OutProblems.push_back(MakeProblem(Writer, ESeverity::Error, 0u, request.Source,
+					FString::Format("'{}' is the meta of '{}', which exists: delete the asset, and its meta goes with it",
+						ToDisplayText(request.Source), ToDisplayText(sourcePath))));
+				bOk = false;
+				continue;
+			}
+			add(request.Source);
+		}
+		else
+		{
+			add(request.Source);
+			if (const std::optional<FString> meta = FindMetaSpelling(listings, request.Source, source->Absolute))
 			{
 				add(*meta);
 			}

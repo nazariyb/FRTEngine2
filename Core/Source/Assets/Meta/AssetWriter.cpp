@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <span>
 #include <system_error>
+#include <unordered_map>
 
 #include "Assets/Discovery/Mounts.h"
 #include "Assets/FileHash.h"
@@ -61,6 +62,61 @@ namespace
 		return !bFound;
 	});
 	return bFound;
+}
+
+// Two mount paths of one file on a case-insensitive disk: only such a Move needs the folder's listing (IsSpelledOnDisk).
+[[nodiscard]] bool IsCaseOnly (FStringView From, FStringView To)
+{
+	return From != To && FString(From).FoldCase() == FString(To).FoldCase();
+}
+
+/**
+ * Each path plays one role per op, in this order: moved away or trashed; or moved to, and then written at most once; or
+ * written. Replay redoes every step the disk does not show done, which is idempotent per step but not per op when a path
+ * comes back: a finished swap X->T, Y->X, T->Y would replay its first Move on the new X, and a WriteFile P followed by a
+ * Move P->Q would rewrite P and then find Q taken. Keys are folded, because NTFS takes X and x for one file. A case-only
+ * Move's two ends are one file, which its rewrite may follow. OutPath names the step's path that takes a second role.
+ */
+using FPathRoles = std::unordered_map<FString, bool>;   // folded path -> a Move's target that no step has written yet
+
+[[nodiscard]] bool ClaimRoles (FPathRoles& Roles, const SAssetOpStep& Step, FString& OutPath)
+{
+	const FString from = Step.Path.FoldCase();
+	if (Step.Kind == EAssetOpStep::WriteFile)
+	{
+		const auto found = Roles.find(from);
+		if (found == Roles.end())
+		{
+			Roles.emplace(from, false);
+			return true;
+		}
+		if (!found->second)
+		{
+			OutPath = Step.Path;
+			return false;
+		}
+		found->second = false;
+		return true;
+	}
+	if (Roles.contains(from))
+	{
+		OutPath = Step.Path;
+		return false;
+	}
+	if (Step.Kind == EAssetOpStep::Move)
+	{
+		const FString to = Step.ToPath.FoldCase();
+		if (to != from && Roles.contains(to))
+		{
+			OutPath = Step.ToPath;
+			return false;
+		}
+		Roles.emplace(from, false);
+		Roles[to] = true;
+		return true;
+	}
+	Roles.emplace(from, false);
+	return true;
 }
 
 [[nodiscard]] bool HoldsBytes (const std::filesystem::path& Path, std::span<const uint8> Bytes)
@@ -228,6 +284,7 @@ SVcsResult CAssetWriter::Prepare (const SAssetOp& Op, bool bReplay, SPlan& Out, 
 
 	std::vector<FString> touched;   // mount paths an earlier step of this op writes, moves away, moves to or trashes
 	std::vector<FString> written;   // write targets
+	FPathRoles roles;
 	for (const SAssetOpStep& step : steps)
 	{
 		if (IsWrite(step.Kind))
@@ -238,19 +295,39 @@ SVcsResult CAssetWriter::Prepare (const SAssetOp& Op, bool bReplay, SPlan& Out, 
 
 	for (SAssetOpStep& step : steps)
 	{
+		if (step.Kind == EAssetOpStep::CopyFile)
+		{
+			return Failure(FString::Format("cannot copy '{}': copies are not run before duplicate (M11) settles what a replay does when "
+				"'{}' is taken meanwhile", ToDisplayText(step.Path), ToDisplayText(step.ToPath)));
+		}
+		if (!bReplay)
+		{
+			FString again;
+			if (!ClaimRoles(roles, step, again))
+			{
+				return Failure(FString::Format("'{}' is touched twice by the operation '{}', which a replay could not redo safely",
+					ToDisplayText(again), Op.Verb));
+			}
+			if (step.Kind == EAssetOpStep::WriteFile && !FitsOpJournalFrame(step))
+			{
+				return Failure(FString::Format("cannot write '{}': its {} bytes are past what the operation journal holds in one step",
+					ToDisplayText(step.Path), step.Bytes.size()));
+			}
+		}
+
 		SPlan::SStep planned;
 		if (!Resolve(step.Path, planned.From, planned.Provider))
 		{
 			return Failure(FString::Format("'{}' names no file in a mount of '{}'", ToDisplayText(step.Path), ToDisplayText(FString::FromPath(Desc.OwnerRoot))));
 		}
-		if (step.Kind == EAssetOpStep::Move || step.Kind == EAssetOpStep::CopyFile)
+		if (step.Kind == EAssetOpStep::Move)
 		{
 			IVcsProvider* toProvider = nullptr;
 			if (!Resolve(step.ToPath, planned.To, toProvider))
 			{
 				return Failure(FString::Format("'{}' names no file in a mount of '{}'", ToDisplayText(step.ToPath), ToDisplayText(FString::FromPath(Desc.OwnerRoot))));
 			}
-			if (step.Kind == EAssetOpStep::Move && toProvider != planned.Provider)
+			if (toProvider != planned.Provider)
 			{
 				Report.bRefusedByVcs = true;
 				return Failure(FString::Format("cannot move '{}' to '{}': they are under different version control", ToDisplayText(step.Path),
@@ -269,30 +346,8 @@ SVcsResult CAssetWriter::Prepare (const SAssetOp& Op, bool bReplay, SPlan& Out, 
 				continue;
 			}
 			break;
-		case EAssetOpStep::CopyFile:
-			if (!bReplay)
-			{
-				if (!bTouched && !Exists(planned.From))
-				{
-					return Failure(FString::Format("cannot copy '{}': it does not exist", ToDisplayText(step.Path)));
-				}
-				if (Exists(planned.To))
-				{
-					return Failure(FString::Format("cannot copy '{}': '{}' exists", ToDisplayText(step.Path), ToDisplayText(step.ToPath)));
-				}
-				if (!step.Hash.IsValid())
-				{
-					const std::optional<hash::SContentHash> content = HashFileStable(planned.From);
-					if (!content.has_value())
-					{
-						return Failure(FString::Format("cannot copy '{}': it cannot be read, or changed while it was read", ToDisplayText(step.Path)));
-					}
-					step.Hash = *content;
-				}
-			}
-			break;
 		case EAssetOpStep::Move:
-			if (!bReplay && !bTouched && step.Path != step.ToPath)
+			if (!bReplay && step.Path != step.ToPath)
 			{
 				const std::optional<platform::SFileStat> from = platform::Stat(planned.From);
 				if (!from.has_value() || from->bDirectory)
@@ -307,6 +362,7 @@ SVcsResult CAssetWriter::Prepare (const SAssetOp& Op, bool bReplay, SPlan& Out, 
 				}
 			}
 			break;
+		case EAssetOpStep::CopyFile:
 		case EAssetOpStep::Trash:
 			break;
 		}
@@ -458,8 +514,11 @@ SVcsResult CAssetWriter::Execute (const SPlan& Plan, SAssetWriteReport& Report)
 				const SPlan::SStep& one = Plan.Steps[at];
 				if (step.Kind == EAssetOpStep::Move)
 				{
-					const bool bFromThere = IsSpelledOnDisk(one.From);
-					if (!bFromThere && IsSpelledOnDisk(one.To))
+					// Stat says it, except for a case-only rename, whose old spelling still opens: a listing for such a Move
+					// only, so that a folder move of N assets does not list its folder N times.
+					const bool bCaseOnly = IsCaseOnly(steps[at].Path, steps[at].ToPath);
+					const bool bFromThere = bCaseOnly ? IsSpelledOnDisk(one.From) : Exists(one.From);
+					if (!bFromThere && (bCaseOnly ? IsSpelledOnDisk(one.To) : Exists(one.To)))
 					{
 						++Report.StepsSkipped;   // moved already
 						continue;
@@ -517,48 +576,20 @@ SVcsResult CAssetWriter::Execute (const SPlan& Plan, SAssetWriteReport& Report)
 			continue;
 		}
 
-		if (step.Kind == EAssetOpStep::WriteFile)
+		// A WriteFile: Prepare refuses CopyFile.
+		if (HoldsBytes(planned.From, step.Bytes))
 		{
-			if (HoldsBytes(planned.From, step.Bytes))
-			{
-				++Report.StepsSkipped;
-			}
-			else
-			{
-				FString error;
-				if (!platform::WriteFileAtomic(planned.From, step.Bytes, true, &error))
-				{
-					return Failure(FString::Format("cannot write '{}': {}", ToDisplayText(step.Path), ToDisplayText(error)));
-				}
-				Report.bChangedDisk = true;
-				++Report.StepsRun;
-			}
+			++Report.StepsSkipped;
 		}
-		else   // CopyFile
+		else
 		{
-			const std::optional<hash::SContentHash> there = Exists(planned.To) ? HashFileStable(planned.To) : std::nullopt;
-			if (there.has_value() && *there == step.Hash)
+			FString error;
+			if (!platform::WriteFileAtomic(planned.From, step.Bytes, true, &error))
 			{
-				++Report.StepsSkipped;
+				return Failure(FString::Format("cannot write '{}': {}", ToDisplayText(step.Path), ToDisplayText(error)));
 			}
-			else if (!Exists(planned.From))
-			{
-				log::Warning(log::Assets, "The operation '{}' cannot copy '{}' to '{}': the file is gone.", Plan.Entry.Op.Verb,
-					ToDisplayText(step.Path), ToDisplayText(step.ToPath));
-				++Report.StepsSkipped;
-			}
-			else
-			{
-				FString error;
-				const std::optional<std::vector<uint8>> bytes = platform::ReadFileBytes(planned.From, &error);
-				if (!bytes.has_value() || !platform::WriteFileAtomic(planned.To, *bytes, true, &error))
-				{
-					return Failure(FString::Format("cannot copy '{}' to '{}': {}", ToDisplayText(step.Path), ToDisplayText(step.ToPath),
-						ToDisplayText(error)));
-				}
-				Report.bChangedDisk = true;
-				++Report.StepsRun;
-			}
+			Report.bChangedDisk = true;
+			++Report.StepsRun;
 		}
 		++index;
 	}
@@ -612,12 +643,26 @@ SVcsResult CAssetWriter::Run (const SAssetOp& Op, SAssetWriteReport& OutReport)
 		return Failure(FString::Format("this process does not hold the writer lock of '{}', so it writes nothing",
 			ToDisplayText(FString::FromPath(Desc.OwnerRoot))));
 	}
-	if (GetUnfinished().has_value())
+	// Begin appends, and a reader stops at the first frame it cannot read, so the log must hold nothing by then: an op
+	// logged after a torn tail (a crash during an earlier Begin) would be invisible to roll-forward. An unfinished op is
+	// finished first; anything else the log holds (a finished op, a torn tail) is emptied; a log that cannot be read or
+	// emptied refuses the op.
 	{
 		FString error;
-		if (!RollForward(&error))
+		SOpJournalContents contents;
+		if (!ReadOpJournal(Journal.GetPath(), contents, &error))
+		{
+			return Failure(FString::Format("cannot read the operation journal '{}', so '{}' does not start: {}",
+				ToDisplayText(FString::FromPath(Journal.GetPath())), Op.Verb, ToDisplayText(error)));
+		}
+		if (contents.Unfinished.has_value() && !RollForward(&error))
 		{
 			return Failure(FString::Format("an earlier operation could not be finished, so '{}' does not start: {}", Op.Verb, error));
+		}
+		if (!contents.bEmpty && !Journal.Clear(&error))
+		{
+			return Failure(FString::Format("cannot empty the operation journal '{}', so '{}' does not start: {}",
+				ToDisplayText(FString::FromPath(Journal.GetPath())), Op.Verb, ToDisplayText(error)));
 		}
 	}
 

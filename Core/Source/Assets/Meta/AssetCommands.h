@@ -67,7 +67,8 @@ struct SAssetMove
 };
 
 // One asset to delete: its source, its meta and the companions given, in one provider Delete (the Recycle Bin under None
-// and Git). An orphan meta alone may be deleted by naming the meta.
+// and Git). An orphan meta alone may be deleted by naming the meta; naming the meta of a file that exists, in any
+// spelling, is refused, since that would strip a live asset of its identity.
 struct SAssetDelete
 {
 	FString Source;
