@@ -120,8 +120,8 @@ struct SLifecycleFacts
 	SSafetySwitches Safety;
 	SAssetEditorSettings Times;
 	FString Salt;
-	// A person ran it: no delays; AutoRepairMetas and OrphanPairing ignored. DerivedAutoGuids still picks the GUID kind, and
-	// AutoResolveDuplicates still decides: off, a duplicate stays a fix-it, even for `fix`.
+	// A person ran it: no delays; AutoRepairMetas ignored. DerivedAutoGuids still picks the GUID kind, and OrphanPairing and
+	// AutoResolveDuplicates still decide: off, a relink or a duplicate stays a fix-it, even for `fix`.
 	bool bCommand = false;
 	// The provider is busy, unsettled, or not yet known (SLifecycleDesc::bProvidersPending): nothing automatic is proposed. A
 	// held run's WakeAtMs says nothing about the hold, which usually ends with no file event (index.lock lies outside the

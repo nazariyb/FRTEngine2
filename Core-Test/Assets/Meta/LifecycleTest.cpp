@@ -1,7 +1,7 @@
 // The meta lifecycle as a pure state machine (Assets/Meta/Lifecycle.h, design §4.6, §4.7, §4.8): every transition, one by
 // one, with each default-on switch on and then off (AutoRepairMetas, DerivedAutoGuids, AutoResolveDuplicates,
 // OrphanPairing; WaitForVcs is the caller's bVcsHold), giving exactly the "when off" row and never a fresh identity for a
-// known asset; commands ignore AutoRepairMetas and OrphanPairing; the facts' order changes nothing; applying a result's
+// known asset; commands ignore AutoRepairMetas only; the facts' order changes nothing; applying a result's
 // repairs yields no further repair, which is the guard against a repair loop; derived GUIDs are the frozen derivations
 // and re-roll over live ones; a run asks for hashes and committed facts instead of guessing; a slow checkout never gets a
 // meta created; a folder copied twice references its own copies. Pure: no files, no clock.
@@ -205,11 +205,18 @@ SLifecycleResult RunAnswering (SWorld& World)
 	return result;
 }
 
+FString DescribeAction (const SLifecycleAction& Action);
+
 // What the writer and the next scan would make of the repairs: E4 registers each GUID and clears its tombstone.
 void ApplyRepairs (SWorld& World, const SLifecycleResult& Result)
 {
 	for (const SLifecycleAction& action : Result.Repairs)
 	{
+		// A known identity is never reminted: only a new identity (CreateMeta, ReGuid) may leave its GUID to the planner.
+		if (!action.Guid.IsValid() && (action.Kind == ELifecycleAction::RestoreMeta || action.Kind == ELifecycleAction::MoveMeta))
+		{
+			ADD_FAILURE() << DescribeAction(action) << " carries no GUID: the planner would mint a fresh one for a known asset";
+		}
 		const SGuid guid = action.Guid.IsValid() ? action.Guid : World.MintRandom();
 		switch (action.Kind)
 		{
@@ -231,6 +238,7 @@ void ApplyRepairs (SWorld& World, const SLifecycleResult& Result)
 			const auto meta = std::find_if(World.Metas.begin(), World.Metas.end(), [&action] (const SLifecycleMeta& Meta) { return Meta.MountPath == action.Path; });
 			ASSERT_NE(meta, World.Metas.end()) << action.Path;
 			const SGuid moved = meta->Guid;
+			EXPECT_EQ(action.Guid, moved) << DescribeAction(action) << ": a moved meta keeps its GUID";
 			World.Metas.erase(meta);
 			for (SLiveGuid& entry : World.Live)
 			{
@@ -527,10 +535,8 @@ const std::vector<SCase>& GetCases ()
 			{ .Repairs = { "CreateMeta /Project/New/Rock.png" }, .FixIts = { "MoveMeta /Project/Old/Rock.png.meta -> /Project/New/Rock.png.meta" },
 				.Problems = { "META009 /Project/Old/Rock.png.meta", "META002 /Project/Old/Rock.png.meta" },
 				.States = { "/Project/New/Rock.png PendingMeta", "/Project/Old/Rock.png.meta Orphan" } },
-			{ { ESwitch::OrphanPairing, { .FixIts = { "MoveMeta /Project/Old/Rock.png.meta -> /Project/New/Rock.png.meta" },
-				.Problems = { "META008 /Project/New/Rock.png", "META009 /Project/Old/Rock.png.meta", "META002 /Project/Old/Rock.png.meta" },
-				.States = { "/Project/New/Rock.png MissingMeta", "/Project/Old/Rock.png.meta Orphan" } } },
-			  { ESwitch::AutoRepairMetas, { .FixIts = { "MoveMeta /Project/Old/Rock.png.meta -> /Project/New/Rock.png.meta", "CreateMeta /Project/New/Rock.png" },
+			// OrphanPairing off changes nothing here: it removes an automatic pairing, and this match would never have paired.
+			{ { ESwitch::AutoRepairMetas, { .FixIts = { "MoveMeta /Project/Old/Rock.png.meta -> /Project/New/Rock.png.meta", "CreateMeta /Project/New/Rock.png" },
 				.Problems = { "META001 /Project/New/Rock.png", "META009 /Project/Old/Rock.png.meta", "META002 /Project/Old/Rock.png.meta" },
 				.States = { "/Project/New/Rock.png PendingMeta", "/Project/Old/Rock.png.meta Orphan" } } } } },
 
@@ -565,6 +571,25 @@ const std::vector<SCase>& GetCases ()
 				.Problems = { "META008 /Project/A/Rock.png", "META008 /Project/B/Rock.png", "META009 /Project/Old/Rock.png.meta",
 					"META009 /Project/Old/Rock.png.meta", "META002 /Project/Old/Rock.png.meta" },
 				.States = { "/Project/A/Rock.png MissingMeta", "/Project/B/Rock.png MissingMeta", "/Project/Old/Rock.png.meta Orphan" } } },
+
+		{ "a FileId match outranks another file's content match: the moved file pairs, the copy gets its own identity",
+			[] (SWorld& W)
+			{
+				// Explorer: Rock.png copied to Copy/, then moved to New/ without its meta, in one batch.
+				W.AddTombstone(G1, "/Project/Old/Rock.png", "rock", MakeIdentity(909u), 2500u);
+				W.AddMeta("/Project/Old/Rock.png.meta", G1, 2500u);
+				W.AddNewFile("/Project/New/Rock.png", "rock", 2500u).Identity = MakeIdentity(909u);
+				W.AddNewFile("/Project/Copy/Rock.png", "rock");
+			},
+			{ .Repairs = { "MoveMeta /Project/Old/Rock.png.meta -> /Project/New/Rock.png.meta", "CreateMeta /Project/Copy/Rock.png" },
+				.States = { "/Project/New/Rock.png PendingMeta", "/Project/Copy/Rock.png PendingMeta" } },
+			{ { ESwitch::AutoRepairMetas, { .Repairs = { "MoveMeta /Project/Old/Rock.png.meta -> /Project/New/Rock.png.meta" },
+				.FixIts = { "CreateMeta /Project/Copy/Rock.png" }, .Problems = { "META001 /Project/Copy/Rock.png" },
+				.States = { "/Project/New/Rock.png PendingMeta", "/Project/Copy/Rock.png PendingMeta" } } },
+			  { ESwitch::OrphanPairing, { .Repairs = { "CreateMeta /Project/Copy/Rock.png" },
+				.FixIts = { "MoveMeta /Project/Old/Rock.png.meta -> /Project/New/Rock.png.meta" },
+				.Problems = { "META008 /Project/New/Rock.png", "META009 /Project/Old/Rock.png.meta", "META002 /Project/Old/Rock.png.meta" },
+				.States = { "/Project/New/Rock.png MissingMeta", "/Project/Copy/Rock.png PendingMeta", "/Project/Old/Rock.png.meta Orphan" } } } } },
 
 		{ "a lost meta is restored from its verified copy after the grace",
 			[] (SWorld& W)
@@ -739,6 +764,18 @@ const std::vector<SCase>& GetCases ()
 		{ "a meta beside an excluded file is left alone",
 			[] (SWorld& W) { W.AddMeta("/Project/Readme.md.meta", G1).bSourceExcluded = true; },
 			{} },
+
+		{ "a meta beside a file of a class that gets no meta is left alone, not taken for an orphan",
+			[] (SWorld& W)
+			{
+				W.AddNewFile("/Project/Notes.txt", "notes").Class = EFileClass::Unclaimed;   // its Importer: pin no longer resolves
+				W.AddMeta("/Project/Notes.txt.meta", G1);
+				W.AddTombstone(G1, "/Project/Elsewhere/Notes.txt", "notes", MakeIdentity(910u), Settled);
+				W.AddNewFile("/Project/Elsewhere/Notes.png", "notes").Identity = MakeIdentity(910u);
+			},
+			{ .Repairs = { "CreateMeta /Project/Elsewhere/Notes.png" }, .States = { "/Project/Elsewhere/Notes.png PendingMeta" } },
+			{ { ESwitch::AutoRepairMetas, { .FixIts = { "CreateMeta /Project/Elsewhere/Notes.png" }, .Problems = { "META001 /Project/Elsewhere/Notes.png" },
+				.States = { "/Project/Elsewhere/Notes.png PendingMeta" } } } } },
 	};
 	return cases;
 }
@@ -779,9 +816,8 @@ TEST(LifecycleTest, ApplyingTheRepairsLeavesNothingToRepair)
 	}
 }
 
-// §4.7: the switches cover automatic repairs only; a person's command writes its metas whatever AutoRepairMetas and
-// OrphanPairing say.
-TEST(LifecycleTest, ACommandIgnoresAutoRepairMetasAndOrphanPairing)
+// §4.7: the switches cover automatic repairs only; a person's command writes its metas whatever AutoRepairMetas says.
+TEST(LifecycleTest, ACommandIgnoresAutoRepairMetas)
 {
 	for (const SCase& testCase : GetCases())
 	{
@@ -790,15 +826,28 @@ TEST(LifecycleTest, ACommandIgnoresAutoRepairMetasAndOrphanPairing)
 		testCase.Build(onWorld);
 		onWorld.bCommand = true;
 		const FString on = DescribeExactly(RunAnswering(onWorld));
-		for (const ESwitch off : { ESwitch::AutoRepairMetas, ESwitch::OrphanPairing })
-		{
-			SWorld world;
-			testCase.Build(world);
-			world.bCommand = true;
-			TurnOff(world.Safety, off);
-			EXPECT_EQ(DescribeExactly(RunAnswering(world)), on) << GetSwitchName(off);
-		}
+		SWorld world;
+		testCase.Build(world);
+		world.bCommand = true;
+		TurnOff(world.Safety, ESwitch::AutoRepairMetas);
+		EXPECT_EQ(DescribeExactly(RunAnswering(world)), on);
 	}
+}
+
+// Edit [9]: `fix` never relinks. OrphanPairing off keeps a match a relink fix-it even for a command, as AutoResolveDuplicates
+// off keeps a duplicate one, and the file still never falls through to CreateMeta.
+TEST(LifecycleTest, OrphanPairingOffKeepsARelinkAFixItEvenForACommand)
+{
+	SWorld world;
+	world.bCommand = true;
+	world.Safety.bOrphanPairing = false;
+	world.AddTombstone(G1, "/Project/Old/Rock.png", "rock", MakeIdentity(980u), 0u);
+	world.AddMeta("/Project/Old/Rock.png.meta", G1, 0u);
+	world.AddNewFile("/Project/New/Rock.png", "rock", 0u).Identity = MakeIdentity(980u);
+	const SLifecycleResult result = RunAnswering(world);
+	EXPECT_TRUE(result.Repairs.empty()) << DescribeExactly(result);
+	EXPECT_EQ(Describe(result.FixIts), Sorted({ "MoveMeta /Project/Old/Rock.png.meta -> /Project/New/Rock.png.meta" }));
+	EXPECT_EQ(Describe(result.States), Sorted({ "/Project/New/Rock.png MissingMeta", "/Project/Old/Rock.png.meta Orphan" }));
 }
 
 // Identity must not depend on the order the caller happened to gather the facts in: two machines list differently.
@@ -876,6 +925,102 @@ TEST(LifecycleTest, ADerivedGuidReRollsPastALiveOne)
 	EXPECT_EQ(result.Repairs[0].Guid, MakeCreateMetaGuid("Demo", "/Project/A.png", content, [&first] (const SGuid& Guid) { return Guid == first; }));
 }
 
+// §4.6, §4.7: never a fresh GUID for a known asset, whatever the switches. A restore, the "create from registry" fix-it and
+// an orphan pairing carry the identity they keep, even with DerivedAutoGuids off, where only new identities go random.
+TEST(LifecycleTest, AKnownIdentityKeepsItsGuidWithEachSwitchOnAndOff)
+{
+	const auto findAll = [] (const SLifecycleResult& Result, ELifecycleAction Kind)
+	{
+		std::vector<const SLifecycleAction*> found;
+		for (const std::vector<SLifecycleAction>* actions : { &Result.Repairs, &Result.FixIts })
+		{
+			for (const SLifecycleAction& action : *actions)
+			{
+				if (action.Kind == Kind)
+				{
+					found.push_back(&action);
+				}
+			}
+		}
+		return found;
+	};
+	for (const ESwitch off : { ESwitch::None, SwitchesOff[0], SwitchesOff[1], SwitchesOff[2], SwitchesOff[3] })
+	{
+		SCOPED_TRACE(GetSwitchName(off));
+		{
+			SWorld world;
+			TurnOff(world.Safety, off);
+			world.AddPaired("/Project/Дерево.png", G1, "tree");
+			world.LoseMeta("/Project/Дерево.png", Settled);
+			world.Verified.push_back(G1);
+			const auto restores = findAll(RunAnswering(world), ELifecycleAction::RestoreMeta);
+			ASSERT_EQ(restores.size(), 1u);
+			EXPECT_EQ(restores[0]->Guid, G1) << "a restore keeps the record's GUID";
+		}
+		{
+			SWorld world;
+			TurnOff(world.Safety, off);
+			world.AddPaired("/Project/Дерево.png", G1, "tree");
+			world.LoseMeta("/Project/Дерево.png", Settled);
+			const auto creates = findAll(RunAnswering(world), ELifecycleAction::CreateMeta);
+			ASSERT_EQ(creates.size(), 1u);
+			EXPECT_EQ(creates[0]->Guid, G1) << "create from registry keeps the record's GUID, never a derived or random one";
+		}
+		for (const bool bByFileId : { true, false })
+		{
+			SCOPED_TRACE(bByFileId ? "by FileId" : "by content");
+			SWorld world;
+			TurnOff(world.Safety, off);
+			world.AddTombstone(G1, "/Project/Old/Rock.png", "rock", MakeIdentity(990u), 2500u);
+			world.AddMeta("/Project/Old/Rock.png.meta", G1, 2500u);
+			SLifecycleSource& moved = world.AddNewFile("/Project/New/Rock.png", "rock", 2500u);
+			if (bByFileId)
+			{
+				moved.Identity = MakeIdentity(990u);
+			}
+			const auto moves = findAll(RunAnswering(world), ELifecycleAction::MoveMeta);
+			ASSERT_EQ(moves.size(), 1u);
+			EXPECT_EQ(moves[0]->Guid, G1) << "a paired orphan keeps its GUID";
+		}
+	}
+}
+
+// A FileId match must not depend on whether another file that matches the same orphan by content was hashed yet: the
+// same final facts give the same identities.
+TEST(LifecycleTest, AFileIdPairingDoesNotDependOnAnotherFilesHash)
+{
+	const auto build = [] (SWorld& W)
+	{
+		W.AddTombstone(G1, "/Project/Old/Rock.png", "rock", MakeIdentity(991u), 2500u);
+		W.AddMeta("/Project/Old/Rock.png.meta", G1, 2500u);
+		W.AddNewFile("/Project/New/Rock.png", "rock", 2500u).Identity = MakeIdentity(991u);
+		W.AddNewFile("/Project/Copy/Rock.png", "rock");
+	};
+	SWorld hashed;
+	build(hashed);
+	ApplyRepairs(hashed, RunAnswering(hashed));
+	ApplyRepairs(hashed, RunAnswering(hashed));
+
+	SWorld withheld;
+	build(withheld);
+	const SLifecycleResult first = RunLifecycle(withheld.GetFacts());
+	EXPECT_EQ(first.NeedContentHash, std::vector<FString> { "/Project/Copy/Rock.png" });
+	EXPECT_EQ(Describe(first.Repairs), Sorted({ "MoveMeta /Project/Old/Rock.png.meta -> /Project/New/Rock.png.meta" }));
+	ApplyRepairs(withheld, first);
+	ApplyRepairs(withheld, RunAnswering(withheld));
+
+	for (const FStringView path : { "/Project/New/Rock.png", "/Project/Copy/Rock.png" })
+	{
+		SCOPED_TRACE(path);
+		ASSERT_NE(hashed.FindSource(path), nullptr);
+		ASSERT_NE(withheld.FindSource(path), nullptr);
+		EXPECT_TRUE(hashed.FindSource(path)->bMetaOnDisk);
+		EXPECT_EQ(hashed.FindSource(path)->RecordGuid, withheld.FindSource(path)->RecordGuid);
+	}
+	EXPECT_EQ(hashed.FindSource("/Project/New/Rock.png")->RecordGuid, G1);
+	EXPECT_NE(hashed.FindSource("/Project/Copy/Rock.png")->RecordGuid, G1);
+}
+
 // Each copy of a folder copied twice must reference its own copies, so a loser's map sends every old GUID to the loser
 // nearest it, and starts with its own pair.
 TEST(LifecycleTest, EachCopyOfAFolderCopiedTwiceMapsToItsOwnCopies)
@@ -947,6 +1092,65 @@ TEST(LifecycleTest, EachCopyOfAFolderCopiedTwiceMapsToItsOwnCopies)
 	}
 }
 
+// Two unrelated copies that land in one batch: Model's meta refers to Rock, but Rock was never copied into B, so B's Model
+// copy must keep referring to the original Rock.
+TEST(LifecycleTest, UnrelatedCopiesInOneBatchNeverReferenceEachOther)
+{
+	SWorld world;
+	world.AddPaired("/Project/A/Rock.png", G1, "rock");
+	world.AddPaired("/Project/B/Model.gltf", G2, "model");
+	world.AddPaired("/Project/A/Rock2.png", G1, "rock").LastEventMs = world.Now - Settled;
+	world.AddMeta("/Project/A/Rock2.png.meta", G1, Settled, false);
+	world.AddPaired("/Project/B/Model2.gltf", G2, "model").LastEventMs = world.Now - Settled;
+	world.AddMeta("/Project/B/Model2.gltf.meta", G2, Settled, false);
+	world.CommittedOnDisk = { "/Project/A/Rock.png.meta", "/Project/B/Model.gltf.meta" };
+	const SLifecycleResult result = RunAnswering(world);
+	ASSERT_EQ(result.Repairs.size(), 2u);
+	for (const SLifecycleAction& action : result.Repairs)
+	{
+		SCOPED_TRACE(action.Path);
+		ASSERT_EQ(action.Remap.size(), 1u) << "only its own pair";
+		EXPECT_EQ(action.Remap[0].second, action.Guid);
+	}
+}
+
+// A loser that is not rewritten with the others keeps its old GUID, so no other loser's map may point at its new one:
+// that GUID would be held by no meta, and with DerivedAutoGuids off it never would be.
+TEST(LifecycleTest, ALoserThatStaysAsItIsIsInNoOtherLosersMap)
+{
+	for (const bool bBroken : { true, false })
+	{
+		SCOPED_TRACE(bBroken ? "a broken loser" : "a read-only loser");
+		SWorld world;
+		world.AddPaired("/Project/Pack/Model.gltf", G1, "model");
+		world.AddPaired("/Project/Pack/Skin.png", G2, "skin");
+		world.AddPaired("/Project/Pack (копія)/Model.gltf", G1, "model").LastEventMs = world.Now - Settled;
+		world.AddMeta("/Project/Pack (копія)/Model.gltf.meta", G1, Settled, false);
+		SLifecycleSource& skin = world.AddPaired("/Project/Pack (копія)/Skin.png", G2, "skin");
+		skin.LastEventMs = world.Now - Settled;
+		SLifecycleMeta& skinMeta = world.AddMeta("/Project/Pack (копія)/Skin.png.meta", G2, Settled, false);
+		if (bBroken)
+		{
+			skinMeta.Parse = EMetaParseState::Broken;
+			skinMeta.SalvagedGuids = { G2 };
+		}
+		else
+		{
+			skin.bWritable = false;
+			skinMeta.bWritable = false;
+		}
+		world.CommittedOnDisk = { "/Project/Pack/Model.gltf.meta", "/Project/Pack/Skin.png.meta" };
+		const SLifecycleResult result = RunAnswering(world);
+		ASSERT_EQ(result.Repairs.size(), 1u) << DescribeExactly(result);
+		EXPECT_EQ(result.Repairs[0].Path, FStringView("/Project/Pack (копія)/Model.gltf.meta"));
+		ASSERT_EQ(result.Repairs[0].Remap.size(), 1u) << "only its own pair";
+		for (const SLifecycleAction& fixIt : result.FixIts)
+		{
+			EXPECT_EQ(fixIt.Remap.size(), 1u) << "a fix-it maps to no repair's GUID either";
+		}
+	}
+}
+
 
 // ---- What a run asks for ----
 
@@ -1010,6 +1214,52 @@ TEST(LifecycleTest, DuplicatesWaitForTheCommittedFacts)
 
 	world.Committed = std::vector<FString> { "/Project/Pack/Skin.png.meta" };
 	EXPECT_EQ(Describe(RunLifecycle(world.GetFacts()).Repairs), Sorted({ "ReGuid /Project/Pack (копія)/Skin.png.meta" }));
+}
+
+// A read-only run (`--ci`, a guest) with two copies here: one of them loses whoever wins, so META003 is certain, and a
+// caller that never answers bNeedCommitted, or runs under a hold, or while the copy settles, still sees it.
+TEST(LifecycleTest, ADuplicateNoRepairCanRewriteIsReportedBeforeTheWinnerIsKnown)
+{
+	const auto build = [] (SWorld& W)
+	{
+		W.AddPaired("/Project/Pack/Skin.png", G2, "skin").bWritable = false;
+		SLifecycleSource& copy = W.AddPaired("/Project/Pack (копія)/Skin.png", G2, "skin");
+		copy.LastEventMs = W.Now - Settled;
+		copy.bWritable = false;
+		W.AddMeta("/Project/Pack (копія)/Skin.png.meta", G2, Settled, false).bWritable = false;
+	};
+	const std::vector<FString> both = Sorted({ "META003 /Project/Pack (копія)/Skin.png", "META003 /Project/Pack/Skin.png" });
+
+	SWorld asking;
+	build(asking);
+	const SLifecycleResult unanswered = RunLifecycle(asking.GetFacts());
+	EXPECT_TRUE(unanswered.bNeedCommitted);
+	EXPECT_EQ(Describe(unanswered.Problems), both);
+	EXPECT_TRUE(unanswered.FixIts.empty()) << "the fix-it waits for the winner";
+
+	SWorld held;
+	build(held);
+	held.bVcsHold = true;
+	EXPECT_EQ(Describe(RunLifecycle(held.GetFacts()).Problems), both);
+
+	SWorld settling;
+	build(settling);
+	settling.FindSource("/Project/Pack (копія)/Skin.png")->LastEventMs = settling.Now - 100u;
+	EXPECT_EQ(Describe(RunLifecycle(settling.GetFacts()).Problems), both);
+
+	// One copy here that no repair can rewrite may be the winner: nothing is certain until the committed facts are in.
+	SWorld one;
+	build(one);
+	one.FindSource("/Project/Pack/Skin.png")->bWritable = true;
+	EXPECT_TRUE(RunLifecycle(one.GetFacts()).Problems.empty());
+
+	// Once the winner is known, the loser alone reports, with its fix-it.
+	SWorld answered;
+	build(answered);
+	answered.CommittedOnDisk = { "/Project/Pack/Skin.png.meta" };
+	const SLifecycleResult resolved = RunAnswering(answered);
+	EXPECT_EQ(Describe(resolved.Problems), Sorted({ "META003 /Project/Pack (копія)/Skin.png" }));
+	EXPECT_EQ(Describe(resolved.FixIts), Sorted({ "ReGuid /Project/Pack (копія)/Skin.png.meta" }));
 }
 
 // One run covers one mount: a duplicate's member in another mount is that mount's run's to re-GUID.
@@ -1100,6 +1350,26 @@ TEST(LifecycleTest, ARunWakesWhenTheFirstDelayRunsOut)
 	EXPECT_EQ(ahead.WakeAtMs, back.Now + 100u + back.Times.MetaCreationDelayMs);
 }
 
+// A move outside the editor: the orphan's grace (RemoveGraceMs, 1000) ends before the moved file's creation delay
+// (MetaCreationDelayMs, 1500). In between, the orphan the waiting file matches by FileId is not reported.
+TEST(LifecycleTest, AnOrphanAWaitingFileMatchesByFileIdIsNotReported)
+{
+	SWorld world;
+	world.AddTombstone(G1, "/Project/Old/Rock.png", "rock", MakeIdentity(985u), 1200u);
+	world.AddMeta("/Project/Old/Rock.png.meta", G1, 1200u);
+	world.AddNewFile("/Project/New/Rock.png", "rock", 1200u).Identity = MakeIdentity(985u);
+	const SLifecycleResult waiting = RunAnswering(world);
+	EXPECT_TRUE(waiting.Repairs.empty());
+	EXPECT_TRUE(waiting.Problems.empty()) << DescribeExactly(waiting);
+	EXPECT_EQ(Describe(waiting.States), Sorted({ "/Project/New/Rock.png PendingMeta" }));
+	EXPECT_EQ(waiting.WakeAtMs, world.Now - 1200u + world.Times.MetaCreationDelayMs);
+
+	world.Now += 300u;
+	const SLifecycleResult paired = RunAnswering(world);
+	EXPECT_EQ(Describe(paired.Repairs), Sorted({ "MoveMeta /Project/Old/Rock.png.meta -> /Project/New/Rock.png.meta" }));
+	EXPECT_TRUE(paired.Problems.empty());
+}
+
 TEST(LifecycleTest, ATimeNotTrackedIsADelayAlreadyOver)
 {
 	SWorld world;
@@ -1126,6 +1396,8 @@ TEST(LifecycleTest, ASlowCheckoutNeverCreatesAMeta)
 		EXPECT_TRUE(result.Problems.empty()) << later << ": a repair is coming once the hold ends";
 		EXPECT_EQ(Describe(result.States), Sorted({ "/Project/Big.png PendingMeta" })) << later;
 	}
+
+	EXPECT_FALSE(world.FindSource("/Project/Big.png")->Content.has_value()) << "never hashed while the VCS may still be writing it";
 
 	world.Now = T0 + 12000u;
 	world.bVcsHold = false;

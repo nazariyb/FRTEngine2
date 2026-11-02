@@ -105,6 +105,7 @@ private:
 		uint32 Meta = 0u;
 		const SLifecycleTombstone* Tombstone = nullptr;   // the latest with the meta's GUID
 		bool bConsumed = false;                           // a repair this run pairs it
+		uint64 HeldUntilMs = 0u;                          // a new file still in its delay matches it by FileId until then
 	};
 
 	// A new file past its creation delay, and the orphans (indices into Orphans) whose tombstone it matches.
@@ -135,6 +136,7 @@ private:
 
 	std::vector<uint32> SourceOrder;                                   // the sources that get a meta, in folded path order
 	std::unordered_map<FString, std::vector<uint32>> SourcesByFold;    // folded mount path -> sources, in SourceOrder
+	std::unordered_set<FString> OtherSourcesByFold;                    // folded mount paths of the sources that get no meta
 	std::vector<uint32> MetaOrder;                                     // Metas in folded path order
 	std::vector<int32> MetaOfSource;                                   // per source: its meta in Metas, or NoIndex
 	std::vector<SOrphan> Orphans;                                      // in folded path order
@@ -240,6 +242,10 @@ private:
 			{
 				SourceOrder.push_back(i);
 			}
+			else
+			{
+				OtherSourcesByFold.insert(Fold(Facts.Sources[i].MountPath));
+			}
 		}
 		std::sort(SourceOrder.begin(), SourceOrder.end(), [this] (uint32 A, uint32 B)
 		{
@@ -286,6 +292,10 @@ private:
 			}
 			const FStringView sourcePath = meta.SourcePath.IsEmpty() ? GetSourceOf(meta.MountPath) : meta.SourcePath.View();
 			const int32 source = FindSource(sourcePath);
+			if (source == NoIndex && OtherSourcesByFold.contains(Fold(sourcePath)))
+			{
+				continue;   // its source exists but gets no meta (a companion, an unclaimed file): META007 is RunValidation's
+			}
 			if (source == NoIndex)
 			{
 				SOrphan orphan;
@@ -531,6 +541,15 @@ private:
 			if (IsWaiting(source.LastEventMs, Facts.Times.MetaCreationDelayMs))
 			{
 				AddState(source.MountPath, EMetaState::PendingMeta);   // the VCS may deliver its meta yet
+				// A move outside the editor: the orphan's grace (RemoveGraceMs) ends before this file's delay does. The orphan it
+				// matches by FileId is not reported meanwhile, since this file will most likely take it.
+				for (SOrphan& orphan : Orphans)
+				{
+					if (orphan.Tombstone != nullptr && source.Identity.IsValid() && orphan.Tombstone->Identity == source.Identity)
+					{
+						orphan.HeldUntilMs = std::max(orphan.HeldUntilMs, source.LastEventMs + Facts.Times.MetaCreationDelayMs);
+					}
+				}
 				continue;
 			}
 			SNewFile file;
@@ -556,7 +575,26 @@ private:
 			ready.push_back(std::move(file));
 		}
 
-		// An orphan claimed by two new files pairs with neither: which one moved is a person's call.
+		// A FileId is definitive (§4.6: "by FileId, or by BLAKE3 content hash when unique"): an orphan that a new file claims
+		// by FileId is that file's, and another file's content match to it is no match at all. Otherwise whether the other
+		// file had been hashed yet would decide which identity each file gets.
+		std::vector<bool> claimedByFileId(Orphans.size(), false);
+		for (const SNewFile& file : ready)
+		{
+			for (const uint32 k : file.FileIdMatches)
+			{
+				claimedByFileId[k] = true;
+			}
+		}
+		for (SNewFile& file : ready)
+		{
+			const auto isClaimed = [&claimedByFileId] (uint32 K) -> bool { return claimedByFileId[K]; };
+			std::erase_if(file.ContentInWindow, isClaimed);
+			std::erase_if(file.ContentOutsideWindow, isClaimed);
+		}
+
+		// An orphan claimed by two new files (both by FileId, or both by content) pairs with neither: which one moved is a
+		// person's call.
 		std::vector<uint32> claims(Orphans.size(), 0u);
 		for (const SNewFile& file : ready)
 		{
@@ -566,14 +604,18 @@ private:
 			}
 		}
 		// Content decides wherever no FileId does, and a claim not yet known could make any content pairing ambiguous: until
-		// every such hash is in, no new file is decided by content.
+		// every such hash is in, no new file is decided by content. Under a hold nothing is decided by content anyway, so
+		// nothing is hashed: the VCS may still be writing those files, and would make F4 hash them twice (edit [27]).
 		bool bHashPending = false;
 		for (const SNewFile& file : ready)
 		{
 			const SLifecycleSource& source = Facts.Sources[file.Source];
 			if (!source.Content.has_value() && file.FileIdMatches.empty() && (bAnyHashCandidate || Facts.Safety.bDerivedAutoGuids))
 			{
-				RequestHash(source.MountPath);
+				if (!bHeld)
+				{
+					RequestHash(source.MountPath);
+				}
 				bHashPending = true;
 			}
 		}
@@ -597,24 +639,15 @@ private:
 			return;
 		}
 
-		std::vector<uint32> all = File.FileIdMatches;
-		for (const std::vector<uint32>* matches : { &File.ContentInWindow, &File.ContentOutsideWindow })
+		// The switch removes the automatic pairing and nothing else (§4.8), even for a command (`fix` never relinks): a match
+		// that would have paired becomes a relink fix-it, and an older one stays a suggestion as with the switch on.
+		const std::vector<uint32>& pairing = File.GetPairingMatches();
+		if (!Facts.Safety.bOrphanPairing && !pairing.empty())
 		{
-			for (const uint32 k : *matches)
-			{
-				if (std::find(all.begin(), all.end(), k) == all.end())
-				{
-					all.push_back(k);
-				}
-			}
-		}
-		if (!Facts.bCommand && !Facts.Safety.bOrphanPairing && !all.empty())
-		{
-			ReportMatched(source, all, "Safety.OrphanPairing is off");
+			ReportMatched(source, pairing, "Safety.OrphanPairing is off");
 			return;
 		}
 
-		const std::vector<uint32>& pairing = File.GetPairingMatches();
 		if (pairing.size() == 1u && Claims[pairing.front()] == 1u)
 		{
 			SOrphan& orphan = Orphans[pairing.front()];
@@ -709,6 +742,11 @@ private:
 			{
 				continue;
 			}
+			if (orphan.HeldUntilMs > Facts.NowMs)
+			{
+				WakeAt(orphan.HeldUntilMs);
+				continue;
+			}
 			// A VCS sync may bring the source back: wait as for any removal.
 			if (IsWaiting(orphan.Tombstone != nullptr ? orphan.Tombstone->RemovedMs : meta.FirstSeenMs, Facts.Times.RemoveGraceMs))
 			{
@@ -739,11 +777,15 @@ private:
 		uint32 Winner = 0u;
 	};
 
+	// What becomes of a loser: rewritten now, offered to a person, or never rewritten.
+	enum class EOutcome : uint8 { Repair, FixIt, Broken };
+
 	struct SLoser
 	{
 		const SGroup* Group = nullptr;
 		const SMember* Member = nullptr;
 		SGuid NewGuid;
+		EOutcome Outcome = EOutcome::Repair;
 	};
 
 	[[nodiscard]] std::unordered_map<FString, SRunMember> CollectRunMembers () const
@@ -851,13 +893,59 @@ private:
 		return a != b ? a > b : PathLess(A.Member->SourcePath, B.Member->SourcePath);
 	}
 
+	[[nodiscard]] bool IsRepairableMember (const SRunMember& Member) const noexcept
+	{
+		return Facts.Safety.bAutoResolveDuplicates && !IsBrokenMember(Member) && IsWritableMember(Member);
+	}
+
+	[[nodiscard]] FStringView GetMemberSubject (const SMember& Member) const noexcept
+	{
+		const SRunMember& run = *Member.Run;
+		return run.Source != NoIndex ? Facts.Sources[static_cast<uint32>(run.Source)].MountPath.View()
+			: Facts.LiveGuids[Member.Live].MetaPath.View();
+	}
+
+	// Before the winner is known (a hold, a member still settling, the committed facts not asked yet): a group with two
+	// members here that no repair can rewrite has a loser among them whoever wins, so META003 is an error in every outcome
+	// and is reported to a caller that never answers bNeedCommitted. The fix-it waits for the winner.
+	void ReportCertainDuplicates (const std::vector<SGroup>& Groups)
+	{
+		for (const SGroup& group : Groups)
+		{
+			std::vector<const SMember*> stuck;
+			for (const SMember& member : group.Members)
+			{
+				if (member.Run.has_value() && !IsRepairableMember(*member.Run))
+				{
+					stuck.push_back(&member);
+				}
+			}
+			if (stuck.size() < 2u)
+			{
+				continue;
+			}
+			for (const SMember* member : stuck)
+			{
+				const SMember* other = member == stuck.front() ? stuck[1] : stuck.front();
+				AddProblem(ESeverity::Error, Meta003, GetMemberSubject(*member), FString::Format("duplicate GUID {}, also in {}: whichever "
+					"keeps it, a copy here that cannot be rewritten automatically needs a new GUID", group.Guid.ToString(),
+					Facts.LiveGuids[other->Live].MetaPath));
+			}
+		}
+	}
+
 	// §4.6 Explorer copy, resolved as a set from committed facts only, so every machine picks the same winner and derives the
 	// same losers' GUIDs.
 	void ResolveDuplicates ()
 	{
 		std::vector<SGroup> groups = CollectGroups();
-		if (groups.empty() || bHeld)
+		if (groups.empty())
 		{
+			return;
+		}
+		if (bHeld)
+		{
+			ReportCertainDuplicates(groups);
 			return;
 		}
 		bool bWaiting = false;
@@ -873,11 +961,13 @@ private:
 		}
 		if (bWaiting)
 		{
+			ReportCertainDuplicates(groups);
 			return;
 		}
 		if (!Facts.Committed.has_value())
 		{
 			Result.bNeedCommitted = true;
+			ReportCertainDuplicates(groups);
 			return;
 		}
 
@@ -906,7 +996,9 @@ private:
 			{
 				if (i != group.Winner && group.Members[i].Run.has_value())
 				{
-					losers.push_back(SLoser { &group, &group.Members[i], SGuid {} });
+					const SRunMember& run = *group.Members[i].Run;
+					const EOutcome outcome = IsBrokenMember(run) ? EOutcome::Broken : IsRepairableMember(run) ? EOutcome::Repair : EOutcome::FixIt;
+					losers.push_back(SLoser { &group, &group.Members[i], SGuid {}, outcome });
 				}
 			}
 		}
@@ -923,13 +1015,29 @@ private:
 
 		for (const SLoser& loser : losers)
 		{
+			const FStringView subject = GetMemberSubject(*loser.Member);
+			const SMember& winner = loser.Group->Members[loser.Group->Winner];
+			const FString& winnerPath = Facts.LiveGuids[winner.Live].MetaPath;
+			if (loser.Outcome == EOutcome::Broken)
+			{
+				AddProblem(ESeverity::Error, Meta003, subject, FString::Format("duplicate GUID {}: {} keeps it. This meta is broken, so it "
+					"is never rewritten: fix it by hand", loser.Group->Guid.ToString(), winnerPath));
+				continue;
+			}
+
 			SLifecycleAction reGuid = MakeAction(ELifecycleAction::ReGuid, Facts.LiveGuids[loser.Member->Live].MetaPath, FStringView(),
 				Facts.Safety.bDerivedAutoGuids ? loser.NewGuid : SGuid {});
 			reGuid.Remap.emplace_back(loser.Group->Guid, loser.NewGuid);
+			// Only losers rewritten together (the repairs as one SAssetOp, or the fix-its applied as a set) map to each other: a
+			// loser that stays as it is keeps its old GUID, so a map to its new one would point at a GUID no meta holds. And
+			// only a loser under this one's copy root, nearer to it than its own winner, so unrelated copies that land in one
+			// batch never reference each other.
+			const uint32 ownRoot = GetCommonFolderLength(loser.Member->FoldedSource, winner.FoldedSource);
 			std::map<SGuid, const SLoser*> nearest;
 			for (const SLoser& other : losers)
 			{
-				if (other.Group->Guid == loser.Group->Guid)
+				if (other.Group->Guid == loser.Group->Guid || other.Outcome != loser.Outcome
+					|| GetCommonFolderLength(loser.Member->FoldedSource, other.Member->FoldedSource) <= ownRoot)
 				{
 					continue;
 				}
@@ -944,22 +1052,12 @@ private:
 				reGuid.Remap.emplace_back(oldGuid, best->NewGuid);
 			}
 
-			const SRunMember& run = *loser.Member->Run;
-			const FStringView subject = run.Source != NoIndex ? Facts.Sources[static_cast<uint32>(run.Source)].MountPath.View()
-				: Facts.LiveGuids[loser.Member->Live].MetaPath.View();
-			const FString& winnerPath = Facts.LiveGuids[loser.Group->Members[loser.Group->Winner].Live].MetaPath;
-			if (IsBrokenMember(run))
-			{
-				AddProblem(ESeverity::Error, Meta003, subject, FString::Format("duplicate GUID {}: {} keeps it. This meta is broken, so it "
-					"is never rewritten: fix it by hand", loser.Group->Guid.ToString(), winnerPath));
-				continue;
-			}
-			const bool bWritable = IsWritableMember(run);
-			if (Facts.Safety.bAutoResolveDuplicates && bWritable)
+			if (loser.Outcome == EOutcome::Repair)
 			{
 				Result.Repairs.push_back(std::move(reGuid));
 				continue;
 			}
+			const bool bWritable = IsWritableMember(*loser.Member->Run);
 			AddProblem(ESeverity::Error, Meta003, subject, FString::Format("duplicate GUID {}: {} keeps it, this one needs a new GUID: {}",
 				loser.Group->Guid.ToString(), winnerPath, bWritable ? FStringView(AutoResolveOffReason) : FStringView(NotWritableReason)));
 			Result.FixIts.push_back(std::move(reGuid));

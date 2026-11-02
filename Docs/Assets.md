@@ -117,8 +117,8 @@ and `Registry`, whose severities are fixed in M3.
 | `META005` | a meta that is not canonical (it would be rewritten) | from M4: warning | `validate` |
 | `META006` | a meta whose case differs from its source's | from M4: error | Lifecycle |
 | `META007` | an excluded file that still has a meta | from M4: warning | `validate` |
-| `META008` | a meta missing and not restorable from a verified copy (`MissingMeta`) | from M4: error | Lifecycle |
-| `META009` | an orphan meta that matches a new file by content outside the move window, or at all with `Safety.OrphanPairing: false` | from M4: info | Lifecycle |
+| `META008` | `MissingMeta`: a lost meta that no repair will restore (no verified copy, its GUID live in another meta, a read-only file or `Safety.AutoRepairMetas: false`), or a new file that an orphan meta matches and that is not paired automatically (ambiguous, read-only, or `Safety.OrphanPairing: false`) | from M4: error | Lifecycle |
+| `META009` | an orphan meta that matches a new file and is not paired with it automatically: by content outside the move window, or a match that `META008` reports (relink suggestion) | from M4: info | Lifecycle |
 | `VCS001` | CRLF in a hashed FRT text file (detected only in M4; blocking DDC writes arrives with the first asset builder) | from M4: error | Lifecycle |
 | `VCS002` | the VCS refused a write (`CheckOut`, `Move` or `Delete` failed); the command wrote nothing | from M4: error | the command |
 | `VCS003` | an asset and its meta tracked differently ("generated locally: commit it") | from M4: warning | `validate` |
