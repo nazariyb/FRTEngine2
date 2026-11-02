@@ -240,9 +240,20 @@ new` only prints the hint, and `git commit --no-verify` skips it once. It parses
 2. duplicate GUIDs in the index (`META003`);
 3. exactly one valid `Guid:` line per staged meta, and no conflict markers (`META004`);
 4. on staged names, case-only collisions in the index and between index and disk (`PATH001`), and illegal names (`PATH002`);
-5. `FRT.bat check-builders`, in an engine checkout, when a staged path is under `Core/Source/Assets` (`BUILD003`);
+5. `FRT.bat check-builders`, in an engine checkout, when a staged path is under `Core/Source` (`BUILD003`): a builder's
+   sources lie wherever its code is (the shader builder's are in `Core/Source/Graphics`), and the check is one process;
 6. `validate --staged --quick --ci` through `AssetTool-Development-Default.exe` when it is built, never `FRT.bat assets`,
-   which may start a build. Skipped with a message when the tool is not built or does not know the verb yet.
+   which may start a build. Skipped with a message when the tool is not built or does not know the verb yet. It validates
+   the `.frtproject` at the top of the work tree, else the engine in an engine checkout, else each `.frtproject` in the
+   index (a project in a folder of its repository), one run each. The tool inherits git's `GIT_INDEX_FILE`, so it sees
+   what `git commit -a` is about to commit; the hook names the committing repository in `FRT_HOOK_TOPLEVEL`, and the Git
+   provider of any other repository (an `Engine/` submodule, a shared engine) runs its git without that variable, which
+   would otherwise read as an empty index there.
+
+A file name is always quoted in the commands a person is shown to paste (`GetRestoreCommand`, `GetAddCommand`), so a name
+with `&` in it stays one argument. A case-only rename of a tracked file is `git mv -f`, since git's own same-file test folds
+ASCII only; the batch has already made sure the target is that very file. A repository nested in the mount and never
+committed there is one untracked entry to git, and every file below it is `Untracked`.
 
 ## One file watcher (M2)
 

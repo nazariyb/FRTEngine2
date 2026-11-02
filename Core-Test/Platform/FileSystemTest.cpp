@@ -10,6 +10,7 @@
 #include <gtest/gtest.h>
 
 #include "TestCommon.h"
+#include "Log/LogCapture.h"
 #include "Platform/RecycleBinTestUtils.h"
 
 #include <algorithm>
@@ -1306,6 +1307,55 @@ TEST_F(FileSystemTest, MoveFileNoReplaceMovesAFileAndKeepsItsIdentity)
 	EXPECT_FALSE(std::filesystem::exists(from));
 	EXPECT_EQ(platform::GetFileIdentity(to), identity);
 	EXPECT_EQ(platform::ReadFileText(to).value_or(FString()), "вміст");
+}
+
+// A scanner reads a file just written, and refuses the write access a flush needs, not the delete access a rename does.
+TEST_F(FileSystemTest, MoveFileNoReplaceWaitsForAHolderToFlush)
+{
+	const test::CLogCapture capture;
+	const std::filesystem::path from = File("Тримають.txt");
+	const std::filesystem::path to = File("Відпустили.txt");
+	ASSERT_TRUE(platform::WriteFileBytes(from, AsBytes("вміст")));
+	const HANDLE holder = CreateFileW(from.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+	ASSERT_NE(holder, INVALID_HANDLE_VALUE);
+
+	std::atomic<bool> bReleased = false;
+	std::thread release([&]
+	{
+		std::this_thread::sleep_for(std::chrono::milliseconds(30));
+		bReleased = true;
+		CloseHandle(holder);
+	});
+	FString error;
+	const bool bMoved = platform::MoveFileNoReplace(from, to, &error);
+	const bool bReleasedOnReturn = bReleased;
+	release.join();
+
+	EXPECT_TRUE(bMoved) << error.CStr();
+	EXPECT_TRUE(bReleasedOnReturn) << "it returned without the flush it promises";
+	EXPECT_TRUE(capture.GetEntries().empty());
+}
+
+// False would say that nothing moved, and a batch would then leave this file where it is while it undoes the others.
+TEST_F(FileSystemTest, MoveFileNoReplaceThatCannotFlushHasStillMovedAndSaysSo)
+{
+	const test::CLogCapture capture;
+	const std::filesystem::path from = File("Не відпускають.txt");
+	const std::filesystem::path to = File("Перейшов.txt");
+	ASSERT_TRUE(platform::WriteFileBytes(from, AsBytes("вміст")));
+	const HANDLE holder = CreateFileW(from.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+	ASSERT_NE(holder, INVALID_HANDLE_VALUE);
+
+	FString error;
+	const bool bMoved = platform::MoveFileNoReplace(from, to, &error);
+	CloseHandle(holder);
+
+	EXPECT_TRUE(bMoved) << error.CStr();
+	EXPECT_FALSE(std::filesystem::exists(from));
+	EXPECT_EQ(platform::ReadFileText(to).value_or(FString()), "вміст");
+	ASSERT_EQ(capture.GetEntries().size(), 1u);
+	EXPECT_EQ(capture.GetEntries()[0].Level, log::ELevel::Warning);
+	EXPECT_TRUE(capture.GetEntries()[0].Text.Contains("Перейшов.txt")) << capture.GetEntries()[0].Text.CStr();
 }
 
 TEST_F(FileSystemTest, MoveFileNoReplaceNeverDestroysWhatItWouldLandOn)

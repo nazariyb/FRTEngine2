@@ -362,22 +362,28 @@ TEST_F(VcsProviderTest, ACaseOnlyMoveOfATrackedPairIsARenameToGit)
 {
 	Write("Case/tex.png");
 	Write("Case/tex.png.meta");
+	// Git's own test for "the same file in another spelling" folds ASCII only, so a plain `git mv` refuses this pair.
+	Write("Case/текстура 纹理.png");
+	Write("Case/текстура 纹理.png.meta");
 	CommitAll();
 
-	const SVcsMove moves[] = { { Mounted("Case/tex.png"), Mounted("Case/Tex.png") }, { Mounted("Case/tex.png.meta"), Mounted("Case/Tex.png.meta") } };
+	const SVcsMove moves[] = { { Mounted("Case/tex.png"), Mounted("Case/Tex.png") }, { Mounted("Case/tex.png.meta"), Mounted("Case/Tex.png.meta") },
+		{ Mounted("Case/текстура 纹理.png"), Mounted("Case/Текстура 纹理.png") }, { Mounted("Case/текстура 纹理.png.meta"), Mounted("Case/Текстура 纹理.png.meta") } };
 	const SVcsResult result = Git.Move(moves);
 	EXPECT_EQ(result.Error, EVcsError::None) << result.Message.CStr();
 
-	const FString status = StatusLines();
+	const FString status = RunGit({ "-c", "core.quotePath=false", "status", "--porcelain" }).Output;
 	EXPECT_TRUE(status.Contains("R  ")) << status.CStr();
-	EXPECT_TRUE(status.Contains("Case/Tex.png\"\n")) << status.CStr();
-	EXPECT_TRUE(status.Contains("Case/Tex.png.meta\"\n")) << status.CStr();
+	for (const FStringView name : { "Case/Tex.png\"\n", "Case/Tex.png.meta\"\n", "Case/Текстура 纹理.png\"\n", "Case/Текстура 纹理.png.meta\"\n" })
+	{
+		EXPECT_TRUE(status.Contains(name)) << FString(name).CStr() << " not in:\n" << status.CStr();
+	}
 	std::set<FString> names;
 	for (FString& name : DirectoryNames(gMount / "Case"))
 	{
 		names.insert(std::move(name));
 	}
-	EXPECT_EQ(names, (std::set<FString> { "Tex.png", "Tex.png.meta" }));
+	EXPECT_EQ(names, (std::set<FString> { "Tex.png", "Tex.png.meta", "Текстура 纹理.png", "Текстура 纹理.png.meta" }));
 }
 
 TEST_F(VcsProviderTest, ACaseOnlyMoveOfAnUntrackedFileStagesNothing)
@@ -526,6 +532,13 @@ TEST_F(VcsProviderTest, StatusTellsEveryStateApart)
 	ASSERT_EQ(stages.ExitCode, 0) << stages.Errors.CStr();
 	std::filesystem::remove(Git.GetGitDir() / "stages.txt");
 
+	// A repository inside this one, never committed here, seen and ignored: git lists each as one folder with a trailing /.
+	Write("State/Nested/Inner.png");
+	Write("State/Held.ign/Inner.png");
+	Write("State/Nested.png");
+	ASSERT_EQ(test::RunGit(gGit, gMount / "State" / "Nested", { "init", "-q" }).ExitCode, 0);
+	ASSERT_EQ(test::RunGit(gGit, gMount / "State" / "Held.ign", { "init", "-q" }).ExitCode, 0);
+
 	const struct { FStringView Name; EVcsState State; } cases[] = {
 		{ "State/Clean.png", EVcsState::Clean },
 		{ "State/Modified.png", EVcsState::Modified },
@@ -537,6 +550,10 @@ TEST_F(VcsProviderTest, StatusTellsEveryStateApart)
 		{ "State/Untracked.png", EVcsState::Untracked },
 		{ "State/Ignored.ign", EVcsState::Untracked },
 		{ "State/Never.png", EVcsState::Untracked },
+		{ "State/Nested/Inner.png", EVcsState::Untracked },
+		{ "State/nested/inner.png", EVcsState::Untracked },
+		{ "State/Held.ign/Inner.png", EVcsState::Untracked },
+		{ "State/Nested.png", EVcsState::Untracked },
 	};
 	std::vector<FString> files;
 	for (const auto& one : cases)
@@ -597,6 +614,56 @@ TEST_F(VcsProviderTest, GetStagedListsOnlyThisMountsFilesByAbsolutePath)
 	EXPECT_EQ(result.Error, EVcsError::None) << result.Message.CStr();
 	EXPECT_EQ(std::set<FString>(staged.begin(), staged.end()),
 		(std::set<FString> { FString::FromPath(gMount / "Staged" / "Gone.png"), FString::FromPath(gMount / "Staged" / FStringView("Змінений.png").ToPath()) }));
+}
+
+// A pre-commit hook hands its tool GIT_INDEX_FILE, relative as git leaves it or absolute (a worktree, `commit -a`). It belongs
+// to the committing repository alone: git in any other reads it without a word, as an empty index or as somebody else's.
+TEST_F(VcsProviderTest, OnlyTheCommittingRepositoryReadsTheIndexAHookWasGiven)
+{
+	Write("Hook/Staged.png");
+	const FString staged = FString::FromPath(gMount.filename()) + "/Hook/Staged.png";
+	ASSERT_EQ(RunGit({ "add", "--", staged }).ExitCode, 0);
+	const std::filesystem::path tree = gDir / FStringView("Дерево поруч").ToPath();
+	ASSERT_EQ(RunGit({ "worktree", "add", "-q", "--detach", FString::FromPath(tree) }).ExitCode, 0);
+	const FString treeMount = FString::FromPath(tree / gMount.filename());
+	const FString baseInTree = FString::FromPath(tree / gMount.filename() / "Base.png");
+
+	for (const FString& index : { FString(".git/index"), FString::FromPath(gRepo / ".git" / "index") })
+	{
+		SCOPED_TRACE(index.CStr());
+		platform::SetEnvironmentValue("GIT_INDEX_FILE", index);
+		platform::SetEnvironmentValue("FRT_HOOK_TOPLEVEL", FString::FromPath(gRepo, EPathStyle::Generic));
+
+		CGitVcsProvider committing;
+		ASSERT_TRUE(committing.Detect(FString::FromPath(gMount)));
+		std::vector<FString> files;
+		EXPECT_EQ(committing.GetStaged(files).Error, EVcsError::None);
+		EXPECT_EQ(files, std::vector<FString> { FString::FromPath(gMount / "Hook" / "Staged.png") });
+
+		CGitVcsProvider other;
+		ASSERT_TRUE(other.Detect(treeMount));
+		EXPECT_EQ(other.GetStaged(files).Error, EVcsError::None);
+		EXPECT_EQ(files, std::vector<FString> {}) << "nothing is staged in the other work tree";
+		std::vector<SVcsStatus> status;
+		EXPECT_EQ(other.StatusOf(std::span(&baseInTree, 1u), status).Error, EVcsError::None);
+		EXPECT_EQ(status[0].State, EVcsState::Clean);
+
+		platform::SetEnvironmentValue("FRT_HOOK_TOPLEVEL", "");
+		platform::SetEnvironmentValue("GIT_INDEX_FILE", "");
+	}
+
+	// No hook said anything: a person's own GIT_INDEX_FILE is theirs, and git's rules apply.
+	platform::SetEnvironmentValue("GIT_INDEX_FILE", FString::FromPath(gRepo / ".git" / "index"));
+	CGitVcsProvider plain;
+	const bool bDetected = plain.Detect(treeMount);
+	std::vector<FString> files;
+	const SVcsResult result = plain.GetStaged(files);
+	platform::SetEnvironmentValue("GIT_INDEX_FILE", "");
+	EXPECT_TRUE(bDetected);
+	EXPECT_EQ(result.Error, EVcsError::None);
+	EXPECT_EQ(files.size(), 1u);
+
+	EXPECT_EQ(RunGit({ "worktree", "remove", "--force", FString::FromPath(tree) }).ExitCode, 0);
 }
 
 
@@ -665,9 +732,12 @@ TEST_F(VcsProviderTest, DeleteGoesToTheRecycleBinAndAGoneFileIsDone)
 
 TEST_F(VcsProviderTest, TheCommandsAPersonIsShownNameTheFile)
 {
-	EXPECT_EQ(Git.GetRestoreCommand("D:\\Game\\A.png.meta"), "git checkout -- D:\\Game\\A.png.meta");
+	EXPECT_EQ(Git.GetRestoreCommand("D:\\Game\\A.png.meta"), "git checkout -- \"D:\\Game\\A.png.meta\"");
 	EXPECT_EQ(Git.GetRestoreCommand("D:\\My Game\\A.png.meta"), "git checkout -- \"D:\\My Game\\A.png.meta\"");
 	EXPECT_EQ(Git.GetAddCommand("D:\\My Game\\A.png.meta"), "git add \"D:\\My Game\\A.png.meta\"");
+	// A name comes with the repository, and pasted without quotes this one would start a second command.
+	EXPECT_EQ(Git.GetRestoreCommand("D:\\Game\\A&calc.png.meta"), "git checkout -- \"D:\\Game\\A&calc.png.meta\"");
+	EXPECT_EQ(Git.GetAddCommand("D:\\Game\\A&calc.png.meta"), "git add \"D:\\Game\\A&calc.png.meta\"");
 
 	const CNoneVcsProvider none;
 	EXPECT_TRUE(none.GetRestoreCommand("A.png.meta").IsEmpty());

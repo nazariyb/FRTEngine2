@@ -117,6 +117,46 @@ void AppendToolArgument (FString& Out, FStringView Argument)
 	Out.AppendChar('"');
 }
 
+// This process's environment without Names, as CreateProcessW takes it: each NAME=value ends with a nul, and one more ends
+// the block. Windows reads a name in any case. A name may start with '=' (cmd's per-drive directories, "=C:=C:\...").
+[[nodiscard]] std::vector<wchar_t> MakeEnvironmentWithout (const std::vector<FString>& Names)
+{
+	std::vector<FWideString> unset;
+	unset.reserve(Names.size());
+	for (const FString& name : Names)
+	{
+		unset.emplace_back(name.View());
+	}
+	std::vector<wchar_t> block;
+	if (const LPWCH strings = GetEnvironmentStringsW(); strings != nullptr)
+	{
+		for (const wchar_t* entry = strings; *entry != L'\0'; )
+		{
+			const size_t length = wcslen(entry);
+			const wchar_t* equals = wcschr(entry + 1, L'=');
+			const int nameLength = static_cast<int>(equals != nullptr ? equals - entry : static_cast<ptrdiff_t>(length));
+			bool bDrop = false;
+			for (const FWideString& name : unset)
+			{
+				bDrop = bDrop || CompareStringOrdinal(entry, nameLength, name.CStr(), static_cast<int>(name.Len()), TRUE) == CSTR_EQUAL;
+			}
+			if (!bDrop)
+			{
+				block.insert(block.end(), entry, entry + length + 1u);
+			}
+			entry += length + 1u;
+		}
+		FreeEnvironmentStringsW(strings);
+	}
+	// An empty block is two nuls.
+	block.push_back(L'\0');
+	if (block.size() == 1u)
+	{
+		block.push_back(L'\0');
+	}
+	return block;
+}
+
 /**
  * The read end of one of the tool's output streams. Overlapped, so that one thread can wait on both streams, the process
  * and the timeout together: with blocking reads each stream needs a thread of its own, and a stream some other process
@@ -321,8 +361,15 @@ SToolProcessResult RunToolProcess (const SToolProcessDesc& Desc)
 	startup.StartupInfo.hStdError = errorsWrite.Get();
 	startup.lpAttributeList = attributes;
 	PROCESS_INFORMATION process = {};
+	// Null inherits this process's environment as it is.
+	std::vector<wchar_t> environment;
+	if (!Desc.UnsetEnvironment.empty())
+	{
+		environment = MakeEnvironmentWithout(Desc.UnsetEnvironment);
+	}
 	const bool bStarted = bAttributes && CreateProcessW(Desc.Executable.c_str(), wideCommandLine.GetData(), nullptr, nullptr, TRUE,
-		CREATE_NO_WINDOW | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT, nullptr,
+		CREATE_NO_WINDOW | CREATE_SUSPENDED | EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+		environment.empty() ? nullptr : environment.data(),
 		Desc.WorkingDir.empty() ? nullptr : Desc.WorkingDir.c_str(), &startup.StartupInfo, &process) != 0;
 	const DWORD startError = GetLastError();
 	DeleteProcThreadAttributeList(attributes);

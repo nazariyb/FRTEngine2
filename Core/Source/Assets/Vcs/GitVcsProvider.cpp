@@ -86,9 +86,40 @@ constexpr uint32 GitTimeoutMs = 120000u;
 	return EVcsState::Clean;
 }
 
+// Whether a folder above Name was listed as one untracked or ignored entry, its name with a trailing '/'. A file's own
+// name never ends with '/', so Listed holds both and only folders match.
+template <typename TMap>
+[[nodiscard]] bool IsInUntrackedFolder (const FString& Name, const TMap& Listed)
+{
+	const FStringView name = Name.View();
+	for (uint32 at = 0u; at < name.Len(); ++at)
+	{
+		if (name[at] == '/' && Listed.contains(FString(name.Left(at + 1u))))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+// Always quoted: a name comes with the repository, and unquoted `A&calc.png` pasted into cmd starts a second command. A
+// Windows name cannot hold '"'.
 [[nodiscard]] FString QuoteForShell (const FString& File)
 {
-	return File.View().Contains(' ') ? FString::Format("\"{}\"", File) : File;
+	return FString::Format("\"{}\"", File);
+}
+
+// One directory, as git spelled it and as Detect resolved it: the same text below, or the same directory on disk (a subst
+// drive or a junction spells it otherwise).
+[[nodiscard]] bool IsSameDirectory (const std::filesystem::path& Spelled, const std::filesystem::path& Resolved)
+{
+	const std::optional<FString> relative = platform::GetRelativePath(Spelled, Resolved);
+	if (relative.has_value())
+	{
+		return relative->IsEmpty();
+	}
+	const std::optional<platform::SFileIdentity> spelled = platform::GetFileIdentity(Spelled);
+	return spelled.has_value() && spelled->IsValid() && spelled == platform::GetFileIdentity(Resolved);
 }
 }
 
@@ -140,6 +171,17 @@ bool CGitVcsProvider::Detect (const FString& InMountRoot)
 	HeadLock = GitDir / "HEAD.lock";
 	OtherBusyFiles = { GitDir / "MERGE_HEAD", GitDir / "REBASE_HEAD", GitDir / "CHERRY_PICK_HEAD", GitDir / "rebase-merge",
 		GitDir / "rebase-apply" };
+
+	// A pre-commit hook hands its tool GIT_INDEX_FILE and names the repository committing (Tools/GitHooks/pre-commit). That
+	// index is the committing repository's alone: git in any other (an Engine/ submodule, a shared engine, another worktree)
+	// would read it without a word, as an empty index or as somebody else's. Without the hook's word the variable is the
+	// person's, and git's own rules apply.
+	UnsetEnvironment.clear();
+	const std::optional<FString> committing = platform::GetEnvironmentValue("FRT_HOOK_TOPLEVEL");
+	if (committing.has_value() && !committing->IsEmpty() && !IsSameDirectory(committing->ToPath(), TopLevel))
+	{
+		UnsetEnvironment.emplace_back("GIT_INDEX_FILE");
+	}
 	return true;
 }
 
@@ -220,7 +262,9 @@ SVcsResult CGitVcsProvider::MoveOne (const SVcsMove& Move) const
 	{
 		return MoveFilePlain(Move);
 	}
-	const platform::SToolProcessResult moved = RunGit({ "mv", "--", from, to });
+	// -f: git's own "is it the same file in another spelling" folds ASCII only, so it refuses `текстура` to `Текстура` as
+	// "destination exists". RunMoves has made sure the target is this very file or absent, so -f overwrites nothing.
+	const platform::SToolProcessResult moved = RunGit({ "mv", "-f", "--", from, to });
 	if (!moved.bStarted || moved.bTimedOut || moved.ExitCode != 0)
 	{
 		return MakeFailure("mv", moved);
@@ -306,6 +350,9 @@ SVcsResult CGitVcsProvider::StatusOf (std::span<const FString> Files, std::vecto
 		folded.insert_or_assign(FString(Path), State);
 	};
 	bool bOriginalPath = false;   // what follows a rename entry, were one ever reported
+	// Even with --untracked-files=all, a repository inside this one, never committed here, is one `?` or `!` entry: its folder,
+	// with a trailing '/'. Every file below it is as untracked as the folder.
+	bool bUntrackedFolders = false;
 	for (const FStringView entry : AsText(run.Stdout).Split('\0', EStringSplit::SkipEmpty))
 	{
 		if (bOriginalPath)
@@ -328,6 +375,7 @@ SVcsResult CGitVcsProvider::StatusOf (std::span<const FString> Files, std::vecto
 		case '?':
 		case '!':
 			record(SkipFields(entry, 1u), EVcsState::Untracked);
+			bUntrackedFolders = bUntrackedFolders || entry.EndsWith('/');
 			break;
 		default:
 			break;
@@ -348,6 +396,10 @@ SVcsResult CGitVcsProvider::StatusOf (std::span<const FString> Files, std::vecto
 		else if (const auto foundFolded = folded.find(name); foundFolded != folded.end())
 		{
 			Out[file].State = foundFolded->second;
+		}
+		else if (bUntrackedFolders && IsInUntrackedFolder(name, folded))
+		{
+			Out[file].State = EVcsState::Untracked;
 		}
 		else if (platform::Stat(Files[file].ToPath()).has_value())
 		{
@@ -399,6 +451,7 @@ platform::SToolProcessResult CGitVcsProvider::RunGit (std::vector<FString> Argum
 	desc.Arguments = std::move(arguments);
 	desc.WorkingDir = MountRoot;
 	desc.TimeoutMs = GitTimeoutMs;
+	desc.UnsetEnvironment = UnsetEnvironment;
 	return platform::RunToolProcess(desc);
 }
 

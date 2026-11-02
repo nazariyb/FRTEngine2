@@ -30,6 +30,8 @@ class FRT_CORE_API CGitVcsProvider final : public IVcsProvider
 public:
 	// True when MountRoot is in a work tree. False leaves this provider unusable (the caller falls back to None), and warns
 	// once if a `.git` is there all the same: no git on PATH, or git refusing it (dubious ownership), quoting git's reason.
+	// Under a pre-commit hook (FRT_HOOK_TOPLEVEL set), only the provider of the committing repository keeps the hook's
+	// GIT_INDEX_FILE; every other one's git runs without it.
 	bool Detect (const FString& MountRoot) override;
 	bool IsBusy () const override;
 	bool IsRewritingTree () const override;
@@ -75,6 +77,7 @@ private:
 	std::vector<std::filesystem::path> OtherBusyFiles;
 	std::filesystem::path IndexLock;
 	std::filesystem::path HeadLock;
+	std::vector<FString> UnsetEnvironment;   // GIT_INDEX_FILE when a hook gave it for another repository (Detect)
 	uint32 LockWarningMs = StaleLockWarningMs;
 	mutable std::atomic<uint64> LockHeldSinceMs = 0u;   // 0: not held at the last look
 	mutable std::atomic<bool> bLockWarned = false;

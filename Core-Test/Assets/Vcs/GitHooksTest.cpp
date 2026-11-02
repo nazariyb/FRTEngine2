@@ -1,10 +1,10 @@
 // The pre-commit hook and its switch, self-tested on a scratch repository (design §13.3, §15 I24), run the way git runs it:
 // a good commit goes through with a new source left to `validate --staged`; every check reports in one failed commit, with
 // each of its messages, so no check hides another; the hook only asks git and AssetTool when it should (BUILD003 only in an
-// engine checkout and only for staged asset sources, and a missing AssetTool is a message, not a refusal). The hook is LF
-// whatever core.autocrlf says, or bash could not read its first line. `FRT.bat setup --hooks` sets core.hooksPath and
-// nothing else, `=off` clears it, relative for an engine inside the clone. A failing commit costs a bash and a few git
-// processes, so one commit asserts many messages. Skipped without git on PATH.
+// engine checkout and only for staged engine sources, and a missing AssetTool is a message, not a refusal), and tells the tool
+// which repository is committing. The hook is LF whatever core.autocrlf says, or bash could not read its first line.
+// `FRT.bat setup --hooks` sets core.hooksPath and nothing else, `=off` clears it, relative for an engine inside the clone.
+// A failing commit costs a bash and a few git processes, so one commit asserts many messages. Skipped without git on PATH.
 #include <gtest/gtest.h>
 
 #include "TestCommon.h"
@@ -222,23 +222,105 @@ TEST_F(GitHooksTest, EveryCheckReportsInOneRefusedCommit)
 	EXPECT_EQ(RunGit({ "rev-parse", "HEAD" }).Output.TrimEnd(), gBase) << "nothing was committed";
 }
 
-TEST_F(GitHooksTest, BuildersAreCheckedOnlyInAnEngineCheckoutAndOnlyForAssetSources)
+TEST_F(GitHooksTest, BuildersAreCheckedOnlyInAnEngineCheckoutAndOnlyForEngineSources)
 {
-	// An engine checkout, whose check-builders fails, and whose AssetTool is not built.
-	Write("Engine.frtengine", "[Engine]\nName=Scratch\n");
+	// A check-builders that fails, not yet in an engine checkout.
 	Write("FRT.bat", "@echo BUILD003 Test.Stub\r\n@exit /b 1\r\n");
+	Write("Core/Source/Assets/Elsewhere.cpp");
+	Stage({ "Core/Source/Assets/Elsewhere.cpp" });
+	const test::SProcessResult elsewhere = Commit();
+	EXPECT_EQ(elsewhere.ExitCode, 0) << elsewhere.Output.CStr() << elsewhere.Errors.CStr();
 
-	Write("Core/Source/Other/Code.cpp");
-	Stage({ "Core/Source/Other/Code.cpp" });
+	// An engine checkout, whose AssetTool is not built.
+	Write("Engine.frtengine", "[Engine]\nName=Scratch\n");
+	Write("Docs/Page.md");
+	Stage({ "Docs/Page.md" });
 	const test::SProcessResult other = Commit();
 	EXPECT_EQ(other.ExitCode, 0) << other.Output.CStr() << other.Errors.CStr();
 	EXPECT_TRUE((other.Output + other.Errors).Contains("quick validate skipped: AssetTool is not built")) << other.Output.CStr();
+
+	// The one builder there is has no source under Core/Source/Assets; this is one of them.
+	Write("Core/Source/Graphics/Render/RHI/ShaderCompiler.cpp");
+	Stage({ "Core/Source/Graphics/Render/RHI/ShaderCompiler.cpp" });
+	const test::SProcessResult builder = Commit();
+	EXPECT_EQ(builder.ExitCode, 1) << builder.Output.CStr() << builder.Errors.CStr();
+	EXPECT_TRUE((builder.Output + builder.Errors).Contains("BUILD003 Test.Stub")) << builder.Output.CStr() << builder.Errors.CStr();
+	ASSERT_EQ(RunGit({ "reset", "-q" }).ExitCode, 0);
 
 	Write("Core/Source/Assets/Code.cpp");
 	Stage({ "Core/Source/Assets/Code.cpp" });
 	const test::SProcessResult assets = Commit();
 	EXPECT_EQ(assets.ExitCode, 1) << assets.Output.CStr() << assets.Errors.CStr();
 	EXPECT_TRUE((assets.Output + assets.Errors).Contains("BUILD003 Test.Stub")) << assets.Output.CStr() << assets.Errors.CStr();
+}
+
+// The hook starts check-builders for what is staged under Core/Source, so a builder with a source elsewhere would go unchecked.
+TEST(GitHookTriggerTest, EveryBuildersSourcesAreWhereTheHookLooks)
+{
+	const FStringView rows[] = {
+#define FRT_BUILDER(Name, Version, Hash, Sources) Sources,
+#include "Assets/BuilderVersions.inl"
+#undef FRT_BUILDER
+	};
+	for (const FStringView row : rows)
+	{
+		for (const FStringView sources : row.Split(';', EStringSplit::SkipEmpty))
+		{
+			EXPECT_TRUE(sources.StartsWith("Core/Source/")) << FString(sources).CStr();
+		}
+	}
+}
+
+// What the hook gives its tool, seen by a stand-in for AssetTool beside a copy of the hook: a script, which bash runs whatever
+// its name. It refuses, because the hook shows a tool's words only then.
+TEST_F(GitHooksTest, TheToolIsToldWhatToValidateAndWhichRepositoryIsCommitting)
+{
+	const std::filesystem::path stub = gDir / "Stub";
+	const std::filesystem::path binaries = stub / "Binaries" / "Win64";
+	const std::filesystem::path hooks = stub / "Tools" / "GitHooks";
+	std::error_code ec;
+	std::filesystem::create_directories(binaries, ec);
+	std::filesystem::create_directories(hooks, ec);
+	std::filesystem::copy_file(paths::GetEngineDir() / "Tools" / "GitHooks" / "pre-commit", hooks / "pre-commit", std::filesystem::copy_options::overwrite_existing, ec);
+	ASSERT_FALSE(ec) << FString::FromUtf8Lossy(ec.message()).CStr();
+	ASSERT_TRUE(platform::WriteFileText(binaries / "AssetTool-Development-Default.exe", "#!/usr/bin/env bash\n"
+		"printf '%s' \"$FRT_HOOK_TOPLEVEL\" > \"${0%/*}/toplevel.txt\"\n"
+		"printf 'index=%s\\n' \"$GIT_INDEX_FILE\"\n"
+		"printf 'gitdir=[%s]\\n' \"$GIT_DIR\"\n"
+		"printf 'arg=%s\\n' \"$@\"\n"
+		"exit 1\n"));
+	const auto commit = [&]
+	{
+		const test::SProcessResult run = Commit({ "-c", "core.hooksPath=" + FString::FromPath(hooks, EPathStyle::Generic) });
+		EXPECT_EQ(run.ExitCode, 1) << run.Output.CStr() << run.Errors.CStr();
+		return run.Output + run.Errors;
+	};
+
+	// A project in a folder of its repository, and another: found in the index, as the hook has no other way to know.
+	Write("Ігри/Гра/Game.frtproject", "[Project]\nName=Game\n");
+	Write("Other/Other.frtproject", "[Project]\nName=Other\n");
+	Stage({ "Ігри/Гра/Game.frtproject", "Other/Other.frtproject" });
+	FString all = commit();
+	EXPECT_TRUE(all.Contains("arg=--project=Ігри/Гра/Game.frtproject\n")) << all.CStr();
+	EXPECT_TRUE(all.Contains("arg=--project=Other/Other.frtproject\n")) << all.CStr();
+	EXPECT_TRUE(all.Contains("arg=--staged\n")) << all.CStr();
+	EXPECT_TRUE(all.Contains("index=.git/index\n")) << all.CStr();
+	EXPECT_TRUE(all.Contains("gitdir=[]\n")) << all.CStr();
+	const FString topLevel = platform::ReadFileText(binaries / "toplevel.txt").value_or(FString());
+	EXPECT_EQ(platform::GetFileIdentity(topLevel.ToPath()), platform::GetFileIdentity(gRepo)) << topLevel.CStr();
+
+	// One at the top is the project, whatever else the index holds.
+	Write("Game.frtproject", "[Project]\nName=Top\n");
+	all = commit();
+	EXPECT_TRUE(all.Contains("arg=--project=./Game.frtproject\n")) << all.CStr();
+	EXPECT_FALSE(all.Contains("arg=--project=Other")) << all.CStr();
+	std::filesystem::remove(gRepo / "Game.frtproject");
+
+	// An engine checkout validates its content, and the templates it holds are not projects of this repository.
+	Write("Engine.frtengine", "[Engine]\nName=Scratch\n");
+	all = commit();
+	EXPECT_TRUE(all.Contains("arg=--engine\n")) << all.CStr();
+	EXPECT_FALSE(all.Contains("arg=--project")) << all.CStr();
 }
 
 // The engine's own hook, so it finds the engine's AssetTool when this configuration built one. Until AssetTool has
@@ -312,4 +394,32 @@ TEST_F(GitHooksTest, SetupHooksSetsCoreHooksPathAndNothingElse)
 	EXPECT_EQ(outside.ExitCode, 0) << outside.Output.CStr() << outside.Errors.CStr();
 	EXPECT_TRUE(std::filesystem::path(hooksPath(shared).ToPath()).is_absolute()) << hooksPath(shared).CStr();
 	EXPECT_TRUE(hooksPath(shared).EndsWith("Engine/Tools/GitHooks")) << hooksPath(shared).CStr();
+
+	// A project in a folder of its repository: git reads the value from the top of the work tree.
+	const std::filesystem::path outer = gDir / FStringView("Зовнішнє сховище").ToPath();
+	const std::filesystem::path below = outer / FStringView("Гра").ToPath();
+	std::filesystem::create_directories(below, ec);
+	std::filesystem::rename(engine, below / "Engine", ec);
+	ASSERT_FALSE(ec) << FString::FromUtf8Lossy(ec.message()).CStr();
+	ASSERT_TRUE(platform::WriteFileText(below / "Game.frtproject", "[Project]\nName=Game\nEngine=Engine\n"));
+	ASSERT_EQ(test::RunGit(gGit, outer, { "init", "-q" }).ExitCode, 0);
+	const std::vector<FString> folderOptions = { "--file=" + FString::FromPath(below / "Engine" / "premake5.lua"), "setup", "--hooks",
+		"--project=" + FString::FromPath(below / "Game.frtproject") };
+	const test::SProcessResult folder = test::RunProcess(premake, folderOptions, below / "Engine");
+	EXPECT_EQ(folder.ExitCode, 0) << folder.Output.CStr() << folder.Errors.CStr();
+	EXPECT_EQ(hooksPath(below), "Гра/Engine/Tools/GitHooks") << folder.Output.CStr();
+
+	// The same project with an engine on another drive, which no relative path reaches: this engine, from the temporary folder.
+	const std::filesystem::path realEngine = paths::GetEngineDir();
+	if (realEngine.root_name() != gDir.root_name())
+	{
+		const std::filesystem::path other = outer / FStringView("Інша гра").ToPath();
+		std::filesystem::create_directories(other, ec);
+		ASSERT_TRUE(platform::WriteFileText(other / "Other.frtproject", FString::Format("[Project]\nName=Other\nEngine={}\n", FString::FromPath(realEngine, EPathStyle::Generic))));
+		const std::vector<FString> driveOptions = { "--file=" + FString::FromPath(realEngine / "premake5.lua"), "setup", "--hooks",
+			"--project=" + FString::FromPath(other / "Other.frtproject") };
+		const test::SProcessResult drive = test::RunProcess(premake, driveOptions, realEngine);
+		EXPECT_EQ(drive.ExitCode, 0) << drive.Output.CStr() << drive.Errors.CStr();
+		EXPECT_EQ(platform::GetFileIdentity(hooksPath(other).ToPath()), platform::GetFileIdentity(realEngine / "Tools" / "GitHooks")) << hooksPath(other).CStr();
+	}
 }

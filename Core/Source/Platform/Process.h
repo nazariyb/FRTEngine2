@@ -53,6 +53,8 @@ struct SToolProcessDesc
 	std::vector<FString> Arguments;
 	std::filesystem::path WorkingDir;
 	uint32 TimeoutMs = 30000u;
+	// It inherits this process's environment without these variables, named in any case.
+	std::vector<FString> UnsetEnvironment;
 };
 
 struct SToolProcessResult

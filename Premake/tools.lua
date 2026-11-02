@@ -1402,8 +1402,9 @@ local function setupHooks(value)
 	end
 
 	local hooks = path.join(ROOT_DIR, "Tools/GitHooks")
+	-- An engine on another drive has no relative path, and getrelative gives the absolute one back.
 	local relative = path.getrelative(clone, ROOT_DIR)
-	if not relative:match("^%.%.") then
+	if not relative:match("^%.%.") and not path.isabsolute(relative) then
 		hooks = prefix .. path.join(relative == "." and "" or relative, "Tools/GitHooks")
 	end
 	-- Not quoted(), which spells it for Windows: this value is git's, and the same in every clone of a project.

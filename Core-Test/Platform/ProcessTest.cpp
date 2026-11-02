@@ -90,6 +90,18 @@ int RunToolEcho (std::span<const FString> Arguments)
 }
 const bool bToolEchoRegistered = test::RegisterChildMode("tool-echo", &RunToolEcho);
 
+// "tool-env <names>...": each variable on a line, as name=value, or name! when it is not set.
+int RunToolEnv (std::span<const FString> Arguments)
+{
+	for (const FString& name : Arguments)
+	{
+		const std::optional<FString> value = platform::GetEnvironmentValue(name);
+		WriteTo(STD_OUTPUT_HANDLE, value.has_value() ? FString::Format("{}={}\n", name, *value) : FString::Format("{}!\n", name));
+	}
+	return 0;
+}
+const bool bToolEnvRegistered = test::RegisterChildMode("tool-env", &RunToolEnv);
+
 // "tool-noisy <bytes>": that many bytes on each stream, in turns, far past what a pipe buffers.
 int RunToolNoisy (std::span<const FString> Arguments)
 {
@@ -272,6 +284,31 @@ TEST_F(ToolProcessTest, ArgumentsArriveAsGivenAndTheResultComesBack)
 	const FString expected = FString::Format("прості слова 词\nends with \\\na \"quoted\" one\n\nback\\slash\\\"\n{}", FString::FromPath(Dir));
 	EXPECT_EQ(FStringView(reinterpret_cast<const char*>(run.Stdout.data()), static_cast<uint32>(run.Stdout.size())), expected.View());
 	EXPECT_EQ(run.Stderr, "на stderr");
+}
+
+TEST_F(ToolProcessTest, TheChildInheritsTheEnvironmentButWhatItIsToldToDrop)
+{
+	platform::SetEnvironmentValue("FRT_TOOL_DROP", "занадто");
+	platform::SetEnvironmentValue("FRT_TOOL_KEEP", "лишається 留");
+	platform::SToolProcessDesc desc;
+	desc.Executable = platform::GetExecutablePath();
+	desc.WorkingDir = Dir;
+	desc.Arguments = { FString(test::ChildModeSwitch) + "tool-env", "FRT_TOOL_DROP", "FRT_TOOL_KEEP" };
+	const auto runToText = [&]
+	{
+		const platform::SToolProcessResult run = platform::RunToolProcess(desc);
+		EXPECT_EQ(run.ExitCode, 0) << run.Stderr.CStr();
+		return FString(FStringView(reinterpret_cast<const char*>(run.Stdout.data()), static_cast<uint32>(run.Stdout.size())));
+	};
+
+	EXPECT_EQ(runToText(), "FRT_TOOL_DROP=занадто\nFRT_TOOL_KEEP=лишається 留\n");
+	// As Windows reads a name, in any case. Only this run: the parent keeps it.
+	desc.UnsetEnvironment = { "frt_tool_drop", "FRT_NOT_THERE" };
+	EXPECT_EQ(runToText(), "FRT_TOOL_DROP!\nFRT_TOOL_KEEP=лишається 留\n");
+	EXPECT_TRUE(platform::GetEnvironmentValue("FRT_TOOL_DROP").has_value());
+
+	platform::SetEnvironmentValue("FRT_TOOL_DROP", "");
+	platform::SetEnvironmentValue("FRT_TOOL_KEEP", "");
 }
 
 TEST_F(ToolProcessTest, BothStreamsAreDrainedWhileItRuns)

@@ -9,6 +9,7 @@
 
 #include "Containers/StringMap.h"
 #include "Containers/WideString.h"
+#include "Log/Log.h"
 #include "Platform/FileMove.h"
 #include "Platform/Windows/WindowsCommon.h"
 
@@ -672,20 +673,40 @@ bool MoveFileNoReplace (const std::filesystem::path& From, const std::filesystem
 	}
 
 	// MOVEFILE_WRITE_THROUGH only promises anything for a move that copies. On one volume the rename is in NTFS's log, and
-	// flushing the file forces that log out. A directory or a read-only file cannot be opened for that; there the rename is
-	// as durable as the file system's own log flush makes it, soon after.
-	const CScopedHandle file(CreateFileW(to.c_str(), FILE_WRITE_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-		OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+	// flushing the file forces that log out. A directory or a read-only file cannot be opened for that (access denied); there
+	// the rename is as durable as the file system's own log flush makes it, soon after. A scanner that holds the file just
+	// moved without FILE_SHARE_WRITE is waited for as the rename waits for one. From here on the file has moved, so the
+	// answer is true whatever the flush does: false would tell a batch that nothing moved, and it would leave this file
+	// where it is while it undoes the others. A flush that cannot be had is a warning instead.
+	HANDLE rawFile = INVALID_HANDLE_VALUE;
+	DWORD error = ERROR_SUCCESS;
+	sleepMs = 1u;
+	sleptMs = 0u;
+	while (true)
+	{
+		rawFile = CreateFileW(to.c_str(), FILE_WRITE_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+			OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+		error = rawFile != INVALID_HANDLE_VALUE ? ERROR_SUCCESS : GetLastError();
+		if ((error != ERROR_SHARING_VIOLATION && error != ERROR_LOCK_VIOLATION) || sleptMs >= ReplaceRetryBudgetMs)
+		{
+			break;
+		}
+		Sleep(sleepMs);
+		sleptMs += sleepMs;
+		sleepMs = sleepMs * 2u < ReplaceRetryMaxSleepMs ? sleepMs * 2u : ReplaceRetryMaxSleepMs;
+	}
+	const CScopedHandle file(rawFile);
 	if (file.IsValid() && !FlushFileBuffers(file.Get()))
 	{
-		const DWORD error = GetLastError();
-		if (OutError != nullptr)
-		{
-			*OutError = FString::Format("Moved '{}' to '{}' but cannot flush it to disk: {} ({})", FString::FromPath(From),
-				FString::FromPath(To), GetSystemErrorMessage(error), error);
-		}
-		return false;
+		error = GetLastError();
 	}
+	else if (file.IsValid() || error == ERROR_ACCESS_DENIED || error == ERROR_FILE_NOT_FOUND)
+	{
+		// Flushed; or a directory or read-only file, left to the log; or already moved on by somebody else.
+		return true;
+	}
+	log::Write(log::Platform, log::ELevel::Warning, FString::Format("Moved '{}' to '{}' but cannot flush it to disk, so the move "
+		"may not survive a crash: {} ({})", FString::FromPath(From), FString::FromPath(To), GetSystemErrorMessage(error), error));
 	return true;
 }
 

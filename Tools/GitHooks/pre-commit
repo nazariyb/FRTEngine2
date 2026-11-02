@@ -12,9 +12,13 @@
 #   4. portable paths on staged names: case-only collisions in the index and between index and disk
 #      (PATH001; core.ignorecase=true hides a case rename made in Explorer), and names illegal on a
 #      supported platform (PATH002);
-#   5. BUILD003, in an engine checkout, when a staged path is under Core/Source/Assets;
+#   5. BUILD003, in an engine checkout, when a staged path is under Core/Source: a builder's sources are
+#      wherever its code is (the shader builder's are in Core/Source/Graphics), and check-builders is one
+#      premake process;
 #   6. validate --staged --quick --ci through AssetTool when it is built: never FRT.bat assets, which may
-#      start a build. --ci is read-only by request, so it runs beside an open editor.
+#      start a build. --ci is read-only by request, so it runs beside an open editor. The project is the
+#      .frtproject at the top of the work tree, else the engine in an engine checkout, else each
+#      .frtproject in the index (a project in a folder of its repository), one run each.
 
 # A UTF-8 locale, so that awk folds non-ASCII names (the content of a game is rarely all ASCII).
 export LC_ALL=C.UTF-8
@@ -159,7 +163,7 @@ if [ -n "$duplicates" ]; then
 fi
 
 # 5.
-if [ -f Engine.frtengine ] && [ -f FRT.bat ] && tr '\0' '\n' < "$staged" | grep -q '^Core/Source/Assets/'; then
+if [ -f Engine.frtengine ] && [ -f FRT.bat ] && tr '\0' '\n' < "$staged" | grep -q '^Core/Source/'; then
 	if ! ./FRT.bat check-builders > "$scratch/builders" 2>&1; then
 		cat "$scratch/builders"
 		failed=1
@@ -167,30 +171,42 @@ if [ -f Engine.frtengine ] && [ -f FRT.bat ] && tr '\0' '\n' < "$staged" | grep 
 fi
 
 # 6. In this checkout's engine, where this hook is. A project names its file, an engine checkout its own
-# content; anything else is not FRT's to validate. The tool's git runs from the mount, where a GIT_DIR git
-# set for the hook would not hold; GIT_INDEX_FILE stays, so it sees what git commit -a is about to commit.
+# content (the templates it holds are not projects of it); anything else is not FRT's to validate. The
+# tool's git runs from the mount, where a GIT_DIR git set for the hook would not hold. GIT_INDEX_FILE
+# stays, so it sees what git commit -a is about to commit, but it is this repository's index alone:
+# FRT_HOOK_TOPLEVEL names this repository, and the tool's git in any other (an Engine/ submodule, a
+# shared engine) runs without it.
 tool=$hookDir/../../Binaries/Win64/AssetTool-Development-Default.exe
-target=
+targets=()
 for file in ./*.frtproject; do
 	if [ -f "$file" ]; then
-		target=--project=$file
+		targets=("--project=$file")
 	fi
 done
-if [ -z "$target" ] && [ -f Engine.frtengine ]; then
-	target=--engine
+if [ ${#targets[@]} -eq 0 ] && [ -f Engine.frtengine ]; then
+	targets=(--engine)
 fi
-if [ -n "$target" ]; then
+if [ ${#targets[@]} -eq 0 ]; then
+	while IFS= read -r -d '' file; do
+		targets+=("--project=$file")
+	done < <(git ls-files --cached -z -- '*.frtproject')
+fi
+if [ ${#targets[@]} -ne 0 ]; then
 	if [ ! -f "$tool" ]; then
 		echo "pre-commit: quick validate skipped: AssetTool is not built."
 	else
-		(unset GIT_DIR GIT_WORK_TREE; "$tool" validate --staged --quick --ci "$target") > "$scratch/validate" 2>&1
-		result=$?
-		if [ "$result" -eq 2 ]; then
-			echo "pre-commit: quick validate skipped: this AssetTool has no validate --staged (build it again)."
-		elif [ "$result" -ne 0 ]; then
-			cat "$scratch/validate"
-			failed=1
-		fi
+		topLevel=$(git rev-parse --show-toplevel)
+		for target in "${targets[@]}"; do
+			(unset GIT_DIR GIT_WORK_TREE; export FRT_HOOK_TOPLEVEL="$topLevel"; "$tool" validate --staged --quick --ci "$target") > "$scratch/validate" 2>&1
+			result=$?
+			if [ "$result" -eq 2 ]; then
+				echo "pre-commit: quick validate skipped: this AssetTool has no validate --staged (build it again)."
+				break
+			elif [ "$result" -ne 0 ]; then
+				cat "$scratch/validate"
+				failed=1
+			fi
+		done
 	fi
 fi
 
