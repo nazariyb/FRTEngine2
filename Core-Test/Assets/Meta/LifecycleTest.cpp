@@ -953,7 +953,8 @@ TEST(LifecycleTest, AKnownIdentityKeepsItsGuidWithEachSwitchOnAndOff)
 			world.AddPaired("/Project/Дерево.png", G1, "tree");
 			world.LoseMeta("/Project/Дерево.png", Settled);
 			world.Verified.push_back(G1);
-			const auto restores = findAll(RunAnswering(world), ELifecycleAction::RestoreMeta);
+			const SLifecycleResult result = RunAnswering(world);
+			const auto restores = findAll(result, ELifecycleAction::RestoreMeta);
 			ASSERT_EQ(restores.size(), 1u);
 			EXPECT_EQ(restores[0]->Guid, G1) << "a restore keeps the record's GUID";
 		}
@@ -962,7 +963,8 @@ TEST(LifecycleTest, AKnownIdentityKeepsItsGuidWithEachSwitchOnAndOff)
 			TurnOff(world.Safety, off);
 			world.AddPaired("/Project/Дерево.png", G1, "tree");
 			world.LoseMeta("/Project/Дерево.png", Settled);
-			const auto creates = findAll(RunAnswering(world), ELifecycleAction::CreateMeta);
+			const SLifecycleResult result = RunAnswering(world);
+			const auto creates = findAll(result, ELifecycleAction::CreateMeta);
 			ASSERT_EQ(creates.size(), 1u);
 			EXPECT_EQ(creates[0]->Guid, G1) << "create from registry keeps the record's GUID, never a derived or random one";
 		}
@@ -978,7 +980,8 @@ TEST(LifecycleTest, AKnownIdentityKeepsItsGuidWithEachSwitchOnAndOff)
 			{
 				moved.Identity = MakeIdentity(990u);
 			}
-			const auto moves = findAll(RunAnswering(world), ELifecycleAction::MoveMeta);
+			const SLifecycleResult result = RunAnswering(world);
+			const auto moves = findAll(result, ELifecycleAction::MoveMeta);
 			ASSERT_EQ(moves.size(), 1u);
 			EXPECT_EQ(moves[0]->Guid, G1) << "a paired orphan keeps its GUID";
 		}
