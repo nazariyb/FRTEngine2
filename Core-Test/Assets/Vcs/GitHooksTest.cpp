@@ -241,6 +241,20 @@ TEST_F(GitHooksTest, BuildersAreCheckedOnlyInAnEngineCheckoutAndOnlyForAssetSour
 	EXPECT_TRUE((assets.Output + assets.Errors).Contains("BUILD003 Test.Stub")) << assets.Output.CStr() << assets.Errors.CStr();
 }
 
+// The engine's own hook, so it finds the engine's AssetTool when this configuration built one. Until AssetTool has
+// validate (G4 replaces this test with a staged META004 refused through it), its usage error is a message, not a refusal.
+TEST_F(GitHooksTest, AToolWithoutTheVerbIsAMessageNotARefusal)
+{
+	Write("Game.frtproject", "[Project]\nName=Game\n");
+	Write("Content/New.png");
+	Stage({ "Content/New.png" });
+
+	const FString hooks = FString::FromPath(paths::GetEngineDir() / "Tools" / "GitHooks", EPathStyle::Generic);
+	const test::SProcessResult commit = Commit({ "-c", "core.hooksPath=" + hooks });
+	EXPECT_EQ(commit.ExitCode, 0) << commit.Output.CStr() << commit.Errors.CStr();
+	EXPECT_TRUE((commit.Output + commit.Errors).Contains("quick validate skipped")) << commit.Output.CStr() << commit.Errors.CStr();
+}
+
 TEST_F(GitHooksTest, SetupHooksSetsCoreHooksPathAndNothingElse)
 {
 	// A scratch engine inside a project, as FRT.bat runs it. No Engine.frtengine yet: if --hooks fell through to the rest of
