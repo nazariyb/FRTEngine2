@@ -9,6 +9,7 @@
 
 #include "Containers/StringMap.h"
 #include "Containers/WideString.h"
+#include "Platform/FileMove.h"
 #include "Platform/Windows/WindowsCommon.h"
 
 
@@ -640,6 +641,52 @@ bool ReplaceFileAtomic (const std::filesystem::path& Temp, const std::filesystem
 		sleptMs += sleepMs;
 		sleepMs = sleepMs * 2u < ReplaceRetryMaxSleepMs ? sleepMs * 2u : ReplaceRetryMaxSleepMs;
 	}
+}
+
+bool MoveFileNoReplace (const std::filesystem::path& From, const std::filesystem::path& To, FString* OutError)
+{
+	const std::filesystem::path from = windows::ToWin32Path(From);
+	const std::filesystem::path to = windows::ToWin32Path(To);
+
+	DWORD sleepMs = 1u;
+	DWORD sleptMs = 0u;
+	while (!MoveFileExW(from.c_str(), to.c_str(), MOVEFILE_WRITE_THROUGH))
+	{
+		// Transient as in ReplaceFileAtomic: the file is open without FILE_SHARE_DELETE, as a virus scanner has one just
+		// written. To existing is not.
+		const DWORD error = GetLastError();
+		const bool bTransient = error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION
+			|| (error == ERROR_ACCESS_DENIED && !HasAttribute(from, FILE_ATTRIBUTE_DIRECTORY));
+		if (!bTransient || sleptMs >= ReplaceRetryBudgetMs)
+		{
+			if (OutError != nullptr)
+			{
+				*OutError = FString::Format("Cannot move '{}' to '{}': {} ({})", FString::FromPath(From), FString::FromPath(To),
+					GetSystemErrorMessage(error), error);
+			}
+			return false;
+		}
+		Sleep(sleepMs);
+		sleptMs += sleepMs;
+		sleepMs = sleepMs * 2u < ReplaceRetryMaxSleepMs ? sleepMs * 2u : ReplaceRetryMaxSleepMs;
+	}
+
+	// MOVEFILE_WRITE_THROUGH only promises anything for a move that copies. On one volume the rename is in NTFS's log, and
+	// flushing the file forces that log out. A directory or a read-only file cannot be opened for that; there the rename is
+	// as durable as the file system's own log flush makes it, soon after.
+	const CScopedHandle file(CreateFileW(to.c_str(), FILE_WRITE_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+		OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+	if (file.IsValid() && !FlushFileBuffers(file.Get()))
+	{
+		const DWORD error = GetLastError();
+		if (OutError != nullptr)
+		{
+			*OutError = FString::Format("Moved '{}' to '{}' but cannot flush it to disk: {} ({})", FString::FromPath(From),
+				FString::FromPath(To), GetSystemErrorMessage(error), error);
+		}
+		return false;
+	}
+	return true;
 }
 
 bool WriteFileAtomic (const std::filesystem::path& Path, std::span<const uint8> Bytes, bool bCreateDirectories, FString* OutError)

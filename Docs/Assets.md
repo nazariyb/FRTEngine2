@@ -206,6 +206,44 @@ compile, and a table of the matches (Name, Type, Path, Size, Problems) with a de
 visible; its rows are copied text, never record ids. Read-only in M3. The default layout docks it beside Stats; View >
 Assets toggles it. The smoke test checks it against the registry's own answer for `type:Texture`.
 
+## Version control (M4, `Assets/Vcs/`)
+
+FRT is not a version-control client: it never commits, syncs or reverts. `IVcsProvider` (`Assets/Vcs/VcsProvider.h`) is what
+it needs from one: writes the VCS accepts, an asset and its meta kept together in every move and delete, and knowing when
+the VCS is rewriting the tree. One instance per mount, from `MakeVcsProvider` (`[AssetsEditor] VcsProvider=Auto|None|Git`).
+No host reaches any of this yet: the asset writer and the repairs that use it arrive later in M4.
+
+| Call | `CNoneVcsProvider` | `CGitVcsProvider` |
+|---|---|---|
+| `Detect` | always | `git rev-parse` from the mount root, so worktrees, submodules and `.git` files resolve to their own git dir; a `.git` without `git` on `PATH`, or one git refuses (dubious ownership), gives `None` and one warning |
+| `IsBusy` | never | stats only: `index.lock`, `HEAD.lock`, `MERGE_HEAD`, `REBASE_HEAD`, `CHERRY_PICK_HEAD`, `rebase-merge/`, `rebase-apply/` in that git dir |
+| `IsRewritingTree` | never | `index.lock` or `HEAD.lock` only, so an open merge holds repairs but never hot reload. Held 30 s without a break logs one warning naming the file; it is never deleted |
+| `CheckOut` | a read-only file fails with `ReadOnly`, naming it; the attribute is never cleared | the same |
+| `Add` | nothing | nothing: new files are left for the user to stage |
+| `Move` | `platform::MoveFileNoReplace`, and one warning on a case-only rename | the same, with `git mv` for a case-only rename of a tracked file, which `core.ignorecase=true` would hide; refused over `index.lock` it returns `Busy` |
+| `Delete` | `platform::MoveToTrash` | the same |
+| `GetCommittedFacts` | all false | `git ls-tree -r -z --full-name --name-only HEAD`; an unborn HEAD (`FRT.bat new` commits nothing) means nothing is committed |
+| `StatusOf` | all `Untracked` | `git --no-optional-locks status --porcelain=v2 -z --no-renames --untracked-files=all --ignored -- .`; an ignored file is `Untracked` |
+| `GetStaged` | empty | `git diff --cached --name-only -z --no-renames --relative` |
+
+A `Move` batch moves as one: what would be refused anyway refuses before anything moves, and what moved moves back if a later
+file fails. Git commands list the mount once and look the batch up, so a command line never grows with a batch. Each runs
+through `platform::RunToolProcess`, blocking, on a worker; only `IsBusy` and `IsRewritingTree` run on the owner thread. The
+design's long-lived `SpawnToolProcess` and `IToolPipe` wait for their first client, the Blender bridge (M9c).
+
+**The pre-commit hook** (`Tools/GitHooks/pre-commit`, bash under Git for Windows) is opt-in per clone: `FRT.bat setup --hooks`
+sets `core.hooksPath` (relative for an engine inside the clone, absolute for a shared one), `--hooks=off` clears it, `FRT.bat
+new` only prints the hint, and `git commit --no-verify` skips it once. It parses no YAML and reports everything at once:
+
+1. pairs: a staged meta whose source is neither staged nor tracked, and a staged delete or rename of a source whose tracked
+   meta did not go along (`META002`). A new source without a meta is left to check 6, which knows the rules and companions;
+2. duplicate GUIDs in the index (`META003`);
+3. exactly one valid `Guid:` line per staged meta, and no conflict markers (`META004`);
+4. on staged names, case-only collisions in the index and between index and disk (`PATH001`), and illegal names (`PATH002`);
+5. `FRT.bat check-builders`, in an engine checkout, when a staged path is under `Core/Source/Assets` (`BUILD003`);
+6. `validate --staged --quick --ci` through `AssetTool-Development-Default.exe` when it is built, never `FRT.bat assets`,
+   which may start a build. Skipped with a message when the tool is not built or does not know the verb yet.
+
 ## One file watcher (M2)
 
 Every system that reloads files in dev builds learns about changes from one watcher instead of polling timestamps:
@@ -421,6 +459,8 @@ Asset code never calls the OS directly; `python -I Tools/Lint/CheckPlatform.py` 
 | `ReadFileChunksStable` | streams a file and reports `Changed` if it changed while being read, so a hash is never recorded for bytes that are gone |
 | `CBlockingFileReader` | synchronous ranged reads, files over 2 GB included |
 | `MoveToTrash` | the Recycle Bin, so editor deletes can be undone |
+| `MoveFileNoReplace` (`Platform/FileMove.h`) | a durable rename that fails if its target exists, unless that is the same file in another case; `ReplaceFileAtomic` and `std::filesystem::rename` both overwrite |
+| `RunToolProcess`, `FindOnPath` (`Platform/Process.h`) | a console tool run to its end with both streams captured and a timeout: no shell, no window, killed with its host (a job object); the executable found on `PATH` alone, never in the working directory |
 | `QueryVolumeInfo` | case sensitivity (per volume and per directory), remote and cloud volumes |
 | `ReserveVirtual`, `CommitVirtual`, `DecommitVirtual`, `ReleaseVirtual` | virtual memory |
 | `FillRandomBytes`, `GetCurrentThreadId`, `ReadTimestamp`, `GetModuleImage` | randomness, thread ids, a monotonic clock, a loaded module's address range |

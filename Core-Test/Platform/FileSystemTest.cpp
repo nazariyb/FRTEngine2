@@ -10,6 +10,7 @@
 #include <gtest/gtest.h>
 
 #include "TestCommon.h"
+#include "Platform/RecycleBinTestUtils.h"
 
 #include <algorithm>
 #include <atomic>
@@ -30,6 +31,7 @@
 
 #include "Containers/String.h"
 #include "Containers/WideString.h"
+#include "Platform/FileMove.h"
 #include "Platform/FileSystem.h"
 #include "Platform/Platform.h"
 
@@ -140,11 +142,11 @@ void AgeFile (const std::filesystem::path& Path)
 // and PID_DISPLACED_FROM of shlguid.h).
 constexpr PROPERTYKEY RecycledFromKey = { { 0x9B174B33u, 0x40FFu, 0x11D2u, { 0xA2u, 0x7Eu, 0x00u, 0xC0u, 0x4Fu, 0xC3u, 0x08u, 0x71u } }, 2u };
 
-// Deletes for good what a test moved to the Recycle Bin, so that running the suite leaves nothing
-// in the user's Bin: every item whose name starts with NamePrefix (unique to the test run) and that
-// came from Directory (compared by identity, so short and long spellings of the path agree). Nothing
-// else is touched. Returns how many items it found and deleted - finding them there is also the half
-// of "trash, then restore" a test can check.
+}
+
+
+namespace frt::test
+{
 uint32 PurgeFromRecycleBin (FStringView NamePrefix, const std::filesystem::path& Directory)
 {
 	using Microsoft::WRL::ComPtr;
@@ -205,6 +207,11 @@ uint32 PurgeFromRecycleBin (FStringView NamePrefix, const std::filesystem::path&
 	}
 	return purged;
 }
+}
+
+
+namespace
+{
 
 
 // ---------------- The atomic writer child ----------------
@@ -1280,8 +1287,81 @@ TEST_F(FileSystemTest, MoveToTrashRemovesTheFile)
 	EXPECT_TRUE(bTrashed) << error.CStr();
 	EXPECT_FALSE(std::filesystem::exists(other));
 
-	EXPECT_EQ(PurgeFromRecycleBin(stem, Dir), 2u) << "both files should be in the Recycle Bin";
-	EXPECT_EQ(PurgeFromRecycleBin(stem, Dir), 0u) << "and gone from it after the clean-up";
+	EXPECT_EQ(test::PurgeFromRecycleBin(stem, Dir), 2u) << "both files should be in the Recycle Bin";
+	EXPECT_EQ(test::PurgeFromRecycleBin(stem, Dir), 0u) << "and gone from it after the clean-up";
+}
+
+
+// ---------------- MoveFileNoReplace ----------------
+
+TEST_F(FileSystemTest, MoveFileNoReplaceMovesAFileAndKeepsItsIdentity)
+{
+	const std::filesystem::path from = File("Звідки 来自.txt");
+	const std::filesystem::path to = File("Куди 去往.txt");
+	ASSERT_TRUE(platform::WriteFileBytes(from, AsBytes("вміст")));
+	const std::optional<platform::SFileIdentity> identity = platform::GetFileIdentity(from);
+
+	FString error;
+	EXPECT_TRUE(platform::MoveFileNoReplace(from, to, &error)) << error.CStr();
+	EXPECT_FALSE(std::filesystem::exists(from));
+	EXPECT_EQ(platform::GetFileIdentity(to), identity);
+	EXPECT_EQ(platform::ReadFileText(to).value_or(FString()), "вміст");
+}
+
+TEST_F(FileSystemTest, MoveFileNoReplaceNeverDestroysWhatItWouldLandOn)
+{
+	const std::filesystem::path from = File("Перший.txt");
+	const std::filesystem::path to = File("Другий.txt");
+	ASSERT_TRUE(platform::WriteFileBytes(from, AsBytes("перший")));
+	ASSERT_TRUE(platform::WriteFileBytes(to, AsBytes("другий")));
+
+	FString error;
+	EXPECT_FALSE(platform::MoveFileNoReplace(from, to, &error));
+	EXPECT_TRUE(error.Contains("Другий.txt")) << error.CStr();
+	EXPECT_EQ(platform::ReadFileText(from).value_or(FString()), "перший");
+	EXPECT_EQ(platform::ReadFileText(to).value_or(FString()), "другий");
+
+	error.Clear();
+	EXPECT_FALSE(platform::MoveFileNoReplace(File("Немає.txt"), File("Куди.txt"), &error));
+	EXPECT_FALSE(error.IsEmpty());
+	EXPECT_FALSE(std::filesystem::exists(File("Куди.txt")));
+}
+
+TEST_F(FileSystemTest, MoveFileNoReplaceRenamesACaseOnlySpelling)
+{
+	const std::filesystem::path from = File("текстура.PNG");
+	const std::filesystem::path to = File("Текстура.png");
+	ASSERT_TRUE(platform::WriteFileBytes(from, AsBytes("x")));
+	const std::optional<platform::SFileIdentity> identity = platform::GetFileIdentity(from);
+
+	FString error;
+	EXPECT_TRUE(platform::MoveFileNoReplace(from, to, &error)) << error.CStr();
+	EXPECT_EQ(platform::GetFileIdentity(to), identity);
+	std::vector<std::filesystem::path> names;
+	for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(Dir))
+	{
+		names.push_back(entry.path().filename());
+	}
+	ASSERT_EQ(names.size(), 1u);
+	EXPECT_EQ(names[0], to.filename());
+
+	// The same spelling is nothing to do, not a collision.
+	EXPECT_TRUE(platform::MoveFileNoReplace(to, to, &error)) << error.CStr();
+	EXPECT_TRUE(std::filesystem::exists(to));
+}
+
+TEST_F(FileSystemTest, MoveFileNoReplaceMovesAReadOnlyFile)
+{
+	const std::filesystem::path from = File("Лише читання.txt");
+	const std::filesystem::path to = File("Перейменований.txt");
+	ASSERT_TRUE(platform::WriteFileBytes(from, AsBytes("x")));
+	std::filesystem::permissions(from, std::filesystem::perms::owner_write | std::filesystem::perms::group_write | std::filesystem::perms::others_write,
+		std::filesystem::perm_options::remove);
+
+	FString error;
+	EXPECT_TRUE(platform::MoveFileNoReplace(from, to, &error)) << error.CStr();
+	EXPECT_TRUE(platform::Stat(to)->bReadOnly);
+	std::filesystem::permissions(to, std::filesystem::perms::owner_write, std::filesystem::perm_options::add);
 }
 
 

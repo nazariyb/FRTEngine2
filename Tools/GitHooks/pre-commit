@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+# The Git provider's pre-commit hook (Docs/Assets.md, "Version control"). Opt-in, per clone:
+# FRT.bat setup --hooks sets core.hooksPath to this directory, --hooks=off clears it, and
+# git commit --no-verify skips it for one commit. It never parses YAML, and it reads the index, not the
+# working files, except where the check is about the disk. Every check runs, so one commit reports
+# everything at once.
+#   1. pairs: a staged meta whose source is neither staged nor tracked, and a staged delete or rename of
+#      a source whose tracked meta did not go along. A new source without a meta is left to check 6,
+#      which knows the rules and companions: Demo's .bin files have no meta and need none.
+#   2. duplicate GUIDs in the index (META003);
+#   3. exactly one valid Guid: line per staged meta, and no conflict markers (META004);
+#   4. portable paths on staged names: case-only collisions in the index and between index and disk
+#      (PATH001; core.ignorecase=true hides a case rename made in Explorer), and names illegal on a
+#      supported platform (PATH002);
+#   5. BUILD003, in an engine checkout, when a staged path is under Core/Source/Assets;
+#   6. validate --staged --quick --ci through AssetTool when it is built: never FRT.bat assets, which may
+#      start a build. --ci is read-only by request, so it runs beside an open editor.
+
+# A UTF-8 locale, so that awk folds non-ASCII names (the content of a game is rarely all ASCII).
+export LC_ALL=C.UTF-8
+
+hookDir=${0%/*}
+scratch=$(mktemp -d) || exit 1
+trap 'rm -rf "$scratch"' EXIT
+staged=$scratch/staged
+index=$scratch/index
+guids=$scratch/guids
+dirs=$scratch/dirs
+disk=$scratch/disk
+failed=0
+
+# --no-renames: a rename is a delete and an add, and each half has to have its meta.
+git diff --cached --name-status -z --no-renames > "$staged" || exit 1
+if [ ! -s "$staged" ]; then
+	exit 0
+fi
+git ls-files --cached -z > "$index" || exit 1
+git -c core.quotePath=false grep --cached -E '^(Guid:|<<<<<<<|=======|>>>>>>>)' -- '*.meta' > "$guids"
+: > "$dirs"
+
+# Read with one awk: a bash loop over a repository's file list reads a byte per system call.
+awk -v dirsFile="$dirs" '
+function isContent(path) { return path ~ /(^|\/)Content\// }
+function report(text) { print "  " text; failed = 1 }
+function illegalReason(name, base)
+{
+	if (name ~ /[<>:"\\|?*\001-\037]/) return "holds a character illegal on a supported platform"
+	if (name ~ /[. ]$/) return "ends with a dot or a space"
+	base = toupper(name)
+	sub(/\..*$/, "", base)
+	if (base ~ /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/) return "is a reserved device name"
+	return ""
+}
+part == "staged" {
+	if (!bHaveStatus) { status = $0; bHaveStatus = 1; next }
+	bHaveStatus = 0
+	if (status == "D") deleted[$0] = 1; else present[$0] = 1
+	next
+}
+part == "index" {
+	inIndex[$0] = 1
+	# Each folder of the path too: Foo/a and foo/b are one folder on Windows and two elsewhere.
+	count = split($0, names, "/")
+	prefix = ""
+	for (i = 1; i <= count; i++) {
+		prefix = i == 1 ? names[1] : prefix "/" names[i]
+		fold = tolower(prefix)
+		if (!(fold in spelling)) spelling[fold] = prefix
+		else if (spelling[fold] != prefix) other[fold] = prefix
+	}
+	next
+}
+part == "guids" {
+	colon = index($0, ":")
+	path = substr($0, 1, colon - 1)
+	line = substr($0, colon + 1)
+	if (line ~ /^Guid:/) {
+		guidLines[path]++
+		if (line ~ /^Guid: [0-9a-f]{32}$/) validGuids[path]++
+	} else {
+		conflicted[path] = 1
+	}
+	next
+}
+END {
+	for (path in present) {
+		if (isContent(path) && path ~ /\.meta$/) {
+			source = substr(path, 1, length(path) - 5)
+			if (!(source in inIndex)) report("META002 " path ": staged without its source, which is neither staged nor tracked")
+			if (path in conflicted) report("META004 " path ": it holds conflict markers")
+			if (guidLines[path] != 1) report("META004 " path ": it has " (guidLines[path] + 0) " Guid: lines, not one")
+			else if (validGuids[path] != 1) report("META004 " path ": its Guid: line is not 32 lowercase hexadecimal digits")
+		}
+		count = split(path, names, "/")
+		prefix = ""
+		for (i = 1; i <= count; i++) {
+			prefix = i == 1 ? names[1] : prefix "/" names[i]
+			reason = illegalReason(names[i])
+			if (reason != "") report("PATH002 " path ": \"" names[i] "\" " reason)
+			fold = tolower(prefix)
+			if (fold in other && !(fold in clashed)) {
+				clashed[fold] = 1
+				report("PATH001 \"" spelling[fold] "\" and \"" other[fold] "\" differ only in case")
+			}
+			if (i < count) folders[prefix] = 1
+		}
+		folders["."] = 1
+	}
+	for (path in deleted) {
+		if (isContent(path) && path !~ /\.meta$/ && (path ".meta" in inIndex)) {
+			report("META002 " path ": staged for delete or rename, but " path ".meta did not go along")
+		}
+	}
+	for (folder in folders) print folder > dirsFile
+	exit failed
+}
+' part=staged RS='\0' "$staged" part=index RS='\0' "$index" part=guids RS='\n' "$guids" || failed=1
+
+# The disk's spelling of every name in the folders of staged files, one glob per folder: no process each.
+(
+	shopt -s nullglob dotglob
+	while IFS= read -r folder; do
+		for entry in "$folder"/*; do
+			printf '%s\0' "${entry#./}"
+		done
+	done < "$dirs"
+) > "$disk"
+
+awk '
+part == "disk" { onDisk[tolower($0)] = $0; next }
+part == "staged" {
+	if (!bHaveStatus) { status = $0; bHaveStatus = 1; next }
+	bHaveStatus = 0
+	if (status == "D") next
+	count = split($0, names, "/")
+	prefix = ""
+	for (i = 1; i <= count; i++) {
+		prefix = i == 1 ? names[1] : prefix "/" names[i]
+		fold = tolower(prefix)
+		if (fold in onDisk && onDisk[fold] != prefix && !(fold in reported)) {
+			reported[fold] = 1
+			print "  PATH001 the index has \"" prefix "\", the disk \"" onDisk[fold] "\": they differ only in case"
+			failed = 1
+		}
+	}
+	next
+}
+END { exit failed }
+' part=disk RS='\0' "$disk" part=staged RS='\0' "$staged" || failed=1
+
+# 2. The GUIDs of every meta in the index, not only the staged ones: a staged copy duplicates a tracked one.
+duplicates=$(git grep --cached -h -E '^Guid: [0-9a-f]{32}$' -- '*.meta' | LC_ALL=C sort | uniq -d)
+if [ -n "$duplicates" ]; then
+	failed=1
+	while IFS= read -r line; do
+		echo "  META003 ${line#Guid: } is in more than one meta:"
+		git -c core.quotePath=false grep --cached -l -E "^$line$" -- '*.meta' | sed 's/^/    /'
+	done <<< "$duplicates"
+fi
+
+# 5.
+if [ -f Engine.frtengine ] && [ -f FRT.bat ] && tr '\0' '\n' < "$staged" | grep -q '^Core/Source/Assets/'; then
+	if ! ./FRT.bat check-builders > "$scratch/builders" 2>&1; then
+		cat "$scratch/builders"
+		failed=1
+	fi
+fi
+
+# 6. In this checkout's engine, where this hook is. A project names its file, an engine checkout its own
+# content; anything else is not FRT's to validate. The tool's git runs from the mount, where a GIT_DIR git
+# set for the hook would not hold; GIT_INDEX_FILE stays, so it sees what git commit -a is about to commit.
+tool=$hookDir/../../Binaries/Win64/AssetTool-Development-Default.exe
+target=
+for file in ./*.frtproject; do
+	if [ -f "$file" ]; then
+		target=--project=$file
+	fi
+done
+if [ -z "$target" ] && [ -f Engine.frtengine ]; then
+	target=--engine
+fi
+if [ -n "$target" ]; then
+	if [ ! -f "$tool" ]; then
+		echo "pre-commit: quick validate skipped: AssetTool is not built."
+	else
+		(unset GIT_DIR GIT_WORK_TREE; "$tool" validate --staged --quick --ci "$target") > "$scratch/validate" 2>&1
+		result=$?
+		if [ "$result" -eq 2 ]; then
+			echo "pre-commit: quick validate skipped: this AssetTool has no validate --staged (build it again)."
+		elif [ "$result" -ne 0 ]; then
+			cat "$scratch/validate"
+			failed=1
+		fi
+	fi
+fi
+
+if [ "$failed" -ne 0 ]; then
+	echo "pre-commit: commit refused (FRT's asset checks, Docs/Assets.md; git commit --no-verify skips them)." >&2
+	exit 1
+fi
+exit 0

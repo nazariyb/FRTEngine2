@@ -141,6 +141,7 @@ Code shared between projects is not supported yet; `Core/Source/Project/Project.
 | Command | Does |
 |---|---|
 | `FRT.bat setup` | registers the engine, gives hashed text files LF in this working tree (checking out again only files whose line endings alone differ; it refuses on uncommitted changes), and generates `FRTEngine2.sln` |
+| `FRT.bat setup --hooks` | only turns on the pre-commit hook for this clone or `--project`'s (`core.hooksPath`; `--hooks=off` turns it off): asset and meta pairs, duplicate GUIDs, portable names, `BUILD003`, a quick validate |
 | `FRT.bat check-line-endings` | only checks those line endings (`git ls-files --eol`) |
 | `FRT.bat assets <verb>` | runs `AssetTool` for the project (or `/Engine` with `--engine`): `help`, `newguid`, `lock`, `ddc stats\|gc\|verify`, and the asset registry's `scan`, `status`, `query "<text>"`, `refs <asset>`, `referencers <asset>`, `explain <file>`, `list-rules`, `dump registry`; `--json`, `--ci`; see [Docs/Assets.md](Docs/Assets.md) |
 | `FRT.bat check-builders` | fails when a builder's sources changed without a new version GUID (`--update` records the hash of a freshly bumped GUID) |

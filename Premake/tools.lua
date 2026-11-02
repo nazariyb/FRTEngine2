@@ -6,7 +6,8 @@
 --
 --   setup      registers this engine under its name (Engine.frtengine), so shared projects find
 --              it, gives the checkout's hashed text files LF line endings (Line endings, below)
---              and generates its solution: the first thing to run in a new checkout
+--              and generates its solution: the first thing to run in a new checkout. With
+--              --hooks[=off] it only turns the pre-commit hook on or off for one clone
 --   new        creates a project from a template, sets up its git repository, generates its
 --              solution: FRT.bat new --name=MyGame [--template=Demo] [--layout=embedded] [--build]
 --   generate   (re)generates the engine's solution, or the project's
@@ -122,6 +123,12 @@ newoption
 {
 	trigger     = "update",
 	description = "check-builders: record the current source hash of every changed builder whose version GUID is new since HEAD"
+}
+
+newoption
+{
+	trigger     = "hooks",
+	description = "setup: only turn the pre-commit hook on for this clone, or --project's (--hooks=off: off), and change nothing else"
 }
 
 -----------------------------------------
@@ -1362,11 +1369,59 @@ end
 ---------------  Actions  ---------------
 -----------------------------------------
 
+-- FRT.bat setup --hooks[=off]: core.hooksPath of one clone, the engine's or --project's, and nothing else: no
+-- registration and no solution, so a project's clone can turn it on, and nothing installs it implicitly. An engine
+-- inside the clone (the engine's own checkout, a project's Engine/ submodule) is named relatively, from the top of the
+-- work tree, as git reads it, so it holds wherever the clone is and in every worktree of it; a shared engine elsewhere
+-- has only its absolute path. The hook itself: Tools/GitHooks/pre-commit.
+local function setupHooks(value)
+	if value ~= "" and value ~= "off" then
+		fail("setup: --hooks takes no value, or =off to turn the hook off")
+	end
+	if not outputOf("git --version") then
+		fail("setup --hooks: git is not on PATH")
+	end
+	local project, delegated = commandProject("setup")
+	if delegated then
+		return
+	end
+	local clone = project and project.Dir or ROOT_DIR
+	local gitConfig = "git -C " .. quoted(clone) .. " config "
+	-- Asked of git: its spelling of the top level may not be ours (a subst or mapped drive, a junction).
+	local prefix = outputOf("git -C " .. quoted(clone) .. " rev-parse --show-prefix")
+	if not prefix then
+		fail("setup --hooks: " .. winpath(clone) .. " is not in a git repository")
+	end
+
+	if value == "off" then
+		if outputOf(gitConfig .. "--local --get core.hooksPath") and not runCommand(gitConfig .. "--local --unset core.hooksPath") then
+			fail("setup --hooks=off: git config failed in " .. winpath(clone))
+		end
+		print("The pre-commit hook is off for " .. winpath(clone) .. ".")
+		return
+	end
+
+	local hooks = path.join(ROOT_DIR, "Tools/GitHooks")
+	local relative = path.getrelative(clone, ROOT_DIR)
+	if not relative:match("^%.%.") then
+		hooks = prefix .. path.join(relative == "." and "" or relative, "Tools/GitHooks")
+	end
+	-- Not quoted(), which spells it for Windows: this value is git's, and the same in every clone of a project.
+	if not runCommand(gitConfig .. '--local core.hooksPath "' .. hooks .. '"') then
+		fail("setup --hooks: git config failed in " .. winpath(clone))
+	end
+	print("The pre-commit hook is on for " .. winpath(clone) .. " (core.hooksPath=" .. hooks .. ").")
+end
+
 newaction
 {
 	trigger     = "setup",
 	description = "Register this engine for projects to find by name, give its text files LF, and generate its solution",
 	execute     = function ()
+		if _OPTIONS["hooks"] ~= nil then
+			setupHooks(_OPTIONS["hooks"])
+			return
+		end
 		local engine = loadEngine(ROOT_DIR) or fail("setup: " .. rootpath(engineFileName) .. " has no [Engine] Name")
 		-- First: it may rewrite files, and nothing below depends on it.
 		local bLineEndings = setupLineEndings()
@@ -1534,6 +1589,7 @@ newaction
 			"Engine/, a git submodule"))
 		if hasGit then
 			print("  A new git repository, with everything added: commit when ready.")
+			print("  Optional: FRT.bat setup --hooks checks asset and meta pairs before each commit, in this clone.")
 		end
 	end
 }

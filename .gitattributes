@@ -36,6 +36,9 @@ Core-Test/Assets/Golden/** text eol=lf
 # Text formats the engine only imports reach the importer byte for byte as committed.
 *.gltf -text
 
+# Git for Windows' bash cannot read a hook's first line with a CR at its end, and hooks have no extension to match.
+Tools/GitHooks/* text eol=lf
+
 # cmd.exe reads batch files with CRLF line endings; with LF it can misparse labels and blocks.
 *.bat eol=crlf
 
