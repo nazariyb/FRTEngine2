@@ -7,15 +7,16 @@
 /**
  * The asset system's diagnostic codes (design §13.4), as packed constants for SDiagnostic::Code. One place
  * spells each code, so a typo is a compile error instead of a code nobody groups by. Codes arrive with the
- * milestone that first reports them; M3 reports these:
- *	PATH001  two files or folders of one mount equal under the portable fold (an error from M4)
- *	PATH002  a name illegal on a supported platform, or not valid UTF-8 (an error from M4)
+ * milestone that first reports them (Docs/Assets.md has the table, with each code's severity and source). The
+ * registry's (M3):
+ *	PATH001  two files or folders of one mount equal under the portable fold (error)
+ *	PATH002  a name illegal on a supported platform, or not valid UTF-8 (error)
  *	PATH003  a mount-relative path longer than 180 UTF-8 bytes (warning)
  *	RULE001  a rule file error, with file and line (error)
  *	RULE002  an unclaimed file not listed in Scan.Quiet (warning)
- *	REF006   a reference resolved through a path whose case differs from the file's (info)
+ *	REF006   a reference resolved through an alias, a former path or a path whose case differs from the file's (info)
  *	REF007   a legacy path reference in data (info)
- * M4 names these; M4's pieces start to report them (severities as in §13.4):
+ * The meta lifecycle's, `validate`'s and the migration gate's (M4; MIG002 has no reporter until M7 and M9a):
  *	META001  an included file without a meta after the creation delay
  *	META002  an orphan meta: its source is gone
  *	META003  a duplicate GUID

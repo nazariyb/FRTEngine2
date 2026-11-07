@@ -37,8 +37,9 @@ enum class ESeverity : uint8
  * store groups by; File, Line, Column and FieldPath say where in the source (Line and Column count
  * from 1; 0 is unknown). Code is a packed textual code (EncodeDiagnosticCode: "META001"), 0 for none.
  *
- * The spec's `SAssetId Asset` and `SFixIt Fix` members arrive with the asset registry (M3/M4) and the
- * validation panel's fix-its (M4); until then Subject carries the asset.
+ * Subject carries the asset (its mount path), so a diagnostic needs no `SAssetId Asset` member. Fix-its are not
+ * stored on it either (edit [33]): the Asset problems panel asks the meta lifecycle for a problem's fix-its
+ * (CAssetRepairs::GetFixIts, Assets/Meta/ProblemList.h), which keeps one action type from automatic repair to button.
  */
 struct SDiagnostic
 {
