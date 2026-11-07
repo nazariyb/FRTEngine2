@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# FRT's pass-through for the clone's own pre-push hook, which core.hooksPath would silence: Git LFS's,
+# which uploads the LFS objects a push needs, the person's, or Git LFS itself (chain says how).
+. "${0%/*}/chain"
+chainHook pre-push "$@"

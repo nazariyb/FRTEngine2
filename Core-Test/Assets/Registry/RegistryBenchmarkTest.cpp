@@ -17,6 +17,7 @@
 #include <random>
 
 #include "../Query/QueryBenchmarkGenerator.h"
+#include "Assets/Registry/RegistryRecords.h"
 #include "Assets/Registry/RegistryTables.h"
 #include "../BenchmarkBudget.h"
 #include "Platform/Platform.h"
@@ -135,11 +136,11 @@ double TimeLookups (uint32 Count, TBody&& Body)
 void PrintMemory (const SRegistryMemoryStats& Memory)
 {
 	std::printf("[registry] resident: files %.2f, folders %.2f, rule files %.2f, assets %.2f, sub-entries %.2f, type tables %.2f, "
-		"graph %.2f, names %.2f, strings %.2f, labels %.2f, problems %.2f, indices %.2f, writer %.2f, change ring %.2f MB\n",
+		"graph %.2f, names %.2f, strings %.2f, labels %.2f, problems %.2f, identity %.2f, indices %.2f, writer %.2f, change ring %.2f MB\n",
 		Memory.Files / 1048576.0, Memory.Folders / 1048576.0, Memory.RuleFiles / 1048576.0, Memory.Assets / 1048576.0,
 		Memory.SubEntries / 1048576.0, Memory.TypeTables / 1048576.0, Memory.Graph / 1048576.0, Memory.Names / 1048576.0,
-		Memory.Strings / 1048576.0, Memory.Labels / 1048576.0, Memory.Problems / 1048576.0, Memory.Indices / 1048576.0,
-		Memory.Writer / 1048576.0, Memory.ChangeRing / 1048576.0);
+		Memory.Strings / 1048576.0, Memory.Labels / 1048576.0, Memory.Problems / 1048576.0, Memory.Identity / 1048576.0,
+		Memory.Indices / 1048576.0, Memory.Writer / 1048576.0, Memory.ChangeRing / 1048576.0);
 }
 
 // The rows of one scale.
@@ -153,6 +154,7 @@ struct SScaleBudgets
 	SBudget PathLookup { 0.5 };
 	SBudget ResidentMemory;
 	bool bJudge = true;                // false: printed only (1M + 5M rows, which §5.11 does not budget)
+	bool bMetas = false;               // every asset with a meta (M4, edit [63]): the 100k columns
 };
 
 /**
@@ -206,12 +208,19 @@ void MeasureStoreAtScale (uint32 Assets, uint32 Rows, const SScaleBudgets& Budge
 	query_bench::SGeneratorSpec spec;
 	spec.Assets = Assets;
 	spec.Rows = Rows;
+	spec.bMetas = Budgets.bMetas;
 	const query_bench::SGeneratorReport report = query_bench::Generate(store, spec);
 	store.CompactGraph();
 	std::printf("[registry] generated %u assets, %u rows: %u records, %u sub-entries, %u files, %u edges; %u commits %.0f ms\n", Assets, Rows,
 		store.Live().GetRecordCount(), store.Live().GetSubEntryCount(), store.Live().GetFileCount(), GetTables(store.Live()).Graph.LiveEdges,
 		report.Commits, report.CommitMilliseconds);
 	ASSERT_EQ(store.Live().GetRecordCount(), Assets);
+	if (Budgets.bMetas)
+	{
+		std::printf("[registry] metas: %u (%.0f B each on average, %.2f MB of bytes); %u meta copies kept\n", report.Metas,
+			report.Metas > 0u ? static_cast<double>(report.MetaBytes) / report.Metas : 0.0, report.MetaBytes / 1048576.0, store.Live().GetMetaCopyCount());
+		EXPECT_EQ(store.Live().GetMetaCopyCount(), Assets);
+	}
 
 	// One edit: a material re-analyzed with a changed texture list. Median of 51 commits.
 	std::vector<double> commits;
@@ -268,7 +277,36 @@ void MeasureStoreAtScale (uint32 Assets, uint32 Rows, const SScaleBudgets& Budge
 
 	const SRegistryMemoryStats memory = store.GetMemoryStats();
 	PrintMemory(memory);
-	Check("ResidentMemoryMB", memory.Total / 1048576.0, Budgets.ResidentMemory, "MB", "(the generated store; the loaded one: SnapshotBenchmarkTest)");
+	Check("ResidentMemoryMB", memory.Total / 1048576.0, Budgets.ResidentMemory, "MB",
+		Budgets.bMetas ? "(the generated store, a meta per asset; the loaded one: SnapshotBenchmarkTest)" : "(the generated store; the loaded one: SnapshotBenchmarkTest)");
+	if (!Budgets.bMetas)
+	{
+		return;
+	}
+	// The metas' share (edit [63]: §5.11's row was measured without them) and what the bulk adoption pays for them
+	// (each copy upserted, hashed and verified again, an index insert each): the adoption with them and with METAS
+	// left out of the image, one thread, best of 3.
+	Check("IdentityMemoryMB", memory.Identity / 1048576.0, SBudget {}, "MB", "(METAS bytes and columns, aliases, former paths, tombstones; their indices are in 'indices')");
+	const auto timeAdopt = [&] (bool bWithMetas)
+	{
+		double best = 1e30;
+		for (uint32 round = 0u; round < 3u; ++round)
+		{
+			SRegistryImage image = view->ExportImage({});
+			if (!bWithMetas)
+			{
+				image.Metas.clear();
+			}
+			CRegistryStore adopted;
+			adopted.AdoptImage(std::move(image), view->GetRevision());
+			best = (std::min)(best, adopted.GetLastCommitStats().Milliseconds);
+		}
+		return best;
+	};
+	const double withMetas = timeAdopt(true);
+	const double withoutMetas = timeAdopt(false);
+	Check("AdoptWithMetasMs", withMetas, SBudget {}, "ms",
+		FString::Format("(one thread, best of 3; {:.2f} ms with METAS left out of the image: the copies cost {:.2f} ms)", withoutMetas, withMetas - withoutMetas).CStr());
 }
 }
 
@@ -461,6 +499,35 @@ TEST(RegistryBenchmarkTest, TheStoreMeetsItsBudgetsAt10kGeneratedAssets)
 	MeasureStoreAtScale(FixtureSize(10000u), 0u, budgets);
 }
 
+// The generator's metas (SGeneratorSpec::bMetas, the 100k columns'): every asset record takes the meta's GUID, its file
+// row says Paired, the meta has a FILES row of its own (never counted) and a METAS copy that survives an adoption.
+TEST(RegistryBenchmarkTest, TheGeneratorsMetasGiveEveryAssetItsGuidAndACopy)
+{
+	CRegistryStore store;
+	query_bench::SGeneratorSpec spec;
+	spec.Assets = 1000u;
+	spec.bMetas = true;
+	const query_bench::SGeneratorReport report = query_bench::Generate(store, spec);
+	const CRegistryView& view = store.Live();
+	EXPECT_EQ(report.Metas, spec.Assets);
+	EXPECT_EQ(view.GetMetaCopyCount(), spec.Assets);
+	uint32 paired = 0u;
+	view.ForEachRecord([&] (SRecordId Record)
+	{
+		SAssetData data;
+		view.GetRecord(Record, data);
+		const std::optional<SMetaCopyView> copy = view.FindMetaCopy(data.Id.Guid);
+		const std::optional<SStoredFile> file = FindStoredFile(view, data.MountPath);
+		paired += copy.has_value() && copy->SourcePath == data.MountPath.View() && data.Id.Guid != MakeProvisionalGuid(data.MountPath)
+			&& file.has_value() && file->MetaState == EMetaState::Paired && file->MetaHash == copy->Hash ? 1u : 0u;
+	});
+	EXPECT_EQ(paired, spec.Assets);
+	CRegistryStore adopted;
+	adopted.AdoptImage(view.ExportImage({}), view.GetRevision());
+	EXPECT_EQ(adopted.Live().GetMetaCopyCount(), spec.Assets);
+	EXPECT_EQ(adopted.Live().GetFileCount(), view.GetFileCount());
+}
+
 TEST(RegistryBenchmarkTest, DISABLED_TheStoreAt100kAssets)
 {
 	SScaleBudgets budgets;
@@ -470,6 +537,7 @@ TEST(RegistryBenchmarkTest, DISABLED_TheStoreAt100kAssets)
 	budgets.GuidLookup = SBudget { 50.0, -1.0, 40.0, 80.0 };
 	budgets.AssetId64Lookup = SBudget { 50.0, -1.0, 20.0, 40.0 };
 	budgets.PathLookup = SBudget { 0.5, -1.0, 0.5, 1.0 };
+	budgets.bMetas = true;
 	MeasureStoreAtScale(100000u, 0u, budgets);
 }
 
@@ -482,7 +550,11 @@ TEST(RegistryBenchmarkTest, DISABLED_TheStoreAt100kAssetsAnd500kRows)
 	budgets.GuidLookup = SBudget { 50.0, -1.0, 40.0, 80.0 };
 	budgets.AssetId64Lookup = SBudget { 50.0, -1.0, 20.0, 40.0 };
 	budgets.PathLookup = SBudget { 0.5, -1.0, 0.5, 1.0 };
-	budgets.ResidentMemory = SBudget { 150.0, -1.0, 155.0, 155.0 };
+	// A meta per asset (edit [63]) costs about 51 MB here: 197.3 MB against 146.2 MB without them (Development, alone,
+	// 9950X3D): METAS 13.8, the metas' FILES rows 10.3, their paths 11.9 and names 7.8, indices 6.0. §5.11 was revised
+	// for it at M4, from 150 MB to 210 MB; making the meta rows smaller is planned work.
+	budgets.ResidentMemory = SBudget { 210.0, -1.0, 205.0, 205.0 };
+	budgets.bMetas = true;
 	MeasureStoreAtScale(100000u, 500000u, budgets);
 }
 

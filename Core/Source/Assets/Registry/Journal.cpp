@@ -198,6 +198,7 @@ void AppendRecord (std::vector<uint8>& Out, const SRecordUpsert& Record, const C
 	AppendEnum(Out, Record.CookRule);
 	AppendVarint(Out, Record.Chunk);
 	AppendTexts(Out, Record.RuleLabels);
+	AppendTexts(Out, Record.AuthoredLabels);
 	AppendText(Out, Record.PrimaryName);
 	AppendEnum(Out, Record.ImportStatus);
 	AppendLittleEndian(Out, Record.AnalyzeStamp, 8u);
@@ -222,6 +223,13 @@ void AppendRecord (std::vector<uint8>& Out, const SRecordUpsert& Record, const C
 		AppendText(Out, edge.FieldPath);
 	}
 	AppendTexts(Out, Record.Companions);
+	AppendVarint(Out, Record.Aliases.size());
+	for (const SAssetId& alias : Record.Aliases)
+	{
+		AppendGuid(Out, alias.Guid);
+		AppendLittleEndian(Out, alias.SubId, 8u);
+	}
+	AppendTexts(Out, Record.FormerPaths);
 }
 
 /**
@@ -235,7 +243,7 @@ bool ReadRecord (CByteReader& Reader, const TDecodedTypes& Types, SRecordUpsert&
 	std::optional<reflect::TypeId> type;
 	if (!Reader.ReadText(Out.FileMountPath) || !ReadGuid(Reader, Out.Guid) || !ReadTypeIndex(Reader, Types, type) || !Reader.ReadText(Out.Importer)
 		|| !ReadFlags(Reader, Out.Flags) || !ReadEnum(Reader, ECookRule::DevelopmentOnly, Out.CookRule) || !ReadU16Varint(Reader, Out.Chunk)
-		|| !ReadTexts(Reader, Out.RuleLabels) || !Reader.ReadText(Out.PrimaryName)
+		|| !ReadTexts(Reader, Out.RuleLabels) || !ReadTexts(Reader, Out.AuthoredLabels) || !Reader.ReadText(Out.PrimaryName)
 		|| !ReadEnum(Reader, EImportStatus::ImporterUnavailable, Out.ImportStatus) || !ReadU64(Reader, Out.AnalyzeStamp)
 		|| !ReadTags(Reader, Out.Tags) || !ReadCount(Reader, 12u, subCount))
 	{
@@ -278,7 +286,47 @@ bool ReadRecord (CByteReader& Reader, const TDecodedTypes& Types, SRecordUpsert&
 			return false;
 		}
 	}
-	return ReadTexts(Reader, Out.Companions);
+	uint32 aliasCount = 0u;
+	if (!ReadTexts(Reader, Out.Companions) || !ReadCount(Reader, 24u, aliasCount))
+	{
+		return false;
+	}
+	Out.Aliases.resize(aliasCount);
+	for (SAssetId& alias : Out.Aliases)
+	{
+		if (!ReadGuid(Reader, alias.Guid) || !ReadU64(Reader, alias.SubId))
+		{
+			return false;
+		}
+	}
+	return ReadTexts(Reader, Out.FormerPaths);
+}
+
+void AppendGuids (std::vector<uint8>& Out, const std::vector<SGuid>& Guids)
+{
+	AppendVarint(Out, Guids.size());
+	for (const SGuid& guid : Guids)
+	{
+		AppendGuid(Out, guid);
+	}
+}
+
+bool ReadGuids (CByteReader& Reader, std::vector<SGuid>& Out)
+{
+	uint32 count = 0u;
+	if (!ReadCount(Reader, 16u, count))
+	{
+		return false;
+	}
+	Out.resize(count);
+	for (SGuid& guid : Out)
+	{
+		if (!ReadGuid(Reader, guid))
+		{
+			return false;
+		}
+	}
+	return true;
 }
 
 
@@ -420,8 +468,12 @@ void EncodeRegistryDelta (const SRegistryDelta& Delta, std::vector<uint8>& Out)
 			binary::AppendHash(Out, *file.ContentHash);
 		}
 		AppendEnum(Out, file.Class);
-		AppendEnum(Out, file.MetaState);
-		AppendLittleEndian(Out, file.MetaHash, 8u);
+		Out.push_back(file.Meta ? 1u : 0u);
+		if (file.Meta)
+		{
+			AppendEnum(Out, file.Meta->State);
+			AppendLittleEndian(Out, file.Meta->Hash, 8u);
+		}
 	}
 	AppendVarint(Out, Delta.RuleFileUpserts.size());
 	for (const SRuleFileUpsert& ruleFile : Delta.RuleFileUpserts)
@@ -442,6 +494,25 @@ void EncodeRegistryDelta (const SRegistryDelta& Delta, std::vector<uint8>& Out)
 		AppendEnum(Out, problems.Source);
 		AppendDiagnostics(Out, problems.Diagnostics);
 	}
+	AppendVarint(Out, Delta.MetaCopies.size());
+	for (const SMetaCopy& copy : Delta.MetaCopies)
+	{
+		AppendGuid(Out, copy.Guid);
+		AppendLittleEndian(Out, copy.Hash, 8u);
+		binary::AppendSized(Out, copy.Bytes);
+		AppendText(Out, copy.SourcePath);
+	}
+	AppendGuids(Out, Delta.MetaCopyRemoves);
+	AppendVarint(Out, Delta.Tombstones.size());
+	for (const STombstone& tombstone : Delta.Tombstones)
+	{
+		AppendGuid(Out, tombstone.Guid);
+		AppendText(Out, tombstone.LastPath);
+		binary::AppendHash(Out, tombstone.Hash);
+		AppendIdentity(Out, tombstone.Identity);
+		AppendSignedVarint(Out, tombstone.RemovedFileTime);
+	}
+	AppendGuids(Out, Delta.TombstoneRemoves);
 }
 
 std::optional<SRegistryDelta> DecodeRegistryDelta (std::span<const uint8> Bytes)
@@ -483,7 +554,7 @@ std::optional<SRegistryDelta> DecodeRegistryDelta (std::span<const uint8> Bytes)
 	delta.ProblemClears.resize(count);
 	for (SProblemsClear& clear : delta.ProblemClears)
 	{
-		if (!reader.ReadText(clear.MountPath) || !ReadEnum(reader, EProblemSource::Unclaimed, clear.Source))
+		if (!reader.ReadText(clear.MountPath) || !ReadEnum(reader, EProblemSource::Lifecycle, clear.Source))
 		{
 			return std::nullopt;
 		}
@@ -500,7 +571,7 @@ std::optional<SRegistryDelta> DecodeRegistryDelta (std::span<const uint8> Bytes)
 			return std::nullopt;
 		}
 	}
-	if (!ReadCount(reader, 38u, count))
+	if (!ReadCount(reader, 30u, count))
 	{
 		return std::nullopt;
 	}
@@ -522,10 +593,19 @@ std::optional<SRegistryDelta> DecodeRegistryDelta (std::span<const uint8> Bytes)
 			}
 			file.ContentHash = contentHash;
 		}
-		if (!ReadEnum(reader, EFileClass::Excluded, file.Class) || !ReadEnum(reader, EMetaState::MissingMeta, file.MetaState)
-			|| !ReadU64(reader, file.MetaHash))
+		uint8 hasMeta = 0u;
+		if (!ReadEnum(reader, EFileClass::Meta, file.Class) || !reader.ReadU8(hasMeta) || hasMeta > 1u)
 		{
 			return std::nullopt;
+		}
+		if (hasMeta != 0u)
+		{
+			SFileMetaState meta;
+			if (!ReadEnum(reader, EMetaState::MissingMeta, meta.State) || !ReadU64(reader, meta.Hash))
+			{
+				return std::nullopt;
+			}
+			file.Meta = meta;
 		}
 	}
 	if (!ReadCount(reader, 10u, count))
@@ -560,13 +640,40 @@ std::optional<SRegistryDelta> DecodeRegistryDelta (std::span<const uint8> Bytes)
 	delta.Problems.resize(count);
 	for (SProblemsSet& problems : delta.Problems)
 	{
-		if (!reader.ReadText(problems.Subject) || !ReadEnum(reader, EProblemSource::Unclaimed, problems.Source)
+		if (!reader.ReadText(problems.Subject) || !ReadEnum(reader, EProblemSource::Lifecycle, problems.Source)
 			|| !ReadDiagnostics(reader, problems.Diagnostics))
 		{
 			return std::nullopt;
 		}
 	}
-	if (!reader.IsAtEnd())
+	if (!ReadCount(reader, 26u, count))
+	{
+		return std::nullopt;
+	}
+	delta.MetaCopies.resize(count);
+	for (SMetaCopy& copy : delta.MetaCopies)
+	{
+		std::span<const uint8> bytes;
+		if (!ReadGuid(reader, copy.Guid) || !ReadU64(reader, copy.Hash) || !reader.ReadSized(bytes) || !reader.ReadText(copy.SourcePath))
+		{
+			return std::nullopt;
+		}
+		copy.Bytes.assign(bytes.begin(), bytes.end());
+	}
+	if (!ReadGuids(reader, delta.MetaCopyRemoves) || !ReadCount(reader, 62u, count))
+	{
+		return std::nullopt;
+	}
+	delta.Tombstones.resize(count);
+	for (STombstone& tombstone : delta.Tombstones)
+	{
+		if (!ReadGuid(reader, tombstone.Guid) || !reader.ReadText(tombstone.LastPath) || !reader.ReadHash(tombstone.Hash)
+			|| !ReadIdentity(reader, tombstone.Identity) || !ReadSignedVarint(reader, tombstone.RemovedFileTime))
+		{
+			return std::nullopt;
+		}
+	}
+	if (!ReadGuids(reader, delta.TombstoneRemoves) || !reader.IsAtEnd())
 	{
 		return std::nullopt;
 	}
@@ -647,6 +754,22 @@ SRegistryDelta FilterDeltaByMount (const SRegistryDelta& Delta, TFunctionRef<boo
 			out.Problems.push_back(problems);
 		}
 	}
+	for (const SMetaCopy& copy : Delta.MetaCopies)
+	{
+		if (keepPath(copy.SourcePath))
+		{
+			out.MetaCopies.push_back(copy);
+		}
+	}
+	for (const STombstone& tombstone : Delta.Tombstones)
+	{
+		if (keepPath(tombstone.LastPath))
+		{
+			out.Tombstones.push_back(tombstone);
+		}
+	}
+	out.MetaCopyRemoves = Delta.MetaCopyRemoves;
+	out.TombstoneRemoves = Delta.TombstoneRemoves;
 	return out;
 }
 
@@ -964,7 +1087,11 @@ bool CRegistryJournal::FinishRestart (CJournalRestart&& Prepared, FString* OutEr
 	const std::span<const uint8> later = std::span<const uint8>(OwnFrames).subspan((std::min)(Prepared.CoveredBytes, OwnFrames.size()));
 	const uint64 fileStart = platform::ReadTimestamp();
 	++Generation;
+	// A swap, not a move-assign that would close the old handle here: that close frees the replaced, unlinked file, and
+	// file-system filters do their work in it, which can take milliseconds of the owner's frame. The caller drops it.
+	platform::CAppendFile replaced = std::move(File);
 	File = std::move(Prepared.File);
+	Prepared.File = std::move(replaced);
 	JournalBase = Prepared.Base;
 	if (!later.empty() && !File.Append(later, OutError))
 	{

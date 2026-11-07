@@ -9,6 +9,8 @@
 
 #include "Containers/StringMap.h"
 #include "Containers/WideString.h"
+#include "Log/Log.h"
+#include "Platform/FileMove.h"
 #include "Platform/Windows/WindowsCommon.h"
 
 
@@ -374,6 +376,22 @@ std::optional<FString> GetRelativePath (const std::filesystem::path& Path, const
 	return FString(below.TrimStart("/"));
 }
 
+bool IsAtOrBelowResolved (const std::filesystem::path& Path, const std::filesystem::path& Directory)
+{
+	std::error_code ec;
+	std::filesystem::path path = std::filesystem::weakly_canonical(Path, ec);
+	if (ec)
+	{
+		path = Path;
+	}
+	std::filesystem::path directory = std::filesystem::weakly_canonical(Directory, ec);
+	if (ec)
+	{
+		directory = Directory;
+	}
+	return IsAtOrBelow(NormalizePath(path), NormalizePath(directory));
+}
+
 std::optional<SFileStat> Stat (const std::filesystem::path& Path, FString* OutError)
 {
 	const CScopedHandle handle(OpenForAttributes(Path));
@@ -640,6 +658,136 @@ bool ReplaceFileAtomic (const std::filesystem::path& Temp, const std::filesystem
 		sleptMs += sleepMs;
 		sleepMs = sleepMs * 2u < ReplaceRetryMaxSleepMs ? sleepMs * 2u : ReplaceRetryMaxSleepMs;
 	}
+}
+
+bool MoveFileNoReplace (const std::filesystem::path& From, const std::filesystem::path& To, FString* OutError)
+{
+	const std::filesystem::path from = windows::ToWin32Path(From);
+	const std::filesystem::path to = windows::ToWin32Path(To);
+
+	DWORD sleepMs = 1u;
+	DWORD sleptMs = 0u;
+	while (!MoveFileExW(from.c_str(), to.c_str(), MOVEFILE_WRITE_THROUGH))
+	{
+		// Transient as in ReplaceFileAtomic: the file is open without FILE_SHARE_DELETE, as a virus scanner has one just
+		// written. To existing is not.
+		const DWORD error = GetLastError();
+		const bool bTransient = error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION
+			|| (error == ERROR_ACCESS_DENIED && !HasAttribute(from, FILE_ATTRIBUTE_DIRECTORY));
+		if (!bTransient || sleptMs >= ReplaceRetryBudgetMs)
+		{
+			if (OutError != nullptr)
+			{
+				*OutError = FString::Format("Cannot move '{}' to '{}': {} ({})", FString::FromPath(From), FString::FromPath(To),
+					GetSystemErrorMessage(error), error);
+			}
+			return false;
+		}
+		Sleep(sleepMs);
+		sleptMs += sleepMs;
+		sleepMs = sleepMs * 2u < ReplaceRetryMaxSleepMs ? sleepMs * 2u : ReplaceRetryMaxSleepMs;
+	}
+
+	// MOVEFILE_WRITE_THROUGH only promises anything for a move that copies. On one volume the rename is in NTFS's log, and
+	// flushing the file forces that log out. A directory or a read-only file cannot be opened for that (access denied); there
+	// the rename is as durable as the file system's own log flush makes it, soon after. A scanner that holds the file just
+	// moved without FILE_SHARE_WRITE is waited for as the rename waits for one. From here on the file has moved, so the
+	// answer is true whatever the flush does: false would tell a batch that nothing moved, and it would leave this file
+	// where it is while it undoes the others. A flush that cannot be had is a warning instead.
+	HANDLE rawFile = INVALID_HANDLE_VALUE;
+	DWORD error = ERROR_SUCCESS;
+	sleepMs = 1u;
+	sleptMs = 0u;
+	while (true)
+	{
+		rawFile = CreateFileW(to.c_str(), FILE_WRITE_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+			OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+		error = rawFile != INVALID_HANDLE_VALUE ? ERROR_SUCCESS : GetLastError();
+		if ((error != ERROR_SHARING_VIOLATION && error != ERROR_LOCK_VIOLATION) || sleptMs >= ReplaceRetryBudgetMs)
+		{
+			break;
+		}
+		Sleep(sleepMs);
+		sleptMs += sleepMs;
+		sleepMs = sleepMs * 2u < ReplaceRetryMaxSleepMs ? sleepMs * 2u : ReplaceRetryMaxSleepMs;
+	}
+	const CScopedHandle file(rawFile);
+	if (file.IsValid() && !FlushFileBuffers(file.Get()))
+	{
+		error = GetLastError();
+	}
+	else if (file.IsValid() || error == ERROR_ACCESS_DENIED || error == ERROR_FILE_NOT_FOUND)
+	{
+		// Flushed; or a directory or read-only file, left to the log; or already moved on by somebody else.
+		return true;
+	}
+	log::Write(log::Platform, log::ELevel::Warning, FString::Format("Moved '{}' to '{}' but cannot flush it to disk, so the move "
+		"may not survive a crash: {} ({})", FString::FromPath(From), FString::FromPath(To), GetSystemErrorMessage(error), error));
+	return true;
+}
+
+bool WriteFileNew (const std::filesystem::path& Path, std::span<const uint8> Bytes, FString* OutError, bool* bOutExists)
+{
+	if (bOutExists != nullptr)
+	{
+		*bOutExists = false;
+	}
+	if (!Path.has_filename())
+	{
+		windows::SetErrorText(OutError, "Cannot write", Path, "no file name");
+		return false;
+	}
+	const auto exists = [&Path, bOutExists]
+	{
+		const bool bExists = GetFileAttributesW(windows::ToWin32Path(Path).c_str()) != INVALID_FILE_ATTRIBUTES;
+		if (bOutExists != nullptr)
+		{
+			*bOutExists = bExists;
+		}
+		return bExists;
+	};
+	if (exists())
+	{
+		windows::SetErrorText(OutError, "Cannot create", Path, "the file exists");
+		return false;
+	}
+
+	// As WriteFileAtomic: a new temporary file beside Path, written and flushed before it is moved in.
+	std::filesystem::path temp;
+	HANDLE rawFile = INVALID_HANDLE_VALUE;
+	for (uint32 attempt = 0u; attempt < 16u && rawFile == INVALID_HANDLE_VALUE; ++attempt)
+	{
+		temp = MakeTempPath(Path, gTempFileCounter.fetch_add(1u, std::memory_order_relaxed));
+		rawFile = CreateFileW(windows::ToWin32Path(temp).c_str(), GENERIC_WRITE, 0u, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+		if (rawFile == INVALID_HANDLE_VALUE && GetLastError() != ERROR_FILE_EXISTS)
+		{
+			break;
+		}
+	}
+	CScopedHandle file(rawFile);
+	if (!file.IsValid())
+	{
+		windows::SetError(OutError, "Cannot create a temporary file for", Path, GetLastError());
+		return false;
+	}
+	bool bWritten = WriteAll(file.Get(), Bytes, temp, OutError);
+	if (bWritten && !FlushFileBuffers(file.Get()))
+	{
+		windows::SetError(OutError, "Cannot flush", temp, GetLastError());
+		bWritten = false;
+	}
+	if (!file.Reset() && bWritten)
+	{
+		windows::SetError(OutError, "Cannot close", temp, GetLastError());
+		bWritten = false;
+	}
+	if (bWritten && MoveFileNoReplace(temp, Path, OutError))
+	{
+		return true;
+	}
+	DeleteFileW(windows::ToWin32Path(temp).c_str());
+	(void)exists();
+	return false;
 }
 
 bool WriteFileAtomic (const std::filesystem::path& Path, std::span<const uint8> Bytes, bool bCreateDirectories, FString* OutError)

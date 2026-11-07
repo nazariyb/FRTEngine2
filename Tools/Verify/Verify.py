@@ -20,13 +20,17 @@ script, behind FRT.bat verify (Premake/tools.lua). A milestone branch merges onl
      of the engine (/Engine) and of each template (/Project) in place, on a tree git says is unchanged there,
      equal to Core-Test/Assets/Golden/Registry-*.txt and clean of PATH001-003, RULE001-002 and errors (Core-Test
      compares the same files over temp copies); and every verb of FRT.bat assets help --json and every code of
-     Core/Source/Assets/AssetDiagnosticCodes.h is named in Docs/Assets.md;
+     Core/Source/Assets/AssetDiagnosticCodes.h is named in Docs/Assets.md; in full mode also validate --ci of the
+     engine (--engine) and of each template, in place: clean (no error, no warning; REF007's infos stay until M7);
   5. the editor's smoke test (-Editor:SmokeTest=1) over Templates/Demo and Templates/Blank, in place, in
      Debug and Development, which also checks the asset registry's initial scan and the editor's Assets panel
-     (its "[smoke] ok registry:" line; in Demo the panel lists textures); then its steps that edit files, on a
+     (its "[smoke] ok registry:" line; in Demo the panel lists textures) and that its Asset problems panel lists
+     what validate does over every mount, with the lifecycle's providers ("[smoke] ok the Asset problems panel lists"); then its steps that edit files, on a
      scratch copy of Templates/Demo made with
      FRT.bat new and a copy of the shaders (Gate.smoke_scratch): a material rewritten must reload and a
-     shader include edited must rebuild exactly the programs that include it, through the file watcher;
+     shader include edited must rebuild exactly the programs that include it, through the file watcher, and a
+     metaless PNG added must get its meta from the editor's lifecycle through the copy's Git provider, both files
+     left untracked; then, with the copy's .git deleted and nothing rebuilt, the same run once more through None;
   6. automation captures of Templates/Demo through the launcher, in Debug and in Development: one raster,
      compared byte for byte with its baseline, and one path traced, compared by relative RMSE - path
      tracing still varies a little from run to run, as its radiance cache inserts with GPU atomics, so a
@@ -672,6 +676,20 @@ class Gate:
         return (f'8 verbs: {scan[0]["records"]} records, {textures[-1]["matched"]} textures, {len(refs)} edge(s) of a model, '
                 f'{records} records dumped')
 
+    def assets_validate(self, log):
+        """FRT.bat assets validate --ci over the engine (--engine) and each template, in place and read-only (design
+        13.5, edit [11]): each exits with 0, which with --ci means clean - every included file has its committed meta,
+        each repository's Schemas/Migrations.yml is current, nothing is a META, VCS, MIG, PATH or RULE error or
+        warning; infos pass (REF007, legacy path references, until M7)."""
+        found = []
+        for name, arguments in (('engine', ['--engine']), *((template, [f'-Project=Templates/{template}']) for template in TEMPLATES)):
+            lines = self.assets_json(log, [FRT, 'assets', *arguments, 'validate', '--ci', '--json'], 0)
+            summary = next((o for o in lines if o.get('kind') == 'summary'), None)
+            if summary is None or not summary.get('clean') or summary.get('errors') or summary.get('warnings'):
+                raise StepFailed(f'validate --ci of {name}: {json.dumps(summary or lines[:2])[:160]}')
+            found.append(f'{name} {summary.get("infos", 0)} info')
+        return 'clean: ' + ', '.join(found)
+
     def golden_dump(self, log, name, template, arguments):
         """FRT.bat assets dump registry --text --ci for one golden dump (GOLDENS), in place, with LF line endings."""
         output = Path(log).with_suffix(f'.{name}.txt')
@@ -929,10 +947,16 @@ class Gate:
 
     SMOKE_REGISTRY_LINE = re.compile(r'^\[smoke\]\s+ok\s+registry: (\d+) records, initial scan (\d+) ms', re.MULTILINE)
     SMOKE_PANEL_LINE = re.compile(r'^\[smoke\]\s+ok\s+the Assets panel shows (\d+) of (\d+) record\(s\) of type:Texture', re.MULTILINE)
+    SMOKE_PROBLEMS_LINE = re.compile(r'^\[smoke\]\s+ok\s+the Asset problems panel lists (\d+) problem\(s\) in (\d+) asset\(s\), '
+                                     r'as RunValidation does with its options', re.MULTILINE)
+    # A read-only editor's registry runs the meta lifecycle too, reporting only (edit [55]): the in-place run is one.
+    SMOKE_READER_LIFECYCLE_LINE = re.compile(r'^\[smoke\]\s+ok\s+the read-only registry runs the meta lifecycle, reporting only',
+                                             re.MULTILINE)
 
     def check_smoke_registry(self, name, config, text, log):
-        """The smoke test's registry check: the initial scan completed (its "[smoke] ok registry:" line) and the
-        editor's Assets panel shows what the registry holds; in SMOKE_TEXTURES templates it lists textures. Records
+        """The smoke test's registry check: the initial scan completed (its "[smoke] ok registry:" line), the
+        editor's Assets panel shows what the registry holds (in SMOKE_TEXTURES templates it lists textures), and its
+        Asset problems panel lists what validate does over the same mounts (design 12.8, edit [18]). Records
         the host's "[assets] initial scan:" line, which must come before its first BuildWorld, for the summary. Returns
         a detail text, or raises StepFailed."""
         self.read_initial_scan(f'editor, {name} ({config})', log, required=True)
@@ -944,13 +968,46 @@ class Gate:
             raise StepFailed('no "[smoke] ok the Assets panel shows" line: the Assets panel check did not pass')
         if name in SMOKE_TEXTURES and int(panel.group(1)) == 0:
             raise StepFailed(f'the Assets panel of {name} lists no texture (type:Texture)')
-        return f'registry: {registry.group(1)} records, {panel.group(2)} textures, initial scan {registry.group(2)} ms'
+        problems = self.SMOKE_PROBLEMS_LINE.search(text)
+        if not problems:
+            raise StepFailed('no "[smoke] ok the Asset problems panel lists" line: the problems panel did not list what '
+                             'RunValidation does with its options')
+        if not self.SMOKE_READER_LIFECYCLE_LINE.search(text):
+            raise StepFailed('no "[smoke] ok the read-only registry runs the meta lifecycle, reporting only" line: the '
+                             'read-only editor runs no meta lifecycle')
+        return (f'registry: {registry.group(1)} records, {panel.group(2)} textures, {problems.group(1)} problems, '
+                f'initial scan {registry.group(2)} ms')
 
     # Lines of the smoke test's file edits that must have passed: without them the step tested nothing.
     SCRATCH_EDIT_CHECKS = (
         ('the material reload', re.compile(r'^\[smoke\]\s+ok\s+.* reloaded: version', re.MULTILINE)),
         ('the shader rebuild', re.compile(r'^\[smoke\]\s+ok\s+exactly the \d+ program\(s\) that read ', re.MULTILINE)),
     )
+    # The lifecycle's meta for the PNG the smoke test adds, through the provider named (edit [4]).
+    SCRATCH_META_LINE = re.compile(r'^\[smoke\]\s+ok\s+the lifecycle created (\S+\.png)\.meta through the (\w+) provider', re.MULTILINE)
+
+    def scratch_smoke_run(self, log, env, config, project, project_dir, shaders, output, provider, root):
+        """One editor smoke run with file edits over the scratch copy (Env: the user-data directory FRT.bat new
+        registered the engine in); the meta it creates goes through Provider."""
+        exe = BINARIES / f'Editor-{config}-Default.exe'
+        since = Path(log).stat().st_size if Path(log).exists() else 0
+        code, seconds = run([exe, f'-Project={project}', '-Editor:SmokeTest=1', f'-Editor:SmokeTestDir={output}',
+                             '-Editor:SmokeTestEdits=1', f'-Render:ShaderRoot={shaders}'],
+                            log, cwd=project_dir, env=env, timeout=SMOKE_TIMEOUT)
+        self.timings.append((f'editor smoke test with file edits, scratch copy ({config}, {provider})', f'{seconds:.1f} s'))
+        text = Path(log).read_bytes()[since:].decode('utf-8', errors='replace')   # this run's lines alone
+        if code != 0:
+            failures = re.findall(r'^\[smoke\]\s+FAIL\s+(.*)$', text, re.MULTILINE)
+            raise StepFailed(('timed out' if code is None else f'exit code {code}') + f' ({provider})' +
+                             (': ' + '; '.join(f.strip() for f in failures[:3]) if failures else '') +
+                             f' (the copy is kept: {root})')
+        missing = [what for what, pattern in self.SCRATCH_EDIT_CHECKS if not pattern.search(text)]
+        if missing:
+            raise StepFailed(f'no check of {" or ".join(missing)} passed ({provider}; the copy is kept: {root})')
+        metas = [m for m in self.SCRATCH_META_LINE.finditer(text) if m.group(2) == provider]
+        if not metas:
+            raise StepFailed(f'no "[smoke] ok the lifecycle created ... through the {provider} provider" line (the copy is kept: {root})')
+        return text, metas[-1].group(1)
 
     def smoke_scratch(self, log, config):
         """The smoke steps that edit files, on a scratch copy (design 13.5, step 3), never on the engine
@@ -977,32 +1034,46 @@ class Gate:
             errors = tail(log, lines=3, pattern=r'error|failed|cannot|new:')
             raise StepFailed('FRT.bat new: ' + ('timed out' if code is None else
                                                 '; '.join(errors) if errors else f'exit code {code}'))
+        # The template's Schemas/Migrations.yml comes along byte for byte (edit [65]): without it the copy would be
+        # behind the engine (MIG001) the moment it is made.
+        migrations = ROOT / 'Templates' / SCRATCH_TEMPLATE / 'Schemas' / 'Migrations.yml'
+        copied = project_dir / 'Schemas' / 'Migrations.yml'
+        if not migrations.exists() or not copied.exists() or copied.read_bytes() != migrations.read_bytes():
+            raise StepFailed(f'FRT.bat new did not carry {SCRATCH_TEMPLATE}\'s Schemas/Migrations.yml over unchanged '
+                             f'(the copy is kept: {root})')
         retries = self.build(log, f'--project={project}', f'--config={config}', env=env)
 
         shaders = root / 'Shaders'
         shutil.copytree(ROOT / 'Core' / 'Content' / 'Shaders', shaders, ignore=shutil.ignore_patterns('Bin'))
 
-        exe = BINARIES / f'Editor-{config}-Default.exe'
+        # The copy is a git repository (FRT.bat new: git init, everything staged, nothing committed), so the editor, its
+        # writer here (Engine/Automation.h), creates the added PNG's meta through Git, which stages nothing: both files
+        # stay untracked (edit [4]).
+        # Both legs always run: verify needs git anyway, so a copy without a repository means FRT.bat new regressed.
         output = self.run_dir / 'Smoke' / f'{SCRATCH_NAME}-{config}'
-        code, seconds = run([exe, f'-Project={project}', '-Editor:SmokeTest=1', f'-Editor:SmokeTestDir={output}',
-                             '-Editor:SmokeTestEdits=1', f'-Render:ShaderRoot={shaders}'],
-                            log, cwd=project_dir, env=env, timeout=SMOKE_TIMEOUT)
-        self.timings.append((f'editor smoke test with file edits, scratch copy ({config})', f'{seconds:.1f} s'))
-        text = Path(log).read_bytes().decode('utf-8', errors='replace')
+        if not (project_dir / '.git').exists():
+            raise StepFailed(f'FRT.bat new made no git repository in the copy, so the Git provider cannot be proven '
+                             f'(the copy is kept: {root})')
+        text, added = self.scratch_smoke_run(log, env, config, project, project_dir, shaders, output, 'Git', root)
         checks = len(re.findall(r'^\[smoke\]\s+ok\s', text, re.MULTILINE))
         skips = len(re.findall(r'^\[smoke\]\s+skip\s', text, re.MULTILINE))
-        if code != 0:
-            failures = re.findall(r'^\[smoke\]\s+FAIL\s+(.*)$', text, re.MULTILINE)
-            raise StepFailed(('timed out' if code is None else f'exit code {code}') +
-                             (': ' + '; '.join(f.strip() for f in failures[:3]) if failures else '') +
-                             f' (the copy is kept: {root})')
-        missing = [what for what, pattern in self.SCRATCH_EDIT_CHECKS if not pattern.search(text)]
-        if missing:
-            raise StepFailed(f'no check of {" or ".join(missing)} passed (the copy is kept: {root})')
+        detail = f'{checks} checks passed' + (f', {skips} skipped' if skips else '')
+        status = output_of(['git', '-C', str(project_dir), 'status', '--porcelain', '--untracked-files=all', '--', 'Content'])
+        lines = (status or b'').decode('utf-8', errors='replace').splitlines()
+        for path in (f'Content/{added}', f'Content/{added}.meta'):
+            if f'?? {path}' not in lines:
+                raise StepFailed(f'git status does not list {path} as untracked: {"; ".join(lines[:4]) or "nothing"} '
+                                 f'(the copy is kept: {root})')
+        # The same copy without its repository: None, with nothing generated or built again. remove_tree swallows what it
+        # cannot delete, and a .git left in part would make the run detect Git again.
+        remove_tree(project_dir / '.git')
+        if (project_dir / '.git').exists():
+            raise StepFailed(f'{project_dir / ".git"} could not be deleted for the None run (the copy is kept: {root})')
+        self.scratch_smoke_run(log, env, config, project, project_dir, shaders, self.run_dir / 'Smoke' / f'{SCRATCH_NAME}-{config}-None',
+                               'None', root)
         remove_tree(root)
-        return (f'{checks} checks passed' + (f', {skips} skipped' if skips else '') +
-                ', the material reloaded and the shader programs rebuilt' + (f'; build {retries}' if retries else '') +
-                f'; output in {output}')
+        return (detail + f', the material reloaded, the shader programs rebuilt and {added}\'s meta created through Git, '
+                f'then without .git through None' + (f'; build {retries}' if retries else '') + f'; output in {output}')
 
     # ---- captures ----
 
@@ -1210,6 +1281,11 @@ class Gate:
             raise StepFailed('; '.join(errors) if errors else f'exit code {code}')
         if not list(output.glob('*.exe')):
             raise StepFailed(f'no executable in {output}')
+        # Metas never ship (design §3.2; FRT.bat package skips them), nor anything of a Local/ directory.
+        stray = sorted(str(p.relative_to(output)) for p in output.rglob('*')
+                       if (p.is_file() and p.name.lower().endswith('.meta')) or (p.is_dir() and p.name == 'Local'))
+        if stray:
+            raise StepFailed(f'{len(stray)} meta(s) or Local/ in the package, e.g. {stray[0]}')
         return str(output)
 
     # ---- git ----
@@ -1276,7 +1352,7 @@ class Gate:
         self.step('docs name every verb and code', self.docs_coverage, needs=[('engine', 'Development')])
 
         if self.mode != 'quick':
-            self.skip('assets validate --ci', 'skipped (M4)')
+            self.step('assets validate --ci', self.assets_validate, needs=[('engine', 'Development')])
             for config in SMOKE_CONFIGS:
                 for name in TEMPLATES:
                     self.step(f'smoke {name} in place ({config})', self.smoke, name, config,

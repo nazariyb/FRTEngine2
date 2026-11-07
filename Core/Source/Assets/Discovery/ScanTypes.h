@@ -110,6 +110,21 @@ struct SScanFolder   // Parent: index; ~0u = root. Scope: what EnterFolder retur
 struct SScanFile { uint32 Folder = 0; FString Name; uint64 Size = 0; int64 MTime = 0; platform::SFileIdentity Identity;
 	SFileVerdict Verdict; EScanFileState State = EScanFileState::New; };
 /**
+ * A `.meta` of the listing (design §3.2, §5.4 step 4). `*.meta` stays a built-in exclude, so no rule ever classifies a
+ * meta: the scanner splits metas out of each listing before Classify, as it does with the folder's Assets.yml, and
+ * records them here with the spelling the listing has. SourceFile pairs it with the file it describes, the meta's name
+ * without ".meta": byte-exact first, else the first equal under the portable fold (a meta spelled otherwise, META006).
+ * ~0u: no such file is in Files - an orphan, or a meta whose source the listing holds but Classify excluded
+ * (bSourceExcluded: an excluded file that still has a meta, META007; a folder rule file counts as excluded). A name that
+ * is a dot-name or nothing but ".meta" is no meta: the built-in excludes drop it unseen, as before.
+ */
+struct SScanMeta
+{
+	uint32 Folder = 0; FString Name; uint64 Size = 0; int64 MTime = 0; platform::SFileIdentity Identity;
+	uint32 SourceFile = ~0u;          // index in SScanBatch::Files
+	bool bSourceExcluded = false;
+};
+/**
  * One scan's result. The oracle never emits RULE002: whether a file stays Unclaimed is decided after Analyze,
  * once companions are known. Removals (known files at or below the root missing from the batch, outside
  * FailedFolders) are computed by the consumer, not the scanner.
@@ -119,9 +134,11 @@ struct SScanBatch
 	FString RootMountPath;                     // Folders[0] is this folder (a mount root or the subtree root); none when excluded
 	std::vector<SScanFolder> Folders;          // pre-order DFS; siblings by SStringLessIgnoreCase, then bytes
 	std::vector<SScanFile> Files;              // every file Classify kept, Unchanged included; ordered like the folders, then by name
+	std::vector<SScanMeta> Metas;              // every meta listed; ordered like Files; the same with or without IKnownFiles
 	std::vector<FString> FailedFolders;        // listing failed: consumers keep everything they know at or below them
 	std::vector<FString> SkippedLinks;         // name-surrogate reparse points (symlinks, junctions): never descended
-	std::vector<SDiagnostic> Diagnostics;      // the scan's own (problem source Scan): PATH001-003, unlistable folders, skipped links
+	std::vector<SDiagnostic> Diagnostics;      // the scan's own (problem source Scan): PATH001-003 (metas' names included),
+	                                           // unlistable folders, skipped links
 	std::vector<SDiagnostic> RuleDiagnostics;  // what the oracle's OpenScope and EnterFolder returned (source Rules): RULE001 and its
 	                                           // code-0 warnings; the consumer routes by this member, never by code
 	uint32 FoldersListed = 0; double Milliseconds = 0.0;

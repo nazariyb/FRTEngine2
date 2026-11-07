@@ -159,6 +159,21 @@ TEST(PlatformTest, EnvironmentValueRoundTrip)
 	EXPECT_FALSE(platform::GetEnvironmentValue(Name).has_value());
 }
 
+// What the shell would run on a double click is never opened, only shown: the problems panel's Open.
+TEST(PlatformTest, ShellRunnableKindsAreExecutablesScriptsAndShortcutsInAnyCase)
+{
+	for (const char* runnable : { "a.exe", "B.BAT", "c.Cmd", "d.ps1", "e.lnk", "f.vbs", "g.msi", "h.reg", "dir/i.com" })
+	{
+		EXPECT_TRUE(platform::IsShellRunnable(FStringView(runnable).ToPath())) << runnable;
+	}
+	for (const char* document : { "a.png", "b.yml", "c.meta", "Schemas/Migrations.yml", "noextension", "d.exe.txt", ".exe" })
+	{
+		EXPECT_FALSE(platform::IsShellRunnable(FStringView(document).ToPath())) << document;
+	}
+	EXPECT_EQ(platform::OpenWithShell(FStringView("never.bat").ToPath()), platform::EShellOpen::Failed) << "refused, not run";
+	EXPECT_EQ(platform::ShowInFileManager(FStringView("Z:/no/such/file.png").ToPath()), platform::EShellOpen::NotFound);
+}
+
 TEST(PlatformTest, EnvironmentUnsetIsNotEmpty)
 {
 	EXPECT_FALSE(platform::GetEnvironmentValue("FRT_TEST_NEVER_SET_Ж").has_value());

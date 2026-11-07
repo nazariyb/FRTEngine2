@@ -1,8 +1,9 @@
 // The libraries that reload files in dev builds - materials and input action maps - do it through the
 // file watcher service (Assets/FileWatcherService.h) instead of polling every file's time: a file they
 // loaded is read again once the watcher reports it and its write time differs from the one it was read
-// with, exactly that file, and nothing else; a removed file keeps what was loaded; a Rescan (an
-// overflow) reads only the files whose time changed; and dropping the watcher ends every subscription.
+// with, exactly that file, and nothing else (not its .meta beside it either); a removed file keeps what
+// was loaded; a Rescan (an overflow) reads only the files whose time changed; and dropping the watcher
+// ends every subscription.
 // Also the rule they share, IsFileAffected. Everything runs in directories with non-ASCII names, on
 // the real Windows watcher.
 #include <gtest/gtest.h>
@@ -119,6 +120,11 @@ TEST(FileChangeRule, AFileIsAffectedByAChangeOfItsPathOrOfADirectoryAboveItButNo
 	other.Path = root / FStringView("Матеріали/Камінь.frtmat.yml").ToPath();
 	EXPECT_FALSE(assets::IsFileAffected(other, file));
 
+	// Its meta (M4) is another file: the runtime loads by path and never reads one (design §3.2).
+	assets::SFileChange meta = modified;
+	meta.Path = root / FStringView("Матеріали/Цегла.frtmat.yml.meta").ToPath();
+	EXPECT_FALSE(assets::IsFileAffected(meta, file));
+
 	assets::SFileChange rescan;
 	rescan.Kind = assets::EFileChange::Rescan;
 	rescan.bDirectory = true;
@@ -155,17 +161,26 @@ TEST_F(WatchedReloadTest, AMaterialIsReadAgainWhenTheWatcherReportsItsFileChange
 	assets::CFileWatcherService service;
 	graphics::CMaterialLibrary library;
 	library.SetFileWatcher(&service);
-	const memory::TRefShared<graphics::SMaterial> material = library.LoadOrCreateMaterial(path, {});
+	memory::TRefShared<graphics::SMaterial> material = library.LoadOrCreateMaterial(path, {});
 	ASSERT_TRUE(material);
 	EXPECT_FLOAT_EQ(material->Roughness, 0.1f);
 	EXPECT_EQ(service.GetStats().Subscriptions, 1u) << "one subscription for the material's directory";
 	const uint32 version = material->Version;
 	EXPECT_FALSE(library.ReloadModifiedMaterials()) << "nothing reported, nothing read";
 
-	// A file it never loaded is not read.
+	// A file it never loaded is not read, nor is the loaded material's meta written beside it (M4: nothing at run time
+	// reads a meta, design §3.2). The material is made to look stale for this step (its read time no longer its
+	// file's), so a report that marked it for either write would read it again: only the reports decide here, not the
+	// write time.
+	const std::filesystem::file_time_type readTime = material->LastWriteTime;
+	material->LastWriteTime = readTime - std::chrono::seconds(60);
 	Rewrite(other, MaterialText(0.9f));
+	ASSERT_TRUE(platform::WriteFileText(Dir / FStringView("Цегла.frtmat.yml.meta").ToPath(),
+		"FormatVersion: 1\nGuid: 5d1e7a3b9c0f42d68e1a2b3c4d5e6f70\n"));
 	ASSERT_TRUE(service.Flush(Dir));
-	EXPECT_FALSE(library.ReloadModifiedMaterials());
+	EXPECT_FALSE(library.ReloadModifiedMaterials()) << "neither the other material's report nor its meta's marks it";
+	EXPECT_EQ(material->Version, version);
+	material->LastWriteTime = readTime;
 
 	Rewrite(path, MaterialText(0.6f));
 	ASSERT_TRUE(service.Flush(Dir));

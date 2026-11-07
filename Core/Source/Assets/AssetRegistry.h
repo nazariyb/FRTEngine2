@@ -71,17 +71,27 @@ class CWorkerPool;
  * after a newer one of the same file. The pool's completions and the watcher's callbacks only queue work. Other
  * threads Acquire views and never wait for a commit.
  *
- * Writes (§5.9, the M3 lock deviation). Whether the registry writes is decided only by SAssetRegistryDesc::bWriter,
- * which the host sets exactly when it holds the owner root's Owner.lock (the editor: CEngine with
- * SEngineDesc::bAssetWriter; AssetTool: a verb that took the lock); the registry never takes a lock and never decides
+ * Writes (§5.9). Whether the registry writes is decided only by SAssetRegistryDesc::bWriter, which the host sets
+ * exactly when it holds the owner root's Owner.lock (ClaimAssetOwnership, Assets/Meta/AssetRepairs.h: the editor through
+ * CEngine with SEngineDesc::bAssetWriter; AssetTool: a verb that took the lock; a read-only guest is a reader); the
+ * registry never takes a lock and never decides
  * from config. A writer writes its snapshot file and journal (Project: AssetRegistry.snapshot of /Project and its
  * plugins; Engine: Engine.snapshot of /Engine), Rules.cache and ProjectId under its owner root; a reader writes
  * nothing at all - no journal (opening one writes), no ProjectId (ReadProjectId: a root without one starts cold), no
- * Rules.cache, no watcher fences (a writer's Flush writes fence files into its own mounts). The editor never writes
- * /Engine in M3, fences included: engine files changed since the last `FRT.bat assets scan --engine` are analyzed
- * in memory at every start (logged once).
+ * Rules.cache, no watcher fences (a writer's Flush writes fence files into its own mounts). A Project owner never writes
+ * Engine.snapshot or a journal of /Engine, fences included, even in engine-owner mode (bEngineMetasWritable, which lets
+ * the lifecycle repair /Engine's metas and nothing else): engine files changed since the last `FRT.bat assets scan
+ * --engine` are analyzed in memory at every start (logged once).
  * Snapshots are written from an acquired view on a worker after a batch of SnapshotBatchRecords records, after
  * SnapshotIdleSeconds without a commit, and at ShutDown (clean exit).
+ *
+ * The meta lifecycle (M4, §4.7). With SAssetRegistryDesc::Lifecycle the registry owns a CAssetRepairs (GetRepairs):
+ * its Start rolls an unfinished operation of the owner root's OpJournal forward before the first scan; every finished
+ * pass hands it the paths it touched, and Pump ticks it (SLifecycleDesc::bLive), so the lifecycle runs on a worker
+ * against the committed view whenever the registry is quiet, commits its states and problems (EProblemSource::Lifecycle)
+ * and, for a writer with bRepairs, applies its repairs through a CAssetWriter on the owner root and rescans what they
+ * touched. Only the mounts the writer owns are repaired (Project: /Project and its plugins, and /Engine too through a
+ * writer of the engine root with SAssetRegistryDesc::bEngineMetasWritable; Engine: /Engine); every mount is reported.
  *
  * Change notification (§5.9). Panels poll GetRevision() once per frame and re-run their queries when it moved;
  * ForEachChangeSince walks the store's change ring. Engine systems may subscribe to OnAssetsChanged, which fires once
@@ -93,8 +103,10 @@ class CWorkerPool;
  */
 namespace frt::assets
 {
+class CAssetRepairs;
 class CFileWatcherService;
 class CRegistryJournal;
+struct SLifecycleDesc;
 
 // Which owner root's files a writer writes, and which mounts it holds.
 enum class EAssetRegistryOwner : uint8
@@ -123,6 +135,11 @@ struct SAssetRegistryDesc
 	EAssetRegistryOwner Owner = EAssetRegistryOwner::Project;
 	// The host holds the owner root's Owner.lock (see the class comment): only then is anything written.
 	bool bWriter = false;
+	// Engine-owner mode of a Project-owner writer (§4.7, ClaimAssetOwnership in Assets/Meta/AssetRepairs.h): the host holds
+	// <engine>/Local/Assets/Owner.lock too, so the lifecycle repairs metas in /Engine through a second CAssetWriter on the
+	// engine root. Nothing more: no Engine.snapshot, no journal of /Engine, no fences there (only --engine runs, Owner
+	// Engine, write those). Ignored without bWriter, without Lifecycle and for an Engine owner.
+	bool bEngineMetasWritable = false;
 	// The file watcher to subscribe to (every mount's content root and rule-file directory); null or disabled: none.
 	CFileWatcherService* Watcher = nullptr;
 	// Default (empty Target) in every host, so the editor, headless hosts and AssetTool share one RulesBasis. Tests
@@ -142,6 +159,10 @@ struct SAssetRegistryDesc
 	uint32 RetryDelayMs = 200u;
 	// Files per Analyze task (one delta each).
 	uint32 AnalyzeBatchFiles = 16u;
+	// The meta lifecycle (Assets/Meta/AssetRepairs.h); the registry keeps the pointer and owns a CAssetRepairs for it
+	// (GetRepairs). Null: none, nothing is reported or written (tests and benchmarks that predate it). Every host passes
+	// one: CEngine's live, repairing for the writer and reporting otherwise; each AssetTool run its own (RegistryRun.h).
+	const SLifecycleDesc* Lifecycle = nullptr;
 };
 
 // What the registry did since construction.
@@ -150,11 +171,14 @@ struct SAssetRegistryCounters
 	uint64 Analyzed = 0u;       // AnalyzeFile calls (retries included)
 	uint64 Hashed = 0u;         // content hashes computed (the importers that read a whole file hash it in that pass)
 	uint64 ReEvaluated = 0u;    // records whose rule outputs were resolved again without Analyze
+	uint64 MetasRead = 0u;      // metas whose bytes a conversion read (changed ones, and those of files worked on)
 	uint64 Committed = 0u;      // deltas committed
 	uint64 Scanned = 0u;        // files listed by scans
 	uint64 Passes = 0u;         // scans completed (whole mounts and subtrees)
 	uint64 SnapshotsWritten = 0u;
 	uint64 Compactions = 0u;
+	uint64 RepairsApplied = 0u; // lifecycle repairs written (an action each: a meta created, restored, moved, re-GUIDed)
+	uint64 RepairsRefused = 0u; // lifecycle repairs the VCS or the writer refused (VCS002): kept as proposals
 	double CommitMs = 0.0;      // owner-thread time of the commits, journal appends included
 };
 
@@ -167,11 +191,15 @@ struct SAssetChange
 
 /**
  * What changed since the last OnAssetsChanged (§5.9). Added, Removed and Modified come from the store's change ring
- * (asset records; a sub-entry's change is its record's). M3 has no move (ids are path-derived: a move is a Removed and
- * an Added), and the store does not tell tag and edge edits apart from other edits, so Moved, TagsChanged and
- * DependenciesChanged stay empty and every edit is Modified. bRefreshAll: the ring cannot list the changes (a
- * snapshot adopted, tables compacted, the ring overflowed): re-run every query. bScanCompleted: the initial scan
- * completed in this Pump.
+ * (asset records; a sub-entry's change is its record's); a record whose id changed in place (its file's meta appeared,
+ * a GUID edited) is a Removed of the old id and an Added of the new one. Moved: an id that left a path it held before
+ * the window and holds, at the end of it, a path it did not hold (from M4 the meta's GUID, so a file renamed or moved
+ * with its meta), listed once with its new path and in neither Added nor Removed (AddRecordChanges); a record added and
+ * removed within one window, a path that went and came back, and a file without a meta (its id is path-derived) stay
+ * Added and Removed. The store does not tell tag and edge edits apart from other edits, so TagsChanged and
+ * DependenciesChanged stay empty and every edit is Modified. bRefreshAll: the ring cannot list the changes (a snapshot
+ * adopted, tables compacted, the ring overflowed): re-run every query. bScanCompleted: the initial scan completed in
+ * this Pump.
  */
 struct SAssetChangeSet
 {
@@ -191,6 +219,11 @@ struct SAssetChangeSet
 			&& !bRefreshAll && !bScanCompleted;
 	}
 };
+
+// Appends the change ring's entries of one broadcast window (oldest first, CRegistryStore::ForEachChangeSince) to Out's
+// Added, Removed, Modified and Moved, as SAssetChangeSet says: per id, the k-th path it left (by its last Removed) and
+// the k-th path it came to (by its first Added) are one move.
+FRT_CORE_API void AddRecordChanges (std::span<const SRecordChange> Changes, SAssetChangeSet& Out);
 
 // The start-up as the hosts log it (`[assets] initial scan: ...`).
 struct SInitialScanReport
@@ -289,6 +322,8 @@ public:
 	[[nodiscard]] TMulticastDelegate<const SAssetChangeSet&>& OnAssetsChanged () noexcept;
 
 	[[nodiscard]] const SAssetRegistryCounters& GetCounters () const noexcept;
+	// The meta lifecycle's runtime (SAssetRegistryDesc::Lifecycle), null without one. Owner thread.
+	[[nodiscard]] CAssetRepairs* GetRepairs () noexcept;
 	[[nodiscard]] const CMountTable& GetMounts () const noexcept;
 	[[nodiscard]] const CRulesEngine& GetRules () const noexcept;
 	[[nodiscard]] bool IsWriter () const noexcept;
@@ -299,13 +334,18 @@ public:
 	struct SImpl;
 
 private:
-	// Core-Test: breaks the journal as a failed write would; makes a file keep changing while it is analyzed.
+	// Core-Test: breaks the journal as a failed write would; makes a file keep changing while it is analyzed, or a meta
+	// unreadable.
 	friend struct SAssetRegistryTestAccess;
 	// The writer's journal while it is open (null for a reader, and before the snapshots loaded or after ShutDown).
 	[[nodiscard]] CRegistryJournal* GetJournal () noexcept;
 	// Every Analyze of the file at MountPath reports bSourceChanged, as for a file written to without pause (the
-	// retry cap that ends every wait). Owner thread, before Start.
+	// retry cap that ends every wait); for a meta's path, every read of the meta changed while read. Owner thread,
+	// before Start.
 	void SetSourceChangedForTest (FString MountPath);
+	// Every read of the meta at MountPath fails as for a file that cannot be opened (no access, an I/O error). Owner
+	// thread, before Start.
+	void SetMetaUnreadableForTest (FString MountPath);
 
 	std::unique_ptr<SImpl> Impl;
 };

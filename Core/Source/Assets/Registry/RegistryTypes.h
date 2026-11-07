@@ -60,8 +60,16 @@ struct SRecordId
 	constexpr bool operator== (const SRecordId&) const noexcept = default;
 };
 
-enum class EFileClass : uint8 { Asset, Companion, Raw, Unclaimed, Excluded };
-enum class EMetaState : uint8 { Paired, PendingMeta, Orphan, Broken, MissingMeta };   // M3: always PendingMeta
+// Meta (M4): a `.meta` file's own FILES row, so that it has a stat and an identity and an orphan has a home.
+enum class EFileClass : uint8 { Asset, Companion, Raw, Unclaimed, Excluded, Meta };
+// The file classes that get a meta (§3.2): imported assets and raw files. Companions, unclaimed and excluded files (a
+// type the scope's Types filter leaves out included) do not, so nothing ever creates one for them.
+[[nodiscard]] constexpr bool GetsMeta (EFileClass Class) noexcept
+{
+	return Class == EFileClass::Asset || Class == EFileClass::Raw;
+}
+// §4.7's ErrorMissingMeta is PendingMeta plus an error-severity META001; MissingMeta is a lost meta (META008).
+enum class EMetaState : uint8 { Paired, PendingMeta, Orphan, Broken, MissingMeta };   // a scan sets Paired/Broken/Orphan, the lifecycle the rest
 enum class ERecordFlags : uint16
 {
 	None = 0, Primary = 1 << 0, HasProblems = 1 << 1, StaleTags = 1 << 2, LoadedThroughRedirect = 1 << 3,
@@ -494,7 +502,8 @@ FRT_DECLARE_ENUM_REFLECTION(
 	FRT_ENUM_ENTRY(frt::assets::EFileClass, Companion),
 	FRT_ENUM_ENTRY(frt::assets::EFileClass, Raw),
 	FRT_ENUM_ENTRY(frt::assets::EFileClass, Unclaimed),
-	FRT_ENUM_ENTRY(frt::assets::EFileClass, Excluded));
+	FRT_ENUM_ENTRY(frt::assets::EFileClass, Excluded),
+	FRT_ENUM_ENTRY(frt::assets::EFileClass, Meta));
 
 FRT_DECLARE_ENUM_REFLECTION(
 	frt::assets::EMetaState,

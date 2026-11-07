@@ -5,13 +5,15 @@
  * snapshots, runs the incremental scan, answers from the registry and shuts it down before it returns, so nothing
  * of it outlives the verb (the host drains the pool right after).
  *
- * Writes. Only `scan` writes, and only while the host holds the mount's writer lock (SCommandlet::bWritesProject,
- * not a read-only run): its registry is then the writer and writes the snapshot of the mounts it owns (/Project and
- * its plugins: Local/Assets/AssetRegistry.snapshot; with --engine: <engine>/Local/Registry/Engine.snapshot), its
- * journal, Rules.cache and ProjectId. Every other verb builds a reader that writes nothing at all - not even beside
- * an open editor, and without --ci (§13.1; M3 has no guest mode). `list-rules` therefore prints Rules.cache's lines
- * without writing the file (an M3 deviation from §13.2: the lock holder writes it). `scan --engine` is the M3 subset
- * of M4's engine-owner mode; no other verb's --engine writes.
+ * Writes. Of these verbs only `scan` writes, and only while the host holds the mount's writer lock
+ * (SCommandlet::bWritesProject, not a read-only run): its registry is then the writer and writes the snapshot of the
+ * mounts it owns (/Project and its plugins: Local/Assets/AssetRegistry.snapshot; with --engine:
+ * <engine>/Local/Registry/Engine.snapshot), its journal, Rules.cache and ProjectId - and never a meta: it opens no
+ * lifecycle (edit [66]). Every other verb here builds a reader that writes nothing at all, beside an open editor too.
+ * `list-rules` therefore prints Rules.cache's lines without writing the file (an M3 deviation from §13.2: the lock
+ * holder writes it). The meta verbs (MetaCommandlets.cpp) open their registry here with a lifecycle of their own.
+ * `status` names each mount's VCS provider, so it alone of these detects them (git runs once per mount); the others
+ * spawn nothing.
  *
  * Every verb needs a mount: a project, or --engine (the host requires one only for verbs that write). Deltas commit
  * strictly in sequence order (jobs::ECommitOrder::Sequence, §5.9: tools that promise reproducible output), and
@@ -37,14 +39,20 @@
 #include "Assets/AssetRegistry.h"
 #include "Assets/AssetTypes.h"
 #include "Assets/Discovery/Mounts.h"
+#include "Assets/Meta/Lifecycle.h"
+#include "Assets/Meta/MetaFile.h"
+#include "Assets/Meta/MetaPaths.h"
 #include "Assets/Pipeline/ImporterTable.h"
 #include "Assets/Pipeline/Rules.h"
 #include "Assets/Registry/AssetQuery.h"
 #include "Assets/Registry/QueryEngine.h"
 #include "Assets/Registry/RegistryView.h"
 #include "Jobs/WorkerPool.h"
+#include "Platform/FileSystem.h"
+#include "Project/Project.h"
 
 #include "Commandlet.h"
+#include "RegistryRun.h"
 
 
 namespace frt::assettool
@@ -85,87 +93,6 @@ int32 FailQuery (const CCommandletContext& Context, FStringView Verb, FStringVie
 	return ExitUsage;
 }
 
-// ---- The registry of one run ----
-
-/**
- * The registry a verb reads: built over the run's mounts, started, waited for, and shut down when this goes (the
- * clean exit: a writer writes its snapshot there unless WriteSnapshotNow already did).
- */
-struct SRegistryRun
-{
-	std::shared_ptr<const assets::CMountTable> Mounts;
-	std::unique_ptr<assets::CAssetRegistry> Registry;
-
-	SRegistryRun () = default;
-	SRegistryRun (const SRegistryRun&) = delete;
-	SRegistryRun& operator= (const SRegistryRun&) = delete;
-	~SRegistryRun ()
-	{
-		if (Registry)
-		{
-			Registry->ShutDown();
-		}
-	}
-
-	[[nodiscard]] const assets::CRegistryView& View () const { return Registry->Live(); }
-};
-
-/**
- * Builds the registry of the run and waits for its initial scan. bWriter: the host holds the mount's writer lock (a
- * `scan` that is not read-only); everyone else reads. ExitSuccess, or the exit code to end with (reported).
- */
-int32 OpenRegistry (CCommandletContext& Context, FStringView Verb, bool bWriter, SRegistryRun& Out)
-{
-	if (Context.ProjectRoot.empty() && !Context.bEngineOwner)
-	{
-		return Context.Fail(ExitUsage, FString::Format("{}: no project to act on. Run it in a project's directory, with --project=<file>, "
-			"or with --engine for the engine's own content", Verb));
-	}
-	jobs::CWorkerPool& pool = Context.GetWorkerPool();
-	// Reproducible output (§5.9): deltas commit strictly in sequence order, inside the waits below.
-	pool.SetCommitOrder(jobs::ECommitOrder::Sequence);
-
-	assets::SMountRoots roots;
-	roots.EngineDir = Context.EngineRoot;
-	roots.EngineContentDir = paths::GetEngineContentDir();
-	roots.EngineConfigDir = paths::GetEngineConfigPath().parent_path();
-	if (!Context.bEngineOwner)
-	{
-		roots.ProjectDir = Context.ProjectRoot;
-	}
-	std::vector<SDiagnostic> diagnostics;
-	Out.Mounts = std::make_shared<const assets::CMountTable>(assets::CMountTable::Resolve(roots, &diagnostics));
-	for (const SDiagnostic& diagnostic : diagnostics)
-	{
-		Context.PrintError(FString::Format("warning: {}: {}", ToDisplayText(diagnostic.Subject), diagnostic.Message));
-	}
-
-	assets::SAssetRegistryDesc desc;
-	desc.Mounts = Out.Mounts;
-	desc.Pool = &pool;
-	desc.Owner = Context.bEngineOwner ? assets::EAssetRegistryOwner::Engine : assets::EAssetRegistryOwner::Project;
-	desc.bWriter = bWriter;
-	Out.Registry = std::make_unique<assets::CAssetRegistry>(std::move(desc));
-	Out.Registry->Start();
-	if (!Out.Registry->WaitForInitialScan())
-	{
-		return Context.Fail(ExitInternalError, FString::Format("{}: the registry's initial scan did not complete", Verb));
-	}
-	return ExitSuccess;
-}
-
-// "/Engine, /Project, /Plugin.X".
-FString DescribeMounts (const assets::CMountTable& Mounts)
-{
-	FString text;
-	for (const assets::SMount& mount : Mounts.GetMounts())
-	{
-		text += text.IsEmpty() ? "" : ", ";
-		text += mount.GetRootMountPath();
-	}
-	return text;
-}
-
 std::vector<FString> MountNames (const assets::CMountTable& Mounts)
 {
 	std::vector<FString> names;
@@ -198,6 +125,15 @@ SProblemCounts CountProblems (const assets::CRegistryView& View)
 	return counts;
 }
 
+// The run's root behind the engine's migrations (CCommandletContext::MigrationGap: the gate is on, and the host let this
+// run go on because it writes nothing): one error-severity problem beside the registry's, so the exit code says it.
+// Each verb reports it inside its own output (scan in its one object, status as one of its problems by code), never
+// as a line of its own.
+FStringView MigrationGapMessage (const CCommandletContext& Context)
+{
+	return Context.MigrationGap.has_value() ? Context.MigrationGap->Message.View() : FStringView();
+}
+
 // A record's mount path ("#label" for a sub-entry), "" for an invalid one.
 FString PathOf (const assets::CRegistryView& View, assets::SRecordId Record)
 {
@@ -215,6 +151,158 @@ FStringView TypeNameOf (const assets::CRegistryView& View, assets::SRecordId Rec
 
 }
 
+
+// ---- The registry of one run ----
+
+std::vector<FString> SRegistryRun::GetOwnRoots () const
+{
+	std::vector<FString> roots;
+	for (const assets::MountId mount : OwnMounts)
+	{
+		if (const assets::SMount* found = Mounts->Find(mount); found != nullptr)
+		{
+			roots.push_back(found->GetRootMountPath());
+		}
+	}
+	return roots;
+}
+
+assets::CMountTable ResolveRunMounts (const CCommandletContext& Context, std::vector<SDiagnostic>* Diagnostics)
+{
+	assets::SMountRoots roots;
+	roots.EngineDir = Context.EngineRoot;
+	roots.EngineContentDir = paths::GetEngineContentDir();
+	roots.EngineConfigDir = paths::GetEngineConfigPath().parent_path();
+	if (!Context.bEngineOwner)
+	{
+		roots.ProjectDir = Context.ProjectRoot;
+	}
+	return assets::CMountTable::Resolve(roots, Diagnostics);
+}
+
+int32 OpenRegistry (CCommandletContext& Context, FStringView Verb, const SRegistryOpenOptions& Options, SRegistryRun& Out)
+{
+	if (Context.ProjectRoot.empty() && !Context.bEngineOwner)
+	{
+		return Context.Fail(ExitUsage, FString::Format("{}: no project to act on. Run it in a project's directory, with --project=<file>, "
+			"or with --engine for the engine's own content", Verb));
+	}
+	jobs::CWorkerPool& pool = Context.GetWorkerPool();
+	// Reproducible output (§5.9): deltas commit strictly in sequence order, inside the waits below.
+	pool.SetCommitOrder(jobs::ECommitOrder::Sequence);
+
+	std::vector<SDiagnostic> diagnostics;
+	Out.Mounts = std::make_shared<const assets::CMountTable>(ResolveRunMounts(Context, &diagnostics));
+	for (const SDiagnostic& diagnostic : diagnostics)
+	{
+		Context.PrintError(FString::Format("warning: {}: {}", ToDisplayText(diagnostic.Subject), diagnostic.Message));
+	}
+	for (const assets::SMount& mount : Out.Mounts->GetMounts())
+	{
+		if ((mount.Kind == assets::EMountKind::Engine) == Context.bEngineOwner)
+		{
+			Out.OwnMounts.push_back(mount.Id);
+		}
+	}
+
+	const assets::SAssetEditorSettings settings = assets::SAssetEditorSettings::FromConfig(Context.GetConfig());
+	if (Options.bProviders || Options.bLifecycle)
+	{
+		// Git is spawned here, once per mount asked for: a lifecycle needs its own mounts' only (§12.9 Detection).
+		Out.Providers = std::make_unique<assets::CVcsProviderSet>();
+		Out.Providers->DetectNow(*Out.Mounts, Options.bLifecycle ? std::span<const assets::MountId>(Out.OwnMounts) : std::span<const assets::MountId>(),
+			settings.VcsProvider);
+	}
+
+	assets::SAssetRegistryDesc desc;
+	desc.Mounts = Out.Mounts;
+	desc.Pool = &pool;
+	desc.Owner = Context.bEngineOwner ? assets::EAssetRegistryOwner::Engine : assets::EAssetRegistryOwner::Project;
+	desc.bWriter = Options.bWriter;
+	// A tool host's lifecycle: providers settled before the registry opens (a mount without one is None, and spawns
+	// nothing), no live ticks (RunNow alone acts), a reader's or a guest's only reporting. A guest's META001 names the
+	// process that owns the mount.
+	Out.Lifecycle = std::make_unique<assets::SLifecycleDesc>();
+	if (Out.Providers)
+	{
+		Out.Lifecycle->Providers = Out.Providers->GetProviders();
+	}
+	Out.Lifecycle->Settings = settings;
+	if (!Context.ProjectRoot.empty())
+	{
+		Out.Lifecycle->ProjectSalt = FString(paths::GetProject().GetAssetSalt());
+	}
+	Out.Lifecycle->Owner = Context.bGuest ? Context.Owner : FString();
+	Out.Lifecycle->bRepairs = Options.bLifecycle && Options.bRepairs && Options.bWriter;
+	desc.Lifecycle = Out.Lifecycle.get();
+	Out.Registry = std::make_unique<assets::CAssetRegistry>(std::move(desc));
+	Out.Registry->Start();
+	if (!Out.Registry->WaitForInitialScan())
+	{
+		return Context.Fail(ExitInternalError, FString::Format("{}: the registry's initial scan did not complete", Verb));
+	}
+	if (!Options.bLifecycle)
+	{
+		// What gathering reports about metas (§13.4, edit [9]), over every mount the run sees, as a command does (a tool's
+		// tree is static: no delays). Nothing is repaired here; a writer's snapshot keeps the problems.
+		assets::SRepairOptions report;
+		for (const assets::SMount& mount : Out.Mounts->GetMounts())
+		{
+			report.Paths.push_back(mount.GetRootMountPath());
+		}
+		(void)Out.Registry->GetRepairs()->RunNow(report);
+	}
+	return ExitSuccess;
+}
+
+FString DescribeMounts (const assets::CMountTable& Mounts)
+{
+	FString text;
+	for (const assets::SMount& mount : Mounts.GetMounts())
+	{
+		text += text.IsEmpty() ? "" : ", ";
+		text += mount.GetRootMountPath();
+	}
+	return text;
+}
+
+std::optional<FString> ResolveFileArgument (const CCommandletContext& Context, FStringView Verb, const assets::CMountTable& Mounts,
+	FStringView Argument, int32& OutExit)
+{
+	FString mountPath;
+	if (Argument.StartsWith('/'))
+	{
+		FStringView mountName;
+		FStringView relative;
+		if (!assets::IsWellFormedMountPath(Argument) || !assets::SplitMountPath(Argument, mountName, relative) || Mounts.Find(mountName) == nullptr)
+		{
+			OutExit = Context.Fail(ExitUsage, FString::Format("{}: {} is no file of the mounts ({})", Verb, Argument, DescribeMounts(Mounts)));
+			return std::nullopt;
+		}
+		mountPath = FString(Argument);
+	}
+	else
+	{
+		const std::optional<std::filesystem::path> path = Argument.TryToPath();
+		std::error_code ec;
+		const std::filesystem::path absolute = path ? std::filesystem::absolute(*path, ec) : std::filesystem::path();
+		const std::optional<FString> converted = absolute.empty() ? std::nullopt : Mounts.ToMountPath(absolute);
+		if (!converted)
+		{
+			OutExit = Context.Fail(ExitUsage, FString::Format("{}: {} is in none of the mounts ({})", Verb, Argument, DescribeMounts(Mounts)));
+			return std::nullopt;
+		}
+		mountPath = *converted;
+	}
+	if (assets::GetMountPathParent(mountPath).IsEmpty())
+	{
+		OutExit = Context.Fail(ExitUsage, FString::Format("{}: {} is a mount root, not a file", Verb, mountPath));
+		return std::nullopt;
+	}
+	return mountPath;
+}
+
+
 // scan: the mounts scanned into the registry; a writer writes its snapshot. Exit 1 on an error-severity problem.
 int32 RunScan (CCommandletContext& Context)
 {
@@ -225,7 +313,7 @@ int32 RunScan (CCommandletContext& Context)
 	// The host took the mount's writer lock exactly when the run is not read-only (bWritesProject).
 	const bool bWriter = !Context.bReadOnly;
 	SRegistryRun run;
-	if (const int32 result = OpenRegistry(Context, "scan", bWriter, run); result != ExitSuccess)
+	if (const int32 result = OpenRegistry(Context, "scan", { .bWriter = bWriter }, run); result != ExitSuccess)
 	{
 		return result;
 	}
@@ -243,7 +331,8 @@ int32 RunScan (CCommandletContext& Context)
 	const assets::CRegistryView& view = run.View();
 	const assets::SInitialScanReport& report = registry.GetInitialScanReport();
 	const assets::SAssetRegistryCounters& counters = registry.GetCounters();
-	const SProblemCounts problems = CountProblems(view);
+	SProblemCounts problems = CountProblems(view);
+	problems.Errors += Context.MigrationGap.has_value() ? 1u : 0u;
 	const FString snapshot = FString::FromPath(registry.GetSnapshotPath());
 
 	Context.Print(FString::Format("Scanned {}: {} file(s), {} record(s), {} sub-entr{}, {} folder(s) in {:.1f} ms", DescribeMounts(*run.Mounts),
@@ -259,6 +348,10 @@ int32 RunScan (CCommandletContext& Context)
 			file.Message.IsEmpty() ? FString() : FString(" (") + file.Message + ")"));
 	}
 	Context.Print(FString::Format("  problems: {} error(s), {} warning(s), {} info", problems.Errors, problems.Warnings, problems.Infos));
+	if (Context.MigrationGap.has_value())
+	{
+		Context.Print(FString::Format("  MIG001 {}", Context.MigrationGap->Message));
+	}
 	Context.Print(bWriter ? FString::Format("  wrote {}", snapshot) : FString("  read-only: wrote nothing"));
 
 	const std::vector<FString> mounts = MountNames(*run.Mounts);
@@ -269,7 +362,7 @@ int32 RunScan (CCommandletContext& Context)
 		.AddUInt("reEvaluated", counters.ReEvaluated).AddUInt("scanned", counters.Scanned).AddUInt("committed", counters.Committed)
 		.AddUInt("loadMs", static_cast<uint64>(report.LoadMs + 0.5)).AddUInt("totalMs", static_cast<uint64>(report.TotalMs + 0.5))
 		.AddUInt("errors", problems.Errors).AddUInt("warnings", problems.Warnings).AddUInt("infos", problems.Infos)
-		.AddString("snapshot", bWritten ? snapshot.View() : FStringView()));
+		.AddString("snapshot", bWritten ? snapshot.View() : FStringView()).AddString("migration", MigrationGapMessage(Context)));
 	return problems.Errors > 0u ? ExitProblems : ExitSuccess;
 }
 
@@ -284,7 +377,7 @@ int32 RunStatus (CCommandletContext& Context)
 		return Context.Fail(ExitUsage, "status: takes no arguments");
 	}
 	SRegistryRun run;
-	if (const int32 result = OpenRegistry(Context, "status", false, run); result != ExitSuccess)
+	if (const int32 result = OpenRegistry(Context, "status", { .bProviders = true }, run); result != ExitSuccess)
 	{
 		return result;
 	}
@@ -301,6 +394,26 @@ int32 RunStatus (CCommandletContext& Context)
 		.AddUInt("records", view.GetRecordCount()).AddUInt("subEntries", view.GetSubEntryCount()).AddUInt("folders", view.GetFolderCount())
 		.AddUInt("totalMs", static_cast<uint64>(report.TotalMs + 0.5)).AddUInt("analyzed", report.Analyzed).AddUInt("hashed", report.Hashed));
 
+	// Per mount: its VCS provider (§12.9, edit [15]) and the files that wait for a meta (PendingMeta: no meta yet).
+	std::vector<uint32> pending(run.Mounts->GetMounts().size(), 0u);
+	view.ForEachFile([&] (uint32 Row)
+	{
+		assets::SFileData file;
+		if (view.GetFile(Row, file) && assets::GetsMeta(file.Class) && file.MetaState == assets::EMetaState::PendingMeta && file.Mount < pending.size())
+		{
+			++pending[file.Mount];
+		}
+	});
+	Context.Print("Mounts (provider, files waiting for a meta):");
+	for (const assets::SMount& mount : run.Mounts->GetMounts())
+	{
+		const assets::IVcsProvider* provider = run.FindProvider(mount.Id);
+		const FStringView name = provider != nullptr ? provider->GetName() : FStringView("None");
+		Context.Print(FString::Format("  {:<16} {:<6} {} pending meta(s)", mount.GetRootMountPath(), name, pending[mount.Id]));
+		Context.PrintJson(CJsonObject().AddString("kind", "mount").AddString("mount", mount.GetRootMountPath()).AddString("provider", name)
+			.AddUInt("pendingMetas", pending[mount.Id]));
+	}
+
 	// Problems by (code, severity, source); a code-0 problem (an Analyze failure, an unlistable folder) as "-".
 	using SProblemKey = std::tuple<FString, uint8, uint8>;
 	std::map<SProblemKey, uint32> byCode;
@@ -316,6 +429,13 @@ int32 RunStatus (CCommandletContext& Context)
 		case ESeverity::Info: ++counts.Infos; break;
 		}
 	});
+	// MIG001 (the gate on, the root behind) is the lifecycle's: one more problem by code, so it is counted, listed and
+	// sent as every other is.
+	if (Context.MigrationGap.has_value())
+	{
+		++byCode[SProblemKey(FString("MIG001"), static_cast<uint8>(ESeverity::Error), static_cast<uint8>(assets::EProblemSource::Lifecycle))];
+		++counts.Errors;
+	}
 	Context.Print(byCode.empty() ? FString("Problems: none") : FString("Problems by code, severity and source:"));
 	for (const auto& [key, count] : byCode)
 	{
@@ -324,6 +444,10 @@ int32 RunStatus (CCommandletContext& Context)
 		Context.Print(FString::Format("  {:<8} {:<8} {:<10} {}", std::get<0>(key), severity, source, count));
 		Context.PrintJson(CJsonObject().AddString("kind", "problems").AddString("code", std::get<0>(key) == "-" ? FStringView() : std::get<0>(key).View())
 			.AddString("severity", severity).AddString("source", source).AddUInt("count", count));
+	}
+	if (Context.MigrationGap.has_value())
+	{
+		Context.Print(FString::Format("  MIG001: {}", Context.MigrationGap->Message));
 	}
 
 	// Unclaimed files (no importer claimed them, and no record names them as a companion), by folder and extension.
@@ -536,7 +660,7 @@ int32 RunQuery (CCommandletContext& Context)
 	}
 
 	SRegistryRun run;
-	if (const int32 result = OpenRegistry(Context, "query", false, run); result != ExitSuccess)
+	if (const int32 result = OpenRegistry(Context, "query", {}, run); result != ExitSuccess)
 	{
 		return result;
 	}
@@ -721,7 +845,7 @@ int32 RunRefs (CCommandletContext& Context)
 	}
 	const FString& asset = Context.Arguments[0];
 	SRegistryRun run;
-	if (const int32 result = OpenRegistry(Context, "refs", false, run); result != ExitSuccess)
+	if (const int32 result = OpenRegistry(Context, "refs", {}, run); result != ExitSuccess)
 	{
 		return result;
 	}
@@ -751,7 +875,7 @@ int32 RunReferencers (CCommandletContext& Context)
 	const FString& asset = Context.Arguments[0];
 	const bool bTransitive = Context.HasOption("transitive");
 	SRegistryRun run;
-	if (const int32 result = OpenRegistry(Context, "referencers", false, run); result != ExitSuccess)
+	if (const int32 result = OpenRegistry(Context, "referencers", {}, run); result != ExitSuccess)
 	{
 		return result;
 	}
@@ -808,6 +932,49 @@ FString FormatProvenance (const assets::SProvenance& Source, FStringView Default
 	return text;
 }
 
+// The meta beside a file, as explain shows it: its spelling on disk (empty: none), the registry's state of the pair, and
+// the parse of its bytes.
+struct SExplainMeta
+{
+	FString File;                     // its mount path
+	assets::EMetaState State = assets::EMetaState::PendingMeta;
+	assets::SMetaParseResult Parsed;
+};
+
+SExplainMeta ReadExplainMeta (const assets::CRegistryView& View, const assets::CMountTable& Mounts, FStringView MountPath)
+{
+	SExplainMeta out;
+	if (const std::optional<uint32> row = View.FindFile(MountPath); row.has_value())
+	{
+		assets::SFileData file;
+		if (View.GetFile(*row, file))
+		{
+			out.State = file.MetaState;
+		}
+	}
+	const std::optional<uint32> metaRow = View.FindFile(assets::GetMetaPath(MountPath));
+	assets::SFileData meta;
+	if (!metaRow.has_value() || !View.GetFile(*metaRow, meta) || meta.Class != assets::EFileClass::Meta)
+	{
+		return out;
+	}
+	out.File = FString(meta.MountPath);
+	const std::optional<std::filesystem::path> path = Mounts.FromMountPath(meta.MountPath);
+	FString bytes;
+	if (path.has_value() && platform::ReadFileChunksStable(*path, [&bytes] (std::span<const uint8> Chunk)
+		{
+			bytes += FStringView(reinterpret_cast<const char*>(Chunk.data()), static_cast<uint32>(Chunk.size()));
+		}) == platform::EStableRead::Stable)
+	{
+		assets::ParseMeta(bytes, out.Parsed);
+	}
+	else
+	{
+		out.Parsed.State = assets::EMetaParseState::Broken;
+	}
+	return out;
+}
+
 const assets::SProvenance* FindProvenance (const assets::SEffectiveFileSettings& Settings, FStringView Field)
 {
 	for (const auto& [name, source] : Settings.Provenance)
@@ -843,37 +1010,17 @@ int32 RunExplain (CCommandletContext& Context)
 	}
 	const FString& argument = Context.Arguments[0];
 	SRegistryRun run;
-	if (const int32 result = OpenRegistry(Context, "explain", false, run); result != ExitSuccess)
+	if (const int32 result = OpenRegistry(Context, "explain", {}, run); result != ExitSuccess)
 	{
 		return result;
 	}
-	FString mountPath;
-	if (argument.StartsWith('/'))
+	int32 exitCode = ExitSuccess;
+	const std::optional<FString> resolved = ResolveFileArgument(Context, "explain", *run.Mounts, argument, exitCode);
+	if (!resolved)
 	{
-		FStringView mountName;
-		FStringView relative;
-		if (!assets::IsWellFormedMountPath(argument) || !assets::SplitMountPath(argument, mountName, relative) || run.Mounts->Find(mountName) == nullptr)
-		{
-			return Context.Fail(ExitUsage, FString::Format("explain: {} is no file of the mounts ({})", argument, DescribeMounts(*run.Mounts)));
-		}
-		mountPath = argument;
+		return exitCode;
 	}
-	else
-	{
-		const std::optional<std::filesystem::path> path = argument.View().TryToPath();
-		std::error_code ec;
-		const std::filesystem::path absolute = path ? std::filesystem::absolute(*path, ec) : std::filesystem::path();
-		const std::optional<FString> converted = absolute.empty() ? std::nullopt : run.Mounts->ToMountPath(absolute);
-		if (!converted)
-		{
-			return Context.Fail(ExitUsage, FString::Format("explain: {} is in none of the mounts ({})", argument, DescribeMounts(*run.Mounts)));
-		}
-		mountPath = *converted;
-	}
-	if (assets::GetMountPathParent(mountPath).IsEmpty())
-	{
-		return Context.Fail(ExitUsage, FString::Format("explain: {} is a mount root, not a file", mountPath));
-	}
+	FString mountPath = *resolved;
 
 	const assets::CRegistryView& view = run.View();
 	const assets::CRulesEngine& rules = run.Registry->GetRules();
@@ -889,6 +1036,12 @@ int32 RunExplain (CCommandletContext& Context)
 			mountPath = record.MountPath;
 			facts.Type = record.Type;
 		}
+	}
+	// The file's meta applies last (importer default < rules < meta), so its fields name it as their provenance.
+	const SExplainMeta meta = ReadExplainMeta(view, *run.Mounts, mountPath);
+	if (meta.Parsed.State == assets::EMetaParseState::Ok && !meta.File.IsEmpty())
+	{
+		facts.Meta = &meta.Parsed.Meta;
 	}
 	std::vector<SDiagnostic> diagnostics;
 	const std::shared_ptr<const assets::SScanScope> scope = rules.OpenFolderScope(assets::GetMountPathParent(mountPath), diagnostics);
@@ -921,7 +1074,14 @@ int32 RunExplain (CCommandletContext& Context)
 		{
 			const assets::SProvenance* source = FindProvenance(settings, FString("Labels.") + label);
 			Context.Print(FString::Format("  label     {:<16} {}", label, FormatProvenance(source != nullptr ? *source : assets::SProvenance {}, "-")));
-			labels.push_back(CJsonObject().AddString("label", label).AddObject("source", ProvenanceObject(source)));
+			labels.push_back(CJsonObject().AddString("label", label).AddObject("source", ProvenanceObject(source)).AddBool("authored", false));
+		}
+		// The meta's own labels (§5.2 LABELS, "authored"): what Label selectors match.
+		for (const FString& label : settings.AuthoredLabels)
+		{
+			const assets::SProvenance* source = FindProvenance(settings, FString("Labels.") + label);
+			Context.Print(FString::Format("  label     {:<16} {} (authored)", label, FormatProvenance(source != nullptr ? *source : assets::SProvenance {}, "-")));
+			labels.push_back(CJsonObject().AddString("label", label).AddObject("source", ProvenanceObject(source)).AddBool("authored", true));
 		}
 		std::vector<CJsonObject> fields;
 		if (settings.Settings.Table != nullptr)
@@ -953,16 +1113,49 @@ int32 RunExplain (CCommandletContext& Context)
 	{
 		Context.Print(FString::Format("  note: {}", note));
 	}
+	// The meta: where it is, what the registry made of the pair, the GUID it gives the record; then the ids and paths that
+	// resolve to the record besides its own (a meta's Aliases, a renamed sub-asset's old label; FormerPaths).
+	CJsonObject metaJson;
+	if (meta.File.IsEmpty())
+	{
+		Context.Print(FString::Format("  meta      none ({})", enum_::ToString(meta.State)));
+	}
+	else
+	{
+		const bool bOk = meta.Parsed.State == assets::EMetaParseState::Ok;
+		const FString guid = bOk ? meta.Parsed.Meta.Guid.ToString() : FString();
+		const FString file = rules.GetMetaProvenance(*scope, mountPath);
+		Context.Print(FString::Format("  meta      {}  {}{}", file, enum_::ToString(meta.State), bOk ? FString::Format("  {{{}}}", guid) : FString("  (does not parse)")));
+		metaJson.AddString("file", file).AddString("path", meta.File).AddString("guid", guid).AddBool("parses", bOk);
+	}
+	metaJson.AddString("state", enum_::ToString(meta.State));
+	std::vector<FString> aliases;
+	std::vector<FString> formerPaths;
 	if (bRecord)
 	{
-		Context.Print(FString::Format("  registry: {}, importer {}", TypeNameOf(view, record.Record), view.GetImporterName(record.Record)));
+		view.ForEachAlias(record.Record, [&] (const assets::SAssetId& Alias)
+		{
+			aliases.push_back(Alias.SubId == 0u ? Alias.Guid.ToString() : FString::Format("{}#{:016x}", Alias.Guid.ToString(), Alias.SubId));
+		});
+		view.ForEachFormerPath(record.Record, [&] (FStringView Path) { formerPaths.emplace_back(Path); });
+		for (const FString& alias : aliases)
+		{
+			Context.Print(FString::Format("  alias     {{{}}}", alias));
+		}
+		for (const FString& path : formerPaths)
+		{
+			Context.Print(FString::Format("  formerly  {}", ToDisplayText(path)));
+		}
+		Context.Print(FString::Format("  registry: {}, importer {}, id {{{}}}{}", TypeNameOf(view, record.Record), view.GetImporterName(record.Record),
+			record.Id.Guid.ToString(), meta.State == assets::EMetaState::PendingMeta ? " (provisional: no meta yet)" : ""));
 	}
 	else
 	{
 		Context.Print("  registry: no record");
 	}
 	json.AddObjectArray("chain", chain).AddStringArray("notes", explanation.Notes).AddBool("record", bRecord)
-		.AddString("recordType", bRecord ? TypeNameOf(view, record.Record) : FStringView());
+		.AddString("recordType", bRecord ? TypeNameOf(view, record.Record) : FStringView()).AddObject("meta", metaJson)
+		.AddStringArray("aliases", aliases).AddStringArray("formerPaths", formerPaths);
 	Context.PrintJson(json);
 	return ExitSuccess;
 }
@@ -978,7 +1171,7 @@ int32 RunListRules (CCommandletContext& Context)
 		return Context.Fail(ExitUsage, "list-rules: takes no arguments");
 	}
 	SRegistryRun run;
-	if (const int32 result = OpenRegistry(Context, "list-rules", false, run); result != ExitSuccess)
+	if (const int32 result = OpenRegistry(Context, "list-rules", {}, run); result != ExitSuccess)
 	{
 		return result;
 	}
@@ -1040,7 +1233,7 @@ int32 RunDump (CCommandletContext& Context)
 		return Context.Fail(ExitUsage, "dump registry: --mount=<name>[,<name>...] names the mounts");
 	}
 	SRegistryRun run;
-	if (const int32 result = OpenRegistry(Context, "dump", false, run); result != ExitSuccess)
+	if (const int32 result = OpenRegistry(Context, "dump", {}, run); result != ExitSuccess)
 	{
 		return result;
 	}

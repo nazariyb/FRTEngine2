@@ -9,6 +9,8 @@
 #include "Asserts.h"
 #include "Assets/AssetDiagnosticCodes.h"
 #include "Assets/AssetTypes.h"
+#include "Assets/Meta/MetaPaths.h"
+#include "Assets/Meta/MetaTypes.h"
 #include "Containers/PathGlob.h"
 #include "Hash/StableHash.h"
 #include "Platform/FileSystem.h"
@@ -205,6 +207,7 @@ struct CRuleFile::SData
 	std::vector<SPresetDef> Presets;
 	std::vector<SRuleDef> Rules;
 	std::vector<SValidationDef> Validation;
+	SSafetySwitches Safety;   // the file's `Safety:` over the defaults (a mount file's; a folder file has none)
 };
 
 
@@ -1750,6 +1753,17 @@ private:
 			if (const std::optional<bool> value = ReadBool(child.Value, FString::Format("Safety.{}", child.Key)))
 			{
 				AddEntry("Safety", FString::Format("{}: {}", child.Key, *value ? "true" : "false"), child.KeyLine);
+				SSafetySwitches& safety = Data->Safety;
+				bool* const switches[] = { &safety.bAutoRepairMetas, &safety.bDerivedAutoGuids, &safety.bAutoResolveDuplicates,
+					&safety.bOrphanPairing, &safety.bBuilderSourceGuard, &safety.bIdLedger, &safety.bGuestProcesses };
+				static_assert(std::size(switches) == std::size(SafetyKeys));
+				for (uint32 i = 0u; i < std::size(SafetyKeys); ++i)
+				{
+					if (child.Key == SafetyKeys[i])
+					{
+						*switches[i] = *value;
+					}
+				}
 			}
 		}
 	}
@@ -2027,7 +2041,7 @@ public:
 		}
 		if (Rule.Label.has_value())
 		{
-			const bool bHasLabel = std::any_of(Facts.AuthoredLabels.begin(), Facts.AuthoredLabels.end(),
+			const bool bHasLabel = Facts.Meta != nullptr && std::any_of(Facts.Meta->Labels.begin(), Facts.Meta->Labels.end(),
 				[&Rule] (const FString& Label) { return Label.Equals<ESearchCase::IgnoreCase>(*Rule.Label); });
 			if (!bHasLabel)
 			{
@@ -2098,6 +2112,68 @@ SProvenance MakeSource (const CRuleFile& File, uint32 Line, int32 RuleIndex)
 	return SProvenance { File.GetOrigin().File, Line, RuleIndex };
 }
 
+/**
+ * A meta's value for a settings field, normalised as a rule file's is (the parser's ReadSettingValue): an enum value in
+ * its canonical spelling, numbers through their parse, true or false. nullopt when it is no value of the field - a rule
+ * file's would be RULE001; a meta's is left out (the rules' value stands) for `validate` to report.
+ */
+std::optional<FString> NormalizeMetaSetting (reflect::HDataNode Node, const SSettingsField& Field)
+{
+	switch (Field.Kind)
+	{
+	case ETagType::Enum:
+	{
+		const std::optional<FStringView> text = Node.AsText();
+		if (text.has_value())
+		{
+			for (const FStringLiteral value : Field.EnumValues)
+			{
+				if (text->Equals<ESearchCase::IgnoreCase>(value))
+				{
+					return FString(value);
+				}
+			}
+		}
+		return std::nullopt;
+	}
+	case ETagType::Int64:
+	{
+		const std::optional<int64> number = Node.AsInt64();
+		return number.has_value() ? std::optional<FString>(FString::FromNumber(*number)) : std::nullopt;
+	}
+	case ETagType::Double:
+	{
+		const std::optional<double> number = Node.AsDouble();
+		return number.has_value() && std::isfinite(*number) ? std::optional<FString>(FString::FromNumber(*number)) : std::nullopt;
+	}
+	case ETagType::Bool:
+	{
+		const std::optional<bool> value = Node.AsBool();
+		return value.has_value() ? std::optional<FString>(FString(*value ? "true" : "false")) : std::nullopt;
+	}
+	default:
+	{
+		const std::optional<FStringView> text = Node.AsText();
+		return text.has_value() && !text->IsEmpty() ? std::optional<FString>(FString(*text)) : std::nullopt;
+	}
+	}
+}
+
+// What a tree holds, as bytes for a hash: kinds, keys and texts in order (positions and styles left out).
+void AppendTreeContent (reflect::HDataNode Node, FString& Out)
+{
+	Out += static_cast<char>('0' + static_cast<uint32>(Node.GetKind()));
+	Out += Node.GetText();
+	Out += '\x1F';
+	for (const reflect::SDataChild& child : Node.GetChildren())
+	{
+		Out += child.Key;
+		Out += '\x1E';
+		AppendTreeContent(child.Value, Out);
+	}
+	Out += '\x1D';
+}
+
 const SSettingDef* FindSetting (std::span<const SSettingDef> Values, uint32 Field) noexcept
 {
 	for (const SSettingDef& value : Values)
@@ -2109,6 +2185,12 @@ const SSettingDef* FindSetting (std::span<const SSettingDef> Values, uint32 Fiel
 	}
 	return nullptr;
 }
+}
+
+
+std::optional<FString> NormalizeMetaSettingValue (reflect::HDataNode Node, const SSettingsField& Field)
+{
+	return NormalizeMetaSetting(Node, Field);
 }
 
 
@@ -2415,6 +2497,19 @@ uint64 CRulesEngine::GetMountRulesHash (FStringView MountName) const
 	std::scoped_lock lock(Mutex);
 	const SFileState& state = MountFiles[static_cast<uint32>(index)];
 	return state.LastGood != nullptr ? state.LastGood->GetRulesHash() : 0u;
+}
+
+SSafetySwitches CRulesEngine::GetSafety (FStringView MountName) const
+{
+	EnsureLoaded();
+	const int32 index = FindMountIndex(MountName);
+	if (index < 0)
+	{
+		return SSafetySwitches {};
+	}
+	std::scoped_lock lock(Mutex);
+	const SFileState& state = MountFiles[static_cast<uint32>(index)];
+	return state.LastGood != nullptr ? state.LastGood->GetData().Safety : SSafetySwitches {};
 }
 
 uint64 CRulesEngine::GetRulesBasis (bool bWithEngineFallback) const
@@ -2923,6 +3018,66 @@ void ClassifyFile (const SScope& Scope, FStringView FileMountPath, CFileMatcher&
 	Out.Class = importer == GetRawImporter() ? EFileClass::Raw : EFileClass::Asset;
 }
 
+/**
+ * The meta's `Importer:` pin over the rules' classification (Rules.h, "The file's meta"): the rules' importer choice is
+ * replaced, Importers.Exclude and availability still apply, and Scan.Quiet marks the file quiet when it ends Unclaimed.
+ * MetaFile: the meta as provenance names it.
+ */
+void ApplyImporterPin (const SScope& Scope, CFileMatcher& Matcher, const SAssetMeta& Meta, FStringView MetaFile, bool bExplain,
+	SClassification& Out)
+{
+	if (Out.bExcluded || Meta.Importer.IsEmpty())
+	{
+		return;
+	}
+	const SImporterDesc* importer = FindImporter(Meta.Importer);
+	if (importer == nullptr)
+	{
+		if (bExplain)
+		{
+			Out.ImporterNote = FString::Format("{} pins the importer {}, which this build does not know: the rules decide", MetaFile, Meta.Importer);
+		}
+		return;
+	}
+	Out.Importer = nullptr;
+	Out.ImporterNote = FString();
+	Out.bQuiet = false;
+	Out.ImporterSource = SProvenance { FString(MetaFile), 0u, -1 };
+	const uint32 links = static_cast<uint32>(Scope.Chain.size());
+	const auto unclaimed = [&] (FString Note)
+	{
+		Out.Class = EFileClass::Unclaimed;
+		for (uint32 link = 0u; link < links && !Out.bQuiet; ++link)
+		{
+			Out.bQuiet = Matcher.FindMatch(Scope.Chain[link]->GetData().Quiet, link) != nullptr;
+		}
+		if (bExplain)
+		{
+			Out.ImporterNote = std::move(Note);
+		}
+	};
+	for (uint32 link = 0u; link < links; ++link)
+	{
+		const CRuleFile& file = *Scope.Chain[link];
+		for (const SImporterRef& excluded : file.GetData().ImporterExcludes)
+		{
+			if (excluded.Importer == importer)
+			{
+				unclaimed(FString::Format("{} pins the importer {}, which Importers.Exclude disables ({})", MetaFile, importer->Name,
+					FormatProvenance(file.GetOrigin(), excluded.Line)));
+				return;
+			}
+		}
+	}
+	if (!importer->bAvailable)
+	{
+		unclaimed(FString::Format("{} pins the importer {}, which is not available in this build", MetaFile, importer->Name));
+		return;
+	}
+	Out.Importer = importer;
+	Out.Class = importer == GetRawImporter() ? EFileClass::Raw : EFileClass::Asset;
+}
+
 // The Final rule that stopped evaluation and the presets the fields came from, for explain.
 struct SResolveTrace
 {
@@ -2936,8 +3091,8 @@ struct SResolveTrace
  * chunk, labels and settings, each from the first matching rule that sets it, then the importer's defaults. A rule
  * that can no longer set anything is skipped without matching its globs.
  */
-void ResolveRules (const SScope& Scope, CFileMatcher& Matcher, const SFileFacts& Facts, bool bProvenance, FStringView Target, FStringView Platform,
-	const SClassification& Classification, SEffectiveFileSettings& Out, SResolveTrace* Trace)
+void ResolveRules (const SScope& Scope, CFileMatcher& Matcher, const SFileFacts& Facts, FStringView MetaFile, bool bProvenance, FStringView Target,
+	FStringView Platform, const SClassification& Classification, SEffectiveFileSettings& Out, SResolveTrace* Trace)
 {
 	const SSettingsTable* table = Out.Importer != nullptr ? Out.Importer->Settings : nullptr;
 	const uint32 fieldCount = table != nullptr ? static_cast<uint32>(table->Fields.size()) : 0u;
@@ -3125,6 +3280,77 @@ void ResolveRules (const SScope& Scope, CFileMatcher& Matcher, const SFileFacts&
 		}
 	}
 
+	// The meta last (importer default < rules < meta): its Targets block for the full target, then the platform's, then
+	// its Settings, the first that sets a field winning; then Cook, Chunk and its labels.
+	if (Facts.Meta != nullptr)
+	{
+		const SAssetMeta& meta = *Facts.Meta;
+		const SProvenance metaSource { FString(MetaFile), 0u, -1 };
+		if (meta.Cook.has_value())
+		{
+			Out.CookRule = *meta.Cook;
+			cookSource = metaSource;
+		}
+		if (meta.Chunk.has_value())
+		{
+			Out.Chunk = *meta.Chunk;
+			chunkSource = metaSource;
+		}
+		Out.AuthoredLabels = meta.Labels;
+		if (bProvenance)
+		{
+			for (const FString& label : meta.Labels)
+			{
+				labelSources.emplace_back(FString("Labels.") + label, metaSource);
+			}
+		}
+		if (table != nullptr)
+		{
+			std::vector<bool> setByMeta(fieldCount, false);
+			const auto apply = [&] (reflect::HDataNode Map)
+			{
+				for (const reflect::SDataChild& child : Map.GetChildren())
+				{
+					const int32 field = FindSettingsField(*table, child.Key);
+					if (field < 0 || setByMeta[static_cast<uint32>(field)])
+					{
+						continue;   // not a field of this importer's settings (`validate` reports it), or set by a more specific block
+					}
+					std::optional<FString> value = NormalizeMetaSetting(child.Value, table->Fields[static_cast<uint32>(field)]);
+					if (!value.has_value())
+					{
+						continue;
+					}
+					setByMeta[static_cast<uint32>(field)] = true;
+					fieldSet[static_cast<uint32>(field)] = true;
+					Out.Settings.Values[static_cast<uint32>(field)].Field = static_cast<uint16>(field);
+					Out.Settings.Values[static_cast<uint32>(field)].Text = std::move(*value);
+					if (bProvenance)
+					{
+						fieldSources[static_cast<uint32>(field)] = SProvenance { FString(MetaFile), child.KeyLine, -1 };
+					}
+				}
+			};
+			const auto block = [&] (FStringView Name) -> reflect::HDataNode
+			{
+				if (!Name.IsEmpty())
+				{
+					for (const reflect::SDataChild& child : meta.Targets.GetRoot().GetChildren())
+					{
+						if (child.Key.Equals<ESearchCase::IgnoreCase>(Name) && child.Value.IsMap())
+						{
+							return child.Value;
+						}
+					}
+				}
+				return reflect::HDataNode();
+			};
+			apply(block(Target));
+			apply(block(Platform));
+			apply(meta.Settings.GetRoot());
+		}
+	}
+
 	bool bAnyRelevant = false;
 	FString analyzeBytes;
 	for (uint32 field = 0u; field < fieldCount; ++field)
@@ -3149,6 +3375,15 @@ void ResolveRules (const SScope& Scope, CFileMatcher& Matcher, const SFileFacts&
 		}
 	}
 	Out.Settings.AnalyzeHash = bAnyRelevant ? hash::Xxh3_64(analyzeBytes.View()) : 0u;
+	if (Facts.Meta != nullptr && !Facts.Meta->SubAssets.IsEmpty())
+	{
+		// SubAssets (Renamed, Remap, Overrides) is applied to Analyze's sub-entries (ApplySubAssetOverrides), so an edit
+		// of it analyzes the file again.
+		FString subAssets("SubAssets\x1F");
+		subAssets.AppendFormat("{:016x}", Out.Settings.AnalyzeHash);
+		AppendTreeContent(Facts.Meta->SubAssets.GetRoot(), subAssets);
+		Out.Settings.AnalyzeHash = hash::Xxh3_64(subAssets.View());
+	}
 
 	if (bProvenance)
 	{
@@ -3188,6 +3423,14 @@ std::optional<SFileVerdict> CRulesEngine::Classify (const SScanScope& Scope, FSt
 	return SFileVerdict { classification.Class, classification.bQuiet };
 }
 
+FString CRulesEngine::GetMetaProvenance (const SScanScope& Scope, FStringView FileMountPath) const
+{
+	const SScope& scope = AsScope(Scope);
+	const FStringView relative = GetFileRelative(scope, FileMountPath);
+	const std::span<const SMount> mounts = Mounts.GetMounts();
+	return scope.MountIndex < mounts.size() ? GetMetaPath(mounts[scope.MountIndex].GetSourceFile(relative)) : GetMetaPath(FileMountPath);
+}
+
 SEffectiveFileSettings CRulesEngine::ResolveFile (const SScanScope& Scope, FStringView FileMountPath, const SFileFacts& Facts, bool bProvenance) const
 {
 	const SScope& scope = AsScope(Scope);
@@ -3200,10 +3443,15 @@ SEffectiveFileSettings CRulesEngine::ResolveFile (const SScanScope& Scope, FStri
 		settings.Class = EFileClass::Excluded;
 		return settings;
 	}
+	const FString metaFile = Facts.Meta != nullptr ? GetMetaProvenance(Scope, FileMountPath) : FString();
+	if (Facts.Meta != nullptr)
+	{
+		ApplyImporterPin(scope, matcher, *Facts.Meta, metaFile, false, classification);
+	}
 	settings.Importer = classification.Importer;
 	settings.Class = classification.Class;
 	settings.bQuiet = classification.bQuiet;
-	ResolveRules(scope, matcher, Facts, bProvenance, Options.Target, TargetPlatform, classification, settings, nullptr);
+	ResolveRules(scope, matcher, Facts, metaFile, bProvenance, Options.Target, TargetPlatform, classification, settings, nullptr);
 	return settings;
 }
 
@@ -3306,6 +3554,12 @@ SRuleExplanation CRulesEngine::Explain (const SScanScope& Scope, FStringView Fil
 		explanation.Settings.Class = EFileClass::Excluded;
 		return explanation;
 	}
+	const FString metaFile = Facts.Meta != nullptr ? GetMetaProvenance(Scope, FileMountPath) : FString();
+	if (Facts.Meta != nullptr)
+	{
+		ApplyImporterPin(scope, matcher, *Facts.Meta, metaFile, true, classification);
+		explanation.Notes.push_back(FString::Format("{} applies last: importer default < rules < meta", metaFile));
+	}
 	explanation.Verdict = SFileVerdict { classification.Class, classification.bQuiet };
 	if (!classification.ImporterNote.IsEmpty())
 	{
@@ -3315,7 +3569,7 @@ SRuleExplanation CRulesEngine::Explain (const SScanScope& Scope, FStringView Fil
 	explanation.Settings.Class = classification.Class;
 	explanation.Settings.bQuiet = classification.bQuiet;
 	SResolveTrace trace;
-	ResolveRules(scope, matcher, Facts, true, Options.Target, TargetPlatform, classification, explanation.Settings, &trace);
+	ResolveRules(scope, matcher, Facts, metaFile, true, Options.Target, TargetPlatform, classification, explanation.Settings, &trace);
 
 	for (const auto& [binding, rule] : trace.PresetsUsed)
 	{
@@ -3402,6 +3656,22 @@ SRulesListing CRulesEngine::GetListing () const
 
 
 // ---------------- RULE002 ----------------
+
+SSafetySwitches ReadSafetyOfRuleFile (const std::filesystem::path& Path)
+{
+	const std::optional<FString> text = platform::ReadFileText(Path);
+	if (!text.has_value())
+	{
+		return SSafetySwitches {};
+	}
+	SRuleFileOrigin origin;
+	origin.File = FString::FromPath(Path.filename(), EPathStyle::Generic);
+	origin.Level = ERuleFileLevel::Mount;
+	origin.MountName = "Engine";   // the lenient reading of mount prefixes: only Safety is wanted, which no prefix touches
+	std::vector<SDiagnostic> diagnostics;
+	const std::shared_ptr<const CRuleFile> file = CRuleFile::Parse(*text, origin, diagnostics);
+	return file != nullptr ? file->GetData().Safety : SSafetySwitches {};
+}
 
 std::vector<SDiagnostic> ReportUnclaimedFiles (std::span<const SUnclaimedFile> Files)
 {

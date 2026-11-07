@@ -42,8 +42,12 @@ class CWorkerPool;
  *	  opened or downloaded by a scan.
  *	- Rule files. A folder's Assets.yml (RuleFileName, under the portable fold; the byte-exact spelling
  *	  wins when a case-sensitive folder holds two) is handed to EnterFolder and never appears in Files.
- *	- Portable names (§3.1, §13.4), warnings until M4, over the entries the batch records (files Classify
- *	  kept, folders it entered, and every spelling of the rule file): PATH001 for every member of a group of siblings equal under the
+ *	- Metas (M4). A `<name>.meta` that is not a dot-name is split out of the listing before Classify (it stays a
+ *	  built-in exclude, so no rule classifies it) into SScanBatch::Metas, paired with its source there; never in
+ *	  Files, never opened.
+ *	- Portable names (§3.1, §13.4; PATH001 and PATH002 errors from M4, PATH003 a warning) over the entries the batch
+ *	  records (files Classify kept, metas, folders it entered, and every spelling of the rule file): PATH001 for every
+ *	  member of a group of siblings equal under the
  *	  portable fold (Rock.png and rock.png in a case-sensitive folder; U+212A KELVIN SIGN and 'k' on any
  *	  NTFS folder) - a sibling check, so a subtree scan reports its part completely; PATH002 for a name
  *	  that is illegal on a supported platform or not valid UTF-8 (GetNonPortableNameReason); PATH003 for

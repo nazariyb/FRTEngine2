@@ -2,10 +2,12 @@
 
 #include <algorithm>
 #include <type_traits>
+#include <unordered_set>
 #include <utility>
 
 #include "Asserts.h"
 #include "BuildConfig.h"
+#include "Assets/Meta/MetaTypes.h"
 #include "Assets/Pipeline/Importers/ImporterUtils.h"
 #include "Containers/StringMap.h"
 #include "Platform/Platform.h"
@@ -208,7 +210,8 @@ void CheckTags (reflect::TypeId Type, const std::vector<STagDecl>& Tags)
 #endif
 
 template <typename TResult>
-void AppendRecordUpsertImpl (TResult&& Result, const SEffectiveFileSettings& Settings, FStringView FileMountPath, SRegistryDelta& Delta)
+void AppendRecordUpsertImpl (TResult&& Result, const SEffectiveFileSettings& Settings, FStringView FileMountPath, SRegistryDelta& Delta,
+	const SGuid& Guid, const SAssetMeta* Meta)
 {
 	constexpr bool bMove = !std::is_lvalue_reference_v<TResult>;
 	const auto take = [] (auto& Member) -> decltype(auto)
@@ -225,7 +228,7 @@ void AppendRecordUpsertImpl (TResult&& Result, const SEffectiveFileSettings& Set
 
 	SRecordUpsert& record = Delta.RecordUpserts.emplace_back();
 	record.FileMountPath = FString(FileMountPath);
-	record.Guid = MakeProvisionalGuid(FileMountPath);
+	record.Guid = Guid.IsValid() ? Guid : MakeProvisionalGuid(FileMountPath);
 	record.Type = Result.Type;
 	if (Settings.Importer != nullptr)
 	{
@@ -239,6 +242,7 @@ void AppendRecordUpsertImpl (TResult&& Result, const SEffectiveFileSettings& Set
 	record.CookRule = Settings.CookRule;
 	record.Chunk = Settings.Chunk;
 	record.RuleLabels = Settings.RuleLabels;
+	record.AuthoredLabels = Settings.AuthoredLabels;
 	if ((Result.Flags & ERecordFlags::Primary) != ERecordFlags::None)
 	{
 		record.PrimaryName = Result.PrimaryName;
@@ -248,6 +252,15 @@ void AppendRecordUpsertImpl (TResult&& Result, const SEffectiveFileSettings& Set
 	record.SubEntries = take(Result.SubEntries);
 	record.Edges = take(Result.Edges);
 	record.Companions = take(Result.Companions);
+	AppendRenamedSubAliases(record.Guid, record.SubEntries, record.Aliases);
+	if (Meta != nullptr)
+	{
+		for (const SGuid& alias : Meta->Aliases)
+		{
+			record.Aliases.push_back(SAssetId { alias, 0u });
+		}
+		record.FormerPaths = Meta->FormerPaths;
+	}
 
 	Delta.ProblemClears.push_back(SProblemsClear { FString(FileMountPath), EProblemSource::Analyze });
 	// One set per subject, subjects in their first diagnostic's order, diagnostics in theirs (a map from subject
@@ -387,13 +400,129 @@ void RemoveSubEntries (SAnalyzeResult& Result, FStringView FileMountPath, TFunct
 	});
 }
 
-void AppendRecordUpsert (const SAnalyzeResult& Result, const SEffectiveFileSettings& Settings, FStringView FileMountPath, SRegistryDelta& Delta)
+void ApplySubAssetOverrides (SAnalyzeResult& Result, const SAnalyzeInput& In, const SAssetMeta& Meta, FStringView MetaFile)
 {
-	AppendRecordUpsertImpl(Result, Settings, FileMountPath, Delta);
+	const reflect::HDataNode root = Meta.SubAssets.GetRoot();
+	if (!root.IsMap())
+	{
+		return;
+	}
+	SAnalyzeInput metaInput = In;
+	metaInput.SourceFile = FString(MetaFile);
+	const auto warn = [&] (const reflect::SDataChild& Entry, FStringView Section, FString Message)
+	{
+		SDiagnostic diagnostic = importers::MakeFileDiagnostic(metaInput, ESeverity::Warning, std::move(Message));
+		diagnostic.Line = Entry.KeyLine;
+		diagnostic.Column = Entry.KeyColumn;
+		diagnostic.FieldPath = FString::Format("SubAssets.{}.{}", Section, Entry.Key);
+		Result.Diagnostics.push_back(std::move(diagnostic));
+	};
+	const auto findSub = [&Result] (FStringView Label) -> SSubEntryDecl*
+	{
+		const auto found = std::find_if(Result.SubEntries.begin(), Result.SubEntries.end(), [Label] (const SSubEntryDecl& Sub) { return Sub.Label == Label; });
+		return found != Result.SubEntries.end() ? &*found : nullptr;
+	};
+
+	if (const reflect::HDataNode renamed = root.FindChild("Renamed"); renamed.IsMap())
+	{
+		std::unordered_set<uint64> ids;
+		for (const SSubEntryDecl& sub : Result.SubEntries)
+		{
+			ids.insert(sub.SubId != 0u ? sub.SubId : MakeSubId(sub.Label));
+		}
+		for (const reflect::SDataChild& entry : renamed.GetChildren())
+		{
+			const std::optional<FStringView> oldLabel = entry.Value.AsText();
+			SSubEntryDecl* sub = findSub(entry.Key);
+			if (!oldLabel.has_value() || oldLabel->IsEmpty())
+			{
+				warn(entry, "Renamed", FString::Format("SubAssets.Renamed: '{}' must name the label whose id it keeps", entry.Key));
+				continue;
+			}
+			if (sub == nullptr)
+			{
+				warn(entry, "Renamed", FString::Format("SubAssets.Renamed: the file has no sub-asset '{}'", entry.Key));
+				continue;
+			}
+			const uint64 current = sub->SubId != 0u ? sub->SubId : MakeSubId(sub->Label);
+			const uint64 kept = MakeSubId(*oldLabel);
+			if (kept == current)
+			{
+				continue;
+			}
+			if (ids.contains(kept))
+			{
+				warn(entry, "Renamed", FString::Format("SubAssets.Renamed: '{}' cannot keep the id of '{}', which another sub-asset has", entry.Key,
+					*oldLabel));
+				continue;
+			}
+			ids.erase(current);
+			ids.insert(kept);
+			for (SEdgeDecl& edge : Result.Edges)
+			{
+				edge.FromSub = edge.FromSub == current ? kept : edge.FromSub;
+			}
+			sub->SubId = kept;
+		}
+	}
+
+	if (const reflect::HDataNode remap = root.FindChild("Remap"); remap.IsMap())
+	{
+		// The references through the schema-free scan's reader of `$asset` maps (§4.4), over the meta's SubAssets.
+		SAnalyzeResult references;
+		GatherSchemaFree(Meta.SubAssets, metaInput, references);
+		for (SDiagnostic& diagnostic : references.Diagnostics)
+		{
+			if (diagnostic.FieldPath.View().StartsWith("Remap"))
+			{
+				diagnostic.FieldPath = FString("SubAssets.") + diagnostic.FieldPath;
+				Result.Diagnostics.push_back(std::move(diagnostic));
+			}
+		}
+		for (const reflect::SDataChild& entry : remap.GetChildren())
+		{
+			const SSubEntryDecl* sub = findSub(entry.Key);
+			if (sub == nullptr)
+			{
+				warn(entry, "Remap", FString::Format("SubAssets.Remap: the file has no sub-asset '{}'", entry.Key));
+				continue;
+			}
+			const FString fieldPath = FString("Remap.") + entry.Key;
+			for (const SEdgeDecl& reference : references.Edges)
+			{
+				if (reference.FieldPath != fieldPath.View())
+				{
+					continue;
+				}
+				SEdgeDecl& edge = Result.Edges.emplace_back(reference);
+				edge.FromSub = sub->SubId != 0u ? sub->SubId : MakeSubId(sub->Label);
+				edge.Flags = (reference.Flags & ~EDepFlags::Schemaless) | EDepFlags::Hard | EDepFlags::Declared;
+				edge.FieldPath = FString("SubAssets.") + reference.FieldPath;
+			}
+		}
+	}
+
+	if (const reflect::HDataNode overrides = root.FindChild("Overrides"); overrides.IsMap())
+	{
+		for (const reflect::SDataChild& entry : overrides.GetChildren())
+		{
+			if (findSub(entry.Key) == nullptr)
+			{
+				warn(entry, "Overrides", FString::Format("SubAssets.Overrides: the file has no sub-asset '{}'", entry.Key));
+			}
+		}
+	}
 }
 
-void AppendRecordUpsert (SAnalyzeResult&& Result, const SEffectiveFileSettings& Settings, FStringView FileMountPath, SRegistryDelta& Delta)
+void AppendRecordUpsert (const SAnalyzeResult& Result, const SEffectiveFileSettings& Settings, FStringView FileMountPath, SRegistryDelta& Delta,
+	const SGuid& Guid, const SAssetMeta* Meta)
 {
-	AppendRecordUpsertImpl(std::move(Result), Settings, FileMountPath, Delta);
+	AppendRecordUpsertImpl(Result, Settings, FileMountPath, Delta, Guid, Meta);
+}
+
+void AppendRecordUpsert (SAnalyzeResult&& Result, const SEffectiveFileSettings& Settings, FStringView FileMountPath, SRegistryDelta& Delta,
+	const SGuid& Guid, const SAssetMeta* Meta)
+{
+	AppendRecordUpsertImpl(std::move(Result), Settings, FileMountPath, Delta, Guid, Meta);
 }
 }

@@ -4,12 +4,14 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <optional>
 
 #include "EnginePaths.h"
 #include "WorldScene.h"
 #include "Config/Config.h"
 #include "Engine/Engine.h"
 #include "Engine/LaunchConfig.h"
+#include "Platform/FileSystem.h"
 
 #if !defined(FRT_HEADLESS)
 #include "Graphics/Render/Renderer.h"
@@ -38,10 +40,45 @@ bool CAutomation::IsScriptedRun (const config::CConfig& Config)
 	return HasAutomationKeys(Config) || Config.Get("Editor", "SmokeTest", false);
 }
 
+bool CAutomation::IsScratchEditRun (const config::CConfig& Config, const std::filesystem::path& ProjectDir, const std::filesystem::path& EngineDir)
+{
+#if FRT_WITH_DEV_TOOLS
+	if (!Config.Get("Editor", "SmokeTest", false) || !Config.Get("Editor", "SmokeTestEdits", false) || ProjectDir.empty() || EngineDir.empty())
+	{
+		return false;
+	}
+	const std::optional<std::filesystem::path> shaderRoot = Config.Get("Render", "ShaderRoot", "").TryToPath();
+	std::error_code ec;
+	if (!shaderRoot.has_value() || shaderRoot->empty() || !std::filesystem::is_directory(*shaderRoot, ec))
+	{
+		return false;   // the engine's own shaders (CEngine::StartUp ignores a ShaderRoot that is no directory)
+	}
+	return !platform::IsAtOrBelowResolved(ProjectDir, EngineDir) && !platform::IsAtOrBelowResolved(*shaderRoot, EngineDir);
+#else
+	// No [Render] ShaderRoot: the shaders are the engine's, which the smoke test never edits.
+	(void)Config;
+	(void)ProjectDir;
+	(void)EngineDir;
+	return false;
+#endif
+}
+
 void CAutomation::ApplyScriptedRunRules (config::CConfig& Config)
 {
+	ApplyScriptedRunRules(Config, paths::HasProject() ? paths::GetProjectDir() : std::filesystem::path(), paths::GetEngineDir());
+}
+
+void CAutomation::ApplyScriptedRunRules (config::CConfig& Config, const std::filesystem::path& ProjectDir, const std::filesystem::path& EngineDir)
+{
 	Config.SetOverride("Assets", "Watch", "0");
-	Config.SetOverride("Assets", "ReadOnly", "1");
+	// Never /Engine, wherever the project is.
+	Config.SetOverride("Assets", "EngineWritable", "0");
+	// The smoke test's file edits write a scratch copy, never the engine checkout (EditorSmokeTest.h): there the run is
+	// the copy's writer. Anywhere else it stays read-only.
+	if (!IsScratchEditRun(Config, ProjectDir, EngineDir))
+	{
+		Config.SetOverride("Assets", "ReadOnly", "1");
+	}
 }
 
 void CAutomation::Configure (CEngine& Engine, const CWorldScene& World)

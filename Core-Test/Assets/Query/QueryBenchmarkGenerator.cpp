@@ -4,6 +4,9 @@
 
 #include "Assets/AssetId.h"
 #include "Assets/AssetTypes.h"
+#include "Assets/Meta/MetaFile.h"
+#include "Assets/Meta/MetaPaths.h"
+#include "Assets/Meta/MetaTypes.h"
 #include "Assets/Registry/RegistryDelta.h"
 #include "Assets/Registry/RegistryTypes.h"
 #include "Platform/Timestamp.h"
@@ -152,6 +155,10 @@ private:
 
 	void Add (SRecordUpsert&& Record)
 	{
+		if (Spec.bMetas)
+		{
+			AddMeta(Record);
+		}
 		Weight += 1u + static_cast<uint32>(Record.SubEntries.size());
 		Delta.RecordUpserts.push_back(std::move(Record));
 		if (Weight >= Spec.ChunkWeight)
@@ -172,6 +179,42 @@ private:
 		++Report.Commits;
 		Delta = SRegistryDelta {};
 		Weight = 0u;
+	}
+
+	// The record's meta: its GUID, the source row's meta columns, the meta's own FILES row and its METAS copy.
+	void AddMeta (SRecordUpsert& Record)
+	{
+		SAssetMeta meta;
+		meta.Guid = MakeDerivedGuid(SGuid {}, "query-bench-meta", Record.FileMountPath);
+		meta.Importer = Record.Importer;
+		meta.Labels = Record.RuleLabels;
+		FString text;
+		if (!EmitMeta(meta, text))
+		{
+			return;
+		}
+		const uint64 hash = HashMetaBytes(text);
+		const SFileMetaState columns { EMetaState::Paired, hash };
+		for (auto it = Delta.FileUpserts.rbegin(); it != Delta.FileUpserts.rend(); ++it)
+		{
+			if (it->MountPath == Record.FileMountPath)
+			{
+				it->Meta = columns;
+				break;
+			}
+		}
+		SFileUpsert row = MakeFile(GetMetaPath(Record.FileMountPath), text.Len(), EFileClass::Meta);
+		row.Meta = columns;
+		Delta.FileUpserts.push_back(std::move(row));
+		Record.Guid = meta.Guid;
+		SMetaCopy copy;
+		copy.Guid = meta.Guid;
+		copy.Hash = hash;
+		copy.Bytes.assign(text.AsBytes().begin(), text.AsBytes().end());
+		copy.SourcePath = Record.FileMountPath;
+		Report.MetaBytes += copy.Bytes.size();
+		++Report.Metas;
+		Delta.MetaCopies.push_back(std::move(copy));
 	}
 
 	[[nodiscard]] FString RandomTexture (SRandom& Random) const

@@ -1276,7 +1276,7 @@ void ForEachEdgeInto (const SRegistryTables& Tables, uint32 AssetRow, uint64 Sub
 	Tables.Graph.TargetsByResolved.ForEach(MixRegistryKey(AssetRow), [&] (uint32 TargetRow)
 	{
 		const STargetRow& target = Tables.Graph.Targets[TargetRow];
-		if (target.Resolved == AssetRow && target.State == ETargetState::Resolved && (SubId == 0u || target.TargetSub == SubId))
+		if (target.Resolved == AssetRow && target.State == ETargetState::Resolved && (SubId == 0u || GetResolvedSub(Tables, target) == SubId))
 		{
 			ForEachLiveReverseEdge(Tables, TargetRow, [&] (const SReverseEdge& Entry) { Visit(Entry.Source, GetEdgeRow(Tables, Entry.Edge)); });
 		}
@@ -1877,7 +1877,7 @@ private:
 				if ((SubId == 0u || GetEdgeFromSubId(Tables, Row, edge) == SubId) && target.State == ETargetState::Resolved && HasAllFlags(edge.Flags, Spec.Mask))
 				{
 					enter(target.Resolved);
-					addSub(target.Resolved, target.TargetSub);
+					addSub(target.Resolved, GetResolvedSub(Tables, target));
 				}
 			});
 		};
@@ -2037,8 +2037,21 @@ private:
 		case ESystemPredicate::Primary:
 			return HasAnyFlags(flags, ERecordFlags::Primary);
 		case ESystemPredicate::Redirected:
-		case ESystemPredicate::Unsaved:
+		{
+			// An edge of its own resolved through an alias or a FormerPath (§5.2, REF006).
+			bool bRedirected = false;
+			ForEachOwnEdge(Tables, Context, [&] (const SEdgeRow&, const STargetRow& Target)
+			{
+				bRedirected = bRedirected || (Target.State == ETargetState::Resolved && Target.bRedirected);
+			});
+			return bRedirected;
+		}
 		case ESystemPredicate::PendingMeta:
+			// Only a file that gets a meta waits for one: a type-excluded record's file (class Excluded) stays
+			// PendingMeta for good, since nothing creates a meta for it or reports it (the lifecycle and `status` skip it).
+			return GetsMeta(Tables.Files.Class[Context.File])
+				&& Tables.Files.MetaState[Context.File] == EMetaState::PendingMeta;
+		case ESystemPredicate::Unsaved:
 			return false;
 		}
 		return false;

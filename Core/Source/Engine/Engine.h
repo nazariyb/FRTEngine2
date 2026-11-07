@@ -29,6 +29,8 @@ class CAssetRegistry;
 class CDerivedDataCache;
 class CFileWatcherService;
 class CMountTable;
+class CVcsProviderSet;
+struct SLifecycleDesc;
 }
 
 namespace frt::graphics
@@ -67,10 +69,18 @@ struct SEngineDesc
 	// standard output, which is the tool's (a --json stream). The frame calls and the services those
 	// steps would have made are not for it.
 	bool bToolHost = false;
-	// This host writes the project's registry files when it can (design §5.9, the M3 lock deviation): StartUp takes
+	// This host is the project's writer (design §4.7, §5.9; assets::ClaimAssetOwnership): StartUp takes
 	// <project>/Local/Assets/Owner.lock and, holding it, lets the registry write its snapshot, journal, Rules.cache
-	// and ProjectId. Only the editor sets it, when it opens a project; [Assets] ReadOnly=1 (every scripted run) skips
-	// the attempt. Another process holding the lock is said once, and this host then writes nothing.
+	// and ProjectId. Only the editor sets it, when it opens a project; [Assets] ReadOnly=1 (every scripted run but the
+	// smoke test's file edits on a scratch copy, CAutomation::IsScratchEditRun) skips the attempt. While another process
+	// holds the lock StartUp fails, naming it (GetStartUpError), unless the project's Safety.GuestProcesses makes this
+	// host a read-only guest, which writes nothing and says so in its title.
+	// The writer's registry repairs metas (its lifecycle, assets::SLifecycleDesc, through each mount's VCS provider); every
+	// other host's only reports. Engine-owner mode (a project inside the engine checkout, or [Assets] EngineWritable=1):
+	// the writer takes the engine's lock best-effort as well (assets::ClaimsEngineOwnership), and with it the registry
+	// repairs /Engine's metas (SAssetRegistryDesc::bEngineMetasWritable); without it /Engine stays read-only and one line
+	// says who holds it. An operation a previous run left unfinished is rolled forward before the first scan; a root whose
+	// journal still holds one is logged.
 	bool bAssetWriter = false;
 };
 
@@ -115,6 +125,18 @@ public:
 
 	bool StartUp (const SEngineDesc& Desc);
 	void ShutDown ();
+	// Why StartUp returned false, as a host shows it to a person (a second writer of the project: who owns it, and the
+	// ways on); empty for a failure already reported where it happened.
+	const FString& GetStartUpError () const { return StartUpError; }
+	// The MIG001 of the opened project when StartUp found it behind the engine's content migrations (design §14.8,
+	// assets::FindMigrationGap) while the gate is on (assets::IsMigrationGateOn; on by default): the project runs
+	// read-only, as with [Assets] ReadOnly=1 (no metas or registry files), and the log and an asset writer's window
+	// title say so. The interactive editor shows it in a dialog that offers the project manager's migration; scripted
+	// runs, headless hosts and the launcher only log it. Empty otherwise.
+	const FString& GetMigrationNotice () const { return MigrationNotice; }
+	// That MIG001 is a Schemas/Migrations.yml a newer engine wrote: the project is ahead of this engine, not behind it,
+	// so the editor offers no migration (none could read the file) and says to open it with that engine.
+	bool IsMigrationNoticeOfNewerEngine () const { return bMigrationNoticeOfNewerEngine; }
 
 	// ---- frame ----
 	// Dispatches every pending OS message. False once the application should quit.
@@ -157,9 +179,9 @@ public:
 	// drop their handles.
 	assets::CFileWatcherService* GetFileWatcher () { return FileWatcher.get(); }
 	// The asset registry (Assets/AssetRegistry.h): the project's mounts scanned, analyzed and kept current through the
-	// file watcher, read-only in M3. Started in StartUp (its scan overlaps the window and renderer coming up) and
-	// pumped in BeginFrame right after the worker completions; hosts wait for its initial scan before their first
-	// BuildWorld (CAssetRegistry::WaitBeforeBuildWorld). In Debug and Development with a project, headless too; null
+	// file watcher; its lifecycle writes metas for the writer. Started in StartUp (its scan overlaps the window and
+	// renderer coming up) and pumped in BeginFrame right after the worker completions; hosts wait for its initial scan
+	// before their first BuildWorld (CAssetRegistry::WaitBeforeBuildWorld). In Debug and Development with a project, headless too; null
 	// in Release, in tool hosts (AssetTool builds its own), without a project (the project manager) and with
 	// [Assets] Registry=0. Never reachable from game code. Valid from StartUp until ShutDown, which ends it before
 	// the file watcher and the worker pool.
@@ -190,6 +212,9 @@ private:
 	bool IsExclusiveFullscreen () const;
 
 	SEngineDesc Desc;
+	FString StartUpError;
+	FString MigrationNotice;
+	bool bMigrationNoticeOfNewerEngine = false;
 	bool bStarted = false;
 	bool bQuitRequested = false;
 	int ExitCode = 0;
@@ -211,10 +236,15 @@ private:
 	// (whose libraries subscribe) and before the worker pool. A member in every build, like DerivedData.
 	std::unique_ptr<assets::CFileWatcherService> FileWatcher;
 	// Dev builds: the process's mounts (installed for paths::ToMountPath while the engine runs), the project's writer
-	// lock when this host holds it (SEngineDesc::bAssetWriter), and the registry, ended in ShutDown before the file
-	// watcher it subscribes to. Members in every build, like FileWatcher.
+	// lock when this host holds it (SEngineDesc::bAssetWriter) and the engine's in engine-owner mode, and the registry,
+	// ended in ShutDown before the file watcher it subscribes to. Members in every build, like FileWatcher.
 	std::shared_ptr<const assets::CMountTable> MountTable;
 	std::unique_ptr<platform::CExclusiveFileLock> AssetOwnerLock;
+	std::unique_ptr<platform::CExclusiveFileLock> EngineOwnerLock;
+	// The registry's lifecycle (SAssetRegistryDesc::Lifecycle) and the writer's VCS providers, which it points into: both
+	// outlive it (EndAssetRegistry).
+	std::unique_ptr<assets::SLifecycleDesc> AssetLifecycle;
+	std::unique_ptr<assets::CVcsProviderSet> VcsProviders;
 	std::unique_ptr<assets::CAssetRegistry> AssetRegistry;
 	std::unique_ptr<CTimer> Clock;
 	// Window, renderer, UI. One opaque block defined in Engine.cpp: headless builds compile none

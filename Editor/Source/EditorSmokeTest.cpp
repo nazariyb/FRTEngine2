@@ -10,11 +10,20 @@
 #include "EnginePaths.h"
 #include "Timer.h"
 #include "Window.h"
+#include "Assets/AssetDiagnosticCodes.h"
 #include "Assets/AssetRegistry.h"
 #include "Assets/FileWatcherService.h"
+#include "Assets/Discovery/Mounts.h"
+#include "Assets/Meta/AssetRepairs.h"
+#include "Assets/Meta/MetaFile.h"
+#include "Assets/Meta/MetaPaths.h"
+#include "Assets/Meta/ProblemList.h"
+#include "Assets/Registry/RegistryRecords.h"
 #include "Assets/Registry/RegistryView.h"
+#include "Assets/Vcs/VcsProvider.h"
 #include "Config/Config.h"
 #include "Containers/String.h"
+#include "Engine/Automation.h"
 #include "Engine/Engine.h"
 #include "Engine/GameModule.h"
 #include "Entity.h"
@@ -22,7 +31,9 @@
 #include "Graphics/Camera.h"
 #include "Graphics/Render/MaterialLibrary.h"
 #include "Graphics/Render/Renderer.h"
+#include "Platform/FileSystem.h"
 #include "Platform/Platform.h"
+#include "Platform/Timestamp.h"
 #include "UI/DebugTools.h"
 
 #include "imgui.h"
@@ -102,15 +113,21 @@ bool Near (float A, float B, float Tolerance = 1e-4f)
 	return std::abs(A - B) <= Tolerance;
 }
 
-// Path is Directory or below it (both made canonical as far as they exist, so spelling and case
-// do not matter).
+// A 1x1 RGBA PNG: a texture the Demo's rules import, small enough to hash at once.
+constexpr uint8 TinyPng[] = {
+	0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01,
+	0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41,
+	0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
+	0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+};
+
+// How long the lifecycle may take to create the meta: its creation delay and VCS settle time, and a slow machine.
+constexpr double MetaCreationTimeoutSeconds = 30.0;
+
+// Path is Directory or below it, as the disk resolves both (spelling, case and links do not matter).
 bool IsInside (const std::filesystem::path& Path, const std::filesystem::path& Directory)
 {
-	std::error_code ec;
-	const std::filesystem::path path = std::filesystem::weakly_canonical(Path, ec);
-	const std::filesystem::path directory = std::filesystem::weakly_canonical(Directory, ec);
-	const std::filesystem::path relative = path.lexically_relative(directory);
-	return !relative.empty() && *relative.begin() != "..";
+	return platform::IsAtOrBelowResolved(Path, Directory);
 }
 }
 
@@ -188,6 +205,12 @@ void CEditorSmokeTest::BeginFileEdits (CEngine& Engine)
 	Check(bProjectOutside, "the project is a copy outside the engine checkout: " + FString::FromPath(paths::GetProjectDir()));
 	Check(bShadersOutside, "the shaders are a copy outside the engine checkout ([Render] ShaderRoot): " + FString::FromPath(paths::GetShaderRootDir()));
 	bCanEditFiles = bProjectOutside && bShadersOutside;
+	// The engine made the same decision at start-up (CAutomation::IsScratchEditRun): the run writes the copy's assets
+	// exactly when it edits its files, and is read-only everywhere else.
+	const assets::CAssetRegistry* registry = Engine.GetAssetRegistry();
+	Check(bCanEditFiles == CAutomation::IsScratchEditRun(Engine.GetConfig(), paths::GetProjectDir(), engineDir)
+		&& registry != nullptr && registry->IsWriter() == bCanEditFiles,
+		bCanEditFiles ? FString("the run is the scratch copy's asset writer") : FString("the run writes no asset (read-only)"));
 	if (!bCanEditFiles)
 	{
 		Log("  refusing to edit files of the engine checkout");
@@ -281,6 +304,112 @@ void CEditorSmokeTest::CheckProgramsRebuilt (CEngine& Engine)
 	Check(pipelines.GetHotReloadCount() == HotReloads + IncludePrograms && pipelines.GetErrors().empty(),
 		FString::Format("exactly the {} program(s) that read {} were rebuilt ({}), without errors ({})", IncludePrograms,
 			FString::FromPath(EditedInclude.filename()), pipelines.GetHotReloadCount() - HotReloads, pipelines.GetErrors().size()));
+}
+
+void CEditorSmokeTest::BeginMetaCreation (CEngine& Engine)
+{
+	if (!bCanEditFiles)
+	{
+		return;
+	}
+	assets::CAssetRegistry* registry = Engine.GetAssetRegistry();
+	if (registry == nullptr || registry->GetRepairs() == nullptr || !registry->IsWriter())
+	{
+		Check(false, "the scratch copy's editor is its writer, with a lifecycle that repairs");
+		WatchFiles(Engine, false);
+		MetaStep = EMetaStep::Done;
+		return;
+	}
+	MetaStep = EMetaStep::AwaitProvider;
+	MetaDeadline = platform::MakeDeadline(MetaCreationTimeoutSeconds);
+}
+
+void CEditorSmokeTest::UpdateMetaCreation (CEngine& Engine)
+{
+	assets::CAssetRegistry* registry = Engine.GetAssetRegistry();
+	const bool bLate = platform::ReadTimestamp() >= MetaDeadline;
+	if (MetaStep == EMetaStep::AwaitProvider)
+	{
+		// Detected on a worker at start-up (CEngine::StartUp): settled long before this, but never assumed.
+		const assets::IVcsProvider* provider = registry->GetRepairs()->GetProvider(assets::ProjectMountId);
+		if (provider == nullptr)
+		{
+			if (bLate)
+			{
+				Check(false, "the provider of /Project was detected");
+				WatchFiles(Engine, false);
+				MetaStep = EMetaStep::Done;
+			}
+			return;
+		}
+		MetaProvider = FString(provider->GetName());
+		// Named after the provider, so a second run over the same copy with another one adds a file of its own.
+		AddedFile = paths::GetProjectContentDir() / ("SmokeTest" + MetaProvider + ".png").ToPath();
+		const std::filesystem::path metaPath = assets::GetMetaPath(FString::FromPath(AddedFile)).ToPath();
+		std::error_code ec;
+		Check(!std::filesystem::exists(AddedFile, ec) && !std::filesystem::exists(metaPath, ec),
+			FString::Format("{} is new, with no meta", FString::FromPath(AddedFile.filename())));
+		FString error;
+		Check(platform::WriteFileAtomic(AddedFile, std::span<const uint8>(TinyPng), true, &error),
+			FString::Format("{} added to Content/{}", FString::FromPath(AddedFile.filename()), error.IsEmpty() ? FString() : ": " + error));
+		FlushWatcher(Engine, AddedFile.parent_path(), "the new file");
+		MetaStep = EMetaStep::AwaitMeta;
+		MetaDeadline = platform::MakeDeadline(MetaCreationTimeoutSeconds);
+		return;
+	}
+
+	// The meta on disk, parsed, and the registry's record of the file taking its GUID (Paired): the lifecycle's whole loop,
+	// from the watcher's event through the creation delay, the writer and the provider to the rescan.
+	const std::filesystem::path metaPath = assets::GetMetaPath(FString::FromPath(AddedFile)).ToPath();
+	std::optional<assets::SGuid> guid;
+	if (const std::optional<std::vector<uint8>> bytes = platform::ReadFileBytesUncached(metaPath); bytes.has_value())
+	{
+		assets::SMetaParseResult parse;
+		assets::ParseMeta(FStringView(reinterpret_cast<const char*>(bytes->data()), static_cast<uint32>(bytes->size())), parse);
+		if (parse.State == assets::EMetaParseState::Ok)
+		{
+			guid = parse.Meta.Guid;
+		}
+	}
+	const std::optional<FString> mountPath = registry->GetMounts().ToMountPath(AddedFile);
+	const std::optional<assets::SStoredFile> stored = mountPath.has_value() ? assets::FindStoredFile(registry->Live(), *mountPath) : std::nullopt;
+	const bool bPaired = guid.has_value() && stored.has_value() && stored->MetaState == assets::EMetaState::Paired && stored->Guid == *guid;
+	if (!bPaired && !bLate)
+	{
+		return;
+	}
+	Check(bPaired, FString::Format("the lifecycle created {}.meta through the {} provider (GUID {}), and the registry pairs it",
+		FString::FromPath(AddedFile.filename()), MetaProvider, guid.has_value() ? guid->ToString() : FString("none")));
+	if (!bPaired)
+	{
+		// What a failure needs: whether the registry saw the file, whether the lifecycle ran, and what could hold it.
+		const assets::SAssetRepairsStats stats = registry->GetRepairs()->GetStats();
+		const assets::CFileWatcherService* watcher = Engine.GetFileWatcher();
+		Log(FString::Format("  registry: {} ({}), idle {}, revision {}, repairs {} applied / {} refused; lifecycle runs {}, events {}; "
+			"watcher {} (holding {}, pending {})", stored.has_value() ? "has the file" : "has no row of the file",
+			stored.has_value() ? enum_::ToString(stored->MetaState) : FStringView("-"), registry->IsIdle(), registry->GetRevision(),
+			registry->GetCounters().RepairsApplied, registry->GetCounters().RepairsRefused, stats.Runs, stats.TrackedEvents,
+			watcher != nullptr && watcher->IsEnabled() ? "on" : "off", watcher != nullptr && watcher->GetStats().bHolding,
+			watcher != nullptr ? watcher->GetStats().PendingPaths : 0u));
+		for (const assets::SMount& mount : registry->GetMounts().GetMounts())
+		{
+			const assets::IVcsProvider* provider = registry->GetRepairs()->GetProvider(mount.Id);
+			Log(FString::Format("  {}: provider {}{}", mount.GetRootMountPath(), provider != nullptr ? provider->GetName() : FStringView("(not settled)"),
+				provider != nullptr && provider->IsBusy() ? ", busy" : ""));
+		}
+		if (mountPath.has_value())
+		{
+			registry->Live().ForEachProblem([&] (FStringView Subject, assets::EProblemSource, const SDiagnostic& Problem)
+			{
+				if (Subject == mountPath->View())
+				{
+					Log(FString::Format("  problem {} {}", FormatDiagnosticCode(Problem.Code), Problem.Message));
+				}
+			});
+		}
+	}
+	WatchFiles(Engine, false);
+	MetaStep = EMetaStep::Done;
 }
 
 void CEditorSmokeTest::CheckCameraController ()
@@ -473,6 +602,16 @@ void CEditorSmokeTest::Update (CEditor& Editor, CEngine& Engine)
 		// query of it matches (read-only, nothing here writes).
 		{ 3u, "asset registry", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G) { T.CheckAssetRegistry(E, G); } },
 		{ 6u, "Assets panel", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G) { T.CheckAssetsPanel(E, G); } },
+		// The Asset problems panel lists what `validate` does (and comes to the front for a capture); its "Go to" queries
+		// the Assets panel, checked two frames later.
+		{ 8u, "Asset problems panel", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G) { T.CheckProblemsPanel(E, G); } },
+		{ 12u, "Asset problems capture", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G)
+		{
+			T.CheckProblemsDrawn(E);
+			T.Capture(G, "00_asset_problems");
+		} },
+		{ 13u, "Asset problems Go to", [] (CEditorSmokeTest& T, CEditor& E, CEngine&) { T.GoToProblem(E); } },
+		{ 15u, "Asset problems Go to listed", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G) { T.CheckProblemsGoTo(E, G); } },
 		{ 30u, "docked", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G)
 		{
 			T.Check(E.GetViewport(EViewportTarget::Scene).GetFrame().bVisible, "the Scene view is visible");
@@ -757,18 +896,17 @@ void CEditorSmokeTest::Update (CEditor& Editor, CEngine& Engine)
 		{ 1051u, "edit a material", [] (CEditorSmokeTest& T, CEditor&, CEngine& G) { T.EditMaterial(G); } },
 		{ 1060u, "material reloaded", [] (CEditorSmokeTest& T, CEditor&, CEngine&) { T.CheckMaterialReloaded(); } },
 		{ 1061u, "edit a shader include", [] (CEditorSmokeTest& T, CEditor&, CEngine& G) { T.EditShaderInclude(G); } },
-		{ 1070u, "programs rebuilt", [] (CEditorSmokeTest& T, CEditor&, CEngine& G)
-		{
-			T.CheckProgramsRebuilt(G);
-			if (T.bCanEditFiles)
-			{
-				T.WatchFiles(G, false);
-			}
-		} },
+		{ 1070u, "programs rebuilt", [] (CEditorSmokeTest& T, CEditor&, CEngine& G) { T.CheckProgramsRebuilt(G); } },
+		// The lifecycle, live (§4.7): a file added with no meta gets one from this writer, through /Project's provider.
+		{ 1080u, "add a metaless file", [] (CEditorSmokeTest& T, CEditor&, CEngine& G) { T.BeginMetaCreation(G); } },
 	};
 
 	// Hitches: the longest frame between two steps goes into the log with the next step.
 	LongestFrameMs = (std::max)(LongestFrameMs, Engine.GetClock().GetDeltaSeconds() * 1000.0f);
+	if (MetaStep == EMetaStep::AwaitProvider || MetaStep == EMetaStep::AwaitMeta)
+	{
+		UpdateMetaCreation(Engine);
+	}
 	while (NextStep < std::size(steps) && frame >= steps[NextStep].Frame)
 	{
 		const SStep& step = steps[NextStep++];
@@ -777,8 +915,9 @@ void CEditorSmokeTest::Update (CEditor& Editor, CEngine& Engine)
 		step.Run(*this, Editor, Engine);
 	}
 
-	// Done: quit once the captures are on disk.
-	if (NextStep == std::size(steps) && !bFinished && !Engine.GetRenderer()->HasPendingCaptures())
+	// Done: quit once the captures are on disk and nothing is awaited.
+	const bool bAwaiting = MetaStep == EMetaStep::AwaitProvider || MetaStep == EMetaStep::AwaitMeta;
+	if (NextStep == std::size(steps) && !bFinished && !bAwaiting && !Engine.GetRenderer()->HasPendingCaptures())
 	{
 		bFinished = true;
 		// Glyphs are rasterised as text first needs them: the atlas grows with what the run drew.
@@ -822,6 +961,163 @@ void CEditorSmokeTest::CheckAssetsPanel (CEditor& Editor, CEngine& Engine)
 	Check(panel.GetError().IsEmpty() && panel.GetShownRevision() == registry->GetRevision(), "the Assets panel ran its query on the current revision");
 	Check(matched.has_value() && panel.GetResultCount() == *matched && panel.GetShownCount() == std::min(*matched, CAssetsPanel::DefaultLimit),
 		FString::Format("the Assets panel shows {} of {} record(s) of {}", panel.GetShownCount(), panel.GetResultCount(), AssetsPanelQuery));
+}
+
+void CEditorSmokeTest::CheckProblemsPanel (CEditor& Editor, CEngine& Engine)
+{
+	assets::CAssetRegistry* registry = Engine.GetAssetRegistry();
+	if (registry == nullptr)
+	{
+		return;
+	}
+	// A list made now, on a worker as the panel always makes it, against what validate's function returns for the same
+	// options over the same revision.
+	CAssetProblemsPanel& panel = Editor.GetProblemsPanel();
+	panel.RefreshNow(Engine);
+	const std::shared_ptr<const assets::CRegistryView> view = registry->Acquire();
+	std::vector<SDiagnostic> expected;
+	assets::RunValidation(*view, assets::MakeProblemListOptions(*registry), expected);
+	const std::vector<assets::SProblemEntry>& entries = panel.GetEntries();
+	bool bSame = panel.GetShownRevision() == view->GetRevision() && entries.size() == expected.size();
+	for (size_t i = 0u; bSame && i < entries.size(); ++i)
+	{
+		bSame = entries[i].Problem == expected[i];
+	}
+	const assets::SValidationCounts counts = assets::CountValidation(expected);
+	panel.SetFilter(assets::SProblemFilter {});
+	// The panel's options, which are validate's but for the providers: the lifecycle's, none where no lifecycle runs.
+	const size_t providers = assets::MakeProblemListOptions(*registry).Providers.size();
+	Check(bSame, FString::Format("the Asset problems panel lists {} problem(s) in {} asset(s), as RunValidation does with its options "
+		"({} error(s), {} warning(s), {} info; {} mount(s) ask a VCS)", entries.size(), panel.GetGroups().size(), counts.Errors, counts.Warnings,
+		counts.Infos, providers));
+	if (!bSame)
+	{
+		for (const SDiagnostic& problem : expected)
+		{
+			Log(FString::Format("  validate: {} {} {}", FormatDiagnosticCode(problem.Code), problem.Subject, problem.Message));
+		}
+		for (const assets::SProblemEntry& entry : entries)
+		{
+			Log(FString::Format("  panel:    {} {} {}", FormatDiagnosticCode(entry.Problem.Code), entry.Problem.Subject, entry.Problem.Message));
+		}
+	}
+
+	// Every entry's fix-its through the editor's own context, and one a META001 on /Engine offers where this process does
+	// not write /Engine (edit [14]): the `assets fix --engine` command, shown and copied. A process that writes nothing can
+	// apply none of them.
+	const assets::SProblemFixContext context { &registry->GetMounts(), registry->GetRepairs(), &registry->Live() };
+	uint32 offered = 0u;
+	uint32 enabled = 0u;
+	const auto count = [&] (const std::vector<assets::SProblemFixIt>& FixIts)
+	{
+		for (const assets::SProblemFixIt& fix : FixIts)
+		{
+			++offered;
+			enabled += fix.Kind == assets::EProblemFixKind::Apply && fix.Disabled.IsEmpty() ? 1u : 0u;
+		}
+	};
+	for (const assets::SProblemEntry& entry : entries)
+	{
+		count(assets::GetProblemFixIts(entry.Problem, context));
+	}
+	const auto engine = std::find_if(registry->GetMounts().GetMounts().begin(), registry->GetMounts().GetMounts().end(),
+		[] (const assets::SMount& Mount) { return Mount.Kind == assets::EMountKind::Engine; });
+	if (engine != registry->GetMounts().GetMounts().end()
+		&& (registry->GetRepairs() == nullptr || registry->GetRepairs()->GetWriterOf(engine->Id) == nullptr))
+	{
+		SDiagnostic probe;
+		probe.Code = assets::Meta001;
+		probe.Severity = ESeverity::Error;
+		probe.Subject = FString::Format("/{}/SmokeProbe.png", engine->Name);
+		const std::vector<assets::SProblemFixIt> fixIts = assets::GetProblemFixIts(probe, context);
+		count(fixIts);
+		const FString command = FString::Format("\"{}\" assets fix --engine", FString::FromPath((engine->OwnerRoot / "FRT.bat").make_preferred()));
+		const auto copy = std::find_if(fixIts.begin(), fixIts.end(), [] (const assets::SProblemFixIt& Fix) { return Fix.Kind == assets::EProblemFixKind::Copy; });
+		Check(copy != fixIts.end() && copy->Text == command && std::count_if(fixIts.begin(), fixIts.end(),
+			[] (const assets::SProblemFixIt& Fix) { return Fix.Kind == assets::EProblemFixKind::Copy; }) == 1,
+			FString::Format("a META001 on /{} offers {}", engine->Name, copy != fixIts.end() ? copy->Text : FString("no command")));
+	}
+	// Every host's registry runs the meta lifecycle (CEngine::StartUp): the writer's repairs /Project, a reader's only
+	// reports (its META001 and the rest), so a metaless file is a problem in a read-only editor too.
+	assets::CAssetRepairs* repairs = registry->GetRepairs();
+	if (!registry->IsWriter())
+	{
+		Check(offered > 0u && enabled == 0u, FString::Format("the read-only editor offers {} fix-it(s) and none it could apply", offered));
+		Check(repairs != nullptr && repairs->GetWriter() == nullptr && repairs->GetWriterOf(assets::ProjectMountId) == nullptr,
+			"the read-only registry runs the meta lifecycle, reporting only");
+	}
+	else
+	{
+		Check(repairs != nullptr && repairs->GetWriterOf(assets::ProjectMountId) != nullptr,
+			"the writer's registry runs the meta lifecycle, repairing /Project");
+	}
+
+	ImGui::SetWindowFocus(CAssetProblemsPanel::Name);
+	if (entries.empty())
+	{
+		Log("  skip  no asset problem to filter or go to");
+		return;
+	}
+	// Filtered by the first entry's code: exactly the entries of that code are left.
+	assets::SProblemFilter filter;
+	filter.Code = FormatDiagnosticCode(entries.front().Problem.Code);
+	panel.SetFilter(filter);
+	size_t shown = 0u;
+	for (const assets::SProblemGroup& group : panel.GetGroups())
+	{
+		shown += group.Entries.size();
+	}
+	const size_t ofCode = static_cast<size_t>(std::count_if(entries.begin(), entries.end(),
+		[&] (const assets::SProblemEntry& Entry) { return Entry.Problem.Code == entries.front().Problem.Code; }));
+	Check(shown == ofCode, FString::Format("the Asset problems panel filtered by code {} shows its {} problem(s)", filter.Code.IsEmpty() ? "(none)" : filter.Code, ofCode));
+	panel.SetFilter(assets::SProblemFilter {});
+
+	// "Go to" an entry with a record if there is one, else the first.
+	uint32 target = 0u;
+	for (uint32 i = 0u; i < entries.size(); ++i)
+	{
+		if (!entries[i].Type.IsEmpty())
+		{
+			target = i;
+			break;
+		}
+	}
+	GoToEntry = entries[target];   // the entry itself: a later list may hold it at another index
+	GoToQuery = assets::MakeGoToQuery(entries[target]);
+	bGoToListsSomething = !entries[target].Type.IsEmpty() || entries[target].bFolder;   // an orphan meta's folder may hold none
+}
+
+void CEditorSmokeTest::GoToProblem (CEditor& Editor)
+{
+	if (!GoToQuery.IsEmpty())
+	{
+		Editor.GetProblemsPanel().GoTo(Editor.GetAssetsPanel(), GoToEntry);
+	}
+}
+
+void CEditorSmokeTest::CheckProblemsDrawn (CEditor& Editor)
+{
+	const CAssetProblemsPanel& panel = Editor.GetProblemsPanel();
+	if (panel.GetEntries().empty())
+	{
+		return;
+	}
+	Check(panel.GetRowsDrawn() > 0u, FString::Format("the Asset problems panel drew {} row(s) of {} group(s) last frame", panel.GetRowsDrawn(),
+		panel.GetGroups().size()));
+}
+
+void CEditorSmokeTest::CheckProblemsGoTo (CEditor& Editor, CEngine& Engine)
+{
+	assets::CAssetRegistry* registry = Engine.GetAssetRegistry();
+	if (registry == nullptr || GoToQuery.IsEmpty())
+	{
+		return;
+	}
+	const CAssetsPanel& assets = Editor.GetAssetsPanel();
+	Check(assets.GetQuery() == GoToQuery && assets.GetError().IsEmpty() && (assets.GetResultCount() > 0u || !bGoToListsSomething),
+		FString::Format("the Asset problems panel's Go to lists {} record(s) in the Assets panel ({})", assets.GetResultCount(), GoToQuery));
+	// Back to what the Assets panel showed.
+	Editor.GetAssetsPanel().SetQuery(AssetsPanelQuery);
 }
 
 void CEditorSmokeTest::SelectNamedEntity (CEditor& Editor, uint32 Which)

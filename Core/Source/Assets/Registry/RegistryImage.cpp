@@ -1,6 +1,7 @@
 #include "Assets/Registry/RegistryView.h"
 
 #include <algorithm>
+#include <cstring>
 
 #include "Assets/AssetTypes.h"
 #include "Containers/StringMap.h"
@@ -335,13 +336,14 @@ SRegistryImage CRegistryView::ExportImage (std::span<const MountId> Mounts) cons
 			{
 				// Leaves the image's mounts: by the target's mount path, re-resolved wherever it is loaded.
 				FString path(tables.Paths.Get(files.Path[assets.File[target.Resolved]]));
-				const uint32 sub = target.TargetSub != 0u ? FindSubEntryRow(tables, target.Resolved, target.TargetSub) : InvalidRow;
+				const uint64 resolvedSub = GetResolvedSub(tables, target);
+				const uint32 sub = resolvedSub != 0u ? FindSubEntryRow(tables, target.Resolved, resolvedSub) : InvalidRow;
 				if (sub != InvalidRow)
 				{
 					path += '#';
 					path += tables.Names.Get(subs.Key[sub]);
 				}
-				if (target.TargetSub == 0u || sub != InvalidRow)
+				if (resolvedSub == 0u || sub != InvalidRow)
 				{
 					edge.TargetPath = strings.AddText(path);
 				}
@@ -366,6 +368,24 @@ SRegistryImage CRegistryView::ExportImage (std::span<const MountId> Mounts) cons
 			image.Companions.push_back(pathOf(tables.Companions[companions.Begin + i]));
 		}
 		record.Companions.Count = companions.Count;
+
+		record.Aliases.Begin = static_cast<uint32>(image.Aliases.size());
+		record.FormerPaths.Begin = static_cast<uint32>(image.FormerPaths.size());
+		if (const uint32 redirect = assets.Redirect[row]; redirect != InvalidRow)
+		{
+			const SPoolRange aliases = tables.Redirects.Aliases[redirect];
+			for (uint32 i = 0u; i < aliases.Count; ++i)
+			{
+				image.Aliases.push_back(tables.AliasEntries[aliases.Begin + i].Id);
+			}
+			const SPoolRange former = tables.Redirects.FormerPaths[redirect];
+			for (uint32 i = 0u; i < former.Count; ++i)
+			{
+				image.FormerPaths.push_back(pathOf(tables.FormerPaths[former.Begin + i]));
+			}
+			record.Aliases.Count = aliases.Count;
+			record.FormerPaths.Count = former.Count;
+		}
 
 		image.Records.push_back(record);
 	}
@@ -396,6 +416,49 @@ SRegistryImage CRegistryView::ExportImage (std::span<const MountId> Mounts) cons
 				image.Problems.push_back(SImageProblems { pathOf(tables.Problems.Subject[subject]), static_cast<EProblemSource>(source), *list });
 			}
 		}
+	}
+
+	// METAS and TOMBSTONES of the exported mounts (by the source's, the removed file's path), by GUID: the order a
+	// store's history leaves its rows in never reaches a file.
+	const auto isPathExported = [&] (FStringView Path)
+	{
+		const SMountRow* mount = FindMountRowForPath(tables, Path);
+		return mount != nullptr && isExported(mount->Id);
+	};
+	const auto byGuid = [] (const SGuid& A, const SGuid& B) { return std::memcmp(A.Bytes, B.Bytes, sizeof(A.Bytes)) < 0; };
+	std::vector<uint32> rows;
+	for (uint32 row = 0u; row < tables.MetaCopies.Guid.Size(); ++row)
+	{
+		if (tables.MetaCopies.Guid[row].IsValid() && isPathExported(tables.Paths.Get(tables.MetaCopies.SourcePath[row])))
+		{
+			rows.push_back(row);
+		}
+	}
+	std::sort(rows.begin(), rows.end(), [&] (uint32 A, uint32 B) { return byGuid(tables.MetaCopies.Guid[A], tables.MetaCopies.Guid[B]); });
+	image.Metas.reserve(rows.size());
+	for (const uint32 row : rows)
+	{
+		const FStringView bytes = tables.MetaBytes.Get(tables.MetaCopies.Bytes[row]);
+		SImageMetaCopy& copy = image.Metas.emplace_back();
+		copy.Guid = tables.MetaCopies.Guid[row];
+		copy.Hash = tables.MetaCopies.Hash[row];
+		copy.Bytes.assign(reinterpret_cast<const uint8*>(bytes.GetData()), reinterpret_cast<const uint8*>(bytes.GetData()) + bytes.Len());
+		copy.SourcePath = pathOf(tables.MetaCopies.SourcePath[row]);
+	}
+	rows.clear();
+	for (uint32 row = 0u; row < tables.Tombstones.Guid.Size(); ++row)
+	{
+		if (tables.Tombstones.Guid[row].IsValid() && isPathExported(tables.Paths.Get(tables.Tombstones.LastPath[row])))
+		{
+			rows.push_back(row);
+		}
+	}
+	std::sort(rows.begin(), rows.end(), [&] (uint32 A, uint32 B) { return byGuid(tables.Tombstones.Guid[A], tables.Tombstones.Guid[B]); });
+	image.Tombstones.reserve(rows.size());
+	for (const uint32 row : rows)
+	{
+		image.Tombstones.push_back(SImageTombstone { tables.Tombstones.Guid[row], pathOf(tables.Tombstones.LastPath[row]), tables.Tombstones.Hash[row],
+			tables.Tombstones.Identity[row], tables.Tombstones.RemovedFileTime[row] });
 	}
 	return image;
 }
@@ -482,8 +545,7 @@ SRegistryDelta MakeImageDelta (SRegistryImage&& Image)
 		upsert.Identity = file.Identity;
 		upsert.ContentHash = file.ContentHash;
 		upsert.Class = file.Class;
-		upsert.MetaState = file.MetaState;
-		upsert.MetaHash = file.MetaHash;
+		upsert.Meta = SFileMetaState { file.MetaState, file.MetaHash };
 		delta.FileUpserts.push_back(std::move(upsert));
 	}
 
@@ -560,10 +622,8 @@ SRegistryDelta MakeImageDelta (SRegistryImage&& Image)
 		record.AnalyzeStamp = image.AnalyzeStamp;
 		for (uint32 i = image.Labels.Begin; i < image.Labels.Begin + image.Labels.Count && i < Image.Labels.size(); ++i)
 		{
-			if ((Image.Labels[i] & RuleLabelBit) != 0u)
-			{
-				record.RuleLabels.push_back(FString(name(Image.Labels[i] & ~RuleLabelBit)));
-			}
+			std::vector<FString>& labels = (Image.Labels[i] & RuleLabelBit) != 0u ? record.RuleLabels : record.AuthoredLabels;
+			labels.push_back(FString(name(Image.Labels[i] & ~RuleLabelBit)));
 		}
 		if (type)
 		{
@@ -604,6 +664,14 @@ SRegistryDelta MakeImageDelta (SRegistryImage&& Image)
 		{
 			record.Companions.push_back(FString(text(Image.Companions[i])));
 		}
+		for (uint32 i = image.Aliases.Begin; i < image.Aliases.Begin + image.Aliases.Count && i < Image.Aliases.size(); ++i)
+		{
+			record.Aliases.push_back(Image.Aliases[i]);
+		}
+		for (uint32 i = image.FormerPaths.Begin; i < image.FormerPaths.Begin + image.FormerPaths.Count && i < Image.FormerPaths.size(); ++i)
+		{
+			record.FormerPaths.push_back(FString(text(Image.FormerPaths[i])));
+		}
 		delta.RecordUpserts.push_back(std::move(record));
 	}
 
@@ -613,6 +681,14 @@ SRegistryDelta MakeImageDelta (SRegistryImage&& Image)
 		{
 			delta.Problems.push_back(SProblemsSet { Image.Strings[problems.Subject], problems.Source, std::move(problems.Diagnostics) });
 		}
+	}
+	for (SImageMetaCopy& copy : Image.Metas)
+	{
+		delta.MetaCopies.push_back(SMetaCopy { copy.Guid, copy.Hash, std::move(copy.Bytes), FString(text(copy.SourcePath)) });
+	}
+	for (const SImageTombstone& tombstone : Image.Tombstones)
+	{
+		delta.Tombstones.push_back(STombstone { tombstone.Guid, FString(text(tombstone.LastPath)), tombstone.Hash, tombstone.Identity, tombstone.RemovedFileTime });
 	}
 	return delta;
 }

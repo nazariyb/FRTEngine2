@@ -32,6 +32,9 @@ namespace
 // The epoch of the writer's own hash indices: they are never published, so their pages are never frozen.
 constexpr uint64 WriterEpoch = 0u;
 
+// MetaBytes of replaced or removed meta copies that make a table compaction due (with a quarter of the pool).
+constexpr uint64 MetaBytesGarbageThreshold = 1024u * 1024u;
+
 // A companion path (portable fold) and how many committed records name it.
 struct SCompanionRef
 {
@@ -219,6 +222,10 @@ public:
 		{
 			ClearProblems(clear.MountPath, 1u << SourceIndex(clear.Source), true);
 		}
+		for (const SGuid& guid : Delta.TombstoneRemoves)
+		{
+			RemoveTombstone(guid);
+		}
 
 		for (const SMountUpsert& mount : Delta.Mounts)
 		{
@@ -240,9 +247,31 @@ public:
 		{
 			UpsertRecord(record);
 		}
+		// A GUID's tombstone and the removal of its copy apply only when no live record holds the GUID once the
+		// records are in (a GUID changed in place has lost it by then): the identity state then depends on what is
+		// live, never on the order commits of two passes (or two journals' parts) arrive in, and is what the bulk
+		// adoption builds from the same records.
+		for (const SGuid& guid : Delta.MetaCopyRemoves)
+		{
+			if (!IsGuidLive(guid))
+			{
+				RemoveMetaCopy(guid);
+			}
+		}
+		for (const STombstone& tombstone : Delta.Tombstones)
+		{
+			if (!IsGuidLive(tombstone.Guid))
+			{
+				UpsertTombstone(tombstone);
+			}
+		}
 		for (SProblemsSet& problems : Delta.Problems)
 		{
 			SetProblems(problems.Subject, problems.Source, std::move(problems.Diagnostics));
+		}
+		for (const SMetaCopy& copy : Delta.MetaCopies)
+		{
+			UpsertMetaCopy(copy);
 		}
 
 		Finish();
@@ -265,7 +294,18 @@ public:
 			const bool bLive = T.Assets.File[row] != InvalidRow;
 			SRingEntry change;
 			change.Revision = Revision;
-			if (touch.bExistedBefore && bLive)
+			if (touch.bExistedBefore && bLive && T.Assets.Guid[row] != touch.GuidBefore)
+			{
+				// Its id changed in place (a meta appeared for a file with a provisional id, a GUID edited by hand, two
+				// metas swapped): to a listener the old id went and the new one came, never a Modified of an id it
+				// never saw added.
+				change.Kind = ERecordChange::Removed;
+				change.Guid = touch.GuidBefore;
+				change.Path = T.Files.Path[T.Assets.File[row]];
+				changes.push_back(change);
+				change.Kind = ERecordChange::Added;
+			}
+			else if (touch.bExistedBefore && bLive)
 			{
 				change.Kind = ERecordChange::Modified;
 			}
@@ -288,7 +328,7 @@ public:
 			}
 			else
 			{
-				change.Guid = touch.RemovedGuid;
+				change.Guid = touch.GuidBefore;   // the id a listener knew, also when this commit re-GUIDed it first
 				change.Path = touch.RemovedPath;
 			}
 			changes.push_back(change);
@@ -300,7 +340,7 @@ private:
 	struct STouch
 	{
 		bool bExistedBefore = false;
-		SGuid RemovedGuid;
+		SGuid GuidBefore;                  // the row's GUID before this commit (bExistedBefore)
 		uint32 RemovedPath = InvalidRow;   // PATHS
 	};
 
@@ -787,14 +827,15 @@ private:
 		return ref != InvalidRow && W.CompanionRefs[ref].Count > 0u;
 	}
 
+	// A meta (EFileClass::Meta) is never a companion, whatever a record names.
 	EFileClass EffectiveClass (FStringView Path, EFileClass BaseClass, uint64 PortableHash) const
 	{
-		return IsNamedCompanion(Path, PortableHash) ? EFileClass::Companion : BaseClass;
+		return BaseClass != EFileClass::Meta && IsNamedCompanion(Path, PortableHash) ? EFileClass::Companion : BaseClass;
 	}
 
 	EFileClass EffectiveClass (FStringView Path, EFileClass BaseClass) const
 	{
-		return W.CompanionRefs.empty() ? BaseClass : EffectiveClass(Path, BaseClass, HashPortable(Path));
+		return W.CompanionRefs.empty() || BaseClass == EFileClass::Meta ? BaseClass : EffectiveClass(Path, BaseClass, HashPortable(Path));
 	}
 
 	// The FILES row of that exact spelling, created (with its folders) when missing. InvalidRow on a violation.
@@ -884,6 +925,7 @@ private:
 		W.FileSlot[row] = static_cast<uint32>(W.FolderFiles[Folder].size());
 		W.FolderFiles[Folder].push_back(row);
 		++T.LiveFiles;
+		T.LiveMetaFiles += File.Class == EFileClass::Meta ? 1u : 0u;
 		return row;
 	}
 
@@ -903,10 +945,17 @@ private:
 		{
 			files.ContentHash.SetIfChanged(row, *Upsert.ContentHash, Epoch);
 		}
-		files.MetaHash.SetIfChanged(row, Upsert.MetaHash, Epoch);
+		if (Upsert.Meta.has_value())
+		{
+			files.MetaHash.SetIfChanged(row, Upsert.Meta->Hash, Epoch);
+			files.MetaState.SetIfChanged(row, Upsert.Meta->State, Epoch);
+		}
+		if ((files.BaseClass[row] == EFileClass::Meta) != (Upsert.Class == EFileClass::Meta))
+		{
+			T.LiveMetaFiles = Upsert.Class == EFileClass::Meta ? T.LiveMetaFiles + 1u : T.LiveMetaFiles - 1u;
+		}
 		files.BaseClass.SetIfChanged(row, Upsert.Class, Epoch);
 		files.Class.SetIfChanged(row, EffectiveClass(Upsert.MountPath, Upsert.Class), Epoch);
-		files.MetaState.SetIfChanged(row, Upsert.MetaState, Epoch);
 	}
 
 	void RemoveFile (uint32 Row)
@@ -935,6 +984,7 @@ private:
 		siblings.pop_back();
 		files.Folder.Set(Row, InvalidRow, Epoch);
 		--T.LiveFiles;
+		T.LiveMetaFiles -= files.BaseClass[Row] == EFileClass::Meta ? 1u : 0u;
 		bFilesRemoved = true;
 		ClearProblems(path, (1u << SourceIndex(EProblemSource::Analyze)) | (1u << SourceIndex(EProblemSource::Registry)), false);
 	}
@@ -951,7 +1001,8 @@ private:
 		{
 			if (T.Files.Folder[Row] != InvalidRow && EqualPortable(T.Paths.Get(T.Files.Path[Row]), Path))
 			{
-				const EFileClass fileClass = bCompanion ? EFileClass::Companion : T.Files.BaseClass[Row];
+				const EFileClass baseClass = T.Files.BaseClass[Row];
+				const EFileClass fileClass = bCompanion && baseClass != EFileClass::Meta ? EFileClass::Companion : baseClass;
 				if (!bBulk && T.Files.Class[Row] != fileClass)
 				{
 					CompanionClassChanges.emplace_back(T.Paths.Get(T.Files.Path[Row]));
@@ -1180,6 +1231,10 @@ private:
 		if (bInserted)
 		{
 			it->second.bExistedBefore = bExistedBefore;
+			if (bExistedBefore)
+			{
+				it->second.GuidBefore = T.Assets.Guid[AssetRow];   // every caller touches a row before it sets its GUID
+			}
 		}
 	}
 
@@ -1235,6 +1290,7 @@ private:
 		assets.BaseEdges.Append(SPoolRange {}, Epoch);
 		assets.BaseEdgesMasked.Grow(row + 1u, Epoch);
 		assets.OverflowEdges.Append(SPoolRange {}, Epoch);
+		assets.Redirect.Append(InvalidRow, Epoch);
 		return row;
 	}
 
@@ -1282,10 +1338,10 @@ private:
 		Touch(Row, true);
 		const FStringView path = T.Paths.Get(T.Files.Path[file]);
 		STouch& touch = Touched[Row];
-		touch.RemovedGuid = assets.Guid[Row];
 		touch.RemovedPath = T.Files.Path[file];
 		ReleaseRecordContents(Row, false, false);
 		DropEdges(Row);
+		DropRedirects(Row);
 		SetLabels(Row, {});
 		SetCompanions(Row, {}, path);
 		T.Indices.RecordsByPortablePath.Erase(HashPortable(path), Row, Epoch);
@@ -1347,6 +1403,11 @@ private:
 		T.Indices.RecordsByGuid.Insert(HashGuid(guid), row, Epoch);
 		T.Indices.RecordsById64.Insert(MixRegistryKey(id64), row, Epoch);
 		TouchedGuids.insert(HashGuid(guid));
+		RemoveTombstone(guid);   // a GUID registered again is no longer a removed asset's
+		if (bExisted && !bKeepSubEntries)
+		{
+			TouchedRecordPaths.insert(FString(path));   // a path edge's label resolves to a sub-entry by its label (renamed ones keep old ids)
+		}
 
 		if (!bKeepTypeRow)
 		{
@@ -1365,8 +1426,13 @@ private:
 		assets.Name.SetIfChanged(row, T.Names.Intern(GetRecordStem(GetMountPathLeaf(path)), Epoch), Epoch);
 		assets.ChangedRevision.SetIfChanged(row, Revision, Epoch);
 
+		// Authored labels (the meta's) first, then the rule labels, each list in its producer's order.
 		std::vector<uint32> labels;
-		labels.reserve(Upsert.RuleLabels.size());
+		labels.reserve(Upsert.AuthoredLabels.size() + Upsert.RuleLabels.size());
+		for (const FString& label : Upsert.AuthoredLabels)
+		{
+			labels.push_back(T.Names.Intern(label, Epoch));
+		}
 		for (const FString& label : Upsert.RuleLabels)
 		{
 			labels.push_back(T.Names.Intern(label, Epoch) | RuleLabelBit);
@@ -1377,6 +1443,262 @@ private:
 		WriteSubEntries(row, guid, subPlan, path, bKeepSubEntries);
 		WriteEdges(row, Upsert.Edges, path);
 		SetCompanions(row, Upsert.Companions, path);
+		SetRedirects(row, guid, Upsert.Aliases, Upsert.FormerPaths, path);
+	}
+
+	// ---------------- Identity: aliases, former paths, METAS, TOMBSTONES (M4) ----------------
+
+	// The SubId of the record's sub-entry whose label's MakeSubId is LabelId, or 0 when none has it.
+	uint64 FindSubOfLabelId (uint32 Row, uint64 LabelId) const
+	{
+		const SAssetsTable& assets = T.Assets;
+		for (uint32 i = 0u; i < assets.NumSubs[Row]; ++i)
+		{
+			const uint32 sub = assets.FirstSub[Row] + i;
+			if (MakeSubId(T.Names.Get(T.SubEntries.Key[sub])) == LabelId)
+			{
+				return T.SubEntries.SubId[sub];
+			}
+		}
+		return 0u;
+	}
+
+	// Takes a record's aliases and former paths out of the indices; the targets they could name re-resolve. The lists
+	// stay behind as garbage (few records have any).
+	void DropRedirects (uint32 Row)
+	{
+		const uint32 redirect = T.Assets.Redirect[Row];
+		if (redirect == InvalidRow)
+		{
+			return;
+		}
+		const SPoolRange aliases = T.Redirects.Aliases[redirect];
+		for (uint32 i = aliases.Begin; i < aliases.Begin + aliases.Count; ++i)
+		{
+			const SGuid guid = T.AliasEntries[i].Id.Guid;
+			T.Indices.Aliases.Erase(HashGuid(guid), i, Epoch);
+			TouchedGuids.insert(HashGuid(guid));
+		}
+		const SPoolRange former = T.Redirects.FormerPaths[redirect];
+		for (uint32 i = former.Begin; i < former.Begin + former.Count; ++i)
+		{
+			const FStringView formerPath = T.Paths.Get(T.FormerPaths[i]);
+			T.Indices.RecordsByFormerPath.Erase(HashPortable(formerPath), Row, Epoch);
+			TouchedRecordPaths.insert(FString(formerPath));
+		}
+		T.GarbagePoolItems += aliases.Count + former.Count + 1u;   // the lists and the REDIRECTS row
+		T.Assets.Redirect.Set(Row, InvalidRow, Epoch);
+	}
+
+	/**
+	 * A record's alias index entries and former paths (RegistryDelta.h). An alias of the record's own GUID names one of
+	 * its sub-entries by its label's id and resolves to that sub-entry's SubId; one that names no sub-entry, or one whose
+	 * sub-entry has that very id, needs no entry. Former paths equal to the record's path, or to one listed before them
+	 * under the portable fold, are left out. Lists equal to the stored ones change nothing.
+	 */
+	void SetRedirects (uint32 Row, const SGuid& Guid, std::span<const SAssetId> Aliases, std::span<const FString> FormerPaths, FStringView Path)
+	{
+		std::vector<SAliasEntry> entries;
+		for (const SAssetId& alias : Aliases)
+		{
+			if (!alias.IsValid())
+			{
+				Violation(Path, "an alias with no GUID: dropped");
+				continue;
+			}
+			SAliasEntry entry { alias, Row, 0u };
+			if (alias.Guid == Guid)
+			{
+				entry.TargetSub = alias.SubId != 0u ? FindSubOfLabelId(Row, alias.SubId) : 0u;
+				if (entry.TargetSub == 0u || entry.TargetSub == alias.SubId)
+				{
+					continue;   // its own id, or a label the record does not have (any more)
+				}
+			}
+			else if (alias.SubId != 0u)
+			{
+				Violation(Path, FString::Format("alias {{{}, {:016x}}} names a sub-asset of another asset: dropped", alias.Guid.ToString(), alias.SubId));
+				continue;
+			}
+			if (std::none_of(entries.begin(), entries.end(), [&] (const SAliasEntry& Other) { return Other.Id == alias; }))
+			{
+				entries.push_back(entry);
+			}
+		}
+		std::vector<FStringView> formerPaths;
+		for (const FString& formerPath : FormerPaths)
+		{
+			if (!IsWellFormedMountPath(formerPath) || !HasRelativePart(formerPath))
+			{
+				Violation(Path, FString::Format("former path '{}' is not a mount path of a file: dropped", formerPath));
+				continue;
+			}
+			if (!EqualPortable(formerPath, Path)
+				&& std::none_of(formerPaths.begin(), formerPaths.end(), [&] (FStringView Other) { return EqualPortable(Other, formerPath); }))
+			{
+				formerPaths.push_back(formerPath.View());
+			}
+		}
+
+		const uint32 current = T.Assets.Redirect[Row];
+		if (current != InvalidRow)
+		{
+			const SPoolRange aliases = T.Redirects.Aliases[current];
+			const SPoolRange former = T.Redirects.FormerPaths[current];
+			bool bSame = aliases.Count == entries.size() && former.Count == formerPaths.size();
+			for (uint32 i = 0u; bSame && i < entries.size(); ++i)
+			{
+				const SAliasEntry& stored = T.AliasEntries[aliases.Begin + i];
+				bSame = stored.Id == entries[i].Id && stored.TargetSub == entries[i].TargetSub;
+			}
+			for (uint32 i = 0u; bSame && i < formerPaths.size(); ++i)
+			{
+				bSame = T.Paths.Get(T.FormerPaths[former.Begin + i]) == formerPaths[i];
+			}
+			if (bSame)
+			{
+				return;
+			}
+		}
+		else if (entries.empty() && formerPaths.empty())
+		{
+			return;
+		}
+		DropRedirects(Row);
+		if (entries.empty() && formerPaths.empty())
+		{
+			return;
+		}
+		const uint32 aliasBegin = T.AliasEntries.Size();
+		for (const SAliasEntry& entry : entries)
+		{
+			const uint32 index = T.AliasEntries.Append(entry, Epoch);
+			T.Indices.Aliases.Insert(HashGuid(entry.Id.Guid), index, Epoch);
+			TouchedGuids.insert(HashGuid(entry.Id.Guid));
+		}
+		std::vector<uint32> pathIds;
+		pathIds.reserve(formerPaths.size());
+		for (const FStringView formerPath : formerPaths)
+		{
+			pathIds.push_back(T.Paths.Add(formerPath, Epoch));
+			T.Indices.RecordsByFormerPath.Insert(HashPortable(formerPath), Row, Epoch);
+			TouchedRecordPaths.insert(FString(formerPath));
+		}
+		const uint32 pathBegin = pathIds.empty() ? 0u : T.FormerPaths.Append(pathIds, Epoch);
+		const uint32 redirect = T.Redirects.Aliases.Append(SPoolRange { entries.empty() ? 0u : aliasBegin, static_cast<uint32>(entries.size()) }, Epoch);
+		T.Redirects.FormerPaths.Append(SPoolRange { pathBegin, static_cast<uint32>(pathIds.size()) }, Epoch);
+		T.Assets.Redirect.Set(Row, redirect, Epoch);
+	}
+
+	void UpsertTombstone (const STombstone& Tombstone)
+	{
+		if (!Tombstone.Guid.IsValid() || !IsWellFormedMountPath(Tombstone.LastPath) || !HasRelativePart(Tombstone.LastPath))
+		{
+			Violation(Tombstone.LastPath.IsEmpty() ? FStringView("/") : Tombstone.LastPath.View(),
+				FString::Format("tombstone {{{}}} of '{}' is malformed: ignored", Tombstone.Guid.ToString(), Tombstone.LastPath));
+			return;
+		}
+		STombstonesTable& tombstones = T.Tombstones;
+		const uint32 path = T.Paths.Add(Tombstone.LastPath, Epoch);
+		uint32 row = FindTombstoneRow(T, Tombstone.Guid);
+		if (row == InvalidRow)
+		{
+			row = tombstones.Guid.Append(Tombstone.Guid, Epoch);
+			tombstones.LastPath.Append(path, Epoch);
+			tombstones.Hash.Append(Tombstone.Hash, Epoch);
+			tombstones.Identity.Append(Tombstone.Identity, Epoch);
+			tombstones.RemovedFileTime.Append(Tombstone.RemovedFileTime, Epoch);
+			T.Indices.TombstonesByGuid.Insert(HashGuid(Tombstone.Guid), row, Epoch);
+			++T.LiveTombstones;
+			return;
+		}
+		tombstones.LastPath.Set(row, path, Epoch);
+		tombstones.Hash.Set(row, Tombstone.Hash, Epoch);
+		tombstones.Identity.Set(row, Tombstone.Identity, Epoch);
+		tombstones.RemovedFileTime.Set(row, Tombstone.RemovedFileTime, Epoch);
+	}
+
+	// A live record holds Guid (its own; an alias does not count).
+	bool IsGuidLive (const SGuid& Guid) const
+	{
+		bool bLive = false;
+		T.Indices.RecordsByGuid.ForEach(HashGuid(Guid), [&] (uint32 Row)
+		{
+			bLive = T.Assets.File[Row] != InvalidRow && T.Assets.Guid[Row] == Guid;
+			return !bLive;
+		});
+		return bLive;
+	}
+
+	void RemoveTombstone (const SGuid& Guid)
+	{
+		if (T.LiveTombstones == 0u)
+		{
+			return;
+		}
+		const uint32 row = FindTombstoneRow(T, Guid);
+		if (row != InvalidRow)
+		{
+			T.Indices.TombstonesByGuid.Erase(HashGuid(Guid), row, Epoch);
+			T.Tombstones.Guid.Set(row, SGuid {}, Epoch);
+			--T.LiveTombstones;
+		}
+	}
+
+	// A copy whose bytes do not hash to its Hash is never kept (METAS is verified against MetaHash, §5.3).
+	void UpsertMetaCopy (const SMetaCopy& Copy)
+	{
+		const FStringView bytes(reinterpret_cast<const char*>(Copy.Bytes.data()), static_cast<uint32>(Copy.Bytes.size()));
+		if (!Copy.Guid.IsValid() || !IsWellFormedMountPath(Copy.SourcePath) || !HasRelativePart(Copy.SourcePath))
+		{
+			Violation(Copy.SourcePath.IsEmpty() ? FStringView("/") : Copy.SourcePath.View(),
+				FString::Format("meta copy {{{}}} of '{}' is malformed: ignored", Copy.Guid.ToString(), Copy.SourcePath));
+			return;
+		}
+		if (hash::Xxh3_64(std::span<const uint8>(Copy.Bytes)) != Copy.Hash)
+		{
+			Violation(Copy.SourcePath, FString::Format("meta copy {{{}}}: its bytes do not hash to {:016x}: ignored", Copy.Guid.ToString(), Copy.Hash));
+			return;
+		}
+		SMetaCopiesTable& copies = T.MetaCopies;
+		uint32 row = FindMetaCopyRow(T, Copy.Guid);
+		if (row != InvalidRow && copies.Hash[row] == Copy.Hash && T.Paths.Get(copies.SourcePath[row]) == Copy.SourcePath.View())
+		{
+			return;
+		}
+		const uint32 bytesId = T.MetaBytes.Add(bytes, Epoch);
+		const uint32 file = FindFileRowExact(T, Copy.SourcePath);
+		const uint32 path = file != InvalidRow ? T.Files.Path[file] : T.Paths.Add(Copy.SourcePath, Epoch);
+		if (row == InvalidRow)
+		{
+			row = copies.Guid.Append(Copy.Guid, Epoch);
+			copies.Hash.Append(Copy.Hash, Epoch);
+			copies.Bytes.Append(bytesId, Epoch);
+			copies.SourcePath.Append(path, Epoch);
+			T.Indices.MetaCopiesByGuid.Insert(HashGuid(Copy.Guid), row, Epoch);
+			++T.LiveMetaCopies;
+			return;
+		}
+		T.GarbageMetaBytes += T.MetaBytes.Get(copies.Bytes[row]).Len();
+		copies.Hash.Set(row, Copy.Hash, Epoch);
+		copies.Bytes.Set(row, bytesId, Epoch);
+		copies.SourcePath.Set(row, path, Epoch);
+	}
+
+	void RemoveMetaCopy (const SGuid& Guid)
+	{
+		if (T.LiveMetaCopies == 0u)
+		{
+			return;
+		}
+		const uint32 row = FindMetaCopyRow(T, Guid);
+		if (row != InvalidRow)
+		{
+			T.Indices.MetaCopiesByGuid.Erase(HashGuid(Guid), row, Epoch);
+			T.MetaCopies.Guid.Set(row, SGuid {}, Epoch);
+			T.GarbageMetaBytes += T.MetaBytes.Get(T.MetaCopies.Bytes[row]).Len();
+			--T.LiveMetaCopies;
+		}
 	}
 
 	// A record's label list: kept when it is the same, else appended anew (the old one is garbage).
@@ -1882,64 +2204,82 @@ private:
 		result.State = ETargetState::Unresolved;
 		result.Resolved = InvalidRow;
 		result.bSpellingDiffers = false;
+		result.bRedirected = false;
 		result.FilePartLength = 0u;
 		if (Current.Kind == ETargetKind::Guid)
 		{
-			uint32 matches = 0u;
-			uint32 first = InvalidRow;
+			// Two records with one GUID (a copy, until the lifecycle re-GUIDs it): the preferred one, never ambiguous.
+			uint32 preferred = InvalidRow;
 			T.Indices.RecordsByGuid.ForEach(HashGuid(Current.Guid), [&] (uint32 Row)
 			{
-				if (T.Assets.File[Row] != InvalidRow && T.Assets.Guid[Row] == Current.Guid)
+				if (T.Assets.File[Row] != InvalidRow && T.Assets.Guid[Row] == Current.Guid && IsPreferredGuidRow(T, Row, preferred))
 				{
-					++matches;
-					first = first == InvalidRow || Row < first ? Row : first;
+					preferred = Row;
 				}
 				return true;
 			});
-			if (matches == 1u)
+			uint32 aliased = InvalidRow;
+			uint64 aliasedSub = 0u;
+			if (preferred != InvalidRow)
 			{
 				result.State = ETargetState::Resolved;
-				result.Resolved = first;
+				result.Resolved = preferred;
+				// An id of the record that no sub-entry has may be a renamed sub-asset's new label's id (the alias index).
+				result.bRedirected = Current.TargetSub != 0u && FindSubEntryRow(T, preferred, Current.TargetSub) == InvalidRow
+					&& ResolveAlias(T, SAssetId { Current.Guid, Current.TargetSub }, aliased, aliasedSub) && aliased == preferred;
 			}
-			else if (matches > 1u)
+			else if (ResolveAlias(T, SAssetId { Current.Guid, Current.TargetSub }, aliased, aliasedSub))
 			{
-				result.State = ETargetState::Ambiguous;
+				result.State = ETargetState::Resolved;
+				result.Resolved = aliased;
+				result.bRedirected = true;   // a consolidated GUID (the meta's Aliases)
 			}
 			return result;
 		}
 
 		const FStringView text = T.Paths.Get(Current.Text);
 		bool bDone = false;
+		bool bFormer = false;   // the second round: the records' FormerPaths
 		const auto trySplit = [&] (uint32 Split)
 		{
 			const FStringView filePart = text.Left(Split);
 			uint32 first = InvalidRow;
 			const uint64 hash = Split == text.Len() && WholeHash != 0u ? WholeHash : HashPortable(filePart);
-			const uint32 matches = FindRecordRowsPortableHashed(T, filePart, hash, first);
+			const uint32 matches = bFormer ? FindRecordRowsByFormerPath(T, filePart, hash, first) : FindRecordRowsPortableHashed(T, filePart, hash, first);
 			if (matches == 0u)
 			{
 				return true;
 			}
 			result.FilePartLength = Split;
 			bDone = true;
-			if (matches > 1u)
+			if (matches > 1u && !bFormer)
 			{
 				result.State = ETargetState::Ambiguous;
 				return false;
 			}
 			result.State = ETargetState::Resolved;
 			result.Resolved = first;
-			result.TargetSub = Split < text.Len() ? MakeSubId(text.RightChop(Split + 1u)) : 0u;
-			result.bSpellingDiffers = T.Paths.Get(T.Files.Path[T.Assets.File[first]]) != filePart;
+			result.TargetSub = Split < text.Len() ? FindLabelSub(first, text.RightChop(Split + 1u)) : 0u;
+			result.bSpellingDiffers = !bFormer && T.Paths.Get(T.Files.Path[T.Assets.File[first]]) != filePart;
+			result.bRedirected = bFormer;
 			return false;
 		};
-		if (trySplit(text.Len()))
+		// Every spelling of a current path first, then the former paths (a file now at an old path takes it over).
+		for (const bool bFormerPaths : { false, true })
 		{
-			ForEachLabelSplit(text, trySplit);
-		}
-		if (bDone)
-		{
-			return result;
+			bFormer = bFormerPaths;
+			if (bFormer && T.Indices.RecordsByFormerPath.GetCount() == 0u)
+			{
+				break;
+			}
+			if (trySplit(text.Len()))
+			{
+				ForEachLabelSplit(text, trySplit);
+			}
+			if (bDone)
+			{
+				return result;
+			}
 		}
 		result.TargetSub = 0u;
 		if (IsCompanionFile(text))
@@ -1947,6 +2287,26 @@ private:
 			result.State = ETargetState::Companion;
 		}
 		return result;
+	}
+
+	// The SubId of the sub-entry a path edge's label names: MakeSubId of the label, or the SubId of the sub-entry of that
+	// label when another one (a renamed sub-asset keeps its old label's id); MakeSubId of the label when none has it.
+	uint64 FindLabelSub (uint32 Row, FStringView Label) const
+	{
+		const uint64 id = MakeSubId(Label);
+		if (T.Assets.NumSubs[Row] == 0u || FindSubEntryRow(T, Row, id) != InvalidRow)
+		{
+			return id;
+		}
+		for (uint32 i = 0u; i < T.Assets.NumSubs[Row]; ++i)
+		{
+			const uint32 sub = T.Assets.FirstSub[Row] + i;
+			if (T.Names.Get(T.SubEntries.Key[sub]) == Label)
+			{
+				return T.SubEntries.SubId[sub];
+			}
+		}
+		return id;
 	}
 
 	// Whether a live FILES row of that path (portable fold) is a companion: an edge to it needs the file, which
@@ -1969,7 +2329,8 @@ private:
 		const STargetRow current = graph.Targets[Row];
 		const STargetRow resolved = ResolveTarget(current);
 		if (resolved.State == current.State && resolved.Resolved == current.Resolved && resolved.TargetSub == current.TargetSub
-			&& resolved.bSpellingDiffers == current.bSpellingDiffers && resolved.FilePartLength == current.FilePartLength)
+			&& resolved.bSpellingDiffers == current.bSpellingDiffers && resolved.bRedirected == current.bRedirected
+			&& resolved.FilePartLength == current.FilePartLength)
 		{
 			return;
 		}
@@ -2302,15 +2663,13 @@ public:
 			assets.AnalyzeStamp.Set(row, image.AnalyzeStamp, Epoch);
 			assets.Name.Set(row, stemIds[r], Epoch);
 			assets.ChangedRevision.Set(row, Revision, Epoch);
+			assets.Redirect.Set(row, InvalidRow, Epoch);
 
 			labels.clear();
 			const SPoolRange labelRange = ClampRange(image.Labels, Image.Labels.size());
 			for (uint32 i = labelRange.Begin; i < labelRange.Begin + labelRange.Count; ++i)
 			{
-				if ((Image.Labels[i] & RuleLabelBit) != 0u)
-				{
-					labels.push_back(nameIdOf(Image.Labels[i] & ~RuleLabelBit) | RuleLabelBit);
-				}
+				labels.push_back(nameIdOf(Image.Labels[i] & ~RuleLabelBit) | (Image.Labels[i] & RuleLabelBit));
 			}
 			if (!labels.empty())
 			{
@@ -2477,6 +2836,47 @@ public:
 				SetProblems(Image.Strings[problems.Subject], problems.Source, std::move(problems.Diagnostics));
 			}
 		}
+
+		// Aliases and former paths (few records have any; before the targets resolve), then TOMBSTONES and METAS as the
+		// replay applies them: a tombstone of a GUID a record holds goes (the record's upsert clears it).
+		std::vector<SAssetId> aliases;
+		std::vector<FString> formerPaths;
+		for (uint32 r = 0u; r < recordCount; ++r)
+		{
+			const SImageRecord& image = Image.Records[r];
+			const SPoolRange aliasRange = ClampRange(image.Aliases, Image.Aliases.size());
+			const SPoolRange formerRange = ClampRange(image.FormerPaths, Image.FormerPaths.size());
+			if (aliasRange.Count == 0u && formerRange.Count == 0u)
+			{
+				continue;
+			}
+			aliases.assign(Image.Aliases.begin() + aliasRange.Begin, Image.Aliases.begin() + aliasRange.Begin + aliasRange.Count);
+			formerPaths.clear();
+			for (uint32 i = formerRange.Begin; i < formerRange.Begin + formerRange.Count; ++i)
+			{
+				formerPaths.emplace_back(textAt(Image.FormerPaths[i]));
+			}
+			SetRedirects(r, assets.Guid[r], aliases, formerPaths, T.Paths.Get(T.Files.Path[assets.File[r]]));
+		}
+		T.Indices.TombstonesByGuid.Reserve(static_cast<uint32>(Image.Tombstones.size()), Epoch);
+		for (const SImageTombstone& image : Image.Tombstones)
+		{
+			bool bLive = false;
+			T.Indices.RecordsByGuid.ForEach(HashGuid(image.Guid), [&] (uint32 Row)
+			{
+				bLive = T.Assets.Guid[Row] == image.Guid;
+				return !bLive;
+			});
+			if (!bLive)
+			{
+				UpsertTombstone(STombstone { image.Guid, FString(textAt(image.LastPath)), image.Hash, image.Identity, image.RemovedFileTime });
+			}
+		}
+		T.Indices.MetaCopiesByGuid.Reserve(static_cast<uint32>(Image.Metas.size()), Epoch);
+		for (SImageMetaCopy& image : Image.Metas)
+		{
+			UpsertMetaCopy(SMetaCopy { image.Guid, image.Hash, std::move(image.Bytes), FString(textAt(image.SourcePath)) });
+		}
 		FinishAdoption();
 		return true;
 	}
@@ -2638,6 +3038,7 @@ private:
 		assets.BaseEdges.Grow(size, Epoch);
 		assets.BaseEdgesMasked.Grow(size, Epoch);
 		assets.OverflowEdges.Grow(size, Epoch);
+		assets.Redirect.Grow(size, Epoch);   // each record sets its own (InvalidRow, or SetRedirects')
 	}
 
 	void GrowSubEntryRows (uint32 Count)
@@ -2826,7 +3227,7 @@ private:
 					byResolved.emplace_back(MixRegistryKey(resolved.Resolved), target);
 				}
 				T.Graph.Targets.Set(target, resolved, Epoch);
-				if (resolved.State == ETargetState::Ambiguous || (resolved.State == ETargetState::Resolved && resolved.bSpellingDiffers))
+				if (resolved.State == ETargetState::Ambiguous || (resolved.State == ETargetState::Resolved && (resolved.bSpellingDiffers || resolved.bRedirected)))
 				{
 					ForEachLiveReverseEdge(T, target, [&] (const SReverseEdge& Entry) { sources.push_back(Entry.Source); });
 				}
@@ -2931,9 +3332,8 @@ private:
 			const FStringView text = target.Text != InvalidRow ? T.Paths.Get(target.Text) : FStringView();
 			if (target.State == ETargetState::Ambiguous)
 			{
-				SDiagnostic diagnostic = MakeRegistryDiagnostic(ESeverity::Warning, Path001, path, target.Kind == ETargetKind::Path
-					? FString::Format("reference '{}' matches several files that differ only in case: it stays unresolved", text)
-					: FString::Format("reference to {} matches several records with that id: it stays unresolved", target.Guid.ToString()));
+				SDiagnostic diagnostic = MakeRegistryDiagnostic(ESeverity::Error, Path001, path,
+					FString::Format("reference '{}' matches several files that differ only in case: it stays unresolved", text));
 				diagnostic.FieldPath = edge.FieldPath != InvalidRow ? FString(T.Names.Get(edge.FieldPath)) : FString();
 				diagnostics.push_back(std::move(diagnostic));
 			}
@@ -2942,6 +3342,17 @@ private:
 				const FStringView onDisk = T.Paths.Get(T.Files.Path[T.Assets.File[target.Resolved]]);
 				SDiagnostic diagnostic = MakeRegistryDiagnostic(ESeverity::Info, Ref006, path,
 					FString::Format("reference '{}' resolves to '{}', which is spelled differently on disk", text.Left(target.FilePartLength), onDisk));
+				diagnostic.FieldPath = edge.FieldPath != InvalidRow ? FString(T.Names.Get(edge.FieldPath)) : FString();
+				diagnostics.push_back(std::move(diagnostic));
+			}
+			else if (target.State == ETargetState::Resolved && target.bRedirected)
+			{
+				const FStringView onDisk = T.Paths.Get(T.Files.Path[T.Assets.File[target.Resolved]]);
+				const FString named = target.Kind == ETargetKind::Path ? FString(text.Left(target.FilePartLength))
+					: FString::Format("{{{}}}{}", target.Guid.ToString(), target.TargetSub != 0u ? FString::Format("#{:016x}", target.TargetSub) : FString());
+				SDiagnostic diagnostic = MakeRegistryDiagnostic(ESeverity::Info, Ref006, path,
+					FString::Format("reference '{}' resolves to '{}' through {}", named, onDisk,
+						target.Kind == ETargetKind::Path ? FStringView("its former path (FormerPaths)") : FStringView("an alias (Aliases, SubAssets.Renamed)")));
 				diagnostic.FieldPath = edge.FieldPath != InvalidRow ? FString(T.Names.Get(edge.FieldPath)) : FString();
 				diagnostics.push_back(std::move(diagnostic));
 			}
@@ -3377,8 +3788,14 @@ bool CRegistryStore::RecordTablesNeedCompaction () const noexcept
 			poolItems += column.Multi.Size();
 		}
 	}
+	// Identity state (M4): dead METAS and TOMBSTONES rows, replaced alias and former-path lists, replaced copies' bytes.
+	rows += tables.MetaCopies.Guid.Size() + tables.Tombstones.Guid.Size();
+	deadRows += (tables.MetaCopies.Guid.Size() - tables.LiveMetaCopies) + (tables.Tombstones.Guid.Size() - tables.LiveTombstones);
+	poolItems += static_cast<uint64>(tables.AliasEntries.Size()) + tables.FormerPaths.Size() + tables.Redirects.Aliases.Size();
 	const uint64 garbage = tables.GarbagePoolItems;
-	return (deadRows >= 4096u && deadRows * 4u >= rows) || (garbage >= 16384u && garbage * 4u >= poolItems);
+	const uint64 metaBytes = tables.MetaBytes.GetResidentBytes();
+	return (deadRows >= 4096u && deadRows * 4u >= rows) || (garbage >= 16384u && garbage * 4u >= poolItems)
+		|| (tables.GarbageMetaBytes >= MetaBytesGarbageThreshold && tables.GarbageMetaBytes * 4u >= metaBytes);
 }
 
 bool CRegistryStore::NeedsCompaction () const noexcept
@@ -3430,8 +3847,10 @@ void CRegistryStore::RunCompaction (bool bGraph, bool bTables)
 
 /**
  * Rebuilds SUBENTRY, the type tables, the label, companion, Multi and STRINGS pools and the AssetId64 index
- * from the live rows, then remaps FirstSub and TypeRow. New columns are built (as CompactGraphTables does),
- * so views that hold the old ones keep them; Names and Paths stay (NAMES is interned, PATHS ids are stable).
+ * from the live rows, then remaps FirstSub and TypeRow; and the identity state (M4): ALIASES, FORMERPATHS and
+ * REDIRECTS with the alias index (Redirect remapped), METAS with its bytes and TOMBSTONES, each with its GUID
+ * index. New columns are built (as CompactGraphTables does), so views that hold the old ones keep them; Names
+ * and Paths stay (NAMES is interned, PATHS ids are stable).
  */
 void CRegistryStore::CompactRecordTables ()
 {
@@ -3576,6 +3995,78 @@ void CRegistryStore::CompactRecordTables ()
 		byId64.Insert(MixRegistryKey(subs.AssetId64[sub]), SubEntryBit | sub, epoch);
 	}
 
+	// Identity state (M4): each live record's alias and former-path lists (a new REDIRECTS row each, the alias index
+	// rebuilt; RecordsByFormerPath names ASSETS rows, which stay), and the live METAS and TOMBSTONES rows with their
+	// indices and the live copies' bytes.
+	CPagedColumn<SAliasEntry> aliasEntries;
+	CPagedPool<uint32> formerPaths;
+	SRedirectsTable redirects;
+	CPagedHashIndex aliasIndex;
+	for (uint32 row = 0u; row < assetRows; ++row)
+	{
+		const uint32 redirect = assets.Redirect[row];
+		if (redirect == InvalidRow)
+		{
+			continue;
+		}
+		if (assets.File[row] == InvalidRow)
+		{
+			assets.Redirect.Set(row, InvalidRow, epoch);
+			continue;
+		}
+		const SPoolRange aliases = tables.Redirects.Aliases[redirect];
+		const uint32 aliasBegin = aliasEntries.Size();
+		for (uint32 i = aliases.Begin; i < aliases.Begin + aliases.Count; ++i)
+		{
+			const SAliasEntry& entry = tables.AliasEntries[i];
+			aliasIndex.Insert(HashGuid(entry.Id.Guid), aliasEntries.Append(entry, epoch), epoch);
+		}
+		const SPoolRange former = tables.Redirects.FormerPaths[redirect];
+		items.resize(former.Count);
+		for (uint32 i = 0u; i < former.Count; ++i)
+		{
+			items[i] = tables.FormerPaths[former.Begin + i];
+		}
+		const uint32 formerBegin = items.empty() ? 0u : formerPaths.Append(items, epoch);
+		const uint32 compacted = redirects.Aliases.Append(SPoolRange { aliases.Count > 0u ? aliasBegin : 0u, aliases.Count }, epoch);
+		redirects.FormerPaths.Append(SPoolRange { formerBegin, former.Count }, epoch);
+		assets.Redirect.SetIfChanged(row, compacted, epoch);
+	}
+	SMetaCopiesTable metaCopies;
+	CStringPool metaBytes;
+	CPagedHashIndex metaCopiesByGuid;
+	metaCopiesByGuid.Reserve(tables.LiveMetaCopies, epoch);
+	for (uint32 row = 0u; row < tables.MetaCopies.Guid.Size(); ++row)
+	{
+		const SGuid& guid = tables.MetaCopies.Guid[row];
+		if (!guid.IsValid())
+		{
+			continue;
+		}
+		const uint32 compacted = metaCopies.Guid.Append(guid, epoch);
+		metaCopies.Hash.Append(tables.MetaCopies.Hash[row], epoch);
+		metaCopies.Bytes.Append(metaBytes.Add(tables.MetaBytes.Get(tables.MetaCopies.Bytes[row]), epoch), epoch);
+		metaCopies.SourcePath.Append(tables.MetaCopies.SourcePath[row], epoch);
+		metaCopiesByGuid.Insert(HashGuid(guid), compacted, epoch);
+	}
+	STombstonesTable tombstones;
+	CPagedHashIndex tombstonesByGuid;
+	tombstonesByGuid.Reserve(tables.LiveTombstones, epoch);
+	for (uint32 row = 0u; row < tables.Tombstones.Guid.Size(); ++row)
+	{
+		const SGuid& guid = tables.Tombstones.Guid[row];
+		if (!guid.IsValid())
+		{
+			continue;
+		}
+		const uint32 compacted = tombstones.Guid.Append(guid, epoch);
+		tombstones.LastPath.Append(tables.Tombstones.LastPath[row], epoch);
+		tombstones.Hash.Append(tables.Tombstones.Hash[row], epoch);
+		tombstones.Identity.Append(tables.Tombstones.Identity[row], epoch);
+		tombstones.RemovedFileTime.Append(tables.Tombstones.RemovedFileTime[row], epoch);
+		tombstonesByGuid.Insert(HashGuid(guid), compacted, epoch);
+	}
+
 	tables.SubEntries = std::move(subs);
 	tables.LiveSubEntries = tables.SubEntries.Owner.Size();
 	tables.Types = std::move(types);
@@ -3583,7 +4074,17 @@ void CRegistryStore::CompactRecordTables ()
 	tables.Labels = std::move(labels);
 	tables.Companions = std::move(companions);
 	tables.Indices.RecordsById64 = std::move(byId64);
+	tables.AliasEntries = std::move(aliasEntries);
+	tables.FormerPaths = std::move(formerPaths);
+	tables.Redirects = std::move(redirects);
+	tables.Indices.Aliases = std::move(aliasIndex);
+	tables.MetaCopies = std::move(metaCopies);
+	tables.MetaBytes = std::move(metaBytes);
+	tables.Indices.MetaCopiesByGuid = std::move(metaCopiesByGuid);
+	tables.Tombstones = std::move(tombstones);
+	tables.Indices.TombstonesByGuid = std::move(tombstonesByGuid);
 	tables.GarbagePoolItems = 0u;
+	tables.GarbageMetaBytes = 0u;
 }
 
 /**

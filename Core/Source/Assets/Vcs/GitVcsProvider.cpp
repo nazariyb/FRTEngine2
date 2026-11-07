@@ -1,0 +1,792 @@
+#include "Assets/Vcs/GitVcsProvider.h"
+
+#include <algorithm>
+#include <chrono>
+#include <numeric>
+#include <optional>
+#include <utility>
+
+#include "Assets/Vcs/VcsFileOps.h"
+#include "Containers/StringMap.h"
+#include "Log/Log.h"
+#include "Platform/FileSystem.h"
+#include "Unicode/DisplayText.h"
+
+
+namespace frt::assets
+{
+namespace
+{
+// Longer than any command here takes on a healthy repository; a hung git must not hold a worker for good.
+constexpr uint32 GitTimeoutMs = 120000u;
+
+[[nodiscard]] FStringView AsText (const std::vector<uint8>& Bytes) noexcept
+{
+	return FStringView(reinterpret_cast<const char*>(Bytes.data()), static_cast<uint32>(Bytes.size()));
+}
+
+// A `.git` file or directory at or above Directory: a repository git could not, or would not, use. Looked for as git looks:
+// never up into a folder GIT_CEILING_DIRECTORIES lists (';'-separated, as git reads it on Windows), so that this walk and
+// git's own discovery agree on what is a repository.
+[[nodiscard]] bool HasDotGitAbove (const std::filesystem::path& Directory)
+{
+	std::vector<std::filesystem::path> ceilings;
+	if (const std::optional<FString> listed = platform::GetEnvironmentValue("GIT_CEILING_DIRECTORIES"); listed.has_value())
+	{
+		for (const FStringView entry : listed->View().Split(';', EStringSplit::SkipEmpty | EStringSplit::Trim))
+		{
+			const std::filesystem::path ceiling = entry.ToPath();
+			if (ceiling.is_absolute())
+			{
+				ceilings.push_back(platform::NormalizePath(ceiling));
+			}
+		}
+	}
+	for (std::filesystem::path current = Directory; ; current = current.parent_path())
+	{
+		if (platform::Stat(current / ".git").has_value())
+		{
+			return true;
+		}
+		const std::filesystem::path parent = current.parent_path();
+		if (current == parent)
+		{
+			return false;
+		}
+		for (const std::filesystem::path& ceiling : ceilings)
+		{
+			if (const std::optional<FString> relative = platform::GetRelativePath(parent, ceiling); relative.has_value() && relative->IsEmpty())
+			{
+				return false;
+			}
+		}
+	}
+}
+
+[[nodiscard]] bool IsDirectory (const std::filesystem::path& Path)
+{
+	const std::optional<platform::SFileStat> stat = platform::Stat(Path);
+	return stat.has_value() && stat->bDirectory;
+}
+
+[[nodiscard]] FStringView FirstLine (FStringView Text) noexcept
+{
+	return Text.TrimStartAndEnd().SplitFirst('\n').Left.TrimEnd();
+}
+
+// What failed, with git's words. Git says index.lock when another git holds the index: a wait, not a failure.
+[[nodiscard]] SVcsResult MakeFailure (FStringView Command, const platform::SToolProcessResult& Run)
+{
+	if (!Run.bStarted)
+	{
+		return { EVcsError::Failed, Run.Stderr };
+	}
+	if (Run.bTimedOut)
+	{
+		return { EVcsError::Failed, FString::Format("git {} did not finish and was stopped", Command) };
+	}
+	return { Run.Stderr.View().Contains("index.lock") ? EVcsError::Busy : EVcsError::Failed,
+		FString::Format("git {} failed: {}", Command, FirstLine(Run.Stderr)) };
+}
+
+// Porcelain v2 fields are separated by one space, and only the last, the path, may hold more.
+[[nodiscard]] FStringView SkipFields (FStringView Entry, uint32 Count) noexcept
+{
+	for (uint32 field = 0u; field < Count; ++field)
+	{
+		Entry = Entry.SplitFirst(' ').Right;
+	}
+	return Entry;
+}
+
+[[nodiscard]] EVcsState ToVcsState (char Index, char WorkTree) noexcept
+{
+	if (Index == 'D' || WorkTree == 'D')
+	{
+		return EVcsState::Deleted;
+	}
+	if (Index == 'A' || Index == 'R' || Index == 'C')
+	{
+		return EVcsState::Added;
+	}
+	if (Index != '.' || WorkTree != '.')
+	{
+		return EVcsState::Modified;
+	}
+	return EVcsState::Clean;
+}
+
+// Whether a folder above Name was listed as one untracked or ignored entry, its name with a trailing '/'. A file's own
+// name never ends with '/', so Listed holds both and only folders match.
+template <typename TMap>
+[[nodiscard]] bool IsInUntrackedFolder (const FString& Name, const TMap& Listed)
+{
+	const FStringView name = Name.View();
+	for (uint32 at = 0u; at < name.Len(); ++at)
+	{
+		if (name[at] == '/' && Listed.contains(FString(name.Left(at + 1u))))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+// Always quoted: a name comes with the repository, and unquoted `A&calc.png` pasted into cmd starts a second command. A
+// Windows name cannot hold '"'.
+[[nodiscard]] FString QuoteForShell (const FString& File)
+{
+	return FString::Format("\"{}\"", File);
+}
+
+// One directory, as git spelled it and as Detect resolved it: the same text below, or the same directory on disk (a subst
+// drive or a junction spells it otherwise).
+[[nodiscard]] bool IsSameDirectory (const std::filesystem::path& Spelled, const std::filesystem::path& Resolved)
+{
+	const std::optional<FString> relative = platform::GetRelativePath(Spelled, Resolved);
+	if (relative.has_value())
+	{
+		return relative->IsEmpty();
+	}
+	const std::optional<platform::SFileIdentity> spelled = platform::GetFileIdentity(Spelled);
+	return spelled.has_value() && spelled->IsValid() && spelled == platform::GetFileIdentity(Resolved);
+}
+}
+
+
+bool CGitVcsProvider::Detect (const FString& InMountRoot)
+{
+	MountRoot = platform::NormalizePath(InMountRoot.ToPath());
+	const std::filesystem::path git = platform::FindOnPath("git");
+	if (git.empty())
+	{
+		if (HasDotGitAbove(MountRoot))
+		{
+			log::Warning(log::Assets, "'{}' is in a git repository but git is not on PATH: no version control for it.",
+				unicode::ToDisplayText(FString::FromPath(MountRoot)));
+		}
+		return false;
+	}
+
+	Git = git;
+	// A mount whose folder does not exist (MakeMount keeps it, empty, and git keeps no empty folder) is still in the
+	// repository above it, and it may appear while the editor runs: git runs from the nearest folder that exists, and the
+	// missing rest is part of the prefix. Git cannot start in a folder that is not there.
+	MissingTail = FString();
+	WorkingDirWhileMissing.clear();
+	std::filesystem::path existing = MountRoot;
+	while (!IsDirectory(existing) && existing != existing.parent_path())
+	{
+		existing = existing.parent_path();
+	}
+	if (existing != MountRoot)
+	{
+		MissingTail = platform::GetRelativePath(MountRoot, existing).value_or(FString()) + "/";
+		WorkingDirWhileMissing = existing;
+	}
+
+	const platform::SToolProcessResult run = RunGit({ "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir",
+		"--git-common-dir", "--show-prefix" });
+	std::vector<FStringView> lines;
+	if (run.bStarted && !run.bTimedOut && run.ExitCode == 0)
+	{
+		for (const FStringView line : AsText(run.Stdout).Split('\n'))
+		{
+			lines.push_back(line.TrimEnd("\r"));
+		}
+	}
+	// Absolute, or git is older than --path-format (2.31) and printed the option back.
+	if (lines.size() < 3u || !lines[0].ToPath().is_absolute() || !lines[1].ToPath().is_absolute()
+		|| !lines[2].ToPath().is_absolute())
+	{
+		Git.clear();
+		if (HasDotGitAbove(MountRoot))
+		{
+			// Git's own words when it has any; a run that did not start says why in Stderr.
+			const FString reason = !run.bStarted ? FString(FirstLine(run.Stderr))
+				: run.bTimedOut ? FString::Format("git rev-parse did not finish within {} s", GitTimeoutMs / 1000u)
+				: run.ExitCode != 0 ? (run.Stderr.IsEmpty() ? FString::Format("git rev-parse failed with exit code {}", run.ExitCode)
+					: FString(FirstLine(run.Stderr)))
+				: FString("git 2.31 or later is needed");
+			log::Warning(log::Assets, "git cannot use the repository of '{}', so it has no version control: {}",
+				unicode::ToDisplayText(FString::FromPath(MountRoot)), reason);
+		}
+		return false;
+	}
+
+	TopLevel = lines[0].ToPath();
+	GitDir = lines[1].ToPath();
+	CommonDir = lines[2].ToPath();
+	Prefix = (lines.size() > 3u ? FString(lines[3]) : FString()) + MissingTail;
+	IndexLock = GitDir / "index.lock";
+	HeadLock = GitDir / "HEAD.lock";
+	CommitMessage = GitDir / "COMMIT_EDITMSG";
+	// What `git status` calls an operation in progress, by the same files. REBASE_HEAD is not one: a rebase is open while
+	// rebase-merge/ or rebase-apply/ is there, and git can leave REBASE_HEAD behind after one that ended, which would hold
+	// every repair for good with nothing said. sequencer/todo is a cherry-pick or revert of several commits between steps.
+	OtherBusyFiles = { GitDir / "MERGE_HEAD", GitDir / "CHERRY_PICK_HEAD", GitDir / "REVERT_HEAD", GitDir / "rebase-merge",
+		GitDir / "rebase-apply", GitDir / "sequencer" / "todo" };
+
+	// A pre-commit hook hands its tool GIT_INDEX_FILE and names the repository committing (Tools/GitHooks/pre-commit). That
+	// index is the committing repository's alone: git in any other (an Engine/ submodule, a shared engine, another worktree)
+	// would read it without a word, as an empty index or as somebody else's. Without the hook's word the variable is the
+	// person's, and git's own rules apply.
+	UnsetEnvironment.clear();
+	bAnotherRepositoryIsCommitting = false;
+	const std::optional<FString> committing = platform::GetEnvironmentValue("FRT_HOOK_TOPLEVEL");
+	if (committing.has_value() && !committing->IsEmpty() && !IsSameDirectory(committing->ToPath(), TopLevel))
+	{
+		UnsetEnvironment.emplace_back("GIT_INDEX_FILE");
+		bAnotherRepositoryIsCommitting = true;
+	}
+	return true;
+}
+
+// `git commit -a` and `git commit <paths>` take index.lock before their pre-commit hook and keep it while the person writes
+// the message, which git asks for in a COMMIT_EDITMSG it writes once the hook passed. From then to its end a commit writes
+// no working file, so a COMMIT_EDITMSG no older than the lock is a commit waiting for its message: busy for repairs, which
+// must not write a meta in the middle of a commit, but no rewrite to hold hot reload for. A checkout, merge or rebase step
+// takes a new index.lock, newer than any COMMIT_EDITMSG before it, and HEAD.lock is always a ref update in progress.
+CGitVcsProvider::ELockHeld CGitVcsProvider::CheckLocks () const
+{
+	const std::optional<platform::SFileStat> index = platform::Stat(IndexLock);
+	const bool bHead = platform::Stat(HeadLock).has_value();
+	if (!index.has_value() && !bHead)
+	{
+		LockHeldSinceMs = 0u;
+		bLockWarned = false;
+		return ELockHeld::None;
+	}
+	ELockHeld held = ELockHeld::Rewriting;
+	if (!bHead)
+	{
+		const std::optional<platform::SFileStat> message = platform::Stat(CommitMessage);
+		if (message.has_value() && message->LastWriteTime >= index->LastWriteTime)
+		{
+			held = ELockHeld::CommitMessage;
+		}
+	}
+
+	const uint64 nowMs = static_cast<uint64>(std::chrono::duration_cast<std::chrono::milliseconds>(
+		std::chrono::steady_clock::now().time_since_epoch()).count()) + 1u;
+	uint64 since = 0u;
+	if (LockHeldSinceMs.compare_exchange_strong(since, nowMs))
+	{
+		since = nowMs;
+	}
+	if (nowMs - since >= LockWarningMs && !bLockWarned.exchange(true))
+	{
+		const FString file = unicode::ToDisplayText(FString::FromPath(index.has_value() ? IndexLock : HeadLock));
+		if (held == ELockHeld::CommitMessage)
+		{
+			log::Warning(log::Assets, "'{}' has been held for {} s by a git commit waiting for its message, and repairs wait "
+				"until it ends. If no git is running, the lock is stale: delete it.", file, (nowMs - since) / 1000u);
+		}
+		else
+		{
+			log::Warning(log::Assets, "'{}' has been there for {} s, and everything that waits for git is waiting. A git "
+				"command may still be running; if none is, the lock is stale: delete it.", file, (nowMs - since) / 1000u);
+		}
+	}
+	return held;
+}
+
+bool CGitVcsProvider::IsRewritingTree () const
+{
+	if (Git.empty())
+	{
+		return false;
+	}
+	if (CheckLocks() == ELockHeld::Rewriting)
+	{
+		return true;
+	}
+	// A `git submodule update` or a checkout in a repository committed inside this mount rewrites this mount's files too.
+	const std::scoped_lock lock(NestedMutex);
+	for (const SNested& nested : Nested)
+	{
+		if (nested.Provider != nullptr && nested.Provider->IsRewritingTree())
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool CGitVcsProvider::IsBusy () const
+{
+	if (Git.empty())
+	{
+		return false;
+	}
+	if (CheckLocks() != ELockHeld::None)
+	{
+		return true;
+	}
+	// An open merge, rebase, cherry-pick or revert stays for as long as the person takes, unlike the two locks.
+	for (const std::filesystem::path& file : OtherBusyFiles)
+	{
+		if (platform::Stat(file).has_value())
+		{
+			return true;
+		}
+	}
+	const std::scoped_lock lock(NestedMutex);
+	for (const SNested& nested : Nested)
+	{
+		if (nested.Provider != nullptr && nested.Provider->IsBusy())
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+CGitVcsProvider* CGitVcsProvider::FindNested (const FString& Gitlink)
+{
+	{
+		const std::scoped_lock lock(NestedMutex);
+		for (const SNested& nested : Nested)
+		{
+			if (nested.Gitlink.View().Equals<ESearchCase::IgnoreCase>(Gitlink.View()))
+			{
+				return nested.Provider.get();
+			}
+		}
+	}
+
+	// Detected outside the lock, which IsBusy takes on the owner thread. A submodule that is not checked out is an empty
+	// folder of this repository, or none, and its provider would be this repository's: nothing there is known.
+	const std::filesystem::path root = (TopLevel / Gitlink.View().TrimEnd("/").ToPath()).make_preferred();
+	std::unique_ptr<CGitVcsProvider> provider = std::make_unique<CGitVcsProvider>();
+	if (!provider->Detect(FString::FromPath(root)) || !IsSameDirectory(provider->TopLevel, root))
+	{
+		log::Warning(log::Assets, "'{}' is a repository of its own (a submodule) that is not checked out: its files have no "
+			"version control facts.", unicode::ToDisplayText(FString::FromPath(root)));
+		provider.reset();
+	}
+	const std::scoped_lock lock(NestedMutex);
+	for (const SNested& nested : Nested)
+	{
+		if (nested.Gitlink.View().Equals<ESearchCase::IgnoreCase>(Gitlink.View()))
+		{
+			return nested.Provider.get();
+		}
+	}
+	Nested.push_back({ Gitlink, std::move(provider) });
+	return Nested.back().Provider.get();
+}
+
+std::vector<FString> CGitVcsProvider::ListIndexGitlinks () const
+{
+	// "<mode> <object> <stage>\t<name>", names from the top level.
+	std::vector<FString> gitlinks;
+	const platform::SToolProcessResult listed = RunGit({ "ls-files", "-s", "-z", "--full-name", "--", "." });
+	if (!listed.bStarted || listed.bTimedOut || listed.ExitCode != 0)
+	{
+		return gitlinks;
+	}
+	for (const FStringView entry : AsText(listed.Stdout).Split('\0', EStringSplit::SkipEmpty))
+	{
+		if (entry.StartsWith("160000 "))
+		{
+			gitlinks.push_back(FString(entry.SplitFirst('\t').Right) + "/");
+		}
+	}
+	return gitlinks;
+}
+
+const FString* CGitVcsProvider::FindGitlinkOf (const FString& File, std::span<const FString> Gitlinks) const
+{
+	const FString name = MakeGitName(File);
+	const FString* deepest = nullptr;
+	for (const FString& link : Gitlinks)
+	{
+		if (name.View().StartsWith<ESearchCase::IgnoreCase>(link.View())
+			&& (deepest == nullptr || link.Len() > deepest->Len()))
+		{
+			deepest = &link;
+		}
+	}
+	return deepest;
+}
+
+template <typename TAsk>
+SVcsResult CGitVcsProvider::AskNested (std::span<const FString> Files, std::span<const FString> Gitlinks,
+	std::vector<size_t>& InOutOwn, TAsk&& Ask)
+{
+	if (Gitlinks.empty())
+	{
+		return {};
+	}
+	std::vector<std::vector<size_t>> below(Gitlinks.size());
+	std::erase_if(InOutOwn, [&] (size_t File)
+	{
+		const FString* deepest = FindGitlinkOf(Files[File], Gitlinks);
+		if (deepest == nullptr)
+		{
+			return false;
+		}
+		below[static_cast<size_t>(deepest - Gitlinks.data())].push_back(File);
+		return true;
+	});
+	for (size_t link = 0u; link < Gitlinks.size(); ++link)
+	{
+		if (below[link].empty())
+		{
+			continue;
+		}
+		if (CGitVcsProvider* nested = FindNested(Gitlinks[link]); nested != nullptr)
+		{
+			if (SVcsResult result = Ask(*nested, below[link]); result.Error != EVcsError::None)
+			{
+				return result;
+			}
+		}
+	}
+	return {};
+}
+
+SVcsResult CGitVcsProvider::CheckOut (std::span<const FString> Files)
+{
+	return CheckOutFiles(Files);
+}
+
+SVcsResult CGitVcsProvider::MoveOne (const SVcsMove& Move)
+{
+	// Names relative to the mount root, so git runs there: a mount folder that does not exist has nothing to move.
+	if (!IsCaseOnlyRename(Move) || !IsDirectory(MountRoot))
+	{
+		return MoveFilePlain(Move);
+	}
+	FString from;
+	FString to;
+	if (!MakeMountRelative(Move.From, from) || !MakeMountRelative(Move.To, to))
+	{
+		return MoveFilePlain(Move);
+	}
+	const platform::SToolProcessResult tracked = RunGitIn(MountRoot, { "ls-files", "--error-unmatch", "--", from });
+	if (tracked.bStarted && !tracked.bTimedOut && tracked.ExitCode != 0)
+	{
+		// Not this repository's: a file below a gitlink is its submodule's, which knows it is tracked (and
+		// core.ignorecase there would hide a plain rename from it).
+		const std::vector<FString> gitlinks = ListIndexGitlinks();
+		if (const FString* gitlink = FindGitlinkOf(Move.From, gitlinks); gitlink != nullptr)
+		{
+			CGitVcsProvider* nested = FindNested(*gitlink);
+			return nested != nullptr ? nested->MoveOne(Move) : MoveFilePlain(Move);
+		}
+	}
+	if (!tracked.bStarted || tracked.bTimedOut || (tracked.ExitCode != 0 && tracked.ExitCode != 1))
+	{
+		return MakeFailure("ls-files", tracked);
+	}
+	if (tracked.ExitCode == 1)
+	{
+		return MoveFilePlain(Move);
+	}
+	// -f: git's own "is it the same file in another spelling" folds ASCII only, so it refuses `текстура` to `Текстура` as
+	// "destination exists". RunMoves has made sure the target is this very file or absent, so -f overwrites nothing.
+	const platform::SToolProcessResult moved = RunGitIn(MountRoot, { "mv", "-f", "--", from, to });
+	if (!moved.bStarted || moved.bTimedOut || moved.ExitCode != 0)
+	{
+		return MakeFailure("mv", moved);
+	}
+	return {};
+}
+
+SVcsResult CGitVcsProvider::Move (std::span<const SVcsMove> Moves)
+{
+	return RunMoves(Moves, [this] (const SVcsMove& One) { return MoveOne(One); });
+}
+
+SVcsResult CGitVcsProvider::Delete (std::span<const FString> Files)
+{
+	return TrashFiles(Files);
+}
+
+SVcsResult CGitVcsProvider::GetCommittedFacts (std::span<const FString> Files, std::vector<bool>& OutCommitted)
+{
+	OutCommitted.assign(Files.size(), false);
+	if (Files.empty())
+	{
+		return {};
+	}
+	if (Git.empty())
+	{
+		return { EVcsError::Failed, "git provider used before Detect" };
+	}
+
+	// Below the working directory only, and -z so that non-ASCII names arrive as they are, not quoted. With the modes, for the
+	// gitlinks.
+	const platform::SToolProcessResult listed = RunGit({ "ls-tree", "-r", "-z", "--full-name", "HEAD" });
+	if (!listed.bStarted || listed.bTimedOut)
+	{
+		return MakeFailure("ls-tree", listed);
+	}
+	if (listed.ExitCode != 0)
+	{
+		// Asked only now, so the usual path spawns one process.
+		const platform::SToolProcessResult head = RunGit({ "rev-parse", "--verify", "-q", "HEAD" });
+		return head.bStarted && !head.bTimedOut && head.ExitCode != 0 ? SVcsResult {} : MakeFailure("ls-tree", listed);
+	}
+
+	// "<mode> <type> <object>\t<name>". A gitlink (mode 160000) is a repository committed inside this one (a submodule under
+	// Content/): git here lists it and never a file below it, so those are asked of that repository.
+	FStringSetIgnoreCase committed;
+	std::vector<FString> gitlinks;
+	for (const FStringView entry : AsText(listed.Stdout).Split('\0', EStringSplit::SkipEmpty))
+	{
+		const auto split = entry.SplitFirst('\t');
+		committed.emplace(split.Right);
+		if (split.Left.StartsWith("160000 "))
+		{
+			gitlinks.push_back(FString(split.Right) + "/");
+		}
+	}
+	std::vector<size_t> own(Files.size());
+	std::iota(own.begin(), own.end(), size_t(0));
+	const SVcsResult nested = AskNested(Files, gitlinks, own, [&] (CGitVcsProvider& Nested, std::span<const size_t> Below)
+	{
+		std::vector<FString> files;
+		for (const size_t file : Below)
+		{
+			files.push_back(Files[file]);
+		}
+		std::vector<bool> facts;
+		const SVcsResult result = Nested.GetCommittedFacts(files, facts);
+		for (size_t one = 0u; one < Below.size() && one < facts.size(); ++one)
+		{
+			OutCommitted[Below[one]] = facts[one];
+		}
+		return result;
+	});
+	if (nested.Error != EVcsError::None)
+	{
+		return nested;
+	}
+	for (const size_t file : own)
+	{
+		const FString name = MakeGitName(Files[file]);
+		OutCommitted[file] = !name.IsEmpty() && committed.contains(name);
+	}
+	return {};
+}
+
+SVcsResult CGitVcsProvider::StatusOf (std::span<const FString> Files, std::vector<SVcsStatus>& Out)
+{
+	Out.assign(Files.size(), SVcsStatus {});
+	if (Files.empty())
+	{
+		return {};
+	}
+	if (Git.empty())
+	{
+		return { EVcsError::Failed, "git provider used before Detect" };
+	}
+
+	// --no-renames: a rename is its two files, and each has a state. --ignored with --untracked-files=all lists each ignored
+	// file by itself. --ignore-submodules=none: a submodule's changes show whatever .gitmodules (ignore = untracked, as
+	// art packs often set) or diff.ignoreSubmodules says. The paths are below the top level, whatever the working
+	// directory.
+	const platform::SToolProcessResult run = RunGit({ "status", "--porcelain=v2", "-z", "--no-renames", "--untracked-files=all",
+		"--ignored", "--ignore-submodules=none", "--", "." });
+	if (!run.bStarted || run.bTimedOut || run.ExitCode != 0)
+	{
+		return MakeFailure("status", run);
+	}
+
+	// A case-only rename lists both spellings, so the exact one answers first; the fold is for a file renamed outside git.
+	TStringMap<EVcsState> exact;
+	TStringMapIgnoreCase<EVcsState> folded;
+	const auto record = [&] (FStringView Path, EVcsState State)
+	{
+		exact.insert_or_assign(FString(Path), State);
+		folded.insert_or_assign(FString(Path), State);
+	};
+	bool bOriginalPath = false;   // what follows a rename entry, were one ever reported
+	// Even with --untracked-files=all, a repository inside this one, never committed here, is one `?` or `!` entry: its folder,
+	// with a trailing '/'. Every file below it is as untracked as the folder.
+	bool bUntrackedFolders = false;
+	// A repository committed here (a submodule) with anything changed in it is one entry whose <sub> field starts with 'S',
+	// and git lists no file below it: those are asked of that repository. So are the files below every other gitlink of
+	// the index: a clean submodule is not listed, and yet a file it ignores is Untracked, not Clean.
+	std::vector<FString> gitlinks = ListIndexGitlinks();
+	const auto recordChanged = [&] (FStringView Entry, uint32 Fields)
+	{
+		const FStringView path = SkipFields(Entry, Fields);
+		record(path, ToVcsState(Entry[2], Entry[3]));
+		const FString gitlink = FString(path) + "/";
+		const auto same = [&] (const FString& Link)
+		{
+			return Link.View().Equals<ESearchCase::IgnoreCase>(gitlink.View());
+		};
+		if (SkipFields(Entry, 2u).StartsWith('S') && std::none_of(gitlinks.begin(), gitlinks.end(), same))
+		{
+			gitlinks.push_back(gitlink);
+		}
+	};
+	for (const FStringView entry : AsText(run.Stdout).Split('\0', EStringSplit::SkipEmpty))
+	{
+		if (bOriginalPath)
+		{
+			bOriginalPath = false;
+			continue;
+		}
+		switch (entry.First())
+		{
+		case '1':
+			recordChanged(entry, 8u);
+			break;
+		case '2':
+			recordChanged(entry, 9u);
+			bOriginalPath = true;
+			break;
+		case 'u':
+			record(SkipFields(entry, 10u), EVcsState::Conflicted);
+			break;
+		case '?':
+		case '!':
+			record(SkipFields(entry, 1u), EVcsState::Untracked);
+			bUntrackedFolders = bUntrackedFolders || entry.EndsWith('/');
+			break;
+		default:
+			break;
+		}
+	}
+
+	std::vector<size_t> own(Files.size());
+	std::iota(own.begin(), own.end(), size_t(0));
+	const SVcsResult nested = AskNested(Files, gitlinks, own, [&] (CGitVcsProvider& Nested, std::span<const size_t> Below)
+	{
+		std::vector<FString> files;
+		for (const size_t file : Below)
+		{
+			files.push_back(Files[file]);
+		}
+		std::vector<SVcsStatus> status;
+		const SVcsResult result = Nested.StatusOf(files, status);
+		for (size_t one = 0u; one < Below.size() && one < status.size(); ++one)
+		{
+			Out[Below[one]] = std::move(status[one]);
+		}
+		return result;
+	});
+	if (nested.Error != EVcsError::None)
+	{
+		return nested;
+	}
+	for (const size_t file : own)
+	{
+		const FString name = MakeGitName(Files[file]);
+		if (name.IsEmpty())
+		{
+			continue;
+		}
+		if (const auto found = exact.find(name); found != exact.end())
+		{
+			Out[file].State = found->second;
+		}
+		else if (const auto foundFolded = folded.find(name); foundFolded != folded.end())
+		{
+			Out[file].State = foundFolded->second;
+		}
+		else if (bUntrackedFolders && IsInUntrackedFolder(name, folded))
+		{
+			Out[file].State = EVcsState::Untracked;
+		}
+		else if (platform::Stat(Files[file].ToPath()).has_value())
+		{
+			Out[file].State = EVcsState::Clean;
+		}
+	}
+	return {};
+}
+
+SVcsResult CGitVcsProvider::GetStaged (std::vector<FString>& OutFiles)
+{
+	OutFiles.clear();
+	if (Git.empty())
+	{
+		return { EVcsError::Failed, "git provider used before Detect" };
+	}
+	// Nothing staged in this repository is in another one's commit, which records at most its gitlink: a plugin in a
+	// submodule, staged but not committed, is checked by its own commit's hook, never refuses its parent's.
+	if (bAnotherRepositoryIsCommitting)
+	{
+		return {};
+	}
+	// --relative: below the working directory only, and named from it. On an unborn HEAD, everything staged is listed. From
+	// above a mount folder that does not exist, only what is under its missing rest is the mount's.
+	const std::filesystem::path workingDir = GetWorkingDir();
+	const platform::SToolProcessResult run = RunGitIn(workingDir, { "diff", "--cached", "--name-only", "-z", "--no-renames",
+		"--relative" });
+	if (!run.bStarted || run.bTimedOut || run.ExitCode != 0)
+	{
+		return MakeFailure("diff --cached", run);
+	}
+	const bool bFromAbove = workingDir != MountRoot;
+	for (FStringView name : AsText(run.Stdout).Split('\0', EStringSplit::SkipEmpty))
+	{
+		if (bFromAbove && !name.RemoveFromStart<ESearchCase::IgnoreCase>(MissingTail.View()))
+		{
+			continue;
+		}
+		OutFiles.push_back(FString::FromPath((MountRoot / name.ToPath()).make_preferred()));
+	}
+	return {};
+}
+
+FString CGitVcsProvider::GetRestoreCommand (const FString& File) const
+{
+	return FString::Format("git checkout -- {}", QuoteForShell(File));
+}
+
+FString CGitVcsProvider::GetAddCommand (const FString& File) const
+{
+	return FString::Format("git add {}", QuoteForShell(File));
+}
+
+std::filesystem::path CGitVcsProvider::GetWorkingDir () const
+{
+	return WorkingDirWhileMissing.empty() || IsDirectory(MountRoot) ? MountRoot : WorkingDirWhileMissing;
+}
+
+platform::SToolProcessResult CGitVcsProvider::RunGit (std::vector<FString> Arguments) const
+{
+	return RunGitIn(GetWorkingDir(), std::move(Arguments));
+}
+
+platform::SToolProcessResult CGitVcsProvider::RunGitIn (const std::filesystem::path& WorkingDir, std::vector<FString> Arguments) const
+{
+	// --no-optional-locks: a look at the tree never takes index.lock, so FRT never makes git, or its own IsBusy, see a lock.
+	// --literal-pathspecs: a name with [ or * in it is that name. core.fsmonitor off: the daemon it starts would be in this
+	// call's job, and die with it.
+	std::vector<FString> arguments = { "--no-optional-locks", "--literal-pathspecs", "-c", "core.fsmonitor=false" };
+	arguments.insert(arguments.end(), std::make_move_iterator(Arguments.begin()), std::make_move_iterator(Arguments.end()));
+	platform::SToolProcessDesc desc;
+	desc.Executable = Git;
+	desc.Arguments = std::move(arguments);
+	desc.WorkingDir = WorkingDir;
+	desc.TimeoutMs = GitTimeoutMs;
+	desc.UnsetEnvironment = UnsetEnvironment;
+	return platform::RunToolProcess(desc);
+}
+
+FString CGitVcsProvider::MakeGitName (const FString& File) const
+{
+	FString relative;
+	return MakeMountRelative(File, relative) ? Prefix + relative : FString();
+}
+
+bool CGitVcsProvider::MakeMountRelative (const FString& File, FString& Out) const
+{
+	std::optional<FString> relative = platform::GetRelativePath(File.ToPath(), MountRoot);
+	if (!relative.has_value() || relative->IsEmpty())
+	{
+		return false;
+	}
+	Out = std::move(*relative);
+	return true;
+}
+}

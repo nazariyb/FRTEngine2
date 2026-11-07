@@ -118,8 +118,7 @@ TEST(AssetQueryParseTest, SystemPredicatesParseAndThreeWaitForTheirMilestone)
 	{
 		const ESystemPredicate predicate = static_cast<ESystemPredicate>(i);
 		EXPECT_EQ(FindSystemPredicate(GetSystemPredicateName(predicate)), std::optional<ESystemPredicate>(predicate));
-		const bool bWaits = predicate == ESystemPredicate::Redirected || predicate == ESystemPredicate::Unsaved
-			|| predicate == ESystemPredicate::PendingMeta;
+		const bool bWaits = predicate == ESystemPredicate::Unsaved;   // redirected and pending-meta have data from M4
 		EXPECT_EQ(HasSystemPredicateData(predicate), !bWaits) << GetSystemPredicateName(predicate).CStr();
 	}
 	EXPECT_FALSE(FindSystemPredicate("broken").has_value());

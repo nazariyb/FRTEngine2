@@ -124,6 +124,9 @@ void CEditor::ShutDown ()
 	{
 		return;
 	}
+	// Its validation job reads the registry's mounts, rules and providers: done before the registry goes, and first, since
+	// waiting for a running one pumps the pool's completions while everything they may touch still stands.
+	ProblemsPanel.ShutDown();
 	graphics::CRenderer& renderer = *Engine.GetRenderer();
 	Capture.Release(*Engine.GetWindow());
 	renderer.FlushCommandQueue();
@@ -221,6 +224,7 @@ int CEditor::Run ()
 		// dock node, and the layout would come back rearranged.
 		Tools.Draw(tools);
 		AssetsPanel.Draw(Engine.GetAssetRegistry());
+		ProblemsPanel.Draw(Engine, AssetsPanel);
 
 		// ---- input: routed from what the panels reported ----
 		HandleShortcuts();
@@ -668,6 +672,7 @@ void CEditor::DrawMainMenu ()
 			}
 		}
 		ImGui::MenuItem(CAssetsPanel::Name, nullptr, &AssetsPanel.bOpen);
+		ImGui::MenuItem(CAssetProblemsPanel::Name, nullptr, &ProblemsPanel.bOpen);
 		ImGui::Separator();
 		if (ImGui::MenuItem("Maximize Viewport", shortcut(EEditorCommand::ToggleMaximize), MaximizedViewport >= 0))
 		{

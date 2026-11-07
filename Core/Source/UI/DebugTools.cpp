@@ -11,6 +11,10 @@
 #include "EnginePaths.h"
 #include "Entity.h"
 #include "WorldScene.h"
+#include "Assets/AssetRegistry.h"
+#include "Assets/Discovery/Mounts.h"
+#include "Assets/Meta/AssetRepairs.h"
+#include "Assets/Vcs/VcsProvider.h"
 #include "Engine/Engine.h"
 #include "Graphics/Camera.h"
 #include "Graphics/Render/GraphicsCoreTypes.h"
@@ -211,6 +215,23 @@ void CDebugTools::DrawStatsPanel (const SContext& Context)
 			ImGui::TextColored(ImVec4(1, 0.4f, 0.3f, 1), "  BUILD002: %llu cached programs differ from a fresh compile",
 				static_cast<unsigned long long>(shaders.VerifyMismatches));
 		}
+	}
+
+	// The asset registry's meta lifecycle (design §4.7, edit [15]): each mount's VCS provider ("..." while it is detected;
+	// a host that writes nothing asks none) and the repairs written and refused since start-up.
+	if (assets::CAssetRegistry* registry = Context.Engine.GetAssetRegistry())
+	{
+		const assets::CAssetRepairs* repairs = registry->GetRepairs();
+		FString providers;
+		for (const assets::SMount& mount : registry->GetMounts().GetMounts())
+		{
+			const assets::IVcsProvider* provider = repairs != nullptr ? repairs->GetProvider(mount.Id) : nullptr;
+			providers += FString::Format("{}{} {}", providers.IsEmpty() ? "" : ", ", mount.GetRootMountPath(),
+				provider != nullptr ? provider->GetName() : FStringView(registry->IsWriter() ? "..." : "None"));
+		}
+		const assets::SAssetRegistryCounters& counters = registry->GetCounters();
+		ImGui::Text("Assets: %s; repairs %llu applied, %llu refused%s", providers.CStr(), static_cast<unsigned long long>(counters.RepairsApplied),
+			static_cast<unsigned long long>(counters.RepairsRefused), registry->IsWriter() ? "" : " (read-only)");
 	}
 
 	// FRT_CPU_SCOPE timings of the last frame, every thread, the costliest names first.

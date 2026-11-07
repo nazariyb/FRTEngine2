@@ -23,9 +23,11 @@
  * File layout (little-endian): the 48-byte header - Magic "FRTAREG1", FormatVersion, SectionCount,
  * ProjectId, JournalBase, RulesBasis (u64; 0 = unknown, what files written before it held) - then SectionCount entries { Id u32; LayoutVersion u32; Offset u64;
  * Size u64; Xxh3 u64 }, then the sections at 16-byte aligned offsets. FormatVersion gates the container only;
- * each section has its own LayoutVersion and checksum (ESnapshotSection lists them; ALIASES, FORMERPATHS,
- * METAS and TOMBSTONES are written empty in M3). The image's string tables are written as they are (NAMES,
- * STRINGS, TYPES by stable type name), so ids of the writing process never leak into a file.
+ * each section has its own LayoutVersion and checksum (ESnapshotSection lists them). Every section is at layout 2
+ * since M4 filled ALIASES and FORMERPATHS (per record, sparse), METAS (the meta copies, their bytes one zstd frame,
+ * each copy checked against its hash on load) and TOMBSTONES (pruned at write after 30 days); a layout 1 file is
+ * not used. The image's string tables are written as they are (NAMES, STRINGS, TYPES by stable type name), so ids
+ * of the writing process never leak into a file.
  *
  * Validity is per section, never all-or-nothing (§5.3): a section whose LayoutVersion differs or whose
  * checksum fails is dropped with what depends on it, and what was lost is what the start-up rebuilds:
@@ -42,7 +44,8 @@
  *	  stamps: they wait for their type, AdoptImage's rule.)
  *	- Rule outputs lost - LABELS or PROBLEMS: the RULEFILES rows are dropped too, and every record of those
  *	  mounts is re-evaluated (the file's journal is replayed without its rule-file upserts and removes, which
- *	  would make some folders look current again).
+ *	  would make some folders look current again). The metas' outputs - ALIASES, FORMERPATHS - and METAS count as
+ *	  rule outputs: the re-evaluation reads every file's meta again and commits them. TOMBSTONES lost: forgotten.
  *	- STRINGS lost: DEPS and PROBLEMS go with it (and type tables with a String key).
  *	- RULEFILES lost alone: every record of the file's mounts is re-evaluated.
  *	- RulesBasis changed: the header's RulesBasis is what the records were evaluated against besides the file's
@@ -101,10 +104,10 @@ enum class ESnapshotSection : uint32
 	Types = 10,          // per-file type index -> stable type name
 	TypeTables = 11,     // per type: name, TagSchemaHash, keys by name, columns
 	Deps = 12,           // edges and companions
-	Aliases = 13,        // empty in M3
-	FormerPaths = 14,    // empty in M3
-	Metas = 15,          // empty in M3
-	Tombstones = 16,     // empty in M3
+	Aliases = 13,        // per record with any: its aliases (M4; empty in M3)
+	FormerPaths = 14,    // per record with any: its former paths (STRINGS)
+	Metas = 15,          // meta copies by GUID: hash, source path, bytes (one zstd frame)
+	Tombstones = 16,     // by GUID: last path, hash, file identity, removal time
 	Problems = 17,
 };
 
@@ -123,13 +126,23 @@ enum class ESnapshotSection : uint32
 
 struct SSnapshotWriteStats
 {
-	double ExportMs = 0.0;       // CRegistryView::ExportImage
+	double ExportMs = 0.0;       // CRegistryView::ExportImage (and the tombstones' pruning)
 	double EncodeMs = 0.0;       // sections, checksums
 	double WriteMs = 0.0;        // WriteFileAtomic (flushed to disk)
 	uint64 Bytes = 0u;
 	uint64 JournalBase = 0u;     // the view's revision
 	uint32 Records = 0u;
+	uint32 PrunedTombstones = 0u;
 };
+
+// A tombstone is kept for 30 days (§5.3): a snapshot written later leaves it out, so the next load forgets it.
+inline constexpr int64 TombstoneLifetimeFileTicks = 30ll * 24ll * 3600ll * 10000000ll;
+
+// The current time as a file time (100 ns ticks since 1601-01-01 UTC, SFileStat's unit): STombstone::RemovedFileTime.
+[[nodiscard]] FRT_CORE_API int64 GetFileTimeNow () noexcept;
+
+// Drops the image's tombstones removed more than TombstoneLifetimeFileTicks before NowFileTime; returns how many.
+FRT_CORE_API uint32 PruneTombstones (SRegistryImage& Image, int64 NowFileTime);
 
 // The file's bytes for an image (EncodeSnapshot) - deterministic: one image gives one byte sequence.
 [[nodiscard]] FRT_CORE_API std::vector<uint8> EncodeSnapshot (const SRegistryImage& Image, const SGuid& ProjectId, uint64 JournalBase,

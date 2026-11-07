@@ -3,13 +3,15 @@
 // file - not even when the writing process is killed at a random moment - and works on every path
 // WriteFileBytes can write, every call reads, stats and lists what the layer writes past MAX_PATH,
 // appends from several handles never tear each other, RemoveFile frees a name a reader still holds,
-// TouchFile moves only the write time, and ReadFileChunksStable never calls a read stable when the file
-// changed underneath it, and retries a file a writer still holds. Everything runs in directories
+// TouchFile moves only the write time, WriteFileNew never replaces a file, and ReadFileChunksStable
+// never calls a read stable when the file changed underneath it, and retries a file a writer still holds. Everything runs in directories
 // with non-ASCII names, which every path conversion on the way has to survive, and nothing is left
 // behind - not even in the Recycle Bin.
 #include <gtest/gtest.h>
 
 #include "TestCommon.h"
+#include "Log/LogCapture.h"
+#include "Platform/RecycleBinTestUtils.h"
 
 #include <algorithm>
 #include <atomic>
@@ -30,6 +32,7 @@
 
 #include "Containers/String.h"
 #include "Containers/WideString.h"
+#include "Platform/FileMove.h"
 #include "Platform/FileSystem.h"
 #include "Platform/Platform.h"
 
@@ -140,11 +143,11 @@ void AgeFile (const std::filesystem::path& Path)
 // and PID_DISPLACED_FROM of shlguid.h).
 constexpr PROPERTYKEY RecycledFromKey = { { 0x9B174B33u, 0x40FFu, 0x11D2u, { 0xA2u, 0x7Eu, 0x00u, 0xC0u, 0x4Fu, 0xC3u, 0x08u, 0x71u } }, 2u };
 
-// Deletes for good what a test moved to the Recycle Bin, so that running the suite leaves nothing
-// in the user's Bin: every item whose name starts with NamePrefix (unique to the test run) and that
-// came from Directory (compared by identity, so short and long spellings of the path agree). Nothing
-// else is touched. Returns how many items it found and deleted - finding them there is also the half
-// of "trash, then restore" a test can check.
+}
+
+
+namespace frt::test
+{
 uint32 PurgeFromRecycleBin (FStringView NamePrefix, const std::filesystem::path& Directory)
 {
 	using Microsoft::WRL::ComPtr;
@@ -205,6 +208,11 @@ uint32 PurgeFromRecycleBin (FStringView NamePrefix, const std::filesystem::path&
 	}
 	return purged;
 }
+}
+
+
+namespace
+{
 
 
 // ---------------- The atomic writer child ----------------
@@ -1280,8 +1288,154 @@ TEST_F(FileSystemTest, MoveToTrashRemovesTheFile)
 	EXPECT_TRUE(bTrashed) << error.CStr();
 	EXPECT_FALSE(std::filesystem::exists(other));
 
-	EXPECT_EQ(PurgeFromRecycleBin(stem, Dir), 2u) << "both files should be in the Recycle Bin";
-	EXPECT_EQ(PurgeFromRecycleBin(stem, Dir), 0u) << "and gone from it after the clean-up";
+	EXPECT_EQ(test::PurgeFromRecycleBin(stem, Dir), 2u) << "both files should be in the Recycle Bin";
+	EXPECT_EQ(test::PurgeFromRecycleBin(stem, Dir), 0u) << "and gone from it after the clean-up";
+}
+
+
+// ---------------- MoveFileNoReplace ----------------
+
+TEST_F(FileSystemTest, MoveFileNoReplaceMovesAFileAndKeepsItsIdentity)
+{
+	const std::filesystem::path from = File("Звідки 来自.txt");
+	const std::filesystem::path to = File("Куди 去往.txt");
+	ASSERT_TRUE(platform::WriteFileBytes(from, AsBytes("вміст")));
+	const std::optional<platform::SFileIdentity> identity = platform::GetFileIdentity(from);
+
+	FString error;
+	EXPECT_TRUE(platform::MoveFileNoReplace(from, to, &error)) << error.CStr();
+	EXPECT_FALSE(std::filesystem::exists(from));
+	EXPECT_EQ(platform::GetFileIdentity(to), identity);
+	EXPECT_EQ(platform::ReadFileText(to).value_or(FString()), "вміст");
+}
+
+// A scanner reads a file just written, and refuses the write access a flush needs, not the delete access a rename does.
+TEST_F(FileSystemTest, MoveFileNoReplaceWaitsForAHolderToFlush)
+{
+	const test::CLogCapture capture;
+	const std::filesystem::path from = File("Тримають.txt");
+	const std::filesystem::path to = File("Відпустили.txt");
+	ASSERT_TRUE(platform::WriteFileBytes(from, AsBytes("вміст")));
+	const HANDLE holder = CreateFileW(from.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+	ASSERT_NE(holder, INVALID_HANDLE_VALUE);
+
+	std::atomic<bool> bReleased = false;
+	std::thread release([&]
+	{
+		std::this_thread::sleep_for(std::chrono::milliseconds(30));
+		bReleased = true;
+		CloseHandle(holder);
+	});
+	FString error;
+	const bool bMoved = platform::MoveFileNoReplace(from, to, &error);
+	const bool bReleasedOnReturn = bReleased;
+	release.join();
+
+	EXPECT_TRUE(bMoved) << error.CStr();
+	EXPECT_TRUE(bReleasedOnReturn) << "it returned without the flush it promises";
+	EXPECT_TRUE(capture.GetEntries().empty());
+}
+
+// False would say that nothing moved, and a batch would then leave this file where it is while it undoes the others.
+TEST_F(FileSystemTest, MoveFileNoReplaceThatCannotFlushHasStillMovedAndSaysSo)
+{
+	const test::CLogCapture capture;
+	const std::filesystem::path from = File("Не відпускають.txt");
+	const std::filesystem::path to = File("Перейшов.txt");
+	ASSERT_TRUE(platform::WriteFileBytes(from, AsBytes("вміст")));
+	const HANDLE holder = CreateFileW(from.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+	ASSERT_NE(holder, INVALID_HANDLE_VALUE);
+
+	FString error;
+	const bool bMoved = platform::MoveFileNoReplace(from, to, &error);
+	CloseHandle(holder);
+
+	EXPECT_TRUE(bMoved) << error.CStr();
+	EXPECT_FALSE(std::filesystem::exists(from));
+	EXPECT_EQ(platform::ReadFileText(to).value_or(FString()), "вміст");
+	ASSERT_EQ(capture.GetEntries().size(), 1u);
+	EXPECT_EQ(capture.GetEntries()[0].Level, log::ELevel::Warning);
+	EXPECT_TRUE(capture.GetEntries()[0].Text.Contains("Перейшов.txt")) << capture.GetEntries()[0].Text.CStr();
+}
+
+TEST_F(FileSystemTest, MoveFileNoReplaceNeverDestroysWhatItWouldLandOn)
+{
+	const std::filesystem::path from = File("Перший.txt");
+	const std::filesystem::path to = File("Другий.txt");
+	ASSERT_TRUE(platform::WriteFileBytes(from, AsBytes("перший")));
+	ASSERT_TRUE(platform::WriteFileBytes(to, AsBytes("другий")));
+
+	FString error;
+	EXPECT_FALSE(platform::MoveFileNoReplace(from, to, &error));
+	EXPECT_TRUE(error.Contains("Другий.txt")) << error.CStr();
+	EXPECT_EQ(platform::ReadFileText(from).value_or(FString()), "перший");
+	EXPECT_EQ(platform::ReadFileText(to).value_or(FString()), "другий");
+
+	error.Clear();
+	EXPECT_FALSE(platform::MoveFileNoReplace(File("Немає.txt"), File("Куди.txt"), &error));
+	EXPECT_FALSE(error.IsEmpty());
+	EXPECT_FALSE(std::filesystem::exists(File("Куди.txt")));
+}
+
+TEST_F(FileSystemTest, MoveFileNoReplaceRenamesACaseOnlySpelling)
+{
+	const std::filesystem::path from = File("текстура.PNG");
+	const std::filesystem::path to = File("Текстура.png");
+	ASSERT_TRUE(platform::WriteFileBytes(from, AsBytes("x")));
+	const std::optional<platform::SFileIdentity> identity = platform::GetFileIdentity(from);
+
+	FString error;
+	EXPECT_TRUE(platform::MoveFileNoReplace(from, to, &error)) << error.CStr();
+	EXPECT_EQ(platform::GetFileIdentity(to), identity);
+	std::vector<std::filesystem::path> names;
+	for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(Dir))
+	{
+		names.push_back(entry.path().filename());
+	}
+	ASSERT_EQ(names.size(), 1u);
+	EXPECT_EQ(names[0], to.filename());
+
+	// The same spelling is nothing to do, not a collision.
+	EXPECT_TRUE(platform::MoveFileNoReplace(to, to, &error)) << error.CStr();
+	EXPECT_TRUE(std::filesystem::exists(to));
+}
+
+TEST_F(FileSystemTest, MoveFileNoReplaceMovesAReadOnlyFile)
+{
+	const std::filesystem::path from = File("Лише читання.txt");
+	const std::filesystem::path to = File("Перейменований.txt");
+	ASSERT_TRUE(platform::WriteFileBytes(from, AsBytes("x")));
+	std::filesystem::permissions(from, std::filesystem::perms::owner_write | std::filesystem::perms::group_write | std::filesystem::perms::others_write,
+		std::filesystem::perm_options::remove);
+
+	FString error;
+	EXPECT_TRUE(platform::MoveFileNoReplace(from, to, &error)) << error.CStr();
+	EXPECT_TRUE(platform::Stat(to)->bReadOnly);
+	std::filesystem::permissions(to, std::filesystem::perms::owner_write, std::filesystem::perm_options::add);
+}
+
+// The asset writer's creates: a meta that is there by the time the bytes would go in is kept, and nothing is left behind.
+TEST_F(FileSystemTest, WriteFileNewCreatesAFileAndNeverReplacesOne)
+{
+	const std::filesystem::path path = File("Новий 新.meta");
+	FString error;
+	bool bExists = true;
+	EXPECT_TRUE(platform::WriteFileNew(path, AsBytes("перший"), &error, &bExists)) << error.CStr();
+	EXPECT_FALSE(bExists);
+	EXPECT_EQ(platform::ReadFileText(path).value_or(FString()), "перший");
+
+	EXPECT_FALSE(platform::WriteFileNew(path, AsBytes("другий"), &error, &bExists));
+	EXPECT_TRUE(bExists);
+	EXPECT_EQ(platform::ReadFileText(path).value_or(FString()), "перший");
+	EXPECT_FALSE(platform::WriteFileNew(File("Немає/x.meta"), AsBytes("x"), &error, &bExists)) << "no folder is made";
+	EXPECT_FALSE(bExists);
+	EXPECT_FALSE(std::filesystem::exists(File("Немає")));
+	size_t count = 0u;
+	for ([[maybe_unused]] const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(Dir))
+	{
+		++count;
+	}
+	EXPECT_EQ(count, 1u) << "no temporary file is left";
 }
 
 

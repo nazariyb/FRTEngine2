@@ -68,6 +68,24 @@ FRT_CORE_API bool SetEnvironmentPath (FStringView Name, const std::filesystem::p
 
 // OutputDebugStringW: shows in the debugger's output whatever the console's code page.
 FRT_CORE_API void OutputDebugText (FStringView Text) noexcept;
+
+// The shell would run File, not open it, on a double click: an extension of PATHEXT, or another kind Windows runs (a
+// shortcut, an installer, a .reg, a script host's). Such a file is shown (ShowInFileManager), never opened.
+[[nodiscard]] FRT_CORE_API bool IsShellRunnable (const std::filesystem::path& File);
+
+enum class EShellOpen : uint8
+{
+	Done,
+	NotFound,    // the file or its folder does not exist
+	NoProgram,   // no program is set to open its kind
+	Failed,
+};
+
+// The shell's open verb on a document: it opens in the program its kind is set to. Refused (Failed) for a file
+// IsShellRunnable says the shell would run.
+[[nodiscard]] FRT_CORE_API EShellOpen OpenWithShell (const std::filesystem::path& File);
+// The file manager (Explorer) with File selected.
+[[nodiscard]] FRT_CORE_API EShellOpen ShowInFileManager (const std::filesystem::path& File);
 // MessageBoxW with MB_OK | MB_ICONERROR, no owner window. Blocks until it is dismissed.
 FRT_CORE_API void ShowErrorMessage (FStringView Title, FStringView Text) noexcept;
 // The system's text for a Win32 error code or an HRESULT (FormatMessageW, in the user's language),

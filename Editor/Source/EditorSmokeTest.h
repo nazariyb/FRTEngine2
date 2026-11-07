@@ -5,7 +5,9 @@
 #include <vector>
 
 #include "CoreTypes.h"
+#include "Containers/String.h"
 #include "Containers/StringView.h"
+#include "Assets/Meta/ProblemList.h"
 #include "Math/Math.h"
 
 
@@ -47,12 +49,22 @@ class CEditor;
  * [Editor] SmokeTestEdits=1 the steps that edit the project's files, for a scratch copy only (FRT.bat
  * verify makes one with FRT.bat new, and a copy of the shaders it names with [Render] ShaderRoot):
  * one of the project's materials is rewritten and must reload (its Version goes up, its new value
- * shows), and one shader include gets a comment and exactly the programs that include it must be
- * rebuilt. They refuse, and fail, when the project or the shaders are in the engine checkout.
+ * shows), one shader include gets a comment and exactly the programs that include it must be
+ * rebuilt, and a metaless PNG is added to Content/ and the lifecycle must create its meta through the
+ * copy's VCS provider ("[smoke] ok the lifecycle created SmokeTest<Provider>.png.meta through the
+ * <Provider> provider ..."; such a run is the copy's writer, Engine/Automation.h). They refuse, and
+ * fail, when the project or the shaders are in the engine checkout.
  *
- * It also checks the asset registry (read-only, as every scripted run is): its initial scan was
- * complete before the first world was built ("[smoke] ok registry: <n> records, initial scan <ms> ms"),
- * and the editor's Assets panel shows what the registry answers for type:Texture.
+ * It also checks the asset registry (read-only in place, the scratch copy's writer with the file edits;
+ * its meta lifecycle runs either way, "[smoke] ok the read-only registry runs the meta lifecycle,
+ * reporting only" in place): its initial scan was complete before the first world was built
+ * ("[smoke] ok registry: <n> records, initial scan <ms> ms"),
+ * the editor's Assets panel shows what the registry answers for type:Texture, and the Asset problems
+ * panel lists exactly what RunValidation returns over every mount with the panel's options ("[smoke] ok
+ * the Asset problems panel lists <n> problem(s) ..."; validate's but for the providers, the lifecycle's),
+ * offers the `assets fix --engine` command for a META001 on /Engine and no fix-it it could apply in a
+ * read-only process, draws its rows, filters by code, and its "Go to" lists an entry's asset in the
+ * Assets panel.
  */
 class CEditorSmokeTest
 {
@@ -74,6 +86,13 @@ private:
 	void CheckAssetRegistry (CEditor& Editor, CEngine& Engine);
 	// The panel shows what the registry answers for that query.
 	void CheckAssetsPanel (CEditor& Editor, CEngine& Engine);
+	// The Asset problems panel lists what RunValidation does with the same options; "Go to" on one entry.
+	void CheckProblemsPanel (CEditor& Editor, CEngine& Engine);
+	// "Go to" on the entry CheckProblemsPanel picked; then the Assets panel ran its query and lists something.
+	void GoToProblem (CEditor& Editor);
+	// The panel drew rows in the frame before the capture.
+	void CheckProblemsDrawn (CEditor& Editor);
+	void CheckProblemsGoTo (CEditor& Editor, CEngine& Engine);
 	void CheckCameraController ();
 	void TouchGameBuild (CEditor& Editor);
 	void WriteInputOverrides (FStringView Text);
@@ -89,6 +108,9 @@ private:
 	void CheckMaterialReloaded ();
 	void EditShaderInclude (CEngine& Engine);
 	void CheckProgramsRebuilt (CEngine& Engine);
+	// A metaless PNG added once /Project's provider is known, then its meta awaited (each frame until done).
+	void BeginMetaCreation (CEngine& Engine);
+	void UpdateMetaCreation (CEngine& Engine);
 	// The Which-th entity (of the first three) whose name is not ASCII, selected in the Editor
 	// panel after checking the UI font has a glyph for each of its characters; Which 0 finds them.
 	void SelectNamedEntity (CEditor& Editor, uint32 Which);
@@ -109,6 +131,9 @@ private:
 	float ReleaseSpeed = 0.0f;
 	uint32 GameReloads = 0u;
 	uint32 EditEntities = 0u;
+	FString GoToQuery;                         // the Asset problems panel's "Go to", for CheckProblemsGoTo
+	assets::SProblemEntry GoToEntry;           // its entry
+	bool bGoToListsSomething = false;          // its entry has a record, or is a folder
 	std::vector<int32> NamedEntities;          // edit world indices, for SelectNamedEntity
 	bool bCanReload = false;
 	bool bFinished = false;
@@ -121,5 +146,10 @@ private:
 	std::filesystem::path EditedInclude;
 	uint32 IncludePrograms = 0u;               // programs that read EditedInclude
 	uint64 HotReloads = 0u;                    // the pipeline library's count before the edit
+	enum class EMetaStep : uint8 { Idle, AwaitProvider, AwaitMeta, Done };
+	EMetaStep MetaStep = EMetaStep::Idle;
+	uint64 MetaDeadline = 0u;                  // platform::ReadTimestamp ticks
+	FString MetaProvider;                      // /Project's provider ("Git", "None")
+	std::filesystem::path AddedFile;           // the metaless PNG
 };
 }

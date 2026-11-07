@@ -5,6 +5,9 @@
 // is copied into a temp tree in the checkout's own layout first (the runtime may write Content/), and FRT.bat verify
 // compares the same files with `FRT.bat assets dump registry --text --ci` run in place. A content change that changes
 // a dump is committed with its golden file: `FRT.bat verify --update-goldens` rewrites them and shows the diff.
+// Since M4 the registry runs its lifecycle as every host's does (reporting only), so a committed file without its meta
+// is a META001 error here; and the Demo copied into a case-sensitive directory dumps the same text (§16.2 M4): the
+// identities its committed metas give do not depend on how the file system compares names.
 #include <gtest/gtest.h>
 
 #include <filesystem>
@@ -16,6 +19,7 @@
 
 #include "Assets/AssetDiagnosticCodes.h"
 #include "Assets/AssetRegistry.h"
+#include "Assets/Meta/AssetRepairs.h"
 #include "Containers/String.h"
 #include "Diagnostics/Diagnostics.h"
 #include "EnginePaths.h"
@@ -104,6 +108,9 @@ void ExpectGoldenDump (const CCheckoutCopy& Copy, FStringView Name, std::span<co
 	desc.Owner = MountNames.size() == 1u && MountNames[0] == "Engine" && Copy.Mounts->Find("Project") == nullptr ? EAssetRegistryOwner::Engine
 		: EAssetRegistryOwner::Project;
 	desc.bLoadSnapshots = false;
+	// The lifecycle, reporting only, with no provider (None), as AssetTool's dump has it.
+	const SLifecycleDesc lifecycle;
+	desc.Lifecycle = &lifecycle;
 	CAssetRegistry registry(std::move(desc));
 	// Shut down on every way out, a failed ASSERT included: ~CAssetRegistry asserts (a breakpoint that ends Core-Test
 	// without a debugger) on a registry still running, whose scan tasks would outlive it on the pool.
@@ -114,6 +121,12 @@ void ExpectGoldenDump (const CCheckoutCopy& Copy, FStringView Name, std::span<co
 	} shutDownOnExit { registry };
 	registry.Start();
 	ASSERT_TRUE(registry.WaitForInitialScan(300.0)) << "the initial scan of " << FString(Name).CStr() << " did not end";
+	SRepairOptions report;
+	for (const SMount& mount : Copy.Mounts->GetMounts())
+	{
+		report.Paths.push_back(mount.GetRootMountPath());
+	}
+	(void)registry.GetRepairs()->RunNow(report);
 
 	FString dump;
 	registry.Live().DumpText(dump, EDumpFlags::None, mounts);
@@ -165,4 +178,21 @@ TEST(RegistryGoldenTest, TheBlankTemplatesDumpMatchesItsGoldenFile)
 	ASSERT_FALSE(HasFailure());
 	const FStringView mounts[] = { "Project" };
 	ExpectGoldenDump(copy, "Blank", mounts);
+}
+
+// A clone into a case-sensitive directory (WSL's, or one a developer set up for Linux tools) scans to the same dump: a
+// per-directory attribute on a temp directory, not a system setting; skipped where it cannot be set.
+TEST(RegistryGoldenTest, TheDemoTemplateInACaseSensitiveDirectoryDumpsTheSameText)
+{
+	const CCheckoutCopy copy("Golden Demo Case", "Demo", true);
+	if (!copy.bIsCaseSensitive)
+	{
+		GTEST_SKIP() << "this volume cannot make a directory case-sensitive (NTFS, and on some Windows versions WSL, is needed)";
+	}
+	ASSERT_FALSE(HasFailure());
+	const SMount* project = copy.Mounts->Find("Project");
+	ASSERT_NE(project, nullptr);
+	EXPECT_TRUE(project->Volume.bCaseSensitive) << "the copy's mount reads as case-sensitive";
+	const FStringView mounts[] = { "Project" };
+	ExpectGoldenDump(copy, "Demo", mounts);
 }

@@ -26,6 +26,7 @@ struct SProjectManagerRequest
 	FString Message;                 // shown at the top
 	bool bOpenNow = false;           // open it right away: it belongs to another engine's editor
 	bool bOfferBuild = false;        // its game would not load: offer to build it and try again
+	bool bOfferMigrate = false;      // its content is behind this engine (MIG001): offer to migrate it, then open it
 };
 
 /**
@@ -34,8 +35,12 @@ struct SProjectManagerRequest
  * user's recent projects (Project/UserRegistry.h), opens one or any other project file, and
  * creates projects from the engine's templates.
  *
- * It does nothing the command line cannot: creating and building run the engine's FRT.bat (new,
- * build - Premake/tools.lua), whose output it shows as they go. A project opens in a new editor
+ * It does nothing the command line cannot: creating, building and migrating run the engine's FRT.bat
+ * (new, build, assets migrate --all - Premake/tools.lua), whose output it shows as they go. A
+ * project whose content is behind this engine's migrations (MIG001, design §14.8: its
+ * Schemas/Migrations.yml lacks a step) is marked in the list, and Migrate and Open brings it up to
+ * date before opening it; the editor sends a project it found behind here when asked to. Both
+ * only while the gate is on (assets::IsMigrationGateOn; on by default). A project opens in a new editor
  * process - its own engine's editor, which need not be this one - and the manager then exits:
  * an editor runs one project for its whole life, so the game module and everything built from
  * it never outlive their project.
@@ -67,6 +72,8 @@ private:
 		FString LastOpened;
 		bool bMissing = false;           // the project file is gone
 		bool bEngineMissing = false;
+		FString Behind;                  // MIG001: its content is behind this engine's migrations (the gate is on)
+		bool bNewerEngine = false;       // ... that MIG001 is a newer engine's Schemas/Migrations.yml: no Migrate offered
 	};
 
 	struct STemplate
@@ -80,6 +87,7 @@ private:
 		None,
 		Build,                           // FRT.bat build, then open
 		Create,                          // FRT.bat new --build, then open
+		Migrate,                         // FRT.bat assets migrate --all, then open
 	};
 
 	enum class EBrowse : uint8
@@ -101,9 +109,12 @@ private:
 	// Opens a project: builds it first when its editor or its game is not built, or bBuild.
 	void Open (const std::filesystem::path& ProjectFile, bool bBuild);
 	// Builds the project in a console once this process has exited, then opens it: for when the
-	// engine itself needs building, which its running editor prevents.
-	void BuildAfterExit (const std::filesystem::path& ProjectFile);
+	// engine itself needs building, which its running editor prevents. bMigrate: the task that failed
+	// was a migration, so its content is migrated between the build and the open.
+	void BuildAfterExit (const std::filesystem::path& ProjectFile, bool bMigrate);
 	void StartCreate ();
+	// Brings the project's content up to date with its engine's migrations, then opens it.
+	void StartMigrate (const std::filesystem::path& ProjectFile);
 	void StartTask (ETask Kind, FString Title, FStringView CommandLine, const std::filesystem::path& ProjectFile);
 	void SetMessage (FString Text, bool bError);
 	void SaveSettings () const;
@@ -118,6 +129,7 @@ private:
 	FString Message;
 	bool bMessageIsError = false;
 	bool bOfferBuild = false;
+	bool bOfferMigrate = false;
 
 	std::vector<SRecentProject> Recent;
 	int32 Selected = -1;
@@ -133,6 +145,7 @@ private:
 	FString TaskTitle;
 	std::filesystem::path TaskProject;   // opened when the task succeeds
 	std::filesystem::path FailedProject; // its build failed on a file this process holds
+	ETask FailedTask = ETask::None;      // the task that failed so (a migration rebuilds AssetTool first)
 	CToolProcess Tool;
 	size_t ShownOutputSize = 0u;
 

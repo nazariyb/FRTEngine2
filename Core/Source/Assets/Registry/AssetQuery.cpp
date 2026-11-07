@@ -39,7 +39,7 @@ std::optional<ESystemPredicate> FindSystemPredicate (FStringView Name) noexcept
 
 bool HasSystemPredicateData (ESystemPredicate Predicate) noexcept
 {
-	return Predicate != ESystemPredicate::Redirected && Predicate != ESystemPredicate::Unsaved && Predicate != ESystemPredicate::PendingMeta;
+	return Predicate != ESystemPredicate::Unsaved;
 }
 
 

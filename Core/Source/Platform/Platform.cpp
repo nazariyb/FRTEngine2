@@ -497,4 +497,62 @@ bool WriteFileText (const std::filesystem::path& Path, FStringView Text, bool bC
 {
 	return WriteFileBytes(Path, Text.AsBytes(), bCreateDirectories);
 }
+
+bool IsShellRunnable (const std::filesystem::path& File)
+{
+	const FString extension = FString::FromPath(File.extension()).FoldCase();
+	if (extension.Len() < 2u)
+	{
+		return false;
+	}
+	FString runnable = ".com;.exe;.bat;.cmd;.vbs;.vbe;.js;.jse;.wsf;.wsh;.msc;.ps1;.lnk;.url;.scr;.pif;.msi;.msp;.cpl;.hta;.reg;.jar;"
+		".appref-ms;.application;.gadget;.inf;.scf;";
+	runnable += GetEnvironmentValue("PATHEXT").value_or(FString());
+	const FString folded = runnable.FoldCase();
+	for (const FStringView kind : folded.View().Split(';', EStringSplit::SkipEmpty))
+	{
+		if (kind.TrimStartAndEnd() == extension.View())
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+namespace
+{
+[[nodiscard]] EShellOpen ToShellOpen (HINSTANCE Result) noexcept
+{
+	const INT_PTR code = reinterpret_cast<INT_PTR>(Result);
+	if (code > 32)
+	{
+		return EShellOpen::Done;
+	}
+	if (code == SE_ERR_FNF || code == SE_ERR_PNF || code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND)
+	{
+		return EShellOpen::NotFound;
+	}
+	return code == SE_ERR_NOASSOC || code == SE_ERR_ASSOCINCOMPLETE ? EShellOpen::NoProgram : EShellOpen::Failed;
+}
+}
+
+EShellOpen OpenWithShell (const std::filesystem::path& File)
+{
+	if (IsShellRunnable(File))
+	{
+		return EShellOpen::Failed;
+	}
+	return ToShellOpen(ShellExecuteW(nullptr, L"open", ToWide(FString::FromPath(File)).CStr(), nullptr, nullptr, SW_SHOWNORMAL));
+}
+
+EShellOpen ShowInFileManager (const std::filesystem::path& File)
+{
+	std::error_code ec;
+	if (!std::filesystem::exists(File, ec))
+	{
+		return EShellOpen::NotFound;
+	}
+	const FString arguments = "/select,\"" + FString::FromPath(File) + "\"";
+	return ToShellOpen(ShellExecuteW(nullptr, L"open", L"explorer.exe", ToWide(arguments).CStr(), nullptr, SW_SHOWNORMAL));
+}
 }

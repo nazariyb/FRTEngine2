@@ -463,6 +463,7 @@ struct SAssetsTable
 	CPagedColumn<SPoolRange> BaseEdges;                   // the record's slice of SGraphTables::BaseEdges
 	CPagedBitmap BaseEdgesMasked;                         // the slice is superseded (or the record removed)
 	CPagedColumn<SPoolRange> OverflowEdges;               // the record's edges since the last compaction
+	CPagedColumn<uint32> Redirect;                        // SRedirectsTable row (aliases, former paths), InvalidRow = none
 };
 
 // SUBENTRY. Owner = InvalidRow: a removed row. A record's sub-entries are FirstSub .. FirstSub + NumSubs.
@@ -478,6 +479,48 @@ struct SSubEntryTable
 	// The sub-entry's place among its record's sub-entries by folded label, then label bytes (0 first): with
 	// SFilesTable::PathRank, the result order of a query needs no string compare.
 	CPagedColumn<uint32> LabelRank;
+};
+
+
+// ---------------- Identity (§5.2 alias index and paths, §5.3 METAS and TOMBSTONES; M4) ----------------
+
+/**
+ * One alias of a record (RegistryDelta.h SRecordUpsert::Aliases), found through SRegistryIndices::Aliases by the
+ * GUID of Id. Id.SubId 0: every {Id.Guid, s} resolves to {the record's GUID, s} (TargetSub unused); else Id resolves
+ * to the record's sub-entry of SubId TargetSub (a renamed sub-asset). Record InvalidRow: dropped with its list.
+ */
+struct SAliasEntry
+{
+	SAssetId Id;
+	uint32 Record = InvalidRow;
+	uint64 TargetSub = 0u;
+};
+
+// The aliases and former paths of the records that have any (SAssetsTable::Redirect): few do, so one 4-byte column per
+// record instead of two ranges. A replaced list leaves the old one behind (never read again; CompactTables drops it).
+struct SRedirectsTable
+{
+	CPagedColumn<SPoolRange> Aliases;                     // in SRegistryTables::AliasEntries
+	CPagedColumn<SPoolRange> FormerPaths;                 // in SRegistryTables::FormerPaths (PATHS ids)
+};
+
+// METAS: one row per GUID, the meta's raw bytes in SRegistryTables::MetaBytes. Guid invalid: a removed row.
+struct SMetaCopiesTable
+{
+	CPagedColumn<SGuid> Guid;
+	CPagedColumn<uint64> Hash;                            // Xxh3_64 of the bytes (HashMetaBytes)
+	CPagedColumn<uint32> Bytes;                           // MetaBytes id
+	CPagedColumn<uint32> SourcePath;                      // PATHS
+};
+
+// TOMBSTONES: one row per GUID (the latest). Guid invalid: a removed row.
+struct STombstonesTable
+{
+	CPagedColumn<SGuid> Guid;
+	CPagedColumn<uint32> LastPath;                        // PATHS
+	CPagedColumn<hash::SContentHash> Hash;
+	CPagedColumn<platform::SFileIdentity> Identity;
+	CPagedColumn<int64> RemovedFileTime;
 };
 
 
@@ -500,13 +543,17 @@ enum class ETargetState : uint8 { Unresolved, Resolved, Ambiguous, Companion }; 
 struct STargetRow
 {
 	SGuid Guid;                         // Guid targets
-	uint64 TargetSub = 0u;              // Guid targets: the id's SubId; Path targets: MakeSubId(label) once resolved
+	// Guid targets: the id's SubId as declared (the target's key; GetResolvedSub gives what an alias maps it to); Path
+	// targets, once resolved: the SubId of the sub-entry the label names (MakeSubId of it, or the SubId of the sub-entry
+	// of that label: a renamed one keeps its old label's).
+	uint64 TargetSub = 0u;
 	uint32 Text = InvalidRow;           // PATHS: the path as the source wrote it ("#label" included); a Guid target's hint
 	uint32 Resolved = InvalidRow;       // ASSETS row
 	uint32 FilePartLength = 0u;         // Path targets, resolved: bytes of Text naming the file (the label follows a '#')
 	ETargetKind Kind = ETargetKind::Path;
 	ETargetState State = ETargetState::Unresolved;
 	bool bSpellingDiffers = false;      // resolved under the fold with a spelling other than the file's (REF006)
+	bool bRedirected = false;           // resolved through an alias or a FormerPath (REF006, is:redirected)
 };
 
 // A record keeps one edge per distinct (FromSub, Target, Flags) (§5.2 "one edge per distinct (target, sub,
@@ -560,7 +607,7 @@ struct SGraphTables
 	CPagedColumn<SReverseEdge> BaseReverseEdges;
 	CPagedColumn<uint32> OverflowReverseHead;             // per target row: newest entry, InvalidRow = none
 	CPagedColumn<SOverflowReverseEdge> OverflowReverseEdges;
-	CPagedHashIndex TargetsByKey;                         // Path: HashExact(Text); Guid: HashGuid ^ TargetSub
+	CPagedHashIndex TargetsByKey;                         // Path: HashExact(Text); Guid: HashGuid ^ MixRegistryKey(TargetSub)
 	CPagedHashIndex TargetsByResolved;                    // MixRegistryKey(ASSETS row) -> target rows resolved to it
 	uint32 LiveEdges = 0u;
 	uint32 GarbageEdges = 0u;                             // masked base and superseded overflow edges
@@ -613,8 +660,8 @@ public:
 // ---------------- Problems ----------------
 
 using FProblemList = std::shared_ptr<const std::vector<SDiagnostic>>;
-inline constexpr uint32 ProblemSourceCount = 5u;   // EProblemSource
-static_assert(ProblemSourceCount == static_cast<uint32>(EProblemSource::Unclaimed) + 1u, "a list per EProblemSource");
+inline constexpr uint32 ProblemSourceCount = 6u;   // EProblemSource
+static_assert(ProblemSourceCount == static_cast<uint32>(EProblemSource::Lifecycle) + 1u, "a list per EProblemSource");
 
 // Per (subject, source) lists (RegistryDelta.h). A subject row is never removed; its lists empty instead.
 struct SProblemTables
@@ -636,7 +683,10 @@ struct SRegistryIndices
 	CPagedHashIndex RecordsByPortablePath;    // ASSETS, HashPortable of the file path; several records per key
 	CPagedHashIndex RecordsByGuid { 4u };     // ASSETS, HashGuid; at most half full: Find(SAssetId) visits every match
 	CPagedHashIndex RecordsById64;            // ASSETS and SUBENTRY: AssetId64 -> SRecordId value
-	CPagedHashIndex Aliases;                  // non-canonical SAssetId -> ASSETS row (§5.2; empty in M3)
+	CPagedHashIndex Aliases;                  // HashGuid(alias GUID) -> SRegistryTables::AliasEntries index (§5.2, M4)
+	CPagedHashIndex RecordsByFormerPath;      // ASSETS, HashPortable of each former path; several records per key
+	CPagedHashIndex MetaCopiesByGuid;         // METAS rows, HashGuid
+	CPagedHashIndex TombstonesByGuid;         // TOMBSTONES rows, HashGuid
 };
 
 
@@ -662,16 +712,27 @@ struct SRegistryTables
 	SGraphTables Graph;
 	std::vector<CTypeTable> Types;                               // indexed by TypeId (CAssetTypeRegistry)
 	SProblemTables Problems;
+	CPagedColumn<SAliasEntry> AliasEntries;
+	CPagedPool<uint32> FormerPaths;                              // PATHS ids
+	SRedirectsTable Redirects;
+	SMetaCopiesTable MetaCopies;
+	CStringPool MetaBytes;                                       // METAS bytes (raw, not UTF-8 checked)
+	STombstonesTable Tombstones;
 	SRegistryIndices Indices;
 
+	uint32 LiveMetaCopies = 0u;
+	uint32 LiveTombstones = 0u;
 	uint32 LiveFiles = 0u;
+	uint32 LiveMetaFiles = 0u;                                   // of LiveFiles, rows of class Meta (BaseClass): not in GetFileCount
 	uint32 LiveFolders = 0u;
 	uint32 LiveRuleFiles = 0u;
 	uint32 LiveRecords = 0u;
 	uint32 LiveSubEntries = 0u;
-	// Items of Labels, Companions, the type tables' Multi pools and STRINGS that no live row uses any more
-	// (replaced lists, dead rows' values): what CRegistryStore::CompactTables reclaims.
+	// Items of Labels, Companions, the type tables' Multi pools, STRINGS, AliasEntries, FormerPaths and the REDIRECTS
+	// rows that no live row uses any more (replaced lists, dead rows' values): what CRegistryStore::CompactTables
+	// reclaims, with dead METAS and TOMBSTONES rows and the MetaBytes of replaced or removed copies.
 	uint32 GarbagePoolItems = 0u;
+	uint64 GarbageMetaBytes = 0u;
 };
 
 inline constexpr uint32 RuleLabelBit = 1u << 31u;   // SRegistryTables::Labels: a rule label (Assets.yml), else authored
@@ -703,6 +764,16 @@ inline int32 CompareFileOrder (const SRegistryTables& Tables, uint32 A, uint32 B
 		compared = Tables.Paths.Get(Tables.Files.Path[A]).Compare(Tables.Paths.Get(Tables.Files.Path[B]));
 	}
 	return compared != 0 ? compared : (A < B ? -1 : (A > B ? 1 : 0));
+}
+
+/**
+ * Of two live asset rows with one GUID (a copy of a file and its meta, until the lifecycle gives the copy its own), the
+ * one every lookup by id answers (§4.8: the would-be winner, when committed facts are unknown): the one whose file
+ * comes first in CompareFileOrder, the smallest folded path. Current InvalidRow: none chosen yet.
+ */
+[[nodiscard]] inline bool IsPreferredGuidRow (const SRegistryTables& Tables, uint32 Candidate, uint32 Current) noexcept
+{
+	return Current == InvalidRow || CompareFileOrder(Tables, Tables.Assets.File[Candidate], Tables.Assets.File[Current]) < 0;
 }
 
 // The order SSubEntryTable::LabelRank keeps among one record's sub-entries: folded label bytes, label bytes, row.
@@ -759,6 +830,22 @@ FRT_CORE_API uint32 FindRecordRowsPortableHashed (const SRegistryTables& Tables,
 
 // The subject row of a problem subject, or InvalidRow.
 [[nodiscard]] FRT_CORE_API uint32 FindProblemSubject (const SRegistryTables& Tables, FStringView Subject) noexcept;
+
+// Live records with FileMountPath among their FormerPaths (portable fold): how many, and in OutRow the one whose file
+// comes first in CompareFileOrder (InvalidRow when none). PortableHash: HashPortable(FileMountPath).
+FRT_CORE_API uint32 FindRecordRowsByFormerPath (const SRegistryTables& Tables, FStringView FileMountPath, uint64 PortableHash, uint32& OutRow) noexcept;
+/**
+ * The alias index (§5.2): the record an alias names for Id, and the SubId it resolves to. An alias of exactly Id (a
+ * renamed sub-asset, or a consolidated main asset) first, else one of {Id.Guid, 0} (a consolidated GUID: OutSub =
+ * Id.SubId). Several records claiming one alias: the one whose file comes first in CompareFileOrder. False: none.
+ */
+FRT_CORE_API bool ResolveAlias (const SRegistryTables& Tables, const SAssetId& Id, uint32& OutRow, uint64& OutSub) noexcept;
+// The SubId a resolved target names in its record: TargetSub, or for a Guid target resolved through an alias the SubId
+// the alias maps it to.
+[[nodiscard]] FRT_CORE_API uint64 GetResolvedSub (const SRegistryTables& Tables, const STargetRow& Target) noexcept;
+// The METAS and TOMBSTONES row of a GUID, or InvalidRow.
+[[nodiscard]] FRT_CORE_API uint32 FindMetaCopyRow (const SRegistryTables& Tables, const SGuid& Guid) noexcept;
+[[nodiscard]] FRT_CORE_API uint32 FindTombstoneRow (const SRegistryTables& Tables, const SGuid& Guid) noexcept;
 
 // The SUBENTRY row an edge of the ASSETS row AssetRow comes from, or InvalidRow for the record itself.
 [[nodiscard]] inline uint32 GetEdgeSourceSub (const SRegistryTables& Tables, uint32 AssetRow, const SEdgeRow& Edge) noexcept
@@ -841,6 +928,7 @@ struct SRegistryMemoryStats
 	uint64 Strings = 0u;          // STRINGS and the path pool
 	uint64 Labels = 0u;           // labels and companions
 	uint64 Problems = 0u;
+	uint64 Identity = 0u;         // aliases, former paths, METAS, TOMBSTONES (M4)
 	uint64 Indices = 0u;
 	uint64 Writer = 0u;           // CRegistryStore::GetMemoryStats only: the writer's lists and maps
 	uint64 ChangeRing = 0u;       // CRegistryStore::GetMemoryStats only
@@ -943,6 +1031,25 @@ struct SImageRecord
 	SPoolRange Tags;
 	SPoolRange Edges;
 	SPoolRange Companions;            // into Companions: Strings ids
+	SPoolRange Aliases;               // into Aliases (M4)
+	SPoolRange FormerPaths;           // into FormerPaths: Strings ids (M4)
+};
+
+struct SImageMetaCopy
+{
+	SGuid Guid;
+	uint64 Hash = 0u;
+	std::vector<uint8> Bytes;
+	uint32 SourcePath = ~0u;          // Strings
+};
+
+struct SImageTombstone
+{
+	SGuid Guid;
+	uint32 LastPath = ~0u;            // Strings
+	hash::SContentHash Hash;
+	platform::SFileIdentity Identity;
+	int64 RemovedFileTime = 0;
 };
 
 struct SImageProblems
@@ -969,6 +1076,10 @@ struct SRegistryImage
 	std::vector<SImageEdge> Edges;
 	std::vector<uint32> Companions;
 	std::vector<SImageProblems> Problems;
+	std::vector<SAssetId> Aliases;
+	std::vector<uint32> FormerPaths;      // Strings ids
+	std::vector<SImageMetaCopy> Metas;    // of the image's mounts (by SourcePath)
+	std::vector<SImageTombstone> Tombstones;
 };
 
 /**

@@ -15,6 +15,7 @@
 
 #include "EnginePaths.h"
 #include "Window.h"
+#include "Assets/Meta/Migrations.h"
 #include "Config/IniFile.h"
 #include "Containers/WideString.h"
 #include "Engine/Engine.h"
@@ -162,6 +163,7 @@ CProjectManager::CProjectManager (CEngine& InEngine, SProjectManagerRequest InRe
 	Message = Request.Message;
 	bMessageIsError = !Message.IsEmpty();
 	bOfferBuild = Request.bOfferBuild;
+	bOfferMigrate = Request.bOfferMigrate;
 
 	// A scripted run keeps to its own directory, registry included: the processes it starts
 	// inherit FRT_USER_DATA_DIR. Set before anything reads the registry. By default outside any
@@ -280,6 +282,16 @@ void CProjectManager::Refresh ()
 			else if (IsSameDir(engineDir, paths::GetEngineDir()))
 			{
 				entry.EngineText = "This engine";
+				// Behind this engine's migrations (MIG001): what the editor would open read-only. Another engine's
+				// project is that engine's to judge, so only this one's are asked, and only while the gate is on.
+				if (assets::IsMigrationGateOn(Engine.GetConfig()))
+				{
+					if (const std::optional<SDiagnostic> gap =
+						assets::FindMigrationGap(descriptor.GetDir(), "/Project", false, &entry.bNewerEngine))
+					{
+						entry.Behind = gap->Message;
+					}
+				}
 			}
 			else if (IsSameDir(engineDir, descriptor.GetDir() / "Engine"))
 			{
@@ -304,6 +316,7 @@ void CProjectManager::SetMessage (FString Text, bool bError)
 	Message = std::move(Text);
 	bMessageIsError = bError;
 	bOfferBuild = false;
+	bOfferMigrate = false;
 }
 
 void CProjectManager::SaveSettings () const
@@ -361,6 +374,14 @@ void CProjectManager::Draw ()
 			}
 			ImGui::SameLine();
 		}
+		if (bOfferMigrate && Task == ETask::None && !Request.Project.empty())
+		{
+			if (ImGui::Button("Migrate and Open"))
+			{
+				StartMigrate(Request.Project);
+			}
+			ImGui::SameLine();
+		}
 		if (Task == ETask::None && ImGui::SmallButton("Dismiss"))
 		{
 			SetMessage({}, false);
@@ -413,6 +434,16 @@ void CProjectManager::DrawRecent ()
 	}
 	ImGui::EndDisabled();
 	ImGui::SameLine();
+	// Only for a project behind this engine (MIG001), which only the gate (on by default) finds; never for one a newer
+	// engine migrated, whose Schemas/Migrations.yml this engine's migrate cannot read.
+	if (selected != nullptr && !selected->Behind.IsEmpty() && !selected->bNewerEngine)
+	{
+		if (ImGui::Button("Migrate and Open"))
+		{
+			StartMigrate(selected->File);
+		}
+		ImGui::SameLine();
+	}
 	ImGui::BeginDisabled(!selected || selected->bMissing);
 	if (ImGui::Button("Show in Explorer"))
 	{
@@ -483,6 +514,17 @@ void CProjectManager::DrawRecent ()
 		else
 		{
 			ImGui::TextUnformatted(entry.EngineText.CStr());
+		}
+		if (!entry.Behind.IsEmpty())
+		{
+			// One line in the row; the whole message on hover.
+			ImGui::SameLine();
+			ImGui::TextColored(ErrorColor, "%s", entry.bNewerEngine ? "- content of a newer engine (MIG001): opens read-only here"
+				: "- content behind it (MIG001): Migrate and Open");
+			if (ImGui::IsItemHovered())
+			{
+				ImGui::SetTooltip("%s", entry.Behind.CStr());
+			}
 		}
 		ImGui::TableNextColumn();
 		ImGui::TextUnformatted(entry.LastOpened.CStr());
@@ -641,14 +683,15 @@ void CProjectManager::DrawTask ()
 	{
 		Task = ETask::None;
 		FailedProject.clear();
+		FailedTask = ETask::None;
 		Refresh();
 	}
 	if (!FailedProject.empty())
 	{
 		ImGui::SameLine();
-		if (ImGui::Button("Close and Build in a Console"))
+		if (ImGui::Button(FailedTask == ETask::Migrate ? "Close, Build and Migrate in a Console" : "Close and Build in a Console"))
 		{
-			BuildAfterExit(FailedProject);
+			BuildAfterExit(FailedProject, FailedTask == ETask::Migrate);
 		}
 		ImGui::SameLine();
 		ImGui::TextColored(DimColor, "The engine needs building, and this editor runs from its binaries.");
@@ -671,6 +714,7 @@ void CProjectManager::UpdateTask ()
 			IsSameDir(project::ResolveEngineDir(descriptor), paths::GetEngineDir()))
 		{
 			FailedProject = TaskProject;
+			FailedTask = Task;
 		}
 		TaskProject.clear();
 	}
@@ -691,6 +735,7 @@ void CProjectManager::StartTask (ETask Kind, FString Title, FStringView CommandL
 	TaskTitle = std::move(Title);
 	TaskProject = ProjectFile;
 	FailedProject.clear();
+	FailedTask = ETask::None;
 	ShownOutputSize = 0u;
 	SetMessage({}, false);
 	Tool.Start(CommandLine, paths::GetEngineDir());
@@ -745,7 +790,7 @@ void CProjectManager::Open (const std::filesystem::path& ProjectFile, bool bBuil
 	Engine.RequestQuit(0);
 }
 
-void CProjectManager::BuildAfterExit (const std::filesystem::path& ProjectFile)
+void CProjectManager::BuildAfterExit (const std::filesystem::path& ProjectFile, bool bMigrate)
 {
 	project::SProjectDescriptor descriptor;
 	FString error;
@@ -760,13 +805,18 @@ void CProjectManager::BuildAfterExit (const std::filesystem::path& ProjectFile)
 		SetMessage(descriptor.Name + ": " + error, true);
 		return;
 	}
-	// Waits for this process, builds, opens the project; stays open to be read if the build fails.
+	// Waits for this process, builds, migrates when bMigrate, opens the project; stays open to be read if a step fails.
 	FString command;
 	command << "title Building " << descriptor.Name
 		<< " & powershell -NoProfile -Command \"Wait-Process -Id " << GetCurrentProcessId() << " -ErrorAction SilentlyContinue\""
 		<< " & " << QuoteArgument(engineDir / "FRT.bat") << " build --project=" << QuoteArgument(descriptor.File)
-		<< " --config=" << ConfigName
-		<< " && start \"\" " << QuoteArgument(EditorExecutable(engineDir)) << " -Project=" << QuoteArgument(descriptor.File)
+		<< " --config=" << ConfigName;
+	if (bMigrate)
+	{
+		// The migration the editor could not run: FRT.bat assets rebuilds AssetTool, which needed this process gone.
+		command << " && " << QuoteArgument(engineDir / "FRT.bat") << " assets migrate --all --project=" << QuoteArgument(descriptor.File);
+	}
+	command << " && start \"\" " << QuoteArgument(EditorExecutable(engineDir)) << " -Project=" << QuoteArgument(descriptor.File)
 		<< " || pause";
 	if (!StartCommand(command, engineDir, true))
 	{
@@ -788,6 +838,26 @@ void CProjectManager::StartCreate ()
 		<< " --layout=" << (bEmbeddedEngine ? "embedded" : "shared") << " --build --config=" << ConfigName;
 	StartTask(ETask::Create, "Creating " + Name + " from " + templateName, command,
 		location / Name.ToPath() / (Name + project::ProjectFileExtension).ToPath());
+}
+
+void CProjectManager::StartMigrate (const std::filesystem::path& ProjectFile)
+{
+	project::SProjectDescriptor descriptor;
+	FString error;
+	if (!project::SProjectDescriptor::Load(ProjectFile, descriptor, &error))
+	{
+		SetMessage(error, true);
+		return;
+	}
+	const std::filesystem::path engineDir = project::ResolveEngineDir(descriptor, &error);
+	if (engineDir.empty())
+	{
+		SetMessage(descriptor.Name + ": " + error, true);
+		return;
+	}
+	// Its own engine's AssetTool, which knows the steps that engine requires (design §14.8); opened once it is done.
+	const FString command = QuoteArgument(engineDir / "FRT.bat") + " assets migrate --all --project=" + QuoteArgument(descriptor.File);
+	StartTask(ETask::Migrate, "Migrating " + descriptor.Name + "'s content (FRT.bat assets migrate --all)", command, descriptor.File);
 }
 
 void CProjectManager::StartBrowse (EBrowse Kind)

@@ -594,7 +594,8 @@ TEST(SharedTypesTest, RecordIdsAndTagValuesHaveUsefulDefaults)
 	delta.FileUpserts.push_back(SFileUpsert { "/Project/Rock.png" });
 	EXPECT_FALSE(delta.IsEmpty());
 	EXPECT_EQ(SMountUpsert().Id, InvalidMountId);
-	EXPECT_EQ(delta.FileUpserts[0].MetaState, EMetaState::PendingMeta);
+	EXPECT_FALSE(delta.FileUpserts[0].Meta.has_value()) << "keeps the stored meta columns; a new row starts PendingMeta";
+	EXPECT_EQ(SFileMetaState().State, EMetaState::PendingMeta);
 	EXPECT_EQ(delta.FileUpserts[0].Class, EFileClass::Unclaimed);
 	EXPECT_FALSE(delta.FileUpserts[0].ContentHash.has_value());
 
@@ -644,7 +645,7 @@ void ExpectNamesRoundTrip (bool bFlags, size_t ExpectedCount)
 
 TEST(SharedTypesTest, RegistryEnumsHaveTextNames)
 {
-	ExpectNamesRoundTrip<EFileClass>(false, 5u);
+	ExpectNamesRoundTrip<EFileClass>(false, 6u);
 	ExpectNamesRoundTrip<EMetaState>(false, 5u);
 	ExpectNamesRoundTrip<ETagType>(false, 9u);
 	ExpectNamesRoundTrip<ECookRule>(false, 5u);
@@ -652,7 +653,7 @@ TEST(SharedTypesTest, RegistryEnumsHaveTextNames)
 	ExpectNamesRoundTrip<ECompare>(false, 12u);
 	ExpectNamesRoundTrip<EExists>(false, 3u);
 	ExpectNamesRoundTrip<ERecordScope>(false, 4u);
-	ExpectNamesRoundTrip<EProblemSource>(false, 5u);
+	ExpectNamesRoundTrip<EProblemSource>(false, 6u);
 	ExpectNamesRoundTrip<EScanFileState>(false, 4u);
 	ExpectNamesRoundTrip<ERecordFlags>(true, 11u);
 	ExpectNamesRoundTrip<ETagFlags>(true, 5u);

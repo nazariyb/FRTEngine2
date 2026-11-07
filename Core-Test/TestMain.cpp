@@ -1,12 +1,16 @@
 #include <gtest/gtest.h>
 
 #include <cstdio>
+#include <filesystem>
+#include <optional>
 #include <span>
+#include <system_error>
 #include <vector>
 
 #include "TestCommon.h"
 
 #include "Containers/String.h"
+#include "Platform/FileSystem.h"
 #include "Platform/Platform.h"
 
 
@@ -88,6 +92,24 @@ int main (int ArgCount, char** Args)
 	{
 		const frt::FStringView name = gMainArguments[0].View().RightChop(frt::test::ChildModeSwitch.Len());
 		return RunChildMode(name, std::span<const frt::FString>(gMainArguments).subspan(1u));
+	}
+
+	// Every scratch repository a test makes is below the temporary folder, which can itself be in a work tree (a dotfiles
+	// repository in the home folder holds %TEMP%). Git must not find that one from a scratch folder that has none, nor the
+	// Git provider's own walk, which reads the same variable; child processes, AssetTool's included, inherit it.
+	{
+		std::error_code ec;
+		const std::filesystem::path temp = std::filesystem::canonical(std::filesystem::temp_directory_path(ec), ec);
+		if (!ec)
+		{
+			frt::FString ceilings = frt::FString::FromPath(frt::platform::NormalizePath(temp), frt::EPathStyle::Generic);
+			if (const std::optional<frt::FString> previous = frt::platform::GetEnvironmentValue("GIT_CEILING_DIRECTORIES");
+				previous.has_value() && !previous->IsEmpty())
+			{
+				ceilings.Append(";").Append(*previous);
+			}
+			frt::platform::SetEnvironmentValue("GIT_CEILING_DIRECTORIES", ceilings);
+		}
 	}
 
 	::testing::InitGoogleTest(&ArgCount, Args);

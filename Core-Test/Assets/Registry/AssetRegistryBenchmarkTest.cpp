@@ -20,7 +20,11 @@
 #include "../BenchmarkBudget.h"
 #include "TemplateTestUtils.h"
 
+#include "Assets/AssetId.h"
 #include "Assets/AssetRegistry.h"
+#include "Assets/Meta/MetaFile.h"
+#include "Assets/Meta/MetaPaths.h"
+#include "Assets/Meta/MetaTypes.h"
 #include "Assets/FileWatcherService.h"
 #include "BuildConfig.h"
 #include "Jobs/WorkerPool.h"
@@ -57,11 +61,24 @@ std::vector<uint8> MakePngHeader ()
 		0, 0, 0, 0, 'I', 'D', 'A', 'T', 0, 0, 0, 0, 0, 0, 0, 0, 'I', 'E', 'N', 'D', 0, 0, 0, 0 };
 }
 
+// A source file's meta as the lifecycle writes it (EmitMeta, canonical): a GUID derived from its mount path.
+void WriteMeta (const std::filesystem::path& Source, FStringView MountPath)
+{
+	SAssetMeta meta;
+	meta.Guid = MakeDerivedGuid(SGuid {}, "registry-budget-meta", MountPath);
+	FString text;
+	ASSERT_TRUE(EmitMeta(meta, text));
+	std::filesystem::path path = Source;
+	path += FStringView(MetaFileSuffix).ToPath();
+	ASSERT_TRUE(platform::WriteFileBytes(path, text.AsBytes()));
+}
+
 /**
  * A synthetic project of Files files below Content/, 100 per folder: in each folder 70 textures, 10 legacy materials
- * naming one of them and 20 text files nobody claims (one RULE002 per folder).
+ * naming one of them and 20 text files nobody claims (one RULE002 per folder). bMetas (M4, edit [63]): each texture
+ * and material has its meta beside it as well, so the tree holds Files + 80% of Files files.
  */
-void WriteSyntheticProject (const CRulesTree& Tree, uint32 Files)
+void WriteSyntheticProject (const CRulesTree& Tree, uint32 Files, bool bMetas = false)
 {
 	Tree.WriteEngineRules(EngineRulesText);
 	Tree.WriteProjectRules(ProjectRulesText);
@@ -72,18 +89,29 @@ void WriteSyntheticProject (const CRulesTree& Tree, uint32 Files)
 	const uint32 folders = (Files + 99u) / 100u;
 	for (uint32 folder = 0u; folder < folders; ++folder)
 	{
+		const FString folderPath = FString::Format("/Project/Тека {:02}/Folder {}", folder / 20u, folder);
 		const std::filesystem::path directory = content / FString::Format("Тека {:02}", folder / 20u).ToPath() / FString::Format("Folder {}", folder).ToPath();
 		frt::test::rules::MakeDirectories(directory);
 		for (uint32 file = 0u; file < 100u && folder * 100u + file < Files; ++file)
 		{
 			if (file < 70u)
 			{
-				ASSERT_TRUE(platform::WriteFileBytes(directory / FString::Format("Файл_{}.png", file).ToPath(), png));
+				const FString name = FString::Format("Файл_{}.png", file);
+				ASSERT_TRUE(platform::WriteFileBytes(directory / name.ToPath(), png));
+				if (bMetas)
+				{
+					WriteMeta(directory / name.ToPath(), FString::Format("{}/{}", folderPath, name));
+				}
 			}
 			else if (file < 80u)
 			{
+				const FString name = FString::Format("М_{}.frtmat.yml", file);
 				const FString text = FString::Format("version: 2\nname: М_{}\n\nalbedo:\n  texture: Файл_{}.png\n", file, file - 70u);
-				ASSERT_TRUE(platform::WriteFileBytes(directory / FString::Format("М_{}.frtmat.yml", file).ToPath(), text.AsBytes()));
+				ASSERT_TRUE(platform::WriteFileBytes(directory / name.ToPath(), text.AsBytes()));
+				if (bMetas)
+				{
+					WriteMeta(directory / name.ToPath(), FString::Format("{}/{}", folderPath, name));
+				}
 			}
 			else
 			{
@@ -147,20 +175,27 @@ SStart BestWarmStart (jobs::CWorkerPool& Pool, const std::shared_ptr<const CMoun
 	return best;
 }
 
-void MeasureWarmStart (uint32 Files, const SBudget& Warm, const SBudget& AfterEdit, bool bWatchedEdit)
+void MeasureWarmStart (uint32 Files, const SBudget& Warm, const SBudget& AfterEdit, bool bWatchedEdit, bool bMetas = false)
 {
-	CRulesTree tree(FString::Format("Registry Budget {}", Files));
-	WriteSyntheticProject(tree, Files);
+	CRulesTree tree(FString::Format("Registry Budget {}{}", Files, bMetas ? " metas" : ""));
+	WriteSyntheticProject(tree, Files, bMetas);
 	jobs::CWorkerPool pool(MakePoolDesc(jobs::CWorkerPool::GetDefaultThreadCount()));
 	const std::shared_ptr<const CMountTable> project = std::make_shared<const CMountTable>(tree.Resolve());
 	const SStart cold = WriteSnapshots(pool, EngineOnly(tree), project);
 	std::printf("%s cold start of %u files: %.1f ms, %llu analyzed (%u threads; not budgeted at this size)\n", Prefix, cold.Report.Files,
 		cold.Report.TotalMs, static_cast<unsigned long long>(cold.Counters.Analyzed), pool.GetThreadCount());
 
+	const uint32 assets = Files / 100u * 80u + (std::min)(Files % 100u, 80u);
+	if (bMetas)
+	{
+		EXPECT_EQ(cold.Counters.MetasRead, assets) << "every asset's meta read once";
+	}
+
 	const SStart warm = BestWarmStart(pool, project);
 	EXPECT_EQ(warm.Counters.Analyzed, 0u);
 	EXPECT_EQ(warm.Counters.Hashed, 0u);
-	const FString name = FString::Format("WarmStart{}kMs", Files / 1000u);
+	EXPECT_EQ(warm.Counters.MetasRead, 0u);
+	const FString name = bMetas ? FString::Format("WarmStart{}kAssetsWithMetasMs", assets / 1000u) : FString::Format("WarmStart{}kMs", Files / 1000u);
 	const FString note = FString::Format("({} files, {} records; snapshot load {:.2f}, scan {:.2f}, convert {:.2f}, commit {:.2f}, RULE002 {:.2f} ms; best of 3)",
 		warm.Report.Files, warm.Report.Records, warm.Report.LoadMs, warm.Report.ScanMs, warm.Report.ConvertMs, warm.Report.CommitMs, warm.Report.UnclaimedMs);
 	CheckBudget(Prefix, name.CStr(), warm.Report.TotalMs, Warm, "ms", note.CStr());
@@ -172,7 +207,9 @@ void MeasureWarmStart (uint32 Files, const SBudget& Warm, const SBudget& AfterEd
 	EXPECT_EQ(edited.Counters.Analyzed, 0u);
 	EXPECT_EQ(edited.Counters.Hashed, 0u);
 	EXPECT_GT(edited.Counters.ReEvaluated, 0u);
-	const FString editName = FString::Format("WarmStartAfterRuleEdit{}kMs", Files / 1000u);
+	EXPECT_EQ(edited.Counters.MetasRead, 0u) << "a re-evaluation takes an unchanged meta from its copy";
+	const FString editName = bMetas ? FString::Format("WarmStartAfterRuleEdit{}kAssetsWithMetasMs", assets / 1000u)
+		: FString::Format("WarmStartAfterRuleEdit{}kMs", Files / 1000u);
 	const FString editNote = FString::Format("({} records re-evaluated, 0 analyzed, 0 hashed; scan {:.2f}, convert {:.2f}, commit {:.2f} ms; best of 3)",
 		edited.Counters.ReEvaluated, edited.Report.ScanMs, edited.Report.ConvertMs, edited.Report.CommitMs);
 	CheckBudget(Prefix, editName.CStr(), edited.Report.TotalMs, AfterEdit, "ms", editNote.CStr());
@@ -253,6 +290,38 @@ void MeasureWarmStart (uint32 Files, const SBudget& Warm, const SBudget& AfterEd
 }
 
 
+// The metas the 100k tree is written with (WriteSyntheticProject's bMetas), on a folder of it: every asset takes its
+// meta's GUID and a METAS copy (not a benchmark: 180 files).
+TEST(AssetRegistryBudget, TheSyntheticProjectsMetasGiveEveryAssetItsGuid)
+{
+	CRulesTree tree("Registry Budget metas");
+	WriteSyntheticProject(tree, 100u, true);
+	jobs::CWorkerPool pool(MakePoolDesc(2u));
+	SAssetRegistryDesc desc;
+	desc.Mounts = std::make_shared<const CMountTable>(tree.Resolve());
+	desc.Pool = &pool;
+	desc.bLoadSnapshots = false;
+	CAssetRegistry registry(std::move(desc));
+	registry.Start();
+	EXPECT_TRUE(registry.WaitForInitialScan(60.0));
+	const CRegistryView& view = registry.Live();
+	uint32 assets = 0u;
+	uint32 fromMeta = 0u;
+	view.ForEachRecord([&] (SRecordId Record)
+	{
+		SAssetData data;
+		if (view.GetRecord(Record, data) && data.MountPath.View().StartsWith(FStringView("/Project/")))
+		{
+			++assets;
+			fromMeta += data.Id.Guid == MakeDerivedGuid(SGuid {}, "registry-budget-meta", data.MountPath) ? 1u : 0u;
+		}
+	});
+	EXPECT_EQ(assets, 80u);
+	EXPECT_EQ(fromMeta, 80u);
+	EXPECT_EQ(view.GetMetaCopyCount(), 80u);
+	registry.ShutDown();
+}
+
 TEST(AssetRegistryBudget, TheDemoTemplateWarmStartsWithinItsBudget)
 {
 	const frt::test::registry::CTemplateCopy copy("Registry Demo Budget");
@@ -303,6 +372,13 @@ TEST(AssetRegistryBudget, AColdFullScanWithAnalyzeOf10kFilesStaysWithinItsBudget
 TEST(AssetRegistryBudget, DISABLED_TwoHundredThousandFilesWarmStartWithinTheirBudget)
 {
 	MeasureWarmStart(200000u, SBudget { 400.0, 650.0, -1.0, -1.0 }, SBudget { 400.0, 720.0, -1.0, -1.0 }, false);
+}
+
+// Nightly, edit [63]: §5.11's 100k column as it means it, 100k assets with their metas (125k source files, 100k metas:
+// 225k files; run alone). The same proposed figures as above; M4 compares the two.
+TEST(AssetRegistryBudget, DISABLED_OneHundredThousandAssetsWithMetasWarmStartWithinTheirBudget)
+{
+	MeasureWarmStart(125000u, SBudget { 400.0, 650.0, -1.0, -1.0 }, SBudget { 400.0, 720.0, -1.0, -1.0 }, false, true);
 }
 
 TEST(AssetRegistryBudget, DISABLED_AColdFullScanWithAnalyzeOf100kFilesStaysWithinItsBudget)

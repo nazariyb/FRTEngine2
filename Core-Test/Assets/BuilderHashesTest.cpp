@@ -16,6 +16,7 @@
 
 #include "TestCommon.h"
 #include "TestProcess.h"
+#include "Assets/Vcs/GitTestUtils.h"
 
 #include <algorithm>
 #include <chrono>
@@ -68,36 +69,16 @@ uint64 Fnv1a (uint64 Hash, FStringView Bytes)
 	return Hash;
 }
 
-std::optional<std::filesystem::path> FindGitOnPath ()
-{
-	const std::optional<FString> path = platform::GetEnvironmentValue("PATH");
-	if (!path)
-	{
-		return std::nullopt;
-	}
-	for (const FStringView dir : path->View().Split(';', EStringSplit::SkipEmpty | EStringSplit::Trim))
-	{
-		const std::filesystem::path candidate = dir.TrimQuotes().ToPath() / "git.exe";
-		if (platform::Stat(candidate).has_value())
-		{
-			return candidate;
-		}
-	}
-	return std::nullopt;
-}
-
-
 class BuilderHashesTest : public ::testing::Test
 {
 protected:
 	void SetUp () override
 	{
-		const std::optional<std::filesystem::path> git = FindGitOnPath();
-		if (!git)
+		Git = platform::FindOnPath("git");
+		if (Git.empty())
 		{
 			GTEST_SKIP() << "no git.exe on PATH";
 		}
-		Git = *git;
 		Premake = paths::GetEngineDir() / "ThirdParty" / "premake-5.0.0-beta2-windows" / "premake5.exe";
 		ASSERT_TRUE(platform::Stat(Premake).has_value()) << FString::FromPath(Premake).CStr();
 
@@ -177,10 +158,7 @@ protected:
 
 	void RunGit (std::vector<FString> Arguments) const
 	{
-		const std::vector<FString> prefix = { "-C", FString::FromPath(Engine), "-c", "core.autocrlf=false", "-c", "user.name=FRT Test",
-			"-c", "user.email=frt-test@example.invalid", "-c", "commit.gpgsign=false" };
-		Arguments.insert(Arguments.begin(), prefix.begin(), prefix.end());
-		const test::SProcessResult result = test::RunProcess(Git, Arguments, Engine);
+		const test::SProcessResult result = test::RunGit(Git, Engine, Arguments);
 		ASSERT_EQ(result.ExitCode, 0) << Arguments.back().CStr() << ": " << result.Errors.CStr() << result.Output.CStr();
 	}
 

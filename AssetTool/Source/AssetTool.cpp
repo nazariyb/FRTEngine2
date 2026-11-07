@@ -18,8 +18,16 @@
  *
  * A commandlet that writes what only the mount's owner may write (SCommandlet::bWritesProject) runs
  * only while this process holds the mount's writer lock, Local/Assets/Owner.lock (§5.9): if another
- * process owns the mount, the run ends with exit code 4 and names it. --ci and -Assets:ReadOnly=1 make
- * a run read-only by request: it never takes the lock, and so runs beside an open editor.
+ * process owns the mount, the run ends with exit code 4 and names it - unless the opened project's
+ * Safety.GuestProcesses (the engine's with --engine) lets it run as a read-only guest, which says so on
+ * stderr and writes nothing (lock never runs as one). --ci and -Assets:ReadOnly=1 make a run read-only
+ * by request, as does a verb's own read-only option (SCommandlet::ReadOnlyOption: migrate --dry-run): it
+ * never takes the lock, and so runs beside an open editor.
+ *
+ * A root behind the engine's content migrations (MIG001: its Schemas/Migrations.yml lacks a step, design §14.8) is
+ * written only by migrate: every other run that would write exits with code 1 before it takes the lock, a run that
+ * writes nothing runs and reports MIG001 (scan, status, validate). The gate is [Assets] MigrationGate
+ * (assets::IsMigrationGateOn), on by default; -Assets:MigrationGate=0 turns it off for a run.
  *
  * Output: human text, or with --json one JSON object per line on stdout (stable field names); errors
  * and warnings on stderr in either mode. Exit codes: Commandlet.h (0 success, 1 problems, 2 usage,
@@ -35,15 +43,23 @@
 
 #include "EnginePaths.h"
 #include "Precision.h"
+#include "Assets/Discovery/BuiltinExcludes.h"
+#include "Assets/Discovery/Mounts.h"
+#include "Assets/Meta/AssetRepairs.h"
+#include "Assets/Meta/Safety.h"
+#include "Assets/Meta/Migrations.h"
+#include "Assets/MountPaths.h"
 #include "Assets/OwnerLock.h"
 #include "Engine/Engine.h"
 #include "Jobs/WorkerPool.h"
+#include "Assets/Vcs/VcsProviderSet.h"
 #include "Platform/FileLock.h"
 #include "Platform/Platform.h"
 #include "Platform/Process.h"
 #include "Project/Project.h"
 
 #include "Commandlet.h"
+#include "RegistryRun.h"
 
 
 namespace frt::assettool
@@ -194,25 +210,101 @@ int32 RunAssetTool ()
 		return context.Fail(ExitInternalError, "the engine did not start");
 	}
 	context.SetConfig(engine.GetConfig());
-	context.bReadOnly = context.bCi || engine.GetConfig().Get("Assets", "ReadOnly", false);
+	context.bReadOnly = context.bCi || engine.GetConfig().Get("Assets", "ReadOnly", false)
+		|| (!commandlet->ReadOnlyOption.IsEmpty() && context.HasOption(commandlet->ReadOnlyOption));
 	context.SetWorkerPool(engine.GetWorkerPool());
 
-	// Held until the commandlet returns; the OS lets go of it if the process dies first.
-	std::optional<platform::CExclusiveFileLock> ownerLock;
-	if (commandlet->bWritesProject && !context.bReadOnly)
+	// The Safety switches that govern a process (GuestProcesses, BuilderSourceGuard) come from one file: the opened
+	// project's, the engine's with --engine (and with no project). BuilderSourceGuard is set before the verb keys any
+	// builder's step (assets::ApplySafetyOfRuleFile).
+	const std::filesystem::path rulesFile = context.bEngineOwner || context.ProjectRoot.empty()
+		? paths::GetEngineConfigPath().parent_path() / assets::RuleFileName.ToPath()
+		: context.ProjectRoot / "Config" / assets::RuleFileName.ToPath();
+	(void)assets::ApplySafetyOfRuleFile(rulesFile);
+
+	// The MIG001 gate (design §14.8; assets::IsMigrationGateOn, on by default): a root behind the engine's migrations - the
+	// project's, the engine's with --engine - is written by nothing but its migration. A run that would write ends here,
+	// before the lock, with exit code 1; one that writes nothing (--ci, -Assets:ReadOnly=1, migrate --dry-run, validate
+	// without --fix) runs, and the verbs that report problems list MIG001 with them (CCommandletContext::MigrationGap).
+	if (!context.GetMountRoot().empty() && assets::IsMigrationGateOn(engine.GetConfig()))
 	{
-		FString owner;
-		FString error;
-		ownerLock = assets::TryTakeOwnerLock(context.GetMountRoot(), &owner, &error);
-		if (!ownerLock.has_value())
+		context.MigrationGap = assets::FindMigrationGap(context.GetMountRoot(), context.GetMountName(), context.bEngineOwner);
+		const bool bWrites = commandlet->bWritesProject && !context.bReadOnly
+			&& (commandlet->WriteOption.IsEmpty() || context.HasOption(commandlet->WriteOption));
+		if (context.MigrationGap.has_value() && bWrites && !commandlet->bRunsBehind)
 		{
-			if (owner.IsEmpty())
+			const SDiagnostic& gap = *context.MigrationGap;
+			return context.Fail(ExitProblems, FString::Format("{}: MIG001 {}; {} writes nothing until then", commandlet->Name, gap.Message,
+				commandlet->Name), CJsonObject().AddString("code", "MIG001").AddString("subject", gap.Subject).AddString("file", gap.File));
+		}
+	}
+
+	// Held until the commandlet returns; the OS lets go of it if the process dies first. The decision is the one the
+	// editor makes (assets::ClaimAssetOwnership), for the run's own mount set only: never /Project and /Engine together.
+	std::optional<platform::CExclusiveFileLock> ownerLock;
+	if (commandlet->bWritesProject)
+	{
+		assets::SAssetOwnershipRequest request;
+		request.Root = context.GetMountRoot();
+		request.RulesFile = rulesFile;
+		request.bReadOnly = context.bReadOnly;
+		// An operation a previous run left unfinished is rolled forward right after the lock is taken, before the verb runs
+		// (assets::TakeOwnership), through the providers of the run's own mounts, detected for that alone and only once
+		// the lock is held: a run that finds no such operation resolves and spawns nothing here, and one another process
+		// owns (it exits 4, or runs as a guest) spawns no git.
+		std::shared_ptr<const assets::CMountTable> rollMounts;
+		assets::CVcsProviderSet rollProviders;
+		std::vector<std::pair<assets::MountId, assets::IVcsProvider*>> rollProviderList;
+		if (!request.bReadOnly && assets::HasUnfinishedOperation(request.Root))
+		{
+			rollMounts = std::make_shared<const assets::CMountTable>(ResolveRunMounts(context));
+			request.Mounts = rollMounts.get();
+			request.DetectProviders = [&] () -> std::span<const std::pair<assets::MountId, assets::IVcsProvider*>>
 			{
-				return context.Fail(ExitInternalError, FString::Format("{}: cannot take the writer lock of {}: {}", commandlet->Name,
-					context.GetMountName(), error));
-			}
+				std::vector<assets::MountId> own;
+				for (const assets::SMount& mount : rollMounts->GetMounts())
+				{
+					if ((mount.Kind == assets::EMountKind::Engine) == context.bEngineOwner)
+					{
+						own.push_back(mount.Id);
+					}
+				}
+				rollProviders.DetectNow(*rollMounts, own, assets::SAssetEditorSettings::FromConfig(engine.GetConfig()).VcsProvider);
+				rollProviderList = rollProviders.GetProviders();
+				return rollProviderList;
+			};
+		}
+		assets::SAssetOwnership ownership = assets::ClaimAssetOwnership(request);
+		// A process without the lock rolls nothing forward (§4.7): the owner finishes it. With the lock it was finished
+		// above, or it could not be (named below).
+		const std::vector<FString> unfinished = assets::DescribeUnfinishedOperations(request, ownership, true);
+		const FString& owner = ownership.Root.Owner;
+		if (ownership.Role == assets::EOwnerRole::Writer)
+		{
+			ownerLock = std::move(ownership.Root.Lock);
+		}
+		else if (ownership.Role == assets::EOwnerRole::Guest && commandlet->bGuestRuns)
+		{
+			// §5.9: it loads, scans and reports as any read-only run does, and writes nothing a mount owns.
+			context.bReadOnly = true;
+			context.bGuest = true;
+			context.Owner = owner;
+			context.PrintError(FString::Format("warning: {} owns {}: {} runs as a read-only guest (Safety.GuestProcesses) and writes "
+				"nothing", owner, context.GetMountName(), commandlet->Name));
+		}
+		else if (ownership.Role == assets::EOwnerRole::Guest || ownership.Role == assets::EOwnerRole::Refused)
+		{
 			return context.Fail(ExitOwned, FString::Format("{} owns {}: close it, or run with --ci", owner, context.GetMountName()),
 				CJsonObject().AddString("owner", owner).AddString("mount", context.GetMountName()));
+		}
+		else if (ownership.Role == assets::EOwnerRole::Failed)
+		{
+			return context.Fail(ExitInternalError, FString::Format("{}: cannot take the writer lock of {}: {}", commandlet->Name,
+				context.GetMountName(), ownership.Root.Error));
+		}
+		for (const FString& line : unfinished)
+		{
+			context.PrintError("warning: " + line);
 		}
 	}
 

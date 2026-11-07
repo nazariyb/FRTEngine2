@@ -1,13 +1,13 @@
 mount /Engine
   rules Config/Assets.yml 3d443bdc2fe3284f
   folder /Engine/Fonts
-  file /Engine/Fonts/NotoEmoji-Medium-Subset.ttf Raw size=754232
-    record type=frt.Raw importer=Raw status=Analyzed stamp=507c2be7c06a6ee5 cook=Auto chunk=0 flags=-
-  file /Engine/Fonts/NotoSansCJKsc-Medium-Subset.otf Raw size=6377520
-    record type=frt.Raw importer=Raw status=Analyzed stamp=507c2be7c06a6ee5 cook=Auto chunk=0 flags=-
-  file /Engine/Fonts/NotoSansSymbols2-Regular-Subset.ttf Raw size=380176
-    record type=frt.Raw importer=Raw status=Analyzed stamp=507c2be7c06a6ee5 cook=Auto chunk=0 flags=-
+  file /Engine/Fonts/NotoEmoji-Medium-Subset.ttf Raw size=754232 meta=Paired
+    record guid=a47af069b21149fb880756c01399bf2a type=frt.Raw importer=Raw status=Analyzed stamp=507c2be7c06a6ee5 cook=Auto chunk=0 flags=-
+  file /Engine/Fonts/NotoSansCJKsc-Medium-Subset.otf Raw size=6377520 meta=Paired
+    record guid=cfe0af3fd0da46f08be5d96628192990 type=frt.Raw importer=Raw status=Analyzed stamp=507c2be7c06a6ee5 cook=Auto chunk=0 flags=-
+  file /Engine/Fonts/NotoSansSymbols2-Regular-Subset.ttf Raw size=380176 meta=Paired
+    record guid=8468e0c3f4d24c9b9a6b135957bca2a7 type=frt.Raw importer=Raw status=Analyzed stamp=507c2be7c06a6ee5 cook=Auto chunk=0 flags=-
   file /Engine/Fonts/OFL.txt Unclaimed size=4880
   file /Engine/Fonts/README.md Unclaimed size=4161
-  file /Engine/Fonts/Roboto-Medium.ttf Raw size=162588
-    record type=frt.Raw importer=Raw status=Analyzed stamp=507c2be7c06a6ee5 cook=Auto chunk=0 flags=-
+  file /Engine/Fonts/Roboto-Medium.ttf Raw size=162588 meta=Paired
+    record guid=7107a5a99bb64fe0af8476c2c351d63c type=frt.Raw importer=Raw status=Analyzed stamp=507c2be7c06a6ee5 cook=Auto chunk=0 flags=-

@@ -7,6 +7,7 @@
 
 #include "CoreTypes.h"
 #include "Containers/String.h"
+#include "Diagnostics/Diagnostics.h"
 
 #include "Text/JsonWriter.h"
 
@@ -66,6 +67,15 @@ public:
 	// writer lock, and so runs beside an open editor (§13.1, O3DE RFC-77).
 	bool bReadOnly = false;
 	bool bEngineOwner = false;   // --engine: acts on /Engine as its owner, with no project (§4.7)
+	// Another process owns the mount and Safety.GuestProcesses let this run go on as a read-only guest (§5.9):
+	// bReadOnly is set as well, so a verb writes nothing; it may say so.
+	bool bGuest = false;
+	// A guest's: the process that owns the mount, as SLockOwner::Describe names it ("Editor.exe, pid 1234").
+	FString Owner;
+	// The MIG001 of the run's root (the project's, the engine's with --engine) while the gate is on and that root is behind
+	// the engine's migrations (assets::FindMigrationGap): the host has refused a writing run already, so the verb sees it
+	// only in a run that writes nothing, or in migrate's; scan and status report it with the registry's problems.
+	std::optional<SDiagnostic> MigrationGap;
 
 	// The project's directory; empty with --engine, or when a verb that needs none runs without one.
 	std::filesystem::path ProjectRoot;
@@ -138,6 +148,19 @@ private:
  *                   -label:Debug): an argument with one dash that is no option of the host or the verb
  *                   is one of its arguments, not an unknown option. Two dashes still make an option, so
  *                   a typo of one (--limt=3) is still refused.
+ *   bGuestRuns      a bWritesProject verb with a read-only form worth running beside the owner: with the
+ *                   project's Safety.GuestProcesses on it runs as a guest instead of exiting with
+ *                   ExitOwned (§5.9). False for lock, whose point is the lock itself.
+ *   ReadOnlyOption  an option of its own that makes the run read-only by request, as --ci does: the host
+ *                   then takes no lock and the verb sees bReadOnly (migrate's dry-run). Empty: none.
+ *   WriteOption     a bWritesProject verb that writes only with this option of its own (validate's fix):
+ *                   for the MIG001 gate, a run without it writes nothing. Empty: every run that is not
+ *                   read-only writes.
+ *   bRunsBehind     runs as usual where the run's root is behind the engine's migrations (MIG001, design
+ *                   §14.8): migrate, which brings it up to date, and lock, which writes nothing. Every other
+ *                   run that writes then ends with exit code 1 and MIG001 before the verb starts, while the
+ *                   gate is on (assets::IsMigrationGateOn); a run that does not write runs, and the verbs
+ *                   that report problems (scan, status, validate) report MIG001 among them.
  */
 struct SCommandlet
 {
@@ -147,6 +170,10 @@ struct SCommandlet
 	bool bWritesProject = false;
 	std::span<const FStringLiteral> Options;
 	bool bTakesText = false;
+	bool bGuestRuns = true;
+	FStringLiteral ReadOnlyOption;
+	FStringLiteral WriteOption;
+	bool bRunsBehind = false;
 };
 
 // Verbs with a file of their own (their table rows, options included, are in Commandlets.cpp).
@@ -161,6 +188,12 @@ int32 RunReferencers (CCommandletContext& Context);
 int32 RunExplain (CCommandletContext& Context);
 int32 RunListRules (CCommandletContext& Context);
 int32 RunDump (CCommandletContext& Context);
+// MetaCommandlets.cpp: the meta verbs (design §13.2, §14.8, M4): validate, fix, new-meta, migrate, resave.
+int32 RunValidate (CCommandletContext& Context);
+int32 RunFix (CCommandletContext& Context);
+int32 RunNewMeta (CCommandletContext& Context);
+int32 RunMigrate (CCommandletContext& Context);
+int32 RunResave (CCommandletContext& Context);
 
 // "123 B", "4.5 KiB", "6.7 MiB", "8.9 GiB" (DdcCommandlets.cpp).
 [[nodiscard]] FString FormatBytes (uint64 Bytes);

@@ -355,6 +355,76 @@ TEST(MountScannerTest, AGeneratedTreeComesBackInBatchOrderWithoutExcludedNamesOr
 	EXPECT_GE(batch.Milliseconds, 0.0);
 }
 
+/**
+ * Metas (M4): split out of every listing before Classify, never a file of the batch, recorded with their on-disk
+ * spelling and stat and paired with their sources - byte-exact first, else under the portable fold - by index into
+ * Files; a meta without a file of the batch is an orphan, marked when the listing holds its source but the batch does
+ * not (an excluded file, a rule file). Dot-names stay built-in excludes. The metas are the same with IKnownFiles.
+ */
+TEST(MountScannerTest, MetasAreSplitOutWithTheirSpellingAndPairedWithTheirSources)
+{
+	CDiscoveryTree tree("Метадані");
+	const CMountTable table = ResolveTree(tree);
+	const std::filesystem::path content = tree.ProjectContent();
+	for (const FStringView file : { FStringView("Камінь.png"), FStringView("Камінь.png.meta"), FStringView("Rock.png"), FStringView("rock.png.META"),
+		FStringView("x.tmp"), FStringView("x.tmp.meta"), FStringView("Assets.yml"), FStringView("Assets.yml.meta"), FStringView("Gone.png.meta"),
+		FStringView(".hidden.meta"), FStringView("Textures.meta"), FStringView("Textures/Трава.png"), FStringView("Textures/Трава.png.meta") })
+	{
+		ASSERT_TRUE(WriteText(content / file.ToPath(), file));
+	}
+
+	const auto pool = MakePool(2u);
+	const CDefaultScanMembership membership;
+	const SScanBatch batch = CMountScanner::ScanBlocking(*pool, *table.Find("Project"), "/Project", membership, nullptr);
+	const std::vector<FString> expectedFiles = { "/Project/Rock.png", "/Project/Камінь.png", "/Project/Textures/Трава.png" };
+	EXPECT_EQ(FilePaths(batch), expectedFiles) << "no meta is a file of the batch";
+
+	struct SExpected
+	{
+		FStringView Path;
+		FStringView Source;   // empty: none
+		bool bSourceExcluded = false;
+	};
+	const SExpected expected[] = {
+		{ "/Project/Assets.yml.meta", "", true },
+		{ "/Project/Gone.png.meta", "", false },
+		{ "/Project/rock.png.META", "/Project/Rock.png", false },
+		{ "/Project/Textures.meta", "", false },
+		{ "/Project/x.tmp.meta", "", true },
+		{ "/Project/Камінь.png.meta", "/Project/Камінь.png", false },
+		{ "/Project/Textures/Трава.png.meta", "/Project/Textures/Трава.png", false },
+	};
+	ASSERT_EQ(batch.Metas.size(), std::size(expected)) << DumpBatch(batch).CStr();
+	for (uint32 i = 0u; i < batch.Metas.size(); ++i)
+	{
+		const SScanMeta& meta = batch.Metas[i];
+		const FString path = MakeChildMountPath(batch.Folders[meta.Folder].MountPath, meta.Name);
+		EXPECT_EQ(path, expected[i].Path);
+		EXPECT_EQ(meta.Size, path.Len() - 9u) << path.CStr();
+		EXPECT_TRUE(meta.Identity.IsValid());
+		EXPECT_EQ(meta.bSourceExcluded, expected[i].bSourceExcluded) << path.CStr();
+		if (expected[i].Source.IsEmpty())
+		{
+			EXPECT_EQ(meta.SourceFile, ~0u) << path.CStr();
+		}
+		else
+		{
+			ASSERT_LT(meta.SourceFile, batch.Files.size()) << path.CStr();
+			EXPECT_EQ(FilePath(batch, batch.Files[meta.SourceFile]), expected[i].Source);
+		}
+	}
+	EXPECT_TRUE(batch.Diagnostics.empty()) << DumpBatch(batch).CStr();
+
+	const CKnownMap known = KnowEverything(batch);
+	const SScanBatch warm = CMountScanner::ScanBlocking(*pool, *table.Find("Project"), "/Project", membership, &known);
+	ASSERT_EQ(warm.Metas.size(), batch.Metas.size());
+	for (uint32 i = 0u; i < warm.Metas.size(); ++i)
+	{
+		EXPECT_EQ(warm.Metas[i].Name, batch.Metas[i].Name);
+		EXPECT_EQ(warm.Metas[i].SourceFile, batch.Metas[i].SourceFile);
+	}
+}
+
 // ScanAsync hands the batch over as a pool completion: on the owner thread, inside PumpCompletions.
 TEST(MountScannerTest, ScanAsyncCompletesOnTheOwnerThread)
 {
@@ -886,7 +956,7 @@ TEST(MountScannerTest, ACaseSensitiveMountScansBothSpellingsAndReportsPath001)
 	EXPECT_EQ(collisions[3]->Subject, "/Project/rock.png");
 	EXPECT_EQ(collisions[4]->Subject, "/Project/Textures");
 	EXPECT_EQ(collisions[5]->Subject, "/Project/textures");
-	EXPECT_EQ(collisions[2]->Severity, ESeverity::Warning);
+	EXPECT_EQ(collisions[2]->Severity, ESeverity::Error) << "an error from M4";
 	EXPECT_TRUE(collisions[2]->Message.View().Contains(FStringView("'rock.png'")));
 
 	CKnownMap known;
@@ -957,7 +1027,7 @@ TEST(MountScannerTest, NonPortableNamesAreRecordedUnderTheirSpellingAndReportedA
 	{
 		subjects.push_back(diagnostic->Subject);
 		EXPECT_TRUE(diagnostic->Message.View().IsValidUtf8());
-		EXPECT_EQ(diagnostic->Severity, ESeverity::Warning);
+		EXPECT_EQ(diagnostic->Severity, ESeverity::Error) << "an error from M4";
 	}
 	std::sort(subjects.begin(), subjects.end());
 	EXPECT_EQ(subjects, (std::vector<FString> { FString::Format("/Project/{}", loneName), "/Project/Space ", "/Project/Trailing.", "/Project/aux.txt" }));

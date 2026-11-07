@@ -109,6 +109,28 @@ TEST_F(ProjectTest, DescriptorReadsNameModuleAndEngine)
 	EXPECT_TRUE(IsSame(descriptor.GetDir(), Root / "Game"));
 }
 
+// What the GUIDs of automatic metas are salted with. A rename must be able to keep it, or a metaless file's reproducible
+// id would change with the project's name.
+TEST_F(ProjectTest, AssetSaltDefaultsToTheNameAndCanBeKeptThroughARename)
+{
+	const std::filesystem::path plain = Root / "Game" / "Game.frtproject";
+	Write(plain, "[Project]\nName=Game\n");
+	const project::SProjectDescriptor game = Load(plain);
+	EXPECT_TRUE(game.AssetSalt.IsEmpty());
+	EXPECT_EQ(game.GetAssetSalt(), "Game");
+
+	const std::filesystem::path salted = Root / "Renamed" / "Renamed.frtproject";
+	Write(salted, "[Project]\nName=Renamed\nAssetSalt=Game\n");
+	const project::SProjectDescriptor renamed = Load(salted);
+	EXPECT_EQ(renamed.AssetSalt, "Game");
+	EXPECT_EQ(renamed.GetAssetSalt(), "Game");
+
+	ASSERT_TRUE(renamed.Save());
+	EXPECT_EQ(Load(salted).GetAssetSalt(), "Game") << "Save keeps it";
+	ASSERT_TRUE(game.Save());
+	EXPECT_TRUE(Load(plain).AssetSalt.IsEmpty()) << "and adds none that was not set";
+}
+
 TEST_F(ProjectTest, ModuleDefaultsToTheName)
 {
 	EXPECT_EQ(Load(MakeProject("Game", "Game", "FRTEngine2")).Module, "Game");

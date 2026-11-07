@@ -12,12 +12,19 @@
 #include "Assets/Discovery/BuiltinExcludes.h"
 #include "Assets/Discovery/Mounts.h"
 #include "Assets/Discovery/ScanTypes.h"
+#include "Assets/Meta/Safety.h"
 #include "Assets/Pipeline/RuleTypes.h"
 #include "Assets/Registry/RegistryDelta.h"
 #include "Assets/Registry/RegistryTypes.h"
 #include "Containers/String.h"
 #include "Containers/StringMap.h"
 #include "Diagnostics/Diagnostics.h"
+
+
+namespace frt::reflect
+{
+class HDataNode;
+}
 
 
 /**
@@ -67,8 +74,15 @@
  *	  mount; Explain notes the shadowing). A preset a rule names must be defined in its own file or an outer one
  *	  (RULE001 when the file is bound into a scope).
  *	- `Types.Include` / `Types.Exclude` (IsTypeIncluded) and `Validation:` severities (ApplyValidation) follow
- *	  the chain the same way; `Validation.Naming`, `Cook`, `PrimaryAssetTypes` and `Safety` are validated and
- *	  listed, never acted on in M3. The mount-level sections in a folder file are RULE001.
+ *	  the chain the same way; `Validation.Naming`, `Cook` and `PrimaryAssetTypes` are validated and listed, never
+ *	  acted on yet. `Safety` is a mount's own (GetSafety, ReadSafetyOfRuleFile; no chain: the engine's file sets
+ *	  /Engine's switches only). The mount-level sections in a folder file are RULE001.
+ *	- The file's meta (SFileFacts::Meta, M4) applies last: importer default < rules < meta. Its `Importer:` pin
+ *	  replaces the rules' choice of importer (Scan.Raw, an Importer rule, the extension claim; an unknown name pins
+ *	  nothing) and is still subject to Importers.Exclude and availability; its `Cook`, `Chunk`, `Settings` and
+ *	  `Targets` (a full target beats a platform, which beats `Settings`) override the rules' values, provenance
+ *	  naming the meta; its `Labels` are the file's authored labels, which `Label` selectors match. A non-empty
+ *	  `SubAssets` enters the Analyze hash, since the registry applies it to Analyze's sub-entries.
  *	- Unknown keys, wrong value types, bad globs, unknown importers, settings fields, enum values, platforms or
  *	  targets, and `frt.` type names the engine does not know are RULE001. Other type names are kept (reflected
  *	  game types arrive with M5) and match nothing yet. Keys are case-sensitive (YAML); enum values, importer,
@@ -191,12 +205,15 @@ struct SRulesListing
 	bool operator== (const SRulesListing&) const = default;
 };
 
-// What Analyze learned about a file, for the `Type` and `Label` selectors. Type InvalidTypeId (before Analyze):
-// Type rules match nothing. AuthoredLabels are the file's `.meta` labels (none in M3).
+struct SAssetMeta;
+
+// What is known about a file besides its path: its type once Analyze ran, for the `Type` selectors (InvalidTypeId
+// before Analyze: Type rules match nothing), and its meta (an Ok parse; null: none, or a Broken one), whose values
+// apply last and whose Labels the `Label` selectors match. The meta must outlive the call.
 struct SFileFacts
 {
 	reflect::TypeId Type = reflect::InvalidTypeId;
-	std::span<const FString> AuthoredLabels;
+	const SAssetMeta* Meta = nullptr;
 };
 
 // How the engine resolves. Target: the target a host builds and loads for ("Win64-D3D12", "Win64-Headless"),
@@ -271,6 +288,13 @@ public:
 	void LoadMountRules (std::vector<SDiagnostic>* OutDiagnostics = nullptr, std::vector<FString>* OutChangedMounts = nullptr);
 	// The RulesHash of a mount's `Config/Assets.yml` (RULEFILES' row with no folder); 0 when it has none or no good parse.
 	[[nodiscard]] uint64 GetMountRulesHash (FStringView MountName) const;
+	// The mount's `Safety:` switches (§4.8) from its `Config/Assets.yml`'s last good parse; the defaults for a key it
+	// does not set, a mount without the file or without a good parse, and an unknown mount. Mount-level only: nothing
+	// is inherited from the engine's file.
+	[[nodiscard]] SSafetySwitches GetSafety (FStringView MountName) const;
+	// How provenance names the meta of a file of Scope's mount: relative to the mount's owner root, as a rule file is
+	// ("Content/Textures/Rock.png.meta").
+	[[nodiscard]] FString GetMetaProvenance (const SScanScope& Scope, FStringView FileMountPath) const;
 	/**
 	 * What a file's class, importer, settings, cook rule and chunk depend on besides the rule texts, which RulesHash
 	 * alone covers: XXH3 of RulesEngineVersion (bumped when this engine's own semantics change - precedence, the
@@ -422,6 +446,20 @@ struct SUnclaimedFile
 };
 
 [[nodiscard]] FRT_CORE_API std::vector<SDiagnostic> ReportUnclaimedFiles (std::span<const SUnclaimedFile> Files);
+
+/**
+ * The `Safety:` switches of one mount rule file read before any registry exists (a host deciding GuestProcesses or the
+ * builder source guard at start-up, §4.8): the defaults for a missing, unreadable or malformed file and for every key
+ * it does not set. Reads the file; safe on any thread.
+ */
+[[nodiscard]] FRT_CORE_API SSafetySwitches ReadSafetyOfRuleFile (const std::filesystem::path& Path);
+
+/**
+ * A meta's value for a settings field normalised as ResolveFile applies it (an enum value in its canonical spelling,
+ * numbers through their parse, true or false); nullopt when it is no value of the field, which ResolveFile leaves out so
+ * the rules' value stands. `validate` reports those (Assets/Meta/Validation.h).
+ */
+[[nodiscard]] FRT_CORE_API std::optional<FString> NormalizeMetaSettingValue (reflect::HDataNode Node, const SSettingsField& Field);
 
 /**
  * `Local/Assets/Rules.cache` (§3.5, §3.5.4; GetRulesCachePath): a listing flattened to JSON lines, for shell hooks,

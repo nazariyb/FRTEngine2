@@ -52,7 +52,8 @@ class CWorkerPool;
 
 namespace frt::assets
 {
-// What happened to an asset record (its sub-entries, tags and edges are part of it).
+// What happened to an asset record (its sub-entries, tags and edges are part of it). A record whose GUID changed in
+// place (its file's meta appeared or was edited) is a Removed of the old id and an Added of the new one, one revision.
 enum class ERecordChange : uint8 { Added, Removed, Modified };
 
 struct SRecordChange
@@ -120,8 +121,9 @@ public:
 	 * an item the delta contract rejects, gets the image replayed as a delta, with the same result. Images of different mounts can be adopted one after the
 	 * other (Engine.snapshot, then AssetRegistry.snapshot). The change ring reports nothing for an image:
 	 * readers refresh everything (ForEachChangeSince returns false for older revisions). A type name the
-	 * table does not know leaves its records frt.Unknown with Schemaless | StaleTags and no tags. Labels
-	 * without RuleLabelBit (authored, M4) are not kept yet. Owner thread.
+	 * table does not know leaves its records frt.Unknown with Schemaless | StaleTags and no tags. Aliases,
+	 * former paths, meta copies and tombstones (M4) are applied as a delta of the image would (a tombstone of a
+	 * GUID a record holds is dropped). Owner thread.
 	 *
 	 * Pool: the bulk path rebuilds independent tables and indices on it at once (RegistryParallel.h: the
 	 * calling thread takes part and never waits for a busy worker, so the call may run on one of Pool's own
@@ -133,17 +135,19 @@ public:
 	/**
 	 * Compaction (§5.2 "Mutation strategy"). Edits leave garbage behind: masked and superseded edges, dead
 	 * SUBENTRY and type-table rows (a record whose sub-entries changed), replaced label, companion and
-	 * MultiValue lists. Commit never compacts, so an interactive commit's main-thread time stays one edit's:
+	 * MultiValue lists, replaced alias and former-path lists, dead METAS and TOMBSTONES rows and the bytes of
+	 * replaced or removed meta copies (M4). Commit never compacts, so an interactive commit's main-thread time stays one edit's:
 	 * the owner (F3) asks NeedsCompaction at idle and inside PumpUntil and calls Compact then.
 	 *	- NeedsCompaction: the graph has at least 64k garbage edges and a quarter as many as live ones, or the
 	 *	  record tables have at least 4096 dead rows and a quarter of their rows dead, or at least 16k garbage
-	 *	  pool items and a quarter of the pools.
+	 *	  pool items and a quarter of the pools, or METAS at least 1 MiB of garbage bytes and a quarter of its pool.
 	 *	- Compact: compacts what NeedsCompaction names and publishes; nothing when nothing is due.
 	 *	- CompactGraph: rebuilds the forward and reverse CSR from the live edges. No row number changes, so it
 	 *	  publishes without a new revision.
 	 *	- CompactTables: rebuilds SUBENTRY (each live record's sub-entries in declared order, records by row),
-	 *	  every type table without dead rows, the label, companion, Multi and STRINGS pools and the AssetId64
-	 *	  index. Sub-entry and type-table row numbers change, so it publishes a new revision (SRecordIds of an
+	 *	  every type table without dead rows, the label, companion, Multi and STRINGS pools, the AssetId64
+	 *	  index, and the identity state: the alias and former-path lists (the alias index rebuilt), METAS with
+	 *	  its bytes and TOMBSTONES (their GUID indices rebuilt). Sub-entry and type-table row numbers change, so it publishes a new revision (SRecordIds of an
 	 *	  older view fail their check) with no change-ring entry: no record's content changed. FILES, FOLDERS
 	 *	  and ASSETS rows of removed items are not reclaimed (they are skipped by every scan); a restart, which
 	 *	  adopts a snapshot of the live rows, drops them.

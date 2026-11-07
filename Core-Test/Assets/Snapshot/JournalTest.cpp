@@ -2,7 +2,8 @@
 // a snapshot plus its journal loads the latest committed state; a journal keeps only its snapshot's mounts; a
 // torn tail is dropped at load and cut off before the next append, and so is a commit whose delta does not decode;
 // a journal that continues another snapshot is ignored; after a full write, Restart - or the restart a worker
-// prepares - keeps exactly the commits the snapshot's view did not hold; a failed append breaks the journal until a full write, and loses no commit; a delta
+// prepares - keeps exactly the commits the snapshot's view did not hold, and the prepared one hands the replaced journal's
+// handle back for its caller to close; a failed append breaks the journal until a full write, and loses no commit; a delta
 // larger than one frame is split and joined again; types are stored by name, and a name this build does not know
 // waits Schemaless; a snapshot that lost its rule outputs replays no rule hashes.
 #include <gtest/gtest.h>
@@ -10,6 +11,7 @@
 #include <algorithm>
 #include <filesystem>
 
+#include "Assets/AssetDiagnosticCodes.h"
 #include "Assets/AssetTypes.h"
 #include "Assets/RecordFrames.h"
 #include "JournalTestAccess.h"
@@ -42,6 +44,8 @@ SRegistryDelta MakeEveryMember ()
 	delta.Problems.push_back(SProblemsSet { "/Project/T/Rock.png", EProblemSource::Analyze, { full } });
 	delta.Problems.push_back(SProblemsSet { "/Project/T", EProblemSource::Unclaimed, { MakeWarning("/Project/T", "unclaimed", DiagnosticCode("RULE002")) } });
 	delta.RecordUpserts[0].Tags.push_back(STagDecl { "Channels", STagValue::FromInt64(-3) });
+	delta.MetaCopyRemoves = { MakeTestGuid("gone copy") };
+	delta.TombstoneRemoves = { MakeTestGuid("gone tombstone"), MakeTestGuid("another") };
 	return delta;
 }
 
@@ -98,6 +102,41 @@ protected:
 
 // ---------------- Encoding ----------------
 
+// The readers bound a stored enum by its last value: a value appended for M4 must not read as a corrupt frame.
+TEST(JournalEncodingTest, TheLastValuesOfTheStoredEnumsSurviveEncoding)
+{
+	SRegistryDelta delta;
+	delta.FileUpserts.push_back(MakeStatFile("/Project/T/Rock.png.meta", 90u, 1u, EFileClass::Meta));
+	delta.FileUpserts[0].Meta = SFileMetaState { EMetaState::MissingMeta, 0x5EEDu };
+	delta.ProblemClears = { SProblemsClear { "/Project/T", EProblemSource::Lifecycle } };
+	delta.Problems.push_back(SProblemsSet { "/Project/T/Rock.png", EProblemSource::Lifecycle, { MakeWarning("/Project/T/Rock.png", "no meta", Meta001) } });
+
+	const std::optional<SRegistryDelta> decoded = DecodeRegistryDelta(Encode(delta));
+	ASSERT_TRUE(decoded.has_value());
+	ASSERT_EQ(decoded->FileUpserts.size(), 1u);
+	EXPECT_EQ(decoded->FileUpserts[0].Class, EFileClass::Meta);
+	ASSERT_TRUE(decoded->FileUpserts[0].Meta.has_value());
+	EXPECT_EQ(*decoded->FileUpserts[0].Meta, (SFileMetaState { EMetaState::MissingMeta, 0x5EEDu }));
+	ASSERT_EQ(decoded->ProblemClears.size(), 1u);
+	EXPECT_EQ(decoded->ProblemClears[0].Source, EProblemSource::Lifecycle);
+	ASSERT_EQ(decoded->Problems.size(), 1u);
+	EXPECT_EQ(decoded->Problems[0].Source, EProblemSource::Lifecycle);
+}
+
+// And one past them still does: the bound moved, it did not go away.
+TEST(JournalEncodingTest, AValuePastTheLastOfAStoredEnumIsACorruptFrame)
+{
+	SRegistryDelta delta;
+	delta.ProblemClears = { SProblemsClear { "/Project/T", EProblemSource::Lifecycle } };
+	std::vector<uint8> bytes = Encode(delta);
+	// Only empty lists follow the clear: its source is the last byte that holds this value.
+	const auto source = std::find(bytes.rbegin(), bytes.rend(), static_cast<uint8>(EProblemSource::Lifecycle));
+	ASSERT_NE(source, bytes.rend());
+	EXPECT_TRUE(DecodeRegistryDelta(bytes).has_value());
+	*source = static_cast<uint8>(EProblemSource::Lifecycle) + 1u;
+	EXPECT_FALSE(DecodeRegistryDelta(bytes).has_value());
+}
+
 TEST(JournalEncodingTest, EveryMemberOfADeltaSurvivesItsEncoding)
 {
 	const SRegistryDelta delta = MakeEveryMember();
@@ -114,6 +153,22 @@ TEST(JournalEncodingTest, EveryMemberOfADeltaSurvivesItsEncoding)
 	EXPECT_EQ(decoded->FileUpserts[1].ContentHash, delta.FileUpserts[1].ContentHash);
 	EXPECT_EQ(decoded->Problems.back().Diagnostics, delta.Problems.back().Diagnostics);
 	EXPECT_EQ(decoded->RecordUpserts[0].Tags.back().Value, STagValue::FromInt64(-3));
+	// M4's identity members (journal format 4).
+	const SRecordUpsert& moved = *std::find_if(decoded->RecordUpserts.begin(), decoded->RecordUpserts.end(),
+		[] (const SRecordUpsert& Record) { return Record.FileMountPath == "/Project/T/Moved.png"; });
+	EXPECT_EQ(moved.Aliases, (std::vector<SAssetId> { SAssetId { MakeTestGuid("absorbed"), 0u } }));
+	EXPECT_EQ(moved.FormerPaths, std::vector<FString> { "/Project/T/Stone.png" });
+	ASSERT_EQ(decoded->MetaCopies.size(), delta.MetaCopies.size());
+	EXPECT_EQ(decoded->MetaCopies[0].Bytes, delta.MetaCopies[0].Bytes);
+	EXPECT_EQ(decoded->MetaCopies[0].Hash, delta.MetaCopies[0].Hash);
+	EXPECT_EQ(decoded->MetaCopies[0].SourcePath, delta.MetaCopies[0].SourcePath);
+	ASSERT_EQ(decoded->Tombstones.size(), delta.Tombstones.size());
+	EXPECT_EQ(decoded->Tombstones[0].LastPath, delta.Tombstones[0].LastPath);
+	EXPECT_EQ(decoded->Tombstones[0].Identity, delta.Tombstones[0].Identity);
+	EXPECT_EQ(decoded->Tombstones[0].Hash, delta.Tombstones[0].Hash);
+	EXPECT_EQ(decoded->Tombstones[0].RemovedFileTime, delta.Tombstones[0].RemovedFileTime);
+	EXPECT_EQ(decoded->MetaCopyRemoves, delta.MetaCopyRemoves);
+	EXPECT_EQ(decoded->TombstoneRemoves, delta.TombstoneRemoves);
 
 	// Both stores answer alike.
 	CRegistryStore a;
@@ -210,6 +265,13 @@ TEST(JournalEncodingTest, ADeltaSplitByMountKeepsEachPartWhole)
 	EXPECT_EQ(project.Problems.size() + others.Problems.size(), delta.Problems.size());
 	EXPECT_EQ(project.RuleFileUpserts.size() + others.RuleFileUpserts.size(), delta.RuleFileUpserts.size());
 	EXPECT_EQ(project.ProblemClears.size(), 2u);
+	// Meta copies by their source, tombstones by their last path; a removal by GUID goes to every part.
+	EXPECT_EQ(project.MetaCopies.size(), 1u);
+	EXPECT_EQ(others.MetaCopies.size(), 1u);
+	EXPECT_EQ(project.Tombstones.size(), 1u);
+	EXPECT_EQ(others.Tombstones.size(), 1u);
+	EXPECT_EQ(project.MetaCopyRemoves, delta.MetaCopyRemoves);
+	EXPECT_EQ(others.TombstoneRemoves, delta.TombstoneRemoves);
 	for (const SRecordUpsert& record : others.RecordUpserts)
 	{
 		EXPECT_FALSE(record.FileMountPath.StartsWith("/Project/")) << record.FileMountPath.CStr();
@@ -509,6 +571,9 @@ TEST_F(JournalTest, ARestartPreparedOnTheWorkerKeepsTheCommitsTheSnapshotDoesNot
 	EXPECT_TRUE(ReadJournal(Journal).Deltas.empty());
 	CommitJournaled(Store, journal, MakeEdit(3u));
 	ASSERT_TRUE(journal.FinishRestart(std::move(restart), &error)) << error.CStr();
+	// The replaced journal's handle comes back still open, for the caller to close off the owner's frame.
+	EXPECT_TRUE(restart.HoldsFile());
+	restart = CJournalRestart();
 	EXPECT_EQ(journal.GetJournalBase(), view->GetRevision());
 	EXPECT_FALSE(journal.IsBroken());
 	EXPECT_EQ(journal.GetStats().Restarts, 1u);

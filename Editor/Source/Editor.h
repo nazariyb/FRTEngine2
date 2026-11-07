@@ -10,6 +10,7 @@
 #include "Graphics/Render/Scene/WorldExtraction.h"
 #include "UI/DebugTools.h"
 
+#include "AssetProblemsPanel.h"
 #include "AssetsPanel.h"
 #include "CursorCapture.h"
 #include "EditorCommands.h"
@@ -100,6 +101,8 @@ public:
 	CDebugTools& GetTools () { return Tools; }
 	// The Assets panel: the registry's search and result list (read-only in M3).
 	CAssetsPanel& GetAssetsPanel () { return AssetsPanel; }
+	// The Asset problems panel: what `validate` lists, grouped by asset, with its fix-its (M4).
+	CAssetProblemsPanel& GetProblemsPanel () { return ProblemsPanel; }
 	// Newer builds of the game module loaded so far.
 	uint32 GetGameReloads () const { return GameReloads; }
 	// Whether the asset registry's initial scan was complete when the first BuildWorld ran (design §5.4: game code
@@ -165,6 +168,7 @@ private:
 	CEditorLayout Layout;
 	CDebugTools Tools;
 	CAssetsPanel AssetsPanel;
+	CAssetProblemsPanel ProblemsPanel;
 	graphics::SRenderExtractOptions Extract;
 	CCursorCapture Capture;
 

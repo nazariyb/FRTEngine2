@@ -69,6 +69,28 @@ std::vector<SRegistryDelta> MakeContent ()
 		D.RecordUpserts.push_back(std::move(action));
 	});
 	add([] (SRegistryDelta& D) { D.FileUpserts.push_back(MakeFile("/Project/readme.txt", 7u, EFileClass::Unclaimed)); });
+	// Identity (M4): a texture that moved (its meta's FormerPaths) and absorbed another GUID (its Aliases), and a
+	// material that still names it by the old path and by the absorbed id - resolved through them in any commit order.
+	add([] (SRegistryDelta& D)
+	{
+		D.FileUpserts.push_back(MakeFile("/Project/Textures/Moved.png"));
+		SRecordUpsert moved = MakeRecord("/Project/Textures/Moved.png");
+		moved.Guid = MakeDerivedGuid(SGuid {}, "dump-test", "moved");
+		moved.Aliases = { SAssetId { MakeDerivedGuid(SGuid {}, "dump-test", "absorbed"), 0u } };
+		moved.FormerPaths = { "/Project/Textures/Old.png" };
+		D.RecordUpserts.push_back(std::move(moved));
+	});
+	add([] (SRegistryDelta& D)
+	{
+		D.FileUpserts.push_back(MakeFile("/Project/Materials/Old.frtmat.yml"));
+		SRecordUpsert material = MakeRecord("/Project/Materials/Old.frtmat.yml", asset_types::Material, "Material.Legacy");
+		material.Edges.push_back(MakePathEdge("/Project/textures/old.png", EDepFlags::Build | EDepFlags::Path, "albedo.texture"));
+		SEdgeDecl byId;
+		byId.Target = SAssetId { MakeDerivedGuid(SGuid {}, "dump-test", "absorbed"), 0u };
+		byId.Flags = EDepFlags::Declared;
+		material.Edges.push_back(byId);
+		D.RecordUpserts.push_back(std::move(material));
+	});
 	add([] (SRegistryDelta& D)
 	{
 		D.RuleFileUpserts.push_back(SRuleFileUpsert { "Project", "", 0x1111u });
@@ -155,7 +177,7 @@ TEST(RegistryDumpTest, MachineSpecificColumnsNeverReachTheDump)
 		file.MTime = MTime;
 		file.Identity.Bytes[0] = IdentityByte;
 		file.ContentHash = hash::HashContent(std::span<const uint8>(&IdentityByte, 1u));
-		file.MetaHash = IdentityByte;
+		file.Meta = SFileMetaState { EMetaState::PendingMeta, IdentityByte };
 		delta.FileUpserts.push_back(file);
 		delta.RecordUpserts.push_back(MakeRecord("/Project/a.png"));
 		store.Commit(std::move(delta));
@@ -311,10 +333,17 @@ TEST(RegistryDumpTest, TheJsonLinesCarryTheTextDumpsContentInItsOrder)
 		{
 			key = FString(tree.Find("code").AsText().value_or(FStringView()));
 		}
+		else if (kind == "redirects")
+		{
+			// A record's aliases and former paths (M4) follow it, as its indented lines do in the text.
+			EXPECT_EQ(FString(tree.Find("path").AsText().value_or(FStringView())), lastFile);
+			return;
+		}
 		else if (kind == "record")
 		{
-			// The record follows its file, with the record's own columns.
-			key = "type=" + FString(tree.Find("type").AsText().value_or(FStringView()));
+			// The record follows its file, with the record's own columns (a meta-given GUID first, as in the text).
+			key = tree.Find("guid").IsValid() ? "guid=" + FString(tree.Find("guid").AsText().value_or(FStringView()))
+				: "type=" + FString(tree.Find("type").AsText().value_or(FStringView()));
 			EXPECT_EQ(FString(tree.Find("path").AsText().value_or(FStringView())), lastFile);
 		}
 		else

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# FRT's pass-through for the clone's own prepare-commit-msg hook, which core.hooksPath would silence (a Gerrit
+# Change-Id, a team's message or rebase check: chain says how).
+. "${0%/*}/chain"
+chainHook prepare-commit-msg "$@"

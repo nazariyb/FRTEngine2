@@ -6,9 +6,11 @@
 --
 --   setup      registers this engine under its name (Engine.frtengine), so shared projects find
 --              it, gives the checkout's hashed text files LF line endings (Line endings, below)
---              and generates its solution: the first thing to run in a new checkout
+--              and generates its solution: the first thing to run in a new checkout. With
+--              --hooks[=off] it only turns the pre-commit hook on or off for one clone
 --   new        creates a project from a template, sets up its git repository, generates its
 --              solution: FRT.bat new --name=MyGame [--template=Demo] [--layout=embedded] [--build]
+--              (--no-generate: no solution)
 --   generate   (re)generates the engine's solution, or the project's
 --   build      builds the engine, or the project's game and the hosts (generating first if
 --              there is no solution yet)
@@ -88,6 +90,12 @@ newoption
 
 newoption
 {
+	trigger     = "no-generate",
+	description = "new: create the project and its repository, and generate no solution (FRT.bat generate does, later)"
+}
+
+newoption
+{
 	trigger     = "quick",
 	description = "verify: only build Development, run its Core-Test and the lints (the pre-commit subset)"
 }
@@ -96,6 +104,12 @@ newoption
 {
 	trigger     = "nightly",
 	description = "verify: everything, plus the long-running checks (none exist yet)"
+}
+
+newoption
+{
+	trigger     = "update-goldens",
+	description = "verify: write the registry's golden dumps again after a content change, show the diff, and run nothing else"
 }
 
 newoption
@@ -122,6 +136,12 @@ newoption
 {
 	trigger     = "update",
 	description = "check-builders: record the current source hash of every changed builder whose version GUID is new since HEAD"
+}
+
+newoption
+{
+	trigger     = "hooks",
+	description = "setup: only turn the pre-commit hook on for this clone, or --project's (--hooks=off: off), and change nothing else"
 }
 
 -----------------------------------------
@@ -390,6 +410,13 @@ local function lfExtensions()
 	return extensions
 end
 
+-- The template's name in a file's path becomes the project's, and so a source and its meta
+-- (X.png and X.png.meta, design §13.3) are renamed alike: the meta's name is its source's with
+-- ".meta", and the rename touches the part they share. A meta's bytes are copied as they are but
+-- for LF (.gitattributes says eol=lf):
+-- ".meta" is no templated extension, so its GUID and paths are never rewritten (projects made
+-- from one template share asset GUIDs, which is fine: §13.3). Schemas/ comes along, so a new
+-- project has its template's Schemas/Migrations.yml and is not behind the engine (MIG001).
 local function copyTree(sourceDir, destinationDir, templateName, projectName)
 	local lf = lfExtensions()
 	for _, file in ipairs(os.matchfiles(path.join(sourceDir, "**"))) do
@@ -486,14 +513,26 @@ local function copyFile(source, destination)
 	end
 end
 
+-- What no package holds, whatever tree it is copied from: a source's .meta (design §3.2: the
+-- runtime loads by path and never reads one; ids reach a package through the cook, M12), in
+-- any case, as the asset system's built-in exclude matches it.
+local packageSkippedSuffixes = { ".meta" }
+
 -- Every file under SourceDir, to the same place under DestinationDir, except those whose path
--- relative to SourceDir starts with one of the prefixes in Skipped ({ "Bin/" }), when given.
-local function copyFiles(sourceDir, destinationDir, skipped)
+-- relative to SourceDir starts with one of the prefixes in Skipped ({ "Bin/" }), and those whose
+-- name ends in one of the suffixes in SkippedSuffixes ({ ".meta" }, in any case), when given.
+local function copyFiles(sourceDir, destinationDir, skipped, skippedSuffixes)
 	for _, file in ipairs(os.matchfiles(path.join(sourceDir, "**"))) do
 		local relative = path.getrelative(sourceDir, file)
 		local skip = false
 		for _, prefix in ipairs(skipped or {}) do
 			if relative:sub(1, #prefix) == prefix then
+				skip = true
+			end
+		end
+		local lower = relative:lower()
+		for _, suffix in ipairs(skippedSuffixes or {}) do
+			if #lower > #suffix and lower:sub(-#suffix) == suffix:lower() then
 				skip = true
 			end
 		end
@@ -1362,11 +1401,113 @@ end
 ---------------  Actions  ---------------
 -----------------------------------------
 
+-- FRT.bat setup --hooks[=off]: core.hooksPath of one clone, the engine's or --project's, and nothing else: no
+-- registration and no solution, so a project's clone can turn it on, and nothing installs it implicitly. An engine
+-- inside the clone (the engine's own checkout, a project's Engine/ submodule) is named relatively, from the top of the
+-- work tree, as git reads it, so it holds wherever the clone is and in every worktree of it; a shared engine elsewhere
+-- has only its absolute path. The hook itself: Tools/GitHooks/pre-commit; the others there pass on to the clone's
+-- own .git/hooks (Git LFS's, the person's), which core.hooksPath would otherwise silence. Only hooks named by a file
+-- there are passed on: setup names the clone's own hooks that run, and warns of each one that will not. A
+-- core.hooksPath that is not FRT's (husky, a team's folder) is never replaced or removed: git runs one folder's hooks.
+local function isFrtHooksPath(value)
+	return value ~= nil and value:gsub("\\", "/"):gsub("/+$", ""):match("Tools/GitHooks$") ~= nil
+end
+
+local function setupHooks(value)
+	if value ~= "" and value ~= "off" then
+		fail("setup: --hooks takes no value, or =off to turn the hook off")
+	end
+	if not outputOf("git --version") then
+		fail("setup --hooks: git is not on PATH")
+	end
+	local project, delegated = commandProject("setup")
+	if delegated then
+		return
+	end
+	local clone = project and project.Dir or ROOT_DIR
+	local gitConfig = "git -C " .. quoted(clone) .. " config "
+	-- Asked of git: its spelling of the top level may not be ours (a subst or mapped drive, a junction).
+	local prefix = outputOf("git -C " .. quoted(clone) .. " rev-parse --show-prefix")
+	if not prefix then
+		fail("setup --hooks: " .. winpath(clone) .. " is not in a git repository")
+	end
+
+	local current = outputOf(gitConfig .. "--local --get core.hooksPath")
+	if current == "" then
+		current = nil
+	end
+	if value == "off" then
+		if current and not isFrtHooksPath(current) then
+			print("core.hooksPath of " .. winpath(clone) .. " is " .. current .. ", not FRT's hooks: left as it is.")
+			return
+		end
+		if current and not runCommand(gitConfig .. "--local --unset core.hooksPath") then
+			fail("setup --hooks=off: git config failed in " .. winpath(clone))
+		end
+		print("The pre-commit hook is off for " .. winpath(clone) .. ".")
+		return
+	end
+	if current and not isFrtHooksPath(current) then
+		fail("setup --hooks: core.hooksPath of " .. winpath(clone) .. " is already " .. current .. ", another tool's " ..
+			"hooks, and git runs the hooks of one folder only. Unset it (git config --unset core.hooksPath) to use FRT's, " ..
+			"which run the clone's own .git/hooks too.")
+	end
+
+	local hooks = path.join(ROOT_DIR, "Tools/GitHooks")
+	-- An engine on another drive has no relative path, and getrelative gives the absolute one back.
+	local relative = path.getrelative(clone, ROOT_DIR)
+	if not relative:match("^%.%.") and not path.isabsolute(relative) then
+		hooks = prefix .. path.join(relative == "." and "" or relative, "Tools/GitHooks")
+	end
+	-- Not quoted(), which spells it for Windows: this value is git's, and the same in every clone of a project.
+	if not runCommand(gitConfig .. '--local core.hooksPath "' .. hooks .. '"') then
+		fail("setup --hooks: git config failed in " .. winpath(clone))
+	end
+	print("The pre-commit hook is on for " .. winpath(clone) .. " (core.hooksPath=" .. hooks .. ").")
+	-- What FRT passes on is what Tools/GitHooks has a file for (chain is sourced, never a hook); git looks nowhere
+	-- else, so any other hook of the clone (reference-transaction, a rare one) is silent from now on, and that is said.
+	local passed = {}
+	for _, file in ipairs(os.matchfiles(path.join(ROOT_DIR, "Tools/GitHooks/*"))) do
+		passed[path.getname(file)] = path.getname(file) ~= "chain"
+	end
+	local commonDir = outputOf("git -C " .. quoted(clone) .. " rev-parse --path-format=absolute --git-common-dir")
+	local own = {}
+	local silenced = {}
+	for _, file in ipairs(commonDir and os.matchfiles(path.join(commonDir, "hooks/*")) or {}) do
+		local name = path.getname(file)
+		if not name:match("%.sample$") then
+			table.insert(passed[name] and own or silenced, name)
+		end
+	end
+	table.sort(own)
+	table.sort(silenced)
+	if #own > 0 then
+		print("FRT's hooks run this clone's own as well: " .. table.concat(own, ", ") .. ".")
+	end
+	if #silenced > 0 then
+		print("Warning: FRT's hooks do not pass on to this clone's own " .. table.concat(silenced, ", ") .. ": " ..
+			(#silenced == 1 and "it does" or "they do") .. " not run while core.hooksPath is FRT's (FRT.bat setup " ..
+			"--hooks=off brings " .. (#silenced == 1 and "it" or "them") .. " back).")
+	end
+	-- git lfs install, run again, finds FRT's pre-push where it would write its own and exits 2 with "Hook already
+	-- exists"; its advice, git lfs update --force, would overwrite the engine's tracked hooks.
+	if (outputOf(gitConfig .. "--get filter.lfs.process") or "") ~= "" and outputOf("git -C " .. quoted(clone) ..
+		' grep --cached -q -e filter=lfs -- .gitattributes "*/.gitattributes"') ~= nil then
+		print("This clone uses Git LFS: FRT's hooks call it. A later 'git lfs install' says \"Hook already exists\" " ..
+			"and exits 2, which is expected; never run 'git lfs update --force', which overwrites FRT's hooks in " ..
+			"the engine.")
+	end
+end
+
 newaction
 {
 	trigger     = "setup",
 	description = "Register this engine for projects to find by name, give its text files LF, and generate its solution",
 	execute     = function ()
+		if _OPTIONS["hooks"] ~= nil then
+			setupHooks(_OPTIONS["hooks"])
+			return
+		end
 		local engine = loadEngine(ROOT_DIR) or fail("setup: " .. rootpath(engineFileName) .. " has no [Engine] Name")
 		-- First: it may rewrite files, and nothing below depends on it.
 		local bLineEndings = setupLineEndings()
@@ -1392,12 +1533,16 @@ newaction
 newaction
 {
 	trigger     = "new",
-	description = "Create a project from a template: FRT.bat new --name=<Name> [--template --location --layout --build]",
+	description = "Create a project from a template: FRT.bat new --name=<Name> [--template --location --layout --build --no-generate]",
 	execute     = function ()
 		local name = _OPTIONS["name"] or fail("new: name the project with --name=<Name>")
 		local valid, why = isValidProjectName(name)
 		if not valid then
 			fail("new: " .. why)
+		end
+
+		if _OPTIONS["no-generate"] and _OPTIONS["build"] then
+			fail("new: --build needs the solution that --no-generate leaves out: give one of them")
 		end
 
 		local templateName = _OPTIONS["template"] or "Blank"
@@ -1510,7 +1655,9 @@ newaction
 
 		-- Generated and built by the project's engine: for an embedded one, the submodule.
 		local project = loadProject(projectFile)
-		if layout == "embedded" then
+		if _OPTIONS["no-generate"] then
+			print("No solution generated (--no-generate): FRT.bat generate --project=" .. quoted(winpath(projectFile)) .. " makes it.")
+		elseif layout == "embedded" then
 			local tool = quoted(path.join(projectDir, "Engine/FRT.bat"))
 			local arguments = " --project=" .. quoted(projectFile) .. " " .. generationOptions(true)
 			if not runCommand(tool .. " generate" .. arguments) then
@@ -1534,6 +1681,7 @@ newaction
 			"Engine/, a git submodule"))
 		if hasGit then
 			print("  A new git repository, with everything added: commit when ready.")
+			print("  Optional: FRT.bat setup --hooks checks asset and meta pairs before each commit, in this clone.")
 		end
 	end
 }
@@ -1601,13 +1749,15 @@ newaction
 		copyFile(path.join(binaries, "dxil.dll"), path.join(dir, "dxil.dll"))
 		copyFiles(path.join(binaries, "D3D12"), path.join(dir, "D3D12"))
 
-		copyFiles(path.join(project.Dir, "Content"), path.join(dir, "Content"))
-		copyFiles(path.join(project.Dir, "Config"), path.join(dir, "Config"))
+		-- No meta goes into a package (packageSkippedSuffixes), and nothing of the project's Local/: only
+		-- these trees are copied.
+		copyFiles(path.join(project.Dir, "Content"), path.join(dir, "Content"), nil, packageSkippedSuffixes)
+		copyFiles(path.join(project.Dir, "Config"), path.join(dir, "Config"), nil, packageSkippedSuffixes)
 
 		-- The shader sources, which Release compiles at start-up until the cook ships DXIL (M12); not the
-		-- stale Bin/ an old build left there, which nothing reads.
-		copyFiles(rootpath("Core/Content/Shaders"), path.join(dir, "Engine/Content/Shaders"), { "Bin/" })
-		copyFiles(rootpath("Core/Content/Fonts"), path.join(dir, "Engine/Content/Fonts"))
+		-- stale Bin/ an old build left there, which nothing reads. The fonts are Raw assets with metas.
+		copyFiles(rootpath("Core/Content/Shaders"), path.join(dir, "Engine/Content/Shaders"), { "Bin/" }, packageSkippedSuffixes)
+		copyFiles(rootpath("Core/Content/Fonts"), path.join(dir, "Engine/Content/Fonts"), nil, packageSkippedSuffixes)
 		copyFile(rootpath("Core/Config/Engine.ini"), path.join(dir, "Engine/Config/Engine.ini"))
 
 		print("")
@@ -1830,7 +1980,7 @@ newaction
 newaction
 {
 	trigger     = "verify",
-	description = "Check the engine before a merge (Tools/Verify/Verify.py): [--quick|--nightly] [--record-baselines]",
+	description = "Check the engine before a merge (Tools/Verify/Verify.py): [--quick|--nightly] [--record-baselines], or --update-goldens",
 	execute     = function ()
 		if _OPTIONS["project"] then
 			fail("verify: checks the engine and its templates; it takes no --project")
@@ -1838,9 +1988,12 @@ newaction
 		if _OPTIONS["quick"] and _OPTIONS["nightly"] then
 			fail("verify: --quick or --nightly, not both")
 		end
+		if _OPTIONS["update-goldens"] and (_OPTIONS["quick"] or _OPTIONS["nightly"] or _OPTIONS["record-baselines"]) then
+			fail("verify: --update-goldens runs nothing else; give it alone")
+		end
 		local interpreter = python() or fail("verify: needs Python 3 (the py launcher or python on PATH)")
 		local command = interpreter .. " -I " .. quoted(rootpath("Tools/Verify/Verify.py"))
-		for _, switch in ipairs({ "quick", "nightly", "record-baselines" }) do
+		for _, switch in ipairs({ "quick", "nightly", "record-baselines", "update-goldens" }) do
 			if _OPTIONS[switch] then
 				command = command .. " --" .. switch
 			end

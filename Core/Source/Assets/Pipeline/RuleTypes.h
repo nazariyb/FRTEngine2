@@ -24,8 +24,10 @@ struct SEffectiveFileSettings
 	ECookRule CookRule = ECookRule::Auto;
 	uint16 Chunk = 0;
 	std::vector<FString> RuleLabels;
+	std::vector<FString> AuthoredLabels;       // the meta's Labels (SFileFacts::Meta), sorted as it holds them; none without one
 	SResolvedSettings Settings;
-	// Per effective field name ("Importer", "Cook", "Chunk", "Labels", "ColorSpace", ...), for `explain`.
+	// Per effective field name ("Importer", "Cook", "Chunk", "Labels", "ColorSpace", ...), for `explain`. A value the
+	// file's meta set names the meta ("Content/Rock.png.meta"), which beats every rule (importer default < rules < meta).
 	std::vector<std::pair<FString, SProvenance>> Provenance;
 };
 }

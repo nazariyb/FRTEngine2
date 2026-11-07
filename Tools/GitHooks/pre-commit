@@ -1,0 +1,291 @@
+#!/usr/bin/env bash
+# The Git provider's pre-commit hook (Docs/Assets.md, "Version control"). Opt-in, per clone:
+# FRT.bat setup --hooks sets core.hooksPath to this directory, --hooks=off clears it, and
+# git commit --no-verify skips it for one commit. It never parses YAML, and it reads the index, not the
+# working files, except where the check is about the disk. Every check runs, so one commit reports
+# everything at once.
+#   1. pairs: a staged meta whose source is neither staged nor tracked, and a staged delete or rename of
+#      a source whose tracked meta did not go along. A new source without a meta is left to check 6,
+#      which knows the rules and companions: Demo's .bin files have no meta and need none.
+#   2. duplicate GUIDs in the index (META003) within one owner root (a project or an engine, by the
+#      deepest .frtproject or Engine.frtengine above), never across them, nor into a submodule. It
+#      reads every meta: one git cannot read (a partial clone offline) refuses the commit with that
+#      said, never passes as no duplicates;
+#   3. exactly one valid Guid: line per staged meta, and no conflict markers (META004), reading the
+#      staged metas alone, whose blobs are always here;
+#   4. portable paths on staged names: case-only collisions in the index and between index and disk
+#      (PATH001; core.ignorecase=true hides a case rename made in Explorer), and names illegal on a
+#      supported platform (PATH002);
+#   5. BUILD003, in an engine checkout, when a staged path is under Core/Source: a builder's sources are
+#      wherever its code is (the shader builder's are in Core/Source/Graphics), and check-builders is one
+#      premake process;
+#   6. validate --staged --quick --ci through AssetTool when it is built: never FRT.bat assets, which may
+#      start a build. --ci is read-only by request, so it runs beside an open editor. The project is the
+#      .frtproject at the top of the work tree, else the engine in an engine checkout together with each
+#      .frtproject in the index with a staged path below its folder (its templates), else each
+#      .frtproject in the index (a project in a folder of its repository), one run each.
+# Then, once they passed, the clone's own .git/hooks/pre-commit, which core.hooksPath would silence
+# (chain; the other hooks here only pass on).
+
+# A UTF-8 locale, so that awk folds non-ASCII names (the content of a game is rarely all ASCII).
+export LC_ALL=C.UTF-8
+
+hookDir=${0%/*}
+. "$hookDir/chain" || exit 1
+scratch=$(mktemp -d) || exit 1
+trap 'rm -rf "$scratch"' EXIT
+staged=$scratch/staged
+index=$scratch/index
+guids=$scratch/guids
+dirs=$scratch/dirs
+disk=$scratch/disk
+failed=0
+
+# --no-renames: a rename is a delete and an add, and each half has to have its meta.
+git diff --cached --name-status -z --no-renames > "$staged" || exit 1
+if [ ! -s "$staged" ]; then
+	chainHook pre-commit "$@"
+	exit
+fi
+git ls-files --cached -z > "$index" || exit 1
+: > "$dirs"
+
+# 3 reads the staged metas alone: their blobs are always here, even in a partial clone that has not fetched the others
+# (git grep would fetch each, or fail offline). In batches, as a commit can stage more metas than one command line holds.
+# git grep's 1 is no match, and anything above it an error, never "0 Guid: lines".
+awk 'BEGIN { RS = "\0" } !bHaveStatus { status = $0; bHaveStatus = 1; next }
+	{ bHaveStatus = 0; if (status != "D" && $0 ~ /\.meta$/) printf "%s%c", $0, 0 }' "$staged" > "$scratch/stagedMetas"
+: > "$guids"
+guidsRead=1
+if [ -s "$scratch/stagedMetas" ] && ! xargs -0 sh -c 'git --literal-pathspecs -c core.quotePath=false grep --cached \
+	-E "^(Guid:|<<<<<<<|=======|>>>>>>>)" -- "$@" 2>> "$0"; [ $? -le 1 ]' "$scratch/guidErrors" \
+	< "$scratch/stagedMetas" > "$guids"; then
+	guidsRead=0
+	echo "  META004 not checked: git grep could not read the staged metas: $(head -n 1 "$scratch/guidErrors")"
+	failed=1
+fi
+
+# Read with one awk: a bash loop over a repository's file list reads a byte per system call.
+awk -v dirsFile="$dirs" -v bGuidsRead="$guidsRead" '
+function isContent(path) { return path ~ /(^|\/)Content\// }
+function report(text) { print "  " text; failed = 1 }
+function illegalReason(name, base)
+{
+	if (name ~ /[<>:"\\|?*\001-\037]/) return "holds a character illegal on a supported platform"
+	if (name ~ /[. ]$/) return "ends with a dot or a space"
+	base = toupper(name)
+	sub(/\..*$/, "", base)
+	if (base ~ /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/) return "is a reserved device name"
+	return ""
+}
+part == "staged" {
+	if (!bHaveStatus) { status = $0; bHaveStatus = 1; next }
+	bHaveStatus = 0
+	if (status == "D") deleted[$0] = 1; else present[$0] = 1
+	next
+}
+part == "index" {
+	inIndex[$0] = 1
+	# Each folder of the path too: Foo/a and foo/b are one folder on Windows and two elsewhere.
+	count = split($0, names, "/")
+	prefix = ""
+	for (i = 1; i <= count; i++) {
+		prefix = i == 1 ? names[1] : prefix "/" names[i]
+		fold = tolower(prefix)
+		if (!(fold in spelling)) spelling[fold] = prefix
+		else if (spelling[fold] != prefix) other[fold] = prefix
+	}
+	next
+}
+part == "guids" {
+	colon = index($0, ":")
+	path = substr($0, 1, colon - 1)
+	line = substr($0, colon + 1)
+	if (line ~ /^Guid:/) {
+		guidLines[path]++
+		if (line ~ /^Guid: [0-9a-f]{32}$/) validGuids[path]++
+	} else {
+		conflicted[path] = 1
+	}
+	next
+}
+END {
+	for (path in present) {
+		if (isContent(path) && path ~ /\.meta$/) {
+			source = substr(path, 1, length(path) - 5)
+			if (!(source in inIndex)) report("META002 " path ": staged without its source, which is neither staged nor tracked")
+			if (bGuidsRead) {
+				if (path in conflicted) report("META004 " path ": it holds conflict markers")
+				if (guidLines[path] != 1) report("META004 " path ": it has " (guidLines[path] + 0) " Guid: lines, not one")
+				else if (validGuids[path] != 1) report("META004 " path ": its Guid: line is not 32 lowercase hexadecimal digits")
+			}
+		}
+		count = split(path, names, "/")
+		prefix = ""
+		for (i = 1; i <= count; i++) {
+			prefix = i == 1 ? names[1] : prefix "/" names[i]
+			reason = illegalReason(names[i])
+			if (reason != "") report("PATH002 " path ": \"" names[i] "\" " reason)
+			fold = tolower(prefix)
+			if (fold in other && !(fold in clashed)) {
+				clashed[fold] = 1
+				report("PATH001 \"" spelling[fold] "\" and \"" other[fold] "\" differ only in case")
+			}
+			if (i < count) folders[prefix] = 1
+		}
+		folders["."] = 1
+	}
+	for (path in deleted) {
+		if (isContent(path) && path !~ /\.meta$/ && (path ".meta" in inIndex)) {
+			report("META002 " path ": staged for delete or rename, but " path ".meta did not go along")
+		}
+	}
+	for (folder in folders) print folder > dirsFile
+	exit failed
+}
+' part=staged RS='\0' "$staged" part=index RS='\0' "$index" part=guids RS='\n' "$guids" || failed=1
+
+# The disk's spelling of every name in the folders of staged files, one glob per folder: no process each.
+(
+	shopt -s nullglob dotglob
+	while IFS= read -r folder; do
+		for entry in "$folder"/*; do
+			printf '%s\0' "${entry#./}"
+		done
+	done < "$dirs"
+) > "$disk"
+
+awk '
+part == "disk" { onDisk[tolower($0)] = $0; next }
+part == "staged" {
+	if (!bHaveStatus) { status = $0; bHaveStatus = 1; next }
+	bHaveStatus = 0
+	if (status == "D") next
+	count = split($0, names, "/")
+	prefix = ""
+	for (i = 1; i <= count; i++) {
+		prefix = i == 1 ? names[1] : prefix "/" names[i]
+		fold = tolower(prefix)
+		if (fold in onDisk && onDisk[fold] != prefix && !(fold in reported)) {
+			reported[fold] = 1
+			print "  PATH001 the index has \"" prefix "\", the disk \"" onDisk[fold] "\": they differ only in case"
+			failed = 1
+		}
+	}
+	next
+}
+END { exit failed }
+' part=disk RS='\0' "$disk" part=staged RS='\0' "$staged" || failed=1
+
+# 2. The GUIDs of every meta in the index, not only the staged ones: a staged copy duplicates a tracked one. So this one
+# reads every meta; a partial clone fetches what it lacks, and one that cannot (offline) is said, never a silent pass.
+# META003 is a rule of one owner root, whose GUIDs are counted apart: the deepest folder above a meta that holds a
+# .frtproject or an Engine.frtengine in the index, else the top. A template an engine holds and a project made from it
+# share GUIDs, which is fine (FRT.bat new copies metas byte for byte), and so do an engine vendored into a project and
+# its templates. A plugin's folder holds neither, so it counts with its project. A submodule is a repository of its own,
+# with its own hook: git grep never reads it here, whatever submodule.recurse says.
+git ls-files --cached -z -- '*.frtproject' 'Engine.frtengine' '*/Engine.frtengine' > "$scratch/roots" || exit 1
+if git -c submodule.recurse=false -c core.quotePath=false grep --cached -E '^Guid: [0-9a-f]{32}$' -- '*.meta' \
+	> "$scratch/allGuids" 2> "$scratch/allGuidErrors" || [ $? -eq 1 ]; then
+	awk '
+	part == "roots" { root = $0; sub(/[^\/]*$/, "", root); roots[root] = 1; next }
+	{
+		colon = index($0, ":Guid: ")
+		path = substr($0, 1, colon - 1)
+		count = split(path, names, "/")
+		root = ""
+		prefix = ""
+		for (i = 1; i < count; i++) {
+			prefix = prefix names[i] "/"
+			if (prefix in roots) root = prefix
+		}
+		key = root SUBSEP substr($0, colon + 7)
+		paths[key] = paths[key] "\n    " path
+		seen[key]++
+	}
+	END {
+		for (key in seen) {
+			if (seen[key] > 1) {
+				split(key, parts, SUBSEP)
+				print "  META003 " parts[2] " is in more than one meta" (parts[1] == "" ? "" : " under " parts[1]) ":" paths[key]
+				failed = 1
+			}
+		}
+		exit failed
+	}' part=roots RS='\0' "$scratch/roots" part=guids RS='\n' "$scratch/allGuids" || failed=1
+else
+	echo "  META003 not checked: git grep could not read every meta in the index (a partial clone offline?):" \
+		"$(head -n 1 "$scratch/allGuidErrors")"
+	failed=1
+fi
+
+# 5.
+if [ -f Engine.frtengine ] && [ -f FRT.bat ] && tr '\0' '\n' < "$staged" | grep -q '^Core/Source/'; then
+	if ! ./FRT.bat check-builders > "$scratch/builders" 2>&1; then
+		cat "$scratch/builders"
+		failed=1
+	fi
+fi
+
+# 6. In this checkout's engine, where this hook is. A project names its file, an engine checkout its own
+# content and each project it holds (its templates) with a staged path below its folder: their content is
+# committed here, and this is its only check per commit, while --engine's run validates the engine's mounts
+# alone. A commit that stages nothing below a template starts no tool for it. Anything else is not FRT's
+# to validate. The tool's git runs from the mount, where a GIT_DIR git set for the hook would not hold. GIT_INDEX_FILE
+# stays, so it sees what git commit -a is about to commit, but it is this repository's index alone:
+# FRT_HOOK_TOPLEVEL names this repository, and the tool's git in any other (an Engine/ submodule, a
+# shared engine) runs without it.
+tool=$hookDir/../../Binaries/Win64/AssetTool-Development-Default.exe
+targets=()
+for file in ./*.frtproject; do
+	if [ -f "$file" ]; then
+		targets=("--project=$file")
+	fi
+done
+if [ ${#targets[@]} -eq 0 ] && [ -f Engine.frtengine ]; then
+	targets=(--engine)
+	while IFS= read -r -d '' file; do
+		targets+=("--project=$file")
+	done < <(git ls-files --cached -z -- '*.frtproject' | awk '
+		part == "projects" { folder = $0; sub(/[^\/]*$/, "", folder); if (folder != "") folders[$0] = folder; next }
+		part == "staged" {
+			if (!bHaveStatus) { bHaveStatus = 1; next }
+			bHaveStatus = 0
+			for (file in folders) if (substr($0, 1, length(folders[file])) == folders[file]) hit[file] = 1
+			next
+		}
+		END { for (file in hit) printf "%s%c", file, 0 }
+	' part=projects RS='\0' - part=staged RS='\0' "$staged")
+fi
+if [ ${#targets[@]} -eq 0 ]; then
+	while IFS= read -r -d '' file; do
+		targets+=("--project=$file")
+	done < <(git ls-files --cached -z -- '*.frtproject')
+fi
+if [ ${#targets[@]} -ne 0 ]; then
+	if [ ! -f "$tool" ]; then
+		echo "pre-commit: quick validate skipped: AssetTool is not built."
+	else
+		topLevel=$(git rev-parse --show-toplevel)
+		for target in "${targets[@]}"; do
+			(unset GIT_DIR GIT_WORK_TREE; export FRT_HOOK_TOPLEVEL="$topLevel"; "$tool" validate --staged --quick --ci "$target") > "$scratch/validate" 2>&1
+			result=$?
+			# A usage error of a tool that knows the verb is a refusal like any: the hook asked for something it cannot
+			# do (a project of another engine), and passing it would leave the check off unseen. Only an AssetTool built
+			# before the verb existed is skipped.
+			if [ "$result" -eq 2 ] && grep -q -e "No verb 'validate'" -e "validate: no option '--" "$scratch/validate"; then
+				echo "pre-commit: quick validate skipped: this AssetTool has no validate --staged (build it again)."
+				break
+			elif [ "$result" -ne 0 ]; then
+				cat "$scratch/validate"
+				failed=1
+			fi
+		done
+	fi
+fi
+
+if [ "$failed" -ne 0 ]; then
+	echo "pre-commit: commit refused (FRT's asset checks, Docs/Assets.md; git commit --no-verify skips them)." >&2
+	exit 1
+fi
+chainHook pre-commit "$@"

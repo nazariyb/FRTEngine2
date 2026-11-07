@@ -39,6 +39,7 @@ struct SSnapshotBudgets
 	SBudget Append;        // journal append per commit
 	SBudget Restart;       // journal restart after a full write, the owner thread's part (not in §5.11)
 	SBudget Memory;        // resident memory of the loaded store with a full change ring
+	bool bMetas = false;   // every asset with a meta (M4, edit [63]): the 100k columns
 };
 
 void Check (const char* Name, double Measured, const SBudget& Budget, const char* Unit, const char* Note = "")
@@ -58,9 +59,11 @@ void MeasureSnapshot (const std::filesystem::path& Dir, uint32 Assets, uint32 Ro
 	query_bench::SGeneratorSpec spec;
 	spec.Assets = Assets;
 	spec.Rows = Rows;
-	query_bench::Generate(store, spec);
-	std::printf("[snapshot] generated %u assets, %u rows: %u records, %u sub-entries, %u files, %u edges\n", Assets, Rows,
-		store.Live().GetRecordCount(), store.Live().GetSubEntryCount(), store.Live().GetFileCount(), GetTables(store.Live()).Graph.LiveEdges);
+	spec.bMetas = Budgets.bMetas;
+	const query_bench::SGeneratorReport generated = query_bench::Generate(store, spec);
+	std::printf("[snapshot] generated %u assets, %u rows: %u records, %u sub-entries, %u files, %u edges; %u metas, %.2f MB of meta bytes\n", Assets,
+		Rows, store.Live().GetRecordCount(), store.Live().GetSubEntryCount(), store.Live().GetFileCount(), GetTables(store.Live()).Graph.LiveEdges,
+		generated.Metas, generated.MetaBytes / 1048576.0);
 	// The engine's content for the two-file load: textures under /Engine, written to a file of their own.
 	{
 		SRegistryDelta engine;
@@ -213,6 +216,12 @@ void MeasureSnapshot (const std::filesystem::path& Dir, uint32 Assets, uint32 Ro
 		}
 		const SRegistryMemoryStats memory = loaded.GetMemoryStats();
 		Check("LoadedMemoryMB", afterLoadMB, SBudget {}, "MB", "(right after the load)");
+		if (Budgets.bMetas)
+		{
+			EXPECT_EQ(loaded.Live().GetMetaCopyCount(), Assets);
+			Check("LoadedIdentityMemoryMB", memory.Identity / 1048576.0, SBudget {}, "MB",
+				"(METAS bytes and columns, aliases, former paths, tombstones; part of the total below)");
+		}
 		const double ringMB = memory.ChangeRing / 1048576.0;
 		const FString note = FString::Format("(change ring full: {:.2f} MB of it)", ringMB);
 		Check("LoadedMemoryFullRingMB", memory.Total / 1048576.0, Budgets.Memory, "MB", note.CStr());
@@ -223,10 +232,14 @@ void MeasureSnapshot (const std::filesystem::path& Dir, uint32 Assets, uint32 Ro
 	// written, renamed over the old one, opened), FinishRestart in the completion. 101 commits appended, the view
 	// at the 96th, the last 5 made while the worker ran (3 before its rename, 2 after it). A journal file of its
 	// own, so the snapshot's stays as the load read it. The check holds the owner thread's whole part - work and
-	// file (the handle swap, the old handle closed, one append of the commits since BeginRestart) - the worst of 5
-	// rounds; the worker's part and the one-call Restart (all of it on the owner thread) are printed.
-	double ownerMs = 0.0;
+	// file (the handle swap, one append of the commits since BeginRestart) - as the median of 5 rounds: the part
+	// takes about 0.2 ms, so one round a loaded machine preempts would decide a worst-of-5 guard, while a real
+	// regression (a copy of the journal, a flush) moves the median. The worst round is printed beside it, and so
+	// are the replaced handle's close (FinishRestart hands it back; F3 closes it on a worker: it frees the unlinked
+	// file, and file-system filters work in it), the worker's part and the one-call Restart (all on the owner thread).
+	std::vector<double> ownerRounds;
 	double ownerFileMs = 0.0;
+	double closeMs = 0.0;
 	double workerMs = 0.0;
 	double oneCallMs = 0.0;
 	const auto makeEdit = [] (uint32 I)
@@ -254,8 +267,12 @@ void MeasureSnapshot (const std::filesystem::path& Dir, uint32 Assets, uint32 Ro
 			ASSERT_TRUE(restarted.Append(makeEdit(i), 1000u + i, &error)) << error.CStr();
 		}
 		ASSERT_TRUE(restarted.FinishRestart(std::move(restart), &error)) << error.CStr();
+		ASSERT_TRUE(restart.HoldsFile()) << "the replaced journal's handle comes back, for a worker to close";
+		const uint64 closeStart = platform::ReadTimestamp();
+		restart = CJournalRestart();
+		closeMs = (std::max)(closeMs, platform::TimestampToMilliseconds(platform::ReadTimestamp() - closeStart));
 		const SJournalStats& stats = restarted.GetStats();
-		ownerMs = (std::max)(ownerMs, stats.LastRestartMs);
+		ownerRounds.push_back(stats.LastRestartMs);
 		ownerFileMs = (std::max)(ownerFileMs, stats.LastRestartFileMs);
 		workerMs = (std::max)(workerMs, stats.LastRestartWorkerMs);
 		restarted.Close();
@@ -270,7 +287,12 @@ void MeasureSnapshot (const std::filesystem::path& Dir, uint32 Assets, uint32 Ro
 		ASSERT_TRUE(oneCall.Restart(1000u + 95u, &error)) << error.CStr();
 		oneCallMs = (std::max)(oneCallMs, oneCall.GetStats().LastRestartMs);
 	}
-	Check("JournalRestartOwnerMs", ownerMs, Budgets.Restart, "ms", FString::Format("(owner thread, worst of 5; file work {:.3f} ms of it)", ownerFileMs).CStr());
+	std::sort(ownerRounds.begin(), ownerRounds.end());
+	const double ownerMs = ownerRounds[ownerRounds.size() / 2u];
+	Check("JournalRestartOwnerMs", ownerMs, Budgets.Restart, "ms", "(owner thread, median of 5)");
+	Check("JournalRestartOwnerWorstMs", ownerRounds.back(), SBudget {}, "ms",
+		FString::Format("(owner thread, worst of 5; file work at most {:.3f} ms of a round)", ownerFileMs).CStr());
+	Check("JournalRestartCloseMs", closeMs, SBudget {}, "ms", "(the replaced journal's handle closed, on a worker in the registry; worst of 5)");
 	Check("JournalRestartWorkerMs", workerMs, SBudget {}, "ms", "(Prepare on the worker, worst of 5)");
 	Check("JournalRestartOneCallMs", oneCallMs, SBudget {}, "ms", "(Restart, all on the owner thread, worst of 5; a full write does not use it)");
 }
@@ -284,6 +306,11 @@ void MeasureSnapshot (const std::filesystem::path& Dir, uint32 Assets, uint32 Ro
  * by one thread (they append to shared pools in record order). The figures are for an optimized build (Release):
  * Development, the build that runs the live registry, is about twice as slow and is reported beside them. Measured
  * (i7-13700K, affinity 0xFFFFFC, warm; the figures of P3's review): see the M3 report.
+ *
+ * §5.11 as revised at M4: the 100k fixtures carry a meta per asset (edit [63]), which doubles the file rows and adds
+ * every meta's bytes, so the 100k figures became 400 ms load, 600 ms load with 500k rows, 210 ms write CPU and 210 MB.
+ * Measured in Release, alone, on the 9950X3D: with metas 359 / 556 ms load, 193 ms write CPU, 197 MB; the same fixtures
+ * without metas 185 / 425 ms, 87 ms, 146 MB. Making the meta rows smaller is planned work, not M4's.
  */
 TEST_F(SnapshotTest, SnapshotAndJournalMeetTheirBudgetsAt10kAssets)
 {
@@ -300,21 +327,25 @@ TEST_F(SnapshotTest, SnapshotAndJournalMeetTheirBudgetsAt10kAssets)
 TEST_F(SnapshotTest, DISABLED_SnapshotAndJournalAt100kAssets)
 {
 	SSnapshotBudgets budgets;
-	budgets.Load = SBudget { 250.0, -1.0, 220.0, 450.0 };
-	budgets.WriteCpu = SBudget { 80.0, -1.0, 90.0, 180.0 };
+	budgets.Load = SBudget { 400.0, -1.0, 400.0, 800.0 };
+	budgets.WriteCpu = SBudget { 210.0, -1.0, 215.0, 430.0 };
 	budgets.WriteTotal = SBudget {};
 	budgets.Append = SBudget { 0.1, -1.0, 0.05, 0.1 };
 	budgets.Restart = SBudget { -1.0, 1.0, 1.5, 2.0 };
+	budgets.bMetas = true;
 	MeasureSnapshot(Dir, 100000u, 0u, budgets);
 }
 
 TEST_F(SnapshotTest, DISABLED_SnapshotAndJournalAt100kAssetsAnd500kRows)
 {
 	SSnapshotBudgets budgets;
-	budgets.Load = SBudget { 550.0, -1.0, 520.0, 1000.0 };
-	budgets.WriteCpu = SBudget { -1.0, -1.0, 300.0, 600.0 };
+	budgets.Load = SBudget { 600.0, -1.0, 610.0, 1150.0 };
+	budgets.WriteCpu = SBudget { -1.0, -1.0, 340.0, 680.0 };
 	budgets.Append = SBudget { 0.1, -1.0, 0.05, 0.1 };
 	budgets.Restart = SBudget { -1.0, 1.0, 1.5, 2.0 };
-	budgets.Memory = SBudget { 150.0, -1.0, 155.0, 155.0 };
+	// With a meta per asset (edit [63]): 197.2 MB measured (alone, 9950X3D), §5.11's 210 MB since M4 (150 MB before;
+	// RegistryBenchmarkTest has the breakdown).
+	budgets.Memory = SBudget { 210.0, -1.0, 205.0, 205.0 };
+	budgets.bMetas = true;
 	MeasureSnapshot(Dir, 100000u, 500000u, budgets);
 }

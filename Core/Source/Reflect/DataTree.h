@@ -312,6 +312,9 @@ public:
 	bool Scalar (FStringView Text, EScalarStyle Style, uint32 Line, uint32 Column);
 	bool Null (uint32 Line, uint32 Column);
 	bool Raw (FStringView Text, uint32 Line, uint32 Column);
+	// Node and everything below it as one value: styles and positions as they are in Node's tree, so a tree is cut and
+	// reassembled (a meta keeps its Settings subtree) without a second walk in each caller. An invalid handle fails.
+	bool Subtree (HDataNode Node);
 
 	// Fails the builder from outside (a producer's own error), at that position. Ignored once failed.
 	void Fail (FStringView Message, uint32 Line, uint32 Column);
@@ -359,4 +362,14 @@ private:
 	uint32 ErrorColumn = 0u;
 	FString ErrorMessage;
 };
+
+
+/**
+ * Whether two trees say the same thing, wherever and however it was written: the same kinds, keys, key order and texts,
+ * and each scalar plain in both or not plain in both, since that is what decides its type (a quoted '1' is text). Unlike
+ * CDataTree::operator==, it ignores positions, flow or block, and which kind of quote: what the canonical emitter's tests
+ * ask of a re-parse (design §3.7), which never sits on the lines the original did. Any spelling of null equals any other
+ * (HDataNode::IsNull). Two empty trees are the same; a Raw node equals a Raw node of the same text.
+ */
+[[nodiscard]] FRT_CORE_API bool IsSameContent (const CDataTree& A, const CDataTree& B);
 }

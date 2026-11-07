@@ -1131,6 +1131,41 @@ bool CDataTreeBuilder::Raw (FStringView Text, uint32 Line, uint32 Column)
 	return true;
 }
 
+bool CDataTreeBuilder::Subtree (HDataNode Node)
+{
+	if (!Node.IsValid())
+	{
+		return SetError("a subtree of no node", 0u, 0u);
+	}
+	const uint32 line = Node.GetLine();
+	const uint32 column = Node.GetColumn();
+	switch (Node.GetKind())
+	{
+	case EDataNodeKind::Null:
+		return this->Null(line, column);
+	case EDataNodeKind::Scalar:
+		return Scalar(Node.GetText(), Node.GetScalarStyle(), line, column);
+	case EDataNodeKind::Raw:
+		return Raw(Node.GetText(), line, column);
+	case EDataNodeKind::Map:
+		BeginMap(line, column, Node.GetCollectionStyle());
+		for (const SDataChild child : Node.GetChildren())
+		{
+			Key(child.Key, child.KeyLine, child.KeyColumn);
+			Subtree(child.Value);
+		}
+		return End();
+	case EDataNodeKind::Sequence:
+		BeginSequence(line, column, Node.GetCollectionStyle());
+		for (const SDataChild child : Node.GetChildren())
+		{
+			Subtree(child.Value);
+		}
+		return End();
+	}
+	return false;
+}
+
 void CDataTreeBuilder::Reset ()
 {
 	Tree = CDataTree();
@@ -1168,5 +1203,59 @@ bool CDataTreeBuilder::Finish (CDataTree& Out, SDiagnostic* OutError)
 	Out = std::move(Tree);
 	Reset();
 	return true;
+}
+
+
+// ---------------- IsSameContent ----------------
+
+namespace
+{
+[[nodiscard]] bool IsSameNodeContent (const HDataNode& A, const HDataNode& B) noexcept
+{
+	if (A.IsNull() || B.IsNull())
+	{
+		return A.IsNull() && B.IsNull();
+	}
+	if (A.GetKind() != B.GetKind())
+	{
+		return false;
+	}
+	switch (A.GetKind())
+	{
+	case EDataNodeKind::Scalar:
+		return A.GetText() == B.GetText()
+			&& (A.GetScalarStyle() == EScalarStyle::Plain) == (B.GetScalarStyle() == EScalarStyle::Plain);
+	case EDataNodeKind::Raw:
+		return A.GetText() == B.GetText();
+	case EDataNodeKind::Map:
+	case EDataNodeKind::Sequence:
+		if (A.GetCount() != B.GetCount())
+		{
+			return false;
+		}
+		for (uint32 i = 0u; i < A.GetCount(); ++i)
+		{
+			const SDataChild childA = A.GetChild(i);
+			const SDataChild childB = B.GetChild(i);
+			if (childA.Key != childB.Key || !IsSameNodeContent(childA.Value, childB.Value))
+			{
+				return false;
+			}
+		}
+		return true;
+	case EDataNodeKind::Null:
+		break;
+	}
+	return true;
+}
+}
+
+bool IsSameContent (const CDataTree& A, const CDataTree& B)
+{
+	if (A.IsEmpty() || B.IsEmpty())
+	{
+		return A.IsEmpty() && B.IsEmpty();
+	}
+	return IsSameNodeContent(A.GetRoot(), B.GetRoot());
 }
 }

@@ -33,6 +33,9 @@ struct SGeneratorSpec
 	uint32 Rows = 0u;                // table rows (sub-entries), 500 per table
 	uint32 Seed = 20261026u;
 	uint32 ChunkWeight = 50000u;     // records + sub-entries per committed delta
+	// M4 (edit [63]): every asset record gets a meta - its GUID, its file's meta columns (Paired), a FILES row of class
+	// Meta beside it and a METAS copy of the meta's canonical text (EmitMeta: the GUID, the importer, the labels).
+	bool bMetas = false;
 };
 
 struct SGeneratorReport
@@ -45,6 +48,8 @@ struct SGeneratorReport
 	uint32 Raws = 0u;
 	uint32 Tables = 0u;
 	uint32 Rows = 0u;
+	uint32 Metas = 0u;
+	uint64 MetaBytes = 0u;            // the copies' bytes, all of them
 	uint32 Commits = 0u;
 	double CommitMilliseconds = 0.0;  // every Commit, publication included
 	double BuildMilliseconds = 0.0;   // generating the deltas

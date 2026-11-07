@@ -12,20 +12,20 @@ mount /Project
   folder /Project/Models/Skull
   folder /Project/Models/Skull/textures
   folder /Project/Models/Sponza
-  file /Project/Input/IA_EnableMove.frtinputaction Asset size=66
-    record type=frt.InputAction importer=Input.Legacy status=Analyzed stamp=ae3217c5d659c9ad cook=Auto chunk=0 flags=-
+  file /Project/Input/IA_EnableMove.frtinputaction Asset size=66 meta=Paired
+    record guid=a78fae121a544458b39998b4a0757a74 type=frt.InputAction importer=Input.Legacy status=Analyzed stamp=ae3217c5d659c9ad cook=Auto chunk=0 flags=-
     tag ValueType = Button
-  file /Project/Input/IA_MoveForward.frtinputaction Asset size=67
-    record type=frt.InputAction importer=Input.Legacy status=Analyzed stamp=ae3217c5d659c9ad cook=Auto chunk=0 flags=-
+  file /Project/Input/IA_MoveForward.frtinputaction Asset size=67 meta=Paired
+    record guid=69260ebe9b61454a892f65cea0e6bcc5 type=frt.InputAction importer=Input.Legacy status=Analyzed stamp=ae3217c5d659c9ad cook=Auto chunk=0 flags=-
     tag ValueType = Button
-  file /Project/Input/IA_MoveLeft.frtinputaction Asset size=65
-    record type=frt.InputAction importer=Input.Legacy status=Analyzed stamp=ae3217c5d659c9ad cook=Auto chunk=0 flags=-
+  file /Project/Input/IA_MoveLeft.frtinputaction Asset size=65 meta=Paired
+    record guid=bb4b3f9a10b54232a35144116fd6dada type=frt.InputAction importer=Input.Legacy status=Analyzed stamp=ae3217c5d659c9ad cook=Auto chunk=0 flags=-
     tag ValueType = Button
-  file /Project/Input/IA_MoveUp.frtinputaction Asset size=62
-    record type=frt.InputAction importer=Input.Legacy status=Analyzed stamp=ae3217c5d659c9ad cook=Auto chunk=0 flags=-
+  file /Project/Input/IA_MoveUp.frtinputaction Asset size=62 meta=Paired
+    record guid=6b90b39f9594436b942c9b1ec6f34456 type=frt.InputAction importer=Input.Legacy status=Analyzed stamp=ae3217c5d659c9ad cook=Auto chunk=0 flags=-
     tag ValueType = Button
-  file /Project/Input/IAM_Editor.frtinputmap Asset size=351
-    record type=frt.InputActionMap importer=Input.Legacy status=Analyzed stamp=ae3217c5d659c9ad cook=Auto chunk=0 flags=Primary primary=IAM_Editor
+  file /Project/Input/IAM_Editor.frtinputmap Asset size=351 meta=Paired
+    record guid=7e8d9bb3b8b7450b958b27b53d5f659c type=frt.InputActionMap importer=Input.Legacy status=Analyzed stamp=ae3217c5d659c9ad cook=Auto chunk=0 flags=Primary primary=IAM_Editor
     tag Actions = IA_EnableMove
     tag Actions = IA_MoveForward
     tag Actions = IA_MoveLeft
@@ -34,13 +34,13 @@ mount /Project
     edge /Project/Input/IA_MoveForward.frtinputaction sub=0000000000000000 flags=Path field=actions.1.action Resolved
     edge /Project/Input/IA_MoveLeft.frtinputaction sub=0000000000000000 flags=Path field=actions.2.action Resolved
     edge /Project/Input/IA_MoveUp.frtinputaction sub=0000000000000000 flags=Path field=actions.3.action Resolved
-  file /Project/Light/light_mat0.frtmat.yml Asset size=92
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=-
-  file /Project/Light/light_mat2.frtmat.yml Asset size=85
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=-
+  file /Project/Light/light_mat0.frtmat.yml Asset size=92 meta=Paired
+    record guid=59a213952b164ae4b126ea31db683ab1 type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=-
+  file /Project/Light/light_mat2.frtmat.yml Asset size=85 meta=Paired
+    record guid=c4e53629e3bd4d508ded5b88f25957ee type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=-
   file /Project/Models/Cube/Cube.bin Companion size=1800
-  file /Project/Models/Cube/Cube.gltf Asset size=3671
-    record type=frt.Model importer=Model.Gltf status=Analyzed stamp=1dfcee76ba4b4b55 cook=Auto chunk=0 flags=-
+  file /Project/Models/Cube/Cube.gltf Asset size=3671 meta=Paired
+    record guid=feaba72d3a7a4330a106b8a94591fb5f type=frt.Model importer=Model.Gltf status=Analyzed stamp=1dfcee76ba4b4b55 cook=Auto chunk=0 flags=-
     tag ImageCount = 2
     tag MaterialCount = 1
     tag MeshCount = 1
@@ -55,23 +55,23 @@ mount /Project
     edge /Project/Models/Cube/Cube_BaseColor.png sub=0000000000000000 flags=Build|Declared|Path field=images.0.uri from=image:#0 Resolved
     edge /Project/Models/Cube/Cube_MetallicRoughness.png sub=0000000000000000 flags=Build|Declared|Path field=images.1.uri from=image:#1 Resolved
     companion /Project/Models/Cube/Cube.bin
-  file /Project/Models/Cube/Cube_BaseColor.png Asset size=891995
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Cube/Cube_BaseColor.png Asset size=891995 meta=Paired
+    record guid=8bacbb9bdb4f4d09a3284600b93ec76e type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 4
     tag HasAlpha = true
     tag Height = 512
     tag Width = 512
-  file /Project/Models/Cube/cube_mat0.frtmat.yml Asset size=191
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+  file /Project/Models/Cube/cube_mat0.frtmat.yml Asset size=191 meta=Paired
+    record guid=58da2f02450d4cb8b97f75fc3a094821 type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
     edge /Project/Models/Cube/Cube_BaseColor.png sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
-  file /Project/Models/Cube/Cube_MetallicRoughness.png Asset size=319
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Cube/Cube_MetallicRoughness.png Asset size=319 meta=Paired
+    record guid=bdea1accf9c44191bd8a86d8977c20a1 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 512
     tag Width = 512
-  file /Project/Models/Duck/Duck.gltf Asset size=4964
-    record type=frt.Model importer=Model.Gltf status=Analyzed stamp=1dfcee76ba4b4b55 cook=Auto chunk=0 flags=-
+  file /Project/Models/Duck/Duck.gltf Asset size=4964 meta=Paired
+    record guid=38cc1301eff24814951eedafd5800f8d type=frt.Model importer=Model.Gltf status=Analyzed stamp=1dfcee76ba4b4b55 cook=Auto chunk=0 flags=-
     tag ImageCount = 1
     tag MaterialCount = 1
     tag MeshCount = 1
@@ -85,22 +85,22 @@ mount /Project
     edge /Project/Models/Duck/DuckCM.png sub=0000000000000000 flags=Build|Declared|Path field=images.0.uri from=image:#0 Resolved
     companion /Project/Models/Duck/Duck0.bin
   file /Project/Models/Duck/Duck0.bin Companion size=102040
-  file /Project/Models/Duck/Duck_mat0.frtmat.yml Asset size=128
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+  file /Project/Models/Duck/Duck_mat0.frtmat.yml Asset size=128 meta=Paired
+    record guid=a5737728d59f41aa91114cc08654f84b type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
     edge /Project/Models/Duck/DuckCM.png sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
-  file /Project/Models/Duck/Duck_mat1.frtmat.yml Asset size=152
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=-
-  file /Project/Models/Duck/DuckCM.png Asset size=16302
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Duck/Duck_mat1.frtmat.yml Asset size=152 meta=Paired
+    record guid=835eb0dbdb1045eb90a47e76cbc6a92f type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=-
+  file /Project/Models/Duck/DuckCM.png Asset size=16302 meta=Paired
+    record guid=66d6cc786ffc48999852aeab007e9eee type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 512
     tag Width = 512
-  file /Project/Models/Floor/floor_mat0.frtmat.yml Asset size=79
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=-
+  file /Project/Models/Floor/floor_mat0.frtmat.yml Asset size=79 meta=Paired
+    record guid=186096d5de0a4d97bd218ed55f297ac3 type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=-
   file /Project/Models/Fox/Fox.bin Companion size=119904
-  file /Project/Models/Fox/Fox.gltf Asset size=45064
-    record type=frt.Model importer=Model.Gltf status=Analyzed stamp=1dfcee76ba4b4b55 cook=Auto chunk=0 flags=-
+  file /Project/Models/Fox/Fox.gltf Asset size=45064 meta=Paired
+    record guid=81e4231dd27744fb927007abe399c077 type=frt.Model importer=Model.Gltf status=Analyzed stamp=1dfcee76ba4b4b55 cook=Auto chunk=0 flags=-
     tag ImageCount = 1
     tag MaterialCount = 1
     tag MeshCount = 1
@@ -113,15 +113,15 @@ mount /Project
       tag VertexCount = 1728
     edge /Project/Models/Fox/Texture.png sub=0000000000000000 flags=Build|Declared|Path field=images.0.uri from=image:#0 Resolved
     companion /Project/Models/Fox/Fox.bin
-  file /Project/Models/Fox/Texture.png Asset size=26764
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Fox/Texture.png Asset size=26764 meta=Paired
+    record guid=a507c485b41f45fa9e90757c82bfdd97 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
   file /Project/Models/Lantern/Lantern.bin Companion size=231324
-  file /Project/Models/Lantern/Lantern.gltf Asset size=5970
-    record type=frt.Model importer=Model.Gltf status=Analyzed stamp=1dfcee76ba4b4b55 cook=Auto chunk=0 flags=-
+  file /Project/Models/Lantern/Lantern.gltf Asset size=5970 meta=Paired
+    record guid=2f00aed5f6774748b24a2a6014c88a2a type=frt.Model importer=Model.Gltf status=Analyzed stamp=1dfcee76ba4b4b55 cook=Auto chunk=0 flags=-
     tag ImageCount = 4
     tag MaterialCount = 1
     tag MeshCount = 3
@@ -146,36 +146,36 @@ mount /Project
     edge /Project/Models/Lantern/Lantern_normal.png sub=0000000000000000 flags=Build|Declared|Path field=images.2.uri from=image:#2 Resolved
     edge /Project/Models/Lantern/Lantern_roughnessMetallic.png sub=0000000000000000 flags=Build|Declared|Path field=images.1.uri from=image:#1 Resolved
     companion /Project/Models/Lantern/Lantern.bin
-  file /Project/Models/Lantern/Lantern_baseColor.png Asset size=4461532
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Lantern/Lantern_baseColor.png Asset size=4461532 meta=Paired
+    record guid=101bb1aa2a584673b2290754e860b241 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 4
     tag HasAlpha = true
     tag Height = 2048
     tag Width = 2048
-  file /Project/Models/Lantern/Lantern_emissive.png Asset size=169335
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Lantern/Lantern_emissive.png Asset size=169335 meta=Paired
+    record guid=8236c5e6cc294747a099bc98904b2e34 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 2048
     tag Width = 2048
-  file /Project/Models/Lantern/Lantern_normal.png Asset size=2928441
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Lantern/Lantern_normal.png Asset size=2928441 meta=Paired
+    record guid=f8071d6c96434a4398bdda12c90756d0 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 2048
     tag Width = 2048
-  file /Project/Models/Lantern/Lantern_roughnessMetallic.png Asset size=2078597
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Lantern/Lantern_roughnessMetallic.png Asset size=2078597 meta=Paired
+    record guid=d2adb51e8fbd453c841b35c9aa72c2ae type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 2048
     tag Width = 2048
-  file /Project/Models/Pillar/pillar_mat0.frtmat.yml Asset size=110
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=-
+  file /Project/Models/Pillar/pillar_mat0.frtmat.yml Asset size=110 meta=Paired
+    record guid=a843e4d9a7e349d9867a62ed740aafeb type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=-
   file /Project/Models/Skull/license.txt Unclaimed size=704
   file /Project/Models/Skull/scene.bin Companion size=1205376
-  file /Project/Models/Skull/scene.gltf Asset size=4187
-    record type=frt.Model importer=Model.Gltf status=Analyzed stamp=1dfcee76ba4b4b55 cook=Auto chunk=0 flags=-
+  file /Project/Models/Skull/scene.gltf Asset size=4187 meta=Paired
+    record guid=b62e4a7261214016b78654921ddcafbf type=frt.Model importer=Model.Gltf status=Analyzed stamp=1dfcee76ba4b4b55 cook=Auto chunk=0 flags=-
     tag ImageCount = 2
     tag MaterialCount = 1
     tag MeshCount = 1
@@ -190,434 +190,434 @@ mount /Project
     edge /Project/Models/Skull/textures/defaultMat_baseColor.jpeg sub=0000000000000000 flags=Build|Declared|Path field=images.0.uri from=image:#0 Resolved
     edge /Project/Models/Skull/textures/defaultMat_normal.jpeg sub=0000000000000000 flags=Build|Declared|Path field=images.1.uri from=image:#1 Resolved
     companion /Project/Models/Skull/scene.bin
-  file /Project/Models/Skull/scene_mat0.frtmat.yml Asset size=221
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+  file /Project/Models/Skull/scene_mat0.frtmat.yml Asset size=221 meta=Paired
+    record guid=7049c31edd834d6a9c76f2d6e00372c9 type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
     edge /Project/Models/Skull/textures/defaultMat_baseColor.jpeg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
-  file /Project/Models/Skull/scene_mat1.frtmat.yml Asset size=82
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=-
-  file /Project/Models/Skull/textures/defaultMat_baseColor.jpeg Asset size=885714
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Skull/scene_mat1.frtmat.yml Asset size=82 meta=Paired
+    record guid=c81bcbbe276348d4bab36212bbb00b0b type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=-
+  file /Project/Models/Skull/textures/defaultMat_baseColor.jpeg Asset size=885714 meta=Paired
+    record guid=47897c1cfbed4d41bc5d912217b65b27 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 2048
     tag Width = 2048
-  file /Project/Models/Skull/textures/defaultMat_normal.jpeg Asset size=1980805
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Skull/textures/defaultMat_normal.jpeg Asset size=1980805 meta=Paired
+    record guid=a61a315fd9c8464680a743dd7fc8f0bf type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 2048
     tag Width = 2048
-  file /Project/Models/Sponza/10381718147657362067.jpg Asset size=881980
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/10381718147657362067.jpg Asset size=881980 meta=Paired
+    record guid=4c43479418824bd798b880ea4cc50d1b type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/10388182081421875623.jpg Asset size=917202
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/10388182081421875623.jpg Asset size=917202 meta=Paired
+    record guid=ea26eee92bc547949414c006705dd359 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/11474523244911310074.jpg Asset size=1079152
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/11474523244911310074.jpg Asset size=1079152 meta=Paired
+    record guid=fa53e63146724324aae5f01d95f12e4c type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/11490520546946913238.jpg Asset size=321375
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/11490520546946913238.jpg Asset size=321375 meta=Paired
+    record guid=353289b63ddf44139b00160dc962e7ad type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/11872827283454512094.jpg Asset size=668962
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/11872827283454512094.jpg Asset size=668962 meta=Paired
+    record guid=4926df172147416c89a769696b0333f4 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/11968150294050148237.jpg Asset size=530384
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/11968150294050148237.jpg Asset size=530384 meta=Paired
+    record guid=be28758186f241efbfc77e214dc0f275 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/1219024358953944284.jpg Asset size=329124
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/1219024358953944284.jpg Asset size=329124 meta=Paired
+    record guid=3fe9795f17b6459d81671449883cbdf0 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/12501374198249454378.jpg Asset size=418235
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/12501374198249454378.jpg Asset size=418235 meta=Paired
+    record guid=d87a419f8e4d4e3ea809d9f84d9924c9 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/13196865903111448057.jpg Asset size=281980
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/13196865903111448057.jpg Asset size=281980 meta=Paired
+    record guid=82e15f0efe364192832a5d54372cee8f type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/13824894030729245199.jpg Asset size=313460
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/13824894030729245199.jpg Asset size=313460 meta=Paired
+    record guid=d060d5681de0474b892ab412ef810026 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/13982482287905699490.jpg Asset size=347538
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/13982482287905699490.jpg Asset size=347538 meta=Paired
+    record guid=fae272afa5f548188abfb85d9e446475 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/14118779221266351425.jpg Asset size=1611314
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/14118779221266351425.jpg Asset size=1611314 meta=Paired
+    record guid=6db21d818387424ba1ce4ce57451feee type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/14170708867020035030.jpg Asset size=140738
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/14170708867020035030.jpg Asset size=140738 meta=Paired
+    record guid=c15cbb80204f4621b31dea6361f38ba3 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/14267839433702832875.jpg Asset size=711217
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/14267839433702832875.jpg Asset size=711217 meta=Paired
+    record guid=4965143c5faa44f3ae28a2fe7efdb84d type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/14650633544276105767.jpg Asset size=521947
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/14650633544276105767.jpg Asset size=521947 meta=Paired
+    record guid=884ec3e265d5402f82240f5a71c5d75a type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/15295713303328085182.jpg Asset size=520162
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/15295713303328085182.jpg Asset size=520162 meta=Paired
+    record guid=fe1e739704e3407aa5ff669f743f9a0c type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/15722799267630235092.jpg Asset size=560258
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/15722799267630235092.jpg Asset size=560258 meta=Paired
+    record guid=3ad8e6199d82432fb25ccd6e6c92b0e4 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/16275776544635328252.png Asset size=1077432
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/16275776544635328252.png Asset size=1077432 meta=Paired
+    record guid=e3e6f863f7ec46888d0cd5a694d430bd type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 4
     tag HasAlpha = true
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/16299174074766089871.jpg Asset size=322693
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/16299174074766089871.jpg Asset size=322693 meta=Paired
+    record guid=ed4996948e874014b16f6638a2feac83 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/16885566240357350108.jpg Asset size=12575
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/16885566240357350108.jpg Asset size=12575 meta=Paired
+    record guid=3700d2cae60d48deb910806ae28b320f type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/17556969131407844942.jpg Asset size=370061
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/17556969131407844942.jpg Asset size=370061 meta=Paired
+    record guid=b8a787eafb13439bb06800d0ef3f7531 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/17876391417123941155.jpg Asset size=1151448
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/17876391417123941155.jpg Asset size=1151448 meta=Paired
+    record guid=bab328d948854547bf073616884ecb30 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/2051777328469649772.jpg Asset size=206618
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/2051777328469649772.jpg Asset size=206618 meta=Paired
+    record guid=06e32bf5fe9241f0becf669699802b80 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/2185409758123873465.jpg Asset size=780166
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/2185409758123873465.jpg Asset size=780166 meta=Paired
+    record guid=4cbff8b5090b44409edde20a8387bbdc type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/2299742237651021498.jpg Asset size=772672
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/2299742237651021498.jpg Asset size=772672 meta=Paired
+    record guid=cc42f83f588e4157b8794b0331ed7198 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/2374361008830720677.jpg Asset size=852079
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/2374361008830720677.jpg Asset size=852079 meta=Paired
+    record guid=4ea8fe5e876f4876b6965f93b154fd26 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/2411100444841994089.jpg Asset size=399963
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/2411100444841994089.jpg Asset size=399963 meta=Paired
+    record guid=8c0887485d684a28ac4e0dfe08c1923c type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/2775690330959970771.jpg Asset size=785678
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/2775690330959970771.jpg Asset size=785678 meta=Paired
+    record guid=2699fe0d1bab4322a79717185388fc24 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/2969916736137545357.jpg Asset size=822373
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/2969916736137545357.jpg Asset size=822373 meta=Paired
+    record guid=46c42cb815514bde996d2c9c8656f8b1 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/332936164838540657.jpg Asset size=852079
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/332936164838540657.jpg Asset size=852079 meta=Paired
+    record guid=741ed7d7ca854e31a4776341e3c76665 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/3371964815757888145.jpg Asset size=682743
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/3371964815757888145.jpg Asset size=682743 meta=Paired
+    record guid=c06f16de65fe45969a4d5681e4f89729 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/3455394979645218238.jpg Asset size=551432
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/3455394979645218238.jpg Asset size=551432 meta=Paired
+    record guid=03c1bc74f2cb44f094752f7f82d6803b type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/3628158980083700836.jpg Asset size=527788
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/3628158980083700836.jpg Asset size=527788 meta=Paired
+    record guid=fc3b5a8d040346ceb8bff1561ae248cc type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/3827035219084910048.jpg Asset size=608394
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/3827035219084910048.jpg Asset size=608394 meta=Paired
+    record guid=8fa48ea9efba4c40a3d84721c9e92c8e type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/4477655471536070370.jpg Asset size=211322
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/4477655471536070370.jpg Asset size=211322 meta=Paired
+    record guid=7fdc417ad631492c8a869fd695ed1681 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/4601176305987539675.jpg Asset size=1043152
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/4601176305987539675.jpg Asset size=1043152 meta=Paired
+    record guid=e72f6a8d033243e48680bdbe4e098a79 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/466164707995436622.jpg Asset size=486634
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/466164707995436622.jpg Asset size=486634 meta=Paired
+    record guid=3bd53339aaac468d810974914ac3a2b6 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/4675343432951571524.jpg Asset size=764529
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/4675343432951571524.jpg Asset size=764529 meta=Paired
+    record guid=3a01fbd5e8964a8ab84864e4eb975250 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/4871783166746854860.jpg Asset size=570081
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/4871783166746854860.jpg Asset size=570081 meta=Paired
+    record guid=98b1ae39088d456ea3ffdca564f854bd type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/4910669866631290573.jpg Asset size=1043152
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/4910669866631290573.jpg Asset size=1043152 meta=Paired
+    record guid=04d2b09d20b548109c04b4c9a463e8ac type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/4975155472559461469.jpg Asset size=399027
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/4975155472559461469.jpg Asset size=399027 meta=Paired
+    record guid=bcde2ff77437431494549ffa85807cc4 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/5061699253647017043.png Asset size=2427921
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/5061699253647017043.png Asset size=2427921 meta=Paired
+    record guid=05205bb597564b90895e5c15b772b691 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 4
     tag HasAlpha = true
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/5792855332885324923.jpg Asset size=564801
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/5792855332885324923.jpg Asset size=564801 meta=Paired
+    record guid=49988cde336f42ba9b91a1155a8d1789 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/5823059166183034438.jpg Asset size=573157
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/5823059166183034438.jpg Asset size=573157 meta=Paired
+    record guid=c509595a01724d78bdb7986d4f6a9200 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/6047387724914829168.jpg Asset size=518310
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/6047387724914829168.jpg Asset size=518310 meta=Paired
+    record guid=8454ba37f2fc45edbd8bdd54af9af58e type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/6151467286084645207.jpg Asset size=643517
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/6151467286084645207.jpg Asset size=643517 meta=Paired
+    record guid=8fe726ddbe2c45e59a97a67f5e908477 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/6593109234861095314.jpg Asset size=1043152
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/6593109234861095314.jpg Asset size=1043152 meta=Paired
+    record guid=404323349cf2489e8434dac751dceee5 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/6667038893015345571.jpg Asset size=703420
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/6667038893015345571.jpg Asset size=703420 meta=Paired
+    record guid=971038a3c62f4aeca91ac3b7b12f012e type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/6772804448157695701.jpg Asset size=599959
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/6772804448157695701.jpg Asset size=599959 meta=Paired
+    record guid=0f4df7e5247d4558a5369a06e9a91987 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/7056944414013900257.jpg Asset size=852079
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/7056944414013900257.jpg Asset size=852079 meta=Paired
+    record guid=bdd8f560737041f5b078df246a234ecd type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/715093869573992647.jpg Asset size=280745
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/715093869573992647.jpg Asset size=280745 meta=Paired
+    record guid=421bbe0a41ee40eebd4170f5608a576f type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/7268504077753552595.jpg Asset size=572245
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/7268504077753552595.jpg Asset size=572245 meta=Paired
+    record guid=c7fcdb89b0dc4c169e83060646735a4a type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/7441062115984513793.jpg Asset size=665796
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/7441062115984513793.jpg Asset size=665796 meta=Paired
+    record guid=aadb7cd601104126a40132370c47a7d1 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/755318871556304029.jpg Asset size=302363
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/755318871556304029.jpg Asset size=302363 meta=Paired
+    record guid=e536793facc245bfb6261efd642cf7ad type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/759203620573749278.jpg Asset size=509411
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/759203620573749278.jpg Asset size=509411 meta=Paired
+    record guid=8df35513ebfc49c1b5263fc0cc954f19 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/7645212358685992005.jpg Asset size=656995
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/7645212358685992005.jpg Asset size=656995 meta=Paired
+    record guid=80a7f78e2dc4459b90b927bda8f99875 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/7815564343179553343.jpg Asset size=623144
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/7815564343179553343.jpg Asset size=623144 meta=Paired
+    record guid=de3df539c7e1469b991547b561f26cd4 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/8006627369776289000.png Asset size=1225157
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/8006627369776289000.png Asset size=1225157 meta=Paired
+    record guid=c043ec0533194c63b914514ace4278a7 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 4
     tag HasAlpha = true
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/8051790464816141987.jpg Asset size=260119
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/8051790464816141987.jpg Asset size=260119 meta=Paired
+    record guid=ee4f73c9e0c2460187324255f0b13bd4 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/8114461559286000061.jpg Asset size=193077
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/8114461559286000061.jpg Asset size=193077 meta=Paired
+    record guid=ca868d58105b4d0699cbca95e09c6b84 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/8481240838833932244.jpg Asset size=531156
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/8481240838833932244.jpg Asset size=531156 meta=Paired
+    record guid=37845e1e37c0438ab3ba26cacce54d81 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/8503262930880235456.jpg Asset size=104626
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/8503262930880235456.jpg Asset size=104626 meta=Paired
+    record guid=f305d9332ee64a7b95a708582a967027 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/8747919177698443163.jpg Asset size=872255
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/8747919177698443163.jpg Asset size=872255 meta=Paired
+    record guid=48595b0a63b94e3cbcdc54bed9586ea8 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/8750083169368950601.jpg Asset size=362437
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/8750083169368950601.jpg Asset size=362437 meta=Paired
+    record guid=fdd77f721b614f5db7440f2e03de9ef6 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/8773302468495022225.jpg Asset size=413837
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/8773302468495022225.jpg Asset size=413837 meta=Paired
+    record guid=a7410b977f4d437f8619d3d91421fa2e type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/8783994986360286082.jpg Asset size=388462
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/8783994986360286082.jpg Asset size=388462 meta=Paired
+    record guid=96b3a326423544008da6d8da7390758d type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/9288698199695299068.jpg Asset size=1044330
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/9288698199695299068.jpg Asset size=1044330 meta=Paired
+    record guid=b471fd6a0154467e8adf35f5f47fd8cf type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
-  file /Project/Models/Sponza/9916269861720640319.jpg Asset size=608687
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/9916269861720640319.jpg Asset size=608687 meta=Paired
+    record guid=1cf8249ea86a4aeab06fd612cd4c819b type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 1024
     tag Width = 1024
   file /Project/Models/Sponza/Sponza.bin Companion size=9528220
-  file /Project/Models/Sponza/Sponza.gltf Asset size=167176
-    record type=frt.Model importer=Model.Gltf status=Analyzed stamp=1dfcee76ba4b4b55 cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/Sponza.gltf Asset size=167176 meta=Paired
+    record guid=6a206175ca79435082bc96b57a22904d type=frt.Model importer=Model.Gltf status=Analyzed stamp=1dfcee76ba4b4b55 cook=Auto chunk=0 flags=-
     tag ImageCount = 69
     tag MaterialCount = 25
     tag MeshCount = 1
@@ -790,133 +790,133 @@ mount /Project
     edge /Project/Models/Sponza/9916269861720640319.jpg sub=0000000000000000 flags=Build|Declared|Path field=images.20.uri from=image:#20 Resolved
     edge /Project/Models/Sponza/white.png sub=0000000000000000 flags=Build|Declared|Path field=images.68.uri from=image:#68 Resolved
     companion /Project/Models/Sponza/Sponza.bin
-  file /Project/Models/Sponza/Sponza_mat0.frtmat.yml Asset size=599
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+  file /Project/Models/Sponza/Sponza_mat0.frtmat.yml Asset size=599 meta=Paired
+    record guid=c5c49faccece454e861b2e9f7f3804a7 type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
     edge /Project/Models/Sponza/11872827283454512094.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
     edge /Project/Models/Sponza/5061699253647017043.png sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
     edge /Project/Models/Sponza/8773302468495022225.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
-  file /Project/Models/Sponza/Sponza_mat1.frtmat.yml Asset size=598
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+  file /Project/Models/Sponza/Sponza_mat1.frtmat.yml Asset size=598 meta=Paired
+    record guid=d4e868b39a6a41da97b55926f67468b8 type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
     edge /Project/Models/Sponza/12501374198249454378.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
     edge /Project/Models/Sponza/715093869573992647.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
     edge /Project/Models/Sponza/8006627369776289000.png sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
-  file /Project/Models/Sponza/Sponza_mat10.frtmat.yml Asset size=603
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+  file /Project/Models/Sponza/Sponza_mat10.frtmat.yml Asset size=603 meta=Paired
+    record guid=d1e2edc56c064675ba80fe4925d8d47a type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
     edge /Project/Models/Sponza/11490520546946913238.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
     edge /Project/Models/Sponza/3455394979645218238.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
     edge /Project/Models/Sponza/3628158980083700836.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
-  file /Project/Models/Sponza/Sponza_mat11.frtmat.yml Asset size=602
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+  file /Project/Models/Sponza/Sponza_mat11.frtmat.yml Asset size=602 meta=Paired
+    record guid=972e141931c0417d9b72bc9c5a651cd4 type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
     edge /Project/Models/Sponza/6151467286084645207.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
     edge /Project/Models/Sponza/7645212358685992005.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
     edge /Project/Models/Sponza/8783994986360286082.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
-  file /Project/Models/Sponza/Sponza_mat12.frtmat.yml Asset size=546
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+  file /Project/Models/Sponza/Sponza_mat12.frtmat.yml Asset size=546 meta=Paired
+    record guid=813e4e2b23784593b9a59519d9ec5502 type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
     edge /Project/Models/Sponza/white.png sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
-  file /Project/Models/Sponza/Sponza_mat13.frtmat.yml Asset size=602
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+  file /Project/Models/Sponza/Sponza_mat13.frtmat.yml Asset size=602 meta=Paired
+    record guid=5e99b80efaf84f508ffe9ccf0289fd3c type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
     edge /Project/Models/Sponza/2299742237651021498.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
     edge /Project/Models/Sponza/3371964815757888145.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
     edge /Project/Models/Sponza/4975155472559461469.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
-  file /Project/Models/Sponza/Sponza_mat14.frtmat.yml Asset size=602
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+  file /Project/Models/Sponza/Sponza_mat14.frtmat.yml Asset size=602 meta=Paired
+    record guid=6c11b3b161d4465b8aabd1ce0605f5b3 type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
     edge /Project/Models/Sponza/4675343432951571524.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
     edge /Project/Models/Sponza/7056944414013900257.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
     edge /Project/Models/Sponza/7815564343179553343.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
-  file /Project/Models/Sponza/Sponza_mat15.frtmat.yml Asset size=602
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+  file /Project/Models/Sponza/Sponza_mat15.frtmat.yml Asset size=602 meta=Paired
+    record guid=7b653174beb846ec81253049f1a206a4 type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
     edge /Project/Models/Sponza/2374361008830720677.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
     edge /Project/Models/Sponza/2775690330959970771.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
     edge /Project/Models/Sponza/7815564343179553343.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
-  file /Project/Models/Sponza/Sponza_mat16.frtmat.yml Asset size=601
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+  file /Project/Models/Sponza/Sponza_mat16.frtmat.yml Asset size=601 meta=Paired
+    record guid=69936fee5b0d4214b86ff69898e602f4 type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
     edge /Project/Models/Sponza/2185409758123873465.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
     edge /Project/Models/Sponza/332936164838540657.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
     edge /Project/Models/Sponza/7815564343179553343.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
-  file /Project/Models/Sponza/Sponza_mat17.frtmat.yml Asset size=602
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+  file /Project/Models/Sponza/Sponza_mat17.frtmat.yml Asset size=602 meta=Paired
+    record guid=31e0078183e2472e91a2fe47ee935e9b type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
     edge /Project/Models/Sponza/17876391417123941155.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
     edge /Project/Models/Sponza/466164707995436622.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
     edge /Project/Models/Sponza/6593109234861095314.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
-  file /Project/Models/Sponza/Sponza_mat18.frtmat.yml Asset size=602
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+  file /Project/Models/Sponza/Sponza_mat18.frtmat.yml Asset size=602 meta=Paired
+    record guid=0446ab9daffa4eb8a229e603c6ca8d2a type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
     edge /Project/Models/Sponza/11474523244911310074.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
     edge /Project/Models/Sponza/4601176305987539675.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
     edge /Project/Models/Sponza/466164707995436622.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
-  file /Project/Models/Sponza/Sponza_mat19.frtmat.yml Asset size=601
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+  file /Project/Models/Sponza/Sponza_mat19.frtmat.yml Asset size=601 meta=Paired
+    record guid=e1b3c6014508434ea54b292c01de33e9 type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
     edge /Project/Models/Sponza/466164707995436622.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
     edge /Project/Models/Sponza/4910669866631290573.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
     edge /Project/Models/Sponza/9288698199695299068.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
-  file /Project/Models/Sponza/Sponza_mat2.frtmat.yml Asset size=601
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+  file /Project/Models/Sponza/Sponza_mat2.frtmat.yml Asset size=601 meta=Paired
+    record guid=f5a1b757d6b047deb0b6696adeb8e6f3 type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
     edge /Project/Models/Sponza/4477655471536070370.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
     edge /Project/Models/Sponza/7268504077753552595.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
     edge /Project/Models/Sponza/8503262930880235456.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
-  file /Project/Models/Sponza/Sponza_mat20.frtmat.yml Asset size=601
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+  file /Project/Models/Sponza/Sponza_mat20.frtmat.yml Asset size=601 meta=Paired
+    record guid=1ac316a0df8144e58f58093dbe8773d7 type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
     edge /Project/Models/Sponza/1219024358953944284.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
     edge /Project/Models/Sponza/14170708867020035030.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
     edge /Project/Models/Sponza/16275776544635328252.png sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
-  file /Project/Models/Sponza/Sponza_mat21.frtmat.yml Asset size=601
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+  file /Project/Models/Sponza/Sponza_mat21.frtmat.yml Asset size=601 meta=Paired
+    record guid=c2bc1aad67ca4fa9a47ae0635cf160bc type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
     edge /Project/Models/Sponza/2411100444841994089.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
     edge /Project/Models/Sponza/3827035219084910048.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
     edge /Project/Models/Sponza/755318871556304029.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
-  file /Project/Models/Sponza/Sponza_mat22.frtmat.yml Asset size=604
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+  file /Project/Models/Sponza/Sponza_mat22.frtmat.yml Asset size=604 meta=Paired
+    record guid=a9b169d970484361a22a839263980f13 type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
     edge /Project/Models/Sponza/10381718147657362067.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
     edge /Project/Models/Sponza/17556969131407844942.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
     edge /Project/Models/Sponza/8481240838833932244.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
-  file /Project/Models/Sponza/Sponza_mat23.frtmat.yml Asset size=602
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+  file /Project/Models/Sponza/Sponza_mat23.frtmat.yml Asset size=602 meta=Paired
+    record guid=b620add87bc04d4980920177fc477f8b type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
     edge /Project/Models/Sponza/13196865903111448057.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
     edge /Project/Models/Sponza/6772804448157695701.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
     edge /Project/Models/Sponza/759203620573749278.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
-  file /Project/Models/Sponza/Sponza_mat24.frtmat.yml Asset size=603
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+  file /Project/Models/Sponza/Sponza_mat24.frtmat.yml Asset size=603 meta=Paired
+    record guid=bdb346ce1e0e42d894ae37a1faca3849 type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
     edge /Project/Models/Sponza/14118779221266351425.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
     edge /Project/Models/Sponza/2969916736137545357.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
     edge /Project/Models/Sponza/8747919177698443163.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
-  file /Project/Models/Sponza/Sponza_mat25.frtmat.yml Asset size=527
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=-
-  file /Project/Models/Sponza/Sponza_mat3.frtmat.yml Asset size=603
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+  file /Project/Models/Sponza/Sponza_mat25.frtmat.yml Asset size=527 meta=Paired
+    record guid=1999a56cc5354aedb44d6beab874d221 type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/Sponza_mat3.frtmat.yml Asset size=603 meta=Paired
+    record guid=276e19ddc6dc4e10bed94a8909b243b6 type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
     edge /Project/Models/Sponza/13982482287905699490.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
     edge /Project/Models/Sponza/16885566240357350108.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
     edge /Project/Models/Sponza/8750083169368950601.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
-  file /Project/Models/Sponza/Sponza_mat4.frtmat.yml Asset size=603
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+  file /Project/Models/Sponza/Sponza_mat4.frtmat.yml Asset size=603 meta=Paired
+    record guid=e0dbc41a908c4a4f83bb004f66ed63e5 type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
     edge /Project/Models/Sponza/11968150294050148237.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
     edge /Project/Models/Sponza/16299174074766089871.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
     edge /Project/Models/Sponza/5792855332885324923.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
-  file /Project/Models/Sponza/Sponza_mat5.frtmat.yml Asset size=602
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+  file /Project/Models/Sponza/Sponza_mat5.frtmat.yml Asset size=602 meta=Paired
+    record guid=f09b2480ae1c48129a572d564c085e3b type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
     edge /Project/Models/Sponza/14650633544276105767.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
     edge /Project/Models/Sponza/2051777328469649772.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
     edge /Project/Models/Sponza/4871783166746854860.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
-  file /Project/Models/Sponza/Sponza_mat6.frtmat.yml Asset size=603
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+  file /Project/Models/Sponza/Sponza_mat6.frtmat.yml Asset size=603 meta=Paired
+    record guid=0174a075301c40e59e0251559ceca35f type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
     edge /Project/Models/Sponza/10388182081421875623.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
     edge /Project/Models/Sponza/15295713303328085182.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
     edge /Project/Models/Sponza/9916269861720640319.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
-  file /Project/Models/Sponza/Sponza_mat7.frtmat.yml Asset size=602
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+  file /Project/Models/Sponza/Sponza_mat7.frtmat.yml Asset size=602 meta=Paired
+    record guid=702d7e433d8a44c2919710ca2ab77747 type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
     edge /Project/Models/Sponza/15722799267630235092.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
     edge /Project/Models/Sponza/6047387724914829168.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
     edge /Project/Models/Sponza/8051790464816141987.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
-  file /Project/Models/Sponza/Sponza_mat8.frtmat.yml Asset size=603
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+  file /Project/Models/Sponza/Sponza_mat8.frtmat.yml Asset size=603 meta=Paired
+    record guid=d63fc279277e4b8d8af8d9908259e8d4 type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
     edge /Project/Models/Sponza/13824894030729245199.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
     edge /Project/Models/Sponza/14267839433702832875.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
     edge /Project/Models/Sponza/5823059166183034438.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
-  file /Project/Models/Sponza/Sponza_mat9.frtmat.yml Asset size=601
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
+  file /Project/Models/Sponza/Sponza_mat9.frtmat.yml Asset size=601 meta=Paired
+    record guid=ab0ee79af9514b58bf577ddc36390e89 type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=HasProblems|LegacyReferences
     edge /Project/Models/Sponza/6667038893015345571.jpg sub=0000000000000000 flags=Build|Path field=normal.texture Resolved
     edge /Project/Models/Sponza/7441062115984513793.jpg sub=0000000000000000 flags=Build|Path field=albedo.texture Resolved
     edge /Project/Models/Sponza/8114461559286000061.jpg sub=0000000000000000 flags=Build|Path field=metallicRoughnessTexture Resolved
-  file /Project/Models/Sponza/white.png Asset size=951
-    record type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
+  file /Project/Models/Sponza/white.png Asset size=951 meta=Paired
+    record guid=52f940e0afd449159adf4ab26c3ee619 type=frt.Texture importer=Texture status=Analyzed stamp=3b1fe50fdc88252d cook=Auto chunk=0 flags=-
     tag Channels = 3
     tag HasAlpha = false
     tag Height = 4

@@ -4,8 +4,10 @@
 // the --json lines (one object per line, stable field names), help's list of verbs, newguid's GUIDs, the
 // asset registry's verbs (scan, status, query, refs, referencers, explain, list-rules, dump registry: only scan
 // writes, and only under the lock; their answers, exit codes and positioned query errors), the
-// writer lock of /Project and, with --engine, of /Engine: a read-only run never takes it, and AssetTool's
-// own lock verb keeps every other writer out until its input ends. A verb that writes nothing runs beside a
+// writer lock of /Project and, with --engine, of /Engine: a read-only run never takes it, a second writer runs as a
+// read-only guest only when the project's Safety.GuestProcesses says so, and AssetTool's
+// own lock verb keeps every other writer out until its input ends. While the MIG001 gate is on, a project behind the
+// engine's migrations is written by nothing but migrate. A verb that writes nothing runs beside a
 // working directory's project it cannot use. The ddc verbs (§7.4, §13.2) count, trim and check the store
 // FRT_DDC_DIR or --ddc names, never create one, keep what every BuildState log of the machine names (the
 // project's, the engine's, the recent projects') without writing any of them, and with --ci trim nothing.
@@ -13,6 +15,8 @@
 // and a copy of it in a scratch engine checkout for /Engine. Release builds no AssetTool: skipped there.
 #include <gtest/gtest.h>
 
+#include "Assets/Meta/MigrationsTestUtils.h"
+#include "Assets/Vcs/GitTestUtils.h"
 #include "TestCommon.h"
 #include "TestProcess.h"
 
@@ -208,6 +212,8 @@ protected:
 		// The engine by its directory: the scratch project is not inside it.
 		ASSERT_TRUE(platform::WriteFileText(ProjectFile, FString::Format("[Project]\nName=AssetToolTest\nEngine={}\n",
 			FString::FromPath(paths::GetEngineDir()))));
+		// Up to date with the engine's migrations, as a committed project is: the MIG001 gate lets its writing verbs run.
+		test::meta::WriteCurrentMigrations(ProjectDir);
 
 		// Nothing AssetTool or the hosts write per user lands in the user's own directory, and the ddc verbs
 		// find the machine's store in a scratch directory (whatever FRT_DDC_DIR a verify run set).
@@ -245,6 +251,7 @@ protected:
 		std::error_code ec;
 		EXPECT_TRUE(std::filesystem::create_directories(binaries, ec)) << FString::FromUtf8Lossy(ec.message()).CStr();
 		EXPECT_TRUE(platform::WriteFileText(Engine / project::EngineFileName.ToPath(), "[Engine]\nName=AssetToolTestEngine\n"));
+		test::meta::WriteCurrentMigrations(Engine);
 		const std::filesystem::path core = ("Core" + GetConfigurationSuffix() + ".dll").ToPath();
 		for (const std::filesystem::path& file : { Exe.filename(), core })
 		{
@@ -302,7 +309,7 @@ TEST_F(AssetToolTest, HelpListsEveryVerb)
 	const test::SProcessResult json = Run({ "help", "--json" });
 	ASSERT_EQ(json.ExitCode, 0) << json.Errors.CStr();
 	const std::vector<FStringView> lines = SplitLines(json.Output);
-	ASSERT_EQ(lines.size(), 12u) << json.Output.CStr();
+	ASSERT_EQ(lines.size(), 17u) << json.Output.CStr();
 	EXPECT_TRUE(lines[0].StartsWith("{\"verb\":\"help\",\"usage\":\"help [verb]: ")) << json.Output.CStr();
 	EXPECT_TRUE(lines[0].EndsWith("\",\"writes\":false}")) << json.Output.CStr();
 	EXPECT_TRUE(lines[1].StartsWith("{\"verb\":\"newguid\",\"usage\":\"newguid [n]: ")) << json.Output.CStr();
@@ -316,6 +323,13 @@ TEST_F(AssetToolTest, HelpListsEveryVerb)
 	{
 		EXPECT_TRUE(lines[4u + i].StartsWith("{\"verb\":\"" + FString(RegistryVerbs[i]) + "\",")) << json.Output.CStr();
 		EXPECT_EQ(lines[4u + i].EndsWith("\"writes\":true}"), i == 0u) << json.Output.CStr();
+	}
+	// The meta verbs (M4): every one takes the writer lock unless read-only.
+	constexpr FStringLiteral MetaVerbs[] = { "validate", "fix", "new-meta", "migrate", "resave" };
+	for (uint32 i = 0u; i < std::size(MetaVerbs); ++i)
+	{
+		EXPECT_TRUE(lines[12u + i].StartsWith("{\"verb\":\"" + FString(MetaVerbs[i]) + "\",")) << json.Output.CStr();
+		EXPECT_TRUE(lines[12u + i].EndsWith("\"writes\":true}")) << json.Output.CStr();
 	}
 
 	const test::SProcessResult one = Run({ "help", "NewGuid" });
@@ -921,6 +935,34 @@ protected:
 		WriteText(content / FStringView("Materials/Камінь.frtmat.yml").ToPath(), "version: 2\nname: Камінь\n\nalbedo:\n  texture: ../Textures/Камінь.png\n");
 		WriteText(content / FStringView("Notes/нотатки.txt").ToPath(), "notes");
 		WriteText(ProjectDir / "Config" / "Assets.yml", "FormatVersion: 1\n");
+		// Each asset's committed meta: with the lifecycle on in every host, a metaless file is a META001 error.
+		for (const auto& [file, guid] : Metas)
+		{
+			WriteText(content / (FString(file) + ".meta").ToPath(), FString::Format("FormatVersion: 1\nGuid: {}\n", guid));
+		}
+	}
+
+	// The scratch project's assets and the GUIDs of their committed metas.
+	struct SMetaFile
+	{
+		FStringLiteral File;
+		FStringLiteral Guid;
+	};
+	static constexpr SMetaFile Metas[] = {
+		{ "Textures/Камінь.png", "5c0e1d2f3a4b4c5d8e9f0a1b2c3d4e5f" },
+		{ "Textures/Трава.png", "6d1f2e3a4b5c4d6e9f0a1b2c3d4e5f60" },
+		{ "Materials/Камінь.frtmat.yml", "7e2a3f4b5c6d4e7f8a0b1c2d3e4f5061" },
+	};
+
+	// The project as it was before its first migration (design §14.8): no meta, no Schemas/Migrations.yml.
+	void RemoveMetasAndMigrations () const
+	{
+		std::error_code ec;
+		for (const auto& [file, guid] : Metas)
+		{
+			std::filesystem::remove(ProjectDir / "Content" / (FString(file) + ".meta").ToPath(), ec);
+		}
+		std::filesystem::remove(ProjectDir / "Schemas" / "Migrations.yml", ec);
 	}
 
 	static void WritePng (const std::filesystem::path& Path, uint32 Size)
@@ -951,6 +993,37 @@ protected:
 };
 }
 
+// The README's `FRT.bat assets <verb>` row is where a reader meets the verbs: it names every verb help lists, and the meta
+// verbs with help's own usage (but --ci, which the row names once for all), so the row cannot fall behind the table again.
+TEST_F(AssetToolTest, TheReadmesAssetsRowNamesEveryVerbHelpLists)
+{
+	const std::optional<FString> readme = platform::ReadFileText(paths::GetEngineDir() / "README.md");
+	ASSERT_TRUE(readme.has_value());
+	FString row;
+	for (const FStringView line : SplitLines(*readme))
+	{
+		if (line.StartsWith("| `FRT.bat assets <verb>` |"))
+		{
+			row = FString(line).Replace("\\|", "|");
+		}
+	}
+	ASSERT_FALSE(row.IsEmpty()) << "README.md has no FRT.bat assets row";
+	const test::SProcessResult json = Run({ "help", "--json" });
+	ASSERT_EQ(json.ExitCode, 0) << json.Errors.CStr();
+	constexpr FStringLiteral MetaVerbs[] = { "validate", "fix", "new-meta", "migrate", "resave" };
+	for (const reflect::CDataTree& line : ParseJsonLines(json.Output))
+	{
+		const FString verb = JsonText(line, "verb");
+		EXPECT_TRUE(row.Contains("`" + verb)) << verb.CStr() << " is missing from the README's row: " << row.CStr();
+		if (std::find(std::begin(MetaVerbs), std::end(MetaVerbs), verb.View()) != std::end(MetaVerbs))
+		{
+			const FString usage = JsonText(line, "usage");
+			const FString head = FString(usage.View().Left(usage.View().Find(": "))).Replace(" [--ci]", "");
+			EXPECT_TRUE(row.Contains("`" + head + "`")) << head.CStr() << " is not in the README's row: " << row.CStr();
+		}
+	}
+}
+
 // scan under the lock writes the project's snapshot, ProjectId and Rules.cache, and a warm scan loads it; scan --ci
 // and every read verb write nothing at all.
 TEST_F(AssetToolRegistryTest, OnlyAScanUnderTheLockWritesAndAWarmScanLoadsItsSnapshot)
@@ -964,8 +1037,13 @@ TEST_F(AssetToolRegistryTest, OnlyAScanUnderTheLockWritesAndAWarmScanLoadsItsSna
 		EXPECT_FALSE(WroteLocalAssets()) << readOnly.front().CStr();
 	}
 
+	// The cold scan with one meta lost: scan reports it (META001, an error, so exit 1) and never writes a meta (edit [66]).
+	const std::filesystem::path stoneMeta = ProjectDir / FStringView("Content/Textures/Камінь.png.meta").ToPath();
+	const FString stoneMetaText = platform::ReadFileText(stoneMeta).value_or(FString());
+	std::error_code removed;
+	ASSERT_TRUE(std::filesystem::remove(stoneMeta, removed));
 	const test::SProcessResult cold = RunOnProject({ "scan", "--json" });
-	ASSERT_EQ(cold.ExitCode, 0) << cold.Errors.CStr();
+	ASSERT_EQ(cold.ExitCode, 1) << cold.Output.CStr() << cold.Errors.CStr();
 	const std::vector<reflect::CDataTree> coldLines = ParseJsonLines(cold.Output);
 	ASSERT_EQ(coldLines.size(), 1u) << cold.Output.CStr();
 	EXPECT_EQ(JsonText(coldLines[0], "verb"), "scan");
@@ -974,11 +1052,13 @@ TEST_F(AssetToolRegistryTest, OnlyAScanUnderTheLockWritesAndAWarmScanLoadsItsSna
 	EXPECT_TRUE(coldLines[0].Find("writer").AsBool().value_or(false));
 	EXPECT_GE(JsonInt(coldLines[0], "records"), 3);
 	EXPECT_GE(JsonInt(coldLines[0], "analyzed"), 3);
-	EXPECT_EQ(JsonInt(coldLines[0], "errors"), 0);
+	EXPECT_EQ(JsonInt(coldLines[0], "errors"), 1) << "the lost meta's META001: " << cold.Output.CStr();
 	EXPECT_TRUE(std::filesystem::exists(assets::GetRegistrySnapshotPath(ProjectDir)));
 	EXPECT_TRUE(std::filesystem::exists(assets::GetProjectIdPath(ProjectDir)));
 	EXPECT_TRUE(std::filesystem::exists(assets::GetRulesCachePath(ProjectDir)));
 	EXPECT_EQ(FString::FromPath(assets::GetRegistrySnapshotPath(ProjectDir)), JsonText(coldLines[0], "snapshot"));
+	EXPECT_FALSE(std::filesystem::exists(stoneMeta)) << "scan never writes a meta";
+	WriteText(stoneMeta, stoneMetaText);
 
 	// Warm: the project's records come from its snapshot (Engine.snapshot is not this verb's to write).
 	const test::SProcessResult warm = RunOnProject({ "scan" });
@@ -994,6 +1074,32 @@ TEST_F(AssetToolRegistryTest, OnlyAScanUnderTheLockWritesAndAWarmScanLoadsItsSna
 	const test::SProcessResult coldDump = RunOnProject({ "dump", "registry", "--mount=Project" });
 	EXPECT_EQ(warmDump.Output, coldDump.Output);
 	EXPECT_FALSE(WroteLocalAssets());
+}
+
+// A second writer (§5.9): while this test process owns the project, scan exits with 4 naming it - until the project's
+// Safety.GuestProcesses lets it run as a read-only guest, which says so, scans, and writes no snapshot. lock is never a
+// guest: holding the lock is its point.
+TEST_F(AssetToolRegistryTest, AScanBesideTheOwnerRunsAsAReadOnlyGuestOnlyWhenTheProjectSaysSo)
+{
+	FString error;
+	const std::optional<platform::CExclusiveFileLock> owned = assets::TryTakeOwnerLock(ProjectDir, nullptr, &error);
+	ASSERT_TRUE(owned.has_value()) << error.CStr();
+	const FString owner = assets::GetThisProcessAsOwner().Describe();
+
+	const test::SProcessResult refused = RunOnProject({ "scan" });
+	EXPECT_EQ(refused.ExitCode, 4) << refused.Errors.CStr();
+	EXPECT_TRUE(refused.Errors.Contains(owner + " owns /Project: close it, or run with --ci")) << refused.Errors.CStr();
+
+	WriteText(ProjectDir / "Config" / "Assets.yml", "FormatVersion: 1\nSafety:\n  GuestProcesses: true\n");
+	const test::SProcessResult guest = RunOnProject({ "scan" });
+	EXPECT_EQ(guest.ExitCode, 0) << guest.Errors.CStr();
+	EXPECT_TRUE(guest.Errors.Contains(owner + " owns /Project: scan runs as a read-only guest (Safety.GuestProcesses)")) << guest.Errors.CStr();
+	EXPECT_TRUE(guest.Output.Contains("read-only: wrote nothing")) << guest.Output.CStr();
+	EXPECT_FALSE(std::filesystem::exists(assets::GetRegistrySnapshotPath(ProjectDir)));
+
+	const test::SProcessResult lock = RunOnProject({ "lock" });
+	EXPECT_EQ(lock.ExitCode, 4) << lock.Errors.CStr();
+	EXPECT_TRUE(lock.Errors.Contains(owner + " owns /Project")) << lock.Errors.CStr();
 }
 
 // query: the records in the query engine's order with the columns asked for, a limit, and positioned errors.
@@ -1197,6 +1303,269 @@ TEST_F(AssetToolRegistryTest, StatusListRulesAndDumpReportWhatTheRegistryHolds)
 	EXPECT_EQ(RunOnProject({ "scan", "--ci" }).ExitCode, 1);
 }
 
+// The meta verbs end to end through the executable, on the scratch project (their logic is MetaVerbsTest's, in-process):
+// validate --ci reports what has no meta and the missing Schemas/Migrations.yml and writes nothing; new-meta creates one
+// meta by its path on disk; migrate --all creates the others, skips that one and records itself; validate as the owner is
+// then clean of errors; fix restores a lost meta byte for byte from the verified copy the last writer's snapshot holds;
+// resave --metas rewrites a hand-edited meta; status names the provider and the metas pending; explain shows the meta.
+TEST_F(AssetToolRegistryTest, TheMetaVerbsCreateValidateRestoreAndExplainMetasThroughTheTool)
+{
+	RemoveMetasAndMigrations();
+	const std::filesystem::path stone = ProjectDir / FStringView("Content/Textures/Камінь.png.meta").ToPath();
+	const std::filesystem::path grass = ProjectDir / FStringView("Content/Textures/Трава.png.meta").ToPath();
+	const std::filesystem::path migrations = ProjectDir / "Schemas" / "Migrations.yml";
+	const auto read = [] (const std::filesystem::path& Path) { return platform::ReadFileText(Path).value_or(FString()); };
+	const auto count = [] (FStringView Output, FStringView Kind, FStringView Code = {})
+	{
+		uint32 found = 0u;
+		for (const reflect::CDataTree& line : ParseJsonLines(Output))
+		{
+			found += JsonText(line, "kind") == Kind && (Code.IsEmpty() || JsonText(line, "code") == Code) ? 1u : 0u;
+		}
+		return found;
+	};
+
+	const test::SProcessResult report = RunOnProject({ "validate", "--ci", "--json" });
+	EXPECT_EQ(report.ExitCode, 1) << report.Output.CStr() << report.Errors.CStr();
+	EXPECT_EQ(count(report.Output, "problem", "META001"), 3u) << "two textures and a material: " << report.Output.CStr();
+	EXPECT_EQ(count(report.Output, "problem", "MIG001"), 1u) << report.Output.CStr();
+	EXPECT_FALSE(std::filesystem::exists(stone));
+	EXPECT_FALSE(WroteLocalAssets()) << "a read-only validate writes nothing";
+
+	// The upgrade preview (§14.8) is read-only by request: it runs beside an owner and writes nothing, not even the
+	// registry's own Local/Assets files (only the lock this test holds is there).
+	{
+		FString error;
+		const std::optional<platform::CExclusiveFileLock> owned = assets::TryTakeOwnerLock(ProjectDir, nullptr, &error);
+		ASSERT_TRUE(owned.has_value()) << error.CStr();
+		const test::SProcessResult preview = RunOnProject({ "migrate", "--all", "--dry-run", "--json" });
+		EXPECT_EQ(preview.ExitCode, 0) << preview.Output.CStr() << preview.Errors.CStr();
+		EXPECT_EQ(count(preview.Output, "meta"), 3u) << preview.Output.CStr();
+		EXPECT_FALSE(std::filesystem::exists(stone));
+		EXPECT_FALSE(std::filesystem::exists(migrations));
+		const std::filesystem::path lock = assets::GetOwnerLockPath(ProjectDir).filename();
+		std::error_code ec;
+		for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(assets::GetMountAssetsLocalDir(ProjectDir), ec))
+		{
+			const FString written = FString::FromPath(entry.path());
+			EXPECT_TRUE(entry.path().filename() == lock) << "a dry run wrote " << written.CStr();
+		}
+	}
+
+	// The project is behind (no Schemas/Migrations.yml yet), which the MIG001 gate refuses every writing verb but migrate
+	// (its own test below): off for this one run, so new-meta's own work is seen before migrate --all.
+	const test::SProcessResult created = RunOnProject({ "new-meta", "Content/Textures/Камінь.png", "-Assets:MigrationGate=0", "--json" });
+	ASSERT_EQ(created.ExitCode, 0) << created.Output.CStr() << created.Errors.CStr();
+	ASSERT_EQ(count(created.Output, "meta"), 1u) << created.Output.CStr();
+	const FString stoneMeta = read(stone);
+	EXPECT_TRUE(stoneMeta.StartsWith("FormatVersion: 1\nGuid: ")) << stoneMeta.CStr();
+
+	const test::SProcessResult migrated = RunOnProject({ "migrate", "--all", "--json" });
+	ASSERT_EQ(migrated.ExitCode, 0) << migrated.Output.CStr() << migrated.Errors.CStr();
+	EXPECT_EQ(count(migrated.Output, "meta"), 2u) << "the other texture and the material: " << migrated.Output.CStr();
+	EXPECT_EQ(read(stone), stoneMeta) << "a meta that exists is skipped";
+	EXPECT_EQ(read(migrations), "FormatVersion: 1\nApplied:\n  - metas\n");
+	EXPECT_FALSE(std::filesystem::exists(ProjectDir / FStringView("Content/Notes/нотатки.txt.meta").ToPath())) << "an unclaimed file takes none";
+
+	const test::SProcessResult owner = RunOnProject({ "validate", "--json" });
+	EXPECT_EQ(owner.ExitCode, 0) << "warnings pass without --ci: " << owner.Output.CStr() << owner.Errors.CStr();
+	EXPECT_EQ(count(owner.Output, "problem", "META001") + count(owner.Output, "problem", "MIG001"), 0u) << owner.Output.CStr();
+
+	// Lost, then fixed from the verified copy; hand-edited, then resaved.
+	const FString grassMeta = read(grass);
+	std::error_code ec;
+	std::filesystem::remove(stone, ec);
+	WriteText(grass, grassMeta.Replace("FormatVersion: 1\n", "") + "FormatVersion: 1\n");
+	const test::SProcessResult fixed = RunOnProject({ "fix", "--json" });
+	EXPECT_EQ(fixed.ExitCode, 0) << fixed.Output.CStr() << fixed.Errors.CStr();
+	EXPECT_EQ(read(stone), stoneMeta) << "restored byte for byte: " << fixed.Output.CStr();
+	EXPECT_EQ(count(fixed.Output, "problem", "META005"), 1u) << "what remains: " << fixed.Output.CStr();
+	const test::SProcessResult resaved = RunOnProject({ "resave", "--metas", "--json" });
+	EXPECT_EQ(resaved.ExitCode, 0) << resaved.Output.CStr() << resaved.Errors.CStr();
+	EXPECT_EQ(read(grass), grassMeta);
+
+	// status detects each mount's provider: the project made a repository just now (an unborn HEAD is one) names Git.
+	const std::filesystem::path git = platform::FindOnPath("git");
+	const FStringView provider = git.empty() ? FStringView("None") : FStringView("Git");
+	if (!git.empty())
+	{
+		ASSERT_EQ(test::RunGit(git, ProjectDir, { "init", "-q" }).ExitCode, 0);
+	}
+	const test::SProcessResult status = RunOnProject({ "status", "--json" });
+	ASSERT_EQ(status.ExitCode, 0) << status.Errors.CStr();
+	bool bMount = false;
+	for (const reflect::CDataTree& line : ParseJsonLines(status.Output))
+	{
+		if (JsonText(line, "kind") == "mount" && JsonText(line, "mount") == "/Project")
+		{
+			bMount = JsonText(line, "provider") == provider && JsonInt(line, "pendingMetas") == 0;
+		}
+	}
+	EXPECT_TRUE(bMount) << "provider " << FString(provider).CStr() << ": " << status.Output.CStr();
+
+	const test::SProcessResult explained = RunOnProject({ "explain", "/Project/Textures/Камінь.png", "--json" });
+	ASSERT_EQ(explained.ExitCode, 0) << explained.Errors.CStr();
+	const std::vector<reflect::CDataTree> lines = ParseJsonLines(explained.Output);
+	ASSERT_EQ(lines.size(), 1u) << explained.Output.CStr();
+	EXPECT_EQ(JsonText(lines[0], "meta.file"), "Content/Textures/Камінь.png.meta");
+	EXPECT_EQ(JsonText(lines[0], "meta.state"), "Paired");
+	EXPECT_TRUE(stoneMeta.Contains("Guid: " + JsonText(lines[0], "meta.guid") + "\n")) << explained.Output.CStr();
+}
+
+// fix prints each planned repair as what became of it: a metaless source whose meta cannot be written (a directory holds
+// its name, so the writer's step fails) is a CreateMeta whose {"kind":"repair"} line says "refused" with no GUID, the text
+// line says so too, and the summary counts it as refused, not repaired; nothing is written.
+TEST_F(AssetToolRegistryTest, FixPrintsARefusedRepairAsRefused)
+{
+	const std::filesystem::path meta = ProjectDir / FStringView("Content/Textures/Камінь.png.meta").ToPath();
+	std::error_code ec;
+	std::filesystem::remove(meta, ec);
+	ASSERT_TRUE(std::filesystem::create_directory(meta, ec)) << FString::FromUtf8Lossy(ec.message()).CStr();
+	const test::SProcessResult fixed = RunOnProject({ "fix", "--json" });
+	const test::SProcessResult text = RunOnProject({ "fix" });
+
+	EXPECT_EQ(fixed.ExitCode, 1) << fixed.Output.CStr() << fixed.Errors.CStr();
+	uint32 repairs = 0u;
+	for (const reflect::CDataTree& line : ParseJsonLines(fixed.Output))
+	{
+		if (JsonText(line, "kind") == "repair")
+		{
+			++repairs;
+			EXPECT_EQ(JsonText(line, "action"), "CreateMeta");
+			EXPECT_EQ(JsonText(line, "path"), "/Project/Textures/Камінь.png");
+			EXPECT_EQ(JsonText(line, "outcome"), "refused") << fixed.Output.CStr();
+			EXPECT_EQ(JsonText(line, "guid"), "") << fixed.Output.CStr();
+		}
+		if (JsonText(line, "kind") == "summary")
+		{
+			EXPECT_EQ(JsonInt(line, "repaired"), 0) << fixed.Output.CStr();
+			EXPECT_EQ(JsonInt(line, "refused"), 1) << fixed.Output.CStr();
+		}
+	}
+	EXPECT_EQ(repairs, 1u) << fixed.Output.CStr();
+	EXPECT_TRUE(text.Output.Contains("(refused: VCS002)")) << text.Output.CStr();
+	EXPECT_TRUE(std::filesystem::is_directory(meta));
+}
+
+// validate --staged, the pre-commit hook's check 6, over what a commit stages outside every mount's content, which the
+// mounts' providers (rooted at Content/) never list: the project's own Config/Assets.yml brings in its rule-file problems
+// (CRLF: VCS001, an unknown key: RULE001, both named /Project), and a staged deletion of Schemas/Migrations.yml the root's
+// MIG001; the same rule file broken on disk but not staged is not this commit's. Skipped without git on PATH.
+TEST_F(AssetToolRegistryTest, ValidateStagedSeesAStagedRuleFileAndMigrationsFileOutsideTheContent)
+{
+	const std::filesystem::path git = platform::FindOnPath("git");
+	if (git.empty())
+	{
+		GTEST_SKIP() << "no git.exe on PATH";
+	}
+	ASSERT_EQ(test::RunGit(git, ProjectDir, { "init", "-q" }).ExitCode, 0);
+	ASSERT_EQ(test::RunGit(git, ProjectDir, { "add", "--all" }).ExitCode, 0);
+	ASSERT_EQ(test::RunGit(git, ProjectDir, { "commit", "-q", "-m", "A project" }).ExitCode, 0);
+	const auto count = [] (FStringView Output, FStringView Code)
+	{
+		uint32 found = 0u;
+		for (const reflect::CDataTree& line : ParseJsonLines(Output))
+		{
+			found += JsonText(line, "kind") == "problem" && JsonText(line, "code") == Code && JsonText(line, "subject") == "/Project" ? 1u : 0u;
+		}
+		return found;
+	};
+
+	// CRLF in a rule file that loads (one that does not load holds no rules to check).
+	WriteText(ProjectDir / "Config" / "Assets.yml", "FormatVersion: 1\r\n");
+	const test::SProcessResult unstaged = RunOnProject({ "validate", "--staged", "--ci", "--json" });
+	EXPECT_EQ(unstaged.ExitCode, 0) << unstaged.Output.CStr() << unstaged.Errors.CStr();
+	EXPECT_EQ(count(unstaged.Output, "VCS001"), 0u) << "not staged: " << unstaged.Output.CStr();
+	ASSERT_EQ(test::RunGit(git, ProjectDir, { "add", "--", "Config/Assets.yml" }).ExitCode, 0);
+	const test::SProcessResult crlf = RunOnProject({ "validate", "--staged", "--ci", "--json" });
+	EXPECT_EQ(crlf.ExitCode, 1) << crlf.Output.CStr() << crlf.Errors.CStr();
+	EXPECT_EQ(count(crlf.Output, "VCS001"), 1u) << crlf.Output.CStr();
+	EXPECT_EQ(count(crlf.Output, "MIG001"), 0u) << "Migrations.yml was not staged: " << crlf.Output.CStr();
+
+	WriteText(ProjectDir / "Config" / "Assets.yml", "FormatVersion: 1\nNoSuchKey: 1\n");
+	ASSERT_EQ(test::RunGit(git, ProjectDir, { "add", "--", "Config/Assets.yml" }).ExitCode, 0);
+	const test::SProcessResult unknown = RunOnProject({ "validate", "--staged", "--ci", "--json" });
+	EXPECT_EQ(unknown.ExitCode, 1) << unknown.Output.CStr() << unknown.Errors.CStr();
+	EXPECT_GE(count(unknown.Output, "RULE001"), 1u) << unknown.Output.CStr();
+
+	ASSERT_EQ(test::RunGit(git, ProjectDir, { "reset", "-q", "--hard" }).ExitCode, 0);
+	ASSERT_EQ(test::RunGit(git, ProjectDir, { "rm", "-q", "--", "Schemas/Migrations.yml" }).ExitCode, 0);
+	const test::SProcessResult deleted = RunOnProject({ "validate", "--staged", "--ci", "--json" });
+	EXPECT_EQ(deleted.ExitCode, 1) << deleted.Output.CStr() << deleted.Errors.CStr();
+	EXPECT_EQ(count(deleted.Output, "MIG001"), 1u) << deleted.Output.CStr();
+	EXPECT_EQ(count(deleted.Output, "VCS001") + count(deleted.Output, "RULE001"), 0u) << deleted.Output.CStr();
+}
+
+// The MIG001 gate (design §14.8), on by default and named for these runs with -Assets:MigrationGate=1: in a project
+// behind the engine every run that would write ends with exit code 1 and MIG001 before it takes the lock, validate
+// --fix as well (its WriteOption), and writes nothing; a run that writes nothing goes on and reports MIG001 as an
+// error inside the output its verb documents: scan --ci in its one --json object ("migration"), status as one more
+// {"kind":"problems"} line; migrate runs and brings the project up to date, and then the same scan writes. Six
+// launches.
+TEST_F(AssetToolRegistryTest, AProjectBehindTheEngineIsWrittenOnlyByItsMigrationWhileTheGateIsOn)
+{
+	RemoveMetasAndMigrations();
+	const FString gate = "-Assets:MigrationGate=1";
+	const std::filesystem::path stone = ProjectDir / FStringView("Content/Textures/Камінь.png.meta").ToPath();
+
+	const test::SProcessResult refused = RunOnProject({ "scan", gate, "--json" });
+	EXPECT_EQ(refused.ExitCode, 1) << refused.Output.CStr() << refused.Errors.CStr();
+	EXPECT_TRUE(refused.Output.Contains("\"exitCode\":1,\"code\":\"MIG001\",\"subject\":\"/Project\"")) << refused.Output.CStr();
+	EXPECT_TRUE(refused.Errors.Contains("scan: MIG001 /Project is behind this engine")) << refused.Errors.CStr();
+	EXPECT_TRUE(refused.Errors.Contains("migrate --all")) << refused.Errors.CStr();
+	EXPECT_FALSE(WroteLocalAssets()) << "refused before the lock";
+
+	const test::SProcessResult fix = RunOnProject({ "validate", "--fix", gate });
+	EXPECT_EQ(fix.ExitCode, 1) << fix.Output.CStr() << fix.Errors.CStr();
+	EXPECT_TRUE(fix.Errors.Contains("validate: MIG001")) << fix.Errors.CStr();
+	EXPECT_FALSE(std::filesystem::exists(stone)) << "--fix writes, so it is refused";
+
+	const test::SProcessResult readOnly = RunOnProject({ "scan", "--ci", gate, "--json" });
+	EXPECT_EQ(readOnly.ExitCode, 1) << readOnly.Output.CStr() << readOnly.Errors.CStr();
+	const std::vector<reflect::CDataTree> scanLines = ParseJsonLines(readOnly.Output);
+	ASSERT_EQ(scanLines.size(), 1u) << "scan --json is one line, MIG001 or not: " << readOnly.Output.CStr();
+	EXPECT_EQ(JsonText(scanLines[0], "verb"), "scan");
+	EXPECT_TRUE(JsonText(scanLines[0], "migration").StartsWith("/Project is behind this engine")) << readOnly.Output.CStr();
+	EXPECT_GE(JsonInt(scanLines[0], "errors"), 1) << readOnly.Output.CStr();
+	EXPECT_FALSE(WroteLocalAssets()) << "a read-only scan writes nothing";
+
+	// status: MIG001 is one of its problems by code (the lifecycle's), counted in its summary's errors.
+	const test::SProcessResult status = RunOnProject({ "status", gate, "--json" });
+	EXPECT_EQ(status.ExitCode, 1) << status.Output.CStr() << status.Errors.CStr();
+	uint32 mig001 = 0u;
+	for (const reflect::CDataTree& line : ParseJsonLines(status.Output))
+	{
+		const FString kind = JsonText(line, "kind");
+		EXPECT_TRUE(kind == "scan" || kind == "mount" || kind == "problems" || kind == "unclaimed" || kind == "ddc" || kind == "summary")
+			<< "status sends only the kinds it documents: " << kind.CStr();
+		if (kind == "problems" && JsonText(line, "code") == "MIG001")
+		{
+			++mig001;
+			EXPECT_EQ(JsonText(line, "severity"), "error");
+			EXPECT_EQ(JsonText(line, "source"), "Lifecycle");
+			EXPECT_EQ(JsonInt(line, "count"), 1);
+		}
+		if (kind == "summary")
+		{
+			EXPECT_GE(JsonInt(line, "errors"), 1);
+		}
+	}
+	EXPECT_EQ(mig001, 1u) << status.Output.CStr();
+	EXPECT_FALSE(WroteLocalAssets()) << "status writes nothing";
+
+	const test::SProcessResult migrated = RunOnProject({ "migrate", "--all", gate });
+	ASSERT_EQ(migrated.ExitCode, 0) << migrated.Output.CStr() << migrated.Errors.CStr();
+	EXPECT_TRUE(std::filesystem::exists(stone));
+	EXPECT_TRUE(std::filesystem::exists(ProjectDir / "Schemas" / "Migrations.yml"));
+
+	const test::SProcessResult scanned = RunOnProject({ "scan", gate, "--json" });
+	EXPECT_EQ(scanned.ExitCode, 0) << scanned.Output.CStr() << scanned.Errors.CStr();
+	const std::vector<reflect::CDataTree> scannedLines = ParseJsonLines(scanned.Output);
+	ASSERT_EQ(scannedLines.size(), 1u) << scanned.Output.CStr();
+	EXPECT_EQ(JsonText(scannedLines[0], "migration"), "") << scanned.Output.CStr();
+	EXPECT_TRUE(std::filesystem::exists(assets::GetRegistrySnapshotPath(ProjectDir)));
+}
+
 // scan --engine is the engine's owner: it writes Engine.snapshot under its own engine checkout, never a project's.
 TEST_F(AssetToolRegistryTest, ScanWithEngineWritesTheEnginesSnapshot)
 {
@@ -1204,6 +1573,7 @@ TEST_F(AssetToolRegistryTest, ScanWithEngineWritesTheEnginesSnapshot)
 	const std::filesystem::path engineTool = MakeScratchEngine(engine);
 	ASSERT_FALSE(HasFailure());
 	WritePng(engine / "Core" / "Content" / "Textures" / "Default.png", 4u);
+	WriteText(engine / "Core" / "Content" / "Textures" / "Default.png.meta", "FormatVersion: 1\nGuid: 8f3b4a5c6d7e4f809a1b2c3d4e5f6071\n");
 	const test::SProcessResult scanned = test::RunProcess(engineTool, std::vector<FString> { "--engine", "scan", "--json" }, Dir);
 	ASSERT_EQ(scanned.ExitCode, 0) << scanned.Errors.CStr();
 	const std::vector<reflect::CDataTree> lines = ParseJsonLines(scanned.Output);
@@ -1219,4 +1589,57 @@ TEST_F(AssetToolRegistryTest, ScanWithEngineWritesTheEnginesSnapshot)
 	ASSERT_EQ(dump.ExitCode, 0) << dump.Errors.CStr();
 	EXPECT_TRUE(dump.Output.Contains("file /Engine/Textures/Default.png Asset")) << dump.Output.CStr();
 	EXPECT_FALSE(dump.Output.Contains("mount /Project")) << dump.Output.CStr();
+}
+
+// Two machines agree on a new meta (design §4.2, §16.2 M4 "two fresh clones of a commit with a metaless PNG give
+// byte-identical metas"): a repository whose project commits a texture without its meta, cloned twice to other paths,
+// one clone with core.autocrlf=true as Git for Windows has it by default; `fix` in each derives the same GUID from the
+// folded mount path, the file's bytes and the project's salt, so both metas have the same bytes, LF and canonical. Two
+// launches. The project carries the .gitattributes every project gets (Templates/Common's, FRT.bat new): the CRLF clone
+// checks the project file out CRLF, and the hashed rule file LF, as without it `fix` would refuse (VCS001); the PNG is
+// binary either way.
+TEST_F(AssetToolRegistryTest, TwoFreshClonesOfACommitGiveAMetalessFileByteIdenticalMetas)
+{
+	const std::filesystem::path git = platform::FindOnPath("git");
+	if (git.empty())
+	{
+		GTEST_SKIP() << "git is not on PATH";
+	}
+	const std::filesystem::path origin = Dir / FStringView("Джерело").ToPath();
+	const std::filesystem::path texture = FStringView("Content/Textures/Камінь.png").ToPath();
+	WritePng(origin / texture, 16u);
+	WriteText(origin / "Config" / "Assets.yml", "FormatVersion: 1\n");
+	WriteText(origin / "Clone.frtproject", FString::Format("[Project]\nName=Clone\nEngine={}\n", FString::FromPath(paths::GetEngineDir())));
+	test::meta::WriteCurrentMigrations(origin);
+	std::error_code ec;
+	ASSERT_TRUE(std::filesystem::copy_file(paths::GetEngineDir() / "Templates" / "Common" / ".gitattributes", origin / ".gitattributes", ec))
+		<< ec.message();
+	ASSERT_EQ(test::RunGit(git, origin, { "init", "-q" }).ExitCode, 0);
+	ASSERT_EQ(test::RunGit(git, origin, { "add", "--all" }).ExitCode, 0);
+	ASSERT_EQ(test::RunGit(git, origin, { "commit", "-q", "-m", "A texture without its meta" }).ExitCode, 0);
+
+	std::vector<FString> metas;
+	for (const auto& [name, autocrlf] : { std::pair<FStringView, FStringView> { "Перший", "false" }, { "Другий 第二", "true" } })
+	{
+		const std::filesystem::path clone = Dir / name.ToPath();
+		// Top-level, after RunGit's own core.autocrlf=false, so that the later one wins for clone's checkout; `clone -c`
+		// keeps it in the clone's config for the git that `fix` runs.
+		const FString setting = FString::Format("core.autocrlf={}", autocrlf);
+		const test::SProcessResult cloned = test::RunGit(git, Dir, { "-c", setting, "clone", "-q", "--local", "-c", setting,
+			FString::FromPath(origin), FString::FromPath(clone) });
+		ASSERT_EQ(cloned.ExitCode, 0) << cloned.Errors.CStr();
+		const std::optional<FString> projectFile = platform::ReadFileText(clone / "Clone.frtproject");
+		const std::optional<FString> rules = platform::ReadFileText(clone / "Config" / "Assets.yml");
+		ASSERT_TRUE(projectFile.has_value() && rules.has_value());
+		EXPECT_EQ(projectFile->Contains("\r\n"), autocrlf == "true") << "the clone checked its text out with " << setting.CStr();
+		EXPECT_FALSE(rules->Contains("\r")) << "a hashed rule file is LF in every checkout (.gitattributes)";
+		const test::SProcessResult fixed = Run({ "-Project=" + FString::FromPath(clone / "Clone.frtproject"), "fix" }, clone);
+		ASSERT_EQ(fixed.ExitCode, 0) << fixed.Output.CStr() << fixed.Errors.CStr();
+		const std::optional<std::vector<uint8>> bytes = platform::ReadFileBytesUncached(clone / (FString::FromPath(texture) + ".meta").ToPath());
+		ASSERT_TRUE(bytes.has_value()) << "fix created the meta: " << fixed.Output.CStr();
+		metas.emplace_back(FStringView(reinterpret_cast<const char*>(bytes->data()), static_cast<uint32>(bytes->size())));
+	}
+	EXPECT_EQ(metas[0], metas[1]);
+	EXPECT_TRUE(metas[0].StartsWith("FormatVersion: 1\nGuid: ")) << metas[0].CStr();
+	EXPECT_FALSE(metas[0].Contains("\r")) << metas[0].CStr();
 }

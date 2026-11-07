@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# FRT's pass-through for the clone's own post-checkout hook, which core.hooksPath would silence: Git LFS's,
+# the person's, or Git LFS itself (chain says how).
+. "${0%/*}/chain"
+chainHook post-checkout "$@"

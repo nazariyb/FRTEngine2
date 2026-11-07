@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "Assets/AssetId.h"
+#include "Assets/Meta/MetaPaths.h"
 #include "Containers/String.h"
 #include "Hash/StableHash.h"
 
@@ -224,6 +225,57 @@ TEST(AssetIdTest, AutoGuidValuesAreFrozen)
 	EXPECT_EQ(MakeAutoGuid("Demo", "migrate-metas", FStringView("/project/модель.gltf").AsBytes()).ToString(),
 		"273321575b9b495aa75a1db1df1f1a87");
 	EXPECT_EQ(MakeAutoGuidCandidate("Demo", "auto-meta", {}, 1u).ToString(), "afe6511d0fa6425f85b35290a26f5fbb");
+}
+
+// The two GUIDs tools derive for metas (Assets/Meta/MetaPaths.h). Two clones of one commit must write the same bytes, so
+// the exact input is frozen: this input, recomputed by hand here, and the values, which metas on disk will hold.
+TEST(AssetIdTest, CreateMetaGuidIsTheFoldedPathThenTheContent)
+{
+	const hash::SContentHash content = hash::HashContent(FStringView("пікселі").AsBytes());
+	const FStringView folded = "/project/гра/камінь.png";
+	std::vector<uint8> input(folded.AsBytes().begin(), folded.AsBytes().end());
+	input.insert(input.end(), std::begin(content.Bytes), std::end(content.Bytes));
+
+	const SGuid guid = MakeCreateMetaGuid("Demo", "/Project/Гра/Камінь.PNG", content);
+	EXPECT_EQ(guid, MakeAutoGuid("Demo", "auto-meta", input));
+	EXPECT_EQ(guid, MakeCreateMetaGuid("Demo", "/project/гра/камінь.png", content)) << "a case-sensitive checkout agrees";
+	EXPECT_EQ(guid.ToString(), "4ab961ad9839446baf42d36a6564048c");
+	EXPECT_EQ(MakeCreateMetaGuid("FRT.Engine", "/Engine/Fonts/Roboto.ttf", hash::SContentHash {}).ToString(), "e3942051094b44a7aede8b7ba94e4664");
+
+	EXPECT_NE(MakeCreateMetaGuid("Blank", "/Project/Гра/Камінь.PNG", content), guid);
+	EXPECT_NE(MakeCreateMetaGuid("Demo", "/Project/Гра/Інший.png", content), guid);
+	EXPECT_NE(MakeCreateMetaGuid("Demo", "/Project/Гра/Камінь.PNG", hash::SContentHash {}), guid);
+}
+
+TEST(AssetIdTest, DedupeGuidIsTheOldGuidThenTheFoldedPath)
+{
+	const SGuid old = GuidFromText("5d1e7a3b9c0f42d68e1a2b3c4d5e6f70");
+	const FStringView folded = "/project/копія/rock.png";
+	std::vector<uint8> input(std::begin(old.Bytes), std::end(old.Bytes));
+	input.insert(input.end(), folded.AsBytes().begin(), folded.AsBytes().end());
+
+	const SGuid guid = MakeDedupeGuid("Demo", old, "/Project/Копія/Rock.png");
+	EXPECT_EQ(guid, MakeAutoGuid("Demo", "dedupe", input));
+	EXPECT_EQ(guid.ToString(), "bd27976466f843f588bc133e9ed46111");
+
+	EXPECT_NE(MakeDedupeGuid("Demo", old, "/Project/Копія 2/Rock.png"), guid) << "two losers of one GUID stay apart";
+	EXPECT_NE(MakeDedupeGuid("Demo", SGuid {}, "/Project/Копія/Rock.png"), guid);
+}
+
+TEST(AssetIdTest, MetaGuidsRerollOverAGuidThatIsAlreadyLive)
+{
+	const hash::SContentHash content {};
+	const SGuid first = MakeCreateMetaGuid("Demo", "/Project/A.png", content);
+	std::set<SGuid> live = { first };
+	const SGuid second = MakeCreateMetaGuid("Demo", "/Project/A.png", content, [&] (const SGuid& Guid) { return live.contains(Guid); });
+	EXPECT_NE(second, first);
+	live.insert(second);
+	const SGuid third = MakeCreateMetaGuid("Demo", "/Project/A.png", content, [&] (const SGuid& Guid) { return live.contains(Guid); });
+	EXPECT_NE(third, first);
+	EXPECT_NE(third, second);
+
+	const SGuid dedupe = MakeDedupeGuid("Demo", first, "/Project/B.png");
+	EXPECT_NE(MakeDedupeGuid("Demo", first, "/Project/B.png", [&] (const SGuid& Guid) { return Guid == dedupe; }), dedupe);
 }
 
 TEST(AssetIdTest, AutoGuidRerollsWhenALiveGuidHasIt)

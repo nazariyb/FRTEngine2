@@ -135,6 +135,7 @@ struct SFileWatcherSettings
 	bool bEnabled = true;
 	uint32 SettleMs = 200u;
 	uint32 MaxLatencyMs = 2000u;
+	// [AssetsEditor] RemoveGraceMs (default 1000).
 	uint32 RemoveGraceMs = 1000u;
 	uint32 PairWindowMs = 150u;
 	uint32 BurstEvents = 256u;
@@ -151,7 +152,8 @@ struct SFileWatcherSettings
 	// For the platform watcher the service creates (buffer size, thread name, lost-root polling).
 	platform::SFileWatcherDesc Watcher;
 
-	// The defaults with [Assets] Watch and [AssetsEditor] VcsSettleMs from Config.
+	// The defaults with [Assets] Watch from Config, and RemoveGraceMs and VcsSettleMs from SAssetEditorSettings::FromConfig
+	// (Assets/Meta/Safety.h), the one reader of [AssetsEditor].
 	[[nodiscard]] FRT_CORE_API static SFileWatcherSettings FromConfig (const config::CConfig& Config);
 };
 
