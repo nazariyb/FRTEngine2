@@ -1,10 +1,12 @@
 #pragma once
 
 #include <filesystem>
+#include <optional>
 #include <vector>
 
 #include "TestProcess.h"
 #include "Containers/String.h"
+#include "Platform/Platform.h"
 
 
 namespace frt::test
@@ -18,4 +20,30 @@ inline SProcessResult RunGit (const std::filesystem::path& Git, const std::files
 	Arguments.insert(Arguments.begin(), prefix.begin(), prefix.end());
 	return RunProcess(Git, Arguments, Repository);
 }
+
+// One environment variable of this process set for a scope, and given back (or removed) when it ends, however it ends: an
+// ASSERT returns early, and every git a later test starts would inherit a GIT_INDEX_FILE or a FRT_HOOK_TOPLEVEL left set.
+// An empty Value removes the variable.
+class CScopedEnvironment
+{
+public:
+	CScopedEnvironment (FStringView InName, FStringView Value)
+		: Name(InName)
+		, Saved(platform::GetEnvironmentValue(InName))
+	{
+		platform::SetEnvironmentValue(Name, Value);
+	}
+
+	~CScopedEnvironment ()
+	{
+		platform::SetEnvironmentValue(Name, Saved.value_or(FString()));
+	}
+
+	CScopedEnvironment (const CScopedEnvironment&) = delete;
+	CScopedEnvironment& operator= (const CScopedEnvironment&) = delete;
+
+private:
+	FString Name;
+	std::optional<FString> Saved;
+};
 }

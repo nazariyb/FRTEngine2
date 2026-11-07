@@ -24,18 +24,40 @@ constexpr uint32 GitTimeoutMs = 120000u;
 	return FStringView(reinterpret_cast<const char*>(Bytes.data()), static_cast<uint32>(Bytes.size()));
 }
 
-// A `.git` file or directory at or above Directory: a repository git could not, or would not, use.
+// A `.git` file or directory at or above Directory: a repository git could not, or would not, use. Looked for as git looks:
+// never up into a folder GIT_CEILING_DIRECTORIES lists (';'-separated, as git reads it on Windows), so that this walk and
+// git's own discovery agree on what is a repository.
 [[nodiscard]] bool HasDotGitAbove (const std::filesystem::path& Directory)
 {
+	std::vector<std::filesystem::path> ceilings;
+	if (const std::optional<FString> listed = platform::GetEnvironmentValue("GIT_CEILING_DIRECTORIES"); listed.has_value())
+	{
+		for (const FStringView entry : listed->View().Split(';', EStringSplit::SkipEmpty | EStringSplit::Trim))
+		{
+			const std::filesystem::path ceiling = entry.ToPath();
+			if (ceiling.is_absolute())
+			{
+				ceilings.push_back(platform::NormalizePath(ceiling));
+			}
+		}
+	}
 	for (std::filesystem::path current = Directory; ; current = current.parent_path())
 	{
 		if (platform::Stat(current / ".git").has_value())
 		{
 			return true;
 		}
-		if (current == current.parent_path())
+		const std::filesystem::path parent = current.parent_path();
+		if (current == parent)
 		{
 			return false;
+		}
+		for (const std::filesystem::path& ceiling : ceilings)
+		{
+			if (const std::optional<FString> relative = platform::GetRelativePath(parent, ceiling); relative.has_value() && relative->IsEmpty())
+			{
+				return false;
+			}
 		}
 	}
 }

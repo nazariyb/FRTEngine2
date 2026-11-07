@@ -3,8 +3,10 @@
 // tracked file is a rename to git, and every other move stages nothing; refused or failed moves leave an asset and its
 // meta together; committed facts and status round-trip non-ASCII names and survive an unborn HEAD; a read-only file fails
 // CheckOut without being written, partly written or having its attribute cleared; and `None` asks nothing of anybody. A
-// `.git` that cannot be used is None and one warning. The recording fake other pieces test against is checked here too.
-// One small repository per suite (no test writes more than a handful of files). Skipped without git on PATH.
+// `.git` that cannot be used is None and one warning, and nothing above GIT_CEILING_DIRECTORIES is a repository (Core-Test
+// sets it to the temporary folder, which may itself be in a work tree). The recording fake other pieces test against is
+// checked here too. One small repository per suite (no test writes more than a handful of files). An environment variable a
+// test sets is given back however the test ends. Skipped without git on PATH.
 #include <gtest/gtest.h>
 
 #include "TestCommon.h"
@@ -55,24 +57,6 @@ void SetReadOnly (const std::filesystem::path& File, bool bReadOnly)
 	}
 	return warnings;
 }
-
-class CScopedPath
-{
-public:
-	explicit CScopedPath (FStringView Value)
-		: Saved(platform::GetEnvironmentValue("PATH").value_or(FString()))
-	{
-		platform::SetEnvironmentValue("PATH", Value);
-	}
-
-	~CScopedPath ()
-	{
-		platform::SetEnvironmentValue("PATH", Saved);
-	}
-
-private:
-	FString Saved;
-};
 
 class VcsProviderTest : public ::testing::Test
 {
@@ -209,7 +193,7 @@ TEST_F(VcsProviderTest, ADotGitWithoutGitOnPathIsNoneAndOneWarning)
 	const test::CLogCapture capture;
 	const std::filesystem::path outside = gDir / FStringView("Без сховища").ToPath();
 	std::filesystem::create_directories(outside);
-	const CScopedPath path("");
+	const test::CScopedEnvironment path("PATH", "");
 
 	std::unique_ptr<IVcsProvider> provider = MakeVcsProvider("Auto", FString::FromPath(gMount));
 	EXPECT_EQ(provider->GetName(), "None");
@@ -230,6 +214,31 @@ TEST_F(VcsProviderTest, ADotGitGitRefusesIsNoneAndAWarningQuotingGit)
 	EXPECT_EQ(MakeVcsProvider("Auto", FString::FromPath(broken))->GetName(), "None");
 	ASSERT_EQ(CountWarnings(capture), 1u);
 	EXPECT_TRUE(capture.GetEntries()[0].Text.Contains("not a git repository")) << capture.GetEntries()[0].Text.CStr();
+}
+
+// A temporary folder inside a work tree (a dotfiles repository in the home folder) holds every scratch folder of a test.
+// With GIT_CEILING_DIRECTORIES at the temporary folder, as Core-Test's main sets it, neither git nor the provider's own walk
+// for a `.git` (when git is not on PATH) finds that repository from a scratch folder; without it, both do.
+TEST_F(VcsProviderTest, NothingAboveTheGitCeilingIsARepository)
+{
+	const std::filesystem::path home = gDir / FStringView("Домівка").ToPath();
+	const std::filesystem::path temp = home / "AppData" / "Temp";
+	const std::filesystem::path scratch = temp / FStringView("Чернетка").ToPath();
+	std::filesystem::create_directories(scratch);
+	ASSERT_EQ(test::RunGit(gGit, home, { "init", "-q" }).ExitCode, 0);
+	const test::CLogCapture capture;
+	{
+		const test::CScopedEnvironment ceiling("GIT_CEILING_DIRECTORIES", FString::FromPath(temp, EPathStyle::Generic));
+		EXPECT_EQ(MakeVcsProvider("Auto", FString::FromPath(scratch))->GetName(), "None");
+		const test::CScopedEnvironment path("PATH", "");
+		EXPECT_EQ(MakeVcsProvider("Auto", FString::FromPath(scratch))->GetName(), "None");
+		EXPECT_EQ(CountWarnings(capture), 0u) << (capture.GetEntries().empty() ? "" : capture.GetEntries()[0].Text.CStr());
+	}
+	const test::CScopedEnvironment ceiling("GIT_CEILING_DIRECTORIES", "");
+	EXPECT_EQ(MakeVcsProvider("Auto", FString::FromPath(scratch))->GetName(), "Git");
+	const test::CScopedEnvironment path("PATH", "");
+	EXPECT_EQ(MakeVcsProvider("Auto", FString::FromPath(scratch))->GetName(), "None");
+	EXPECT_EQ(CountWarnings(capture), 1u) << "git is not on PATH, and there is a .git above";
 }
 
 // A mount whose folder does not exist (MakeMount keeps one, empty, and git keeps no empty folder) is in the repository
@@ -778,6 +787,14 @@ TEST_F(VcsProviderTest, OnlyTheCommittingRepositoryReadsTheIndexAHookWasGiven)
 	ASSERT_EQ(RunGit({ "add", "--", staged }).ExitCode, 0);
 	const std::filesystem::path tree = gDir / FStringView("Дерево поруч").ToPath();
 	ASSERT_EQ(RunGit({ "worktree", "add", "-q", "--detach", FString::FromPath(tree) }).ExitCode, 0);
+	// However the test ends, so that no later test finds the work tree still registered.
+	const struct SRemoveWorktree
+	{
+		std::filesystem::path Tree;
+		~SRemoveWorktree () { (void)RunGit({ "worktree", "remove", "--force", FString::FromPath(Tree) }); }
+	} removeWorktree { tree };
+	const std::optional<FString> savedIndexFile = platform::GetEnvironmentValue("GIT_INDEX_FILE");
+	const std::optional<FString> savedHook = platform::GetEnvironmentValue("FRT_HOOK_TOPLEVEL");
 	const FString treeMount = FString::FromPath(tree / gMount.filename());
 	const FString baseInTree = FString::FromPath(tree / gMount.filename() / "Base.png");
 	ASSERT_TRUE(platform::WriteFileText(tree / gMount.filename() / "Other.png", "staged in the other work tree\n"));
@@ -786,8 +803,9 @@ TEST_F(VcsProviderTest, OnlyTheCommittingRepositoryReadsTheIndexAHookWasGiven)
 	for (const FString& index : { FString(".git/index"), FString::FromPath(gRepo / ".git" / "index") })
 	{
 		SCOPED_TRACE(index.CStr());
-		platform::SetEnvironmentValue("GIT_INDEX_FILE", index);
-		platform::SetEnvironmentValue("FRT_HOOK_TOPLEVEL", FString::FromPath(gRepo, EPathStyle::Generic));
+		// Given back however the pass ends: an ASSERT below returns with both set otherwise, and every later git inherits them.
+		const test::CScopedEnvironment indexFile("GIT_INDEX_FILE", index);
+		const test::CScopedEnvironment hook("FRT_HOOK_TOPLEVEL", FString::FromPath(gRepo, EPathStyle::Generic));
 
 		CGitVcsProvider committing;
 		ASSERT_TRUE(committing.Detect(FString::FromPath(gMount)));
@@ -802,28 +820,24 @@ TEST_F(VcsProviderTest, OnlyTheCommittingRepositoryReadsTheIndexAHookWasGiven)
 		std::vector<SVcsStatus> status;
 		EXPECT_EQ(other.StatusOf(std::span(&baseInTree, 1u), status).Error, EVcsError::None);
 		EXPECT_EQ(status[0].State, EVcsState::Clean);
-
-		platform::SetEnvironmentValue("FRT_HOOK_TOPLEVEL", "");
-		platform::SetEnvironmentValue("GIT_INDEX_FILE", "");
 	}
+	EXPECT_EQ(platform::GetEnvironmentValue("GIT_INDEX_FILE"), savedIndexFile);
+	EXPECT_EQ(platform::GetEnvironmentValue("FRT_HOOK_TOPLEVEL"), savedHook);
 
-	// No hook said anything: a person's own GIT_INDEX_FILE is theirs, and git's rules apply.
-	platform::SetEnvironmentValue("GIT_INDEX_FILE", FString::FromPath(gRepo / ".git" / "index"));
-	CGitVcsProvider plain;
-	const bool bDetected = plain.Detect(treeMount);
 	std::vector<FString> files;
-	const SVcsResult result = plain.GetStaged(files);
-	platform::SetEnvironmentValue("GIT_INDEX_FILE", "");
-	EXPECT_TRUE(bDetected);
-	EXPECT_EQ(result.Error, EVcsError::None);
-	EXPECT_EQ(files.size(), 1u);
+	{
+		// No hook said anything: a person's own GIT_INDEX_FILE is theirs, and git's rules apply.
+		const test::CScopedEnvironment indexFile("GIT_INDEX_FILE", FString::FromPath(gRepo / ".git" / "index"));
+		CGitVcsProvider plain;
+		ASSERT_TRUE(plain.Detect(treeMount));
+		EXPECT_EQ(plain.GetStaged(files).Error, EVcsError::None);
+		EXPECT_EQ(files.size(), 1u);
+	}
 	// And without any of it, the other work tree's own staged file.
 	CGitVcsProvider own;
 	ASSERT_TRUE(own.Detect(treeMount));
 	EXPECT_EQ(own.GetStaged(files).Error, EVcsError::None);
 	EXPECT_EQ(files, std::vector<FString> { FString::FromPath(tree / gMount.filename() / "Other.png") });
-
-	EXPECT_EQ(RunGit({ "worktree", "remove", "--force", FString::FromPath(tree) }).ExitCode, 0);
 }
 
 
