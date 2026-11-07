@@ -195,7 +195,7 @@ struct SAssetRepairsDesc
  * the registry is quiet. Its result is committed when it arrives if the registry is still quiet at the revision the run
  * read; otherwise it is dropped and run again, so a result never lands on a tree it did not see. The repairs of one result
  * are one proposal set: their ops run in one worker job, after IsBusy is asked once more and the expected writes are
- * registered with the watcher. While a provider IsBusy, and for VcsSettleMs after (WaitForVcs), until the providers are
+ * registered with the watcher. While the provider of a mount it repairs IsBusy, and for VcsSettleMs after (WaitForVcs), until the providers are
  * settled, and while the watcher holds events back (a burst, an overflow), runs report without repairing; IsBusy is polled
  * every 100 ms only while that hold keeps something pending. A fix-it is a command: no hold applies to its op.
  *
@@ -363,6 +363,10 @@ struct SAssetOwnership
 
 [[nodiscard]] FRT_CORE_API SAssetOwnership ClaimAssetOwnership (const SAssetOwnershipRequest& Request);
 
+// Root's OpJournal.log holds an operation a previous run left unfinished (one file read; no lock asked). A host claiming a
+// root detects its providers before the claim only then, so the roll-forward goes through them (CEngine, AssetTool).
+[[nodiscard]] FRT_CORE_API bool HasUnfinishedOperation (const std::filesystem::path& Root);
+
 // Engine-owner mode (§4.7) of a host with a project: the project's directory lies inside the engine checkout
 // (Templates/*: the engine developer's own projects), or the host asked with -Assets:EngineWritable=1. An engine used as a
 // submodule or shared checkout by an external project stays read-only for it.
@@ -372,7 +376,7 @@ struct SAssetOwnership
 // Whether a Project-owner host in engine-owner mode claims the engine's Owner.lock beside its project's
 // (SAssetOwnershipRequest::EngineRoot): only for a registry whose lifecycle repairs (Lifecycle->bRepairs). Without one,
 // bEngineMetasWritable does nothing, and the lock would only keep every writing --engine run out (exit 4) while the editor
-// is open; real hosts pass no lifecycle until H4b, so the engine's lock and bEngineMetasWritable switch on together there.
+// is open. CEngine's writer passes a repairing lifecycle, so for it the two always go together.
 [[nodiscard]] FRT_CORE_API bool ClaimsEngineOwnership (bool bEngineOwnerMode, const SLifecycleDesc* Lifecycle) noexcept;
 
 // The lines a host reports at start-up (edit [15]) for each root of a claim whose OpJournal.log holds an unfinished

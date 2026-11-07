@@ -283,7 +283,7 @@ void CProjectManager::Refresh ()
 			{
 				entry.EngineText = "This engine";
 				// Behind this engine's migrations (MIG001): what the editor would open read-only. Another engine's
-				// project is that engine's to judge, so only this one's are asked; the gate is off until H4b.
+				// project is that engine's to judge, so only this one's are asked, and only while the gate is on.
 				if (assets::IsMigrationGateOn(Engine.GetConfig()))
 				{
 					if (const std::optional<SDiagnostic> gap = assets::FindMigrationGap(descriptor.GetDir(), "/Project", false))
@@ -433,7 +433,7 @@ void CProjectManager::DrawRecent ()
 	}
 	ImGui::EndDisabled();
 	ImGui::SameLine();
-	// Only for a project behind this engine (MIG001), which only the gate (off until H4b) finds.
+	// Only for a project behind this engine (MIG001), which only the gate (on by default) finds.
 	if (selected != nullptr && !selected->Behind.IsEmpty())
 	{
 		if (ImGui::Button("Migrate and Open"))

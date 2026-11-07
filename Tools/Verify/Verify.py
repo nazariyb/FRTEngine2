@@ -20,7 +20,8 @@ script, behind FRT.bat verify (Premake/tools.lua). A milestone branch merges onl
      of the engine (/Engine) and of each template (/Project) in place, on a tree git says is unchanged there,
      equal to Core-Test/Assets/Golden/Registry-*.txt and clean of PATH001-003, RULE001-002 and errors (Core-Test
      compares the same files over temp copies); and every verb of FRT.bat assets help --json and every code of
-     Core/Source/Assets/AssetDiagnosticCodes.h is named in Docs/Assets.md;
+     Core/Source/Assets/AssetDiagnosticCodes.h is named in Docs/Assets.md; in full mode also validate --ci of the
+     engine (--engine) and of each template, in place: clean (no error, no warning; REF007's infos stay until M7);
   5. the editor's smoke test (-Editor:SmokeTest=1) over Templates/Demo and Templates/Blank, in place, in
      Debug and Development, which also checks the asset registry's initial scan and the editor's Assets panel
      (its "[smoke] ok registry:" line; in Demo the panel lists textures) and that its Asset problems panel lists
@@ -673,6 +674,20 @@ class Gate:
         return (f'8 verbs: {scan[0]["records"]} records, {textures[-1]["matched"]} textures, {len(refs)} edge(s) of a model, '
                 f'{records} records dumped')
 
+    def assets_validate(self, log):
+        """FRT.bat assets validate --ci over the engine (--engine) and each template, in place and read-only (design
+        13.5, edit [11]): each exits with 0, which with --ci means clean - every included file has its committed meta,
+        each repository's Schemas/Migrations.yml is current, nothing is a META, VCS, MIG, PATH or RULE error or
+        warning; infos pass (REF007, legacy path references, until M7)."""
+        found = []
+        for name, arguments in (('engine', ['--engine']), *((template, [f'-Project=Templates/{template}']) for template in TEMPLATES)):
+            lines = self.assets_json(log, [FRT, 'assets', *arguments, 'validate', '--ci', '--json'], 0)
+            summary = next((o for o in lines if o.get('kind') == 'summary'), None)
+            if summary is None or not summary.get('clean') or summary.get('errors') or summary.get('warnings'):
+                raise StepFailed(f'validate --ci of {name}: {json.dumps(summary or lines[:2])[:160]}')
+            found.append(f'{name} {summary.get("infos", 0)} info')
+        return 'clean: ' + ', '.join(found)
+
     def golden_dump(self, log, name, template, arguments):
         """FRT.bat assets dump registry --text --ci for one golden dump (GOLDENS), in place, with LF line endings."""
         output = Path(log).with_suffix(f'.{name}.txt')
@@ -987,13 +1002,12 @@ class Gate:
             raise StepFailed('FRT.bat new: ' + ('timed out' if code is None else
                                                 '; '.join(errors) if errors else f'exit code {code}'))
         # The template's Schemas/Migrations.yml comes along byte for byte (edit [65]): without it the copy would be
-        # behind the engine (MIG001) the moment it is made. Trivially true until H4b commits the template's file.
+        # behind the engine (MIG001) the moment it is made.
         migrations = ROOT / 'Templates' / SCRATCH_TEMPLATE / 'Schemas' / 'Migrations.yml'
-        if migrations.exists():
-            copied = project_dir / 'Schemas' / 'Migrations.yml'
-            if not copied.exists() or copied.read_bytes() != migrations.read_bytes():
-                raise StepFailed(f'FRT.bat new did not carry {SCRATCH_TEMPLATE}\'s Schemas/Migrations.yml over unchanged '
-                                 f'(the copy is kept: {root})')
+        copied = project_dir / 'Schemas' / 'Migrations.yml'
+        if not migrations.exists() or not copied.exists() or copied.read_bytes() != migrations.read_bytes():
+            raise StepFailed(f'FRT.bat new did not carry {SCRATCH_TEMPLATE}\'s Schemas/Migrations.yml over unchanged '
+                             f'(the copy is kept: {root})')
         retries = self.build(log, f'--project={project}', f'--config={config}', env=env)
 
         shaders = root / 'Shaders'
@@ -1298,7 +1312,7 @@ class Gate:
         self.step('docs name every verb and code', self.docs_coverage, needs=[('engine', 'Development')])
 
         if self.mode != 'quick':
-            self.skip('assets validate --ci', 'skipped (M4)')
+            self.step('assets validate --ci', self.assets_validate, needs=[('engine', 'Development')])
             for config in SMOKE_CONFIGS:
                 for name in TEMPLATES:
                     self.step(f'smoke {name} in place ({config})', self.smoke, name, config,

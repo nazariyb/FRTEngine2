@@ -27,7 +27,7 @@
  * A root behind the engine's content migrations (MIG001: its Schemas/Migrations.yml lacks a step, design §14.8) is
  * written only by migrate: every other run that would write exits with code 1 before it takes the lock, a run that
  * writes nothing runs and reports MIG001 (scan, status, validate). The gate is [Assets] MigrationGate
- * (assets::IsMigrationGateOn), off until H4b commits each repository's Schemas/Migrations.yml.
+ * (assets::IsMigrationGateOn), on by default; -Assets:MigrationGate=0 turns it off for a run.
  *
  * Output: human text, or with --json one JSON object per line on stdout (stable field names); errors
  * and warnings on stderr in either mode. Exit codes: Commandlet.h (0 success, 1 problems, 2 usage,
@@ -44,18 +44,22 @@
 #include "EnginePaths.h"
 #include "Precision.h"
 #include "Assets/Discovery/BuiltinExcludes.h"
+#include "Assets/Discovery/Mounts.h"
 #include "Assets/Meta/AssetRepairs.h"
+#include "Assets/Meta/Safety.h"
 #include "Assets/Meta/Migrations.h"
 #include "Assets/MountPaths.h"
 #include "Assets/OwnerLock.h"
 #include "Engine/Engine.h"
 #include "Jobs/WorkerPool.h"
+#include "Assets/Vcs/VcsProviderSet.h"
 #include "Platform/FileLock.h"
 #include "Platform/Platform.h"
 #include "Platform/Process.h"
 #include "Project/Project.h"
 
 #include "Commandlet.h"
+#include "RegistryRun.h"
 
 
 namespace frt::assettool
@@ -218,7 +222,7 @@ int32 RunAssetTool ()
 		: context.ProjectRoot / "Config" / assets::RuleFileName.ToPath();
 	(void)assets::ApplySafetyOfRuleFile(rulesFile);
 
-	// The MIG001 gate (design §14.8; assets::IsMigrationGateOn, off until H4b): a root behind the engine's migrations - the
+	// The MIG001 gate (design §14.8; assets::IsMigrationGateOn, on by default): a root behind the engine's migrations - the
 	// project's, the engine's with --engine - is written by nothing but its migration. A run that would write ends here,
 	// before the lock, with exit code 1; one that writes nothing (--ci, -Assets:ReadOnly=1, migrate --dry-run, validate
 	// without --fix) runs, and the verbs that report problems list MIG001 with them (CCommandletContext::MigrationGap).
@@ -244,10 +248,32 @@ int32 RunAssetTool ()
 		request.Root = context.GetMountRoot();
 		request.RulesFile = rulesFile;
 		request.bReadOnly = context.bReadOnly;
+		// An operation a previous run left unfinished is rolled forward right after the lock is taken, before the verb runs
+		// (assets::TakeOwnership), through the providers of the run's own mounts, detected for that alone: a run that finds
+		// no such operation resolves and spawns nothing here.
+		std::shared_ptr<const assets::CMountTable> rollMounts;
+		assets::CVcsProviderSet rollProviders;
+		std::vector<std::pair<assets::MountId, assets::IVcsProvider*>> rollProviderList;
+		if (!request.bReadOnly && assets::HasUnfinishedOperation(request.Root))
+		{
+			rollMounts = std::make_shared<const assets::CMountTable>(ResolveRunMounts(context));
+			std::vector<assets::MountId> own;
+			for (const assets::SMount& mount : rollMounts->GetMounts())
+			{
+				if ((mount.Kind == assets::EMountKind::Engine) == context.bEngineOwner)
+				{
+					own.push_back(mount.Id);
+				}
+			}
+			rollProviders.DetectNow(*rollMounts, own, assets::SAssetEditorSettings::FromConfig(engine.GetConfig()).VcsProvider);
+			rollProviderList = rollProviders.GetProviders();
+			request.Mounts = rollMounts.get();
+			request.Providers = rollProviderList;
+		}
 		assets::SAssetOwnership ownership = assets::ClaimAssetOwnership(request);
-		// A process without the lock rolls nothing forward (§4.7): the owner finishes it. With the lock, the verb's own
-		// lifecycle does at its Start (the request passes no Mounts): until then, say one waits, whatever the role.
-		const std::vector<FString> unfinished = assets::DescribeUnfinishedOperations(request, ownership, false);
+		// A process without the lock rolls nothing forward (§4.7): the owner finishes it. With the lock it was finished
+		// above, or it could not be (named below).
+		const std::vector<FString> unfinished = assets::DescribeUnfinishedOperations(request, ownership, true);
 		const FString& owner = ownership.Root.Owner;
 		if (ownership.Role == assets::EOwnerRole::Writer)
 		{

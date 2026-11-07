@@ -1,11 +1,14 @@
 # Assets
 
 FRTEngine2's asset system is being built in milestones (M0-M13). This file describes what exists, briefly and
-structurally; every milestone updates it. Today, after **M3 (registry v0, read-only)**, shaders are compiled once and
-served from the derived-data cache, everything that reloads files in dev builds learns about changes from one file
-watcher, and the asset registry catalogs every mount - rules, records, typed tags, dependencies - for queries from
-`FRT.bat assets` and the editor's Assets panel. Nothing reads assets through it yet: materials, textures, models and
-input files still load as before, and the registry writes nothing into `Content/`.
+structurally; every milestone updates it. Today, after **M4 (identity becomes authoritative; VCS provider)**, shaders
+are compiled once and served from the derived-data cache, everything that reloads files in dev builds learns about
+changes from one file watcher, and the asset registry catalogs every mount - rules, records, typed tags, dependencies -
+for queries from `FRT.bat assets` and the editor's Assets and Asset problems panels. Every included file of the engine
+and the templates has a committed `.meta` whose GUID is its identity; the editor that owns a project creates, restores
+and re-GUIDs metas through each mount's VCS provider, and metas are all it writes into `Content/`. Nothing reads assets
+through the registry yet: materials, textures, models and input files still load by path as before, and no runtime
+code or package reads a meta.
 
 ## Where it is going
 
@@ -19,11 +22,11 @@ input files still load as before, and the registry writes nothing into `Content/
   publication so scripted captures stay byte-exact.
 - **Packages.** A cook turns content into paks of final, GPU-ready data plus a runtime registry.
 
-## Registry (M3)
+## Registry (M3, M4)
 
 The registry is an in-memory catalog of every file in the mounts, kept current from the disk and persisted as a cache
-that may always be deleted (design §5). In M3 it is read-only: it reads `Content/`, the rule files and the snapshots,
-and writes only its own files under `Local/`.
+that may always be deleted (design §5). It reads `Content/`, the rule files, the metas and the snapshots, and writes its
+own files under `Local/`; into `Content/` only the meta lifecycle writes, and only metas (below).
 
 ### Mounts, records and ids
 
@@ -59,8 +62,9 @@ Development `CEngine` installs (nullopt in tool hosts, which resolve their own t
   within one broadcast, an id that left a path and holds another at its end is a `Moved`, while a record added and
   removed again or a path that went and came back stays a removal and an addition. A file without a meta has a
   path-derived id, so its move is a removal and an addition, and a record whose id changes in place (its meta appears, a
-  GUID is edited) is a removal of the old id and an addition of the new one. With `SAssetRegistryDesc::Lifecycle` null
-  (every host until M4's switch-on) metas are read, nothing is written and no `META` problem is reported.
+  GUID is edited) is a removal of the old id and an addition of the new one. Every host's registry runs the meta
+  lifecycle (`SAssetRegistryDesc::Lifecycle`, below); with it null (tests and benchmarks that predate it) metas are
+  read, nothing is written and no `META` problem is reported.
 - **Identity state** (M4, design §5.2, §5.3), all keyed by GUID and travelling in the same deltas, journal and snapshot
   as the records:
   - `METAS`: the raw bytes of each meta's last Ok parse, one copy per GUID, kept only when they hash to the copy's
@@ -140,36 +144,39 @@ Each problem has a `Subject` (the mount path of the file or folder, as spelled o
 file relative to the mount's owner root: `Config/Assets.yml`, `Core/Config/Assets.yml`, `Content/Art/Assets.yml`),
 line and column; absolute paths appear only in messages. They are kept per subject and source: `Scan` (PATH001-003,
 unlistable folders, skipped links), `Rules` (RULE001), `Analyze` (importer diagnostics, REF007, a failed Analyze with
-code 0), `Unclaimed` (RULE002, recomputed once companions are known) and `Registry` (REF006 and PATH001 of edges). `Lifecycle` holds what M4's meta lifecycle reports (META*, VCS00x).
+code 0), `Unclaimed` (RULE002, recomputed once companions are known), `Registry` (REF006 and PATH001 of edges) and
+`Lifecycle` (what the meta lifecycle reports: META*, VCS00x, and the hosts' MIG001).
 A rule file's `Validation:` overrides the severity of every source but `Rules` (a file cannot silence its own RULE001)
-and `Registry`, whose severities are fixed in M3.
+and `Registry`, whose severities are fixed.
 
-| Code | Rule | Severity in M3 | Source |
+| Code | Rule | Severity | Source |
 |---|---|---|---|
-| `PATH001` | two files or folders whose names differ only in case (portable fold) in one folder (so, at the first differing folder, any two paths of a mount); an edge whose path matches two records | error (a warning in M3) | Scan, Registry |
-| `PATH002` | a name illegal on a supported platform, or not valid UTF-8 | error (a warning in M3) | Scan |
+| `PATH001` | two files or folders whose names differ only in case (portable fold) in one folder (so, at the first differing folder, any two paths of a mount); an edge whose path matches two records | error (a warning before M4) | Scan, Registry |
+| `PATH002` | a name illegal on a supported platform, or not valid UTF-8 | error (a warning before M4) | Scan |
 | `PATH003` | a mount-relative path longer than 180 UTF-8 bytes | warning | Scan |
 | `RULE001` | a rule file error: unknown key, wrong type, bad glob, unknown importer, setting, preset or target, a mount-level section in a folder file | error | Rules |
 | `RULE002` | an unclaimed file not in `Scan.Quiet`, once per folder and extension | warning | Unclaimed |
 | `REF006` | a reference that resolved through an alias (a meta's `Aliases`, a renamed sub-asset's new label), a former path (`FormerPaths`), or a path spelled differently from the file on disk | info | Registry |
 | `REF007` | a legacy path reference in data (a material's texture path), until `migrate material-refs` | info | Analyze |
-| `META001` | an included file without a `.meta` after the creation delay | from M4: error with `--ci`, guests or `Safety.AutoRepairMetas: false`; otherwise the owner creates the meta | Lifecycle |
-| `META002` | an orphan `.meta`: its source is gone | from M4: warning | Lifecycle |
-| `META003` | a duplicate GUID | from M4: error; with `Safety.AutoResolveDuplicates` the owner re-GUIDs the losers | Lifecycle |
-| `META004` | a broken meta: a parse error, conflict markers, two `Guid:` lines | from M4: error | Lifecycle |
-| `META005` | a meta that parses and is not canonical (`resave --metas` rewrites it) | from M4: warning | `validate` |
-| `META006` | a meta whose case differs from its source's | from M4: error | Lifecycle |
-| `META007` | a meta beside a file the rules exclude (a rule file too), or beside one of a class that takes no meta (a companion, an unclaimed file) | from M4: warning | `validate` |
-| `META008` | `MissingMeta`: a lost meta that no repair will restore (no verified copy, its GUID live in another meta, a read-only file or `Safety.AutoRepairMetas: false`), or a new file that an orphan meta matches and that is not paired automatically (ambiguous, read-only, or `Safety.OrphanPairing: false`) | from M4: error | Lifecycle |
-| `META009` | an orphan meta that matches a new file and is not paired with it automatically: by content outside the move window, or a match that `META008` reports (relink suggestion) | from M4: info | Lifecycle |
-| `VCS001` | CRLF in a hashed FRT text file (detected only in M4; blocking DDC writes arrives with the first asset builder) | from M4: error | Lifecycle (metas), `validate` (rule files; `.yml`, `.frt`, `.csv`, `.ini`, `.frtinputmap`, `.frtinputaction` sources) |
-| `VCS002` | the VCS refused a write (`CheckOut`, `Move` or `Delete` failed); the command wrote nothing | from M4: error | the command |
-| `VCS003` | an asset and its meta tracked differently ("generated locally: commit it") | from M4: warning | Lifecycle (a meta this process created), `validate` (every pair, one `StatusOf` per provider) |
-| `VCS004` | a Git LFS pointer file where a source is expected; never imported or hashed into a GUID | from M4: error | Lifecycle |
-| `MIG001` | a repository behind the engine: its `Schemas/Migrations.yml` is missing, malformed or lacks a step this engine requires | from M4: error | `validate`; the hosts' gate (`scan`, `status`, a refused AssetTool run, `CEngine`) |
+| `META001` | an included file without a `.meta` after the creation delay | error with `--ci`, guests or `Safety.AutoRepairMetas: false`; otherwise the owner creates the meta | Lifecycle |
+| `META002` | an orphan `.meta`: its source is gone | warning | Lifecycle |
+| `META003` | a duplicate GUID | error; with `Safety.AutoResolveDuplicates` the owner re-GUIDs the losers | Lifecycle |
+| `META004` | a broken meta: a parse error, conflict markers, two `Guid:` lines | error | Lifecycle |
+| `META005` | a meta that parses and is not canonical (`resave --metas` rewrites it) | warning | `validate` |
+| `META006` | a meta whose case differs from its source's | error | Lifecycle |
+| `META007` | a meta beside a file the rules exclude (a rule file too), or beside one of a class that takes no meta (a companion, an unclaimed file) | warning | `validate` |
+| `META008` | `MissingMeta`: a lost meta that no repair will restore (no verified copy, its GUID live in another meta, a read-only file or `Safety.AutoRepairMetas: false`), or a new file that an orphan meta matches and that is not paired automatically (ambiguous, read-only, or `Safety.OrphanPairing: false`) | error | Lifecycle |
+| `META009` | an orphan meta that matches a new file and is not paired with it automatically: by content outside the move window, or a match that `META008` reports (relink suggestion) | info | Lifecycle |
+| `VCS001` | CRLF in a hashed FRT text file (detected only in M4; blocking DDC writes arrives with the first asset builder) | error | Lifecycle (metas), `validate` (rule files; `.yml`, `.frt`, `.csv`, `.ini`, `.frtinputmap`, `.frtinputaction` sources) |
+| `VCS002` | the VCS refused a write (`CheckOut`, `Move` or `Delete` failed); the command wrote nothing | error | the command |
+| `VCS003` | an asset and its meta tracked differently ("generated locally: commit it") | warning | Lifecycle (a meta this process created), `validate` (every pair, one `StatusOf` per provider) |
+| `VCS004` | a Git LFS pointer file where a source is expected; never imported or hashed into a GUID | error | Lifecycle |
+| `MIG001` | a repository behind the engine: its `Schemas/Migrations.yml` is missing, malformed or lacks a step this engine requires | error | `validate`; the hosts' gate (`scan`, `status`, a refused AssetTool run, `CEngine`) |
 | `MIG002` | a leftover legacy pattern, such as `<stem>_mat<N>` beside a model without `SubAssets.Remap` | warning; nothing reports it in M4: its patterns go with the steps of M7 and M9a | `validate` |
 
-The engine and the templates are clean of PATH001-003, RULE001-002 and errors; the golden dumps assert it.
+The engine and the templates are clean of PATH001-003, RULE001-002 and errors, and every file of theirs that takes a
+meta has its committed one: the golden dumps assert it (Core-Test runs them with the lifecycle reporting, so a
+metaless file is a `META001` error there), and `FRT.bat verify` runs `validate --ci` on each.
 
 ### Queries (`Assets/Registry/AssetQuery.h`, `QueryEngine.h`)
 
@@ -180,7 +187,7 @@ of name or path), `type:Texture` / `t:` / `type=frt.Texture`, `dir:/Project/Data
 `#label`, or a unique name), `is:<predicate>`, `or`, `( )`, `order:Key [asc|desc]`, `limit:N`, `rows` / `table:X`.
 Errors carry the column of the term at fault.
 
-- `is:` with data: `broken-ref`, `unused`, `legacy-ref`, `excluded`, `problem`, `stale-tags`, `primary`, and from M4
+- `is:` with data: `broken-ref`, `unused`, `legacy-ref`, `excluded`, `problem`, `stale-tags`, `primary`,
   `redirected` (an edge of its own resolved through an alias or a former path) and `pending-meta` (its file has no
   meta yet); `unsaved` parses and matches nothing until M5-M6 (a note says so). `rows` matches nothing until data
   tables (M5).
@@ -205,6 +212,7 @@ Errors carry the column of the term at fault.
 | `<project>/Local/Assets/AssetRegistry.snapshot` (+ `.journal`) | `/Project` and its plugins | the project's writer: the editor holding `Owner.lock`, `FRT.bat assets scan` |
 | `<root>/Local/Assets/ProjectId` | a random id, so a copied snapshot is never taken for this root's | the root's writer, once |
 | `<root>/Local/Assets/Rules.cache` | the rule files as JSON lines | the root's writer |
+| `<root>/Local/Assets/OpJournal.log` | the planned steps of the meta operation in progress (checksummed frames, flushed before the first file is touched; removed when it ends), rolled forward at the next start | the root's writer: the lifecycle's repairs and the meta verbs |
 
 A snapshot is sections with their own layout versions and checksums; a bad section is dropped alone and only what it
 held is rebuilt (design §5.3). Every section is at layout 2 since M4 filled `ALIASES`, `FORMERPATHS`, `METAS` (one
@@ -237,7 +245,7 @@ deltas per frame; panels poll `GetRevision()`, engine systems may subscribe to `
 Writes are the lock holder's alone. The editor (`SEngineDesc::bAssetWriter`) takes `<project>/Local/Assets/Owner.lock`
 unless the run is read-only; holding it, the registry writes `Local/Assets/AssetRegistry.snapshot` (`/Project` and its
 plugins) with its journal, `Rules.cache` and `ProjectId`, the snapshot after 1000 records, after 60 s idle and at a clean
-exit. Without the lock nothing is written at all. `/Engine` lives in `<engine>/Local/Registry/Engine.snapshot`, written
+exit, and its lifecycle repairs metas (below). Without the lock nothing is written at all. `/Engine` lives in `<engine>/Local/Registry/Engine.snapshot`, written
 only by an engine-owner registry (`--engine`); an editor analyzes engine files changed since then in memory at every
 start and says so once. A writer's `Flush` fences the watcher only in the mounts it owns, so the editor writes no fence
 file into `/Engine` either; of `/Engine` it waits only for what the watcher reported already. AssetTool's `scan` takes
@@ -248,22 +256,23 @@ the lock like any writing verb, and its other registry verbs never take it and w
 A run that is read-only by request (`--ci`, `-Assets:ReadOnly=1`, `migrate --dry-run`, every scripted run, the runtime
 and the dev Launcher) never asks for the lock and always runs. Any other takes the owner root's `Owner.lock`; while another process holds it, a
 second writer does not start: the editor shows one message naming the holder ("close it, or set
-`Safety.GuestProcesses: true`") and quits, AssetTool exits with code 4 (the M3 deviation, an editor that stayed open
-writing nothing, is over). With the opened project's `Safety.GuestProcesses: true` (the engine's file for `--engine`
+`Safety.GuestProcesses: true`") and quits, and AssetTool exits with code 4. With the opened project's `Safety.GuestProcesses: true` (the engine's file for `--engine`
 runs; the switch governs a process, so no other file sets it) the second process runs as a **read-only guest** instead:
 it loads, scans and reports like a read-only run, writes no meta, snapshot, journal or `BuildState`, says so (the
 editor in its title, AssetTool on stderr), and a `META001` it reports names the owner, who creates the meta. `lock` is
-never a guest. A process without the lock rolls no unfinished operation forward and says one waits; a writer that holds
-it says so too until its lifecycle starts and finishes it (`DescribeUnfinishedOperations`: every root, whatever the role).
+never a guest. A writer rolls an operation its roots' `OpJournal.log` holds unfinished forward as soon as it has the lock
+(`TakeOwnership`), before anything is scanned, through the mounts' providers, which it detects for that alone (only
+when such an operation waits, so an ordinary start spawns no git there); one it cannot finish is named. A process
+without the lock rolls nothing forward and says one waits (`DescribeUnfinishedOperations`: every root, whatever the role).
 Both hosts hand the governing rule file's `Safety.BuilderSourceGuard` to the builder guard at start-up
 (`ApplySafetyOfRuleFile`): the opened project's, the engine's for `--engine` or with no project.
 
 **Engine-owner mode (M4, §4.7).** `/Engine` is owner-writable when the opened project lies inside the engine checkout
 (`Templates/*`), with `FRT.bat assets <verb> --engine` (no project: that run owns `<engine>/Local/Registry`), or in the
-editor with `-Assets:EngineWritable=1`; it stays read-only for an engine that external projects use. An editor in that
-mode whose registry runs a lifecycle that repairs (`ClaimsEngineOwnership`; real hosts get one at H4b, so until then an
-open editor never keeps an `--engine` run out) takes `<engine>/Local/Assets/Owner.lock` best-effort, after its project's: without it (another in-engine editor has
-it) `/Engine` is read-only for this process, one line says who holds it, and the project still opens; only the
+editor with `-Assets:EngineWritable=1`; it stays read-only for an engine that external projects use. The project's
+writer in that mode (its lifecycle repairs: `ClaimsEngineOwnership`) takes `<engine>/Local/Assets/Owner.lock`
+best-effort, after its project's, so while it is open a writing `--engine` run exits with 4: without it (another
+in-engine editor has it) `/Engine` is read-only for this process, one line says who holds it, and the project still opens; only the
 project's own lock makes a second writer exit. With it the editor passes `SAssetRegistryDesc::bEngineMetasWritable`,
 and the lifecycle repairs metas in `/Engine` through a second `CAssetWriter` on the engine root, with that root's own
 `OpJournal.log` (rolled forward at start-up), and nothing more: no `Engine.snapshot`, no journal of `/Engine`, no fences
@@ -275,7 +284,7 @@ act on `/Engine` alone, other runs on `/Project` and its plugins.
 `Editor/Source/AssetsPanel.h`: a search box in the query syntax, the positioned error when the text does not parse or
 compile, and a table of the matches (Name, Type, Path, Size, Problems) with a default limit of 500. It polls
 `GetRevision()` once per frame and runs its query again when the text changed, or when the revision moved while it is
-visible; its rows are copied text, never record ids. Read-only in M3. The default layout docks it beside Stats; View >
+visible; its rows are copied text, never record ids. It only reads. The default layout docks it beside Stats; View >
 Assets toggles it. The smoke test checks it against the registry's own answer for `type:Texture`.
 
 ### The editor's Asset problems panel (M4)
@@ -285,7 +294,8 @@ Assets toggles it. The smoke test checks it against the registry's own answer fo
 `validate --engine` together), on a worker over a view the registry handed out - when the panel first draws, when the
 revision or the lifecycle's fix-its and providers (`SAssetRepairsStats::Changes`) moved while it shows (at most once a
 second), and while an applied fix waits for a list, shown or not. Its options are `validate`'s but for the providers: the
-lifecycle's, so no VCS is asked (no `VCS003`) where no lifecycle runs or before detection settles. Each problem gets its asset
+lifecycle's, so no VCS is asked (no `VCS003`) in a process that writes nothing (a read-only editor, a guest: they detect
+no provider) or before detection settles. Each problem gets its asset
 (a meta's problem goes with its source, a sub-entry's with its file) and that asset's type; the list is grouped by asset
 in the registry's order and filtered by severity, code (its start, any case), type and folder (under the fold). Each
 entry has **Go to** (the Assets panel lists the asset by `$Path=`, a folder or mount root by `dir:`, a file without a record
@@ -302,7 +312,7 @@ stages), and `"<engine>\FRT.bat" assets fix --engine` for a `META001` on `/Engin
 `VCS004` is a message (`git lfs pull`). In the live editor `ApplyFix` only queues and returns a ticket: the lifecycle says
 when the fix ran and whether it was refused or not applied (`CAssetRepairs::GetFixResult`; a queued fix never times out),
 and once it ran the lists after it say fixed (the problem is gone) or no change (still there in a list made 30 s later).
-Without a meta lifecycle (until the hosts switch it on) the panel lists and offers commands, and applies nothing. PATH
+In a process that writes nothing (read-only, a guest) the panel lists and offers commands, and applies nothing. PATH
 renames, reference relinks, hints and aliases are M11's. The smoke test checks that the panel lists exactly what
 `RunValidation` returns with the same options (`[smoke] ok the Asset problems panel lists ...`, which `FRT.bat verify`
 requires), that a `META001` on `/Engine` offers the `assets fix --engine` command, that a read-only editor can apply none
@@ -314,8 +324,10 @@ FRT is not a version-control client: it never commits, syncs or reverts. `IVcsPr
 it needs from one: writes the VCS accepts, an asset and its meta kept together in every move and delete, and knowing when
 the VCS is rewriting the tree. One instance per mount, from `MakeVcsProvider` (`[AssetsEditor] VcsProvider=Auto|None|Git`); `CVcsProviderSet`
 (`Assets/Vcs/VcsProviderSet.h`) detects and owns one per mount, at once in a tool host or on a worker in a live one, and
-the meta lifecycle's repairs (below) are their only writer. AssetTool's `status` and meta verbs create them for their
-own run (below); the editor and the other hosts create none until H4b switches them on.
+the meta lifecycle's repairs (below) are their only writer. The editor that owns its project detects one per mount, `/Engine`
+included, on a worker at start-up (`CEngine`); AssetTool's `status` and meta verbs create them for their own run (below).
+A read-only editor, a guest, a scripted run, the dev Launcher and every other verb create none and spawn no git: a
+mount without a provider is `None` to them.
 
 | Call | `CNoneVcsProvider` | `CGitVcsProvider` |
 |---|---|---|
@@ -363,8 +375,11 @@ committed there is one untracked entry to git, and every file below it is `Untra
 ## The meta lifecycle's runtime (M4, `Assets/Meta/AssetRepairs.h`)
 
 `CAssetRepairs` drives the pure lifecycle (`Assets/Meta/Lifecycle.h`) from a registry: `SAssetRegistryDesc::Lifecycle`
-(`SLifecycleDesc`) gives it one, owned by the registry (`GetRepairs()`). Null, which every host still passes until H4b,
-means none at all, exactly as before. With one:
+(`SLifecycleDesc`) gives it one, owned by the registry (`GetRepairs()`). Every host passes one: `CEngine` a live one
+(`bLive`, its settings from `[AssetsEditor]`, the project's salt), repairing for the project's writer and reporting
+for every other host (a read-only editor, a guest, whose `META001` names the owner, a scripted run, the dev
+Launcher); each AssetTool run its own (below). Null, in tests and benchmarks that predate it, means none at all. With
+one:
 
 - **When it runs.** Every finished pass hands it the paths its deltas touched; the time of the next tick after that is
   the path's event time (kept in memory only, so a restart counts from then). Of the initial scan's passes only the
@@ -389,8 +404,9 @@ means none at all, exactly as before. With one:
   folders are then rescanned. It is level-triggered: the rescan of a repair's own write proposes nothing. A meta beside
   a file the rules exclude is no asset's, so it takes part in no duplicate group.
   `SAssetRegistryCounters::RepairsApplied` and `RepairsRefused` count them.
-- **Holding for the VCS** (`[AssetsEditor] WaitForVcs`, default on): no automatic repair while any provider `IsBusy`, and
-  for `VcsSettleMs` after; `IsBusy` is polled every 100 ms only while something waits on that hold. Whatever the switch,
+- **Holding for the VCS** (`[AssetsEditor] WaitForVcs`, default on): no automatic repair while the provider of a mount
+  the process repairs `IsBusy`, and for `VcsSettleMs` after (another mount's VCS, a read-only `/Engine`'s checkout, holds
+  nothing); `IsBusy` is polled every 100 ms only while something waits on that hold. Whatever the switch,
   nothing automatic is written while the watcher holds events back (a burst, an overflow's rescan): the registry looks
   quiet then, but its tree is not the final one. A person's fix is a command, held by neither. A live host that
   detects its providers on a worker sets `bProvidersPending` and holds everything until the last `SetProvider`. The
@@ -410,8 +426,11 @@ means none at all, exactly as before. With one:
   together with the other losers of its batch), blocking in a tool host and queued in a live one. "Keep A, alias B" reads
   the meta again first and rewrites it only while it is still the broken meta it was offered for.
 - **Start-up.** The registry's `Start` rolls an operation the owner root's `OpJournal.log` holds unfinished forward
-  before anything is scanned. `TakeOwnership(Root, Mounts, Providers)` is the hosts' form of it: the `Owner.lock`, then the
-  roll-forward; a process that does not get the lock rolls nothing forward and reports the unfinished operation.
+  before anything is scanned. `TakeOwnership(Root, Mounts, Providers)` is the hosts' form of it, which `CEngine` and
+  AssetTool use through `ClaimAssetOwnership`: the `Owner.lock`, then the roll-forward, through providers detected then
+  only when `HasUnfinishedOperation` says one waits; a process that does not get the lock rolls nothing forward and
+  reports the unfinished operation. The editor's writer then detects its providers on a worker (`bProvidersPending`),
+  and the Stats panel shows each mount's provider and `RepairsApplied` / `RepairsRefused`.
 
 Known exception until M7 and M10: the create-on-load writes of `CMaterialLibrary` and `CInputActionLibrary` do not go
 through the provider. The file one of them creates is an ordinary new file to the lifecycle, which gives it a meta on the
@@ -424,8 +443,11 @@ opens its registry with a lifecycle of its own (`SLifecycleDesc`, providers dete
 ticks) and acts through `CAssetRepairs::RunNow`, so a meta a verb writes is derived, journalled and checked out exactly as
 an automatic repair's. They are commands a person runs: no creation delay, no VCS hold, `AutoRepairMetas` and
 `OrphanPairing` ignored; `DerivedAutoGuids` still picks the GUID kind and `AutoResolveDuplicates` whether `fix` dedupes.
-Each acts on the run's own mount set, `/Project` and its plugins, or `/Engine` with `--engine`, never both. `scan`
-writes no meta.
+Each acts on the run's own mount set, `/Project` and its plugins, or `/Engine` with `--engine`, never both. Every other
+registry verb (`scan`, `status`, `query`, `refs`, `referencers`, `explain`, `list-rules`, `dump`) runs the lifecycle
+once after its scan, over every mount and reporting only, with no provider but `status`'s, so it sees the `META`
+problems gathering raises (a metaless file is a `META001` error: `scan` and `status` exit with 1); `scan` writes no
+meta.
 
 - **Who runs.** All five take the mount's writer lock unless the run is read-only, so beside another owner they exit with
   4. Only `validate` runs as a read-only guest when `Safety.GuestProcesses` says so (§5.9), reporting, and its META001s
@@ -477,8 +499,9 @@ writes no meta.
   `--fix`) runs, and `scan` and `status` count `MIG001` as an error among their problems (exit 1): `scan` in its one
   object (`migration`), `status` as one more problem by code. A project that
   `FRT.bat new` makes has its template's `Schemas/Migrations.yml`, so it is not behind. The gate is `[Assets]
-  MigrationGate`, default `MigrationGateDefault`, which is **off until H4b** commits the engine's and both templates'
-  files and turns it on; `-Assets:MigrationGate=1` turns it on for one run (AssetTool's gate test does).
+  MigrationGate`, default `MigrationGateDefault`, **on** since the engine and both templates commit their files (M4);
+  `-Assets:MigrationGate=0` turns it off for one run. A test's scratch project that runs a writing verb carries a
+  current file (`Core-Test/Assets/Meta/MigrationsTestUtils.h`).
 - **`resave --metas`** rewrites in ops of at most 256 metas each, through the writer of the mount; a canonical meta is not
   touched or checked out.
 
@@ -548,8 +571,8 @@ A removed file keeps what was loaded. The game module's DLL keeps its own exclus
 
 Automation runs (an `[Automation]` key that makes a run scripted) and the editor's smoke tests are scripted:
 `CEngine::StartUp` forces `[Assets] Watch=0` (nothing reloads behind a capture's back) and `[Assets] ReadOnly=1`
-(the asset system writes nothing: no writer lock, so no registry file) (`CAutomation::IsScriptedRun`,
-`ApplyScriptedRunRules`). A
+(the asset system writes nothing: no writer lock, so no registry file and no meta; its lifecycle only reports)
+(`CAutomation::IsScriptedRun`, `ApplyScriptedRunRules`). A
 smoke step that needs the watcher turns it on for its own directories only (the input overrides' `Local/SmokeTest`; the
 scratch copy and its shader copy) and flushes it after writing, so its result never depends on timing and nothing of the
 checkout it runs in reloads behind its back. With `-Editor:SmokeTestEdits=1` the smoke test also edits files - a
@@ -573,7 +596,7 @@ run from the engine checkout's own `FRT.bat`: a project's `FRT.bat` always names
 | `newguid [n]` | fresh GUIDs for builder versions and built-in assets, as text and as a C++ initializer |
 | `lock` | holds the mount's writer lock until Enter (for tests and scripts) |
 | `ddc stats`, `ddc gc [--max-gb=<n>]`, `ddc verify [--ddc=<dir>]` | the derived-data cache: counts, LRU trim (a dry run with `--ci`), re-check and delete corrupt files |
-| `scan [--engine]` | scans the mounts into the registry and, under the writer lock, writes the snapshot (`--engine`: `Engine.snapshot`); with `--ci` writes nothing. It never writes a meta: it opens no lifecycle, so a metaless file stays `PendingMeta` (the meta verbs below write them). Exit 1 on an error-severity problem |
+| `scan [--engine]` | scans the mounts into the registry and, under the writer lock, writes the snapshot (`--engine`: `Engine.snapshot`); with `--ci` writes nothing. It never writes a meta: its lifecycle only reports, so a metaless file is a `META001` error and stays `PendingMeta` (the meta verbs below write them). Exit 1 on an error-severity problem |
 | `status` | problems by code, severity and source; each mount's VCS provider (detected, so git runs once per mount) and its files waiting for a meta (`PendingMeta`); unclaimed files by folder and extension; the scan state; the DDC's size. Exit 1 on an error-severity problem |
 | `query "<text>" [--columns=a,b] [--limit=<n>] [--rows]` | the records a query matches (default columns `$Name,$Type,$Path,$Size,$Problems`; several arguments are one text; a term with one dash is text, so `query -label:Debug` and `query "-label:Debug type:Model"` work, and after `--` every argument is; `--rows` notes that rows arrive with M5) |
 | `refs <asset>` | the edges an asset declares, with flags and field paths (`<asset>`: a mount path, `#label` for a sub-asset, or a unique name, resolved as `dep:` resolves it) |
@@ -588,8 +611,8 @@ run from the engine checkout's own `FRT.bat`: a project's `FRT.bat` always names
 | `resave --metas` | every meta that parses and is not canonical (`META005`), rewritten as the emitter writes it, as its own commit; a broken meta is left alone. `--references`, `--redirected`, `--type` and `--drop-unknown` arrive with M5 |
 
 The registry verbs need a project or `--engine`. Each builds its own registry (snapshots read, an incremental scan,
-deltas committed strictly in sequence order) and writes nothing unless it is `scan` holding the lock, or a meta verb
-(below). A query that does
+deltas committed strictly in sequence order, the lifecycle run once, reporting, unless the verb runs its own) and
+writes nothing unless it is `scan` holding the lock, or a meta verb (below). A query that does
 not parse or compile, and an `<asset>` that names no record or several, exit with 2 and the positioned message. Their
 `--json` lines (stable fields):
 
@@ -757,9 +780,9 @@ folders only. Invalid patterns are reported, never guessed at.
   reads a meta; ids reach packages through the cook (M12). Verify's package step fails on a `.meta` or a `Local`
   directory in a package.
 - `FRT.bat verify` is the merge gate: builds, Core-Test, lints, the registry verbs with `--json`, the registry's golden
-  dumps, a check that this file names every `FRT.bat assets` verb and every diagnostic code, the editor's smoke tests
-  (in place, read-only, with the registry, Assets panel and Asset problems panel checks, and with file edits on a
-  scratch copy), automation
+  dumps, a check that this file names every `FRT.bat assets` verb and every diagnostic code, `validate --ci` of the
+  engine and both templates (full mode), the editor's smoke tests (in place, read-only, with the registry, Assets panel
+  and Asset problems panel checks, and with file edits on a scratch copy), automation
   captures against baselines (raster byte for byte, path tracing within a tolerance), the Release package's captures,
   and a clean `git status` at the end; the summary lists each host's initial scan and BuildWorld wait. `--quick` runs
   the pre-commit subset; `--record-baselines` records new baselines in `Local/Verify/Baselines`, which belong to the

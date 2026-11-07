@@ -7,7 +7,7 @@
 // then; `migrate metas` is reproducible (two trees, the same bytes), skips existing metas, records itself in
 // Schemas/Migrations.yml only once no file is left without one, and its dry run writes nothing; the Migrations.yml format
 // is canonical, sorted and keeps steps it does not know; the hosts' gate (FindMigrationGap) says what `validate`'s MIG001
-// says, and stays off until H4b unless [Assets] MigrationGate turns it on; `resave --metas` rewrites only the metas that
+// says, and is on unless [Assets] MigrationGate turns it off; `resave --metas` rewrites only the metas that
 // are not canonical.
 // Every crash point of `migrate metas`, `fix` and `resave --metas` is rolled forward in-process, and `migrate metas` and
 // `fix` each have one real killed child (edit [37]: the last two of M4's six). Trees hold at most eight files.
@@ -407,8 +407,8 @@ TEST(MetaVerbs, MigrationsYmlIsCanonicalSortedMergeableAndKeepsStepsItDoesNotKno
 
 // The hosts' gate (CEngine, AssetTool, the project manager): a root behind is one MIG001 naming its steps and the
 // command, the engine's with --engine; a malformed file is behind too, at its line; an up-to-date root is none. The
-// switch is off by default until H4b, and [Assets] MigrationGate turns it on or off for a run.
-TEST(MetaVerbs, TheMigrationGateFindsARootBehindAndIsOffUntilTheSwitchSaysSo)
+// switch is on by default, and [Assets] MigrationGate turns it off or on for a run.
+TEST(MetaVerbs, TheMigrationGateFindsARootBehindAndIsOnUnlessTheSwitchSaysOff)
 {
 	CVerbTree tree("Ворота");
 	const std::filesystem::path root = tree.Tree.ProjectDir();
@@ -439,7 +439,7 @@ TEST(MetaVerbs, TheMigrationGateFindsARootBehindAndIsOffUntilTheSwitchSaysSo)
 	EXPECT_FALSE(FindMigrationGap(root, "/Project", false).has_value());
 
 	config::CConfig config;
-	EXPECT_FALSE(MigrationGateDefault) << "off until H4b commits each repository's Schemas/Migrations.yml";
+	EXPECT_TRUE(MigrationGateDefault) << "on: the engine and both templates commit their Schemas/Migrations.yml";
 	EXPECT_EQ(IsMigrationGateOn(config), MigrationGateDefault);
 	config.SetOverride("Assets", "MigrationGate", "1");
 	EXPECT_TRUE(IsMigrationGateOn(config));

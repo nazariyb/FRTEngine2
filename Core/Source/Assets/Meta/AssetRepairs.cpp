@@ -1374,11 +1374,14 @@ struct CAssetRepairs::SImpl
 		return false;
 	}
 
+	// The provider of a mount this process repairs is busy (edit [56]: a repair waits for its own mount's VCS). Another
+	// mount's never holds it: a read-only /Engine whose checkout is mid-rebase is no reason to leave a project's new file
+	// without its meta.
 	[[nodiscard]] bool IsAnyBusy () const
 	{
 		for (size_t i = 0u; i < Providers.size(); ++i)
 		{
-			if (Settled[i] != 0u && Providers[i] != nullptr && Providers[i]->IsBusy())
+			if (i < Writable.size() && Writable[i] != 0u && Settled[i] != 0u && Providers[i] != nullptr && Providers[i]->IsBusy())
 			{
 				return true;
 			}
@@ -1393,8 +1396,8 @@ struct CAssetRepairs::SImpl
 		return Desc.Watcher != nullptr && Desc.Watcher->IsEnabled() && Desc.Watcher->GetStats().bHolding;
 	}
 
-	// Pending providers and the watcher's hold hold everything; with WaitForVcs, so does a busy provider, and VcsSettleMs
-	// after it.
+	// Pending providers and the watcher's hold hold everything; with WaitForVcs, so does a busy provider of a mount it
+	// repairs, and VcsSettleMs after it.
 	[[nodiscard]] bool ComputeHold (uint64 NowMs)
 	{
 		if (bProvidersPending || IsWatcherHolding())
@@ -2335,14 +2338,14 @@ SOwnership TakeOwnership (const std::filesystem::path& Root, const CMountTable& 
 	return out;
 }
 
-namespace
-{
-[[nodiscard]] bool HasUnfinishedOperation (const std::filesystem::path& Root)
+bool HasUnfinishedOperation (const std::filesystem::path& Root)
 {
 	SOpJournalContents contents;
 	return ReadOpJournal(GetOpJournalPath(Root), contents) && contents.Unfinished.has_value();
 }
 
+namespace
+{
 // TakeOwnership when the request can roll forward, else the lock alone, with an unfinished operation reported either way.
 [[nodiscard]] SOwnership TakeRoot (const std::filesystem::path& Root, const SAssetOwnershipRequest& Request)
 {

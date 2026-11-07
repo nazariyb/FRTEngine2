@@ -29,6 +29,8 @@ class CAssetRegistry;
 class CDerivedDataCache;
 class CFileWatcherService;
 class CMountTable;
+class CVcsProviderSet;
+struct SLifecycleDesc;
 }
 
 namespace frt::graphics
@@ -72,10 +74,12 @@ struct SEngineDesc
 	// and ProjectId. Only the editor sets it, when it opens a project; [Assets] ReadOnly=1 (every scripted run) skips
 	// the attempt. While another process holds the lock StartUp fails, naming it (GetStartUpError), unless the
 	// project's Safety.GuestProcesses makes this host a read-only guest, which writes nothing and says so in its title.
-	// Engine-owner mode (a project inside the engine checkout, or [Assets] EngineWritable=1): once the registry has a
-	// lifecycle that repairs (assets::ClaimsEngineOwnership; H4b), the engine's lock is taken best-effort as well, and with
-	// it the registry repairs /Engine's metas (SAssetRegistryDesc::bEngineMetasWritable); without it /Engine stays
-	// read-only and one line says who holds it. Every root with an unfinished operation in its journal is logged.
+	// The writer's registry repairs metas (its lifecycle, assets::SLifecycleDesc, through each mount's VCS provider); every
+	// other host's only reports. Engine-owner mode (a project inside the engine checkout, or [Assets] EngineWritable=1):
+	// the writer takes the engine's lock best-effort as well (assets::ClaimsEngineOwnership), and with it the registry
+	// repairs /Engine's metas (SAssetRegistryDesc::bEngineMetasWritable); without it /Engine stays read-only and one line
+	// says who holds it. An operation a previous run left unfinished is rolled forward before the first scan; a root whose
+	// journal still holds one is logged.
 	bool bAssetWriter = false;
 };
 
@@ -124,7 +128,7 @@ public:
 	// ways on); empty for a failure already reported where it happened.
 	const FString& GetStartUpError () const { return StartUpError; }
 	// The MIG001 of the opened project when StartUp found it behind the engine's content migrations (design §14.8,
-	// assets::FindMigrationGap) while the gate is on (assets::IsMigrationGateOn; off until H4b): the project runs
+	// assets::FindMigrationGap) while the gate is on (assets::IsMigrationGateOn; on by default): the project runs
 	// read-only, as with [Assets] ReadOnly=1 (no metas or registry files), and the log and an asset writer's window
 	// title say so. The interactive editor shows it in a dialog that offers the project manager's migration; scripted
 	// runs, headless hosts and the launcher only log it. Empty otherwise.
@@ -232,6 +236,10 @@ private:
 	std::shared_ptr<const assets::CMountTable> MountTable;
 	std::unique_ptr<platform::CExclusiveFileLock> AssetOwnerLock;
 	std::unique_ptr<platform::CExclusiveFileLock> EngineOwnerLock;
+	// The registry's lifecycle (SAssetRegistryDesc::Lifecycle) and the writer's VCS providers, which it points into: both
+	// outlive it (EndAssetRegistry).
+	std::unique_ptr<assets::SLifecycleDesc> AssetLifecycle;
+	std::unique_ptr<assets::CVcsProviderSet> VcsProviders;
 	std::unique_ptr<assets::CAssetRegistry> AssetRegistry;
 	std::unique_ptr<CTimer> Clock;
 	// Window, renderer, UI. One opaque block defined in Engine.cpp: headless builds compile none

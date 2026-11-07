@@ -40,7 +40,7 @@ struct SProjectManagerRequest
  * project whose content is behind this engine's migrations (MIG001, design §14.8: its
  * Schemas/Migrations.yml lacks a step) is marked in the list, and Migrate and Open brings it up to
  * date before opening it; the editor sends a project it found behind here when asked to. Both
- * only while the gate is on (assets::IsMigrationGateOn; off until H4b). A project opens in a new editor
+ * only while the gate is on (assets::IsMigrationGateOn; on by default). A project opens in a new editor
  * process - its own engine's editor, which need not be this one - and the manager then exits:
  * an editor runs one project for its whole life, so the game module and everything built from
  * it never outlive their project.

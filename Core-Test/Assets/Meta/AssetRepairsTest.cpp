@@ -362,6 +362,23 @@ TEST(AssetRepairs, ASlowCheckoutNeverMintsAMetaWhileTheProviderIsBusyOrTheMetaIs
 	EXPECT_TRUE(rig.Problems().empty()) << rig.DescribeProblems().CStr();
 }
 
+// Only the VCS of a mount the repair writes holds it (edit [56]): /Engine, read-only to a project's writer, may sit in
+// another checkout that is mid-rebase (a REBASE_HEAD git left behind is busy too, §12.9), and its project's new file
+// still gets its meta.
+TEST(AssetRepairs, ABusyProviderOfAMountThisProcessDoesNotRepairHoldsNothing)
+{
+	CRepairTree tree("Чужий рушій");
+	tree.WritePng("a.png");
+	CRecordingVcsProvider engineVcs;
+	CRig rig(tree, [&engineVcs] (SLifecycleDesc& Lifecycle, SAssetRegistryDesc&) { Lifecycle.Providers.emplace_back(EngineMountId, &engineVcs); });
+	rig.Open();
+	engineVcs.SetBusy(true);
+	rig.Settle();
+	rig.Settle(1600u);
+	EXPECT_EQ(tree.MetaGuid("a.png"), DerivedGuid(P("a.png"))) << "the busy provider is /Engine's, which this process does not write";
+	EXPECT_TRUE(engineVcs.GetWriteCalls().empty());
+}
+
 TEST(AssetRepairs, WaitForVcsOffIgnoresABusyProvider)
 {
 	CRepairTree tree("Без очікування");
@@ -1322,11 +1339,11 @@ TEST(AssetRepairs, EngineOwnerModeIsAProjectInsideTheEngineCheckoutOrEngineWrita
 	EXPECT_FALSE(IsEngineOwnerMode(engine, std::filesystem::path(), true)) << "no project: an --engine run, which owns /Engine itself";
 
 	// The host claims the engine's lock only for a registry whose lifecycle repairs: without one, bEngineMetasWritable does
-	// nothing and the lock would only keep --engine runs out while the editor is open (real hosts until H4b).
+	// nothing and the lock would only keep --engine runs out while the editor is open.
 	SLifecycleDesc reportOnly;
 	SLifecycleDesc repairs;
 	repairs.bRepairs = true;
-	EXPECT_FALSE(ClaimsEngineOwnership(true, nullptr)) << "no lifecycle: real hosts before H4b";
+	EXPECT_FALSE(ClaimsEngineOwnership(true, nullptr)) << "no lifecycle";
 	EXPECT_FALSE(ClaimsEngineOwnership(true, &reportOnly));
 	EXPECT_TRUE(ClaimsEngineOwnership(true, &repairs));
 	EXPECT_FALSE(ClaimsEngineOwnership(false, &repairs)) << "an external project's engine";

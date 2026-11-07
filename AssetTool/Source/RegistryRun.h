@@ -17,14 +17,17 @@ namespace frt::assettool
 /**
  * What a registry verb opens (RegistryCommandlets.cpp): a writer only while the host holds the mount's writer lock;
  * providers only for the verbs that ask the VCS (status names them, the meta verbs write and validate through them: edit
- * [55]), so the read verbs spawn no git; a lifecycle (SLifecycleDesc) only for the verbs that need one (validate, fix,
- * new-meta, migrate, resave), each its own: real hosts pass none until H4b.
+ * [55]), so the read verbs spawn no git. Every registry runs the meta lifecycle (SLifecycleDesc, design §4.7), so a verb
+ * sees what gathering reports (META001 and the rest): the meta verbs (validate, fix, new-meta, migrate, resave) run it
+ * themselves (bLifecycle: CAssetRepairs::RunNow with their own options); for every other verb OpenRegistry runs it once
+ * after the initial scan, reporting only over every mount, with no provider but the ones bProviders asked for. scan
+ * never writes a meta (edit [66]): only the meta verbs' lifecycle repairs.
  */
 struct SRegistryOpenOptions
 {
 	bool bWriter = false;
 	bool bProviders = false;     // detect the providers of the mounts (every mount; with bLifecycle the run's own)
-	bool bLifecycle = false;
+	bool bLifecycle = false;     // the verb runs the lifecycle itself (RunNow); false: OpenRegistry runs it, reporting
 	bool bRepairs = false;       // the lifecycle repairs (an owner's writing verb); false: it reports only
 };
 
@@ -58,6 +61,10 @@ struct SRegistryRun
 	// The root mount paths of OwnMounts ("/Project", "/Plugin.X").
 	[[nodiscard]] std::vector<FString> GetOwnRoots () const;
 };
+
+// The mounts of the run: /Engine and, unless --engine, the project's /Project and plugins (Diagnostics: what Resolve
+// reported). OpenRegistry's, and the host's for a roll-forward before the verb runs (AssetTool.cpp).
+[[nodiscard]] assets::CMountTable ResolveRunMounts (const CCommandletContext& Context, std::vector<SDiagnostic>* Diagnostics = nullptr);
 
 // Builds the registry of the run and waits for its initial scan. ExitSuccess, or the exit code to end with (reported).
 int32 OpenRegistry (CCommandletContext& Context, FStringView Verb, const SRegistryOpenOptions& Options, SRegistryRun& Out);

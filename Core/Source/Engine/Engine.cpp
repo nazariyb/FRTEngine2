@@ -20,6 +20,7 @@
 #include "Assets/Meta/Migrations.h"
 #include "Assets/MountPaths.h"
 #include "Assets/OwnerLock.h"
+#include "Assets/Vcs/VcsProviderSet.h"
 #include "ECS/CoreComponents.h"
 #include "Engine/Automation.h"
 #include "Graphics/GraphicsComponents.h"
@@ -30,6 +31,7 @@
 #include "Platform/FileLock.h"
 #include "Platform/Platform.h"
 #include "Profiler/CpuProfiler.h"
+#include "Project/Project.h"
 
 #if !defined(FRT_HEADLESS)
 #include "backends/imgui_impl_win32.h"
@@ -164,8 +166,10 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 	//     BuildWorld. Only a host that asked to write (the editor) takes the project's writer lock, and only
 	//     outside read-only runs; without the lock the registry writes nothing. A second writer does not start
 	//     (§5.9) unless the project lets it be a read-only guest; in engine-owner mode the engine's lock is taken
-	//     best-effort too (assets::ClaimAssetOwnership says why), once the registry has a lifecycle that repairs
-	//     (assets::ClaimsEngineOwnership: H4b gives the hosts one).
+	//     best-effort too (assets::ClaimAssetOwnership says why). Every host's registry runs the meta lifecycle
+	//     (design §4.7, assets::SLifecycleDesc), live from its Pump: the writer's repairs (it creates, restores and
+	//     re-GUIDs metas through each mount's VCS provider), a reader's or a guest's reports alone (META001 and the
+	//     rest), with no provider and so no git spawned (edit [55]).
 	if (paths::HasProject() && Config.Get("Assets", "Registry", true))
 	{
 		assets::SAssetRegistryDesc registry;
@@ -179,12 +183,18 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 		request.Root = paths::GetProjectDir();
 		request.RulesFile = project != nullptr ? project->RulesFile : std::filesystem::path();
 		request.bReadOnly = !Desc.bAssetWriter || Config.Get("Assets", "ReadOnly", false);
+		AssetLifecycle = std::make_unique<assets::SLifecycleDesc>();
+		AssetLifecycle->Settings = assets::SAssetEditorSettings::FromConfig(Config);
+		AssetLifecycle->ProjectSalt = FString(paths::GetProject().GetAssetSalt());
+		AssetLifecycle->bLive = true;
+		AssetLifecycle->bRepairs = !request.bReadOnly;   // what this host asks for; the claim below settles it
+		registry.Lifecycle = AssetLifecycle.get();
 		if (engine != nullptr && assets::ClaimsEngineOwnership(assets::IsEngineOwnerMode(engine->OwnerRoot, request.Root,
 			Config.Get("Assets", "EngineWritable", false)), registry.Lifecycle))
 		{
 			request.EngineRoot = engine->OwnerRoot;
 		}
-		// The MIG001 gate (design §14.8; assets::IsMigrationGateOn, off until H4b): a project behind the engine's content
+		// The MIG001 gate (design §14.8; assets::IsMigrationGateOn, on unless [Assets] MigrationGate=0): a project behind the engine's content
 		// migrations opens read-only, as with [Assets] ReadOnly=1 - no meta or registry file is written - until
 		// `FRT.bat assets migrate --all` brings it up to date. Content/ is not covered yet: the material library still
 		// writes a model's missing _mat<N>.frtmat.yml and upgrades an old material until its asset-manager façade
@@ -214,8 +224,22 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 				}
 			}
 		}
-		// The lock alone: an unfinished operation is rolled forward by the registry's lifecycle when it starts, and until
-		// H4b gives the hosts a lifecycle and its providers nothing finishes it, so it is reported below whatever the role.
+		// The lock, then the roll-forward of an operation a previous run left unfinished (assets::TakeOwnership), before
+		// anything is scanned. It goes through the mounts' providers: detected here, on this thread, only when a journal
+		// holds such an operation (a crash mid-command: git is spawned once per mount); otherwise a writer detects them
+		// on a worker once its registry runs, and nothing waits for git at start-up.
+		std::vector<std::pair<assets::MountId, assets::IVcsProvider*>> rollProviders;
+		if (!request.bReadOnly)
+		{
+			request.Mounts = MountTable.get();
+			if (assets::HasUnfinishedOperation(request.Root) || (!request.EngineRoot.empty() && assets::HasUnfinishedOperation(request.EngineRoot)))
+			{
+				VcsProviders = std::make_unique<assets::CVcsProviderSet>();
+				VcsProviders->DetectNow(*MountTable, {}, AssetLifecycle->Settings.VcsProvider);
+				rollProviders = VcsProviders->GetProviders();
+				request.Providers = rollProviders;
+			}
+		}
 		assets::SAssetOwnership ownership = assets::ClaimAssetOwnership(request);
 		const std::vector<FString> unfinished = assets::DescribeUnfinishedOperations(request, ownership, ownership.IsWriter()
 			&& registry.Lifecycle != nullptr && registry.Lifecycle->bRepairs);
@@ -229,6 +253,7 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 			log::Info(log::Assets, "{} owns /Project: this editor runs as a read-only guest (Safety.GuestProcesses) and writes no registry "
 				"files or metas", ownership.Root.Owner);
 			Desc.WindowTitle += " (read-only guest)";
+			AssetLifecycle->Owner = ownership.Root.Owner;   // its META001 names the process that creates the meta (§5.9)
 			break;
 		case assets::EOwnerRole::Refused:
 			StartUpError = FString::Format("{} owns /Project.\n\nClose it, or set Safety.GuestProcesses: true in the project's "
@@ -259,8 +284,31 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 				? FString::Format("cannot take the writer lock of /Engine ({})", ownership.Engine.Error)
 				: FString::Format("{} owns /Engine", ownership.Engine.Owner));
 		}
+		// The writer's providers, one per mount (/Engine's too, which engine-owner mode repairs): already detected for the
+		// roll-forward, or detected on a worker now and handed to the repairs as each arrives (CAssetRepairs::SetProvider;
+		// every run holds until the last one). A reader asks no VCS.
+		AssetLifecycle->bRepairs = registry.bWriter;
+		const bool bDetectProviders = registry.bWriter && VcsProviders == nullptr;
+		if (registry.bWriter && VcsProviders != nullptr)
+		{
+			AssetLifecycle->Providers = VcsProviders->GetProviders();
+		}
+		AssetLifecycle->bProvidersPending = bDetectProviders;
 		AssetRegistry = std::make_unique<assets::CAssetRegistry>(std::move(registry));
 		AssetRegistry->Start();
+		if (bDetectProviders)
+		{
+			VcsProviders = std::make_unique<assets::CVcsProviderSet>();
+			VcsProviders->DetectAsync(*WorkerPool, *MountTable, {}, AssetLifecycle->Settings.VcsProvider,
+				[this] (assets::MountId Mount, assets::IVcsProvider* Provider)
+				{
+					// The registry may have gone first (ShutDown); the providers outlive it either way.
+					if (AssetRegistry != nullptr && AssetRegistry->GetRepairs() != nullptr)
+					{
+						AssetRegistry->GetRepairs()->SetProvider(Mount, Provider);
+					}
+				});
+		}
 	}
 #endif
 
@@ -354,6 +402,9 @@ void CEngine::EndAssetRegistry ()
 		AssetRegistry->ShutDown();
 		AssetRegistry.reset();
 	}
+	// The registry kept pointers into both.
+	VcsProviders.reset();
+	AssetLifecycle.reset();
 	// The locks go once nothing writes any more.
 	EngineOwnerLock.reset();
 	AssetOwnerLock.reset();

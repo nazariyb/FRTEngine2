@@ -1,7 +1,7 @@
 /**
  * The meta verbs (design §13.2, §13.4, §14.8; M4): validate, fix, new-meta, migrate and resave. Each opens its registry
- * through OpenRegistry (RegistryCommandlets.cpp) with a lifecycle of its own (SLifecycleDesc: real hosts have none until
- * H4b) over the run's own mount set, /Project and its plugins or /Engine with --engine, never both, and runs F4's
+ * through OpenRegistry (RegistryCommandlets.cpp) with a lifecycle of its own (SLifecycleDesc, SRegistryOpenOptions::bLifecycle)
+ * over the run's own mount set, /Project and its plugins or /Engine with --engine, never both, and runs F4's
  * CAssetRepairs::RunNow: commands a person runs, with no delays. The work is Core's (Assets/Meta/Validation.h,
  * MetaVerbs.h, Migrations.h), so Core-Test runs it in-process; this file parses, prints and picks the exit code.
  *

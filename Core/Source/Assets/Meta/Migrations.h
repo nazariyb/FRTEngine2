@@ -98,11 +98,10 @@ struct SMigrationsFile
 	bool bEngine);
 
 /**
- * The MIG001 gate's switch, [Assets] MigrationGate, MigrationGateDefault when no layer sets it. Off until H4b: the
- * engine and both templates have no Schemas/Migrations.yml before then, so every one of them would open read-only.
- * H4b commits each repository's file and then turns MigrationGateDefault on; -Assets:MigrationGate=1 turns the gate on
- * for one run (the tests of AssetTool's gate), =0 off. Only the hosts read it: `validate` reports MIG001 either way.
+ * The MIG001 gate's switch, [Assets] MigrationGate, MigrationGateDefault when no layer sets it: on, since the engine
+ * and both templates commit their Schemas/Migrations.yml (M4). -Assets:MigrationGate=0 turns it off for one run, =1 on.
+ * Only the hosts read it: `validate` reports MIG001 either way.
  */
-inline constexpr bool MigrationGateDefault = false;
+inline constexpr bool MigrationGateDefault = true;
 [[nodiscard]] FRT_CORE_API bool IsMigrationGateOn (const config::CConfig& Config);
 }

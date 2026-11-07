@@ -167,6 +167,19 @@ std::vector<FString> SRegistryRun::GetOwnRoots () const
 	return roots;
 }
 
+assets::CMountTable ResolveRunMounts (const CCommandletContext& Context, std::vector<SDiagnostic>* Diagnostics)
+{
+	assets::SMountRoots roots;
+	roots.EngineDir = Context.EngineRoot;
+	roots.EngineContentDir = paths::GetEngineContentDir();
+	roots.EngineConfigDir = paths::GetEngineConfigPath().parent_path();
+	if (!Context.bEngineOwner)
+	{
+		roots.ProjectDir = Context.ProjectRoot;
+	}
+	return assets::CMountTable::Resolve(roots, Diagnostics);
+}
+
 int32 OpenRegistry (CCommandletContext& Context, FStringView Verb, const SRegistryOpenOptions& Options, SRegistryRun& Out)
 {
 	if (Context.ProjectRoot.empty() && !Context.bEngineOwner)
@@ -178,16 +191,8 @@ int32 OpenRegistry (CCommandletContext& Context, FStringView Verb, const SRegist
 	// Reproducible output (§5.9): deltas commit strictly in sequence order, inside the waits below.
 	pool.SetCommitOrder(jobs::ECommitOrder::Sequence);
 
-	assets::SMountRoots roots;
-	roots.EngineDir = Context.EngineRoot;
-	roots.EngineContentDir = paths::GetEngineContentDir();
-	roots.EngineConfigDir = paths::GetEngineConfigPath().parent_path();
-	if (!Context.bEngineOwner)
-	{
-		roots.ProjectDir = Context.ProjectRoot;
-	}
 	std::vector<SDiagnostic> diagnostics;
-	Out.Mounts = std::make_shared<const assets::CMountTable>(assets::CMountTable::Resolve(roots, &diagnostics));
+	Out.Mounts = std::make_shared<const assets::CMountTable>(ResolveRunMounts(Context, &diagnostics));
 	for (const SDiagnostic& diagnostic : diagnostics)
 	{
 		Context.PrintError(FString::Format("warning: {}: {}", ToDisplayText(diagnostic.Subject), diagnostic.Message));
@@ -214,26 +219,38 @@ int32 OpenRegistry (CCommandletContext& Context, FStringView Verb, const SRegist
 	desc.Pool = &pool;
 	desc.Owner = Context.bEngineOwner ? assets::EAssetRegistryOwner::Engine : assets::EAssetRegistryOwner::Project;
 	desc.bWriter = Options.bWriter;
-	if (Options.bLifecycle)
+	// A tool host's lifecycle: providers settled before the registry opens (a mount without one is None, and spawns
+	// nothing), no live ticks (RunNow alone acts), a reader's or a guest's only reporting. A guest's META001 names the
+	// process that owns the mount.
+	Out.Lifecycle = std::make_unique<assets::SLifecycleDesc>();
+	if (Out.Providers)
 	{
-		// A tool host's own lifecycle: providers settled before the registry opens, no live ticks (RunNow alone acts), a
-		// reader's or a guest's only reporting. A guest's META001 names the process that owns the mount.
-		Out.Lifecycle = std::make_unique<assets::SLifecycleDesc>();
 		Out.Lifecycle->Providers = Out.Providers->GetProviders();
-		Out.Lifecycle->Settings = settings;
-		if (!Context.ProjectRoot.empty())
-		{
-			Out.Lifecycle->ProjectSalt = FString(paths::GetProject().GetAssetSalt());
-		}
-		Out.Lifecycle->Owner = Context.bGuest ? Context.Owner : FString();
-		Out.Lifecycle->bRepairs = Options.bRepairs && Options.bWriter;
-		desc.Lifecycle = Out.Lifecycle.get();
 	}
+	Out.Lifecycle->Settings = settings;
+	if (!Context.ProjectRoot.empty())
+	{
+		Out.Lifecycle->ProjectSalt = FString(paths::GetProject().GetAssetSalt());
+	}
+	Out.Lifecycle->Owner = Context.bGuest ? Context.Owner : FString();
+	Out.Lifecycle->bRepairs = Options.bLifecycle && Options.bRepairs && Options.bWriter;
+	desc.Lifecycle = Out.Lifecycle.get();
 	Out.Registry = std::make_unique<assets::CAssetRegistry>(std::move(desc));
 	Out.Registry->Start();
 	if (!Out.Registry->WaitForInitialScan())
 	{
 		return Context.Fail(ExitInternalError, FString::Format("{}: the registry's initial scan did not complete", Verb));
+	}
+	if (!Options.bLifecycle)
+	{
+		// What gathering reports about metas (§13.4, edit [9]), over every mount the run sees, as a command does (a tool's
+		// tree is static: no delays). Nothing is repaired here; a writer's snapshot keeps the problems.
+		assets::SRepairOptions report;
+		for (const assets::SMount& mount : Out.Mounts->GetMounts())
+		{
+			report.Paths.push_back(mount.GetRootMountPath());
+		}
+		(void)Out.Registry->GetRepairs()->RunNow(report);
 	}
 	return ExitSuccess;
 }

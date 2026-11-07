@@ -160,8 +160,8 @@ struct SAssetRegistryDesc
 	// Files per Analyze task (one delta each).
 	uint32 AnalyzeBatchFiles = 16u;
 	// The meta lifecycle (Assets/Meta/AssetRepairs.h); the registry keeps the pointer and owns a CAssetRepairs for it
-	// (GetRepairs). Null: none, nothing is reported or written. No host sets it yet: H4b switches the hosts on; tests and
-	// the verbs that need the lifecycle pass their own.
+	// (GetRepairs). Null: none, nothing is reported or written (tests and benchmarks that predate it). Every host passes
+	// one: CEngine's live, repairing for the writer and reporting otherwise; each AssetTool run its own (RegistryRun.h).
 	const SLifecycleDesc* Lifecycle = nullptr;
 };
 
