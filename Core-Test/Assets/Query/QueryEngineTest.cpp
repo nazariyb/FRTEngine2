@@ -320,7 +320,8 @@ TEST(QueryEnginePendingMetaTest, OnlyAFileThatGetsAMetaWaitsForOne)
 	delta.RecordUpserts.push_back(MakeRecord("/Project/T/Дані.txt", asset_types::Raw, "Raw"));
 	delta.FileUpserts.push_back(MakeFile("/Project/M/Box.gltf", 100u));
 	SRecordUpsert model = MakeRecord("/Project/M/Box.gltf", asset_types::Model, "Model");
-	model.SubEntries.push_back(SSubEntryDecl { "mesh:Body", MakeSubId("mesh:Body"), asset_types::Mesh, ERecordFlags::TypeExcluded, {} });
+	model.SubEntries.push_back(SSubEntryDecl { "mesh:Body", MakeSubId("mesh:Body"), asset_types::Mesh, ERecordFlags::TypeExcluded,
+		{} });
 	delta.RecordUpserts.push_back(std::move(model));
 	SFileUpsert paired = MakeFile("/Project/T/Пара.png", 4096u);
 	paired.Meta = SFileMetaState { EMetaState::Paired, 1u };
@@ -328,7 +329,8 @@ TEST(QueryEnginePendingMetaTest, OnlyAFileThatGetsAMetaWaitsForOne)
 	delta.RecordUpserts.push_back(MakeRecord("/Project/T/Пара.png", asset_types::Texture, "Texture"));
 	store.Commit(std::move(delta));
 
-	EXPECT_EQ(Query(store.Live(), "is:pending-meta"), List({ "/Project/M/Box.gltf", "/Project/T/Дані.txt", "/Project/T/Камінь.png" }));
+	EXPECT_EQ(Query(store.Live(), "is:pending-meta"),
+		List({ "/Project/M/Box.gltf", "/Project/T/Дані.txt", "/Project/T/Камінь.png" }));
 	EXPECT_EQ(Query(store.Live(), "is:excluded"), List({ "/Project/T/Виключено.png" }));
 	EXPECT_EQ(Query(store.Live(), "type:Mesh is:pending-meta"), List({ "/Project/M/Box.gltf#mesh:Body" }));
 	EXPECT_EQ(Query(store.Live(), "type:Mesh is:excluded"), List({ "/Project/M/Box.gltf#mesh:Body" }));

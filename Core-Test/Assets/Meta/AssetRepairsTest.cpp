@@ -30,8 +30,8 @@
 // another case is reported, not renamed. F30: repairs hold for VcsSettleMs after a busy provider goes quiet, and the
 // watcher's hold asks the providers' IsRewritingTree only while the repairs exist (ShutDown or destruction clears it).
 // F2: a rebase conflict between two Guid: lines keeps the record's GUID and its copy, so "keep B, alias A" restores the
-// settings. F19: a new file's Broken meta that salvaged no GUID, once deleted, leaves a new file that gets its derived meta, never
-// META008 or a fix-it carrying the file's provisional id.
+// settings. F19: a new file's Broken meta that salvaged no GUID, once deleted, leaves a new file that gets its derived
+// meta, never META008 or a fix-it carrying the file's provisional id.
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -1441,7 +1441,8 @@ TEST(AssetRepairs, ARebaseConflictKeepsTheRecordsGuidFirstAndItsFixRestoresTheSe
 	rig.Settle();
 	ASSERT_EQ(rig.StateOf(P("a.png")), EMetaState::Paired);
 
-	tree.WriteMeta("a.png", FString::Format("FormatVersion: 1\n<<<<<<< HEAD\nGuid: {}\n=======\nGuid: {}\n>>>>>>> local\n", GuidA, GuidB));
+	tree.WriteMeta("a.png",
+		FString::Format("FormatVersion: 1\n<<<<<<< HEAD\nGuid: {}\n=======\nGuid: {}\n>>>>>>> local\n", GuidA, GuidB));
 	rig.Scan();
 	rig.Settle();
 	EXPECT_EQ(rig.StateOf(P("a.png")), EMetaState::Broken);
@@ -1464,9 +1465,9 @@ TEST(AssetRepairs, ARebaseConflictKeepsTheRecordsGuidFirstAndItsFixRestoresTheSe
 	EXPECT_TRUE(rig.Problems().empty()) << rig.DescribeProblems().CStr();
 }
 
-// F19: a new file whose first meta is Broken with no Guid: line to salvage keeps a provisional id, which is no identity.
-// Once the broken meta is deleted the file is new again and gets its derived meta, never META008 with a "create from
-// registry" fix-it that would write its path-derived id into a meta.
+// F19: a new file whose first meta is Broken with no Guid: line to salvage keeps a provisional id, which is no
+// identity. Once the broken meta is deleted the file is new again and gets its derived meta, never META008 with a
+// "create from registry" fix-it that would write its path-derived id into a meta.
 TEST(AssetRepairs, ADeletedBrokenMetaThatSalvagedNoGuidLeavesANewFileNeverALostIdentity)
 {
 	CRepairTree tree("Без ідентичності");

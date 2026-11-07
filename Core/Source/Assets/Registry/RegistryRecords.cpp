@@ -132,7 +132,10 @@ SRecordUpsert MakeRecordUpsertFromView (const CRegistryView& View, SRecordId Rec
 		stored.CookRule = tables.Assets.CookRule[Record.Value];
 		stored.Chunk = tables.Assets.Chunk[Record.Value];
 		flags = tables.Assets.Flags[Record.Value];
-		View.ForEachLabel(Record, [&] (FStringView Label, bool bRule) { (bRule ? stored.RuleLabels : stored.AuthoredLabels).push_back(FString(Label)); });
+		View.ForEachLabel(Record, [&] (FStringView Label, bool bRule)
+		{
+			(bRule ? stored.RuleLabels : stored.AuthoredLabels).push_back(FString(Label));
+		});
 	}
 	return MakeRecordUpsertFromView(View, Record, stored, flags);
 }

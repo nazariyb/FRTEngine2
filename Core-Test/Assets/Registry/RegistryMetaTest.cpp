@@ -3,8 +3,9 @@
 // keeps its provisional id and dumps as in M3, so a provisional id never reaches a golden; an unchanged meta of an
 // unchanged file is never opened, a meta edit re-evaluates the record in memory, a lost meta keeps the identity and a
 // broken one its salvaged GUID (the record's own while a conflict's two Guid: lines still name it, whichever comes
-// first; a provisional id, when it salvages none, is no identity: fixing that meta tombstones nothing); the meta's values beat the rules (an Importer pin claims a file no rule claims); two
-// records with one GUID answer for the smallest path and a move with its meta is a move to listeners; SubAssets
+// first; a provisional id, when it salvages none, is no identity: fixing that meta tombstones nothing); the meta's
+// values beat the rules (an Importer pin claims a file no rule claims); two records with one GUID answer for the
+// smallest path and a move with its meta is a move to listeners; SubAssets
 // renames keep an id and remaps add an edge. E4b: the meta's Aliases and FormerPaths resolve lookups and its bytes are
 // kept in METAS (a re-evaluation reads them there, never the disk); a removed file with a meta-given GUID, or a GUID
 // edited by hand, leaves a tombstone that the identity's return clears; a warm start keeps all of it. F3: a Broken or
@@ -364,8 +365,8 @@ TEST(RegistryMeta, AConflictBetweenTwoGuidLinesKeepsTheRecordsOwnGuidWhicheverSi
 	tree.WritePng("Textures/Лого.png");
 	tree.WriteMeta("Textures/Лого.png", MetaText(GuidB));
 	tree.WriteProjectContent("Models/Box.gltf", R"({"asset":{"version":"2.0"},"materials":[{"name":"Skin"}]})");
-	tree.WriteMeta("Models/Box.gltf", MetaText(GuidC, "SubAssets:\n  Remap:\n    \"material:Skin\": { $asset: " + FString(GuidB)
-		+ ", path: /Project/Textures/Лого.png }\n"));
+	tree.WriteMeta("Models/Box.gltf", MetaText(GuidC, "SubAssets:\n  Remap:\n    \"material:Skin\": { $asset: "
+		+ FString(GuidB) + ", path: /Project/Textures/Лого.png }\n"));
 	jobs::CWorkerPool pool(MakePoolDesc());
 	std::unique_ptr<CAssetRegistry> registry = Open(pool, tree.Mounts());
 	const SGuid b = MakeGuid(GuidB);
@@ -399,13 +400,16 @@ TEST(RegistryMeta, AConflictBetweenTwoGuidLinesKeepsTheRecordsOwnGuidWhicheverSi
 		FStringView Second;
 		bool bSourceToo;
 	};
-	for (const SStep& step : { SStep { GuidA, GuidB, false }, SStep { GuidB, GuidA, false }, SStep { GuidA, GuidB, true } })
+	const SStep steps[] = { SStep { GuidA, GuidB, false }, SStep { GuidB, GuidA, false }, SStep { GuidA, GuidB, true } };
+	for (const SStep& step : steps)
 	{
 		if (step.bSourceToo)
 		{
-			ASSERT_TRUE(platform::WriteFileBytes(tree.Tree.ProjectContent() / FStringView("Textures/Лого.png").ToPath(), MakePng(8u)));
+			const std::filesystem::path png = tree.Tree.ProjectContent() / FStringView("Textures/Лого.png").ToPath();
+			ASSERT_TRUE(platform::WriteFileBytes(png, MakePng(8u)));
 		}
-		tree.WriteMeta("Textures/Лого.png", conflict(step.First, step.Second) + (step.bSourceToo ? "# the image too\n" : ""));
+		const FStringView note = step.bSourceToo ? FStringView("# the image too\n") : FStringView();
+		tree.WriteMeta("Textures/Лого.png", conflict(step.First, step.Second) + note);
 		ASSERT_TRUE(registry->ScanPathsSynchronous(folder, 30.0));
 		const CRegistryView& view = registry->Live();
 		const FString context = FString::Format("{} first, the source changed: {}", step.First, step.bSourceToo);
@@ -981,17 +985,19 @@ namespace
 // A conflict inside a meta's Labels (one Guid: line, salvaged), its Rest kept below.
 FString ConflictedMeta (FStringView Guid, FStringView Rest)
 {
-	return MetaText(Guid, FString::Format("<<<<<<< HEAD\nLabels:\n  - Ours\n=======\nLabels:\n  - Theirs\n>>>>>>> theirs\n{}", Rest));
+	return MetaText(Guid, FString::Format("<<<<<<< HEAD\nLabels:\n  - Ours\n=======\nLabels:\n  - Theirs\n>>>>>>> theirs\n{}",
+		Rest));
 }
 
 constexpr FStringView BoxJson = R"({"asset":{"version":"2.0"},"meshes":[{"name":"Body","primitives":[]}]})";
 }
 
 /**
- * A meta broken by a merge (§4.6: never overwritten, import blocked until fixed) keeps what its last good meta gave the
- * record, taken from that meta's METAS copy: the authored labels and cook rule, an Importer pin (a file only the pin
- * claims keeps its record and its copy), and a SubAssets rename's kept id and alias - on the re-evaluate path, and on
- * the analyze path when the source changes while the meta is broken. Nothing is analyzed under the rules alone.
+ * A meta broken by a merge (§4.6: never overwritten, import blocked until fixed) keeps what its last good meta gave
+ * the record, taken from that meta's METAS copy: the authored labels and cook rule, an Importer pin (a file only the
+ * pin claims keeps its record and its copy), and a SubAssets rename's kept id and alias - on the re-evaluate path,
+ * and on the analyze path when the source changes while the meta is broken. Nothing is analyzed under the rules
+ * alone.
  */
 TEST(RegistryMeta, ABrokenMetaKeepsTheValuesOfItsLastGoodCopy)
 {
@@ -1001,7 +1007,8 @@ TEST(RegistryMeta, ABrokenMetaKeepsTheValuesOfItsLastGoodCopy)
 	tree.WriteProjectContent("Notes/дані.bin", "data");
 	tree.WriteMeta("Notes/дані.bin", MetaText(GuidC, "Importer: Raw\n"));
 	tree.WriteProjectContent("Models/Box.gltf", BoxJson);
-	tree.WriteMeta("Models/Box.gltf", MetaText(GuidB, "SubAssets:\n  Renamed:\n    \"mesh:Body\": \"mesh:Torso\"\n"));
+	constexpr FStringView renamed = "SubAssets:\n  Renamed:\n    \"mesh:Body\": \"mesh:Torso\"\n";
+	tree.WriteMeta("Models/Box.gltf", MetaText(GuidB, renamed));
 	jobs::CWorkerPool pool(MakePoolDesc());
 	std::unique_ptr<CAssetRegistry> registry = Open(pool, tree.Mounts());
 	const FString before = DumpOf(registry->Live());
@@ -1009,13 +1016,14 @@ TEST(RegistryMeta, ABrokenMetaKeepsTheValuesOfItsLastGoodCopy)
 	const auto expectKept = [&] (FStringView Context)
 	{
 		const CRegistryView& view = registry->Live();
-		for (const FStringView path : { FStringView("/Project/Textures/Камінь.png"), FStringView("/Project/Notes/дані.bin"),
-			FStringView("/Project/Models/Box.gltf") })
+		const FStringView paths[] = { "/Project/Textures/Камінь.png", "/Project/Notes/дані.bin", "/Project/Models/Box.gltf" };
+		for (const FStringView path : paths)
 		{
+			const FString where = FString::Format("{}, {}", path, Context);
 			const std::optional<SStoredFile> stored = FindStoredFile(view, path);
-			ASSERT_TRUE(stored.has_value() && stored->Record.IsValid()) << FString(path).CStr() << ", " << FString(Context).CStr();
-			EXPECT_EQ(stored->MetaState, EMetaState::Broken) << FString(path).CStr() << ", " << FString(Context).CStr();
-			EXPECT_TRUE(view.FindMetaCopy(stored->Guid).has_value()) << FString(path).CStr() << ", " << FString(Context).CStr();
+			ASSERT_TRUE(stored.has_value() && stored->Record.IsValid()) << where.CStr();
+			EXPECT_EQ(stored->MetaState, EMetaState::Broken) << where.CStr();
+			EXPECT_TRUE(view.FindMetaCopy(stored->Guid).has_value()) << where.CStr();
 		}
 		const FString dump = DumpOf(view);
 		EXPECT_TRUE(dump.View().Contains(FStringView("cook=Never"))) << Context.GetData() << "\n" << dump.CStr();
@@ -1026,14 +1034,15 @@ TEST(RegistryMeta, ABrokenMetaKeepsTheValuesOfItsLastGoodCopy)
 		ASSERT_TRUE(torso.has_value()) << Context.GetData() << "\n" << dump.CStr();
 		EXPECT_EQ(torso->Name, "mesh:Body");
 		bool bRedirected = false;
-		EXPECT_EQ(view.Find(SAssetId { box, MakeSubId("mesh:Body") }, &bRedirected), std::optional<SRecordId>(torso->Record)) << Context.GetData();
+		EXPECT_EQ(view.Find(SAssetId { box, MakeSubId("mesh:Body") }, &bRedirected), std::optional<SRecordId>(torso->Record))
+			<< Context.GetData();
 		EXPECT_TRUE(bRedirected) << Context.GetData();
 	};
 
 	const uint64 analyzed = registry->GetCounters().Analyzed;
 	tree.WriteMeta("Textures/Камінь.png", ConflictedMeta(GuidA, "Cook: Never\n"));
 	tree.WriteMeta("Notes/дані.bin", ConflictedMeta(GuidC, "Importer: Raw\n"));
-	tree.WriteMeta("Models/Box.gltf", ConflictedMeta(GuidB, "SubAssets:\n  Renamed:\n    \"mesh:Body\": \"mesh:Torso\"\n"));
+	tree.WriteMeta("Models/Box.gltf", ConflictedMeta(GuidB, renamed));
 	const std::vector<FString> root = { "/Project" };
 	ASSERT_TRUE(registry->ScanPathsSynchronous(root, 30.0));
 	expectKept("re-evaluated");
@@ -1041,7 +1050,8 @@ TEST(RegistryMeta, ABrokenMetaKeepsTheValuesOfItsLastGoodCopy)
 	EXPECT_EQ(DumpOf(registry->Live()), before.Replace("meta=Paired", "meta=Broken")) << "only the meta state differs";
 
 	// The model changes while its meta is broken: analyzed again with its last good meta's SubAssets.
-	tree.WriteProjectContent("Models/Box.gltf", R"({"asset":{"version":"2.0"},"meshes":[{"name":"Body","primitives":[]},{"name":"Lid","primitives":[]}]})");
+	tree.WriteProjectContent("Models/Box.gltf",
+		R"({"asset":{"version":"2.0"},"meshes":[{"name":"Body","primitives":[]},{"name":"Lid","primitives":[]}]})");
 	ASSERT_TRUE(registry->ScanPathsSynchronous(root, 30.0));
 	EXPECT_EQ(registry->GetCounters().Analyzed, analyzed + 1u);
 	expectKept("analyzed");
@@ -1050,9 +1060,9 @@ TEST(RegistryMeta, ABrokenMetaKeepsTheValuesOfItsLastGoodCopy)
 }
 
 /**
- * A Broken meta with no last good copy - here a file first seen with a broken meta, whose salvaged GUID is its identity -
- * blocks the import (§4.6): a source edit is not analyzed while the meta is broken, and the file's row keeps the stat
- * its record was made from, so once the meta is fixed the edit is analyzed with the meta's values.
+ * A Broken meta with no last good copy - here a file first seen with a broken meta, whose salvaged GUID is its
+ * identity - blocks the import (§4.6): a source edit is not analyzed while the meta is broken, and the file's row
+ * keeps the stat its record was made from, so once the meta is fixed the edit is analyzed with the meta's values.
  */
 TEST(RegistryMeta, ABrokenMetaWithNoLastGoodCopyBlocksTheImportUntilItIsFixed)
 {
@@ -1112,10 +1122,12 @@ TEST(RegistryMeta, ALostMetasValuesComeFromItsCopyWhenItsFileIsWorkedOn)
 	ASSERT_TRUE(registry->ScanPathsSynchronous(folder, 30.0));
 	ASSERT_EQ(GuidAt(registry->Live(), path), MakeGuid(GuidA));
 
-	tree.WriteProjectContent("Notes/Assets.yml", "FormatVersion: 1\nRules:\n  - { Match: \"**/*.bin\", Labels: [ Stone ] }\n");
+	tree.WriteProjectContent("Notes/Assets.yml",
+		"FormatVersion: 1\nRules:\n  - { Match: \"**/*.bin\", Labels: [ Stone ] }\n");
 	ASSERT_TRUE(registry->ScanPathsSynchronous(folder, 30.0));
 	EXPECT_EQ(GuidAt(registry->Live(), path), MakeGuid(GuidA)) << "the pin still claims it";
-	EXPECT_TRUE(DumpOf(registry->Live()).View().Contains(FStringView("labels authored:Дані, rule:Stone\n"))) << DumpOf(registry->Live()).CStr();
+	const FString relabelled = DumpOf(registry->Live());
+	EXPECT_TRUE(relabelled.View().Contains(FStringView("labels authored:Дані, rule:Stone\n"))) << relabelled.CStr();
 
 	tree.WriteProjectContent("Notes/дані.bin", "more data");
 	ASSERT_TRUE(registry->ScanPathsSynchronous(folder, 30.0));

@@ -206,8 +206,8 @@ struct SReadMeta
 	[[nodiscard]] SFileMetaState GetColumns () const noexcept { return SFileMetaState { IsOk() ? EMetaState::Paired : EMetaState::Broken, Hash }; }
 };
 
-// The test seams of a meta read (CAssetRegistry::SetSourceChangedForTest, SetMetaUnreadableForTest): the meta path whose
-// every read changed while read, and the one that cannot be read at all (empty: none).
+// The test seams of a meta read (CAssetRegistry::SetSourceChangedForTest, SetMetaUnreadableForTest): the meta path
+// whose every read changed while read, and the one that cannot be read at all (empty: none).
 struct SMetaReadFaults
 {
 	FString KeepsChanging;
@@ -217,7 +217,8 @@ struct SMetaReadFaults
 // The meta at MountPath of Mount, read race-free (platform::ReadFileChunksStable); null when it changed while read or
 // cannot be read, which OutRead tells apart (Changed: written meanwhile, or gone; Failed: no access, an I/O error, a
 // cloud file that cannot be fetched). The caller then commits nothing of it.
-std::shared_ptr<const SReadMeta> ReadMetaFile (const SMount& Mount, FStringView MountPath, const SMetaReadFaults& Faults, platform::EStableRead& OutRead)
+std::shared_ptr<const SReadMeta> ReadMetaFile (const SMount& Mount, FStringView MountPath, const SMetaReadFaults& Faults,
+	platform::EStableRead& OutRead)
 {
 	OutRead = platform::EStableRead::Failed;
 	if (!Faults.KeepsChanging.IsEmpty() && MountPath == Faults.KeepsChanging.View())
@@ -227,7 +228,8 @@ std::shared_ptr<const SReadMeta> ReadMetaFile (const SMount& Mount, FStringView 
 	}
 	FStringView mountName;
 	FStringView relative;
-	if ((!Faults.Unreadable.IsEmpty() && MountPath == Faults.Unreadable.View()) || !SplitMountPath(MountPath, mountName, relative))
+	const bool bUnreadable = !Faults.Unreadable.IsEmpty() && MountPath == Faults.Unreadable.View();
+	if (bUnreadable || !SplitMountPath(MountPath, mountName, relative))
 	{
 		return nullptr;
 	}
@@ -282,10 +284,10 @@ std::shared_ptr<const SReadMeta> ReadMetaCopy (const CRegistryView& View, const 
 }
 
 /**
- * The last good meta of a record whose meta is Broken or gone (§4.6: a broken meta blocks import until fixed, a lost one
- * never changes identity): the view's METAS copy of the record's meta-given GUID, when this file's meta wrote it and it
- * parses Ok with that GUID. Its hash is not compared with the file's MetaHash, which holds the broken bytes' once a
- * Broken read is committed. Null: none, and a Broken meta then blocks the record's import.
+ * The last good meta of a record whose meta is Broken or gone (§4.6: a broken meta blocks import until fixed, a lost
+ * one never changes identity): the view's METAS copy of the record's meta-given GUID, when this file's meta wrote it
+ * and it parses Ok with that GUID. Its hash is not compared with the file's MetaHash, which holds the broken bytes'
+ * once a Broken read is committed. Null: none, and a Broken meta then blocks the record's import.
  */
 std::shared_ptr<const SReadMeta> ReadLastGoodMeta (const CRegistryView& View, const SStoredFile& Stored, FStringView Path)
 {
@@ -299,7 +301,8 @@ std::shared_ptr<const SReadMeta> ReadLastGoodMeta (const CRegistryView& View, co
 		return nullptr;
 	}
 	auto meta = std::make_shared<SReadMeta>();
-	ParseMeta(FStringView(reinterpret_cast<const char*>(copy->Bytes.data()), static_cast<uint32>(copy->Bytes.size())), meta->Parse);
+	const FStringView bytes(reinterpret_cast<const char*>(copy->Bytes.data()), static_cast<uint32>(copy->Bytes.size()));
+	ParseMeta(bytes, meta->Parse);
 	if (!meta->IsOk() || meta->Parse.Meta.Guid != Stored.Guid)
 	{
 		return nullptr;
@@ -371,12 +374,13 @@ void KeepStoredRedirects (const CRegistryView& View, SRecordId Record, SRecordUp
 }
 
 /**
- * A record's GUID (§4.1, M4), in order: an Ok meta's; a Broken meta's salvaged one - the stored record's GUID while the
- * broken bytes still name it, else the first in file order (a GUID edited by hand); else the stored record's when a
- * meta gave it, because a lost meta never changes identity; else the provisional id of a file with no meta yet
- * (PendingMeta, or a Broken meta that salvaged none), which never reaches a written meta. A conflict between two Guid:
- * lines keeps the record's own whichever side git wrote first (a rebase puts upstream's first): flipping it would
- * tombstone the GUID the local references name and drop its last good METAS copy, which "keep A, alias B" rebuilds from.
+ * A record's GUID (§4.1, M4), in order: an Ok meta's; a Broken meta's salvaged one - the stored record's GUID while
+ * the broken bytes still name it, else the first in file order (a GUID edited by hand); else the stored record's when
+ * a meta gave it, because a lost meta never changes identity; else the provisional id of a file with no meta yet
+ * (PendingMeta, or a Broken meta that salvaged none), which never reaches a written meta. A conflict between two
+ * Guid: lines keeps the record's own whichever side git wrote first (a rebase puts upstream's first): flipping it
+ * would tombstone the GUID the local references name and drop its last good METAS copy, which "keep A, alias B"
+ * rebuilds from.
  */
 SGuid ChooseRecordGuid (const SReadMeta* Meta, const std::optional<SStoredFile>& Stored, FStringView MountPath)
 {
@@ -782,7 +786,7 @@ SConversion ConvertBatch (SConvertInput& In)
 		uint32 MetasRead = 0u;
 		uint32 Known = 0u;                                  // files and metas the view holds (byte-exact)
 		std::vector<FString> MetaChanged;                   // SConversion::MetaChanged
-		std::vector<SDiagnostic> Diagnostics;               // a meta that cannot be read, or kept changing (source Scan)
+		std::vector<SDiagnostic> Diagnostics;               // a meta unreadable or that kept changing (source Scan)
 	};
 	std::vector<FString> paths(batch.Files.size());
 	// Each file's meta (SScanMeta::SourceFile): the one spelled byte-exact wins when a case-sensitive folder holds two that
@@ -883,13 +887,13 @@ SConversion ConvertBatch (SConvertInput& In)
 				if (read == nullptr)
 				{
 					/**
-					 * Changed while read (git or an editor writing it) or not opened: nothing of the file this pass, so its
-					 * stored row and record stand, and no record is made without its meta (a provisional id, no Importer
-					 * pin, a stamp the next read changes); its row keeps the stat of the last read. A change is read again
-					 * after the settle window in this pass, up to SourceChangedRetries times, then reported. A meta that
-					 * cannot be opened (no access, an I/O error, a cloud file not fetched) is reported at once: no event
-					 * follows it, and every scan fails alike. The error is a Scan problem of this subtree, so the scan
-					 * that reads the meta clears it.
+					 * Changed while read (git or an editor writing it) or not opened: nothing of the file this pass, so
+					 * its stored row and record stand, and no record is made without its meta (a provisional id, no
+					 * Importer pin, a stamp the next read changes); its row keeps the stat of the last read. A change is
+					 * read again after the settle window in this pass, up to SourceChangedRetries times, then reported. A
+					 * meta that cannot be opened (no access, an I/O error, a cloud file not fetched) is reported at once:
+					 * no event follows it, and every scan fails alike. The error is a Scan problem of this subtree, so
+					 * the scan that reads the meta clears it.
 					 */
 					const FString& metaPath = metaPaths[metaIndex];
 					if (outcome == platform::EStableRead::Changed && !In.MetaRetriesUsedUp.contains(path))
@@ -900,22 +904,26 @@ SConversion ConvertBatch (SConvertInput& In)
 					SDiagnostic& error = chunkOut.Diagnostics.emplace_back();
 					error.Severity = ESeverity::Error;
 					error.Subject = metaPath;
-					const FString what = bHasRecord ? FString::Format("'{}' keeps what was registered of it", GetMountPathLeaf(path))
-						: FString::Format("'{}' is not registered", GetMountPathLeaf(path));
+					const FStringView leaf = GetMountPathLeaf(path);
+					const FString what = bHasRecord ? FString::Format("'{}' keeps what was registered of it", leaf)
+						: FString::Format("'{}' is not registered", leaf);
 					error.Message = outcome == platform::EStableRead::Changed
-						? FString::Format("the meta kept changing while it was read ({} attempts): {} until it settles", In.MetaReadAttempts, what)
-						: FString::Format("cannot read the meta (check its permissions, or fetch it if it is a cloud file): {} until it can be read", what);
+						? FString::Format("the meta kept changing while it was read ({} attempts): {} until it settles",
+							In.MetaReadAttempts, what)
+						: FString::Format("cannot read the meta (check its permissions, or fetch it if it is a cloud file): {} until "
+							"it can be read", what);
 					continue;
 				}
 			}
 			const std::optional<SFileMetaState> metaColumns = read != nullptr ? std::optional<SFileMetaState>(read->GetColumns()) : std::nullopt;
 			const SGuid guid = ChooseRecordGuid(read.get(), stored, path);
-			// A Broken meta's values, and a lost one's, are its last good meta's while the record keeps the identity that
-			// meta gave it (§4.6): its Importer pin, Settings, Targets, Cook, Chunk, Labels and SubAssets, never the rules'
-			// alone. The read's columns stay Broken with the broken bytes' hash, and the copy is never replaced by them.
+			// A Broken meta's values, and a lost one's, are its last good meta's while the record keeps the identity
+			// that meta gave it (§4.6): its Importer pin, Settings, Targets, Cook, Chunk, Labels and SubAssets, never the
+			// rules' alone. The read's columns stay Broken with the broken bytes' hash, and the copy is never replaced.
 			if (bHasRecord && guid == stored->Guid && (read == nullptr || !read->IsOk()))
 			{
-				if (std::shared_ptr<const SReadMeta> lastGood = ReadLastGoodMeta(view, *stored, path); lastGood != nullptr)
+				std::shared_ptr<const SReadMeta> lastGood = ReadLastGoodMeta(view, *stored, path);
+				if (lastGood != nullptr)
 				{
 					if (read == nullptr)
 					{
@@ -948,12 +956,12 @@ SConversion ConvertBatch (SConvertInput& In)
 			if (metaColumns.has_value() && metaValues == nullptr && bHasRecord && HasMetaGivenGuid(*stored, path))
 			{
 				/**
-				 * Import blocked until the meta is fixed (§4.6): a Broken meta with no last good copy leaves the record as
-				 * its last good meta made it - neither analyzed nor re-evaluated nor removed under the rules alone. Only
-				 * the meta's columns go in, beside the stored stat, so a content change made meanwhile is still a change
-				 * once the meta is fixed. A GUID the broken bytes name instead of the record's (edited by hand) still
-				 * replaces it, with the record's stored values, and tombstones the old one. A record no meta ever gave
-				 * anything (first sight, PendingMeta) has only the rules' values to lose: it is resolved as before.
+				 * Import blocked until the meta is fixed (§4.6): a Broken meta with no last good copy leaves the record
+				 * as its last good meta made it - neither analyzed nor re-evaluated nor removed under the rules alone.
+				 * Only the meta's columns go in, beside the stored stat, so a content change made meanwhile is still a
+				 * change once the meta is fixed. A GUID the broken bytes name instead of the record's (edited by hand)
+				 * still replaces it, with the record's stored values, and tombstones the old one. A record no meta ever
+				 * gave anything (first sight, PendingMeta) has only the rules' values to lose: it is resolved as before.
 				 */
 				if (stored->MetaState != metaColumns->State || stored->MetaHash != metaColumns->Hash)
 				{
@@ -972,7 +980,7 @@ SConversion ConvertBatch (SConvertInput& In)
 					upsert.Guid = guid;
 					for (SAssetId& alias : upsert.Aliases)
 					{
-						alias.Guid = alias.SubId != 0u ? guid : alias.Guid;   // a renamed sub-asset's alias names its record's id
+						alias.Guid = alias.SubId != 0u ? guid : alias.Guid;   // a renamed sub-asset's alias: the record's id
 					}
 					AppendLostIdentity(MakeTombstone(view, *stored, path, now), part);
 					part.RecordUpserts.push_back(std::move(upsert));
@@ -2038,8 +2046,8 @@ struct CAssetRegistry::SImpl final : IAssetRepairsHost
 		SubmitConversion(PassId, std::move(Batch));
 	}
 
-	// bRetry: the re-conversion of a subtree whose metas changed while read (OnConverted), inside the pass that found it;
-	// it runs under the pass's hold and releases it.
+	// bRetry: the re-conversion of a subtree whose metas changed while read (OnConverted), inside the pass that found
+	// it; it runs under the pass's hold and releases it.
 	void SubmitConversion (uint64 PassId, SScanBatch&& Batch, bool bRetry = false)
 	{
 		SPass& pass = Passes.at(PassId);
@@ -2053,9 +2061,10 @@ struct CAssetRegistry::SImpl final : IAssetRepairsHost
 		job->first.bReEvaluateAll = pass.bReEvaluateAll && !bRetry;   // the pass's first conversion did that
 		job->first.MountRulesHash = bRetry ? std::nullopt : pass.MountRulesHash;
 		job->first.MetaFaults = SMetaReadFaults { SourceChangedForTest, MetaUnreadableForTest };
+		const FStringView root = job->first.Batch.RootMountPath.View();
 		for (const auto& [path, tries] : MetaReadRetries)
 		{
-			if (tries >= Desc.SourceChangedRetries && IsMountPathAtOrBelow(path.View(), job->first.Batch.RootMountPath.View()))
+			if (tries >= Desc.SourceChangedRetries && IsMountPathAtOrBelow(path.View(), root))
 			{
 				job->first.MetaRetriesUsedUp.insert(path);
 			}
@@ -2065,7 +2074,8 @@ struct CAssetRegistry::SImpl final : IAssetRepairsHost
 		++ConversionsInFlight;
 		Pool.Submit(jobs::EWorkPriority::High, CancelGroup,
 			[job] () { job->second = ConvertBatch(job->first); },
-			[this, PassId, job, bRetry, guard = CLostGuard([this, PassId, bRetry] { OnConversionLost(PassId, bRetry); })] () mutable
+			[this, PassId, job, bRetry, guard = CLostGuard([this, PassId, bRetry] { OnConversionLost(PassId, bRetry); })] ()
+			mutable
 			{
 				guard.Dismiss();
 				OnConverted(PassId, std::move(job->second), bRetry);
@@ -2098,16 +2108,21 @@ struct CAssetRegistry::SImpl final : IAssetRepairsHost
 		}
 		else
 		{
-			// A re-conversion's folders replace the first conversion's in its subtree; its RULEFILES rows join the pass's
-			// (none of which is committed before the pass ends), one per rule file.
+			// A re-conversion's folders replace the first conversion's in its subtree; its RULEFILES rows join the
+			// pass's (none of which is committed before the pass ends), one per rule file.
 			pass.bRuleFilesChanged = pass.bRuleFilesChanged || Conversion.bRuleFilesChanged;
-			std::erase_if(pass.Folders, [&] (const SUnclaimedFolder& Folder) { return IsMountPathAtOrBelow(Folder.Path.View(), Conversion.Root.View()); });
+			const FStringView root = Conversion.Root.View();
+			std::erase_if(pass.Folders, [&] (const SUnclaimedFolder& Folder) { return IsMountPathAtOrBelow(Folder.Path.View(), root); });
 			AppendMoved(pass.Folders, Conversion.Folders);
-			const auto take = [] (std::vector<SRuleFileUpsert>& To, std::vector<SRuleFileUpsert>& Other, std::vector<SRuleFileUpsert>& From)
+			using FRows = std::vector<SRuleFileUpsert>;
+			const auto take = [] (FRows& To, FRows& Other, FRows& From)
 			{
 				for (SRuleFileUpsert& row : From)
 				{
-					const auto same = [&] (const SRuleFileUpsert& Stored) { return Stored.MountName == row.MountName && Stored.FolderMountPath == row.FolderMountPath; };
+					const auto same = [&] (const SRuleFileUpsert& Stored)
+					{
+						return Stored.MountName == row.MountName && Stored.FolderMountPath == row.FolderMountPath;
+					};
 					std::erase_if(To, same);
 					std::erase_if(Other, same);
 					To.push_back(std::move(row));
@@ -2121,8 +2136,9 @@ struct CAssetRegistry::SImpl final : IAssetRepairsHost
 		// reported, or went, so its count starts again.
 		std::erase_if(MetaReadRetries, [&] (const auto& Entry)
 		{
+			const std::vector<FString>& changed = Conversion.MetaChanged;
 			return IsMountPathAtOrBelow(Entry.first.View(), Conversion.Root.View())
-				&& std::find(Conversion.MetaChanged.begin(), Conversion.MetaChanged.end(), Entry.first) == Conversion.MetaChanged.end();
+				&& std::find(changed.begin(), changed.end(), Entry.first) == changed.end();
 		});
 		FString rescanRoot;
 		for (const FString& path : Conversion.MetaChanged)
@@ -2146,7 +2162,8 @@ struct CAssetRegistry::SImpl final : IAssetRepairsHost
 		if (!rescanRoot.IsEmpty())
 		{
 			++pass.OutstandingAnalyze;   // held until the re-conversion is done
-			Retries.push_back(SRetry { platform::MakeDeadline(Desc.RetryDelayMs / 1000.0), PassId, {}, std::move(rescanRoot) });
+			const uint64 deadline = platform::MakeDeadline(Desc.RetryDelayMs / 1000.0);
+			Retries.push_back(SRetry { deadline, PassId, {}, std::move(rescanRoot) });
 		}
 		if (bRetry)
 		{
@@ -2265,7 +2282,8 @@ struct CAssetRegistry::SImpl final : IAssetRepairsHost
 		{
 			// A re-conversion compares against what its pass committed so far: it waits for the pass's queued deltas.
 			const SRetry& due = Retries[i];
-			if (!bStopping && (due.Deadline > now || (!due.RescanRoot.IsEmpty() && Passes.at(due.Pass).PendingDeltas != 0u)))
+			const bool bWaitsForDeltas = !due.RescanRoot.IsEmpty() && Passes.at(due.Pass).PendingDeltas != 0u;
+			if (!bStopping && (due.Deadline > now || bWaitsForDeltas))
 			{
 				++i;
 				continue;
@@ -2277,10 +2295,8 @@ struct CAssetRegistry::SImpl final : IAssetRepairsHost
 			{
 				// The pass stays held until the re-conversion is done (OnConverted).
 				++ScansInFlight;
-				CMountScanner::ScanAsync(Pool, Mounts->GetMounts()[pass.Mount], retry.RescanRoot, *Rules, nullptr, [this, id = retry.Pass] (SScanBatch&& Batch)
-				{
-					OnRescanned(id, std::move(Batch));
-				});
+				CMountScanner::ScanAsync(Pool, Mounts->GetMounts()[pass.Mount], retry.RescanRoot, *Rules, nullptr,
+					[this, id = retry.Pass] (SScanBatch&& Batch) { OnRescanned(id, std::move(Batch)); });
 				continue;
 			}
 			--pass.OutstandingAnalyze;   // SubmitAnalyze counts it again

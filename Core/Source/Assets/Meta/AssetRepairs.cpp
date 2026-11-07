@@ -574,8 +574,8 @@ private:
 			const bool bMetaOnDisk = row.MetaRow != InvalidRow && View.GetFile(row.MetaRow, meta);
 			const FString exactMeta = GetMetaPath(file.MountPath);
 			const bool bCaseDiffers = bMetaOnDisk && meta.MountPath != exactMeta.View();
-			// A provisional id is no identity to restore or recreate: a new file's Broken meta that salvaged no GUID, once
-			// deleted, is a new file again (orphan pairing, then a derived GUID), never META008 with its path-derived id.
+			// A provisional id is no identity to restore or recreate: a new file's Broken meta that salvaged no GUID,
+			// once deleted, is a new file again (orphan pairing, then a derived GUID), never META008 with that id.
 			const SGuid fileGuid = GetRecordGuid(file);
 			const SGuid recordGuid = IsMetaGivenGuid(file.MetaState, fileGuid, file.MountPath) ? fileGuid : SGuid {};
 			const bool bDirty = HasEvent(file.MountPath) || HasEvent(exactMeta) || (bMetaOnDisk && HasEvent(meta.MountPath));

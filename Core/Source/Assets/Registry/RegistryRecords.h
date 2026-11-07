@@ -45,11 +45,11 @@ struct SStoredFile
 };
 
 /**
- * Whether a record's GUID came from a meta (§4.1, M4) and so is the asset's identity: a lost meta keeps it, its removal
- * or another GUID in place tombstones it, the lifecycle restores or recreates the meta with it. A provisional id never
- * is: a file that never had a meta (PendingMeta), and a new file whose first meta was Broken with no Guid: line to
- * salvage, which keeps MakeProvisionalGuid of its path beside the state Broken. The provisional id is always that of
- * the file's current path, so the comparison is exact, and it never reaches a written meta.
+ * Whether a record's GUID came from a meta (§4.1, M4) and so is the asset's identity: a lost meta keeps it, its
+ * removal or another GUID in place tombstones it, the lifecycle restores or recreates the meta with it. A provisional
+ * id never is: a file that never had a meta (PendingMeta), and a new file whose first meta was Broken with no Guid:
+ * line to salvage, which keeps MakeProvisionalGuid of its path beside the state Broken. The provisional id is always
+ * that of the file's current path, so the comparison is exact, and it never reaches a written meta.
  */
 [[nodiscard]] inline bool IsMetaGivenGuid (EMetaState State, const SGuid& Guid, FStringView MountPath) noexcept
 {

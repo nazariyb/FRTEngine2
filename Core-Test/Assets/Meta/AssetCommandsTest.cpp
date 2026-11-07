@@ -1,7 +1,7 @@
 // M4's journalled commands (Assets/Meta/AssetCommands.h, design §4.6, §12.6) against the recording provider: create meta
 // writes one meta with its pre-allocated GUID and checks out and adds it with its source, never writes a source's
-// provisional id, and never remints an existing meta in any spelling; a move carries the meta and declared companions in one provider call, records the old path in
-// FormerPaths (and drops the new one from it), records nothing for a case-only rename, renames a meta spelled in another
+// provisional id, and never remints an existing meta in any spelling; a move carries the meta and declared companions in
+// one provider call, records the old path in FormerPaths (and drops the new one from it), records nothing for a case-only rename, renames a meta spelled in another
 // case to the asset's case, moves a broken meta and a newer engine's meta unchanged (nor does a dedupe rewrite the latter),
 // and refuses an occupied target, another file's meta, a
 // non-portable name and two files landing on one name before anything moves; a delete hands the source and its meta to one

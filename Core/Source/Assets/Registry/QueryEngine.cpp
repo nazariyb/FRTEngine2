@@ -2047,9 +2047,10 @@ private:
 			return bRedirected;
 		}
 		case ESystemPredicate::PendingMeta:
-			// Only a file that gets a meta waits for one: a type-excluded record's file (class Excluded) stays PendingMeta
-			// for good, since nothing creates a meta for it or reports it (the lifecycle and `status` skip it too).
-			return GetsMeta(Tables.Files.Class[Context.File]) && Tables.Files.MetaState[Context.File] == EMetaState::PendingMeta;
+			// Only a file that gets a meta waits for one: a type-excluded record's file (class Excluded) stays
+			// PendingMeta for good, since nothing creates a meta for it or reports it (the lifecycle and `status` skip it).
+			return GetsMeta(Tables.Files.Class[Context.File])
+				&& Tables.Files.MetaState[Context.File] == EMetaState::PendingMeta;
 		case ESystemPredicate::Unsaved:
 			return false;
 		}

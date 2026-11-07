@@ -8,8 +8,9 @@
 // change notification; a pass cut short after its conversion (a clean exit while Analyze is pending, a crash) persists
 // nothing that claims work it did not do; a broken journal is mended by the full write its break triggers, and loses no
 // commit; a mount-rule edit over many files is committed in deltas of bounded size; a project writer's Flush fences only
-// its own mounts. A meta that changes while read is read again within the pass (an error once it kept changing), one held
-// by another process during the initial scan is registered in that scan, and one that cannot be read is an error on it. Every tree has non-ASCII names and lives in the temp directory.
+// its own mounts. A meta that changes while read is read again within the pass (an error once it kept changing), one
+// held by another process during the initial scan is registered in that scan, and one that cannot be read is an error
+// on it. Every tree has non-ASCII names and lives in the temp directory.
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -55,7 +56,10 @@ struct SAssetRegistryTestAccess
 {
 	static CRegistryJournal* GetJournal (CAssetRegistry& Registry) { return Registry.GetJournal(); }
 	static void SetSourceChanged (CAssetRegistry& Registry, FStringView MountPath) { Registry.SetSourceChangedForTest(FString(MountPath)); }
-	static void SetMetaUnreadable (CAssetRegistry& Registry, FStringView MountPath) { Registry.SetMetaUnreadableForTest(FString(MountPath)); }
+	static void SetMetaUnreadable (CAssetRegistry& Registry, FStringView MountPath)
+	{
+		Registry.SetMetaUnreadableForTest(FString(MountPath));
+	}
 };
 }
 
@@ -968,8 +972,8 @@ uint32 CountScanErrors (const CRegistryView& View, FStringView Subject, FStringV
 	View.ForEachProblem([&] (FStringView ProblemSubject, EProblemSource Source, const SDiagnostic& Diagnostic)
 	{
 		const FStringView subject = Diagnostic.Subject.IsEmpty() ? ProblemSubject : Diagnostic.Subject.View();
-		found += subject == Subject && Source == EProblemSource::Scan && Diagnostic.Severity == ESeverity::Error && Diagnostic.Message.Contains(Text)
-			? 1u : 0u;
+		found += subject == Subject && Source == EProblemSource::Scan && Diagnostic.Severity == ESeverity::Error
+			&& Diagnostic.Message.Contains(Text) ? 1u : 0u;
 	});
 	return found;
 }
@@ -1041,8 +1045,8 @@ TEST(AssetRegistry, AMetaHeldWhileTheInitialScanReadsItIsRegisteredInThatScan)
 	desc.Pool = &pool;
 	desc.RetryDelayMs = 50u;
 	CAssetRegistry registry(std::move(desc));
-	const HANDLE held = CreateFileW(tree.ProjectContent("Textures/Трава.png.meta").c_str(), GENERIC_READ, 0u, nullptr, OPEN_EXISTING,
-		FILE_ATTRIBUTE_NORMAL, nullptr);
+	const HANDLE held = CreateFileW(tree.ProjectContent("Textures/Трава.png.meta").c_str(), GENERIC_READ, 0u, nullptr,
+		OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
 	ASSERT_NE(held, INVALID_HANDLE_VALUE);
 	registry.Start();
 	const uint64 deadline = platform::MakeDeadline(30.0);
@@ -1106,7 +1110,8 @@ TEST(AssetRegistry, AMetaThatCannotBeReadIsAnErrorOnItAndItsFileIsNeverRegistere
 	}
 
 	// An asset whose meta changes and can then not be read keeps what was registered of it.
-	tree.WriteProjectContent("Textures/Трава.png.meta", FString::Format("FormatVersion: 1\nGuid: {}\nLabels:\n  - Трава\n", guidText));
+	const FString edited = FString::Format("FormatVersion: 1\nGuid: {}\nLabels:\n  - Трава\n", guidText);
+	tree.WriteProjectContent("Textures/Трава.png.meta", edited);
 	CAssetRegistry registry(makeDesc());
 	SAssetRegistryTestAccess::SetMetaUnreadable(registry, metaPath);
 	registry.Start();
