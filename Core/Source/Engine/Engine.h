@@ -134,6 +134,9 @@ public:
 	// title say so. The interactive editor shows it in a dialog that offers the project manager's migration; scripted
 	// runs, headless hosts and the launcher only log it. Empty otherwise.
 	const FString& GetMigrationNotice () const { return MigrationNotice; }
+	// That MIG001 is a Schemas/Migrations.yml a newer engine wrote: the project is ahead of this engine, not behind it,
+	// so the editor offers no migration (none could read the file) and says to open it with that engine.
+	bool IsMigrationNoticeOfNewerEngine () const { return bMigrationNoticeOfNewerEngine; }
 
 	// ---- frame ----
 	// Dispatches every pending OS message. False once the application should quit.
@@ -211,6 +214,7 @@ private:
 	SEngineDesc Desc;
 	FString StartUpError;
 	FString MigrationNotice;
+	bool bMigrationNoticeOfNewerEngine = false;
 	bool bStarted = false;
 	bool bQuitRequested = false;
 	int ExitCode = 0;

@@ -7,7 +7,8 @@
 // then; `migrate metas` is reproducible (two trees, the same bytes), skips existing metas, records itself in
 // Schemas/Migrations.yml only once no file is left without one, and its dry run writes nothing; the Migrations.yml format
 // is canonical, sorted and keeps steps it does not know; the hosts' gate (FindMigrationGap) says what `validate`'s MIG001
-// says, and is on unless [Assets] MigrationGate turns it off; `resave --metas` rewrites only the metas that
+// says, and is on unless [Assets] MigrationGate turns it off; a newer engine's Migrations.yml is MIG001 that offers no
+// migration, and `migrate` refuses it before writing a meta; `resave --metas` rewrites only the metas that
 // are not canonical.
 // Every crash point of `migrate metas`, `fix` and `resave --metas` is rolled forward in-process, and `migrate metas` and
 // `fix` each have one real killed child (edit [37]: the last two of M4's six). Trees hold at most eight files.
@@ -435,6 +436,22 @@ TEST(MetaVerbs, TheMigrationGateFindsARootBehindAndIsOnUnlessTheSwitchSaysOff)
 	EXPECT_EQ(malformed->Line, 3u);
 	EXPECT_TRUE(malformed->Message.EndsWith(": run FRT.bat assets migrate --all after fixing it")) << malformed->Message.CStr();
 
+	// A newer engine's file: still MIG001 (this engine must not write the root), but ahead, not behind, and no migration
+	// can read it, so neither the message nor the hosts offer one.
+	ASSERT_TRUE(platform::WriteFileAtomic(GetMigrationsPath(root), FStringView("FormatVersion: 2\nApplied:\n  - metas\n")));
+	bool bNewerEngine = false;
+	const std::optional<SDiagnostic> newer = FindMigrationGap(root, "/Project", false, &bNewerEngine);
+	ASSERT_TRUE(newer.has_value());
+	EXPECT_EQ(newer->Code, Mig001);
+	EXPECT_TRUE(bNewerEngine);
+	EXPECT_TRUE(newer->Message.StartsWith("/Project needs a newer engine: Schemas/Migrations.yml is FormatVersion 2")) << newer->Message.CStr();
+	EXPECT_FALSE(newer->Message.Contains("migrate")) << newer->Message.CStr();
+	EXPECT_FALSE(newer->Message.Contains("behind")) << newer->Message.CStr();
+	ASSERT_TRUE(FindMigrationGap(root, "/Project", false, &bNewerEngine).has_value());
+	ASSERT_TRUE(platform::WriteFileAtomic(GetMigrationsPath(root), FStringView("FormatVersion: 1\n")));
+	ASSERT_TRUE(FindMigrationGap(root, "/Project", false, &bNewerEngine).has_value());
+	EXPECT_FALSE(bNewerEngine) << "behind: a migration helps";
+
 	ASSERT_TRUE(platform::WriteFileAtomic(GetMigrationsPath(root), FStringView(MigrationsWithMetas)));
 	EXPECT_FALSE(FindMigrationGap(root, "/Project", false).has_value());
 
@@ -499,6 +516,27 @@ TEST(MetaVerbs, MigrateMetasIsReproducibleSkipsExistingMetasAndRecordsItselfOnce
 	{
 		EXPECT_EQ(first.Read(file), second.Read(file)) << "two machines that migrate one commit write the same bytes";
 	}
+}
+
+// A project a newer engine migrated: its Migrations.yml cannot be read here, so the step could never record itself, and it
+// writes no meta first (a dry run plans none either); the file stays as the newer engine wrote it.
+TEST(MetaVerbs, MigrateMetasRefusesANewerEnginesMigrationsFileBeforeWritingAMeta)
+{
+	CVerbTree tree("Новіший рушій");
+	tree.WritePng("Rock.png", 4u);
+	const FStringView newer = "FormatVersion: 2\nApplied:\n  - metas\n";
+	ASSERT_TRUE(platform::WriteFileAtomic(GetMigrationsPath(tree.Tree.ProjectDir()), newer));
+	CVerbRig rig(tree);
+	ASSERT_TRUE(rig.bOpened);
+	const SMigrateMetasResult preview = rig.Migrate(true);
+	EXPECT_TRUE(preview.Report.Planned.empty());
+	EXPECT_FALSE(preview.Error.IsEmpty());
+	const SMigrateMetasResult result = rig.Migrate();
+	EXPECT_TRUE(result.Error.Contains("newer than this engine's 1")) << result.Error.CStr();
+	EXPECT_FALSE(result.bRecorded);
+	EXPECT_TRUE(result.Report.Planned.empty());
+	EXPECT_FALSE(tree.Exists("Rock.png.meta")) << "no meta of this engine's in a newer engine's project";
+	EXPECT_EQ(tree.Migrations(), FString(newer));
 }
 
 TEST(MetaVerbs, MigrateMetasLeavesItselfUnrecordedWhileAFileStillHasNoMeta)

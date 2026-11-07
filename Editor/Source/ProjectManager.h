@@ -73,6 +73,7 @@ private:
 		bool bMissing = false;           // the project file is gone
 		bool bEngineMissing = false;
 		FString Behind;                  // MIG001: its content is behind this engine's migrations (the gate is on)
+		bool bNewerEngine = false;       // ... that MIG001 is a newer engine's Schemas/Migrations.yml: no Migrate offered
 	};
 
 	struct STemplate

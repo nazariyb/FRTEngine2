@@ -64,12 +64,14 @@ struct SMigrationStep
 struct SMigrationsFile
 {
 	bool bExists = false;
+	bool bNewerFormat = false;      // its FormatVersion is newer than MigrationsFormatVersion: a newer engine wrote it
 	std::vector<FString> Applied;   // as the file lists them, known or not
 };
 
 /**
  * Reads Root's file. A missing file is no error: nothing is applied (bExists false). False, with OutError filled (Code
- * MIG001, File MigrationsFile, Line and Column where it has them), when the file cannot be read or is not the format above.
+ * MIG001, File MigrationsFile, Line and Column where it has them), when the file cannot be read or is not the format above,
+ * a newer engine's FormatVersion included (bNewerFormat: no migration of this engine's brings it up to date).
  */
 [[nodiscard]] FRT_CORE_API bool ReadMigrations (const std::filesystem::path& Root, SMigrationsFile& Out, SDiagnostic* OutError = nullptr);
 
@@ -93,9 +95,13 @@ struct SMigrationsFile
  * the hosts and `validate` report, an error with Subject RootMountPath ("/Project", "/Engine"), File MigrationsFile (Line
  * and Column where the file is malformed), and a message that names the steps and the command that brings it up to date
  * (`FRT.bat assets migrate --all`, with --engine for bEngine). nullopt: Root is up to date.
+ *
+ * A file a newer engine wrote (SMigrationsFile::bNewerFormat) is MIG001 too, since this engine must not write that root,
+ * but the root is ahead, not behind: its message says to open it with a newer engine and names no migration, which
+ * could not read the file either, and OutNewerEngine (when given) is set so that a host offers no migration.
  */
 [[nodiscard]] FRT_CORE_API std::optional<SDiagnostic> FindMigrationGap (const std::filesystem::path& Root, FStringView RootMountPath,
-	bool bEngine);
+	bool bEngine, bool* OutNewerEngine = nullptr);
 
 /**
  * The MIG001 gate's switch, [Assets] MigrationGate, MigrationGateDefault when no layer sets it: on, since the engine

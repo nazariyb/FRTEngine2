@@ -56,7 +56,8 @@ struct SNewMetasResult
  * left without a meta, the step records itself in Root's Schemas/Migrations.yml (RecordMigration, through Provider's
  * CheckOut). A dry run writes nothing and lists what it would create. Remaining: the files still without a meta (a
  * read-only file, a Git LFS pointer, a file an orphan meta matches, a lost meta: `fix` or `new-meta` settles each), which
- * keep the step unrecorded.
+ * keep the step unrecorded. A Root whose Schemas/Migrations.yml cannot be read (malformed, or a newer engine's) is refused
+ * before anything is planned, a dry run's too: the step could never record itself there (Error says why).
  */
 struct SMigrateMetasResult
 {
@@ -64,7 +65,7 @@ struct SMigrateMetasResult
 	std::vector<FString> Remaining;      // sources still without a meta, in the registry's order
 	bool bRecorded = false;              // the step is in Migrations.yml now (also when it already was)
 	bool bWasRecorded = false;           // it was before this run
-	FString Error;                       // the record could not be written
+	FString Error;                       // Root's Migrations.yml cannot be read (nothing done), or the record not written
 };
 
 [[nodiscard]] FRT_CORE_API SMigrateMetasResult MigrateMetas (CAssetRegistry& Registry, std::span<const MountId> Mounts,

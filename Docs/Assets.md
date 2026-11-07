@@ -184,7 +184,7 @@ and `Registry`, whose severities are fixed.
 | `VCS002` | the VCS refused a write (`CheckOut`, `Move` or `Delete` failed); the command wrote nothing | error | the command |
 | `VCS003` | an asset and its meta tracked differently ("generated locally: commit it") | warning | Lifecycle (a meta this process created), `validate` (every pair, one `StatusOf` per provider) |
 | `VCS004` | a Git LFS pointer file where a source is expected; never imported or hashed into a GUID | error | Lifecycle |
-| `MIG001` | a repository behind the engine: its `Schemas/Migrations.yml` is missing, malformed or lacks a step this engine requires | error | `validate`; the hosts' gate (`scan`, `status`, a refused AssetTool run, `CEngine`) |
+| `MIG001` | a repository behind the engine: its `Schemas/Migrations.yml` is missing, malformed or lacks a step this engine requires; or ahead of it, the file a newer engine's `FormatVersion` (open it with that engine) | error | `validate`; the hosts' gate (`scan`, `status`, a refused AssetTool run, `CEngine`) |
 | `MIG002` | a leftover legacy pattern, such as `<stem>_mat<N>` beside a model without `SubAssets.Remap` | warning; nothing reports it in M4: its patterns go with the steps of M7 and M9a | `validate` |
 
 The engine and the templates are clean of PATH001-003, RULE001-002 and errors, and every file of theirs that takes a
@@ -521,7 +521,9 @@ meta.
   is never reminted), with `MakeCreateMetaGuid` over the mount's salt, its folded mount path and its content: two people
   who migrate one commit write the same bytes. It records itself only when no such file is left without a meta (a
   read-only file, a Git LFS pointer, a file an orphan meta matches, a lost meta: `fix` or `new-meta` settles each), so a
-  run that crashed, or left one, is run again: it skips what exists and then records. `Schemas/Migrations.yml` lies
+  run that crashed, or left one, is run again: it skips what exists and then records. A root whose file it cannot read
+  (malformed, or a newer engine's `FormatVersion`) is refused before any meta is planned, as the step could never record
+  itself there. `Schemas/Migrations.yml` lies
   outside every mount, so it is written after the op with `WriteFileAtomic`, after the provider's `CheckOut` of an
   existing file. Its format, through the canonical emitter, with no date, user or engine version so it merges as text:
 
@@ -547,7 +549,10 @@ meta.
   writes nothing; a run that writes nothing (`--ci`, `-Assets:ReadOnly=1`, `migrate --dry-run`, `validate` without
   `--fix`) runs, and `scan` and `status` count `MIG001` as an error among their problems (exit 1): `scan` in its one
   object (`migration`), `status` as one more problem by code. A project that
-  `FRT.bat new` makes has its template's `Schemas/Migrations.yml`, so it is not behind. The gate is `[Assets]
+  `FRT.bat new` makes has its template's `Schemas/Migrations.yml`, so it is not behind. A root whose file a newer
+  engine wrote is `MIG001` and read-only the same way, but it is ahead, not behind: its message says to open it with
+  that engine and names no migration, the editor's dialog only tells (no Migrate), its window title says "content of a
+  newer engine", and the project manager marks it without offering Migrate and Open. The gate is `[Assets]
   MigrationGate`, default `MigrationGateDefault`, **on** since the engine and both templates commit their files (M4);
   `-Assets:MigrationGate=0` turns it off for one run. A test's scratch project that runs a writing verb carries a
   current file (`Core-Test/Assets/Meta/MigrationsTestUtils.h`).

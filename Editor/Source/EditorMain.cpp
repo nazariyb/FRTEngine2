@@ -37,6 +37,15 @@ bool AskToMigrate (FStringView Title, FStringView ProjectName, FStringView Notic
 	return MessageBoxW(nullptr, ToWide(text).CStr(), ToWide(Title).CStr(), MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON1 | MB_SETFOREGROUND) == IDYES;
 }
 
+// The same MIG001 for a project a newer engine migrated (CEngine::IsMigrationNoticeOfNewerEngine): no migration of this
+// engine's can read its Schemas/Migrations.yml, so there is nothing to offer; it opens read-only once this is dismissed.
+void TellNewerEngine (FStringView Title, FStringView ProjectName, FStringView Notice)
+{
+	const FString text = FString::Format("{}'s content was migrated by a newer engine (MIG001):\n\n{}\n\nIt opens read-only: nothing writes "
+		"its metas or registry files. Open it with the newer engine to change it.", ProjectName, Notice);
+	(void)MessageBoxW(nullptr, ToWide(text).CStr(), ToWide(Title).CStr(), MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
+}
+
 int RunEditorFor (CEngine& Engine, CGameModule& Module)
 {
 	// Destroyed before the module unloads: the edited world holds code from it. The editor
@@ -140,8 +149,12 @@ int RunEditor ()
 
 	int exitCode = 1;
 	bool bRunManager = !bOpenProject;
-	if (bOpenProject && !engine.GetMigrationNotice().IsEmpty() && !CAutomation::IsScriptedRun(engine.GetConfig())
-		&& AskToMigrate(desc.WindowTitle, gameProject.Name, engine.GetMigrationNotice()))
+	const bool bTellMig001 = bOpenProject && !engine.GetMigrationNotice().IsEmpty() && !CAutomation::IsScriptedRun(engine.GetConfig());
+	if (bTellMig001 && engine.IsMigrationNoticeOfNewerEngine())
+	{
+		TellNewerEngine(desc.WindowTitle, gameProject.Name, engine.GetMigrationNotice());
+	}
+	if (bTellMig001 && !engine.IsMigrationNoticeOfNewerEngine() && AskToMigrate(desc.WindowTitle, gameProject.Name, engine.GetMigrationNotice()))
 	{
 		manager.Message = gameProject.Name + " (MIG001): " + engine.GetMigrationNotice();
 		manager.Project = gameProject.File;

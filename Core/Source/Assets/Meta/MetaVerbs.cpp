@@ -200,10 +200,15 @@ SMigrateMetasResult MigrateMetas (CAssetRegistry& Registry, std::span<const Moun
 {
 	SMigrateMetasResult out;
 	SMigrationsFile file;
-	if (ReadMigrations(Root, file))
+	SDiagnostic unreadable;
+	if (!ReadMigrations(Root, file, &unreadable))
 	{
-		out.bWasRecorded = std::any_of(file.Applied.begin(), file.Applied.end(), [] (const FString& Name) { return Name.View().Equals<ESearchCase::IgnoreCaseAscii>(MetasStep); });
+		// The step could never record itself (RecordMigration reads the file first), so it writes nothing before that: a newer
+		// engine's project would get this engine's metas, and a malformed file would leave the metas made but unrecorded.
+		out.Error = std::move(unreadable.Message);
+		return out;
 	}
+	out.bWasRecorded = std::any_of(file.Applied.begin(), file.Applied.end(), [] (const FString& Name) { return Name.View().Equals<ESearchCase::IgnoreCaseAscii>(MetasStep); });
 	CAssetRepairs* repairs = Registry.GetRepairs();
 	if (repairs == nullptr)
 	{

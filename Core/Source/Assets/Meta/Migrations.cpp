@@ -107,6 +107,7 @@ bool ReadMigrations (const std::filesystem::path& Root, SMigrationsFile& Out, SD
 	}
 	if (*number > static_cast<int64>(MigrationsFormatVersion))
 	{
+		Out.bNewerFormat = true;
 		return Refuse(OutError, FString::Format("{} is FormatVersion {}, newer than this engine's {}: written by a newer engine",
 			MigrationsFile, *number, MigrationsFormatVersion), version.GetLine());
 	}
@@ -221,13 +222,28 @@ bool RecordMigration (const std::filesystem::path& Root, FStringView Step, IVcsP
 	return true;
 }
 
-std::optional<SDiagnostic> FindMigrationGap (const std::filesystem::path& Root, FStringView RootMountPath, bool bEngine)
+std::optional<SDiagnostic> FindMigrationGap (const std::filesystem::path& Root, FStringView RootMountPath, bool bEngine, bool* OutNewerEngine)
 {
 	SMigrationsFile file;
 	SDiagnostic error;
 	FString message;
 	const FStringView command = bEngine ? FStringView("FRT.bat assets migrate --all --engine") : FStringView("FRT.bat assets migrate --all");
-	if (!ReadMigrations(Root, file, &error))
+	if (OutNewerEngine != nullptr)
+	{
+		*OutNewerEngine = false;
+	}
+	const bool bRead = ReadMigrations(Root, file, &error);
+	if (!bRead && file.bNewerFormat)
+	{
+		// Ahead of this engine: nothing here can fix the file, and migrate cannot read it either.
+		message = FString::Format("{} needs a newer engine: {}. Open it with that engine; this one writes nothing in it", RootMountPath,
+			error.Message);
+		if (OutNewerEngine != nullptr)
+		{
+			*OutNewerEngine = true;
+		}
+	}
+	else if (!bRead)
 	{
 		message = FString::Format("{}: run {} after fixing it", error.Message, command);
 	}

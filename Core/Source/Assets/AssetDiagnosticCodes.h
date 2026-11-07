@@ -30,7 +30,7 @@
  *	VCS002   the VCS refused a write; the command wrote nothing
  *	VCS003   an asset and its meta tracked differently ("generated locally: commit it")
  *	VCS004   a Git LFS pointer file where a source is expected
- *	MIG001   project content format behind the engine: Schemas/Migrations.yml misses a step
+ *	MIG001   project content format behind the engine: Schemas/Migrations.yml misses a step (or ahead: a newer engine's)
  *	MIG002   a leftover legacy pattern
  */
 namespace frt::assets

@@ -201,18 +201,20 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 		// (M7 or later). Every host logs it, and an asset writer's window title says it; the editor alone asks, in a
 		// dialog that offers the project manager's migration (GetMigrationNotice, EditorMain.cpp), and never in a
 		// scripted run. An engine behind keeps engine-owner mode from writing /Engine (`migrate --all --engine` is its
-		// migration).
+		// migration). A project a newer engine migrated is read-only the same way, and offered no migration.
 		if (assets::IsMigrationGateOn(Config))
 		{
-			if (const std::optional<SDiagnostic> gap = assets::FindMigrationGap(request.Root, "/Project", false))
+			bool bNewerEngine = false;
+			if (const std::optional<SDiagnostic> gap = assets::FindMigrationGap(request.Root, "/Project", false, &bNewerEngine))
 			{
 				MigrationNotice = gap->Message;
+				bMigrationNoticeOfNewerEngine = bNewerEngine;
 				log::Error(log::Assets, "MIG001 {}: this {} opens it read-only", gap->Message, Desc.bAssetWriter ? "editor" : "host");
 				Config.SetOverride("Assets", "ReadOnly", "1");
 				request.bReadOnly = true;
 				if (Desc.bAssetWriter)
 				{
-					Desc.WindowTitle += " (read-only: content behind the engine, MIG001)";
+					Desc.WindowTitle += bNewerEngine ? " (read-only: content of a newer engine, MIG001)" : " (read-only: content behind the engine, MIG001)";
 				}
 			}
 			else if (!request.EngineRoot.empty())

@@ -286,7 +286,7 @@ void CProjectManager::Refresh ()
 				// project is that engine's to judge, so only this one's are asked, and only while the gate is on.
 				if (assets::IsMigrationGateOn(Engine.GetConfig()))
 				{
-					if (const std::optional<SDiagnostic> gap = assets::FindMigrationGap(descriptor.GetDir(), "/Project", false))
+					if (const std::optional<SDiagnostic> gap = assets::FindMigrationGap(descriptor.GetDir(), "/Project", false, &entry.bNewerEngine))
 					{
 						entry.Behind = gap->Message;
 					}
@@ -433,8 +433,9 @@ void CProjectManager::DrawRecent ()
 	}
 	ImGui::EndDisabled();
 	ImGui::SameLine();
-	// Only for a project behind this engine (MIG001), which only the gate (on by default) finds.
-	if (selected != nullptr && !selected->Behind.IsEmpty())
+	// Only for a project behind this engine (MIG001), which only the gate (on by default) finds; never for one a newer
+	// engine migrated, whose Schemas/Migrations.yml this engine's migrate cannot read.
+	if (selected != nullptr && !selected->Behind.IsEmpty() && !selected->bNewerEngine)
 	{
 		if (ImGui::Button("Migrate and Open"))
 		{
@@ -517,7 +518,8 @@ void CProjectManager::DrawRecent ()
 		{
 			// One line in the row; the whole message on hover.
 			ImGui::SameLine();
-			ImGui::TextColored(ErrorColor, "%s", "- content behind it (MIG001): Migrate and Open");
+			ImGui::TextColored(ErrorColor, "%s", entry.bNewerEngine ? "- content of a newer engine (MIG001): opens read-only here"
+				: "- content behind it (MIG001): Migrate and Open");
 			if (ImGui::IsItemHovered())
 			{
 				ImGui::SetTooltip("%s", entry.Behind.CStr());
