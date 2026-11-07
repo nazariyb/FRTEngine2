@@ -344,4 +344,24 @@ struct SAssetOwnership
 // submodule or shared checkout by an external project stays read-only for it.
 [[nodiscard]] FRT_CORE_API bool IsEngineOwnerMode (const std::filesystem::path& EngineRoot, const std::filesystem::path& ProjectRoot,
 	bool bEngineWritable);
+
+// Whether a Project-owner host in engine-owner mode claims the engine's Owner.lock beside its project's
+// (SAssetOwnershipRequest::EngineRoot): only for a registry whose lifecycle repairs (Lifecycle->bRepairs). Without one,
+// bEngineMetasWritable does nothing, and the lock would only keep every writing --engine run out (exit 4) while the editor
+// is open; real hosts pass no lifecycle until H4b, so the engine's lock and bEngineMetasWritable switch on together there.
+[[nodiscard]] FRT_CORE_API bool ClaimsEngineOwnership (bool bEngineOwnerMode, const SLifecycleDesc* Lifecycle) noexcept;
+
+// The lines a host reports at start-up (edit [15]) for each root of a claim whose OpJournal.log holds an unfinished
+// operation, the project's or --engine's root and, in engine-owner mode, the engine's: one this process does not own waits
+// for its owner (named when known); one it owns whose roll-forward failed names the error; one it owns that nothing has
+// rolled forward yet (SAssetOwnershipRequest::Mounts null) waits for the lifecycle, unless bLifecycleRollsForward says the
+// host's registry starts a repairing lifecycle, which finishes it at its Start (CAssetRepairs::Start). Empty: nothing waits.
+[[nodiscard]] FRT_CORE_API std::vector<FString> DescribeUnfinishedOperations (const SAssetOwnershipRequest& Request,
+	const SAssetOwnership& Ownership, bool bLifecycleRollsForward);
+
+// Safety.BuilderSourceGuard of the rule file a host's process is governed by (the opened project's Config/Assets.yml,
+// the engine's Core/Config/Assets.yml for --engine or with no project; ReadSafetyOfRuleFile, so missing or malformed is
+// the default, on), handed to SetBuilderSourceGuardEnabled (edits [6], [64]). Called once at host start-up, before any
+// builder keys a step; returns every switch of the file.
+FRT_CORE_API SSafetySwitches ApplySafetyOfRuleFile (const std::filesystem::path& RulesFile);
 }

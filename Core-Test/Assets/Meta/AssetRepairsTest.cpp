@@ -41,6 +41,7 @@
 
 #include "Assets/AssetDiagnosticCodes.h"
 #include "Assets/AssetRegistry.h"
+#include "Assets/BuilderGuard.h"
 #include "Assets/FileWatcherService.h"
 #include "Assets/Meta/AssetCommands.h"
 #include "Assets/Meta/AssetRepairs.h"
@@ -1318,6 +1319,16 @@ TEST(AssetRepairs, EngineOwnerModeIsAProjectInsideTheEngineCheckoutOrEngineWrita
 	EXPECT_FALSE(IsEngineOwnerMode(engine, engine.parent_path(), false)) << "an engine inside the project (a submodule)";
 	EXPECT_TRUE(IsEngineOwnerMode(engine, tree.Tree.Root / "Game", true));
 	EXPECT_FALSE(IsEngineOwnerMode(engine, std::filesystem::path(), true)) << "no project: an --engine run, which owns /Engine itself";
+
+	// The host claims the engine's lock only for a registry whose lifecycle repairs: without one, bEngineMetasWritable does
+	// nothing and the lock would only keep --engine runs out while the editor is open (real hosts until H4b).
+	SLifecycleDesc reportOnly;
+	SLifecycleDesc repairs;
+	repairs.bRepairs = true;
+	EXPECT_FALSE(ClaimsEngineOwnership(true, nullptr)) << "no lifecycle: real hosts before H4b";
+	EXPECT_FALSE(ClaimsEngineOwnership(true, &reportOnly));
+	EXPECT_TRUE(ClaimsEngineOwnership(true, &repairs));
+	EXPECT_FALSE(ClaimsEngineOwnership(false, &repairs)) << "an external project's engine";
 }
 
 // The M4 row's proof: a file added under a scratch engine's Core/Content gets its meta in engine-owner mode, through the
@@ -1396,6 +1407,111 @@ TEST(AssetRepairs, AFileAddedUnderAScratchEnginesCoreContentGetsAMetaInEngineOwn
 	EXPECT_FALSE(std::filesystem::exists(GetEngineSnapshotPath(engine.Root), ec));
 	EXPECT_TRUE(!std::filesystem::exists(GetEngineSnapshotPath(engine.Root).parent_path(), ec)
 		|| std::filesystem::is_empty(GetEngineSnapshotPath(engine.Root).parent_path(), ec)) << "no journal of /Engine either";
+}
+
+namespace
+{
+// A create-meta op of Source (a mount path under Root's mounts) stopped after its journal's Begin, in Root's OpJournal.log.
+void LeaveUnfinishedCreateAt (const CMountTable& Mounts, const std::filesystem::path& Root, FStringView Source)
+{
+	SAssetWriterDesc desc;
+	desc.Mounts = &Mounts;
+	desc.OwnerRoot = Root;
+	desc.bHoldsLock = true;
+	CAssetWriter writer(std::move(desc));
+	writer.SetStopAfterStepForTest(0u);
+	SCreateMetaRequest create;
+	create.Source = Source;
+	create.Meta.Guid = SGuid::NewRandom();
+	(void)CreateMeta(writer, create);
+	EXPECT_TRUE(writer.GetUnfinished().has_value()) << FString::FromPath(Root).CStr();
+}
+}
+
+// Edit [15]: at start-up a host reports every root whose journal holds an unfinished operation, whatever its role. A writer
+// that took the lock alone (no Mounts: nothing rolled forward yet) says the lifecycle finishes it, unless its registry runs
+// one that repairs; a guest, a refused writer or a reader names who finishes it; engine-owner mode's engine root counts too.
+TEST(AssetRepairs, EveryRootWithAnUnfinishedOperationIsReportedAtStartUpWhateverTheRole)
+{
+	CRepairTree tree("Незавершене");
+	const SScratchEngine engine(tree);
+	engine.WriteFont("z.png", 7u);
+	frt::test::rules::MakeDirectories(engine.ProjectDir / "Content");
+	ASSERT_TRUE(platform::WriteFileBytes(engine.ProjectDir / "Content" / "a.png", MakePng(3u)));
+	const std::shared_ptr<const CMountTable> mounts = engine.Mounts();
+	LeaveUnfinishedCreateAt(*mounts, engine.Root, "/Engine/Fonts/z.png");
+	LeaveUnfinishedCreateAt(*mounts, engine.ProjectDir, "/Project/a.png");
+	const FString projectJournal = FString::FromPath(GetOpJournalPath(engine.ProjectDir));
+	const FString engineJournal = FString::FromPath(GetOpJournalPath(engine.Root));
+	const FString self = GetThisProcessAsOwner().Describe();
+
+	SAssetOwnershipRequest request = engine.Request();
+	ASSERT_FALSE(request.EngineRoot.empty());
+	SAssetOwnership owner = ClaimAssetOwnership(request);
+	ASSERT_EQ(owner.Role, EOwnerRole::Writer) << owner.Root.Error.CStr();
+	ASSERT_TRUE(owner.OwnsEngine()) << owner.Engine.Error.CStr();
+	const std::vector<FString> lines = DescribeUnfinishedOperations(request, owner, false);
+	ASSERT_EQ(lines.size(), 2u);
+	EXPECT_TRUE(lines[0].Contains(projectJournal)) << lines[0].CStr();
+	EXPECT_TRUE(lines[0].Contains("finished when the lifecycle starts")) << lines[0].CStr();
+	EXPECT_TRUE(lines[1].Contains(engineJournal)) << lines[1].CStr();
+	EXPECT_TRUE(lines[1].Contains("finished when the lifecycle starts")) << lines[1].CStr();
+	EXPECT_TRUE(DescribeUnfinishedOperations(request, owner, true).empty()) << "a repairing lifecycle finishes both at its Start";
+
+	// A second writer of the same project is refused: its report names the owner, and it never asked for the engine.
+	const SAssetOwnership refused = ClaimAssetOwnership(request);
+	ASSERT_EQ(refused.Role, EOwnerRole::Refused);
+	const std::vector<FString> refusedLines = DescribeUnfinishedOperations(request, refused, true);
+	ASSERT_EQ(refusedLines.size(), 1u);
+	EXPECT_TRUE(refusedLines[0].Contains(projectJournal)) << refusedLines[0].CStr();
+	EXPECT_TRUE(refusedLines[0].Contains(self + " finishes it")) << refusedLines[0].CStr();
+
+	ASSERT_TRUE(platform::WriteFileText(request.RulesFile, "FormatVersion: 1
+Safety:
+  GuestProcesses: true
+"));
+	const SAssetOwnership guest = ClaimAssetOwnership(request);
+	ASSERT_EQ(guest.Role, EOwnerRole::Guest);
+	const std::vector<FString> guestLines = DescribeUnfinishedOperations(request, guest, false);
+	ASSERT_EQ(guestLines.size(), 1u);
+	EXPECT_TRUE(guestLines[0].Contains(self + " finishes it")) << guestLines[0].CStr();
+
+	SAssetOwnershipRequest reader = request;
+	reader.bReadOnly = true;
+	const std::vector<FString> readerLines = DescribeUnfinishedOperations(reader, ClaimAssetOwnership(reader), false);
+	ASSERT_EQ(readerLines.size(), 1u);
+	EXPECT_TRUE(readerLines[0].Contains("its owner finishes it")) << readerLines[0].CStr();
+
+	// Another in-engine project's writer: nothing waits in its own journal, the engine's waits for the engine's owner.
+	const SScratchEngine other(tree, "Інша");
+	const SAssetOwnershipRequest otherRequest = other.Request();
+	const SAssetOwnership second = ClaimAssetOwnership(otherRequest);
+	ASSERT_EQ(second.Role, EOwnerRole::Writer) << second.Root.Error.CStr();
+	ASSERT_FALSE(second.OwnsEngine());
+	const std::vector<FString> secondLines = DescribeUnfinishedOperations(otherRequest, second, true);
+	ASSERT_EQ(secondLines.size(), 1u);
+	EXPECT_TRUE(secondLines[0].Contains(engineJournal)) << secondLines[0].CStr();
+	EXPECT_TRUE(secondLines[0].Contains(self + " finishes it")) << secondLines[0].CStr();
+}
+
+// Edits [6], [64]: a host hands Safety.BuilderSourceGuard of the rule file that governs its process to the builder guard at
+// start-up; a missing file gives the default, on.
+TEST(AssetRepairs, AHostAppliesSafetyBuilderSourceGuardOfItsRuleFile)
+{
+	CRepairTree tree("Охорона будівників");
+	struct SRestore
+	{
+		~SRestore () { SetBuilderSourceGuardEnabled(true); }
+	} restore;
+	ASSERT_TRUE(IsBuilderSourceGuardEnabled());
+	tree.WriteProjectRules("FormatVersion: 1
+Safety:
+  BuilderSourceGuard: false
+");
+	EXPECT_FALSE(ApplySafetyOfRuleFile(tree.ProjectRules()).bBuilderSourceGuard);
+	EXPECT_FALSE(IsBuilderSourceGuardEnabled());
+	EXPECT_TRUE(ApplySafetyOfRuleFile(tree.ProjectRules().parent_path() / "Missing.yml").bBuilderSourceGuard);
+	EXPECT_TRUE(IsBuilderSourceGuardEnabled());
 }
 
 // ---------------- What gets reported ----------------

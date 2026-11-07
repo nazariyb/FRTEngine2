@@ -72,9 +72,10 @@ struct SEngineDesc
 	// and ProjectId. Only the editor sets it, when it opens a project; [Assets] ReadOnly=1 (every scripted run) skips
 	// the attempt. While another process holds the lock StartUp fails, naming it (GetStartUpError), unless the
 	// project's Safety.GuestProcesses makes this host a read-only guest, which writes nothing and says so in its title.
-	// Engine-owner mode (a project inside the engine checkout, or [Assets] EngineWritable=1): the engine's lock is taken
-	// best-effort as well, and with it the registry repairs /Engine's metas (SAssetRegistryDesc::bEngineMetasWritable);
-	// without it /Engine stays read-only and one line says who holds it.
+	// Engine-owner mode (a project inside the engine checkout, or [Assets] EngineWritable=1): once the registry has a
+	// lifecycle that repairs (assets::ClaimsEngineOwnership; H4b), the engine's lock is taken best-effort as well, and with
+	// it the registry repairs /Engine's metas (SAssetRegistryDesc::bEngineMetasWritable); without it /Engine stays
+	// read-only and one line says who holds it. Every root with an unfinished operation in its journal is logged.
 	bool bAssetWriter = false;
 };
 

@@ -202,6 +202,14 @@ int32 RunAssetTool ()
 	context.bReadOnly = context.bCi || engine.GetConfig().Get("Assets", "ReadOnly", false);
 	context.SetWorkerPool(engine.GetWorkerPool());
 
+	// The Safety switches that govern a process (GuestProcesses, BuilderSourceGuard) come from one file: the opened
+	// project's, the engine's with --engine (and with no project). BuilderSourceGuard is set before the verb keys any
+	// builder's step (assets::ApplySafetyOfRuleFile).
+	const std::filesystem::path rulesFile = context.bEngineOwner || context.ProjectRoot.empty()
+		? paths::GetEngineConfigPath().parent_path() / assets::RuleFileName.ToPath()
+		: context.ProjectRoot / "Config" / assets::RuleFileName.ToPath();
+	(void)assets::ApplySafetyOfRuleFile(rulesFile);
+
 	// Held until the commandlet returns; the OS lets go of it if the process dies first. The decision is the one the
 	// editor makes (assets::ClaimAssetOwnership), for the run's own mount set only: never /Project and /Engine together.
 	std::optional<platform::CExclusiveFileLock> ownerLock;
@@ -209,11 +217,12 @@ int32 RunAssetTool ()
 	{
 		assets::SAssetOwnershipRequest request;
 		request.Root = context.GetMountRoot();
-		// Safety.GuestProcesses governs a process: the opened project's file, the engine's with --engine.
-		request.RulesFile = context.bEngineOwner ? paths::GetEngineConfigPath().parent_path() / assets::RuleFileName.ToPath()
-			: context.ProjectRoot / "Config" / assets::RuleFileName.ToPath();
+		request.RulesFile = rulesFile;
 		request.bReadOnly = context.bReadOnly;
 		assets::SAssetOwnership ownership = assets::ClaimAssetOwnership(request);
+		// A process without the lock rolls nothing forward (§4.7): the owner finishes it. With the lock, the verb's own
+		// lifecycle does at its Start (the request passes no Mounts): until then, say one waits, whatever the role.
+		const std::vector<FString> unfinished = assets::DescribeUnfinishedOperations(request, ownership, false);
 		const FString& owner = ownership.Root.Owner;
 		if (ownership.Role == assets::EOwnerRole::Writer)
 		{
@@ -237,11 +246,9 @@ int32 RunAssetTool ()
 			return context.Fail(ExitInternalError, FString::Format("{}: cannot take the writer lock of {}: {}", commandlet->Name,
 				context.GetMountName(), ownership.Root.Error));
 		}
-		if (ownership.Root.bUnfinished && !ownerLock.has_value())
+		for (const FString& line : unfinished)
 		{
-			// A process without the lock rolls nothing forward (§4.7): the owner finishes it.
-			context.PrintError(FString::Format("warning: an unfinished operation waits in {}: the owner of {} finishes it",
-				FString::FromPath(assets::GetOpJournalPath(context.GetMountRoot())), context.GetMountName()));
+			context.PrintError("warning: " + line);
 		}
 	}
 

@@ -253,12 +253,16 @@ writing nothing, is over). With the opened project's `Safety.GuestProcesses: tru
 runs; the switch governs a process, so no other file sets it) the second process runs as a **read-only guest** instead:
 it loads, scans and reports like a read-only run, writes no meta, snapshot, journal or `BuildState`, says so (the
 editor in its title, AssetTool on stderr), and a `META001` it reports names the owner, who creates the meta. `lock` is
-never a guest. A process without the lock rolls no unfinished operation forward and says one waits.
+never a guest. A process without the lock rolls no unfinished operation forward and says one waits; a writer that holds
+it says so too until its lifecycle starts and finishes it (`DescribeUnfinishedOperations`: every root, whatever the role).
+Both hosts hand the governing rule file's `Safety.BuilderSourceGuard` to the builder guard at start-up
+(`ApplySafetyOfRuleFile`): the opened project's, the engine's for `--engine` or with no project.
 
 **Engine-owner mode (M4, §4.7).** `/Engine` is owner-writable when the opened project lies inside the engine checkout
 (`Templates/*`), with `FRT.bat assets <verb> --engine` (no project: that run owns `<engine>/Local/Registry`), or in the
 editor with `-Assets:EngineWritable=1`; it stays read-only for an engine that external projects use. An editor in that
-mode takes `<engine>/Local/Assets/Owner.lock` best-effort, after its project's: without it (another in-engine editor has
+mode whose registry runs a lifecycle that repairs (`ClaimsEngineOwnership`; real hosts get one at H4b, so until then an
+open editor never keeps an `--engine` run out) takes `<engine>/Local/Assets/Owner.lock` best-effort, after its project's: without it (another in-engine editor has
 it) `/Engine` is read-only for this process, one line says who holds it, and the project still opens; only the
 project's own lock makes a second writer exit. With it the editor passes `SAssetRegistryDesc::bEngineMetasWritable`,
 and the lifecycle repairs metas in `/Engine` through a second `CAssetWriter` on the engine root, with that root's own

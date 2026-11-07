@@ -6,6 +6,7 @@
 #include <utility>
 
 #include "Assets/AssetDiagnosticCodes.h"
+#include "Assets/BuilderGuard.h"
 #include "Assets/Discovery/Mounts.h"
 #include "Assets/FileWatcherService.h"
 #include "Assets/Meta/AssetCommands.h"
@@ -2320,5 +2321,50 @@ bool IsEngineOwnerMode (const std::filesystem::path& EngineRoot, const std::file
 		return false;
 	}
 	return bEngineWritable || platform::IsAtOrBelow(platform::NormalizePath(ProjectRoot), platform::NormalizePath(EngineRoot));
+}
+
+bool ClaimsEngineOwnership (bool bEngineOwnerMode, const SLifecycleDesc* Lifecycle) noexcept
+{
+	return bEngineOwnerMode && Lifecycle != nullptr && Lifecycle->bRepairs;
+}
+
+std::vector<FString> DescribeUnfinishedOperations (const SAssetOwnershipRequest& Request, const SAssetOwnership& Ownership,
+	bool bLifecycleRollsForward)
+{
+	std::vector<FString> lines;
+	const auto describe = [&] (const std::filesystem::path& Root, const SOwnership& Claim)
+	{
+		if (!Claim.bUnfinished)
+		{
+			return;
+		}
+		const FString journal = FString::FromPath(GetOpJournalPath(Root));
+		if (!Claim.Lock.has_value())
+		{
+			lines.push_back(FString::Format("an unfinished operation waits in {}: {} finishes it", journal,
+				Claim.Owner.IsEmpty() ? FString("its owner") : Claim.Owner));
+		}
+		else if (!Claim.Error.IsEmpty())
+		{
+			lines.push_back(FString::Format("an unfinished operation waits in {}: it could not be finished ({})", journal, Claim.Error));
+		}
+		else if (!bLifecycleRollsForward)
+		{
+			lines.push_back(FString::Format("an unfinished operation waits in {}: it is finished when the lifecycle starts", journal));
+		}
+	};
+	describe(Request.Root, Ownership.Root);
+	if (!Request.EngineRoot.empty())
+	{
+		describe(Request.EngineRoot, Ownership.Engine);
+	}
+	return lines;
+}
+
+SSafetySwitches ApplySafetyOfRuleFile (const std::filesystem::path& RulesFile)
+{
+	const SSafetySwitches safety = ReadSafetyOfRuleFile(RulesFile);
+	SetBuilderSourceGuardEnabled(safety.bBuilderSourceGuard);
+	return safety;
 }
 }

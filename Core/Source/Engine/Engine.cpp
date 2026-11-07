@@ -148,6 +148,13 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 			FileWatcher->AddMount(mount.RulesFile.parent_path());
 		}
 		paths::SetMountTable(MountTable);
+		// Safety.BuilderSourceGuard (§4.8) of the rule file that governs this process, the project's (the engine's with no
+		// project), before anything keys a builder's step (assets::ApplySafetyOfRuleFile).
+		const assets::SMount* governing = MountTable->Find(paths::HasProject() ? assets::ProjectMountId : assets::EngineMountId);
+		if (governing != nullptr)
+		{
+			(void)assets::ApplySafetyOfRuleFile(governing->RulesFile);
+		}
 	}
 	InputActions.SetFileWatcher(FileWatcher.get());
 
@@ -156,7 +163,8 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 	//     BuildWorld. Only a host that asked to write (the editor) takes the project's writer lock, and only
 	//     outside read-only runs; without the lock the registry writes nothing. A second writer does not start
 	//     (§5.9) unless the project lets it be a read-only guest; in engine-owner mode the engine's lock is taken
-	//     best-effort too (assets::ClaimAssetOwnership says why).
+	//     best-effort too (assets::ClaimAssetOwnership says why), once the registry has a lifecycle that repairs
+	//     (assets::ClaimsEngineOwnership: H4b gives the hosts one).
 	if (paths::HasProject() && Config.Get("Assets", "Registry", true))
 	{
 		assets::SAssetRegistryDesc registry;
@@ -170,13 +178,16 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 		request.Root = paths::GetProjectDir();
 		request.RulesFile = project != nullptr ? project->RulesFile : std::filesystem::path();
 		request.bReadOnly = !Desc.bAssetWriter || Config.Get("Assets", "ReadOnly", false);
-		if (engine != nullptr && assets::IsEngineOwnerMode(engine->OwnerRoot, request.Root, Config.Get("Assets", "EngineWritable", false)))
+		if (engine != nullptr && assets::ClaimsEngineOwnership(assets::IsEngineOwnerMode(engine->OwnerRoot, request.Root,
+			Config.Get("Assets", "EngineWritable", false)), registry.Lifecycle))
 		{
 			request.EngineRoot = engine->OwnerRoot;
 		}
-		// The lock alone: an unfinished operation is rolled forward by the registry's lifecycle when it starts (H4b gives
-		// the hosts their providers).
+		// The lock alone: an unfinished operation is rolled forward by the registry's lifecycle when it starts, and until
+		// H4b gives the hosts a lifecycle and its providers nothing finishes it, so it is reported below whatever the role.
 		assets::SAssetOwnership ownership = assets::ClaimAssetOwnership(request);
+		const std::vector<FString> unfinished = assets::DescribeUnfinishedOperations(request, ownership, ownership.IsWriter()
+			&& registry.Lifecycle != nullptr && registry.Lifecycle->bRepairs);
 		switch (ownership.Role)
 		{
 		case assets::EOwnerRole::Writer:
@@ -202,10 +213,9 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 		case assets::EOwnerRole::ReadOnly:
 			break;
 		}
-		if (ownership.Root.bUnfinished && !registry.bWriter)
+		for (const FString& line : unfinished)
 		{
-			log::Warning(log::Assets, "an unfinished operation waits in {}: its owner finishes it",
-				FString::FromPath(assets::GetOpJournalPath(paths::GetProjectDir())));
+			log::Warning(log::Assets, "{}", line);
 		}
 		if (ownership.OwnsEngine())
 		{
