@@ -172,13 +172,15 @@ struct SAssetChange
 
 /**
  * What changed since the last OnAssetsChanged (§5.9). Added, Removed and Modified come from the store's change ring
- * (asset records; a sub-entry's change is its record's). Moved: a record removed and one added with its id (from M4 the
- * meta's GUID, so a file renamed or moved with its meta), listed once with its new path and in neither Added nor
- * Removed; a file without a meta has a path-derived id, so its move stays a Removed and an Added. The store does not
- * tell tag and edge edits apart from other edits, so TagsChanged and DependenciesChanged stay empty and every edit is
- * Modified. bRefreshAll: the ring cannot list the changes (a
- * snapshot adopted, tables compacted, the ring overflowed): re-run every query. bScanCompleted: the initial scan
- * completed in this Pump.
+ * (asset records; a sub-entry's change is its record's); a record whose id changed in place (its file's meta appeared,
+ * a GUID edited) is a Removed of the old id and an Added of the new one. Moved: an id that left a path it held before
+ * the window and holds, at the end of it, a path it did not hold (from M4 the meta's GUID, so a file renamed or moved
+ * with its meta), listed once with its new path and in neither Added nor Removed (AddRecordChanges); a record added and
+ * removed within one window, a path that went and came back, and a file without a meta (its id is path-derived) stay
+ * Added and Removed. The store does not tell tag and edge edits apart from other edits, so TagsChanged and
+ * DependenciesChanged stay empty and every edit is Modified. bRefreshAll: the ring cannot list the changes (a snapshot
+ * adopted, tables compacted, the ring overflowed): re-run every query. bScanCompleted: the initial scan completed in
+ * this Pump.
  */
 struct SAssetChangeSet
 {
@@ -198,6 +200,11 @@ struct SAssetChangeSet
 			&& !bRefreshAll && !bScanCompleted;
 	}
 };
+
+// Appends the change ring's entries of one broadcast window (oldest first, CRegistryStore::ForEachChangeSince) to Out's
+// Added, Removed, Modified and Moved, as SAssetChangeSet says: per id, the k-th path it left (by its last Removed) and
+// the k-th path it came to (by its first Added) are one move.
+FRT_CORE_API void AddRecordChanges (std::span<const SRecordChange> Changes, SAssetChangeSet& Out);
 
 // The start-up as the hosts log it (`[assets] initial scan: ...`).
 struct SInitialScanReport
@@ -311,7 +318,8 @@ private:
 	// The writer's journal while it is open (null for a reader, and before the snapshots loaded or after ShutDown).
 	[[nodiscard]] CRegistryJournal* GetJournal () noexcept;
 	// Every Analyze of the file at MountPath reports bSourceChanged, as for a file written to without pause (the
-	// retry cap that ends every wait). Owner thread, before Start.
+	// retry cap that ends every wait); for a meta's path, every read of the meta changed while read. Owner thread,
+	// before Start.
 	void SetSourceChangedForTest (FString MountPath);
 
 	std::unique_ptr<SImpl> Impl;

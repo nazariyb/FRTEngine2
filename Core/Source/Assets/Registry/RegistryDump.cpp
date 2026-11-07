@@ -120,7 +120,7 @@ struct SDumpLabel
 struct SDumpRecord
 {
 	SGuid Guid;
-	bool bShowGuid = false;   // the file has a meta (its state is not PendingMeta)
+	bool bShowGuid = false;   // the GUID is no provisional id (it came from a meta): one never reaches a golden
 	FStringView Type;
 	FStringView Importer;
 	EImportStatus Status = EImportStatus::NotAnalyzed;
@@ -301,7 +301,8 @@ struct CRegistryView::SDumpBuilder
 				entry.bHasRecord = true;
 				FillRecord(View, row, entry.Record);
 				entry.Record.Guid = tables.Assets.Guid[row];
-				entry.Record.bShowGuid = entry.MetaState != EMetaState::PendingMeta;
+				// Not the meta state: a Broken meta with no GUID to salvage leaves the record its provisional id.
+				entry.Record.bShowGuid = entry.Record.Guid != MakeProvisionalGuid(entry.Path);
 			}
 		}
 

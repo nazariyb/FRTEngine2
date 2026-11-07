@@ -266,12 +266,32 @@ TEST(RegistryMeta, AWarmStartOpensNoMetaAndAMetaEditIsReEvaluatedWithoutAnalyze)
 	EXPECT_TRUE(edited.View().Contains(FStringView("cook=Never"))) << edited.CStr();
 	EXPECT_TRUE(edited.View().Contains(FStringView("labels authored:Rock"))) << edited.CStr();
 
-	// Another GUID in the meta: the record takes it, in memory; the old id answers nothing.
+	// Another GUID in the meta: the record takes it, in memory; the old id answers nothing, and to a listener the old
+	// id went and the new one came (never a Modified of an id it never saw added).
+	std::vector<SAssetChangeSet> changes;
+	const SDelegateHandle handle = registry->OnAssetsChanged().Add([&] (const SAssetChangeSet& Changes) { changes.push_back(Changes); });
 	tree.WriteMeta("Textures/Камінь.png", MetaText(GuidC, "# the GUID was edited by hand\nLabels:\n  - Rock\nCook: Never\n"));
 	ASSERT_TRUE(registry->ScanPathsSynchronous(folder, 30.0));
+	registry->OnAssetsChanged().Remove(handle);
 	EXPECT_EQ(PathOf(registry->Live(), GuidC), "/Project/Textures/Камінь.png");
 	EXPECT_TRUE(PathOf(registry->Live(), GuidA).IsEmpty());
 	EXPECT_EQ(registry->GetCounters().Analyzed, 0u);
+	std::vector<SAssetChange> added;
+	std::vector<SAssetChange> removed;
+	for (const SAssetChangeSet& set : changes)
+	{
+		EXPECT_FALSE(set.bRefreshAll);
+		EXPECT_TRUE(set.Modified.empty()) << set.Modified[0].MountPath.CStr();
+		EXPECT_TRUE(set.Moved.empty());
+		added.insert(added.end(), set.Added.begin(), set.Added.end());
+		removed.insert(removed.end(), set.Removed.begin(), set.Removed.end());
+	}
+	ASSERT_EQ(added.size(), 1u);
+	ASSERT_EQ(removed.size(), 1u);
+	EXPECT_EQ(added[0].Id, (SAssetId { MakeGuid(GuidC), 0u }));
+	EXPECT_EQ(added[0].MountPath, "/Project/Textures/Камінь.png");
+	EXPECT_EQ(removed[0].Id, (SAssetId { MakeGuid(GuidA), 0u }));
+	EXPECT_EQ(removed[0].MountPath, "/Project/Textures/Камінь.png");
 
 	// The meta lost: identity stays (no provisional id), and so does the stored pairing until the lifecycle decides.
 	tree.Remove("Textures/Камінь.png.meta");
@@ -287,6 +307,29 @@ TEST(RegistryMeta, AWarmStartOpensNoMetaAndAMetaEditIsReEvaluatedWithoutAnalyze)
 	EXPECT_EQ(FindStoredFile(registry->Live(), "/Project/Textures/Камінь.png")->MetaState, EMetaState::Broken);
 	EXPECT_TRUE(DumpOf(registry->Live()).View().Contains(FStringView("meta=Broken")));
 	EXPECT_TRUE(ProblemsOf(registry->Live(), Meta004).empty()) << "no lifecycle, no META problems";
+
+	// A broken meta with no GUID to salvage: the record keeps a provisional id, which no dump shows.
+	tree.WritePng("Textures/Трава.png");
+	tree.WriteMeta("Textures/Трава.png", "FormatVersion: 1\nSettings: [\n");
+	ASSERT_TRUE(registry->ScanPathsSynchronous(folder, 30.0));
+	const std::optional<SStoredFile> grass = FindStoredFile(registry->Live(), "/Project/Textures/Трава.png");
+	ASSERT_TRUE(grass.has_value());
+	EXPECT_EQ(grass->MetaState, EMetaState::Broken);
+	EXPECT_EQ(grass->Guid, MakeProvisionalGuid("/Project/Textures/Трава.png"));
+	const FString broken = DumpOf(registry->Live());
+	EXPECT_TRUE(broken.View().Contains(FString::Format("  file /Project/Textures/Трава.png Asset size={} meta=Broken\n    record type=frt.Texture",
+		MakePng(4u).size()).View())) << broken.CStr();
+	EXPECT_TRUE(broken.View().Contains(FString::Format("record guid={}", GuidB).View())) << broken.CStr();
+	uint32 guids = 0u;
+	registry->Live().DumpJson([&] (FStringView Line)
+	{
+		if (Line.Contains(FStringView("Трава.png")))
+		{
+			EXPECT_FALSE(Line.Contains(FStringView("\"guid\""))) << FString(Line).CStr();
+		}
+		guids += Line.Contains(FStringView("\"guid\"")) ? 1u : 0u;
+	});
+	EXPECT_EQ(guids, 1u) << "only Камінь.png's record has a meta GUID";
 	registry->ShutDown();
 }
 
@@ -335,6 +378,7 @@ TEST(RegistryMeta, TwoRecordsWithOneGuidAnswerForTheSmallestPathAndAMoveWithItsM
 
 	std::vector<SAssetChangeSet> changes;
 	const SDelegateHandle handle = registry->OnAssetsChanged().Add([&] (const SAssetChangeSet& Changes) { changes.push_back(Changes); });
+	const uint64 before = registry->GetRevision();
 	tree.Remove("Textures/a.png");
 	tree.Remove("Textures/a.png.meta");
 	tree.Rename("Textures/B.png", "Moved/C.png");
@@ -362,7 +406,121 @@ TEST(RegistryMeta, TwoRecordsWithOneGuidAnswerForTheSmallestPathAndAMoveWithItsM
 	}
 	EXPECT_EQ(moved, std::vector<FString> { "/Project/Moved/C.png" });
 	EXPECT_EQ(removed, 1u) << "a.png went; B.png moved";
+
+	// The move is one commit (ConvertBatch pairs it inside the pass), not a removal and an addition that one broadcast
+	// window happens to hold: one record of GUID A (a.png or B.png, both hold it) goes in the revision C.png's comes in,
+	// the other in the pass's removals before it.
+	std::vector<SRecordChange> ring;
+	EXPECT_TRUE(registry->ForEachChangeSince(before, [&] (const SRecordChange& Change) { ring.push_back(Change); }));
+	const auto added = std::find_if(ring.begin(), ring.end(), [] (const SRecordChange& Change)
+	{
+		return Change.Kind == ERecordChange::Added && Change.MountPath == "/Project/Moved/C.png";
+	});
+	ASSERT_NE(added, ring.end());
+	uint32 removedWith = 0u;
+	uint32 removedBefore = 0u;
+	for (const SRecordChange& change : ring)
+	{
+		if (change.Kind == ERecordChange::Removed && change.Id == SAssetId { MakeGuid(GuidA), 0u })
+		{
+			removedWith += change.Revision == added->Revision ? 1u : 0u;
+			removedBefore += change.Revision < added->Revision ? 1u : 0u;
+		}
+	}
+	EXPECT_EQ(removedWith, 1u);
+	EXPECT_EQ(removedBefore, 1u);
 	registry->ShutDown();
+}
+
+/**
+ * OnAssetsChanged's lists from one broadcast window of the change ring, in ring order: an id that left a path it held
+ * and holds one it did not is one Moved, whichever came first; a record added and removed within the window, a path
+ * that went and came back (a rename there and back, a metaless file deleted and created again) stay Added and Removed.
+ */
+TEST(RegistryMeta, AMoveIsAnIdThatLeftAPathAndHoldsAnotherAtTheEndOfTheWindow)
+{
+	const SAssetId id { MakeGuid(GuidA), 0u };
+	const SAssetId other { MakeGuid(GuidB), 0u };
+	const auto change = [] (uint64 Revision, ERecordChange Kind, const SAssetId& Id, FStringView Path)
+	{
+		return SRecordChange { Revision, Kind, Id, FString(Path) };
+	};
+	const auto paths = [] (const std::vector<SAssetChange>& List)
+	{
+		std::vector<FString> out;
+		for (const SAssetChange& entry : List)
+		{
+			out.push_back(entry.MountPath);
+		}
+		return out;
+	};
+	using FPaths = std::vector<FString>;
+	constexpr ERecordChange Added = ERecordChange::Added;
+	constexpr ERecordChange Removed = ERecordChange::Removed;
+	constexpr ERecordChange Modified = ERecordChange::Modified;
+
+	{
+		// A rename with its meta, in one commit and then edited: one Moved and the edit.
+		SAssetChangeSet set;
+		const std::vector<SRecordChange> window = { change(1u, Removed, id, "/Project/B.png"), change(1u, Added, id, "/Project/C.png"),
+			change(2u, Modified, id, "/Project/C.png"), change(2u, Added, other, "/Project/D.png") };
+		AddRecordChanges(window, set);
+		EXPECT_EQ(paths(set.Moved), FPaths { "/Project/C.png" });
+		EXPECT_EQ(paths(set.Modified), FPaths { "/Project/C.png" });
+		EXPECT_EQ(paths(set.Added), FPaths { "/Project/D.png" });
+		EXPECT_TRUE(set.Removed.empty());
+	}
+	{
+		// A copy with its meta (both records hold the id) deleted again: no move to a path that is gone.
+		SAssetChangeSet set;
+		const std::vector<SRecordChange> window = { change(1u, Added, id, "/Project/Copy.png"), change(2u, Removed, id, "/Project/Copy.png") };
+		AddRecordChanges(window, set);
+		EXPECT_TRUE(set.Moved.empty());
+		EXPECT_EQ(paths(set.Added), FPaths { "/Project/Copy.png" });
+		EXPECT_EQ(paths(set.Removed), FPaths { "/Project/Copy.png" });
+	}
+	{
+		// A -> B -> A: the id is where it was.
+		SAssetChangeSet set;
+		const std::vector<SRecordChange> window = { change(1u, Removed, id, "/Project/A.png"), change(1u, Added, id, "/Project/B.png"),
+			change(2u, Removed, id, "/Project/B.png"), change(2u, Added, id, "/Project/A.png") };
+		AddRecordChanges(window, set);
+		EXPECT_TRUE(set.Moved.empty());
+		EXPECT_EQ(paths(set.Added), (FPaths { "/Project/B.png", "/Project/A.png" }));
+		EXPECT_EQ(paths(set.Removed), (FPaths { "/Project/A.png", "/Project/B.png" }));
+	}
+	{
+		// A file deleted and created again at its path (a metaless one keeps its path-derived id): no move.
+		SAssetChangeSet set;
+		const std::vector<SRecordChange> window = { change(1u, Removed, id, "/Project/A.png"), change(2u, Added, id, "/Project/A.png") };
+		AddRecordChanges(window, set);
+		EXPECT_TRUE(set.Moved.empty());
+		EXPECT_EQ(paths(set.Removed), FPaths { "/Project/A.png" });
+		EXPECT_EQ(paths(set.Added), FPaths { "/Project/A.png" });
+	}
+	{
+		// A copy with its meta, then the original deleted: the asset ends at the copy's path, one Moved.
+		SAssetChangeSet set;
+		const std::vector<SRecordChange> window = { change(1u, Added, id, "/Project/Copy.png"), change(2u, Removed, id, "/Project/A.png") };
+		AddRecordChanges(window, set);
+		EXPECT_EQ(paths(set.Moved), FPaths { "/Project/Copy.png" });
+		EXPECT_TRUE(set.Added.empty());
+		EXPECT_TRUE(set.Removed.empty());
+	}
+	{
+		// Two metas swapped (each record re-GUIDed in place): each id moved to the other path.
+		SAssetChangeSet set;
+		const std::vector<SRecordChange> window = { change(1u, Removed, id, "/Project/A.png"), change(1u, Added, other, "/Project/A.png"),
+			change(1u, Removed, other, "/Project/B.png"), change(1u, Added, id, "/Project/B.png") };
+		AddRecordChanges(window, set);
+		ASSERT_EQ(set.Moved.size(), 2u);
+		EXPECT_EQ(set.Moved[0].Id, other);
+		EXPECT_EQ(set.Moved[0].MountPath, "/Project/A.png");
+		EXPECT_EQ(set.Moved[1].Id, id);
+		EXPECT_EQ(set.Moved[1].MountPath, "/Project/B.png");
+		EXPECT_TRUE(set.Added.empty());
+		EXPECT_TRUE(set.Removed.empty());
+	}
 }
 
 TEST(RegistryMeta, SubAssetsRenamesKeepAnIdAndRemapsAddAnEdgeToTheExternalAsset)

@@ -265,7 +265,18 @@ public:
 			const bool bLive = T.Assets.File[row] != InvalidRow;
 			SRingEntry change;
 			change.Revision = Revision;
-			if (touch.bExistedBefore && bLive)
+			if (touch.bExistedBefore && bLive && T.Assets.Guid[row] != touch.GuidBefore)
+			{
+				// Its id changed in place (a meta appeared for a file with a provisional id, a GUID edited by hand, two
+				// metas swapped): to a listener the old id went and the new one came, never a Modified of an id it
+				// never saw added.
+				change.Kind = ERecordChange::Removed;
+				change.Guid = touch.GuidBefore;
+				change.Path = T.Files.Path[T.Assets.File[row]];
+				changes.push_back(change);
+				change.Kind = ERecordChange::Added;
+			}
+			else if (touch.bExistedBefore && bLive)
 			{
 				change.Kind = ERecordChange::Modified;
 			}
@@ -288,7 +299,7 @@ public:
 			}
 			else
 			{
-				change.Guid = touch.RemovedGuid;
+				change.Guid = touch.GuidBefore;   // the id a listener knew, also when this commit re-GUIDed it first
 				change.Path = touch.RemovedPath;
 			}
 			changes.push_back(change);
@@ -300,7 +311,7 @@ private:
 	struct STouch
 	{
 		bool bExistedBefore = false;
-		SGuid RemovedGuid;
+		SGuid GuidBefore;                  // the row's GUID before this commit (bExistedBefore)
 		uint32 RemovedPath = InvalidRow;   // PATHS
 	};
 
@@ -1191,6 +1202,10 @@ private:
 		if (bInserted)
 		{
 			it->second.bExistedBefore = bExistedBefore;
+			if (bExistedBefore)
+			{
+				it->second.GuidBefore = T.Assets.Guid[AssetRow];   // every caller touches a row before it sets its GUID
+			}
 		}
 	}
 
@@ -1293,7 +1308,6 @@ private:
 		Touch(Row, true);
 		const FStringView path = T.Paths.Get(T.Files.Path[file]);
 		STouch& touch = Touched[Row];
-		touch.RemovedGuid = assets.Guid[Row];
 		touch.RemovedPath = T.Files.Path[file];
 		ReleaseRecordContents(Row, false, false);
 		DropEdges(Row);

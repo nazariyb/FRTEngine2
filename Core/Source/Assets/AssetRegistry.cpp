@@ -192,9 +192,14 @@ struct SReadMeta
 };
 
 // The meta at MountPath of Mount, read race-free (platform::ReadFileChunksStable); null when it changed while read or
-// cannot be read: the caller then commits nothing of it, so the next scan reads it again.
-std::shared_ptr<const SReadMeta> ReadMetaFile (const SMount& Mount, FStringView MountPath)
+// cannot be read (KeepsChanging: a meta every read of which changed, CAssetRegistry::SetSourceChangedForTest): the
+// caller then commits nothing of it, so the next scan reads it again.
+std::shared_ptr<const SReadMeta> ReadMetaFile (const SMount& Mount, FStringView MountPath, FStringView KeepsChanging)
 {
+	if (!KeepsChanging.IsEmpty() && MountPath == KeepsChanging)
+	{
+		return nullptr;
+	}
 	FStringView mountName;
 	FStringView relative;
 	if (!SplitMountPath(MountPath, mountName, relative))
@@ -492,6 +497,7 @@ struct SConvertInput
 	// A scan of the mount root: the RulesHash of the mount's Config/Assets.yml the scan's scopes were made with, whose
 	// RULEFILES row goes into the same delta as the records it re-evaluates.
 	std::optional<uint64> MountRulesHash;
+	FString KeepsChanging;                              // CAssetRegistry::SetSourceChangedForTest
 };
 
 /**
@@ -682,8 +688,16 @@ SConversion ConvertBatch (SConvertInput& In)
 			std::shared_ptr<const SReadMeta> read;
 			if (meta != nullptr)
 			{
-				read = ReadMetaFile(mount, metaPaths[metaIndex]);
+				read = ReadMetaFile(mount, metaPaths[metaIndex], In.KeepsChanging);
 				++chunkOut.MetasRead;
+				if (read == nullptr)
+				{
+					// Changed while read (git or an editor writing it) or not opened: nothing of the file this pass, so
+					// its stored row and record stand, and no record is made without its meta (a provisional id, no
+					// Importer pin, a stamp the next read changes). The write's watcher event or the next scan reads it
+					// again: its row still has the stat of the last read.
+					continue;
+				}
 			}
 			const SAssetMeta* metaValues = read != nullptr ? read->GetValues() : nullptr;
 			const std::optional<SFileMetaState> metaColumns = read != nullptr ? std::optional<SFileMetaState>(read->GetColumns()) : std::nullopt;
@@ -990,6 +1004,69 @@ SConversion ConvertBatch (SConvertInput& In)
 
 
 // ---------------- The service ----------------
+
+void AddRecordChanges (std::span<const SRecordChange> Changes, SAssetChangeSet& Out)
+{
+	// Per id and path, the window's first and last change there: the id held the path before the window when its first
+	// change is no Added, and holds it after when its last is no Removed.
+	struct SSpan
+	{
+		size_t First = 0u;
+		size_t Last = 0u;
+	};
+	std::map<std::pair<SAssetId, FStringView>, SSpan> spans;
+	for (size_t i = 0u; i < Changes.size(); ++i)
+	{
+		const auto [it, bInserted] = spans.try_emplace(std::pair<SAssetId, FStringView>(Changes[i].Id, Changes[i].MountPath.View()), SSpan { i, i });
+		it->second.Last = i;
+	}
+
+	// An id that left paths it held and holds paths it did not: each such pair, oldest first, is one move. The first
+	// Added at the new path goes to Moved and the last Removed at the old one is dropped; every other change stays.
+	enum class EUse : uint8 { Listed, Moved, Dropped };
+	std::vector<EUse> use(Changes.size(), EUse::Listed);
+	std::vector<size_t> left;
+	std::vector<size_t> arrived;
+	for (auto it = spans.begin(); it != spans.end();)
+	{
+		left.clear();
+		arrived.clear();
+		const SAssetId id = it->first.first;
+		for (; it != spans.end() && it->first.first == id; ++it)
+		{
+			const bool bBefore = Changes[it->second.First].Kind != ERecordChange::Added;
+			const bool bAfter = Changes[it->second.Last].Kind != ERecordChange::Removed;
+			if (bBefore && !bAfter)
+			{
+				left.push_back(it->second.Last);
+			}
+			else if (!bBefore && bAfter)
+			{
+				arrived.push_back(it->second.First);
+			}
+		}
+		std::sort(left.begin(), left.end());
+		std::sort(arrived.begin(), arrived.end());
+		for (size_t k = 0u; k < left.size() && k < arrived.size(); ++k)
+		{
+			use[left[k]] = EUse::Dropped;
+			use[arrived[k]] = EUse::Moved;
+		}
+	}
+
+	for (size_t i = 0u; i < Changes.size(); ++i)
+	{
+		const SRecordChange& change = Changes[i];
+		std::vector<SAssetChange>& list = use[i] == EUse::Moved ? Out.Moved
+			: change.Kind == ERecordChange::Added ? Out.Added
+			: change.Kind == ERecordChange::Removed ? Out.Removed : Out.Modified;
+		if (use[i] != EUse::Dropped)
+		{
+			list.push_back(SAssetChange { change.Id, change.MountPath });
+		}
+	}
+}
+
 
 struct CAssetRegistry::SImpl
 {
@@ -1540,6 +1617,7 @@ struct CAssetRegistry::SImpl
 		job->first.Pool = &Pool;
 		job->first.bReEvaluateAll = pass.bReEvaluateAll;
 		job->first.MountRulesHash = pass.MountRulesHash;
+		job->first.KeepsChanging = SourceChangedForTest;
 		pass.View.reset();
 		++ConversionsInFlight;
 		Pool.Submit(jobs::EWorkPriority::High, CancelGroup,
@@ -2013,38 +2091,6 @@ struct CAssetRegistry::SImpl
 		}
 	}
 
-	/**
-	 * A record removed and one added with the same id since the last broadcast is one asset that moved (M4: identity is
-	 * the meta's GUID, so a file renamed with its meta keeps it): the addition goes to Moved, with its new path, and the
-	 * removal is dropped. A copy (an addition whose id another record still has) stays an addition.
-	 */
-	static void PairMoves (SAssetChangeSet& Changes)
-	{
-		if (Changes.Added.empty() || Changes.Removed.empty())
-		{
-			return;
-		}
-		std::map<SAssetId, size_t> removed;
-		for (size_t i = 0u; i < Changes.Removed.size(); ++i)
-		{
-			removed.try_emplace(Changes.Removed[i].Id, i);
-		}
-		std::vector<uint8> moved(Changes.Removed.size(), 0u);
-		std::erase_if(Changes.Added, [&] (SAssetChange& Added)
-		{
-			const auto it = removed.find(Added.Id);
-			if (it == removed.end() || moved[it->second] != 0u)
-			{
-				return false;
-			}
-			moved[it->second] = 1u;
-			Changes.Moved.push_back(std::move(Added));
-			return true;
-		});
-		size_t index = 0u;
-		std::erase_if(Changes.Removed, [&] (const SAssetChange&) { return moved[index++] != 0u; });
-	}
-
 	void Broadcast ()
 	{
 		const uint64 revision = Store->GetRevision();
@@ -2063,27 +2109,18 @@ struct CAssetRegistry::SImpl
 		changes.bScanCompleted = std::exchange(bScanCompletedPending, false);
 		if (revision != BroadcastRevision)
 		{
-			bool bAny = false;
-			const bool bComplete = Store->ForEachChangeSince(BroadcastRevision, [&] (const SRecordChange& Change)
-			{
-				bAny = true;
-				std::vector<SAssetChange>& list = Change.Kind == ERecordChange::Added ? changes.Added
-					: Change.Kind == ERecordChange::Removed ? changes.Removed : changes.Modified;
-				list.push_back(SAssetChange { Change.Id, Change.MountPath });
-			});
-			if (!bComplete || !bAny)
+			std::vector<SRecordChange> window;
+			const bool bComplete = Store->ForEachChangeSince(BroadcastRevision, [&] (const SRecordChange& Change) { window.push_back(Change); });
+			if (!bComplete || window.empty())
 			{
 				// The ring cannot list it (an image, a compaction, an overflow) or no record changed (file rows,
 				// problems): listeners re-run what they show.
 				changes.bRefreshAll = true;
-				if (!bComplete)
-				{
-					changes.Added.clear();
-					changes.Removed.clear();
-					changes.Modified.clear();
-				}
 			}
-			PairMoves(changes);
+			if (bComplete)
+			{
+				AddRecordChanges(window, changes);
+			}
 		}
 		BroadcastRevision = revision;
 		if (!changes.IsEmpty())

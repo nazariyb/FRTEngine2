@@ -52,7 +52,8 @@ class CWorkerPool;
 
 namespace frt::assets
 {
-// What happened to an asset record (its sub-entries, tags and edges are part of it).
+// What happened to an asset record (its sub-entries, tags and edges are part of it). A record whose GUID changed in
+// place (its file's meta appeared or was edited) is a Removed of the old id and an Added of the new one, one revision.
 enum class ERecordChange : uint8 { Added, Removed, Modified };
 
 struct SRecordChange

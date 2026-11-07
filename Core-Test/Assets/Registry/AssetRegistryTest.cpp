@@ -955,6 +955,48 @@ TEST(AssetRegistry, AFileThatKeepsChangingIsCommittedAnalyzeFailedAfterItsRetrie
 	registry.ShutDown();
 }
 
+// A meta that changes while it is read (git or an editor writing it) leaves its file out of the pass, rather than
+// committing a record made without it (a provisional id, no pin); the next read takes the meta's GUID.
+TEST(AssetRegistry, AFileWhoseMetaChangesWhileReadIsLeftForTheNextReadNotCommittedWithoutIt)
+{
+	const CServiceTree tree("Meta Changing");
+	constexpr FStringView path = "/Project/Textures/Трава.png";
+	constexpr FStringLiteral guidText = "5d1e7a3b9c0f42d68e1a2b3c4d5e6f70";
+	tree.WriteProjectContent("Textures/Трава.png.meta", FString::Format("FormatVersion: 1\nGuid: {}\n", guidText));
+	const std::optional<SGuid> guid = SGuid::Parse(guidText);
+	ASSERT_TRUE(guid.has_value());
+	jobs::CWorkerPool pool(MakePoolDesc(2u));
+	const auto makeDesc = [&]
+	{
+		SAssetRegistryDesc desc;
+		desc.Mounts = tree.Project();
+		desc.Pool = &pool;
+		desc.bWriter = true;
+		desc.bLoadSnapshots = true;
+		return desc;
+	};
+	{
+		CAssetRegistry registry(makeDesc());
+		SAssetRegistryTestAccess::SetSourceChanged(registry, FString(path) + ".meta");
+		registry.Start();
+		ASSERT_TRUE(registry.WaitForInitialScan(60.0));
+		const CRegistryView& view = registry.Live();
+		EXPECT_FALSE(FindStoredFile(view, path).has_value()) << "nothing of the file without its meta";
+		EXPECT_FALSE(FindStoredFile(view, FString(path) + ".meta").has_value());
+		EXPECT_FALSE(view.Find(SAssetId { MakeProvisionalGuid(path), 0u }).has_value()) << "no provisional id for a file with a meta";
+		EXPECT_TRUE(FindStoredFile(view, "/Project/Textures/Камінь.png").has_value()) << "the rest of the folder is committed";
+		registry.ShutDown();
+	}
+	CAssetRegistry registry(makeDesc());
+	registry.Start();
+	ASSERT_TRUE(registry.WaitForInitialScan(60.0));
+	const std::optional<SStoredFile> stored = FindStoredFile(registry.Live(), path);
+	ASSERT_TRUE(stored.has_value() && stored->Record.IsValid());
+	EXPECT_EQ(stored->Guid, *guid);
+	EXPECT_EQ(stored->MetaState, EMetaState::Paired);
+	registry.ShutDown();
+}
+
 TEST(AssetRegistry, CompactionKeepsTheDumpAndTheJournalReplay)
 {
 	const CServiceTree tree("Compaction");
