@@ -274,16 +274,19 @@ private:
  *   RestoreMeta   WriteFile of the verified METAS copy, byte for byte, where no meta exists
  *   MoveMeta      Move of the orphan meta onto the new source's meta path (a relink): its bytes stay as they are
  *   FixMetaCase   Move of the meta to its source's spelling (a case-only rename: `git mv` for a tracked meta)
- *   ReGuid        WriteFile of each loser's meta with its new GUID, the map applied to its Aliases and to every `$asset`
- *                 under SubAssets (Remap), emitted canonically; a loser whose meta no longer parses is left out
+ *   ReGuid        WriteFile of each loser's meta with its new GUID and without Aliases, FormerPaths or FormerNames (the
+ *                 winner keeps the redirects), the map applied to every `$asset` under SubAssets (Remap), emitted
+ *                 canonically; another loser's alias maps to that loser's new GUID; a loser whose meta no longer parses
+ *                 is left out
  *   KeepAliasB    WriteFile of the broken meta as the METAS copy of the kept GUID (or a minimal meta without one), with
  *                 the other GUIDs in its Aliases
  */
 [[nodiscard]] FRT_CORE_API bool PlanRepairOp (const CAssetWriter& Writer, const CRegistryView& View, std::span<const SLifecycleAction> Actions,
 	SAssetOp& OutOp, std::vector<SDiagnostic>& OutProblems);
 
-// Applies Map (old GUID -> new GUID) to a meta: its Aliases, and the `$asset` of every reference under SubAssets. True when
-// anything changed. In M4 the map reaches metas only; documents' `$asset` and `base:` arrive with M5 (edit [73]).
+// Applies Map (old GUID -> new GUID) to the `$asset` of every reference under a meta's SubAssets. True when anything
+// changed. A loser's Aliases are dropped, not mapped (PlanRepairOp). In M4 the map reaches metas only; documents' `$asset`
+// and `base:` arrive with M5 (edit [73]).
 FRT_CORE_API bool ApplyGuidRemap (SAssetMeta& Meta, std::span<const std::pair<SGuid, SGuid>> Map);
 
 /**

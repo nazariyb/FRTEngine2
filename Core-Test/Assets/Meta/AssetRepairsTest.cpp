@@ -21,7 +21,8 @@
 // files and drives the lifecycle with its own clock (Settle), never with sleeps: three tests go through the file watcher
 // with small delays. The dedupe op's crash points are rolled forward in-process, and one real child is killed. F1: a
 // meta that lands between a repair's plan and its write, or after a crash and before the roll-forward, is kept; a dedupe
-// set left half written keeps its full remap when the next run plans the rest narrower.
+// set left half written keeps its full remap when the next run plans the rest narrower. F4: a dedupe loser gives its
+// Aliases and FormerPaths up to the winner, and a copied referrer of an alias references the copy.
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -454,6 +455,49 @@ TEST(AssetRepairs, AFolderCopyReGuidsTheCopiesInOneOpAndTheCopyReferencesOnlyThe
 	EXPECT_EQ(rig.Registry->GetCounters().RepairsApplied, 2u);
 	EXPECT_TRUE(rig.Problems().empty()) << rig.DescribeProblems().CStr();
 	EXPECT_FALSE(rig.View().FindTombstone(MakeGuid(GuidA)).has_value()) << "a live GUID gets no tombstone";
+}
+
+// The redirects belong to the GUID the winner keeps: a copy that sorts first ("Pack - Copy" before "Pack") must not take
+// them, or every lookup through the alias or the old path would answer the copy. A copied referrer of the alias (Skin's
+// Remap names C, an alias of Rock) references the copy of Rock.
+TEST(AssetRepairs, ADedupeLoserGivesItsAliasesAndFormerPathsToTheWinner)
+{
+	CRepairTree tree("Перенаправлення");
+	constexpr FStringLiteral GuidC = "9a0b1c2d3e4f40518293a4b5c6d7e8f9";
+	tree.WritePng("Pack/Rock.png", 4u);
+	tree.WriteMeta("Pack/Rock.png", MetaText(GuidA, FString::Format("Aliases: [ {} ]\nFormerPaths: [ /Project/Old/Rock.png ]\n", GuidC)));
+	tree.WritePng("Pack/Skin.png", 5u);
+	tree.WriteMeta("Pack/Skin.png", MetaText(GuidB, FString::Format("SubAssets:\n  Remap:\n    \"material:Skin\": {{ $asset: {} }}\n", GuidC)));
+	CRig rig(tree);
+	rig.Open();
+	const FString committed[] = { tree.Vcs("Pack/Rock.png.meta"), tree.Vcs("Pack/Skin.png.meta") };
+	rig.Vcs.SetCommitted(committed);
+	rig.Settle();
+	std::error_code ec;
+	std::filesystem::copy(tree.Abs("Pack"), tree.Abs("Pack - Copy"), std::filesystem::copy_options::recursive, ec);
+	ASSERT_FALSE(ec) << ec.message();
+	rig.Scan("/Project/Pack - Copy");
+	rig.Settle();
+	rig.Settle(1600u);
+	rig.Settle(100u);
+
+	EXPECT_EQ(tree.MetaGuid("Pack/Rock.png"), MakeGuid(GuidA)) << "the committed original wins";
+	const std::optional<SAssetMeta> copy = tree.ReadMeta("Pack - Copy/Rock.png");
+	ASSERT_TRUE(copy.has_value());
+	const SGuid rockCopy = MakeDedupeGuid(Salt, MakeGuid(GuidA), P("Pack - Copy/Rock.png"));
+	EXPECT_EQ(copy->Guid, rockCopy);
+	EXPECT_TRUE(copy->Aliases.empty());
+	EXPECT_TRUE(copy->FormerPaths.empty());
+	EXPECT_TRUE(copy->FormerNames.empty());
+	EXPECT_EQ(tree.ReadMeta("Pack/Rock.png")->Aliases, std::vector<SGuid> { MakeGuid(GuidC) }) << "the winner keeps them";
+	EXPECT_EQ(RemapTarget(*tree.ReadMeta("Pack - Copy/Skin.png")), rockCopy.ToString()) << "the copied referrer references the copy";
+	EXPECT_EQ(RemapTarget(*tree.ReadMeta("Pack/Skin.png")), FString(GuidC));
+
+	const std::optional<SRecordId> original = rig.View().FindByPath(P("Pack/Rock.png"));
+	ASSERT_TRUE(original.has_value());
+	EXPECT_EQ(rig.View().Find(SAssetId { MakeGuid(GuidC), 0u }), original) << "the alias answers the original";
+	EXPECT_EQ(rig.View().FindByPath("/Project/Old/Rock.png"), original) << "the former path answers the original";
+	EXPECT_TRUE(rig.Problems().empty()) << rig.DescribeProblems().CStr();
 }
 
 TEST(AssetRepairs, AnExplorerMovePairsTheOrphanMetaByFileIdAndMovesIt)

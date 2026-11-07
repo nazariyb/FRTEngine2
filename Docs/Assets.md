@@ -403,7 +403,8 @@ it, means none at all. With one:
   (`Tick`, `Settle` with its own clock: tests) or runs a command.
 - **Repairs.** A writer with `bRepairs` (only on the mounts it owns: `/Project` and its plugins, and `/Engine` too in
   engine-owner mode through a writer of the engine root; or `/Engine` for an engine owner) plans each repair into one op, and every re-GUID of one result into a single op (`PlanRepairOp`: the
-  losers' `Aliases` and every `SubAssets` `$asset` rewritten through the batch's map; random GUIDs minted for the stand-ins
+  losers' `SubAssets` `$asset`s rewritten through the batch's map, their `Aliases`, `FormerPaths` and `FormerNames` left to
+  the winner, which keeps the GUID they redirect to; random GUIDs minted for the stand-ins
   when `Safety.DerivedAutoGuids` is off; a restore writes the verified `METAS` bytes as they were; a relink and a case
   fix are moves). The ops of one result run in one worker job through a `CAssetWriter` on the owner root, after
   `IsBusy` is asked once more and their expected writes are registered with the watcher (`ExpectWrite`); the touched

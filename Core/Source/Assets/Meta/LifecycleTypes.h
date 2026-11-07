@@ -142,7 +142,8 @@ struct SLifecycleFacts
  * loser can refer to another loser. The planner puts them in one SAssetOp (AssetRepairs.h), so a crash between two losers'
  * rewrites is rolled forward rather than rerun: rerun, the second run would see fewer duplicates and a smaller map, and a
  * remaining loser would silently keep its reference to the original asset. In M4 the map applies to the losers' metas only
- * (SubAssets.Remap, Aliases), since no file holds `$asset` until M5, which uses the same map.
+ * (SubAssets.Remap), since no file holds `$asset` until M5, which uses the same map. A loser keeps no Aliases, FormerPaths
+ * or FormerNames: they belong to the GUID it gives up, which the winner keeps.
  *
  * MoveMeta and FixMetaCase are apart because `fix` applies a case fix and never a relink.
  */

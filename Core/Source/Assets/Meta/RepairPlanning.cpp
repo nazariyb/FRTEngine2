@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <map>
 #include <optional>
+#include <set>
 #include <utility>
 
 #include "Assets/Discovery/Mounts.h"
@@ -181,7 +182,16 @@ private:
 	bool bChanged = false;
 };
 
-// Every ReGuid of one result, as one op (LifecycleTypes.h): each loser's meta rewritten with its new GUID and the map.
+/**
+ * Every ReGuid of one result, as one op (LifecycleTypes.h): each loser's meta rewritten with its new GUID and the map.
+ *
+ * A loser is a byte copy, and the redirects in its meta (Aliases, FormerPaths, FormerNames) belong to the GUID it gives up:
+ * the winner keeps them, as §4.6's Duplicate row gives a copy none. Kept on the loser, two live records would claim one
+ * alias and one former path, and every lookup through them would answer whichever path sorts first ("Rock - Copy.png"
+ * before "Rock.png"). An alias of one loser that another loser references (a `$asset` of a consolidated GUID B, copied
+ * along with B's winner) is mapped to the first loser's new GUID, so a copied folder still references its copies; an
+ * alias two losers carry is nobody's in the set and stays unmapped.
+ */
 bool PlanReGuids (const CAssetWriter& Writer, std::span<const SLifecycleAction> Actions, SAssetOp& OutOp, std::vector<SDiagnostic>& OutProblems)
 {
 	OutOp = MakeOp("dedupe");
@@ -203,6 +213,13 @@ bool PlanReGuids (const CAssetWriter& Writer, std::span<const SLifecycleAction> 
 		newGuids.push_back(guid);
 	}
 	const size_t problemsBefore = OutProblems.size();
+	struct SLoser
+	{
+		SAssetMeta Meta;
+		hash::SContentHash Read;
+		bool bOk = false;
+	};
+	std::vector<SLoser> losers(Actions.size());
 	for (size_t i = 0u; i < Actions.size(); ++i)
 	{
 		const SLifecycleAction& action = Actions[i];
@@ -212,8 +229,7 @@ bool PlanReGuids (const CAssetWriter& Writer, std::span<const SLifecycleAction> 
 				"this process writes", ToDisplayText(action.Path))));
 			continue;
 		}
-		hash::SContentHash read;
-		std::optional<SMetaParseResult> parsed = ReadMeta(Writer, action.Path, &read);
+		std::optional<SMetaParseResult> parsed = ReadMeta(Writer, action.Path, &losers[i].Read);
 		const SGuid oldGuid = action.Remap.front().first;
 		if (!parsed.has_value() || parsed->State != EMetaParseState::Ok || parsed->Meta.Guid != oldGuid)
 		{
@@ -221,15 +237,58 @@ bool PlanReGuids (const CAssetWriter& Writer, std::span<const SLifecycleAction> 
 				"left as it is", ToDisplayText(action.Path), oldGuid.ToString())));
 			continue;
 		}
+		losers[i].Meta = std::move(parsed->Meta);
+		losers[i].bOk = true;
+	}
+
+	// Each loser's aliases, by the loser that carries them; one two losers carry is nobody's.
+	std::map<SGuid, size_t> aliasOwner;
+	std::set<SGuid> sharedAliases;
+	for (size_t i = 0u; i < losers.size(); ++i)
+	{
+		if (!losers[i].bOk)
+		{
+			continue;
+		}
+		for (const SGuid& alias : losers[i].Meta.Aliases)
+		{
+			const auto [found, bNew] = aliasOwner.emplace(alias, i);
+			if (!bNew && found->second != i)
+			{
+				sharedAliases.insert(alias);
+			}
+		}
+	}
+
+	for (size_t i = 0u; i < Actions.size(); ++i)
+	{
+		if (!losers[i].bOk)
+		{
+			continue;
+		}
+		const SLifecycleAction& action = Actions[i];
+		// The other losers' pairs (a loser's own first pair is not applied to itself), then the other losers' aliases that
+		// are no old GUID of the set.
 		std::vector<std::pair<SGuid, SGuid>> map;
-		for (const auto& [from, to] : action.Remap)
+		for (const auto& [from, to] : std::span<const std::pair<SGuid, SGuid>>(action.Remap).subspan(1u))
 		{
 			const auto standIn = standIns.find(to);
 			map.emplace_back(from, standIn != standIns.end() ? standIn->second : to);
 		}
-		SAssetMeta meta = std::move(parsed->Meta);
+		for (const auto& [alias, owner] : aliasOwner)
+		{
+			const bool bInSet = std::any_of(action.Remap.begin(), action.Remap.end(), [&alias] (const auto& Pair) { return Pair.first == alias; });
+			if (owner != i && !sharedAliases.contains(alias) && !bInSet)
+			{
+				map.emplace_back(alias, newGuids[owner]);
+			}
+		}
+		SAssetMeta meta = std::move(losers[i].Meta);
 		meta.Guid = newGuids[i];
-		(void)ApplyGuidRemap(meta, std::span<const std::pair<SGuid, SGuid>>(map).subspan(1u));
+		meta.Aliases.clear();
+		meta.FormerPaths.clear();
+		meta.FormerNames.clear();
+		(void)ApplyGuidRemap(meta, map);
 		FString text;
 		SDiagnostic error;
 		if (!EmitMeta(meta, text, &error))
@@ -238,7 +297,7 @@ bool PlanReGuids (const CAssetWriter& Writer, std::span<const SLifecycleAction> 
 				error.Message)));
 			continue;
 		}
-		OutOp.Steps.push_back(MakeRewrite(action.Path, text, read));
+		OutOp.Steps.push_back(MakeRewrite(action.Path, text, losers[i].Read));
 		OutOp.PlannedGuids.push_back(newGuids[i]);
 	}
 	return OutProblems.size() == problemsBefore || !OutOp.Steps.empty();
@@ -353,23 +412,14 @@ bool ApplyGuidRemap (SAssetMeta& Meta, std::span<const std::pair<SGuid, SGuid>> 
 	{
 		map.emplace(from, to);
 	}
-	bool bChanged = false;
-	for (SGuid& alias : Meta.Aliases)
-	{
-		if (const auto found = map.find(alias); found != map.end() && found->second != alias)
-		{
-			alias = found->second;
-			bChanged = true;
-		}
-	}
 	CRefRewriter rewriter(map);
 	reflect::CDataTree subAssets;
-	if (rewriter.Rewrite(Meta.SubAssets, subAssets))
+	if (!rewriter.Rewrite(Meta.SubAssets, subAssets))
 	{
-		Meta.SubAssets = std::move(subAssets);
-		bChanged = true;
+		return false;
 	}
-	return bChanged;
+	Meta.SubAssets = std::move(subAssets);
+	return true;
 }
 
 bool PlanRepairOp (const CAssetWriter& Writer, const CRegistryView& View, std::span<const SLifecycleAction> Actions, SAssetOp& OutOp,
