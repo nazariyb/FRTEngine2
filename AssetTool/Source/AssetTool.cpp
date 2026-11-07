@@ -233,6 +233,7 @@ int32 RunAssetTool ()
 			// §5.9: it loads, scans and reports as any read-only run does, and writes nothing a mount owns.
 			context.bReadOnly = true;
 			context.bGuest = true;
+			context.Owner = owner;
 			context.PrintError(FString::Format("warning: {} owns {}: {} runs as a read-only guest (Safety.GuestProcesses) and writes "
 				"nothing", owner, context.GetMountName(), commandlet->Name));
 		}

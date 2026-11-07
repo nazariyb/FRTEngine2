@@ -199,7 +199,10 @@ if [ ${#targets[@]} -ne 0 ]; then
 		for target in "${targets[@]}"; do
 			(unset GIT_DIR GIT_WORK_TREE; export FRT_HOOK_TOPLEVEL="$topLevel"; "$tool" validate --staged --quick --ci "$target") > "$scratch/validate" 2>&1
 			result=$?
-			if [ "$result" -eq 2 ]; then
+			# A usage error of a tool that knows the verb is a refusal like any: the hook asked for something it cannot
+			# do (a project of another engine), and passing it would leave the check off unseen. Only an AssetTool built
+			# before the verb existed is skipped.
+			if [ "$result" -eq 2 ] && grep -q -e "No verb 'validate'" -e "validate: no option '--" "$scratch/validate"; then
 				echo "pre-commit: quick validate skipped: this AssetTool has no validate --staged (build it again)."
 				break
 			elif [ "$result" -ne 0 ]; then

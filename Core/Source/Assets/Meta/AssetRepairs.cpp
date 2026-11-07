@@ -121,10 +121,11 @@ struct SCaches
 	{
 		return true;
 	}
+	// A meta in Paths (a staged one) covers its source, as its source covers it.
 	const FStringView asset = GetAssetOf(Path);
 	return std::any_of(Paths.begin(), Paths.end(), [&] (const FString& Root)
 	{
-		return IsMountPathAtOrBelow(Path, Root.View()) || IsMountPathAtOrBelow(asset, Root.View());
+		return IsMountPathAtOrBelow(Path, Root.View()) || IsMountPathAtOrBelow(asset, Root.View()) || IsMountPathAtOrBelow(asset, GetAssetOf(Root));
 	});
 }
 
@@ -238,6 +239,7 @@ struct SCycleInput
 	bool bCommand = false;
 	bool bHold = false;
 	bool bCheckAllCrLf = false;
+	bool bNoHashing = false;                       // RunNow's SRepairOptions::bNoHashing
 };
 
 struct SCycleOutput
@@ -664,7 +666,7 @@ private:
 				result = RunLifecycle(facts);
 				++Out.Runs;
 				bool bAgain = false;
-				if (!result.NeedContentHash.empty())
+				if (!result.NeedContentHash.empty() && !In.bNoHashing)
 				{
 					bAgain = FetchHashes(result.NeedContentHash, sources) || bAgain;
 				}
@@ -2075,6 +2077,7 @@ SRepairReport CAssetRepairs::RunNow (const SRepairOptions& Options)
 		input->RunMounts = mounts;
 		input->Paths = Options.Paths;
 		input->Kinds = Options.Kinds;
+		input->bNoHashing = Options.bNoHashing;
 		SCycleOutput output = impl.RunCycleNow(input);
 		impl.ApplyCycle(output, mounts, Options.Paths);
 		report.Planned.insert(report.Planned.end(), output.Repairs.begin(), output.Repairs.end());

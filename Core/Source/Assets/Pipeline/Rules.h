@@ -21,6 +21,12 @@
 #include "Diagnostics/Diagnostics.h"
 
 
+namespace frt::reflect
+{
+class HDataNode;
+}
+
+
 /**
  * The rules engine (design §3.5, §5.4 step 3, §13.4 RULE001/RULE002): the mount and folder `Assets.yml` files read
  * into an immutable form, the scan oracle the mount scanner asks (IScanMembership), and per file the effective
@@ -447,6 +453,13 @@ struct SUnclaimedFile
  * it does not set. Reads the file; safe on any thread.
  */
 [[nodiscard]] FRT_CORE_API SSafetySwitches ReadSafetyOfRuleFile (const std::filesystem::path& Path);
+
+/**
+ * A meta's value for a settings field normalised as ResolveFile applies it (an enum value in its canonical spelling,
+ * numbers through their parse, true or false); nullopt when it is no value of the field, which ResolveFile leaves out so
+ * the rules' value stands. `validate` reports those (Assets/Meta/Validation.h).
+ */
+[[nodiscard]] FRT_CORE_API std::optional<FString> NormalizeMetaSettingValue (reflect::HDataNode Node, const SSettingsField& Field);
 
 /**
  * `Local/Assets/Rules.cache` (§3.5, §3.5.4; GetRulesCachePath): a listing flattened to JSON lines, for shell hooks,

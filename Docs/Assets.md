@@ -157,17 +157,17 @@ and `Registry`, whose severities are fixed in M3.
 | `META002` | an orphan `.meta`: its source is gone | from M4: warning | Lifecycle |
 | `META003` | a duplicate GUID | from M4: error; with `Safety.AutoResolveDuplicates` the owner re-GUIDs the losers | Lifecycle |
 | `META004` | a broken meta: a parse error, conflict markers, two `Guid:` lines | from M4: error | Lifecycle |
-| `META005` | a meta that is not canonical (it would be rewritten) | from M4: warning | `validate` |
+| `META005` | a meta that parses and is not canonical (`resave --metas` rewrites it) | from M4: warning | `validate` |
 | `META006` | a meta whose case differs from its source's | from M4: error | Lifecycle |
-| `META007` | an excluded file that still has a meta | from M4: warning | `validate` |
+| `META007` | a meta beside a file the rules exclude (a rule file too), or beside one of a class that takes no meta (a companion, an unclaimed file) | from M4: warning | `validate` |
 | `META008` | `MissingMeta`: a lost meta that no repair will restore (no verified copy, its GUID live in another meta, a read-only file or `Safety.AutoRepairMetas: false`), or a new file that an orphan meta matches and that is not paired automatically (ambiguous, read-only, or `Safety.OrphanPairing: false`) | from M4: error | Lifecycle |
 | `META009` | an orphan meta that matches a new file and is not paired with it automatically: by content outside the move window, or a match that `META008` reports (relink suggestion) | from M4: info | Lifecycle |
-| `VCS001` | CRLF in a hashed FRT text file (detected only in M4; blocking DDC writes arrives with the first asset builder) | from M4: error | Lifecycle |
+| `VCS001` | CRLF in a hashed FRT text file (detected only in M4; blocking DDC writes arrives with the first asset builder) | from M4: error | Lifecycle (metas), `validate` (rule files; `.yml`, `.frt`, `.csv`, `.ini`, `.frtinputmap`, `.frtinputaction` sources) |
 | `VCS002` | the VCS refused a write (`CheckOut`, `Move` or `Delete` failed); the command wrote nothing | from M4: error | the command |
-| `VCS003` | an asset and its meta tracked differently ("generated locally: commit it") | from M4: warning | `validate` |
+| `VCS003` | an asset and its meta tracked differently ("generated locally: commit it") | from M4: warning | Lifecycle (a meta this process created), `validate` (every pair, one `StatusOf` per provider) |
 | `VCS004` | a Git LFS pointer file where a source is expected; never imported or hashed into a GUID | from M4: error | Lifecycle |
-| `MIG001` | project content format behind the engine: `Schemas/Migrations.yml` misses a step | from M4: error | Lifecycle |
-| `MIG002` | a leftover legacy pattern, such as `<stem>_mat<N>` beside a model without `SubAssets.Remap` | from M4: warning | Lifecycle |
+| `MIG001` | a repository behind the engine: its `Schemas/Migrations.yml` is missing, malformed or lacks a step this engine requires | from M4: error | `validate` |
+| `MIG002` | a leftover legacy pattern, such as `<stem>_mat<N>` beside a model without `SubAssets.Remap` | warning; nothing reports it in M4: its patterns go with the steps of M7 and M9a | `validate` |
 
 The engine and the templates are clean of PATH001-003, RULE001-002 and errors; the golden dumps assert it.
 
@@ -316,7 +316,8 @@ new` only prints the hint, and `git commit --no-verify` skips it once. It parses
 5. `FRT.bat check-builders`, in an engine checkout, when a staged path is under `Core/Source` (`BUILD003`): a builder's
    sources lie wherever its code is (the shader builder's are in `Core/Source/Graphics`), and the check is one process;
 6. `validate --staged --quick --ci` through `AssetTool-Development-Default.exe` when it is built, never `FRT.bat assets`,
-   which may start a build. Skipped with a message when the tool is not built or does not know the verb yet. It validates
+   which may start a build. Skipped with a message when the tool is not built, or was built before it knew the verb; any
+   other refusal of the tool, a usage error included (a project it cannot use), refuses the commit. It validates
    the `.frtproject` at the top of the work tree, else the engine in an engine checkout, else each `.frtproject` in the
    index (a project in a folder of its repository), one run each. The tool inherits git's `GIT_INDEX_FILE`, so it sees
    what `git commit -a` is about to commit; the hook names the committing repository in `FRT_HOOK_TOPLEVEL`, and the Git
@@ -384,6 +385,51 @@ means none at all, exactly as before. With one:
 Known exception until M7 and M10: the create-on-load writes of `CMaterialLibrary` and `CInputActionLibrary` do not go
 through the provider. The file one of them creates is an ordinary new file to the lifecycle, which gives it a meta on the
 owner like any other.
+
+## The meta verbs (M4, `Assets/Meta/Validation.h`, `MetaVerbs.h`, `Migrations.h`)
+
+`validate`, `fix`, `new-meta`, `migrate` and `resave` (the verb table below) are thin AssetTool callers of Core: each
+opens its registry with a lifecycle of its own (`SLifecycleDesc`, providers detected for the run's mounts, no live
+ticks) and acts through `CAssetRepairs::RunNow`, so a meta a verb writes is derived, journalled and checked out exactly as
+an automatic repair's. They are commands a person runs: no creation delay, no VCS hold, `AutoRepairMetas` and
+`OrphanPairing` ignored; `DerivedAutoGuids` still picks the GUID kind and `AutoResolveDuplicates` whether `fix` dedupes.
+Each acts on the run's own mount set, `/Project` and its plugins, or `/Engine` with `--engine`, never both. `scan`
+writes no meta.
+
+- **Who runs.** All five take the mount's writer lock unless the run is read-only, so beside another owner they exit with
+  4. Only `validate` runs as a read-only guest when `Safety.GuestProcesses` says so (§5.9), reporting, and its META001s
+  name the owner. The others, and `validate --fix`, exist to write: as a guest they exit with 4, and with `--ci` or
+  `-Assets:ReadOnly=1` they are a usage error (`migrate --dry-run` excepted). `validate --fix --quick` is one too: a
+  meta's GUID needs its content's hash.
+- **`RunValidation`** is the one list `validate` prints and the problems panel will show (H4): every problem the
+  registry holds in scope (Scan, Rules, Unclaimed, Analyze, Registry, and the Lifecycle's as the verb's report-only or
+  repairing run committed them), plus the rules only it runs: `META005`; `META007`; a meta's unknown keys, a newer
+  `FormatVersion`, settings its effective importer has no field for or no value of, and an `Importer:` pin this build
+  does not know (warnings with no code, which `ResolveFile` ignores: the rules' value stands); `VCS001` for rule files and
+  text sources (`--quick` reads none but the paths asked for); `VCS003` over every pair, one `StatusOf` per provider;
+  `MIG001` per repository root. The rule files' `Validation:` severities apply to these too. `--ci` is clean with no error
+  and no warning, so the code-0 warnings of a meta fail it as well; infos pass (`REF007` until M7).
+- **`--staged`** takes the paths from `IVcsProvider::GetStaged` (Git: what the pre-commit hook is committing, through
+  the inherited `GIT_INDEX_FILE`); a problem is in when its subject is at or below one of them, or is its meta or source.
+  `MIG001` is the root's, so it is in whatever was staged.
+- **`migrate metas`** creates a meta for every file of class Asset or Raw that has none (a broken meta counts as one: it
+  is never reminted), with `MakeCreateMetaGuid` over the mount's salt, its folded mount path and its content: two people
+  who migrate one commit write the same bytes. It records itself only when no such file is left without a meta (a
+  read-only file, a Git LFS pointer, a file an orphan meta matches, a lost meta: `fix` or `new-meta` settles each), so a
+  run that crashed, or left one, is run again: it skips what exists and then records. `Schemas/Migrations.yml` lies
+  outside every mount, so it is written after the op with `WriteFileAtomic`, after the provider's `CheckOut` of an
+  existing file. Its format, through the canonical emitter, with no date, user or engine version so it merges as text:
+
+  ```yaml
+  FormatVersion: 1
+  Applied:
+    - metas
+  ```
+
+  `validate` reports a root whose file lacks a required step as `MIG001`. The gate (a project behind opens read-only, its
+  dialog, the project manager's offer, AssetTool refusing other writes) is G4b's; real hosts open no lifecycle until H4b.
+- **`resave --metas`** rewrites in ops of at most 256 metas each, through the writer of the mount; a canonical meta is not
+  touched or checked out.
 
 ## One file watcher (M2)
 
@@ -476,27 +522,37 @@ run from the engine checkout's own `FRT.bat`: a project's `FRT.bat` always names
 | `newguid [n]` | fresh GUIDs for builder versions and built-in assets, as text and as a C++ initializer |
 | `lock` | holds the mount's writer lock until Enter (for tests and scripts) |
 | `ddc stats`, `ddc gc [--max-gb=<n>]`, `ddc verify [--ddc=<dir>]` | the derived-data cache: counts, LRU trim (a dry run with `--ci`), re-check and delete corrupt files |
-| `scan [--engine]` | scans the mounts into the registry and, under the writer lock, writes the snapshot (`--engine`: `Engine.snapshot`, the M3 subset of M4's engine-owner mode); with `--ci` writes nothing. Exit 1 on an error-severity problem |
-| `status` | problems by code, severity and source; unclaimed files by folder and extension; the scan state; the DDC's size. Exit 1 on an error-severity problem |
+| `scan [--engine]` | scans the mounts into the registry and, under the writer lock, writes the snapshot (`--engine`: `Engine.snapshot`); with `--ci` writes nothing. It never writes a meta: it opens no lifecycle, so a metaless file stays `PendingMeta` (the meta verbs below write them). Exit 1 on an error-severity problem |
+| `status` | problems by code, severity and source; each mount's VCS provider (detected, so git runs once per mount) and its files waiting for a meta (`PendingMeta`); unclaimed files by folder and extension; the scan state; the DDC's size. Exit 1 on an error-severity problem |
 | `query "<text>" [--columns=a,b] [--limit=<n>] [--rows]` | the records a query matches (default columns `$Name,$Type,$Path,$Size,$Problems`; several arguments are one text; a term with one dash is text, so `query -label:Debug` and `query "-label:Debug type:Model"` work, and after `--` every argument is; `--rows` notes that rows arrive with M5) |
 | `refs <asset>` | the edges an asset declares, with flags and field paths (`<asset>`: a mount path, `#label` for a sub-asset, or a unique name, resolved as `dep:` resolves it) |
 | `referencers <asset> [--transitive]` | the edges that reach an asset; with `--transitive` every record that reaches it (`ref:~X`) |
-| `explain <file>` | a file's importer, class, settings, cook rule, chunk and labels, each with the rule file and line that set it (`Content/Art/Assets.yml:4 (rule 2)`), the rule files consulted, notes; `<file>` is a mount path or a disk path (absolute or relative to the working directory) |
+| `explain <file>` | a file's importer, class, settings, cook rule, chunk and labels (the meta's marked authored), each with the rule file and line or the meta that set it (`Content/Art/Assets.yml:4 (rule 2)`, `Content/Art/Rock.png.meta:5`), the rule files consulted, notes, its meta (file, state, GUID), and the aliases and former paths that resolve to its record; `<file>` is a mount path or a disk path (absolute or relative to the working directory) |
 | `list-rules` | every rule file of the mounts with its normalised entries; with `--json` exactly Rules.cache's lines (it writes no Rules.cache: an M3 deviation, only the lock holder writes it) |
 | `dump registry [--text\|--json] [--mount=<name>,...]` | the deterministic registry dump (design §5.3; the golden files), of every mount or the ones named |
+| `validate [paths] [--staged] [--quick] [--fix] [--ci]` | design §13.4 over the run's own mounts (below): the registry's problems, the lifecycle's, and the rules only it runs. `--staged`: the files the VCS has staged (Git), a mount under `None` whole; `--quick`: hashes nothing; `--fix`: `fix` first. Exit 1 on an error, with `--ci` also on a warning (infos pass) |
+| `fix [paths]` | `validate --fix` under another name: the safe repairs (create a missing meta, restore a verified copy, fix a meta's case, re-GUID duplicates while `Safety.AutoResolveDuplicates` is on), then what remains. Never a relink, "keep A, alias B" or a canonical rewrite |
+| `new-meta <file...>` | a meta now for each file named, with the GUID automatic creation derives (not gated by `Safety.AutoRepairMetas`); a file that has a meta, or takes none, is an error, and then nothing is written. Exit 1 then |
+| `migrate <step>\|--all [--dry-run]` | content migrations (design §14.8), each recorded in the root's `Schemas/Migrations.yml`. M4 has `metas`: a meta for every included file that has none, with reproducible GUIDs; recorded once no file is left without one (exit 1 until then). `--all` runs every step this engine has; a later step names its milestone. `--dry-run` writes nothing (with `--ci` too) |
+| `resave --metas` | every meta that parses and is not canonical (`META005`), rewritten as the emitter writes it, as its own commit; a broken meta is left alone. `--references`, `--redirected`, `--type` and `--drop-unknown` arrive with M5 |
 
 The registry verbs need a project or `--engine`. Each builds its own registry (snapshots read, an incremental scan,
-deltas committed strictly in sequence order) and writes nothing unless it is `scan` holding the lock. A query that does
+deltas committed strictly in sequence order) and writes nothing unless it is `scan` holding the lock, or a meta verb
+(below). A query that does
 not parse or compile, and an `<asset>` that names no record or several, exit with 2 and the positioned message. Their
 `--json` lines (stable fields):
 
 | Verb | Lines and fields |
 |---|---|
 | `scan` | one: `verb`, `mounts`, `owner` (`Project`/`Engine`), `writer`, `files`, `records`, `subEntries`, `folders`, `analyzed`, `hashed`, `reEvaluated`, `scanned`, `committed`, `loadMs`, `totalMs`, `errors`, `warnings`, `infos`, `snapshot` (the file written, else "") |
-| `status` | `{"kind":"scan"}` (`mounts`, `state`, `files`, `records`, `subEntries`, `folders`, `totalMs`, `analyzed`, `hashed`), one `{"kind":"problems"}` per (`code`, `severity`, `source`) with `count`, one `{"kind":"unclaimed"}` per (`folder`, `extension`) with `count`, `{"kind":"ddc"}` (`ddc`, `exists`, `error`, `contentBytes`, `totalBytes`, `files`), `{"kind":"summary"}` (`errors`, `warnings`, `infos`) |
+| `status` | `{"kind":"scan"}` (`mounts`, `state`, `files`, `records`, `subEntries`, `folders`, `totalMs`, `analyzed`, `hashed`), one `{"kind":"mount"}` per mount (`mount`, `provider`: `Git` or `None`, `pendingMetas`), one `{"kind":"problems"}` per (`code`, `severity`, `source`) with `count`, one `{"kind":"unclaimed"}` per (`folder`, `extension`) with `count`, `{"kind":"ddc"}` (`ddc`, `exists`, `error`, `contentBytes`, `totalBytes`, `files`), `{"kind":"summary"}` (`errors`, `warnings`, `infos`) |
 | `query` | one per record: a field per column (`$Size` -> `size`, `$ImportStatus` -> `importStatus`, a tag key as named; counts as numbers, `$Labels` and multi-value tags as arrays), then `{"matched","shown"}` |
 | `refs`, `referencers` | one per edge: `from`, `target` (as written), `resolved` (the record reached, else ""), `flags` (array), `field`, `state` (`Resolved`, `Unresolved`, `Ambiguous`, `Companion`); `referencers --transitive`: one per record, `path`, `type` |
-| `explain` | one: `path`, `excluded`, `excludedBy`, `importer`, `class`, `quiet`, `cook`, `chunk`, each source as `{"file","line","rule"}` (`importerSource`, `cookSource`, `chunkSource`), `labels` and `settings` (with `source`), `settingsTable`, `typeIncluded`, `chain`, `notes`, `record`, `recordType` |
+| `explain` | one: `path`, `excluded`, `excludedBy`, `importer`, `class`, `quiet`, `cook`, `chunk`, each source as `{"file","line","rule"}` (`importerSource`, `cookSource`, `chunkSource`), `labels` (with `source` and `authored`) and `settings` (with `source`), `settingsTable`, `typeIncluded`, `chain`, `notes`, `record`, `recordType`, `meta` (`state`; with a meta also `file`, `path`, `guid`, `parses`), `aliases`, `formerPaths` |
+| `validate`, `fix` | `fix`: one `{"kind":"repair"}` per repair (`action`, `path`, `to`, `guid` of a created meta); both: one `{"kind":"problem"}` per problem (`code`, `severity`, `subject`, `file`, `line`, `column`, `field`, `message`), then `{"kind":"summary"}` (`verb`, `errors`, `warnings`, `infos`, `clean`, `staged`, `quick`, `repaired`, `refused`) |
+| `new-meta` | one `{"kind":"meta"}` per meta created (`path` of the source, `meta`, `guid`), the problems, `{"kind":"summary"}` (`verb`, `created`, `refused`) |
+| `migrate` | one `{"kind":"meta"}` per meta created or, with `--dry-run`, to create (`path`, `meta`, `guid`: `random` with `Safety.DerivedAutoGuids: false`, `dryRun`), one `{"kind":"remaining"}` per file still without one (`path`), the problems, then per step `{"kind":"summary"}` (`step`, `created`, `remaining`, `recorded`, `dryRun`) |
+| `resave` | one `{"kind":"meta"}` per meta rewritten or left broken (`path`, `rewritten`, `broken`), the problems, `{"kind":"summary"}` (`verb`, `rewritten`, `canonical`, `broken`) |
 | `list-rules` | Rules.cache's lines (see Rules above) |
 | `dump registry` | one per mount, rule file, folder, file, record and problem, `kind` first: `mount`; `rules` (`folder`, `level`, `hash`: the file named by folder and level as Rules.cache names it - a mount's `Config/Assets.yml` is the mount root with level `Mount` - since the registry knows no disk layout; `list-rules` gives its `file`); `folder` (`path`); `file` (`path`, `class`, `size`, and `meta` unless PendingMeta); `record` (`path`, `guid` when a meta gave it, `type`, `importer`, `status`, `stamp`, `cook`, `chunk`, `flags`, `primary`, `labels`, `tags`, `subEntries`, `edges` - `redirected` when resolved through an alias or a former path -, `companions`); `redirects` after a record that has any (`path`, `aliases`, `formerPaths`); `problem` (`code`, `severity`, `source`, `subject`, `file`, `line`, `column`, `field`, `message`) |
 

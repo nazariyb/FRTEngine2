@@ -2188,6 +2188,12 @@ const SSettingDef* FindSetting (std::span<const SSettingDef> Values, uint32 Fiel
 }
 
 
+std::optional<FString> NormalizeMetaSettingValue (reflect::HDataNode Node, const SSettingsField& Field)
+{
+	return NormalizeMetaSetting(Node, Field);
+}
+
+
 // ---------------- CRulesEngine ----------------
 
 namespace

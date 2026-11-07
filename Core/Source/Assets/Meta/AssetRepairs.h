@@ -103,6 +103,9 @@ struct SRepairOptions
 	std::vector<ELifecycleAction> Kinds;     // empty: every kind RunLifecycle proposes
 	bool bCommand = true;
 	bool bDryRun = false;
+	// `validate --quick`: no content is hashed for this run, so no new file is paired or created by content; what is an
+	// error in every outcome is still reported (Lifecycle.h).
+	bool bNoHashing = false;
 };
 
 struct SRepairReport

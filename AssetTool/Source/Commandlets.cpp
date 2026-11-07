@@ -23,6 +23,10 @@ constexpr FStringLiteral DdcOptions[] = { "max-gb", "ddc" };
 constexpr FStringLiteral QueryOptions[] = { "rows", "columns", "limit" };
 constexpr FStringLiteral ReferencersOptions[] = { "transitive" };
 constexpr FStringLiteral DumpOptions[] = { "text", "mount" };
+constexpr FStringLiteral ValidateOptions[] = { "staged", "quick", "fix" };
+constexpr FStringLiteral MigrateOptions[] = { "all", "dry-run" };
+// Every mode §13.2 names, so the later ones are refused naming their milestone rather than as unknown options.
+constexpr FStringLiteral ResaveOptions[] = { "metas", "references", "redirected", "type", "drop-unknown" };
 
 /**
  * Every verb, in the order help lists them. A new verb is a function and a line here (§13.1: no
@@ -42,12 +46,12 @@ constexpr SCommandlet Commandlets[] =
 		"with --ci a dry run that deletes nothing; verify re-checks every file and deletes the corrupt ones", false,
 		DdcOptions },
 	// The asset registry (M3, read-only; RegistryCommandlets.cpp). Only scan writes, and only under the mount's
-	// writer lock (not with --ci); the others read the snapshots and the disk and write nothing.
+	// writer lock (not with --ci), never a meta; the others read the snapshots and the disk and write nothing.
 	{ "scan", &RunScan, "scan: scans the project's mounts (with --engine, /Engine) into the asset registry and writes its snapshot "
-		"(Local/Assets/AssetRegistry.snapshot; with --engine <engine>/Local/Registry/Engine.snapshot) - with --ci nothing; prints what it "
-		"found and did", true },
-	{ "status", &RunStatus, "status: the registry's problems by code and source, unclaimed files by folder and extension, the scan state "
-		"and the derived-data cache's size", false },
+		"(Local/Assets/AssetRegistry.snapshot; with --engine <engine>/Local/Registry/Engine.snapshot) - with --ci nothing, and never a meta; "
+		"prints what it found and did", true },
+	{ "status", &RunStatus, "status: the registry's problems by code and source, each mount's VCS provider and files waiting for a meta, "
+		"unclaimed files by folder and extension, the scan state and the derived-data cache's size", false },
 	{ "query", &RunQuery, "query \"<text>\" [--columns=a,b] [--limit=<n>] [--rows]: the registry records a query matches, in the search "
 		"syntax (type:Texture Width>=1024 dir:/Project/Textures label:Hero -label:Debug ref:X is:broken-ref order:Width desc ...); a term "
 		"may start with one dash, and every argument after -- is text", false, QueryOptions, true },
@@ -56,11 +60,26 @@ constexpr SCommandlet Commandlets[] =
 	{ "referencers", &RunReferencers, "referencers <asset> [--transitive]: the edges that reach an asset, or with --transitive every record "
 		"that reaches it", false, ReferencersOptions },
 	{ "explain", &RunExplain, "explain <file>: a file's effective importer, class, settings, cook rule, chunk and labels, each with the rule "
-		"file and line that set it (a mount path, or a path on disk)", false },
+		"file and line or the meta that set it, its meta, aliases and former paths (a mount path, or a path on disk)", false },
 	{ "list-rules", &RunListRules, "list-rules: every rule file of the mounts with its entries (--json: the lines of Local/Assets/Rules.cache)",
 		false },
 	{ "dump", &RunDump, "dump registry [--text|--json] [--mount=<name>,...]: the registry's deterministic dump, of every mount or of the "
 		"ones named (the golden files)", false, DumpOptions },
+	// The meta verbs (M4; MetaCommandlets.cpp), each with a lifecycle of its own over the run's mounts (/Project and its plugins,
+	// or /Engine with --engine). They take the writer lock unless read-only; only validate runs as a read-only guest.
+	{ "validate", &RunValidate, "validate [paths] [--staged] [--quick] [--fix] [--ci]: the rules of design §13.4 over the mounts (the registry's "
+		"problems, the lifecycle's META and VCS codes, non-canonical metas, metas of excluded files, CRLF in FRT text, VCS003, MIG001); "
+		"--staged only what the VCS has staged, --quick hashes nothing, --fix applies the safe repairs first (as fix); exit 1 on an error, "
+		"with --ci also on a warning", true, ValidateOptions },
+	{ "fix", &RunFix, "fix [paths]: validate --fix: creates missing metas, restores verified copies, fixes a meta's case and re-GUIDs "
+		"duplicates (with Safety.AutoResolveDuplicates), then prints what remains; never relinks, aliases or rewrites a meta by hand",
+		true, {}, false, false },
+	{ "new-meta", &RunNewMeta, "new-meta <file...>: a meta now for each file named, with the derived GUID (not gated by "
+		"Safety.AutoRepairMetas); a file that has a meta is an error, and then nothing is written", true, {}, false, false },
+	{ "migrate", &RunMigrate, "migrate <step>|--all [--dry-run]: content migrations (design §14.8), each recorded in Schemas/Migrations.yml; "
+		"M4 has metas: a meta for every included file without one, with reproducible GUIDs", true, MigrateOptions, false, false },
+	{ "resave", &RunResave, "resave --metas: rewrites every meta that is not canonical (META005), as its own commit; --references, "
+		"--redirected, --type and --drop-unknown arrive with M5", true, ResaveOptions, false, false },
 };
 
 // What help says beyond the verbs: the options every verb takes (FindUnknownOption knows the same

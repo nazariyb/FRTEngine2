@@ -2,7 +2,8 @@
 // a good commit goes through with a new source left to `validate --staged`; every check reports in one failed commit, with
 // each of its messages, so no check hides another; the hook only asks git and AssetTool when it should (BUILD003 only in an
 // engine checkout and only for staged engine sources, and a missing AssetTool is a message, not a refusal), and tells the tool
-// which repository is committing. The hook is LF whatever core.autocrlf says, or bash could not read its first line.
+// which repository is committing; with the engine's AssetTool, check 6 refuses a meta that does not parse, as `git commit -a`
+// is about to commit it. The hook is LF whatever core.autocrlf says, or bash could not read its first line.
 // `FRT.bat setup --hooks` sets core.hooksPath and nothing else, `=off` clears it, relative for an engine inside the clone.
 // A failing commit costs a bash and a few git processes, so one commit asserts many messages. Skipped without git on PATH.
 #include <gtest/gtest.h>
@@ -323,18 +324,28 @@ TEST_F(GitHooksTest, TheToolIsToldWhatToValidateAndWhichRepositoryIsCommitting)
 	EXPECT_FALSE(all.Contains("arg=--project")) << all.CStr();
 }
 
-// The engine's own hook, so it finds the engine's AssetTool when this configuration built one. Until AssetTool has
-// validate (G4 replaces this test with a staged META004 refused through it), its usage error is a message, not a refusal.
-TEST_F(GitHooksTest, AToolWithoutTheVerbIsAMessageNotARefusal)
+// The engine's own hook with the engine's own AssetTool (Development, as the hook runs it): check 6 refuses a meta that
+// checks 1-5 let through, one whose Guid line is valid but which does not parse (META004), and it sees what `git commit -a`
+// is about to commit, a working-tree change nobody staged, through the GIT_INDEX_FILE git hands the hook. A usage error of a
+// tool that knows the verb refuses too; only a tool built before the verb existed is skipped (B4 left that open).
+TEST_F(GitHooksTest, AModifiedMetaThatDoesNotParseIsRefusedThroughTheToolsQuickValidate)
 {
-	Write("Game.frtproject", "[Project]\nName=Game\n");
-	Write("Content/New.png");
-	Stage({ "Content/New.png" });
+	const std::filesystem::path tool = paths::GetEngineDir() / "Binaries" / "Win64" / "AssetTool-Development-Default.exe";
+	if (!std::filesystem::exists(tool))
+	{
+		GTEST_SKIP() << "the hook runs the Development AssetTool, which is not built";
+	}
+	Write("Game.frtproject", FString::Format("[Project]\nName=Game\nEngine={}\n", FString::FromPath(paths::GetEngineDir(), EPathStyle::Generic)));
+	Write("Content/Гра.png.meta", MetaText(GuidB) + "Labels: [ unclosed\n");
 
 	const FString hooks = FString::FromPath(paths::GetEngineDir() / "Tools" / "GitHooks", EPathStyle::Generic);
-	const test::SProcessResult commit = Commit({ "-c", "core.hooksPath=" + hooks });
-	EXPECT_EQ(commit.ExitCode, 0) << commit.Output.CStr() << commit.Errors.CStr();
-	EXPECT_TRUE((commit.Output + commit.Errors).Contains("quick validate skipped")) << commit.Output.CStr() << commit.Errors.CStr();
+	const test::SProcessResult commit = RunGit({ "-c", "core.hooksPath=" + hooks, "commit", "-a", "-q", "-m", "A test's commit" });
+	const FString all = commit.Output + commit.Errors;
+	EXPECT_EQ(commit.ExitCode, 1) << all.CStr();
+	EXPECT_TRUE(all.Contains("META004")) << all.CStr();
+	EXPECT_TRUE(all.Contains("/Project/Гра.png.meta")) << all.CStr();
+	EXPECT_FALSE(all.Contains("quick validate skipped")) << all.CStr();
+	EXPECT_EQ(RunGit({ "rev-parse", "HEAD" }).Output.TrimEnd(), gBase) << "nothing was committed";
 }
 
 TEST_F(GitHooksTest, SetupHooksSetsCoreHooksPathAndNothingElse)

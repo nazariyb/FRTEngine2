@@ -69,6 +69,8 @@ public:
 	// Another process owns the mount and Safety.GuestProcesses let this run go on as a read-only guest (§5.9):
 	// bReadOnly is set as well, so a verb writes nothing; it may say so.
 	bool bGuest = false;
+	// A guest's: the process that owns the mount, as SLockOwner::Describe names it ("Editor.exe, pid 1234").
+	FString Owner;
 
 	// The project's directory; empty with --engine, or when a verb that needs none runs without one.
 	std::filesystem::path ProjectRoot;
@@ -168,6 +170,12 @@ int32 RunReferencers (CCommandletContext& Context);
 int32 RunExplain (CCommandletContext& Context);
 int32 RunListRules (CCommandletContext& Context);
 int32 RunDump (CCommandletContext& Context);
+// MetaCommandlets.cpp: the meta verbs (design §13.2, §14.8, M4): validate, fix, new-meta, migrate, resave.
+int32 RunValidate (CCommandletContext& Context);
+int32 RunFix (CCommandletContext& Context);
+int32 RunNewMeta (CCommandletContext& Context);
+int32 RunMigrate (CCommandletContext& Context);
+int32 RunResave (CCommandletContext& Context);
 
 // "123 B", "4.5 KiB", "6.7 MiB", "8.9 GiB" (DdcCommandlets.cpp).
 [[nodiscard]] FString FormatBytes (uint64 Bytes);
