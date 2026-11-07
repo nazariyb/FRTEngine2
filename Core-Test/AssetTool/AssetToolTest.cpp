@@ -993,6 +993,37 @@ protected:
 };
 }
 
+// The README's `FRT.bat assets <verb>` row is where a reader meets the verbs: it names every verb help lists, and the meta
+// verbs with help's own usage (but --ci, which the row names once for all), so the row cannot fall behind the table again.
+TEST_F(AssetToolTest, TheReadmesAssetsRowNamesEveryVerbHelpLists)
+{
+	const std::optional<FString> readme = platform::ReadFileText(paths::GetEngineDir() / "README.md");
+	ASSERT_TRUE(readme.has_value());
+	FString row;
+	for (const FStringView line : SplitLines(*readme))
+	{
+		if (line.StartsWith("| `FRT.bat assets <verb>` |"))
+		{
+			row = FString(line).Replace("\\|", "|");
+		}
+	}
+	ASSERT_FALSE(row.IsEmpty()) << "README.md has no FRT.bat assets row";
+	const test::SProcessResult json = Run({ "help", "--json" });
+	ASSERT_EQ(json.ExitCode, 0) << json.Errors.CStr();
+	constexpr FStringLiteral MetaVerbs[] = { "validate", "fix", "new-meta", "migrate", "resave" };
+	for (const reflect::CDataTree& line : ParseJsonLines(json.Output))
+	{
+		const FString verb = JsonText(line, "verb");
+		EXPECT_TRUE(row.Contains("`" + verb)) << verb.CStr() << " is missing from the README's row: " << row.CStr();
+		if (std::find(std::begin(MetaVerbs), std::end(MetaVerbs), verb.View()) != std::end(MetaVerbs))
+		{
+			const FString usage = JsonText(line, "usage");
+			const FString head = FString(usage.View().Left(usage.View().Find(": "))).Replace(" [--ci]", "");
+			EXPECT_TRUE(row.Contains("`" + head + "`")) << head.CStr() << " is not in the README's row: " << row.CStr();
+		}
+	}
+}
+
 // scan under the lock writes the project's snapshot, ProjectId and Rules.cache, and a warm scan loads it; scan --ci
 // and every read verb write nothing at all.
 TEST_F(AssetToolRegistryTest, OnlyAScanUnderTheLockWritesAndAWarmScanLoadsItsSnapshot)
