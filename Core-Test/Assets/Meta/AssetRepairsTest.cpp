@@ -18,7 +18,7 @@
 // META001; a read-only run never asks for the lock; engine-owner mode is a project inside the engine checkout or
 // EngineWritable, and in it a file added under a scratch engine's Core/Content gets its meta through a writer of the engine
 // root, whose own journal is rolled forward first, while no Engine.snapshot or journal of /Engine is written. Each test holds at most fourteen
-// files and drives the lifecycle with its own clock (Settle), never with sleeps: three tests go through the file watcher
+// files and drives the lifecycle with its own clock (Settle), never with sleeps: four tests go through the file watcher
 // with small delays. The dedupe op's crash points are rolled forward in-process, and one real child is killed. F1: a
 // meta that lands between a repair's plan and its write, or after a crash and before the roll-forward, is kept; a dedupe
 // set left half written keeps its full remap when the next run plans the rest narrower. F4: a dedupe loser gives its
