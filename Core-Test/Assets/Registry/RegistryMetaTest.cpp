@@ -765,6 +765,24 @@ TEST(RegistryMeta, ARemovedFileLeavesATombstoneAndARestoredOneTakesItsIdentityBa
 	registry->ShutDown();
 }
 
+TEST(RegistryMeta, ARemovedCopyOfAGuidAnotherFileHoldsLeavesNoTombstoneAndKeepsTheCopy)
+{
+	CMetaTree tree("Двійник");
+	tree.WritePng("Textures/Камінь.png");
+	tree.WriteMeta("Textures/Камінь.png", MetaText(GuidA));
+	tree.WritePng("Textures/Копія.png");
+	tree.WriteMeta("Textures/Копія.png", MetaText(GuidA));
+	jobs::CWorkerPool pool(MakePoolDesc());
+	std::unique_ptr<CAssetRegistry> registry = Open(pool, tree.Mounts());
+	tree.Remove("Textures/Копія.png");
+	tree.Remove("Textures/Копія.png.meta");
+	ASSERT_TRUE(registry->ScanPathsSynchronous(std::vector<FString> { "/Project/Textures" }, 30.0));
+	EXPECT_EQ(PathOf(registry->Live(), GuidA), "/Project/Textures/Камінь.png");
+	EXPECT_EQ(registry->Live().GetTombstoneCount(), 0u) << "the GUID is not gone";
+	EXPECT_TRUE(registry->Live().FindMetaCopy(MakeGuid(GuidA)).has_value());
+	registry->ShutDown();
+}
+
 TEST(RegistryMeta, AReEvaluationTakesAnUnchangedMetaFromItsCopyAndAWarmStartKeepsTheIdentityState)
 {
 	CMetaTree tree("Копія");

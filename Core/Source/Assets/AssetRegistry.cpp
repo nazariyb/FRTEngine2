@@ -291,6 +291,19 @@ std::optional<STombstone> MakeTombstone (const CRegistryView& View, const SStore
 	{
 		return std::nullopt;
 	}
+	// A GUID another live record holds (a copy, a dedupe loser re-GUIDed away from its winner) is not gone, and its
+	// copy is that record's too.
+	const SRegistryTables& tables = GetTables(View);
+	bool bHeldElsewhere = false;
+	tables.Indices.RecordsByGuid.ForEach(HashGuid(Stored.Guid), [&] (uint32 Row)
+	{
+		bHeldElsewhere = Row != Stored.Record.Value && tables.Assets.File[Row] != InvalidRow && tables.Assets.Guid[Row] == Stored.Guid;
+		return !bHeldElsewhere;
+	});
+	if (bHeldElsewhere)
+	{
+		return std::nullopt;
+	}
 	SFileData file;
 	(void)View.GetFile(Stored.FileRow, file);
 	return STombstone { Stored.Guid, FString(Path), file.ContentHash, Stored.Stat.Identity, Now };
