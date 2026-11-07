@@ -14,6 +14,7 @@
 // and a copy of it in a scratch engine checkout for /Engine. Release builds no AssetTool: skipped there.
 #include <gtest/gtest.h>
 
+#include "Assets/Vcs/GitTestUtils.h"
 #include "TestCommon.h"
 #include "TestProcess.h"
 
@@ -1260,6 +1261,24 @@ TEST_F(AssetToolRegistryTest, TheMetaVerbsCreateValidateRestoreAndExplainMetasTh
 	EXPECT_FALSE(std::filesystem::exists(stone));
 	EXPECT_FALSE(WroteLocalAssets()) << "a read-only validate writes nothing";
 
+	// The upgrade preview (§14.8) is read-only by request: it runs beside an owner and writes nothing, not even the
+	// registry's own Local/Assets files (only the lock this test holds is there).
+	{
+		FString error;
+		const std::optional<platform::CExclusiveFileLock> owned = assets::TryTakeOwnerLock(ProjectDir, nullptr, &error);
+		ASSERT_TRUE(owned.has_value()) << error.CStr();
+		const test::SProcessResult preview = RunOnProject({ "migrate", "--all", "--dry-run", "--json" });
+		EXPECT_EQ(preview.ExitCode, 0) << preview.Output.CStr() << preview.Errors.CStr();
+		EXPECT_EQ(count(preview.Output, "meta"), 3u) << preview.Output.CStr();
+		EXPECT_FALSE(std::filesystem::exists(stone));
+		EXPECT_FALSE(std::filesystem::exists(migrations));
+		std::error_code ec;
+		for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(assets::GetMountAssetsLocalDir(ProjectDir), ec))
+		{
+			EXPECT_EQ(entry.path().filename(), assets::GetOwnerLockPath(ProjectDir).filename()) << "a dry run wrote " << FString::FromPath(entry.path()).CStr();
+		}
+	}
+
 	const test::SProcessResult created = RunOnProject({ "new-meta", "Content/Textures/Камінь.png", "--json" });
 	ASSERT_EQ(created.ExitCode, 0) << created.Output.CStr() << created.Errors.CStr();
 	ASSERT_EQ(count(created.Output, "meta"), 1u) << created.Output.CStr();
@@ -1290,6 +1309,13 @@ TEST_F(AssetToolRegistryTest, TheMetaVerbsCreateValidateRestoreAndExplainMetasTh
 	EXPECT_EQ(resaved.ExitCode, 0) << resaved.Output.CStr() << resaved.Errors.CStr();
 	EXPECT_EQ(read(grass), grassMeta);
 
+	// status detects each mount's provider: the project made a repository just now (an unborn HEAD is one) names Git.
+	const std::filesystem::path git = platform::FindOnPath("git");
+	const FStringView provider = git.empty() ? FStringView("None") : FStringView("Git");
+	if (!git.empty())
+	{
+		ASSERT_EQ(test::RunGit(git, ProjectDir, { "init", "-q" }).ExitCode, 0);
+	}
 	const test::SProcessResult status = RunOnProject({ "status", "--json" });
 	ASSERT_EQ(status.ExitCode, 0) << status.Errors.CStr();
 	bool bMount = false;
@@ -1297,10 +1323,10 @@ TEST_F(AssetToolRegistryTest, TheMetaVerbsCreateValidateRestoreAndExplainMetasTh
 	{
 		if (JsonText(line, "kind") == "mount" && JsonText(line, "mount") == "/Project")
 		{
-			bMount = JsonText(line, "provider") == "None" && JsonInt(line, "pendingMetas") == 0;
+			bMount = JsonText(line, "provider") == provider && JsonInt(line, "pendingMetas") == 0;
 		}
 	}
-	EXPECT_TRUE(bMount) << "a project outside any repository: " << status.Output.CStr();
+	EXPECT_TRUE(bMount) << "provider " << FString(provider).CStr() << ": " << status.Output.CStr();
 
 	const test::SProcessResult explained = RunOnProject({ "explain", "/Project/Textures/Камінь.png", "--json" });
 	ASSERT_EQ(explained.ExitCode, 0) << explained.Errors.CStr();

@@ -321,6 +321,17 @@ TEST(MetaVerbs, ValidateLimitedToStagedPathsQuickAndWithValidationSeveritiesKeep
 	// Quick reads no text source unless it was asked for by path.
 	EXPECT_EQ(Find(rig.Validate(std::nullopt, true), Vcs001, P("B/Stone.frtmat.yml")), nullptr);
 	EXPECT_NE(Find(rig.Validate(std::vector<FString> { P("B") }, true), Vcs001, P("B/Stone.frtmat.yml")), nullptr);
+
+	// A root behind: its MIG001 comes with a staged path of its own mounts, and not with none (the hook over a commit of
+	// code alone stages nothing in a mount), nor with a path of a mount outside the scope.
+	std::error_code ec;
+	ASSERT_TRUE(std::filesystem::remove(GetMigrationsPath(tree.Tree.ProjectDir()), ec)) << ec.message();
+	EXPECT_NE(Find(rig.Validate(std::nullopt, true), Mig001, "/Project"), nullptr);
+	EXPECT_NE(Find(rig.Validate(std::vector<FString> { P("A/Rock.png.meta") }, true), Mig001, "/Project"), nullptr);
+	const std::vector<SDiagnostic> code = rig.Validate(std::vector<FString> {}, true);
+	EXPECT_EQ(Find(code, Mig001, "/Project"), nullptr) << Describe(code).CStr();
+	const std::vector<SDiagnostic> engine = rig.Validate(std::vector<FString> { FString("/Engine/Textures/Default.png") }, true);
+	EXPECT_EQ(Find(engine, Mig001, "/Project"), nullptr) << Describe(engine).CStr();
 }
 
 TEST(MetaVerbs, Vcs003IsAPairTheVcsTracksDifferentlyAskedInOneStatusCall)

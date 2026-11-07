@@ -146,6 +146,8 @@ private:
  *   bGuestRuns      a bWritesProject verb with a read-only form worth running beside the owner: with the
  *                   project's Safety.GuestProcesses on it runs as a guest instead of exiting with
  *                   ExitOwned (§5.9). False for lock, whose point is the lock itself.
+ *   ReadOnlyOption  an option of its own that makes the run read-only by request, as --ci does: the host
+ *                   then takes no lock and the verb sees bReadOnly (migrate's dry-run). Empty: none.
  */
 struct SCommandlet
 {
@@ -156,6 +158,7 @@ struct SCommandlet
 	std::span<const FStringLiteral> Options;
 	bool bTakesText = false;
 	bool bGuestRuns = true;
+	FStringLiteral ReadOnlyOption;
 };
 
 // Verbs with a file of their own (their table rows, options included, are in Commandlets.cpp).

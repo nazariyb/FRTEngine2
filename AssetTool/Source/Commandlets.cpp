@@ -77,7 +77,8 @@ constexpr SCommandlet Commandlets[] =
 	{ "new-meta", &RunNewMeta, "new-meta <file...>: a meta now for each file named, with the derived GUID (not gated by "
 		"Safety.AutoRepairMetas); a file that has a meta is an error, and then nothing is written", true, {}, false, false },
 	{ "migrate", &RunMigrate, "migrate <step>|--all [--dry-run]: content migrations (design §14.8), each recorded in Schemas/Migrations.yml; "
-		"M4 has metas: a meta for every included file without one, with reproducible GUIDs", true, MigrateOptions, false, false },
+		"M4 has metas: a meta for every included file without one, with reproducible GUIDs; --dry-run writes nothing and takes no lock",
+		true, MigrateOptions, false, false, "dry-run" },
 	{ "resave", &RunResave, "resave --metas: rewrites every meta that is not canonical (META005), as its own commit; --references, "
 		"--redirected, --type and --drop-unknown arrive with M5", true, ResaveOptions, false, false },
 };

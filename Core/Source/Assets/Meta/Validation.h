@@ -31,7 +31,8 @@
  *	  VCS001   CRLF in a hashed FRT text file the lifecycle does not read: a rule file, a `.yml`, `.frt`, `.csv`, `.ini`,
  *	           `.frtinputmap` or `.frtinputaction` source (metas are the lifecycle's). Not with bQuick, except for Paths;
  *	  VCS003   a pair the VCS tracks differently, one StatusOf per provider over every pair in scope ("commit it");
- *	  MIG001   a repository root of the scope whose Schemas/Migrations.yml lacks a step this engine requires.
+ *	  MIG001   a repository root of the scope whose Schemas/Migrations.yml lacks a step this engine requires (with Paths, a
+ *	           root that one of them lies in).
  *	MIG002 has no data in M4: the legacy patterns it names go with steps that arrive in M7 and M9a.
  *
  * Each V-only problem carries Subject (the mount path as spelled), File (relative to its owner root) and the rule files'
@@ -51,7 +52,8 @@ struct SValidateOptions
 	const CRulesEngine* Rules = nullptr;              // the Validation: overrides of the V-only rules; null: none
 	std::vector<MountId> Scope;                       // the mounts validated; empty: every mount
 	// Only these mount paths (--staged, or the paths a person named): a problem is in when its subject is at or below one,
-	// or is the meta or the source of one. MIG001 is the root's, so it is reported whatever the paths. nullopt: everything.
+	// or is the meta or the source of one. MIG001 is the root's: reported for a root when one of the paths lies in its mounts
+	// (an empty list, a commit of code alone, has none). nullopt: everything.
 	std::optional<std::vector<FString>> Paths;
 	bool bQuick = false;                              // no reads of text sources but those in Paths (no hashing anywhere)
 	std::vector<std::pair<MountId, IVcsProvider*>> Providers;   // VCS003; absent, null or None: no status asked

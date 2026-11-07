@@ -9,7 +9,8 @@
  * run is read-only, so beside another owner they exit with 4. `validate` alone runs there as a read-only guest when
  * Safety.GuestProcesses says so (§5.9): it reports, naming the owner in its META001. `validate --fix`, `fix`, `new-meta`,
  * `migrate` and `resave` exist to write, so a guest run of them would only report: they exit with 4 instead, and with
- * --ci or -Assets:ReadOnly=1 they are a usage error (`migrate --dry-run` excepted, which writes nothing).
+ * --ci or -Assets:ReadOnly=1 they are a usage error. `migrate --dry-run` is the exception: read-only by request, it takes
+ * no lock, runs beside an owner and writes nothing.
  *
  * Exit codes: 0 done (validate: clean), 1 problems (validate: an error, or with --ci a warning; the writing verbs: a file
  * left without what was asked), 2 usage, 3 the registry did not finish, 4 another process owns the mount.
@@ -312,8 +313,10 @@ int32 RunMigrate (CCommandletContext& Context)
 		return RefuseReadOnly(Context, "migrate");
 	}
 
+	// A dry run is read-only by request (SCommandlet::ReadOnlyOption): the host took no lock, and its reader writes nothing,
+	// neither metas nor the registry's own Local/Assets files, and rolls no unfinished operation forward.
 	SRegistryRun run;
-	const bool bWriter = !Context.bReadOnly;
+	const bool bWriter = !Context.bReadOnly && !bDryRun;
 	if (const int32 result = OpenRegistry(Context, "migrate", { .bWriter = bWriter, .bLifecycle = true, .bRepairs = bWriter }, run); result != ExitSuccess)
 	{
 		return result;

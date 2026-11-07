@@ -21,7 +21,8 @@
  * process owns the mount, the run ends with exit code 4 and names it - unless the opened project's
  * Safety.GuestProcesses (the engine's with --engine) lets it run as a read-only guest, which says so on
  * stderr and writes nothing (lock never runs as one). --ci and -Assets:ReadOnly=1 make a run read-only
- * by request: it never takes the lock, and so runs beside an open editor.
+ * by request, as does a verb's own read-only option (SCommandlet::ReadOnlyOption: migrate --dry-run): it
+ * never takes the lock, and so runs beside an open editor.
  *
  * Output: human text, or with --json one JSON object per line on stdout (stable field names); errors
  * and warnings on stderr in either mode. Exit codes: Commandlet.h (0 success, 1 problems, 2 usage,
@@ -199,7 +200,8 @@ int32 RunAssetTool ()
 		return context.Fail(ExitInternalError, "the engine did not start");
 	}
 	context.SetConfig(engine.GetConfig());
-	context.bReadOnly = context.bCi || engine.GetConfig().Get("Assets", "ReadOnly", false);
+	context.bReadOnly = context.bCi || engine.GetConfig().Get("Assets", "ReadOnly", false)
+		|| (!commandlet->ReadOnlyOption.IsEmpty() && context.HasOption(commandlet->ReadOnlyOption));
 	context.SetWorkerPool(engine.GetWorkerPool());
 
 	// The Safety switches that govern a process (GuestProcesses, BuilderSourceGuard) come from one file: the opened

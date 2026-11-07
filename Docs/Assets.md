@@ -245,8 +245,8 @@ the lock like any writing verb, and its other registry verbs never take it and w
 
 **A second process (M4, §5.9).** Who writes is decided once, before a registry exists, by
 `assets::ClaimAssetOwnership` (`Assets/Meta/AssetRepairs.h`), which the editor (`CEngine::StartUp`) and AssetTool share.
-A run that is read-only by request (`--ci`, `-Assets:ReadOnly=1`, every scripted run, the runtime and the dev Launcher)
-never asks for the lock and always runs. Any other takes the owner root's `Owner.lock`; while another process holds it, a
+A run that is read-only by request (`--ci`, `-Assets:ReadOnly=1`, `migrate --dry-run`, every scripted run, the runtime
+and the dev Launcher) never asks for the lock and always runs. Any other takes the owner root's `Owner.lock`; while another process holds it, a
 second writer does not start: the editor shows one message naming the holder ("close it, or set
 `Safety.GuestProcesses: true`") and quits, AssetTool exits with code 4 (the M3 deviation, an editor that stayed open
 writing nothing, is over). With the opened project's `Safety.GuestProcesses: true` (the engine's file for `--engine`
@@ -400,7 +400,8 @@ writes no meta.
 - **Who runs.** All five take the mount's writer lock unless the run is read-only, so beside another owner they exit with
   4. Only `validate` runs as a read-only guest when `Safety.GuestProcesses` says so (§5.9), reporting, and its META001s
   name the owner. The others, and `validate --fix`, exist to write: as a guest they exit with 4, and with `--ci` or
-  `-Assets:ReadOnly=1` they are a usage error (`migrate --dry-run` excepted). `validate --fix --quick` is one too: a
+  `-Assets:ReadOnly=1` they are a usage error. `migrate --dry-run` is read-only by request itself: no lock, so it runs
+  beside an owner. `validate --fix --quick` is one too: a
   meta's GUID needs its content's hash.
 - **`RunValidation`** is the one list `validate` prints and the problems panel will show (H4): every problem the
   registry holds in scope (Scan, Rules, Unclaimed, Analyze, Registry, and the Lifecycle's as the verb's report-only or
@@ -412,7 +413,8 @@ writes no meta.
   and no warning, so the code-0 warnings of a meta fail it as well; infos pass (`REF007` until M7).
 - **`--staged`** takes the paths from `IVcsProvider::GetStaged` (Git: what the pre-commit hook is committing, through
   the inherited `GIT_INDEX_FILE`); a problem is in when its subject is at or below one of them, or is its meta or source.
-  `MIG001` is the root's, so it is in whatever was staged.
+  `MIG001` is the root's: it is in when something staged lies in one of that root's mounts, so a commit of code alone is
+  never refused for it, and content committed into a repository behind is.
 - **`migrate metas`** creates a meta for every file of class Asset or Raw that has none (a broken meta counts as one: it
   is never reminted), with `MakeCreateMetaGuid` over the mount's salt, its folded mount path and its content: two people
   who migrate one commit write the same bytes. It records itself only when no such file is left without a meta (a
@@ -534,7 +536,7 @@ run from the engine checkout's own `FRT.bat`: a project's `FRT.bat` always names
 | `validate [paths] [--staged] [--quick] [--fix] [--ci]` | design §13.4 over the run's own mounts (below): the registry's problems, the lifecycle's, and the rules only it runs. `--staged`: the files the VCS has staged (Git), a mount under `None` whole; `--quick`: hashes nothing; `--fix`: `fix` first. Exit 1 on an error, with `--ci` also on a warning (infos pass) |
 | `fix [paths]` | `validate --fix` under another name: the safe repairs (create a missing meta, restore a verified copy, fix a meta's case, re-GUID duplicates while `Safety.AutoResolveDuplicates` is on), then what remains. Never a relink, "keep A, alias B" or a canonical rewrite |
 | `new-meta <file...>` | a meta now for each file named, with the GUID automatic creation derives (not gated by `Safety.AutoRepairMetas`); a file that has a meta, or takes none, is an error, and then nothing is written. Exit 1 then |
-| `migrate <step>\|--all [--dry-run]` | content migrations (design §14.8), each recorded in the root's `Schemas/Migrations.yml`. M4 has `metas`: a meta for every included file that has none, with reproducible GUIDs; recorded once no file is left without one (exit 1 until then). `--all` runs every step this engine has; a later step names its milestone. `--dry-run` writes nothing (with `--ci` too) |
+| `migrate <step>\|--all [--dry-run]` | content migrations (design §14.8), each recorded in the root's `Schemas/Migrations.yml`. M4 has `metas`: a meta for every included file that has none, with reproducible GUIDs; recorded once no file is left without one (exit 1 until then). `--all` runs every step this engine has; a later step names its milestone. `--dry-run` writes nothing, neither metas nor the registry's own `Local/Assets` files: it is read-only by request, as `--ci` is, so it takes no lock and runs beside an open editor |
 | `resave --metas` | every meta that parses and is not canonical (`META005`), rewritten as the emitter writes it, as its own commit; a broken meta is left alone. `--references`, `--redirected`, `--type` and `--drop-unknown` arrive with M5 |
 
 The registry verbs need a project or `--engine`. Each builds its own registry (snapshots read, an incremental scan,

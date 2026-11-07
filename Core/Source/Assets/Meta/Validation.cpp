@@ -487,6 +487,19 @@ private:
 				roots.push_back(&mount);
 			}
 		}
+		if (Options.Paths.has_value())
+		{
+			// Limited (--staged, or paths named): a root is behind for a run that asks for something of its own mounts. A commit
+			// of code alone stages no content, so the hook's check 6 lets it through; content into a root behind is refused.
+			std::erase_if(roots, [&] (const SMount* Root)
+			{
+				return std::none_of(Options.Paths->begin(), Options.Paths->end(), [&] (const FString& Path)
+				{
+					const SMount* mount = MountOf(Path);
+					return mount != nullptr && mount->OwnerRoot == Root->OwnerRoot && IsInMountScope(Path);
+				});
+			});
+		}
 		for (const SMount* mount : roots)
 		{
 			SMigrationsFile file;
