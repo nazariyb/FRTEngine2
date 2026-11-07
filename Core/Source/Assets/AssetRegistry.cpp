@@ -275,6 +275,8 @@ struct SAnalyzeRequest
 	std::shared_ptr<const SReadMeta> Meta;              // the file's meta as read for it; null: none (or unreadable)
 	std::optional<SFileMetaState> MetaColumns;          // the file row's meta columns to write; nullopt: keep the stored ones
 	std::optional<SFileUpsert> MetaRow;                 // the meta's own row, committed with the record its values went into
+	bool bHadRecord = false;                            // the view held a record of the file
+	std::vector<FString> FileRemoves;                   // files of the pass this record moved from (ConvertBatch's move pairing)
 };
 
 // One analyzed file's delta: its file row (the stat the scan saw, the hash when Analyze computed one), record and
@@ -362,6 +364,7 @@ SAnalyzeOutcome RunAnalyze (std::vector<SAnalyzeRequest>& Requests, const CRules
 		SAnalyzedFile& file = outcome.Files.emplace_back();
 		file.Path = request.Path;
 		file.Sequence = request.Sequence;
+		file.Delta.FileRemoves = request.FileRemoves;   // a move: removed in the commit that adds it
 		// The file's new stat goes in with its record, never before it (ConvertBatch leaves it out of the conversion
 		// for a file that has a record): a pass cut short before this delta leaves the stat the old record was made
 		// from, so the next scan finds the file changed and analyzes it again.
@@ -764,6 +767,7 @@ SConversion ConvertBatch (SConvertInput& In)
 				request.MTime = file.MTime;
 				request.Identity = file.Identity;
 				request.bContentChanged = !stored.has_value() || bContentChanged;
+				request.bHadRecord = bHasRecord;
 				request.Guid = guid;
 				request.Meta = std::move(read);
 				request.MetaColumns = metaColumns;
@@ -886,14 +890,52 @@ SConversion ConvertBatch (SConvertInput& In)
 		}
 	}
 
+	/**
+	 * Moves inside the pass (a rename, or a move below its root, with the meta): a removed file whose record's GUID a new
+	 * file of the batch takes from its meta is removed in that file's Analyze delta instead, so one commit removes and
+	 * adds the asset, which listeners get as one move (SAssetChangeSet::Moved) and never as two records with one id. A
+	 * removed folder's files, a case-only rename and a move between two passes (the watcher's Moved scans both ends)
+	 * stay a removal and an addition.
+	 */
+	std::vector<FString> fileRemoves = out.RemovedFiles;
+	if (!fileRemoves.empty() && !out.Analyze.empty())
+	{
+		std::map<SGuid, size_t> movedTo;
+		for (size_t i = 0u; i < out.Analyze.size(); ++i)
+		{
+			const SAnalyzeRequest& request = out.Analyze[i];
+			if (!request.bHadRecord && request.Meta != nullptr && request.Guid.IsValid())
+			{
+				movedTo.try_emplace(request.Guid, i);
+			}
+		}
+		std::erase_if(fileRemoves, [&] (const FString& Removed)
+		{
+			const std::optional<SStoredFile> stored = FindStoredFile(view, Removed);
+			if (!stored.has_value() || !stored->Record.IsValid() || stored->MetaState == EMetaState::PendingMeta)
+			{
+				return false;
+			}
+			const auto it = movedTo.find(stored->Guid);
+			// A case-only rename keeps its removal first (the two spellings never share a commit, ConvertBatch's order).
+			if (it == movedTo.end() || Removed.Equals<ESearchCase::IgnoreCase>(out.Analyze[it->second].Path))
+			{
+				return false;
+			}
+			out.Analyze[it->second].FileRemoves.push_back(Removed);
+			movedTo.erase(it);
+			return true;
+		});
+	}
+
 	// The deltas, in commit order. Removals first, as within one delta: a folder or file the batch spells otherwise
 	// (a case-only rename) is removed before its new spelling is added. Then the new folders (parents first), then
 	// the files.
-	if (!out.RemovedFolders.empty() || !out.RemovedFiles.empty())
+	if (!out.RemovedFolders.empty() || !fileRemoves.empty())
 	{
 		SRegistryDelta& removals = out.Deltas.emplace_back();
 		removals.FolderRemoves = out.RemovedFolders;
-		removals.FileRemoves = out.RemovedFiles;
+		removals.FileRemoves = std::move(fileRemoves);
 	}
 	for (size_t i = 0u; i < folderUpserts.size(); i += ConversionDeltaFiles)
 	{

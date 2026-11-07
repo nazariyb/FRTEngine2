@@ -961,7 +961,8 @@ private:
 		{
 			if (T.Files.Folder[Row] != InvalidRow && EqualPortable(T.Paths.Get(T.Files.Path[Row]), Path))
 			{
-				const EFileClass fileClass = bCompanion ? EFileClass::Companion : T.Files.BaseClass[Row];
+				const EFileClass baseClass = T.Files.BaseClass[Row];
+				const EFileClass fileClass = bCompanion && baseClass != EFileClass::Meta ? EFileClass::Companion : baseClass;
 				if (!bBulk && T.Files.Class[Row] != fileClass)
 				{
 					CompanionClassChanges.emplace_back(T.Paths.Get(T.Files.Path[Row]));

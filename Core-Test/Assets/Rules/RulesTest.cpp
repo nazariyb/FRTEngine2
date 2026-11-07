@@ -20,6 +20,7 @@
 #include "Assets/Pipeline/ImporterTable.h"
 #include "Jobs/WorkerPool.h"
 #include "Platform/Platform.h"
+#include "Reflect/DataTreeYaml.h"
 
 using namespace frt;
 using namespace frt::assets;
@@ -1351,4 +1352,110 @@ TEST(RulesEngine, OnACaseSensitiveFolderTheAncestorWalkTakesAnySpellingAndPrefer
 	const auto bound = std::find_if(after.Files.begin(), after.Files.end(), [] (const SRuleFileListing& File) { return File.Origin.FolderMountPath == "/Project/Art"; });
 	ASSERT_NE(bound, after.Files.end());
 	EXPECT_EQ(bound->Origin.File, "Content/Art/ASSETS.YML");
+}
+
+
+// ---------------- The file's meta (M4) ----------------
+
+/**
+ * A meta applies last (importer default < rules < meta) and its values name it in their provenance: an Importer pin
+ * over the extension claim and a rule's Importer, Cook and Chunk over the rules', Settings over a preset's, a Targets
+ * block for the full target over the platform's over Settings, Labels as authored labels a Label selector matches. A
+ * pin is still subject to Importers.Exclude; an unknown pin pins nothing; a value that is no value of its field and
+ * an unknown field are left out. A non-empty SubAssets changes the Analyze hash.
+ */
+TEST(RulesEngine, AMetaAppliesLastAndNamesItselfInTheProvenance)
+{
+	SEngineFixture fixture("Мета");
+	fixture.Tree.WriteProjectRules(
+		"FormatVersion: 1\n"
+		"Importers: { Exclude: [ Model.Gltf ] }\n"
+		"Presets:\n"
+		"  Texture/Big: { MaxSize: 4096, ColorSpace: Linear }\n"
+		"Rules:\n"
+		"  - { Label: hero, Cook: Never }\n"
+		"  - { Match: \"**/*.png\", Preset: Texture/Big, Cook: Always, Chunk: 2, Labels: [ RuleLabel ] }\n");
+	CRulesEngine& engine = fixture.Start(SRulesOptions { "Win64-Headless" });
+	const auto project = fixture.Open("/Project");
+
+	SAssetMeta meta;
+	meta.Cook = ECookRule::EditorOnly;
+	meta.Chunk = 5u;
+	meta.Labels = { "Hero" };
+	ASSERT_TRUE(reflect::ParseYaml("MaxSize: 512\nColorSpace: normal\nMips: Sideways\nNoSuchField: 1\n", meta.Settings));
+	ASSERT_TRUE(reflect::ParseYaml("Win64: { MaxSize: 256 }\nWin64-Headless: { MaxSize: 128 }\n", meta.Targets));
+	const SFileFacts facts { asset_types::Texture, &meta };
+
+	const SEffectiveFileSettings plain = engine.ResolveFile(*project, "/Project/Art/Камінь.png");
+	const SEffectiveFileSettings withMeta = engine.ResolveFile(*project, "/Project/Art/Камінь.png", facts);
+	EXPECT_EQ(plain.CookRule, ECookRule::Always);
+	EXPECT_EQ(withMeta.CookRule, ECookRule::EditorOnly) << "the meta's Cook beats every rule, a Label rule's too";
+	EXPECT_EQ(withMeta.Chunk, 5u);
+	EXPECT_EQ(withMeta.RuleLabels, std::vector<FString> { "RuleLabel" });
+	EXPECT_EQ(withMeta.AuthoredLabels, std::vector<FString> { "Hero" });
+	EXPECT_EQ(FindSetting(withMeta, "MaxSize"), "128") << "the full target's block beats the platform's and Settings";
+	EXPECT_EQ(FindSetting(withMeta, "ColorSpace"), "Normal") << "an enum value in its canonical spelling";
+	EXPECT_EQ(FindSetting(withMeta, "Mips"), "Box") << "no value of Mips: the rules' value stands";
+	const FString metaFile = "Content/Art/Камінь.png.meta";
+	EXPECT_EQ(FindProvenance(withMeta, "Cook")->File, metaFile);
+	EXPECT_EQ(FindProvenance(withMeta, "Chunk")->File, metaFile);
+	EXPECT_EQ(FindProvenance(withMeta, "MaxSize")->File, metaFile);
+	EXPECT_EQ(FindProvenance(withMeta, "MaxSize")->Line, 2u) << "the line of the Targets key";
+	EXPECT_EQ(FindProvenance(withMeta, "ColorSpace")->Line, 2u);
+	EXPECT_TRUE(FindProvenance(withMeta, "Mips")->File.IsEmpty()) << "the importer's default stands";
+	EXPECT_NE(FindProvenance(withMeta, "Labels.Hero"), nullptr);
+	EXPECT_EQ(withMeta.Settings.AnalyzeHash, plain.Settings.AnalyzeHash) << "no Texture setting is Analyze-relevant";
+
+	// A Label rule matches the meta's labels (under the fold), never a rule's.
+	SAssetMeta labelled;
+	labelled.Labels = { "HERO" };
+	EXPECT_EQ(engine.ResolveFile(*project, "/Project/Art/A.png", SFileFacts { asset_types::Texture, &labelled }).CookRule, ECookRule::Never);
+
+	// The pin: over the extension claim and Scan.Raw alike; Importers.Exclude still applies; an unknown name pins nothing.
+	SAssetMeta pinned;
+	pinned.Importer = "raw";
+	const SEffectiveFileSettings raw = engine.ResolveFile(*project, "/Project/Art/A.png", SFileFacts { reflect::InvalidTypeId, &pinned });
+	EXPECT_EQ(raw.Class, EFileClass::Raw);
+	EXPECT_EQ(FindProvenance(raw, "Importer")->File, "Content/Art/A.png.meta");
+	pinned.Importer = "Texture";
+	EXPECT_EQ(engine.ResolveFile(*project, "/Project/Notes/a.dat", SFileFacts { reflect::InvalidTypeId, &pinned }).Class, EFileClass::Asset)
+		<< "a pin claims a file no importer claims by extension";
+	pinned.Importer = "Model.Gltf";
+	EXPECT_EQ(engine.ResolveFile(*project, "/Project/Art/A.png", SFileFacts { reflect::InvalidTypeId, &pinned }).Class, EFileClass::Unclaimed);
+	pinned.Importer = "Nonsense";
+	const SRuleExplanation unknown = engine.Explain(*project, "/Project/Art/A.png", SFileFacts { reflect::InvalidTypeId, &pinned });
+	EXPECT_EQ(unknown.Settings.Importer, FindImporter("Texture"));
+	EXPECT_TRUE(std::any_of(unknown.Notes.begin(), unknown.Notes.end(), [] (const FString& Note) { return Note.View().Contains(FStringView("Nonsense")); }));
+
+	SAssetMeta withSubAssets;
+	ASSERT_TRUE(reflect::ParseYaml("Renamed: { \"mesh:Body\": \"mesh:Torso\" }\n", withSubAssets.SubAssets));
+	const uint64 renamed = engine.ResolveFile(*project, "/Project/Art/A.png", SFileFacts { reflect::InvalidTypeId, &withSubAssets }).Settings.AnalyzeHash;
+	EXPECT_NE(renamed, plain.Settings.AnalyzeHash) << "SubAssets enters the Analyze hash";
+	ASSERT_TRUE(reflect::ParseYaml("Renamed: { \"mesh:Body\": \"mesh:Chest\" }\n", withSubAssets.SubAssets));
+	EXPECT_NE(engine.ResolveFile(*project, "/Project/Art/A.png", SFileFacts { reflect::InvalidTypeId, &withSubAssets }).Settings.AnalyzeHash, renamed);
+}
+
+// The Safety switches (§4.8) come from a mount's own Config/Assets.yml, defaults for what it does not say, nothing from
+// the engine's file for another mount; the reader for hosts gives the defaults for a missing or malformed file.
+TEST(RulesEngine, SafetySwitchesAreAMountsOwnAndReadableBeforeAnyRegistry)
+{
+	SEngineFixture fixture("Безпека");
+	fixture.Tree.WriteEngineRules("FormatVersion: 1\nSafety: { OrphanPairing: false }\n");
+	fixture.Tree.WriteProjectRules("FormatVersion: 1\nSafety: { AutoRepairMetas: false, GuestProcesses: true, BuilderSourceGuard: false }\n");
+	CRulesEngine& engine = fixture.Start();
+	const SSafetySwitches project = engine.GetSafety("Project");
+	EXPECT_FALSE(project.bAutoRepairMetas);
+	EXPECT_TRUE(project.bGuestProcesses);
+	EXPECT_FALSE(project.bBuilderSourceGuard);
+	EXPECT_TRUE(project.bOrphanPairing) << "the engine's file sets /Engine's switches only";
+	EXPECT_TRUE(project.bDerivedAutoGuids);
+	EXPECT_FALSE(engine.GetSafety("Engine").bOrphanPairing);
+	EXPECT_TRUE(engine.GetSafety("Engine").bAutoRepairMetas);
+	EXPECT_TRUE(engine.GetSafety("Plugin.Nobody").bAutoRepairMetas);
+
+	EXPECT_TRUE(ReadSafetyOfRuleFile(fixture.Tree.ProjectRules()).bGuestProcesses);
+	EXPECT_FALSE(ReadSafetyOfRuleFile(fixture.Tree.EngineRules()).bOrphanPairing);
+	EXPECT_FALSE(ReadSafetyOfRuleFile(fixture.Tree.ProjectRules().parent_path() / "Missing.yml").bGuestProcesses);
+	frt::test::rules::WriteFile(fixture.Tree.ProjectRules(), "FormatVersion: 1\nSafety: { AutoRepairMetas: maybe }\n");
+	EXPECT_TRUE(ReadSafetyOfRuleFile(fixture.Tree.ProjectRules()).bAutoRepairMetas) << "a malformed file gives the defaults";
 }
