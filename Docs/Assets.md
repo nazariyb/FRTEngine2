@@ -284,7 +284,8 @@ FRT is not a version-control client: it never commits, syncs or reverts. `IVcsPr
 it needs from one: writes the VCS accepts, an asset and its meta kept together in every move and delete, and knowing when
 the VCS is rewriting the tree. One instance per mount, from `MakeVcsProvider` (`[AssetsEditor] VcsProvider=Auto|None|Git`); `CVcsProviderSet`
 (`Assets/Vcs/VcsProviderSet.h`) detects and owns one per mount, at once in a tool host or on a worker in a live one, and
-the meta lifecycle's repairs (below) are their only writer. No host creates providers yet: that switch is H4b's.
+the meta lifecycle's repairs (below) are their only writer. AssetTool's `status` and meta verbs create them for their
+own run (below); the editor and the other hosts create none until H4b switches them on.
 
 | Call | `CNoneVcsProvider` | `CGitVcsProvider` |
 |---|---|---|
