@@ -269,6 +269,20 @@ bool PlanKeepAlias (const CAssetWriter& Writer, const CRegistryView& View, const
 		OutProblems.push_back(MakeProblem(Writer, Action.Path, FString::Format("cannot rewrite '{}' here", ToDisplayText(Action.Path))));
 		return false;
 	}
+	// Only the broken meta this fix-it was offered for is rewritten: one resolved by hand since (or broken another way)
+	// keeps what the person made of it.
+	const std::optional<SMetaParseResult> current = ReadMeta(Writer, Action.Path);
+	const auto salvaged = [&current] (const SGuid& Guid)
+	{
+		return std::find(current->SalvagedGuids.begin(), current->SalvagedGuids.end(), Guid) != current->SalvagedGuids.end();
+	};
+	if (!current.has_value() || current->State != EMetaParseState::Broken || !salvaged(Action.Guid)
+		|| !std::all_of(Action.Aliases.begin(), Action.Aliases.end(), salvaged))
+	{
+		OutProblems.push_back(MakeProblem(Writer, Action.Path, FString::Format("'{}' is no longer the broken meta the fix was offered for: "
+			"left as it is", ToDisplayText(Action.Path))));
+		return false;
+	}
 	SAssetMeta meta;
 	if (const std::optional<SMetaCopyView> copy = View.FindMetaCopy(Action.Guid); copy.has_value())
 	{

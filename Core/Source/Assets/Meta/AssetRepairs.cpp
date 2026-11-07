@@ -17,6 +17,7 @@
 #include "Assets/OwnerLock.h"
 #include "Assets/Pipeline/Rules.h"
 #include "Assets/Registry/RegistryDelta.h"
+#include "Assets/Registry/RegistryRecords.h"
 #include "Assets/Registry/RegistryTables.h"
 #include "Assets/Registry/RegistryView.h"
 #include "Assets/Registry/Snapshot.h"
@@ -36,6 +37,9 @@ namespace
 constexpr uint64 BusyPollMs = 100u;                 // §4.7: IsBusy polled every 100 ms while something is pending
 constexpr uint32 MaxLifecycleCalls = 4u;            // a run, then again with the hashes, then with the committed facts
 constexpr uint32 MaxCommandRounds = 6u;             // RunNow: repair, rescan, again, until nothing is planned
+constexpr uint32 MaxKindRuns = 3u;                  // a mount run again for the repairs a run's Kinds leave out
+constexpr uint64 UntrackedRecheckMs = 30000u;       // VCS003: StatusOf asked again after this, then twice as long each time
+constexpr uint64 UntrackedRecheckMaxMs = 960000u;
 constexpr uint64 LfsPointerMaxBytes = 1024u;        // §13.3: a Git LFS pointer is a small text file
 constexpr FStringLiteral LfsPointerPrefix = "version https://git-lfs.github.com/spec/";
 
@@ -135,6 +139,12 @@ struct SCaches
 	return false;
 }
 
+// VCS003: a pair whose source StatusOf calls tracked and whose meta it does not.
+[[nodiscard]] bool IsUntrackedBesideTracked (const SVcsStatus& Source, const SVcsStatus& Meta) noexcept
+{
+	return Source.State != EVcsState::Untracked && Meta.State == EVcsState::Untracked;
+}
+
 // The content hash of a source the lifecycle asked for, in one race-free read; a pointer of Git LFS is never hashed into a
 // GUID (§4.7), so its first bytes are looked at whenever the file is small enough to be one.
 [[nodiscard]] SHashed HashSource (const std::filesystem::path& Path)
@@ -212,6 +222,7 @@ struct SCycleInput
 	std::vector<FString> Paths;                    // RunNow's scope; empty: the whole of each run mount
 	TStringMap<uint64> Events;                     // mount path -> the time of the first tick after a pass touched it
 	std::vector<SDiagnostic> MemoryProblems;       // VCS002 and VCS003 this process keeps (Subject set)
+	std::vector<FString> RecheckUntracked;         // the sources of the VCS003 kept, when StatusOf is asked again
 	FStringSet CrLfMetas;                          // metas known to hold CRLF (VCS001)
 	FStringSet Refused;                            // MakeActionKey of the repairs the VCS refused
 	std::vector<ELifecycleAction> Kinds;           // empty: all
@@ -226,6 +237,7 @@ struct SCycleInput
 struct SCycleOutput
 {
 	uint64 Revision = 0u;
+	std::vector<MountId> RunMounts;
 	SRegistryDelta Delta;
 	std::vector<SLifecycleAction> FixIts;
 	std::vector<SLifecycleAction> Repairs;          // the proposals that may be applied (Kinds, refusals), all of them
@@ -233,6 +245,8 @@ struct SCycleOutput
 	std::vector<SDiagnostic> Problems;              // the Lifecycle problems in scope after this run, as committed
 	std::vector<SDiagnostic> PlanProblems;          // repairs that could not be planned
 	std::vector<std::pair<FString, bool>> CrLfChecked;
+	std::vector<FString> NowTracked;                // of RecheckUntracked: the pairs the VCS now tracks alike (VCS003 gone)
+	bool bUntrackedChecked = false;
 	uint64 WakeAtMs = ~0ull;
 	bool bHeld = false;
 	bool bPending = false;                          // held with something to decide: run again when the hold ends
@@ -256,6 +270,7 @@ public:
 	[[nodiscard]] SCycleOutput Run ()
 	{
 		Out.Revision = View.GetRevision();
+		Out.RunMounts = In.RunMounts;
 		Out.bHeld = In.bHold;
 		if (!In.FixActions.empty())
 		{
@@ -268,6 +283,7 @@ public:
 		{
 			RunMount(mount, problems);
 		}
+		RecheckUntracked();
 		AddMemoryProblems(problems);
 		FinishProblems(problems);
 		AddStates();
@@ -424,16 +440,20 @@ private:
 				return;   // paired: seen from its source's side; or beside a file that gets no meta (META007 is validate's)
 			}
 		}
-		// No source row: an orphan, or the meta of a file the rules exclude, which still holds a live GUID on disk.
+		// No source row: an orphan, or the meta of a file the rules exclude. The latter's file is not an asset, so its GUID
+		// is no member of a duplicate group: were it one, a copy at a smaller path would win and re-GUID the asset.
 		const std::optional<std::filesystem::path> sourcePath = ToAbsolute(*source);
 		const std::optional<platform::SFileStat> sourceStat = sourcePath.has_value() ? platform::Stat(*sourcePath) : std::nullopt;
 		const bool bExcluded = sourceStat.has_value() && !sourceStat->bDirectory;
 		if (const SMetaRead* read = ReadMeta(Meta); read != nullptr)
 		{
-			AddLive(read->Guid, Meta.MountPath);
-			for (const SGuid& guid : read->Salvaged)
+			if (!bExcluded)
 			{
-				AddLive(guid, Meta.MountPath);
+				AddLive(read->Guid, Meta.MountPath);
+				for (const SGuid& guid : read->Salvaged)
+				{
+					AddLive(guid, Meta.MountPath);
+				}
 			}
 			if (read->bCrLf || In.CrLfMetas.contains(FString(Meta.MountPath)))
 			{
@@ -629,26 +649,73 @@ private:
 		facts.VerifiedCopies = verified;
 		std::vector<FString> committed;
 		SLifecycleResult result;
-		for (uint32 call = 0u; call < MaxLifecycleCalls; ++call)
+		const auto run = [&]
 		{
-			facts.Sources = sources;
-			facts.Metas = metas;
-			result = RunLifecycle(facts);
-			++Out.Runs;
-			bool bAgain = false;
-			if (!result.NeedContentHash.empty())
+			for (uint32 call = 0u; call < MaxLifecycleCalls; ++call)
 			{
-				bAgain = FetchHashes(result.NeedContentHash, sources) || bAgain;
+				facts.Sources = sources;
+				facts.Metas = metas;
+				result = RunLifecycle(facts);
+				++Out.Runs;
+				bool bAgain = false;
+				if (!result.NeedContentHash.empty())
+				{
+					bAgain = FetchHashes(result.NeedContentHash, sources) || bAgain;
+				}
+				if (result.bNeedCommitted && !facts.Committed.has_value())
+				{
+					committed = FetchCommitted();
+					facts.Committed = std::span<const FString>(committed);
+					bAgain = true;
+				}
+				if (!bAgain)
+				{
+					break;
+				}
 			}
-			if (result.bNeedCommitted && !facts.Committed.has_value())
+		};
+		run();
+
+		// A repair of a kind this run does not apply is not dropped in silence (the lifecycle reports nothing where a repair
+		// is coming): its files are taken as not writable here and the mount runs again, so the condition is reported with
+		// its fix-it, as for any repair this process cannot make.
+		const auto isKind = [&] (ELifecycleAction Kind) { return In.Kinds.empty() || std::find(In.Kinds.begin(), In.Kinds.end(), Kind) != In.Kinds.end(); };
+		std::vector<SLifecycleAction> leftOut;
+		for (uint32 again = 0u; again < MaxKindRuns; ++again)
+		{
+			std::vector<SLifecycleAction> excluded;
+			for (const SLifecycleAction& repair : result.Repairs)
 			{
-				committed = FetchCommitted();
-				facts.Committed = std::span<const FString>(committed);
-				bAgain = true;
+				if (!isKind(repair.Kind))
+				{
+					excluded.push_back(repair);
+				}
 			}
-			if (!bAgain)
+			if (excluded.empty())
 			{
 				break;
+			}
+			const auto concernsAny = [&] (FStringView Path)
+			{
+				return std::any_of(excluded.begin(), excluded.end(), [&] (const SLifecycleAction& Action) { return Concerns(Action, Path); });
+			};
+			for (SLifecycleSource& source : sources)
+			{
+				source.bWritable = source.bWritable && !concernsAny(source.MountPath);
+			}
+			for (SLifecycleMeta& meta : metas)
+			{
+				meta.bWritable = meta.bWritable && !concernsAny(meta.MountPath);
+			}
+			leftOut.insert(leftOut.end(), excluded.begin(), excluded.end());
+			run();
+		}
+		for (SDiagnostic& problem : result.Problems)
+		{
+			const auto action = std::find_if(leftOut.begin(), leftOut.end(), [&] (const SLifecycleAction& Action) { return Concerns(Action, problem.Subject); });
+			if (action != leftOut.end())
+			{
+				problem.Message += FString::Format(" ({} is not among this run's repairs)", enum_::ToString(action->Kind));
 			}
 		}
 
@@ -656,8 +723,7 @@ private:
 		Out.bPending = Out.bPending || (In.bHold && (!sources.empty() || !metas.empty()));
 		for (SLifecycleAction& repair : result.Repairs)
 		{
-			const bool bKind = In.Kinds.empty() || std::find(In.Kinds.begin(), In.Kinds.end(), repair.Kind) != In.Kinds.end();
-			if (bKind && !In.Refused.contains(MakeActionKey(repair)))
+			if (isKind(repair.Kind) && !In.Refused.contains(MakeActionKey(repair)))
 			{
 				Out.Repairs.push_back(std::move(repair));
 			}
@@ -794,9 +860,55 @@ private:
 		}
 		for (const SDiagnostic& problem : In.MemoryProblems)
 		{
-			if (inRun(problem.Subject))
+			const bool bTracked = problem.Code == Vcs003 && std::find(Out.NowTracked.begin(), Out.NowTracked.end(), problem.Subject) != Out.NowTracked.end();
+			if (inRun(problem.Subject) && !bTracked)
 			{
 				Problems.push_back(problem);
+			}
+		}
+	}
+
+	// VCS003 ends when the person adds or commits the meta, which changes only the VCS's own files (no event here): the
+	// kept pairs are asked again, in one StatusOf per provider.
+	void RecheckUntracked ()
+	{
+		if (In.RecheckUntracked.empty())
+		{
+			return;
+		}
+		Out.bUntrackedChecked = true;
+		std::map<IVcsProvider*, std::pair<std::vector<FString>, std::vector<FString>>> byProvider;   // subjects, files
+		for (const FString& subject : In.RecheckUntracked)
+		{
+			FStringView mountName;
+			FStringView relative;
+			const SMount* mount = SplitMountPath(subject, mountName, relative) ? In.Mounts->Find(mountName) : nullptr;
+			IVcsProvider* provider = mount != nullptr && mount->Id < In.Providers.size() ? In.Providers[mount->Id] : nullptr;
+			const std::optional<std::filesystem::path> source = ToAbsolute(subject);
+			const std::optional<std::filesystem::path> meta = ToAbsolute(GetMetaPath(subject));
+			if (provider == nullptr || !source.has_value() || !meta.has_value())
+			{
+				continue;
+			}
+			auto& [subjects, files] = byProvider[provider];
+			subjects.push_back(subject);
+			files.push_back(FString::FromPath(*source));
+			files.push_back(FString::FromPath(*meta));
+		}
+		for (const auto& [provider, batch] : byProvider)
+		{
+			const auto& [subjects, files] = batch;
+			std::vector<SVcsStatus> status;
+			if (provider->StatusOf(files, status).Error != EVcsError::None || status.size() != files.size())
+			{
+				continue;
+			}
+			for (size_t i = 0u; i < subjects.size(); ++i)
+			{
+				if (!IsUntrackedBesideTracked(status[2u * i], status[2u * i + 1u]))
+				{
+					Out.NowTracked.push_back(subjects[i]);
+				}
 			}
 		}
 	}
@@ -968,10 +1080,17 @@ struct SOpsOutput
 	std::vector<FString> Touched;         // mount paths whose folders a rescan must read again
 };
 
-// The ops of one proposal set, in order, on a worker; then what StatusOf says of the metas they created (VCS003).
+// The ops of one proposal set, in order, on a worker; then what StatusOf says of the metas they created (VCS003), in one
+// call per provider: Git's StatusOf reads the status of the whole mount, so a call per meta would be one per file.
 [[nodiscard]] SOpsOutput RunOps (CAssetWriter& Writer, std::vector<SPlannedOp>&& Ops)
 {
 	SOpsOutput out;
+	struct SCreated
+	{
+		std::vector<FString> Subjects;   // the sources, as mount paths
+		std::vector<FString> Files;      // source and meta, absolute, two per subject
+	};
+	std::map<IVcsProvider*, SCreated> created;
 	for (SPlannedOp& planned : Ops)
 	{
 		SOpResult result;
@@ -1001,26 +1120,36 @@ struct SOpsOutput
 				{
 					continue;
 				}
-				const std::vector<FString> files = { FString::FromPath(*sourcePath), FString::FromPath(*metaPath) };
-				std::vector<SVcsStatus> status;
-				if (provider->StatusOf(files, status).Error != EVcsError::None || status.size() != 2u)
-				{
-					continue;
-				}
-				if (status[0].State != EVcsState::Untracked && status[1].State == EVcsState::Untracked)
-				{
-					SDiagnostic problem;
-					problem.Severity = ESeverity::Warning;
-					problem.Code = Vcs003;
-					problem.Subject = FString(*source);
-					const FString command = provider->GetAddCommand(files[1]);
-					problem.Message = command.IsEmpty() ? FString("generated locally: commit it. Its source is tracked and its new meta is not")
-						: FString::Format("generated locally: commit it. Its source is tracked and its new meta is not ({})", command);
-					out.Untracked.push_back(std::move(problem));
-				}
+				SCreated& batch = created[provider];
+				batch.Subjects.emplace_back(*source);
+				batch.Files.push_back(FString::FromPath(*sourcePath));
+				batch.Files.push_back(FString::FromPath(*metaPath));
 			}
 		}
 		out.Results.push_back(std::move(result));
+	}
+	for (const auto& [provider, batch] : created)
+	{
+		std::vector<SVcsStatus> status;
+		if (provider->StatusOf(batch.Files, status).Error != EVcsError::None || status.size() != batch.Files.size())
+		{
+			continue;
+		}
+		for (size_t i = 0u; i < batch.Subjects.size(); ++i)
+		{
+			if (!IsUntrackedBesideTracked(status[2u * i], status[2u * i + 1u]))
+			{
+				continue;
+			}
+			SDiagnostic problem;
+			problem.Severity = ESeverity::Warning;
+			problem.Code = Vcs003;
+			problem.Subject = batch.Subjects[i];
+			const FString command = provider->GetAddCommand(batch.Files[2u * i + 1u]);
+			problem.Message = command.IsEmpty() ? FString("generated locally: commit it. Its source is tracked and its new meta is not")
+				: FString::Format("generated locally: commit it. Its source is tracked and its new meta is not ({})", command);
+			out.Untracked.push_back(std::move(problem));
+		}
 	}
 	return out;
 }
@@ -1109,6 +1238,7 @@ struct CAssetRepairs::SImpl
 				desc.Providers.emplace_back(mount, Providers[mount]);
 			}
 		}
+		Writer.reset();   // one writer of the owner root's journal at a time
 		Writer = std::make_unique<CAssetWriter>(std::move(desc));
 	}
 
@@ -1138,10 +1268,18 @@ struct CAssetRepairs::SImpl
 		return false;
 	}
 
-	// Pending providers hold everything; with WaitForVcs, so does a busy provider, and VcsSettleMs after it.
+	// The watcher holds back a burst, an overflow's rescan or a busy VCS's events (until VcsSettleMs after the last one):
+	// the registry looks quiet then, but the tree it holds is not the final one.
+	[[nodiscard]] bool IsWatcherHolding () const
+	{
+		return Desc.Watcher != nullptr && Desc.Watcher->IsEnabled() && Desc.Watcher->GetStats().bHolding;
+	}
+
+	// Pending providers and the watcher's hold hold everything; with WaitForVcs, so does a busy provider, and VcsSettleMs
+	// after it.
 	[[nodiscard]] bool ComputeHold (uint64 NowMs)
 	{
-		if (bProvidersPending)
+		if (bProvidersPending || IsWatcherHolding())
 		{
 			return true;
 		}
@@ -1172,12 +1310,82 @@ struct CAssetRepairs::SImpl
 		for (const FString& path : PendingEvents)
 		{
 			Events.insert_or_assign(path, NowMs);
-			// An event on a path ends a refusal there: the repair is proposed again.
-			std::erase_if(RefusedActions, [&] (const SLifecycleAction& Action) { return Concerns(Action, path); });
-			Refusals.erase(path);
-			Refusals.erase(FString(GetAssetOf(path)));
+			// An event on a path ends a refusal there: the repair is proposed again. A folder's (its removal) ends every
+			// refusal below it.
+			const FStringView asset = GetAssetOf(path);
+			std::erase_if(RefusedActions, [&] (const SLifecycleAction& Action)
+			{
+				return Concerns(Action, path) || IsMountPathAtOrBelow(Action.Path.View(), path.View())
+					|| (!Action.ToPath.IsEmpty() && IsMountPathAtOrBelow(Action.ToPath.View(), path.View()));
+			});
+			std::erase_if(Refusals, [&] (const auto& Entry)
+			{
+				return Entry.first.View() == path.View() || Entry.first.View() == asset || IsMountPathAtOrBelow(Entry.first.View(), path.View());
+			});
 		}
 		PendingEvents.clear();
+	}
+
+	// The GUID of a settled pair at Path (its source or its meta: a Paired source whose meta is spelled exactly), else
+	// invalid. Such a path's arrival time decides nothing unless the GUID is a duplicate's.
+	[[nodiscard]] static SGuid GetSettledGuid (const CRegistryView& View, FStringView Path, bool& bOutSource)
+	{
+		bOutSource = false;
+		std::optional<SStoredFile> file = FindStoredFile(View, Path);
+		if (!file.has_value())
+		{
+			return {};
+		}
+		if (file->Class == EFileClass::Meta)
+		{
+			const std::optional<FStringView> source = GetMetaSource(Path);
+			file = source.has_value() ? FindStoredFile(View, *source) : std::nullopt;
+			if (!file.has_value())
+			{
+				return {};
+			}
+		}
+		else
+		{
+			bOutSource = true;
+			if (!View.FindFileExact(GetMetaPath(Path)).has_value())
+			{
+				return {};
+			}
+		}
+		return GetsMeta(file->Class) && file->MetaState == EMetaState::Paired ? file->Guid : SGuid {};
+	}
+
+	// An initial pass's paths, as events: a settled pair gains nothing from an arrival time, and tracking one for every
+	// file would make each run of the first seconds gather the whole tree. A file without a meta keeps its creation delay,
+	// a meta spelled in another case its grace, and the members of a duplicate group the pass holds their batch's delay.
+	void AddInitialEvents (std::span<const FString> Dirty)
+	{
+		const CRegistryView& view = Desc.Host->GetLiveView();
+		std::vector<std::pair<const FString*, SGuid>> settled;
+		std::map<SGuid, FStringSet> sources;   // a pass lists a path once per delta that touched it
+		for (const FString& path : Dirty)
+		{
+			bool bSource = false;
+			const SGuid guid = GetSettledGuid(view, path, bSource);
+			if (!guid.IsValid())
+			{
+				PendingEvents.push_back(path);
+				continue;
+			}
+			settled.emplace_back(&path, guid);
+			if (bSource)
+			{
+				sources[guid].insert(path);
+			}
+		}
+		for (const auto& [path, guid] : settled)
+		{
+			if (sources[guid].size() >= 2u)
+			{
+				PendingEvents.push_back(*path);
+			}
+		}
 	}
 
 	void PruneEvents (uint64 NowMs)
@@ -1223,6 +1431,10 @@ struct CAssetRepairs::SImpl
 		for (const auto& [subject, problem] : Untracked)
 		{
 			input->MemoryProblems.push_back(problem);
+			if (!bHold && NowMs >= UntrackedCheckAtMs)
+			{
+				input->RecheckUntracked.push_back(subject);
+			}
 		}
 		input->CrLfMetas = CrLfMetas;
 		for (const SLifecycleAction& action : RefusedActions)
@@ -1239,7 +1451,8 @@ struct CAssetRepairs::SImpl
 
 	// ---- Results, on the owner thread ----
 
-	void ApplyCycle (SCycleOutput& Output, std::span<const FString> Paths)
+	// RunMounts and Paths: the scope the run covered, whose fix-its it replaces (empty Paths: the whole of each run mount).
+	void ApplyCycle (SCycleOutput& Output, std::span<const MountId> RunMounts, std::span<const FString> Paths)
 	{
 		bCheckedAllCrLf = true;
 		for (const auto& [path, bCrLf] : Output.CrLfChecked)
@@ -1258,16 +1471,36 @@ struct CAssetRepairs::SImpl
 		std::erase_if(Untracked, [&] (const auto& Entry) { return !live.FindFileExact(Entry.first).has_value(); });
 		std::erase_if(CrLfMetas, [&] (const FString& Path) { return !live.FindFileExact(Path).has_value(); });
 
+		if (Output.bUntrackedChecked)
+		{
+			for (const FString& subject : Output.NowTracked)
+			{
+				Untracked.erase(subject);
+			}
+			UntrackedRecheckIntervalMs = std::min(UntrackedRecheckIntervalMs * 2u, UntrackedRecheckMaxMs);
+			UntrackedCheckAtMs = LastNowMs + UntrackedRecheckIntervalMs;
+		}
+
 		if (!Output.Delta.IsEmpty())
 		{
 			Desc.Host->CommitNow(std::move(Output.Delta));
 		}
-		std::erase_if(FixIts, [&] (const SLifecycleAction& Action) { return IsInScope(Action.Path, Paths); });
+		std::erase_if(FixIts, [&] (const SLifecycleAction& Action)
+		{
+			FStringView mountName;
+			FStringView relative;
+			const SMount* mount = SplitMountPath(Action.Path, mountName, relative) ? Desc.Mounts->Find(mountName) : nullptr;
+			return mount != nullptr && std::find(RunMounts.begin(), RunMounts.end(), mount->Id) != RunMounts.end() && IsInScope(Action.Path, Paths);
+		});
 		for (SLifecycleAction& fixIt : Output.FixIts)
 		{
 			FixIts.push_back(std::move(fixIt));
 		}
 		WakeAtMs = Output.WakeAtMs;
+		if (!Untracked.empty())
+		{
+			WakeAtMs = std::min(WakeAtMs, UntrackedCheckAtMs);   // VCS003 is looked at again then, without an event
+		}
 		bLastHeldPending = Output.bHeld && Output.bPending;
 		for (const SDiagnostic& problem : Output.PlanProblems)
 		{
@@ -1305,6 +1538,11 @@ struct CAssetRepairs::SImpl
 		for (SDiagnostic& problem : Output.Untracked)
 		{
 			Untracked.insert_or_assign(problem.Subject, std::move(problem));
+		}
+		if (!Output.Untracked.empty())
+		{
+			UntrackedRecheckIntervalMs = UntrackedRecheckMs;
+			UntrackedCheckAtMs = LastNowMs + UntrackedRecheckMs;
 		}
 		Desc.Host->CountRepairs(OutApplied, OutRefused);
 		bDirty = true;
@@ -1347,7 +1585,12 @@ struct CAssetRepairs::SImpl
 				}
 				if (bFix)
 				{
-					StartOps(std::move(output->Ops));
+					// A person's fix: what could not be planned is said, since no run reports it.
+					for (const SDiagnostic& problem : output->PlanProblems)
+					{
+						log::Warning(log::Assets, "fix not applied: {}: {}", problem.Subject, problem.Message);
+					}
+					StartOps(std::move(output->Ops), true);
 					return;
 				}
 				if (!Desc.Host->IsQuiet() || Desc.Host->GetLiveView().GetRevision() != output->Revision)
@@ -1355,24 +1598,31 @@ struct CAssetRepairs::SImpl
 					bDirty = true;   // the tree moved while it ran: run again on the final one
 					return;
 				}
-				ApplyCycle(*output, {});
+				ApplyCycle(*output, output->RunMounts, {});
 				if (!output->Ops.empty() && !output->bHeld)
 				{
-					StartOps(std::move(output->Ops));
+					StartOps(std::move(output->Ops), false);
 				}
 			});
 	}
 
-	void StartOps (std::vector<SPlannedOp>&& Ops)
+	// bCommand: a person's fix, which the hold of automatic writes does not cover (§4.7), as RunNow's ops.
+	void StartOps (std::vector<SPlannedOp>&& Ops, bool bCommand)
 	{
-		if (Ops.empty() || Writer == nullptr || bStopping)
+		if (Ops.empty() || bStopping)
 		{
 			return;
 		}
-		// Asked once more right before the writes start (edit [30]).
-		if (Lifecycle.Settings.bWaitForVcs && IsAnyBusy())
+		MaybeRebuildWriter();   // ops are plain data: they run through the providers known now
+		if (Writer == nullptr)
 		{
-			LastBusyMs = LastNowMs;
+			return;
+		}
+		// Asked once more right before the writes start (edit [30]): the proposals wait, and are made again once it ends.
+		const bool bBusy = !bCommand && Lifecycle.Settings.bWaitForVcs && IsAnyBusy();
+		if (bBusy || (!bCommand && IsWatcherHolding()))
+		{
+			LastBusyMs = bBusy ? LastNowMs : LastBusyMs;
 			bLastHeldPending = true;
 			bDirty = true;
 			return;
@@ -1413,6 +1663,7 @@ struct CAssetRepairs::SImpl
 
 	[[nodiscard]] SOpsOutput RunOpsNow (std::vector<SPlannedOp>&& Ops)
 	{
+		MaybeRebuildWriter();
 		ExpectWrites(Ops);
 		auto output = std::make_shared<SOpsOutput>();
 		auto ops = std::make_shared<std::vector<SPlannedOp>>(std::move(Ops));
@@ -1504,6 +1755,8 @@ struct CAssetRepairs::SImpl
 	std::vector<SLifecycleAction> RefusedActions;
 	TStringMap<SDiagnostic> Refusals;      // VCS002 by subject
 	TStringMap<SDiagnostic> Untracked;     // VCS003 by subject
+	uint64 UntrackedCheckAtMs = 0u;        // when StatusOf is asked about them again
+	uint64 UntrackedRecheckIntervalMs = UntrackedRecheckMs;
 	FStringSet CrLfMetas;
 	std::vector<std::vector<SLifecycleAction>> PendingFixes;
 };
@@ -1566,13 +1819,26 @@ void CAssetRepairs::SetProvider (MountId Mount, IVcsProvider* Provider)
 	}
 }
 
-void CAssetRepairs::OnPassCommitted (std::span<const FString> Dirty)
+void CAssetRepairs::OnPassCommitted (std::span<const FString> Dirty, bool bInitial)
 {
+	SImpl& impl = *Impl;
 	if (Dirty.empty())
 	{
 		return;
 	}
-	Impl->PendingEvents.insert(Impl->PendingEvents.end(), Dirty.begin(), Dirty.end());
+	if (bInitial)
+	{
+		impl.AddInitialEvents(Dirty);
+	}
+	else
+	{
+		impl.PendingEvents.insert(impl.PendingEvents.end(), Dirty.begin(), Dirty.end());
+	}
+	impl.bDirty = true;
+}
+
+void CAssetRepairs::OnRulesChanged ()
+{
 	Impl->bDirty = true;
 }
 
@@ -1589,6 +1855,7 @@ void CAssetRepairs::Tick (uint64 NowMs)
 	{
 		return;
 	}
+	impl.MaybeRebuildWriter();   // a provider settled while a job ran: what is planned now goes through it
 	if (!impl.PendingFixes.empty())
 	{
 		if (impl.Desc.Host->IsQuiet() && impl.Writer != nullptr && !impl.bProvidersPending)
@@ -1652,7 +1919,9 @@ SRepairReport CAssetRepairs::RunNow (const SRepairOptions& Options)
 		return report;
 	}
 	const uint64 now = GetLifecycleNowMs();
+	impl.LastNowMs = now;
 	impl.StampEvents(now);
+	impl.MaybeRebuildWriter();
 	impl.bInCommand = true;
 	// Every mount the run owns, or the mounts of the paths asked for; a reader's run covers every mount.
 	std::vector<MountId> mounts;
@@ -1678,7 +1947,7 @@ SRepairReport CAssetRepairs::RunNow (const SRepairOptions& Options)
 		input->Paths = Options.Paths;
 		input->Kinds = Options.Kinds;
 		SCycleOutput output = impl.RunCycleNow(input);
-		impl.ApplyCycle(output, Options.Paths);
+		impl.ApplyCycle(output, mounts, Options.Paths);
 		report.Planned.insert(report.Planned.end(), output.Repairs.begin(), output.Repairs.end());
 		report.Problems = output.Problems;
 		report.Problems.insert(report.Problems.end(), output.PlanProblems.begin(), output.PlanProblems.end());
@@ -1757,6 +2026,8 @@ SRepairReport CAssetRepairs::ApplyFix (const SLifecycleAction& FixIt)
 		return report;
 	}
 	const uint64 now = GetLifecycleNowMs();
+	impl.LastNowMs = now;
+	impl.MaybeRebuildWriter();
 	impl.bInCommand = true;
 	std::shared_ptr<SCycleInput> input = impl.MakeInput(now, true, false, true);
 	input->FixActions = std::move(actions);
@@ -1776,7 +2047,7 @@ SRepairReport CAssetRepairs::ApplyFix (const SLifecycleAction& FixIt)
 	// The registry's problems as they stand after the fix, through a run that repairs nothing.
 	std::shared_ptr<SCycleInput> after = impl.MakeInput(now, true, false, false);
 	SCycleOutput output = impl.RunCycleNow(after);
-	impl.ApplyCycle(output, {});
+	impl.ApplyCycle(output, output.RunMounts, {});
 	impl.bDirty = false;
 	impl.bInCommand = false;
 	for (SDiagnostic& problem : output.Problems)
@@ -1799,6 +2070,14 @@ CAssetWriter* CAssetRepairs::GetWriter () noexcept
 IVcsProvider* CAssetRepairs::GetProvider (MountId Mount) const noexcept
 {
 	return Mount < Impl->Providers.size() && Impl->Settled[Mount] != 0u ? Impl->Providers[Mount] : nullptr;
+}
+
+SAssetRepairsStats CAssetRepairs::GetStats () const noexcept
+{
+	SAssetRepairsStats stats;
+	stats.Runs = Impl->Runs;
+	stats.TrackedEvents = static_cast<uint32>(Impl->Events.size() + Impl->PendingEvents.size());
+	return stats;
 }
 
 

@@ -44,10 +44,12 @@ class CWorkerPool;
  * row (a hash the lifecycle asks for is computed on the worker, kept in memory per stat and committed into the row);
  * RecordGuid from the record, unless the row is PendingMeta (a provisional id); bMetaOnDisk and the meta's spelling from
  * the Meta row in the same folder whose name folds to the source's + ".meta"; the GUID of an orphan or broken meta read
- * from its file on the worker (few, and nothing of them is stored); VerifiedCopies from METAS whose hash is the source's
+ * from its file on the worker (few, and nothing of them is stored); LiveGuids from every meta but one beside a file the
+ * rules exclude (not an asset, so no member of a duplicate group); VerifiedCopies from METAS whose hash is the source's
  * MetaHash; tombstones from the view; bWritable from the mounts this process writes and the read-only attribute of the
  * file and its meta; every Ms (LastEventMs, MetaGoneMs, FirstSeenMs) from the time of the first Tick after the pass that
- * touched the path (never persisted: a restart counts from then, and an untracked time means the delay is over);
+ * touched the path (never persisted: a restart counts from then, and an untracked time means the delay is over; of the
+ * initial scan only the paths whose time decides something are kept);
  * bLfsPointer from the first bytes of a file under 1024 bytes, read only when it is hashed; Committed from the provider,
  * asked only when a run sets bNeedCommitted. Besides the lifecycle's own problems a run reports VCS001 for a meta whose
  * bytes hold CRLF, VCS002 for a repair the VCS refused and VCS003 for a meta created here that StatusOf calls untracked
@@ -88,7 +90,7 @@ struct SLifecycleDesc
 
 /**
  * What RunNow may apply. RunLifecycle proposes everything it sees, so each verb names its own Kinds, and an action of another
- * kind stays a proposal: `migrate metas` and `new-meta` take CreateMeta alone; `fix` and `validate --fix` take CreateMeta,
+ * kind is reported as a repair this run cannot make (its problem, with the action as its fix-it): `migrate metas` and `new-meta` take CreateMeta alone; `fix` and `validate --fix` take CreateMeta,
  * RestoreMeta, FixMetaCase and ReGuid, never MoveMeta (a relink) or KeepAliasB. With AutoResolveDuplicates off RunLifecycle
  * makes a duplicate a fix-it rather than a repair, so that ReGuid never reaches `fix`.
  */
@@ -106,6 +108,13 @@ struct SRepairReport
 	uint32 Applied = 0u;
 	uint32 Refused = 0u;
 	std::vector<SDiagnostic> Problems;
+};
+
+// What the runtime holds now (Core-Test; the Stats panel may show it).
+struct SAssetRepairsStats
+{
+	uint64 Runs = 0u;              // lifecycle runs whose result was committed
+	uint32 TrackedEvents = 0u;     // paths whose event time is kept (the delays' clocks)
 };
 
 /**
@@ -157,8 +166,9 @@ struct SAssetRepairsDesc
  * the registry is quiet. Its result is committed when it arrives if the registry is still quiet at the revision the run
  * read; otherwise it is dropped and run again, so a result never lands on a tree it did not see. The repairs of one result
  * are one proposal set: their ops run in one worker job, after IsBusy is asked once more and the expected writes are
- * registered with the watcher. While a provider IsBusy, and for VcsSettleMs after (WaitForVcs), or until the providers are
- * settled, runs report without repairing; IsBusy is polled every 100 ms only while that hold keeps something pending.
+ * registered with the watcher. While a provider IsBusy, and for VcsSettleMs after (WaitForVcs), until the providers are
+ * settled, and while the watcher holds events back (a burst, an overflow), runs report without repairing; IsBusy is polled
+ * every 100 ms only while that hold keeps something pending. A fix-it is a command: no hold applies to its op.
  *
  * RunNow is for tool hosts only and blocks until it has applied. ApplyFix blocks the same way in a tool host. In a live host
  * it registers the expected writes, submits the op and returns a report with only Planned filled; the outcome arrives as the
@@ -182,8 +192,12 @@ public:
 
 	// A live host's detection finishing (SLifecycleDesc::bProvidersPending); Provider is null for None.
 	void SetProvider (MountId Mount, IVcsProvider* Provider);
-	// Live: after a pass has committed, never during one. Dirty: the mount paths it touched.
-	void OnPassCommitted (std::span<const FString> Dirty);
+	// Live: after a pass has committed, never during one. Dirty: the mount paths it touched. bInitial (a pass of the initial
+	// scan): only the paths whose arrival time a run needs are kept, not every Paired file of the tree.
+	void OnPassCommitted (std::span<const FString> Dirty, bool bInitial = false);
+	// A pass read changed rule files, or re-evaluated a mount (its rules changed): Safety switches and Validation severities
+	// may differ, though no file did, so the lifecycle runs again.
+	void OnRulesChanged ();
 	// Live: acts once the last result's WakeAtMs has passed, or when the VCS hold (polled while anything is pending) has
 	// ended. A test passes its own clock.
 	void Tick (uint64 NowMs);
@@ -202,6 +216,7 @@ public:
 	[[nodiscard]] CAssetWriter* GetWriter () noexcept;
 	// The provider a mount uses now (null: None, or not settled yet). `status` and the Stats panel name it per mount.
 	[[nodiscard]] IVcsProvider* GetProvider (MountId Mount) const noexcept;
+	[[nodiscard]] SAssetRepairsStats GetStats () const noexcept;
 
 	struct SImpl;
 

@@ -310,9 +310,12 @@ committed there is one untracked entry to git, and every file below it is `Untra
 means none at all, exactly as before. With one:
 
 - **When it runs.** Every finished pass hands it the paths its deltas touched; the time of the next tick after that is
-  the path's event time (kept in memory only, so a restart counts from then). A run starts when something was touched,
-  a delay ran out (the last result's `WakeAtMs`) or a VCS hold ended, and only while the registry is quiet: the initial
-  scan complete, nothing queued, scanning or analyzing. It runs on a worker against an acquired view, one mount at a time:
+  the path's event time (kept in memory only, so a restart counts from then). Of the initial scan's passes only the
+  paths whose time decides something are kept: files without a settled pair, metas spelled in another case and the
+  members of a duplicate group, never every `Paired` file of the tree. A run starts when something was touched, a pass
+  read changed rule files or re-evaluated a mount (a `Safety:` switch changes no row), a delay ran out (the last
+  result's `WakeAtMs`) or a VCS hold ended, and only while the registry is quiet: the initial scan complete, nothing
+  queued, scanning or analyzing. It runs on a worker against an acquired view, one mount at a time:
   the facts as `Lifecycle.h`'s contract asks (only the rows not `Paired`, those touched, metas whose case differs and
   duplicate groups; orphans and broken metas are read from their files, a hash the lifecycle asks for is computed then
   and committed into the file's row, committed facts are asked of the provider only when a run needs them). Its states,
@@ -326,22 +329,29 @@ means none at all, exactly as before. With one:
   when `Safety.DerivedAutoGuids` is off; a restore writes the verified `METAS` bytes as they were; a relink and a case
   fix are moves). The ops of one result run in one worker job through a `CAssetWriter` on the owner root, after
   `IsBusy` is asked once more and their expected writes are registered with the watcher (`ExpectWrite`); the touched
-  folders are then rescanned. It is level-triggered: the rescan of a repair's own write proposes nothing.
+  folders are then rescanned. It is level-triggered: the rescan of a repair's own write proposes nothing. A meta beside
+  a file the rules exclude is no asset's, so it takes part in no duplicate group.
   `SAssetRegistryCounters::RepairsApplied` and `RepairsRefused` count them.
 - **Holding for the VCS** (`[AssetsEditor] WaitForVcs`, default on): no automatic repair while any provider `IsBusy`, and
-  for `VcsSettleMs` after; `IsBusy` is polled every 100 ms only while something waits on that hold. A live host that
+  for `VcsSettleMs` after; `IsBusy` is polled every 100 ms only while something waits on that hold. Whatever the switch,
+  nothing automatic is written while the watcher holds events back (a burst, an overflow's rescan): the registry looks
+  quiet then, but its tree is not the final one. A person's fix is a command, held by neither. A live host that
   detects its providers on a worker sets `bProvidersPending` and holds everything until the last `SetProvider`. The
   watcher's own hold (`SetVcsBusyQuery`) is the narrower `IsRewritingTree` of every mount, so an open merge holds repairs
   but never hot reload; with `WaitForVcs=0` it is left unset.
 - **What it remembers.** A repair the VCS refused stays a proposal with `VCS002` and is not tried again until an event on
   its path or an explicit fix, so a read-only file cannot spin. A meta created beside a source `StatusOf` calls tracked,
-  when the meta itself is untracked, is `VCS003` ("generated locally: commit it", with the provider's add command) for
-  as long as the source stands. A meta whose bytes hold CRLF is `VCS001`, checked once over every `METAS` copy and then
+  when the meta itself is untracked, is `VCS003` ("generated locally: commit it", with the provider's add command), asked
+  in one `StatusOf` per provider for all the metas of a round; adding or committing it changes no file here, so the kept
+  pairs are asked again after 30 s, then twice as long each time (up to 16 min), until the VCS tracks them alike or the
+  source goes. A refusal ends with an event on its path or on a folder above it (a removal). A meta whose bytes hold CRLF is `VCS001`, checked once over every `METAS` copy and then
   on each meta touched.
 - **For verbs and the panel.** `RunNow(SRepairOptions)` runs without delays and blocks until it has applied (the
-  options' `Kinds`, `Paths` and `bDryRun`; the run's mounts by default), rescanning after each round. `GetFixIts`
+  options' `Kinds`, `Paths` and `bDryRun`; the run's mounts by default), rescanning after each round. A repair of a kind
+  the run leaves out is reported as one this process cannot make, with its fix-it, never dropped. `GetFixIts`
   gives the fix-its of a problem (the last run's, and the refused repair of a `VCS002`), `ApplyFix` applies one (a re-GUID
-  together with the other losers of its batch), blocking in a tool host and queued in a live one.
+  together with the other losers of its batch), blocking in a tool host and queued in a live one. "Keep A, alias B" reads
+  the meta again first and rewrites it only while it is still the broken meta it was offered for.
 - **Start-up.** The registry's `Start` rolls an operation the owner root's `OpJournal.log` holds unfinished forward
   before anything is scanned. `TakeOwnership(Root, Mounts, Providers)` is the hosts' form of it: the `Owner.lock`, then the
   roll-forward; a process that does not get the lock rolls nothing forward and reports the unfinished operation.

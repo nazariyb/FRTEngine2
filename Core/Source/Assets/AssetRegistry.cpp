@@ -2158,11 +2158,16 @@ struct CAssetRegistry::SImpl final : IAssetRepairsHost
 		++Counters.Passes;
 		const bool bInitial = pass.bInitial;
 		const bool bRuleFilesChanged = pass.bRuleFilesChanged;
+		const bool bReEvaluated = pass.bReEvaluateAll;
 		std::vector<FString> dirty = std::move(it->second.Dirty);
 		Passes.erase(it);
 		if (Repairs != nullptr)
 		{
-			Repairs->OnPassCommitted(dirty);
+			Repairs->OnPassCommitted(dirty, bInitial);
+			if (bRuleFilesChanged || bReEvaluated)
+			{
+				Repairs->OnRulesChanged();   // unchanged files emit no rows, yet their switches or severities may differ
+			}
 		}
 		if (bRuleFilesChanged && State == EScanState::Ready)
 		{

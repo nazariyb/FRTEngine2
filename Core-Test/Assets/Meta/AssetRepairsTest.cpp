@@ -4,13 +4,18 @@
 // little later) never mints a meta; a folder copy re-GUIDs the copies as one op with their references remapped to each
 // other; an Explorer move pairs the orphan meta by FileId; a delete then restore of a pair, and a lost meta restored byte
 // for byte from METAS, keep the identity; each default-on switch off reduces exactly its repair to a problem with a fix-it
-// (and the fix-it, applied, repairs it), WaitForVcs off ignores a busy provider; a refused CheckOut stays a proposal with
-// VCS002 until an event on the path; a meta created beside a tracked source is VCS003; a read-only process, a mount it
-// does not own and a pending provider detection write nothing; RunNow has no delays and honours its Kinds and dry run;
-// an unfinished operation is rolled forward before the first scan (and by TakeOwnership); problems carry their file and
-// the rule files' Validation: severities; CRLF in a meta is VCS001 and an LFS pointer VCS004. Each test holds at most
-// ten files and drives the lifecycle with its own clock (Settle), never with sleeps: only one test goes through the
-// file watcher with small delays. The dedupe op's crash points are rolled forward in-process, and one real child is killed.
+// (and the fix-it, applied, repairs it), WaitForVcs off ignores a busy provider; a meta beside an excluded copy is no
+// duplicate; nothing is written while the watcher holds a burst, and a live fix-it is applied while the provider is busy;
+// a Safety switch turned back on repairs what it stopped; a refused CheckOut stays a proposal with VCS002 until an event
+// on the path or its folder; a cold start tracks only the arrivals that decide something; a meta created beside a
+// tracked source is VCS003 (asked in one StatusOf per round, and again later, until the VCS tracks it); a read-only
+// process, a mount it does not own and a pending provider detection write nothing, and a provider detected while a run
+// is in flight is the one the repairs then use; RunNow has no delays, honours its Kinds (reporting what they leave out)
+// and dry run, and keeps the other mounts' fix-its; "keep A, alias B" never overwrites a meta resolved since; an
+// unfinished operation is rolled forward before the first scan (and by TakeOwnership); problems carry their file and the
+// rule files' Validation: severities; CRLF in a meta is VCS001 and an LFS pointer VCS004. Each test holds at most fourteen
+// files and drives the lifecycle with its own clock (Settle), never with sleeps: three tests go through the file watcher
+// with small delays. The dedupe op's crash points are rolled forward in-process, and one real child is killed.
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -618,6 +623,128 @@ TEST(AssetRepairs, OrphanPairingOffKeepsAMovedFileInMissingMetaWithARelinkFixItA
 	EXPECT_TRUE(rig.Problems(Meta008).empty()) << rig.DescribeProblems().CStr();
 }
 
+TEST(AssetRepairs, AMetaBesideAnExcludedCopyIsNoDuplicateAndTheAssetKeepsItsGuid)
+{
+	CRepairTree tree("Виключена копія");
+	tree.WritePng("B/Rock.png");
+	tree.WriteMeta("B/Rock.png", MetaText(GuidA));
+	// A copy of the pair where a rule excludes textures, at a path that sorts first: not an asset, so never the winner.
+	tree.WritePng("A/Rock.png");
+	tree.WriteMeta("A/Rock.png", MetaText(GuidA));
+	tree.WriteProjectContent("A/Assets.yml", "FormatVersion: 1\nScan: { Exclude: [ \"*.png\" ] }\n");
+	CRig rig(tree);
+	rig.Open();
+	rig.Settle();
+	rig.Settle(1600u);
+	ASSERT_FALSE(rig.View().FindFileExact(P("A/Rock.png")).has_value()) << "excluded: no FILES row";
+	ASSERT_TRUE(rig.View().FindFileExact(P("A/Rock.png.meta")).has_value());
+	EXPECT_EQ(tree.MetaGuid("B/Rock.png"), MakeGuid(GuidA));
+	EXPECT_EQ(rig.GuidAt(P("B/Rock.png")), MakeGuid(GuidA));
+	EXPECT_TRUE(rig.Vcs.GetWriteCalls().empty());
+	EXPECT_TRUE(rig.Problems().empty()) << rig.DescribeProblems().CStr();
+}
+
+TEST(AssetRepairs, NoMetaIsCreatedWhileTheWatcherHoldsABurst)
+{
+	CRepairTree tree("Сплеск");
+	SFileWatcherSettings settings;
+	settings.SettleMs = 200u;
+	settings.BurstEvents = 8u;
+	settings.VcsSettleMs = 60000u;   // held for the rest of the test
+	CFileWatcherService watcher(settings);
+	CRig rig(tree, [&] (SLifecycleDesc&, SAssetRegistryDesc& Desc) { Desc.Watcher = &watcher; });
+	for (const SMount& mount : rig.Desc.Mounts->GetMounts())
+	{
+		watcher.AddMount(mount.ContentDir);
+		watcher.AddMount(mount.RulesFile.parent_path());
+	}
+	rig.Open();
+	rig.Settle();
+	const auto pump = [&]
+	{
+		watcher.Pump();
+		rig.Pool.PumpCompletions();
+		rig.Registry->Pump();
+	};
+
+	// a.png arrives on its own; then a sync's burst starts, which the watcher holds (its meta may be in it).
+	tree.WritePng("a.png");
+	ASSERT_TRUE(test::WaitUntil([&] { pump(); return FindStoredFile(rig.View(), P("a.png")).has_value(); }));
+	rig.Settle();
+	for (uint32 i = 0u; i < 12u; ++i)
+	{
+		tree.WritePng(FString::Format("Sync/{}.png", i), 10u + i);
+	}
+	ASSERT_TRUE(test::WaitUntil([&] { watcher.Pump(); return watcher.GetStats().bHolding; }));
+	rig.Settle(3000u);
+	EXPECT_FALSE(tree.Exists("a.png.meta")) << "the tree the watcher holds back is not the final one";
+	EXPECT_TRUE(rig.Vcs.GetWriteCalls().empty());
+	rig.Registry->ShutDown();
+	rig.Registry.reset();
+}
+
+TEST(AssetRepairs, AFixItAppliedInALiveHostWhileTheProviderIsBusyIsStillApplied)
+{
+	CRepairTree tree("Виправлення наживо");
+	WriteSafety(tree, "AutoRepairMetas");
+	tree.WritePng("a.png");
+	CRig rig(tree, [] (SLifecycleDesc& Lifecycle, SAssetRegistryDesc&) { Lifecycle.bLive = true; });
+	rig.Open();
+	rig.Settle();
+	rig.Settle(1600u);
+	const std::vector<SDiagnostic> meta001 = rig.Problems(Meta001);
+	ASSERT_EQ(meta001.size(), 1u) << rig.DescribeProblems().CStr();
+	const std::vector<SLifecycleAction> fixIts = rig.Repairs().GetFixIts(meta001[0]);
+	ASSERT_EQ(fixIts.size(), 1u);
+
+	// A person's fix is a command: the hold of automatic repairs does not apply to it.
+	rig.Vcs.SetBusy(true);
+	const SRepairReport report = rig.Repairs().ApplyFix(fixIts[0]);
+	EXPECT_EQ(report.Planned.size(), 1u);
+	rig.Settle();
+	EXPECT_EQ(tree.MetaGuid("a.png"), DerivedGuid(P("a.png")));
+	EXPECT_EQ(rig.Registry->GetCounters().RepairsApplied, 1u);
+	rig.Vcs.SetBusy(false);
+}
+
+// A mount's Safety switch is no input of any file's row (unlike a folder's Validation:, which analyzes its files again),
+// so its re-evaluation commits no row: the lifecycle must run because the rules changed.
+TEST(AssetRepairs, ASafetySwitchTurnedBackOnRepairsWhatItHadStoppedThoughNoFileChanged)
+{
+	CRepairTree tree("Нові правила");
+	WriteSafety(tree, "AutoRepairMetas");
+	tree.WritePng("Textures/a.png");
+	SFileWatcherSettings settings;
+	settings.SettleMs = 20u;
+	settings.VcsSettleMs = 30u;
+	CFileWatcherService watcher(settings);
+	CRig rig(tree, [&] (SLifecycleDesc&, SAssetRegistryDesc& Desc) { Desc.Watcher = &watcher; });
+	for (const SMount& mount : rig.Desc.Mounts->GetMounts())
+	{
+		watcher.AddMount(mount.ContentDir);
+		watcher.AddMount(mount.RulesFile.parent_path());
+	}
+	rig.Open();
+	rig.Settle();
+	rig.Settle(1600u);
+	ASSERT_EQ(rig.Problems(Meta001).size(), 1u) << rig.DescribeProblems().CStr();
+
+	// The rules reload and their rescan (one call) are done once the switch reads on and the registry is idle.
+	tree.WriteProjectRules("FormatVersion: 1\n");
+	ASSERT_TRUE(test::WaitUntil([&]
+	{
+		watcher.Pump();
+		rig.Pool.PumpCompletions();
+		rig.Registry->Pump();
+		return rig.Registry->GetRules().GetSafety("Project").bAutoRepairMetas && rig.Registry->IsIdle();
+	}));
+	rig.Settle();
+	EXPECT_EQ(tree.MetaGuid("Textures/a.png"), DerivedGuid(P("Textures/a.png")));
+	EXPECT_TRUE(rig.Problems().empty()) << rig.DescribeProblems().CStr();
+	rig.Registry->ShutDown();
+	rig.Registry.reset();
+}
+
 // ---------------- Refusals and the VCS ----------------
 
 TEST(AssetRepairs, ARefusedCheckOutStaysAProposalWithVcs002UntilAnEventOnThePath)
@@ -652,6 +779,48 @@ TEST(AssetRepairs, ARefusedCheckOutStaysAProposalWithVcs002UntilAnEventOnThePath
 	EXPECT_TRUE(rig.Problems().empty()) << rig.DescribeProblems().CStr();
 }
 
+TEST(AssetRepairs, ARefusalGoesWithTheFolderItWasIn)
+{
+	CRepairTree tree("Відмова в теці");
+	tree.WritePng("Sub/a.png");
+	CRig rig(tree);
+	rig.Open();
+	rig.Vcs.Refuse("CheckOut", EVcsError::LockedByOther, "held by a colleague");
+	rig.Settle();
+	rig.Settle(1600u);
+	ASSERT_EQ(rig.Problems(Vcs002).size(), 1u) << rig.DescribeProblems().CStr();
+	std::error_code ec;
+	std::filesystem::remove_all(tree.Abs("Sub"), ec);
+	ASSERT_FALSE(ec) << ec.message();
+	rig.Scan();
+	rig.Settle();
+	EXPECT_TRUE(rig.Problems(Vcs002).empty()) << rig.DescribeProblems().CStr();
+	EXPECT_TRUE(rig.Repairs().GetFixIts(SDiagnostic { .Code = Vcs002, .Subject = P("Sub/a.png") }).empty());
+}
+
+TEST(AssetRepairs, AColdStartTracksTheArrivalOfFilesWithoutAMetaOnly)
+{
+	CRepairTree tree("Холодний старт");
+	tree.WritePng("a.png");
+	tree.WriteMeta("a.png", MetaText(GuidA));
+	tree.WritePng("b.png", 5u);
+	tree.WriteMeta("b.png", MetaText(GuidB));
+	tree.WritePng("New.png", 6u);
+	tree.WritePng("Z/a.png");
+	tree.WriteMeta("Z/a.png", MetaText(GuidA));
+	CRig rig(tree);
+	rig.Open();
+	rig.Settle();
+	// New.png, and the two pairs of the duplicate group; b.png's settled pair gains nothing from an arrival time.
+	EXPECT_EQ(rig.Repairs().GetStats().TrackedEvents, 5u);
+	EXPECT_FALSE(tree.Exists("New.png.meta"));
+	EXPECT_EQ(tree.MetaGuid("Z/a.png"), MakeGuid(GuidA)) << "a duplicate group waits for its batch's delay";
+	rig.Settle(1600u);
+	EXPECT_EQ(tree.MetaGuid("New.png"), DerivedGuid(P("New.png"), 6u));
+	EXPECT_EQ(tree.MetaGuid("Z/a.png"), MakeDedupeGuid(Salt, MakeGuid(GuidA), P("Z/a.png")));
+	EXPECT_EQ(tree.MetaGuid("a.png"), MakeGuid(GuidA));
+}
+
 TEST(AssetRepairs, AMetaCreatedBesideATrackedSourceThatTheVcsDoesNotTrackIsVcs003)
 {
 	CRepairTree tree("Не в VCS");
@@ -669,6 +838,34 @@ TEST(AssetRepairs, AMetaCreatedBesideATrackedSourceThatTheVcsDoesNotTrackIsVcs00
 	EXPECT_TRUE(vcs003[0].Message.Contains("commit it"));
 	rig.Settle(5000u);
 	EXPECT_EQ(rig.Problems(Vcs003).size(), 1u) << "kept while the pair stands";
+
+	// The person adds the meta (only .git/index changes, so no file event): the warning goes at the next look.
+	rig.Vcs.SetStatus(tree.Vcs("a.png.meta"), SVcsStatus { EVcsState::Added, {} });
+	rig.Settle(31000u);
+	EXPECT_TRUE(rig.Problems(Vcs003).empty()) << rig.DescribeProblems().CStr();
+}
+
+TEST(AssetRepairs, TheMetasOfOneRoundAreAskedForTheirStatusInOneCall)
+{
+	CRepairTree tree("Один запит");
+	tree.WritePng("a.png");
+	tree.WritePng("b.png", 5u);
+	tree.WritePng("c.png", 6u);
+	CRig rig(tree);
+	rig.Open();
+	SRepairOptions createOnly;
+	createOnly.Kinds = { ELifecycleAction::CreateMeta };
+	EXPECT_EQ(rig.Repairs().RunNow(createOnly).Applied, 3u);
+	uint32 statusCalls = 0u;
+	for (const CRecordingVcsProvider::SCall& call : rig.Vcs.GetCalls())
+	{
+		if (call.Name == "StatusOf")
+		{
+			++statusCalls;
+			EXPECT_EQ(call.Files.size(), 6u) << "every created pair";
+		}
+	}
+	EXPECT_EQ(statusCalls, 1u) << "a whole-tree status per meta would be a git status per file";
 }
 
 TEST(AssetRepairs, APendingProviderDetectionHoldsEveryRepairUntilTheLastMountIsSettled)
@@ -701,11 +898,24 @@ TEST(AssetRepairs, APendingProviderDetectionHoldsEveryRepairUntilTheLastMountIsS
 	rig.Repairs().SetProvider(EngineMountId, nullptr);
 	rig.Settle(100u);
 	EXPECT_FALSE(tree.Exists("a.png.meta")) << "one mount is still pending";
+
+	// The last mount settles while a held run is in flight (a live host's start-up race): the repairs that follow still
+	// go through the provider it names.
+	tree.WritePng("b.png", 5u);
+	rig.Scan();
+	rig.Now += 100u;
+	rig.Repairs().Tick(rig.Now);
+	ASSERT_TRUE(rig.Repairs().IsWorking());
 	rig.Repairs().SetProvider(ProjectMountId, &rig.Vcs);
-	rig.Settle(100u);
+	rig.Settle();
 	EXPECT_EQ(tree.MetaGuid("a.png"), DerivedGuid(P("a.png")));
 	EXPECT_EQ(rig.Repairs().GetProvider(ProjectMountId), &rig.Vcs);
 	EXPECT_EQ(providers.Find(ProjectMountId)->GetName(), "None");
+	const std::vector<CRecordingVcsProvider::SCall> writes = rig.Vcs.GetWriteCalls();
+	ASSERT_EQ(writes.size(), 2u) << "the create went through the detected provider";
+	EXPECT_EQ(writes[0].Name, "CheckOut");
+	EXPECT_EQ(writes[0].Files, (std::vector<FString> { tree.Vcs("a.png.meta"), tree.Vcs("a.png") }));
+	EXPECT_EQ(writes[1].Name, "Add");
 }
 
 // ---------------- Who writes ----------------
@@ -738,6 +948,10 @@ TEST(AssetRepairs, AReadOnlyRunAndAMountTheWriterDoesNotOwnReportMeta001AndWrite
 		const std::vector<SDiagnostic> meta001 = rig.Problems(Meta001);
 		ASSERT_EQ(meta001.size(), 1u) << rig.DescribeProblems().CStr();
 		EXPECT_EQ(meta001[0].Subject, "/Engine/Fonts/x.png");
+		ASSERT_EQ(rig.Repairs().GetFixIts(meta001[0]).size(), 1u);
+		(void)rig.Repairs().RunNow(SRepairOptions {});
+		EXPECT_EQ(rig.Problems(Meta001).size(), 1u) << "a run of the owned mounts leaves the others' problems";
+		EXPECT_EQ(rig.Repairs().GetFixIts(meta001[0]).size(), 1u) << "and their fix-its";
 	}
 }
 
@@ -766,6 +980,15 @@ TEST(AssetRepairs, RunNowHasNoDelaysAndHonoursItsKindsAndItsDryRun)
 	EXPECT_EQ(created.Applied, 1u);
 	EXPECT_EQ(tree.MetaGuid("a.png"), DerivedGuid(P("a.png")));
 	EXPECT_FALSE(tree.Exists("b.png.meta")) << "a restore is not a CreateMeta";
+	const auto lost = std::find_if(created.Problems.begin(), created.Problems.end(), [] (const SDiagnostic& Problem)
+	{
+		return Problem.Code == Meta008 && Problem.Subject == P("b.png");
+	});
+	EXPECT_NE(lost, created.Problems.end()) << "a repair the run's Kinds leave out is reported, not dropped";
+	ASSERT_EQ(rig.Problems(Meta008).size(), 1u) << rig.DescribeProblems().CStr();
+	const std::vector<SLifecycleAction> restore = rig.Repairs().GetFixIts(rig.Problems(Meta008)[0]);
+	ASSERT_EQ(restore.size(), 1u);
+	EXPECT_EQ(restore[0].Kind, ELifecycleAction::RestoreMeta);
 
 	const SRepairReport all = rig.Repairs().RunNow(SRepairOptions {});
 	EXPECT_EQ(all.Applied, 1u);
@@ -848,6 +1071,28 @@ TEST(AssetRepairs, ABrokenMetaWithTwoGuidsOffersKeepAAliasBAndTheFixRewritesItCa
 	EXPECT_EQ(meta->Aliases, std::vector<SGuid> { MakeGuid(GuidB) });
 	EXPECT_EQ(rig.StateOf(P("a.png")), EMetaState::Paired);
 	EXPECT_TRUE(rig.Problems().empty()) << rig.DescribeProblems().CStr();
+}
+
+TEST(AssetRepairs, KeepAliasBNeverOverwritesAMetaResolvedByHandAfterTheFixItWasOffered)
+{
+	CRepairTree tree("Розв'язано вручну");
+	tree.WritePng("a.png");
+	tree.WriteMeta("a.png", FString::Format("FormatVersion: 1\nGuid: {}\nGuid: {}\n", GuidA, GuidB));
+	CRig rig(tree);
+	rig.Open();
+	rig.Settle();
+	const std::vector<SDiagnostic> meta004 = rig.Problems(Meta004);
+	ASSERT_EQ(meta004.size(), 1u) << rig.DescribeProblems().CStr();
+	const std::vector<SLifecycleAction> fixIts = rig.Repairs().GetFixIts(meta004[0]);
+	ASSERT_EQ(fixIts.size(), 2u);
+
+	// The person resolves the conflict by hand before the fix runs (no scan in between).
+	const FString resolved = MetaText(GuidA, "Labels:\n  - Вручну\n");
+	tree.WriteMeta("a.png", resolved);
+	const SRepairReport report = rig.Repairs().ApplyFix(fixIts[0]);
+	EXPECT_EQ(report.Applied, 0u);
+	EXPECT_EQ(tree.Read("a.png.meta"), resolved) << "only the broken meta the fix-it was offered for is rewritten";
+	EXPECT_TRUE(rig.Vcs.GetWriteCalls().empty());
 }
 
 // ---------------- Start-up ----------------
