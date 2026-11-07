@@ -774,6 +774,82 @@ TEST(AssetRepairs, RunNowHasNoDelaysAndHonoursItsKindsAndItsDryRun)
 	EXPECT_TRUE(rig.Problems().empty()) << rig.DescribeProblems().CStr();
 }
 
+TEST(AssetRepairs, AnEngineOwnerRunRepairsEngineFilesWithTheEngineSalt)
+{
+	CRepairTree tree("Власник рушія");
+	const std::filesystem::path font = tree.Tree.EngineContent() / "Fonts" / "x.png";
+	frt::test::rules::MakeDirectories(font.parent_path());
+	ASSERT_TRUE(platform::WriteFileBytes(font, MakePng(9u)));
+	CRig rig(tree, [&tree] (SLifecycleDesc&, SAssetRegistryDesc& Desc)
+	{
+		SMountRoots roots;
+		roots.EngineDir = tree.Tree.EngineDir();
+		roots.EngineContentDir = tree.Tree.EngineContent();
+		roots.EngineConfigDir = tree.Tree.EngineConfig();
+		Desc.Mounts = std::make_shared<const CMountTable>(CMountTable::Resolve(roots, nullptr));
+		Desc.Owner = EAssetRegistryOwner::Engine;
+	});
+	rig.Lifecycle.Providers = { { EngineMountId, &rig.Vcs } };
+	rig.Open();
+	rig.Settle();
+	rig.Settle(1600u);
+	const std::optional<std::vector<uint8>> bytes = platform::ReadFileBytes(GetMetaPath(FString::FromPath(font)).ToPath());
+	ASSERT_TRUE(bytes.has_value());
+	SMetaParseResult parsed;
+	ParseMeta(FStringView(reinterpret_cast<const char*>(bytes->data()), static_cast<uint32>(bytes->size())), parsed);
+	EXPECT_EQ(parsed.Meta.Guid, MakeCreateMetaGuid(EngineAssetSalt, "/Engine/Fonts/x.png", hash::HashContent(MakePng(9u))));
+	EXPECT_EQ(rig.GuidAt("/Engine/Fonts/x.png"), parsed.Meta.Guid);
+}
+
+TEST(AssetRepairs, AMetaSpelledInAnotherCaseIsRenamedToItsSourcesCaseAfterTheGrace)
+{
+	CRepairTree tree("Регістр");
+	tree.WritePng("a.png");
+	tree.WriteProjectContent("a.PNG.meta", MetaText(GuidA));
+	CRig rig(tree);
+	rig.Open();
+	rig.Settle();
+	EXPECT_TRUE(rig.Vcs.GetWriteCalls().empty()) << "a hand rename's second half is not raced";
+	rig.Settle(1100u);
+	bool bExact = false;
+	platform::EnumerateDirectory(tree.Tree.ProjectContent(), [&] (const platform::SDirectoryEntry& Entry)
+	{
+		bExact = bExact || Entry.Name == FStringView("a.png.meta");
+	});
+	EXPECT_TRUE(bExact);
+	EXPECT_EQ(tree.MetaGuid("a.png"), MakeGuid(GuidA));
+	const std::vector<CRecordingVcsProvider::SCall> writes = rig.Vcs.GetWriteCalls();
+	ASSERT_EQ(writes.size(), 1u);
+	EXPECT_EQ(writes[0].Name, "Move");
+	EXPECT_TRUE(rig.Problems().empty()) << rig.DescribeProblems().CStr();
+}
+
+TEST(AssetRepairs, ABrokenMetaWithTwoGuidsOffersKeepAAliasBAndTheFixRewritesItCanonically)
+{
+	CRepairTree tree("Конфлікт");
+	tree.WritePng("a.png");
+	tree.WriteMeta("a.png", FString::Format("FormatVersion: 1\nGuid: {}\nGuid: {}\n", GuidA, GuidB));
+	CRig rig(tree);
+	rig.Open();
+	rig.Settle();
+	EXPECT_EQ(rig.StateOf(P("a.png")), EMetaState::Broken);
+	const std::vector<SDiagnostic> meta004 = rig.Problems(Meta004);
+	ASSERT_EQ(meta004.size(), 1u) << rig.DescribeProblems().CStr();
+	EXPECT_EQ(meta004[0].Subject, P("a.png.meta"));
+	EXPECT_TRUE(rig.Vcs.GetWriteCalls().empty()) << "a broken meta is never overwritten automatically";
+	const std::vector<SLifecycleAction> fixIts = rig.Repairs().GetFixIts(meta004[0]);
+	ASSERT_EQ(fixIts.size(), 2u);
+	EXPECT_EQ(fixIts[0].Guid, MakeGuid(GuidA)) << "the record's GUID first";
+
+	EXPECT_EQ(rig.Repairs().ApplyFix(fixIts[0]).Applied, 1u);
+	const std::optional<SAssetMeta> meta = tree.ReadMeta("a.png");
+	ASSERT_TRUE(meta.has_value());
+	EXPECT_EQ(meta->Guid, MakeGuid(GuidA));
+	EXPECT_EQ(meta->Aliases, std::vector<SGuid> { MakeGuid(GuidB) });
+	EXPECT_EQ(rig.StateOf(P("a.png")), EMetaState::Paired);
+	EXPECT_TRUE(rig.Problems().empty()) << rig.DescribeProblems().CStr();
+}
+
 // ---------------- Start-up ----------------
 
 namespace

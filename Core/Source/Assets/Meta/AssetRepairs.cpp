@@ -1486,6 +1486,8 @@ struct CAssetRepairs::SImpl
 	bool bInitialComplete = false;
 	bool bStopping = false;
 	bool bWorking = false;
+	bool bInCommand = false;      // RunNow or a blocking ApplyFix: the registry's pump inside it must not start a live run
+
 	bool bDirty = false;
 	bool bLastHeldPending = false;
 	bool bCheckedAllCrLf = false;
@@ -1583,7 +1585,7 @@ void CAssetRepairs::Tick (uint64 NowMs)
 	}
 	impl.LastNowMs = NowMs;
 	impl.StampEvents(NowMs);
-	if (!impl.bInitialComplete || impl.bWorking)
+	if (!impl.bInitialComplete || impl.bWorking || impl.bInCommand)
 	{
 		return;
 	}
@@ -1651,6 +1653,7 @@ SRepairReport CAssetRepairs::RunNow (const SRepairOptions& Options)
 	}
 	const uint64 now = GetLifecycleNowMs();
 	impl.StampEvents(now);
+	impl.bInCommand = true;
 	// Every mount the run owns, or the mounts of the paths asked for; a reader's run covers every mount.
 	std::vector<MountId> mounts;
 	for (const FString& path : Options.Paths)
@@ -1695,6 +1698,7 @@ SRepairReport CAssetRepairs::RunNow (const SRepairOptions& Options)
 		}
 	}
 	impl.bDirty = false;
+	impl.bInCommand = false;
 	return report;
 }
 
@@ -1753,12 +1757,14 @@ SRepairReport CAssetRepairs::ApplyFix (const SLifecycleAction& FixIt)
 		return report;
 	}
 	const uint64 now = GetLifecycleNowMs();
+	impl.bInCommand = true;
 	std::shared_ptr<SCycleInput> input = impl.MakeInput(now, true, false, true);
 	input->FixActions = std::move(actions);
 	SCycleOutput planned = impl.RunCycleNow(input);
 	report.Problems = planned.PlanProblems;
 	if (planned.Ops.empty())
 	{
+		impl.bInCommand = false;
 		return report;
 	}
 	SOpsOutput ops = impl.RunOpsNow(std::move(planned.Ops));
@@ -1772,6 +1778,7 @@ SRepairReport CAssetRepairs::ApplyFix (const SLifecycleAction& FixIt)
 	SCycleOutput output = impl.RunCycleNow(after);
 	impl.ApplyCycle(output, {});
 	impl.bDirty = false;
+	impl.bInCommand = false;
 	for (SDiagnostic& problem : output.Problems)
 	{
 		report.Problems.push_back(std::move(problem));
