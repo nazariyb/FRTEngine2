@@ -1,9 +1,9 @@
 mount /Project
   rules Config/Assets.yml 3ddf6cc363d15501
   folder /Project/Materials
-  file /Project/Materials/Floor.frtmat.yml Asset size=77
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=-
-  file /Project/Materials/Light.frtmat.yml Asset size=87
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=-
-  file /Project/Materials/Shape.frtmat.yml Asset size=76
-    record type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=-
+  file /Project/Materials/Floor.frtmat.yml Asset size=77 meta=Paired
+    record guid=55f7bd0fe90549b99f3a850eed11b1b9 type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=-
+  file /Project/Materials/Light.frtmat.yml Asset size=87 meta=Paired
+    record guid=0830f233234c412ea36211829c6e3fb1 type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=-
+  file /Project/Materials/Shape.frtmat.yml Asset size=76 meta=Paired
+    record guid=38b60dc10f7b44c4a521f8867f856994 type=frt.Material importer=Material.Legacy status=Analyzed stamp=3f0b31abdd8ab56f cook=Auto chunk=0 flags=-
