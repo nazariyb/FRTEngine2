@@ -1406,8 +1406,9 @@ end
 -- inside the clone (the engine's own checkout, a project's Engine/ submodule) is named relatively, from the top of the
 -- work tree, as git reads it, so it holds wherever the clone is and in every worktree of it; a shared engine elsewhere
 -- has only its absolute path. The hook itself: Tools/GitHooks/pre-commit; the others there pass on to the clone's
--- own .git/hooks (Git LFS's, the person's), which core.hooksPath would otherwise silence. A core.hooksPath that is
--- not FRT's (husky, a team's folder) is never replaced or removed: git runs the hooks of one folder only.
+-- own .git/hooks (Git LFS's, the person's), which core.hooksPath would otherwise silence. Only hooks named by a file
+-- there are passed on: setup names the clone's own hooks that run, and warns of each one that will not. A
+-- core.hooksPath that is not FRT's (husky, a team's folder) is never replaced or removed: git runs one folder's hooks.
 local function isFrtHooksPath(value)
 	return value ~= nil and value:gsub("\\", "/"):gsub("/+$", ""):match("Tools/GitHooks$") ~= nil
 end
@@ -1463,15 +1464,38 @@ local function setupHooks(value)
 		fail("setup --hooks: git config failed in " .. winpath(clone))
 	end
 	print("The pre-commit hook is on for " .. winpath(clone) .. " (core.hooksPath=" .. hooks .. ").")
+	-- What FRT passes on is what Tools/GitHooks has a file for (chain is sourced, never a hook); git looks nowhere
+	-- else, so any other hook of the clone (reference-transaction, a rare one) is silent from now on, and that is said.
+	local passed = {}
+	for _, file in ipairs(os.matchfiles(path.join(ROOT_DIR, "Tools/GitHooks/*"))) do
+		passed[path.getname(file)] = path.getname(file) ~= "chain"
+	end
 	local commonDir = outputOf("git -C " .. quoted(clone) .. " rev-parse --path-format=absolute --git-common-dir")
 	local own = {}
+	local silenced = {}
 	for _, file in ipairs(commonDir and os.matchfiles(path.join(commonDir, "hooks/*")) or {}) do
-		if not file:match("%.sample$") then
-			table.insert(own, path.getname(file))
+		local name = path.getname(file)
+		if not name:match("%.sample$") then
+			table.insert(passed[name] and own or silenced, name)
 		end
 	end
+	table.sort(own)
+	table.sort(silenced)
 	if #own > 0 then
 		print("FRT's hooks run this clone's own as well: " .. table.concat(own, ", ") .. ".")
+	end
+	if #silenced > 0 then
+		print("Warning: FRT's hooks do not pass on to this clone's own " .. table.concat(silenced, ", ") .. ": " ..
+			(#silenced == 1 and "it does" or "they do") .. " not run while core.hooksPath is FRT's (FRT.bat setup " ..
+			"--hooks=off brings " .. (#silenced == 1 and "it" or "them") .. " back).")
+	end
+	-- git lfs install, run again, finds FRT's pre-push where it would write its own and exits 2 with "Hook already
+	-- exists"; its advice, git lfs update --force, would overwrite the engine's tracked hooks.
+	if (outputOf(gitConfig .. "--get filter.lfs.process") or "") ~= "" and outputOf("git -C " .. quoted(clone) ..
+		' grep --cached -q -e filter=lfs -- .gitattributes "*/.gitattributes"') ~= nil then
+		print("This clone uses Git LFS: FRT's hooks call it. A later 'git lfs install' says \"Hook already exists\" " ..
+			"and exits 2, which is expected; never run 'git lfs update --force', which overwrites FRT's hooks in " ..
+			"the engine.")
 	end
 end
 

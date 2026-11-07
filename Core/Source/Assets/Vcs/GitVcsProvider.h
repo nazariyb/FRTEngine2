@@ -78,7 +78,15 @@ private:
 	[[nodiscard]] std::filesystem::path GetWorkingDir () const;
 	[[nodiscard]] platform::SToolProcessResult RunGit (std::vector<FString> Arguments) const;
 	[[nodiscard]] platform::SToolProcessResult RunGitIn (const std::filesystem::path& WorkingDir, std::vector<FString> Arguments) const;
-	[[nodiscard]] SVcsResult MoveOne (const SVcsMove& Move) const;
+	// A case-only rename of a file below a gitlink is the submodule's to make: git here does not know the file.
+	[[nodiscard]] SVcsResult MoveOne (const SVcsMove& Move);
+	// The gitlinks (mode 160000) the index holds below the working directory, as git names ("/"-ended). Whatever the
+	// submodule's ignore setting or state: `git status` leaves out a clean one, and one .gitmodules or
+	// diff.ignoreSubmodules tells it to ignore, whose files must still be asked of their own repository. Empty when git
+	// cannot say.
+	[[nodiscard]] std::vector<FString> ListIndexGitlinks () const;
+	// The deepest of Gitlinks that File (absolute) is below; null when none.
+	[[nodiscard]] const FString* FindGitlinkOf (const FString& File, std::span<const FString> Gitlinks) const;
 	// The name below the top level git would print for File; empty when File is not under this mount.
 	[[nodiscard]] FString MakeGitName (const FString& File) const;
 	// `git mv` needs names relative to where it runs; false when a file is not under this mount.

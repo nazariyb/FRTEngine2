@@ -1,12 +1,13 @@
-// The VCS providers against real scratch repositories (design §12.9, §15 I26): the Git provider is busy while any of the
-// files §12.9 names exists in the git dir it resolved, and that holds for a worktree and a submodule; a case-only Move of a
-// tracked file is a rename to git, and every other move stages nothing; refused or failed moves leave an asset and its
-// meta together; committed facts and status round-trip non-ASCII names and survive an unborn HEAD; a read-only file fails
-// CheckOut without being written, partly written or having its attribute cleared; and `None` asks nothing of anybody. A
-// `.git` that cannot be used is None and one warning, and nothing above GIT_CEILING_DIRECTORIES is a repository (Core-Test
-// sets it to the temporary folder, which may itself be in a work tree). The recording fake other pieces test against is
-// checked here too. One small repository per suite (no test writes more than a handful of files). An environment variable a
-// test sets is given back however the test ends. Skipped without git on PATH.
+// The VCS providers against real scratch repositories (design §12.9, §15 I26): the Git provider is busy while any of
+// the files §12.9 names exists in the git dir it resolved, and that holds for a worktree and a submodule; a case-only
+// Move of a tracked file is a rename to git, and every other move stages nothing; refused or failed moves leave an
+// asset and its meta together; committed facts and status round-trip non-ASCII names and survive an unborn HEAD, and a
+// submodule inside a mount answers for its own files (whatever its .gitmodules ignores) and renames them; a read-only
+// file fails CheckOut without being written, partly written or having its attribute cleared; and `None` asks nothing of
+// anybody. A `.git` that cannot be used is None and one warning, and nothing above GIT_CEILING_DIRECTORIES is a
+// repository (Core-Test sets it to the temporary folder, which may itself be in a work tree). The recording fake other
+// pieces test against is checked here too. One small repository per suite (no test writes more than a handful of
+// files). An environment variable a test sets is given back however the test ends. Skipped without git on PATH.
 #include <gtest/gtest.h>
 
 #include "TestCommon.h"
@@ -16,6 +17,7 @@
 #include "Log/LogCapture.h"
 #include "Platform/RecycleBinTestUtils.h"
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <random>
@@ -466,6 +468,7 @@ TEST_F(VcsProviderTest, ASubmoduleInsideAMountAnswersForItsOwnFiles)
 	ASSERT_EQ(test::RunGit(gGit, source, { "init", "-q" }).ExitCode, 0);
 	ASSERT_TRUE(platform::WriteFileText(source / "Rock.png", "rock\n"));
 	ASSERT_TRUE(platform::WriteFileText(source / "Rock.png.meta", "Guid: 1\n"));
+	ASSERT_TRUE(platform::WriteFileText(source / ".gitignore", "*.tmp\n"));
 	ASSERT_EQ(test::RunGit(gGit, source, { "add", "--all" }).ExitCode, 0);
 	ASSERT_EQ(test::RunGit(gGit, source, { "commit", "-q", "-m", "Pack" }).ExitCode, 0);
 	const FString packName = FString::FromPath(gMount.filename()) + FString("/Пакет 包");
@@ -496,6 +499,32 @@ TEST_F(VcsProviderTest, ASubmoduleInsideAMountAnswersForItsOwnFiles)
 	EXPECT_EQ(status[1].State, EVcsState::Modified);
 	EXPECT_EQ(status[2].State, EVcsState::Untracked) << "generated locally beside a committed source: VCS003";
 	EXPECT_EQ(status[3].State, EVcsState::Clean);
+
+	// A pack whose .gitmodules says ignore = untracked (art packs often do), which git status then leaves out: its
+	// files are still asked of it. So are a clean pack's, where a file it ignores is Untracked, not Clean.
+	ASSERT_EQ(test::RunGit(gGit, pack, { "checkout", "--", "Rock.png.meta" }).ExitCode, 0);
+	ASSERT_EQ(RunGit({ "config", "-f", ".gitmodules", FString::Format("submodule.{}.ignore", packName), "untracked" }).ExitCode, 0);
+	ASSERT_EQ(RunGit({ "commit", "-q", "-a", "-m", "Ignore the pack's untracked files" }).ExitCode, 0);
+	const SVcsResult statusResultIgnored = Git.StatusOf(files, status);
+	EXPECT_EQ(statusResultIgnored.Error, EVcsError::None) << statusResultIgnored.Message.CStr();
+	EXPECT_EQ(status[1].State, EVcsState::Clean);
+	EXPECT_EQ(status[2].State, EVcsState::Untracked) << "still VCS003 whatever .gitmodules says";
+	std::filesystem::remove(pack / "New.png.meta");
+	ASSERT_TRUE(platform::WriteFileText(pack / "Scratch.tmp", "scratch\n"));
+	const std::vector<FString> ignored = { FString::FromPath(pack / "Scratch.tmp"), FString::FromPath(pack / "Rock.png") };
+	EXPECT_EQ(Git.StatusOf(ignored, status).Error, EVcsError::None);
+	EXPECT_EQ(status[0].State, EVcsState::Untracked) << "ignored by the pack, though the pack is clean";
+	EXPECT_EQ(status[1].State, EVcsState::Clean);
+	std::filesystem::remove(pack / "Scratch.tmp");
+
+	// A case-only rename inside the pack is the pack's git's rename: the parent does not know the file.
+	const SVcsMove rename = { FString::FromPath(pack / "Rock.png"), FString::FromPath(pack / "ROCK.png") };
+	const SVcsResult moved = Git.Move(std::span<const SVcsMove>(&rename, 1u));
+	EXPECT_EQ(moved.Error, EVcsError::None) << moved.Message.CStr();
+	const FString packStatus = test::RunGit(gGit, pack, { "-c", "core.quotePath=false", "status", "--porcelain" }).Output;
+	EXPECT_TRUE(packStatus.Contains("R  Rock.png -> ROCK.png")) << packStatus.CStr();
+	const std::vector<FString> names = DirectoryNames(pack);
+	EXPECT_NE(std::find(names.begin(), names.end(), FString("ROCK.png")), names.end());
 
 	// Asked once, the pack's own git is watched too.
 	CGitVcsProvider inPack;

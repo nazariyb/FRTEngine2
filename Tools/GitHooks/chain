@@ -2,7 +2,10 @@
 # named after one. core.hooksPath, which FRT.bat setup --hooks points here, makes git look for every hook in
 # this folder and nowhere else, so the clone's own hooks in .git/hooks (Git LFS's, the person's) would stop
 # running without a word, and a push would carry LFS pointers without their objects. Each hook here passes
-# on to them.
+# on to them: pre-commit (after its checks), pre-push, post-checkout, post-commit, post-merge, and the message
+# and history hooks prepare-commit-msg, commit-msg (Gerrit's Change-Id), pre-merge-commit, pre-rebase and
+# post-rewrite. A hook with no file here (reference-transaction, which would start a bash on every ref update)
+# is not run; FRT.bat setup --hooks names each such hook the clone has.
 #
 # chainHook <name> [arguments]: runs <common git dir>/hooks/<name> (a worktree's too: the common one is the
 # clone's) with the same arguments and stdin, when it is there and executable, and returns its status. Else,

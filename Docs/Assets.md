@@ -355,10 +355,10 @@ operation forward at start-up detects its providers on its own thread, and only 
 | `IsRewritingTree` | never | `index.lock` or `HEAD.lock` only, so an open merge holds repairs but never hot reload. Not an `index.lock` with a `COMMIT_EDITMSG` no older than it: `git commit -a` or `git commit <paths>` waiting for its message, which writes no working file (`IsBusy` still counts it, so repairs wait for the commit). A lock held 30 s without a break logs one warning naming the file (and saying when it is a commit waiting for its message); it is never deleted |
 | `CheckOut` | a read-only file fails with `ReadOnly`, naming it; the attribute is never cleared | the same |
 | `Add` | nothing | nothing: new files are left for the user to stage |
-| `Move` | `platform::MoveFileNoReplace`, and one warning on a case-only rename | the same, with `git mv` for a case-only rename of a tracked file, which `core.ignorecase=true` would hide; refused over `index.lock` it returns `Busy` |
+| `Move` | `platform::MoveFileNoReplace`, and one warning on a case-only rename | the same, with `git mv` for a case-only rename of a tracked file, which `core.ignorecase=true` would hide (a file below a submodule's gitlink by that submodule's git); refused over `index.lock` it returns `Busy` |
 | `Delete` | `platform::MoveToTrash` | the same |
 | `GetCommittedFacts` | all false | `git ls-tree -r -z --full-name HEAD`; an unborn HEAD (`FRT.bat new` commits nothing) means nothing is committed |
-| `StatusOf` | all `Untracked` | `git --no-optional-locks status --porcelain=v2 -z --no-renames --untracked-files=all --ignored -- .`; an ignored file is `Untracked` |
+| `StatusOf` | all `Untracked` | `git --no-optional-locks status --porcelain=v2 -z --no-renames --untracked-files=all --ignored --ignore-submodules=none -- .`; an ignored file is `Untracked`. A file below a gitlink of the index (a submodule, clean or not, whatever its `ignore` setting) is asked of that submodule's own git |
 | `GetStaged` | empty | `git diff --cached --name-only -z --no-renames --relative` |
 
 A `Move` batch moves as one: what would be refused anyway refuses before anything moves, and what moved moves back if a later
@@ -370,13 +370,20 @@ design's long-lived `SpawnToolProcess` and `IToolPipe` wait for their first clie
 sets `core.hooksPath` (relative for an engine inside the clone, absolute for a shared one), `--hooks=off` clears it, `FRT.bat
 new` only prints the hint, and `git commit --no-verify` skips it once. A `core.hooksPath` that is not FRT's (husky, a team's
 folder) is never replaced or cleared: setup refuses and names it, since git runs the hooks of one folder only. That folder
-would silence the clone's own `.git/hooks`, so `Tools/GitHooks` also holds `pre-push`, `post-checkout`, `post-commit` and
-`post-merge`, which only pass on (`Tools/GitHooks/chain`): to the clone's own hook of that name (Git LFS's, the person's;
-the common git dir's, so a worktree reaches the clone's), else, in a clone that uses Git LFS (its filter configured and a
-`.gitattributes` in the index naming it), to `git lfs <hook>`, which is all LFS's hook files do. So a push still carries its
-LFS objects whether `git lfs install` ran before `setup --hooks` or after, and LFS, which writes the hooks it misses into
-`core.hooksPath`, finds them there and writes nothing into the engine's folder. `pre-commit` runs the clone's own
-`pre-commit` once its checks passed. It parses no YAML and reports everything at once:
+would silence the clone's own `.git/hooks`, so `Tools/GitHooks` also holds `pre-push`, `post-checkout`, `post-commit`,
+`post-merge`, `prepare-commit-msg`, `commit-msg` (Gerrit's `Change-Id`), `pre-merge-commit`, `pre-rebase` and
+`post-rewrite`, which only pass on (`Tools/GitHooks/chain`): to the clone's own hook of that name (Git LFS's, the person's;
+the common git dir's, so a worktree reaches the clone's), else, for the four LFS installs, in a clone that uses Git LFS (its
+filter configured and a `.gitattributes` in the index naming it), to `git lfs <hook>`, which is all LFS's hook files do. Any
+other hook the clone has (`reference-transaction`, which would start a bash on every ref update, or a rare one) does not run
+while `core.hooksPath` is FRT's, and `setup --hooks` names each one it finds as well as those that do run. A push still
+carries its LFS objects whether `git lfs install` ran before `setup --hooks` or after, and LFS, which writes the hooks it
+misses into `core.hooksPath`, finds them there and writes nothing into the engine's folder. An explicit `git lfs install`
+after `setup --hooks` therefore says "Hook already exists: pre-push" and exits 2: that is expected (FRT's hooks already call
+`git lfs`, and LFS's filter is configured all the same). Never follow its advice to run `git lfs update --force`, which
+overwrites the engine's tracked `Tools/GitHooks` (the shared engine every project uses, for a shared one) and drops the
+pass-through to the clone's own hooks; `setup --hooks` says so in a clone whose LFS filter is configured. `pre-commit` runs
+the clone's own `pre-commit` once its checks passed. It parses no YAML and reports everything at once:
 
 1. pairs: a staged meta whose source is neither staged nor tracked, and a staged delete or rename of a source whose tracked
    meta did not go along (`META002`). A new source without a meta is left to check 6, which knows the rules and companions;

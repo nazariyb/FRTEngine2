@@ -1,12 +1,14 @@
-// The pre-commit hook and its switch, self-tested on a scratch repository (design §13.3, §15 I24), run the way git runs it:
-// a good commit goes through with a new source left to `validate --staged`; every check reports in one failed commit, with
-// each of its messages, so no check hides another; the hook only asks git and AssetTool when it should (BUILD003 only in an
-// engine checkout and only for staged engine sources, and a missing AssetTool is a message, not a refusal), and tells the tool
-// which repository is committing; with the engine's AssetTool, check 6 refuses a meta that does not parse, as `git commit -a`
-// is about to commit it. The hook is LF whatever core.autocrlf says, or bash could not read its first line.
-// `FRT.bat setup --hooks` sets core.hooksPath and nothing else, `=off` clears it, relative for an engine inside the clone,
-// and neither touches another tool's; FRT's hooks pass on to the clone's own (and to Git LFS), which it would silence.
-// A failing commit costs a bash and a few git processes, so one commit asserts many messages. Skipped without git on PATH.
+// The pre-commit hook and its switch, self-tested on a scratch repository (design §13.3, §15 I24), run the way git runs
+// it: a good commit goes through with a new source left to `validate --staged`; every check reports in one failed
+// commit, with each of its messages, so no check hides another; the hook only asks git and AssetTool when it should
+// (BUILD003 only in an engine checkout and only for staged engine sources, and a missing AssetTool is a message, not a
+// refusal), and tells the tool which repository is committing; with the engine's AssetTool, check 6 refuses a meta that
+// does not parse, as `git commit -a` is about to commit it. The hook is LF whatever core.autocrlf says, or bash could
+// not read its first line. `FRT.bat setup --hooks` sets core.hooksPath and nothing else, `=off` clears it, relative for
+// an engine inside the clone, and neither touches another tool's; FRT's hooks pass on to the clone's own (and to Git
+// LFS), which it would silence, and setup names those that run, warns of those that will not, and tells an LFS clone
+// not to force LFS's hooks over FRT's. A failing commit costs a bash and a few git processes, so one commit asserts
+// many messages. Skipped without git on PATH.
 #include <gtest/gtest.h>
 
 #include "TestCommon.h"
@@ -151,7 +153,8 @@ protected:
 
 TEST_F(GitHooksTest, TheHooksAreLfWhateverCoreAutocrlfSays)
 {
-	for (const FStringView name : { "pre-commit", "pre-push", "post-checkout", "post-commit", "post-merge", "chain" })
+	for (const FStringView name : { "pre-commit", "pre-push", "post-checkout", "post-commit", "post-merge", "prepare-commit-msg",
+		"commit-msg", "pre-merge-commit", "pre-rebase", "post-rewrite", "chain" })
 	{
 		SCOPED_TRACE(FString(name).CStr());
 		const FString text = platform::ReadFileText(paths::GetEngineDir() / "Tools" / "GitHooks" / name.ToPath(), ETextFileEncoding::Raw).value_or(FString());
@@ -161,11 +164,12 @@ TEST_F(GitHooksTest, TheHooksAreLfWhateverCoreAutocrlfSays)
 	}
 }
 
-// core.hooksPath makes git run the hooks of FRT's folder and no other, so each passes on to the clone's own (Git LFS's, the
-// person's): a pre-commit of the clone still runs once FRT's checks passed, and refuses the commit; a pre-push still runs,
-// with git's arguments and its list of refs; and a clone that uses Git LFS without hook files of its own (installed after
-// setup --hooks, when they had nowhere to go) still uploads its objects on a push, while Git LFS, which writes the hooks it
-// misses into core.hooksPath, finds FRT's there and writes nothing into the engine's folder.
+// core.hooksPath makes git run the hooks of FRT's folder and no other, so each passes on to the clone's own (Git LFS's,
+// the person's): a pre-commit of the clone still runs once FRT's checks passed, and refuses the commit; a commit-msg
+// (Gerrit's Change-Id) still edits the message, and a post-rewrite still hears of an amend; a pre-push still runs, with
+// git's arguments and its list of refs; and a clone that uses Git LFS without hook files of its own (installed after
+// setup --hooks, when they had nowhere to go) still uploads its objects on a push, while Git LFS, which writes the
+// hooks it misses into core.hooksPath, finds FRT's there and writes nothing into the engine's folder.
 TEST_F(GitHooksTest, TheClonesOwnHooksAndGitLfsStillRun)
 {
 	const std::filesystem::path own = gRepo / ".git" / "hooks";
@@ -178,8 +182,10 @@ TEST_F(GitHooksTest, TheClonesOwnHooksAndGitLfsStillRun)
 		~SRemoveOwnHooks ()
 		{
 			std::error_code ignored;
-			std::filesystem::remove(Own / "pre-commit", ignored);
-			std::filesystem::remove(Own / "pre-push", ignored);
+			for (const char* name : { "pre-commit", "pre-push", "commit-msg", "post-rewrite" })
+			{
+				std::filesystem::remove(Own / name, ignored);
+			}
 		}
 	} removeOwnHooks { own };
 	const std::filesystem::path marker = gDir / "Marker.txt";
@@ -199,6 +205,18 @@ TEST_F(GitHooksTest, TheClonesOwnHooksAndGitLfsStillRun)
 	EXPECT_EQ(refused.ExitCode, 1) << refused.Output.CStr() << refused.Errors.CStr();
 	EXPECT_TRUE(refused.Errors.Contains("the clone says no")) << refused.Errors.CStr();
 	std::filesystem::remove(own / "pre-commit", ec);
+
+	ASSERT_TRUE(platform::WriteFileText(own / "commit-msg", "#!/bin/sh\nprintf '\\nChange-Id: I0123456789abcdef\\n' >> \"$1\"\n"));
+	ASSERT_TRUE(platform::WriteFileText(own / "post-rewrite", FString::Format("#!/bin/sh\necho \"post-rewrite $1\" >> \"{}\"\n", markerName)));
+	std::filesystem::remove(marker, ec);
+	const test::SProcessResult messaged = Commit();
+	EXPECT_EQ(messaged.ExitCode, 0) << messaged.Output.CStr() << messaged.Errors.CStr();
+	EXPECT_TRUE(RunGit({ "log", "-1", "--format=%B" }).Output.Contains("Change-Id: I0123456789abcdef")) << "the clone's commit-msg ran";
+	const test::SProcessResult amended = RunGit({ "commit", "-q", "--amend", "-m", "Amended" });
+	EXPECT_EQ(amended.ExitCode, 0) << amended.Output.CStr() << amended.Errors.CStr();
+	EXPECT_EQ(platform::ReadFileText(marker).value_or(FString()), "post-rewrite amend\n");
+	std::filesystem::remove(own / "commit-msg", ec);
+	std::filesystem::remove(own / "post-rewrite", ec);
 
 	const std::filesystem::path remote = gDir / FStringView("Віддалене.git").ToPath();
 	std::filesystem::remove_all(remote, ec);
@@ -607,12 +625,23 @@ TEST_F(GitHooksTest, SetupHooksSetsCoreHooksPathAndNothingElse)
 	EXPECT_EQ(hooksPath(), ".husky");
 	ASSERT_EQ(test::RunGit(gGit, engine, { "config", "--local", "--unset", "core.hooksPath" }).ExitCode, 0);
 
-	// The clone's own hooks are named: FRT's run them too.
-	ASSERT_TRUE(platform::WriteFileText(engine / ".git" / "hooks" / "pre-push", "#!/bin/sh\nexit 0\n"));
+	// The clone's own hooks FRT's pass on are named, and so is one they do not, which stops running.
+	CopyHooks(engine / "Tools" / "GitHooks");
+	for (const char* name : { "pre-push", "commit-msg", "reference-transaction" })
+	{
+		ASSERT_TRUE(platform::WriteFileText(engine / ".git" / "hooks" / name, "#!/bin/sh\nexit 0\n"));
+	}
+	// A clone that uses Git LFS is told that a later git lfs install's "Hook already exists" is expected, and not to
+	// force it.
+	ASSERT_TRUE(platform::WriteFileText(engine / ".gitattributes", "*.bin filter=lfs diff=lfs merge=lfs -text\n"));
+	ASSERT_EQ(test::RunGit(gGit, engine, { "add", ".gitattributes" }).ExitCode, 0);
+	ASSERT_EQ(test::RunGit(gGit, engine, { "config", "--local", "filter.lfs.process", "git-lfs filter-process" }).ExitCode, 0);
 	const test::SProcessResult on = setup({ "--hooks" });
 	EXPECT_EQ(on.ExitCode, 0) << on.Output.CStr() << on.Errors.CStr();
 	EXPECT_EQ(hooksPath(), "Tools/GitHooks") << on.Output.CStr();
-	EXPECT_TRUE(on.Output.Contains("run this clone's own as well: pre-push.")) << on.Output.CStr();
+	EXPECT_TRUE(on.Output.Contains("run this clone's own as well: commit-msg, pre-push.")) << on.Output.CStr();
+	EXPECT_TRUE(on.Output.Contains("do not pass on to this clone's own reference-transaction: it does not run")) << on.Output.CStr();
+	EXPECT_TRUE(on.Output.Contains("never run 'git lfs update --force'")) << on.Output.CStr();
 	// FRT's own, set again: replaced, not refused.
 	EXPECT_EQ(setup({ "--hooks" }).ExitCode, 0);
 	EXPECT_FALSE(std::filesystem::exists(engine / "FRTEngine2.sln")) << "--hooks generates nothing";

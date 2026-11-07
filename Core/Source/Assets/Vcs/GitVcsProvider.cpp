@@ -1,5 +1,6 @@
 #include "Assets/Vcs/GitVcsProvider.h"
 
+#include <algorithm>
 #include <chrono>
 #include <numeric>
 #include <optional>
@@ -376,6 +377,40 @@ CGitVcsProvider* CGitVcsProvider::FindNested (const FString& Gitlink)
 	return Nested.back().Provider.get();
 }
 
+std::vector<FString> CGitVcsProvider::ListIndexGitlinks () const
+{
+	// "<mode> <object> <stage>\t<name>", names from the top level.
+	std::vector<FString> gitlinks;
+	const platform::SToolProcessResult listed = RunGit({ "ls-files", "-s", "-z", "--full-name", "--", "." });
+	if (!listed.bStarted || listed.bTimedOut || listed.ExitCode != 0)
+	{
+		return gitlinks;
+	}
+	for (const FStringView entry : AsText(listed.Stdout).Split('\0', EStringSplit::SkipEmpty))
+	{
+		if (entry.StartsWith("160000 "))
+		{
+			gitlinks.push_back(FString(entry.SplitFirst('\t').Right) + "/");
+		}
+	}
+	return gitlinks;
+}
+
+const FString* CGitVcsProvider::FindGitlinkOf (const FString& File, std::span<const FString> Gitlinks) const
+{
+	const FString name = MakeGitName(File);
+	const FString* deepest = nullptr;
+	for (const FString& link : Gitlinks)
+	{
+		if (name.View().StartsWith<ESearchCase::IgnoreCase>(link.View())
+			&& (deepest == nullptr || link.Len() > deepest->Len()))
+		{
+			deepest = &link;
+		}
+	}
+	return deepest;
+}
+
 template <typename TAsk>
 SVcsResult CGitVcsProvider::AskNested (std::span<const FString> Files, std::span<const FString> Gitlinks,
 	std::vector<size_t>& InOutOwn, TAsk&& Ask)
@@ -387,21 +422,12 @@ SVcsResult CGitVcsProvider::AskNested (std::span<const FString> Files, std::span
 	std::vector<std::vector<size_t>> below(Gitlinks.size());
 	std::erase_if(InOutOwn, [&] (size_t File)
 	{
-		const FString name = MakeGitName(Files[File]);
-		size_t deepest = Gitlinks.size();
-		for (size_t link = 0u; link < Gitlinks.size(); ++link)
-		{
-			if (name.View().StartsWith<ESearchCase::IgnoreCase>(Gitlinks[link].View())
-				&& (deepest == Gitlinks.size() || Gitlinks[link].Len() > Gitlinks[deepest].Len()))
-			{
-				deepest = link;
-			}
-		}
-		if (deepest == Gitlinks.size())
+		const FString* deepest = FindGitlinkOf(Files[File], Gitlinks);
+		if (deepest == nullptr)
 		{
 			return false;
 		}
-		below[deepest].push_back(File);
+		below[static_cast<size_t>(deepest - Gitlinks.data())].push_back(File);
 		return true;
 	});
 	for (size_t link = 0u; link < Gitlinks.size(); ++link)
@@ -426,7 +452,7 @@ SVcsResult CGitVcsProvider::CheckOut (std::span<const FString> Files)
 	return CheckOutFiles(Files);
 }
 
-SVcsResult CGitVcsProvider::MoveOne (const SVcsMove& Move) const
+SVcsResult CGitVcsProvider::MoveOne (const SVcsMove& Move)
 {
 	// Names relative to the mount root, so git runs there: a mount folder that does not exist has nothing to move.
 	if (!IsCaseOnlyRename(Move) || !IsDirectory(MountRoot))
@@ -440,6 +466,17 @@ SVcsResult CGitVcsProvider::MoveOne (const SVcsMove& Move) const
 		return MoveFilePlain(Move);
 	}
 	const platform::SToolProcessResult tracked = RunGitIn(MountRoot, { "ls-files", "--error-unmatch", "--", from });
+	if (tracked.bStarted && !tracked.bTimedOut && tracked.ExitCode != 0)
+	{
+		// Not this repository's: a file below a gitlink is its submodule's, which knows it is tracked (and
+		// core.ignorecase there would hide a plain rename from it).
+		const std::vector<FString> gitlinks = ListIndexGitlinks();
+		if (const FString* gitlink = FindGitlinkOf(Move.From, gitlinks); gitlink != nullptr)
+		{
+			CGitVcsProvider* nested = FindNested(*gitlink);
+			return nested != nullptr ? nested->MoveOne(Move) : MoveFilePlain(Move);
+		}
+	}
 	if (!tracked.bStarted || tracked.bTimedOut || (tracked.ExitCode != 0 && tracked.ExitCode != 1))
 	{
 		return MakeFailure("ls-files", tracked);
@@ -549,9 +586,11 @@ SVcsResult CGitVcsProvider::StatusOf (std::span<const FString> Files, std::vecto
 	}
 
 	// --no-renames: a rename is its two files, and each has a state. --ignored with --untracked-files=all lists each ignored
-	// file by itself. The paths are below the top level, whatever the working directory.
+	// file by itself. --ignore-submodules=none: a submodule's changes show whatever .gitmodules (ignore = untracked, as
+	// art packs often set) or diff.ignoreSubmodules says. The paths are below the top level, whatever the working
+	// directory.
 	const platform::SToolProcessResult run = RunGit({ "status", "--porcelain=v2", "-z", "--no-renames", "--untracked-files=all",
-		"--ignored", "--", "." });
+		"--ignored", "--ignore-submodules=none", "--", "." });
 	if (!run.bStarted || run.bTimedOut || run.ExitCode != 0)
 	{
 		return MakeFailure("status", run);
@@ -570,16 +609,21 @@ SVcsResult CGitVcsProvider::StatusOf (std::span<const FString> Files, std::vecto
 	// with a trailing '/'. Every file below it is as untracked as the folder.
 	bool bUntrackedFolders = false;
 	// A repository committed here (a submodule) with anything changed in it is one entry whose <sub> field starts with 'S',
-	// and git lists no file below it: those are asked of that repository. One with nothing changed is not listed, and its
-	// files are as committed, so Clean below.
-	std::vector<FString> gitlinks;
+	// and git lists no file below it: those are asked of that repository. So are the files below every other gitlink of
+	// the index: a clean submodule is not listed, and yet a file it ignores is Untracked, not Clean.
+	std::vector<FString> gitlinks = ListIndexGitlinks();
 	const auto recordChanged = [&] (FStringView Entry, uint32 Fields)
 	{
 		const FStringView path = SkipFields(Entry, Fields);
 		record(path, ToVcsState(Entry[2], Entry[3]));
-		if (SkipFields(Entry, 2u).StartsWith('S'))
+		const FString gitlink = FString(path) + "/";
+		const auto same = [&] (const FString& Link)
 		{
-			gitlinks.push_back(FString(path) + "/");
+			return Link.View().Equals<ESearchCase::IgnoreCase>(gitlink.View());
+		};
+		if (SkipFields(Entry, 2u).StartsWith('S') && std::none_of(gitlinks.begin(), gitlinks.end(), same))
+		{
+			gitlinks.push_back(gitlink);
 		}
 	};
 	for (const FStringView entry : AsText(run.Stdout).Split('\0', EStringSplit::SkipEmpty))
