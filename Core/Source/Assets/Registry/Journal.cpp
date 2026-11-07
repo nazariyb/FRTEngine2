@@ -1087,7 +1087,11 @@ bool CRegistryJournal::FinishRestart (CJournalRestart&& Prepared, FString* OutEr
 	const std::span<const uint8> later = std::span<const uint8>(OwnFrames).subspan((std::min)(Prepared.CoveredBytes, OwnFrames.size()));
 	const uint64 fileStart = platform::ReadTimestamp();
 	++Generation;
+	// A swap, not a move-assign that would close the old handle here: that close frees the replaced, unlinked file, and
+	// file-system filters do their work in it, which can take milliseconds of the owner's frame. The caller drops it.
+	platform::CAppendFile replaced = std::move(File);
 	File = std::move(Prepared.File);
+	Prepared.File = std::move(replaced);
 	JournalBase = Prepared.Base;
 	if (!later.empty() && !File.Append(later, OutError))
 	{

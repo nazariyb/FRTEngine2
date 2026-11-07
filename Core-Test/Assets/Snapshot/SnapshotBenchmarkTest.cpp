@@ -232,10 +232,14 @@ void MeasureSnapshot (const std::filesystem::path& Dir, uint32 Assets, uint32 Ro
 	// written, renamed over the old one, opened), FinishRestart in the completion. 101 commits appended, the view
 	// at the 96th, the last 5 made while the worker ran (3 before its rename, 2 after it). A journal file of its
 	// own, so the snapshot's stays as the load read it. The check holds the owner thread's whole part - work and
-	// file (the handle swap, the old handle closed, one append of the commits since BeginRestart) - the worst of 5
-	// rounds; the worker's part and the one-call Restart (all of it on the owner thread) are printed.
-	double ownerMs = 0.0;
+	// file (the handle swap, one append of the commits since BeginRestart) - as the median of 5 rounds: the part
+	// takes about 0.2 ms, so one round a loaded machine preempts would decide a worst-of-5 guard, while a real
+	// regression (a copy of the journal, a flush) moves the median. The worst round is printed beside it, and so
+	// are the replaced handle's close (FinishRestart hands it back; F3 closes it on a worker: it frees the unlinked
+	// file, and file-system filters work in it), the worker's part and the one-call Restart (all on the owner thread).
+	std::vector<double> ownerRounds;
 	double ownerFileMs = 0.0;
+	double closeMs = 0.0;
 	double workerMs = 0.0;
 	double oneCallMs = 0.0;
 	const auto makeEdit = [] (uint32 I)
@@ -263,8 +267,12 @@ void MeasureSnapshot (const std::filesystem::path& Dir, uint32 Assets, uint32 Ro
 			ASSERT_TRUE(restarted.Append(makeEdit(i), 1000u + i, &error)) << error.CStr();
 		}
 		ASSERT_TRUE(restarted.FinishRestart(std::move(restart), &error)) << error.CStr();
+		ASSERT_TRUE(restart.HoldsFile()) << "the replaced journal's handle comes back, for a worker to close";
+		const uint64 closeStart = platform::ReadTimestamp();
+		restart = CJournalRestart();
+		closeMs = (std::max)(closeMs, platform::TimestampToMilliseconds(platform::ReadTimestamp() - closeStart));
 		const SJournalStats& stats = restarted.GetStats();
-		ownerMs = (std::max)(ownerMs, stats.LastRestartMs);
+		ownerRounds.push_back(stats.LastRestartMs);
 		ownerFileMs = (std::max)(ownerFileMs, stats.LastRestartFileMs);
 		workerMs = (std::max)(workerMs, stats.LastRestartWorkerMs);
 		restarted.Close();
@@ -279,7 +287,12 @@ void MeasureSnapshot (const std::filesystem::path& Dir, uint32 Assets, uint32 Ro
 		ASSERT_TRUE(oneCall.Restart(1000u + 95u, &error)) << error.CStr();
 		oneCallMs = (std::max)(oneCallMs, oneCall.GetStats().LastRestartMs);
 	}
-	Check("JournalRestartOwnerMs", ownerMs, Budgets.Restart, "ms", FString::Format("(owner thread, worst of 5; file work {:.3f} ms of it)", ownerFileMs).CStr());
+	std::sort(ownerRounds.begin(), ownerRounds.end());
+	const double ownerMs = ownerRounds[ownerRounds.size() / 2u];
+	Check("JournalRestartOwnerMs", ownerMs, Budgets.Restart, "ms", "(owner thread, median of 5)");
+	Check("JournalRestartOwnerWorstMs", ownerRounds.back(), SBudget {}, "ms",
+		FString::Format("(owner thread, worst of 5; file work at most {:.3f} ms of a round)", ownerFileMs).CStr());
+	Check("JournalRestartCloseMs", closeMs, SBudget {}, "ms", "(the replaced journal's handle closed, on a worker in the registry; worst of 5)");
 	Check("JournalRestartWorkerMs", workerMs, SBudget {}, "ms", "(Prepare on the worker, worst of 5)");
 	Check("JournalRestartOneCallMs", oneCallMs, SBudget {}, "ms", "(Restart, all on the owner thread, worst of 5; a full write does not use it)");
 }

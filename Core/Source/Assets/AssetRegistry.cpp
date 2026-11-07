@@ -2819,6 +2819,12 @@ struct CAssetRegistry::SImpl final : IAssetRepairsHost
 			{
 				log::Warning(LogCategory, "the registry journal was not restarted: {}", error);
 			}
+			if (Job.Restart.HoldsFile())
+			{
+				// The replaced journal's handle (a stale restart's: the new one's), closed on a worker, off the frame (Journal.h).
+				Pool.Submit(jobs::EWorkPriority::Low, jobs::NoCancelGroup,
+					[replaced = std::move(Job.Restart)] () mutable { replaced = CJournalRestart(); });
+			}
 			if (!Journal->IsBroken())
 			{
 				bJournalBreakLogged = false;   // the next break is logged again

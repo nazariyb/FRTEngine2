@@ -2,7 +2,8 @@
 // a snapshot plus its journal loads the latest committed state; a journal keeps only its snapshot's mounts; a
 // torn tail is dropped at load and cut off before the next append, and so is a commit whose delta does not decode;
 // a journal that continues another snapshot is ignored; after a full write, Restart - or the restart a worker
-// prepares - keeps exactly the commits the snapshot's view did not hold; a failed append breaks the journal until a full write, and loses no commit; a delta
+// prepares - keeps exactly the commits the snapshot's view did not hold, and the prepared one hands the replaced journal's
+// handle back for its caller to close; a failed append breaks the journal until a full write, and loses no commit; a delta
 // larger than one frame is split and joined again; types are stored by name, and a name this build does not know
 // waits Schemaless; a snapshot that lost its rule outputs replays no rule hashes.
 #include <gtest/gtest.h>
@@ -570,6 +571,9 @@ TEST_F(JournalTest, ARestartPreparedOnTheWorkerKeepsTheCommitsTheSnapshotDoesNot
 	EXPECT_TRUE(ReadJournal(Journal).Deltas.empty());
 	CommitJournaled(Store, journal, MakeEdit(3u));
 	ASSERT_TRUE(journal.FinishRestart(std::move(restart), &error)) << error.CStr();
+	// The replaced journal's handle comes back still open, for the caller to close off the owner's frame.
+	EXPECT_TRUE(restart.HoldsFile());
+	restart = CJournalRestart();
 	EXPECT_EQ(journal.GetJournalBase(), view->GetRevision());
 	EXPECT_FALSE(journal.IsBroken());
 	EXPECT_EQ(journal.GetStats().Restarts, 1u);

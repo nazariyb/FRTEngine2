@@ -50,7 +50,9 @@
  *	   the commits after the view that were appended so far) written beside the old one and renamed over it,
  *	   and opened for appending; on the owner thread, FinishRestart in the job's completion, which swaps the
  *	   handle and appends the commits made since BeginRestart from memory (they went into the old file, which
- *	   the rename left to the old handle) - one append. The journal then keeps this process's frames
+ *	   the rename left to the old handle) - one append. The old handle goes back in the CJournalRestart, still
+ *	   open: closing the last handle of the unlinked file frees it, and file-system filters (a scanner) do their
+ *	   work in that close, so F3 drops the CJournalRestart on a worker. The journal then keeps this process's frames
  *	   committed after that view and drops everything older, which the snapshot holds. A Prepare that failed
  *	   makes FinishRestart do the whole Restart on the owner thread. Restart(view revision) is the same in one
  *	   call on the owner thread. One restart at a time. A crash before the rename leaves a journal whose
@@ -119,7 +121,7 @@ struct SJournalStats
 	uint32 Restarts = 0u;
 	double LastRestartMs = 0.0;       // the last restart that succeeded, on the owner thread: Restart, or BeginRestart + FinishRestart
 	double LastRestartFileMs = 0.0;   // ... of which file work: Restart's closing, writing and reopening; FinishRestart's
-	                                  // handle swap (the old one closed) and append of the later commits
+	                                  // handle swap and append of the later commits (its caller closes the old handle)
 	double LastRestartWorkerMs = 0.0; // the last FinishRestart's CJournalRestart::Prepare, on the worker (0 after a Restart)
 	uint32 FailedAppends = 0u;        // appends that broke the journal
 };
@@ -128,7 +130,9 @@ struct SJournalStats
  * A journal restart prepared on a worker (protocol step 3 in the header comment): made by
  * CRegistryJournal::BeginRestart on the owner thread, Prepare on a worker after the snapshot was written, back
  * to CRegistryJournal::FinishRestart on the owner thread. Movable; dropping one that was prepared leaves the
- * new journal on disk without the commits made since BeginRestart (a rescan finds them).
+ * new journal on disk without the commits made since BeginRestart (a rescan finds them). A prepared FinishRestart
+ * hands the replaced journal's handle back in it, so dropping it then closes that handle: where a close must not
+ * block (the owner thread's frame), drop it on a worker.
  */
 class FRT_CORE_API CJournalRestart
 {
@@ -143,6 +147,8 @@ public:
 	bool Prepare (FString* OutError = nullptr);
 	[[nodiscard]] bool IsPrepared () const noexcept { return bPrepared; }
 	[[nodiscard]] uint64 GetJournalBase () const noexcept { return Base; }
+	// A handle is open in it: after Prepare the new journal's, after a prepared FinishRestart the replaced one's.
+	[[nodiscard]] bool HoldsFile () const noexcept { return File.IsOpen(); }
 
 private:
 	friend class CRegistryJournal;
@@ -153,7 +159,7 @@ private:
 	uint64 Generation = 0u;            // the journal's when BeginRestart made it: a later Open, Close or restart makes it stale
 	size_t CoveredBytes = 0u;          // the journal's in-memory frames when BeginRestart made it
 	std::vector<uint8> Frames;         // of those, the commits after Base
-	platform::CAppendFile File;        // the new journal, open for appending (Prepare)
+	platform::CAppendFile File;        // the new journal, open for appending (Prepare); the replaced one after FinishRestart
 	bool bPrepared = false;
 	double PrepareMs = 0.0;
 };
@@ -191,9 +197,9 @@ public:
 	// Protocol step 3, the owner thread's part where the full write's view is acquired (JournalBase: its
 	// revision): copies the commits after it appended so far (none, when the view is the current revision).
 	[[nodiscard]] CJournalRestart BeginRestart (uint64 JournalBase);
-	// The owner thread's part once the worker is done: a prepared restart takes the new file's handle and
-	// appends the commits made since BeginRestart (one write); one the worker could not prepare restarts here
-	// (Restart). Clears a broken state. False when the restart is stale (an Open, Close or restart came in
+	// The owner thread's part once the worker is done: a prepared restart takes the new file's handle, leaves the
+	// replaced one open in Prepared for its caller to close (CJournalRestart), and appends the commits made since
+	// BeginRestart (one write); one the worker could not prepare restarts here (Restart). Clears a broken state. False when the restart is stale (an Open, Close or restart came in
 	// between: nothing changes) or failed (the journal is broken, the frames in memory).
 	bool FinishRestart (CJournalRestart&& Prepared, FString* OutError = nullptr);
 
