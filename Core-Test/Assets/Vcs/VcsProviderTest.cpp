@@ -447,6 +447,65 @@ TEST_F(VcsProviderTest, ASubmoduleIsARepositoryOfItsOwn)
 	EXPECT_TRUE(committed[0]);
 }
 
+// A submodule committed inside a mount (an art pack under Content/): git in the mount's repository lists its gitlink and
+// never a file below it, so those are asked of the submodule. Its committed meta is committed (a copy elsewhere must not
+// win a duplicate), a meta made beside it is untracked (VCS003), and its locks hold the mount.
+TEST_F(VcsProviderTest, ASubmoduleInsideAMountAnswersForItsOwnFiles)
+{
+	const std::filesystem::path source = gDir / FStringView("Пакет джерело").ToPath();
+	std::filesystem::create_directories(source);
+	ASSERT_EQ(test::RunGit(gGit, source, { "init", "-q" }).ExitCode, 0);
+	ASSERT_TRUE(platform::WriteFileText(source / "Rock.png", "rock\n"));
+	ASSERT_TRUE(platform::WriteFileText(source / "Rock.png.meta", "Guid: 1\n"));
+	ASSERT_EQ(test::RunGit(gGit, source, { "add", "--all" }).ExitCode, 0);
+	ASSERT_EQ(test::RunGit(gGit, source, { "commit", "-q", "-m", "Pack" }).ExitCode, 0);
+	const FString packName = FString::FromPath(gMount.filename()) + FString("/Пакет 包");
+	const test::SProcessResult added = RunGit({ "-c", "protocol.file.allow=always", "submodule", "add", "-q", FString::FromPath(source), packName });
+	ASSERT_EQ(added.ExitCode, 0) << added.Errors.CStr();
+	ASSERT_EQ(RunGit({ "commit", "-q", "-m", "A pack" }).ExitCode, 0);
+	const std::filesystem::path pack = gMount / FStringView("Пакет 包").ToPath();
+
+	const std::vector<FString> files = { FString::FromPath(pack / "Rock.png"), FString::FromPath(pack / "Rock.png.meta"),
+		FString::FromPath(pack / "New.png.meta"), Mounted("Base.png") };
+	std::vector<bool> facts;
+	const SVcsResult factsResult = Git.GetCommittedFacts(files, facts);
+	EXPECT_EQ(factsResult.Error, EVcsError::None) << factsResult.Message.CStr();
+	EXPECT_EQ(facts, (std::vector<bool> { true, true, false, true }));
+
+	// Clean, it is not in git status at all.
+	std::vector<SVcsStatus> status;
+	EXPECT_EQ(Git.StatusOf(files, status).Error, EVcsError::None);
+	EXPECT_EQ(status[0].State, EVcsState::Clean);
+	EXPECT_EQ(status[1].State, EVcsState::Clean);
+
+	ASSERT_TRUE(platform::WriteFileText(pack / "New.png.meta", "Guid: 2\n"));
+	ASSERT_TRUE(platform::WriteFileText(pack / "Rock.png.meta", "Guid: 3\n"));
+	const SVcsResult statusResult = Git.StatusOf(files, status);
+	EXPECT_EQ(statusResult.Error, EVcsError::None) << statusResult.Message.CStr();
+	ASSERT_EQ(status.size(), files.size());
+	EXPECT_EQ(status[0].State, EVcsState::Clean);
+	EXPECT_EQ(status[1].State, EVcsState::Modified);
+	EXPECT_EQ(status[2].State, EVcsState::Untracked) << "generated locally beside a committed source: VCS003";
+	EXPECT_EQ(status[3].State, EVcsState::Clean);
+
+	// Asked once, the pack's own git is watched too.
+	CGitVcsProvider inPack;
+	ASSERT_TRUE(inPack.Detect(FString::FromPath(pack)));
+	EXPECT_FALSE(Git.IsBusy());
+	ASSERT_TRUE(platform::WriteFileText(inPack.GetGitDir() / "index.lock", ""));
+	EXPECT_TRUE(Git.IsBusy());
+	EXPECT_TRUE(Git.IsRewritingTree());
+	std::filesystem::remove(inPack.GetGitDir() / "index.lock");
+	EXPECT_FALSE(Git.IsBusy());
+
+	// Gone again, so that no other test sees it.
+	std::error_code ec;
+	std::filesystem::remove_all(pack, ec);
+	ASSERT_EQ(RunGit({ "rm", "-q", "--cached", "--", packName }).ExitCode, 0);
+	ASSERT_EQ(RunGit({ "rm", "-q", "--", ".gitmodules" }).ExitCode, 0);
+	ASSERT_EQ(RunGit({ "commit", "-q", "-m", "No pack" }).ExitCode, 0);
+}
+
 
 // ---------------- Move ----------------
 

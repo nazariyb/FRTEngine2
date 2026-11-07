@@ -2,6 +2,9 @@
 
 #include <atomic>
 #include <filesystem>
+#include <memory>
+#include <mutex>
+#include <span>
 #include <vector>
 
 #include "Assets/Vcs/VcsProvider.h"
@@ -14,11 +17,12 @@
  * which `core.ignorecase=true` would otherwise hide. New files are left for the user to stage.
  *
  * Every git command runs from the mount root (while that does not exist, from the nearest folder above it), so a mount in a
- * submodule or a worktree talks to its own repository, and never
- * compares a path git prints with one FRT holds: a path is the mount-relative name plus the mount's prefix below the top
- * level, which git itself reports, so a subst or mapped drive or a junction in the path cannot make them disagree. Each
- * command lists the whole mount once (`ls-tree`, `status`) and the batch is looked up in the result, so no command line ever
- * grows with the batch.
+ * submodule or a worktree talks to its own repository, and never compares a path git prints with one FRT holds: a path is
+ * the mount-relative name plus the mount's prefix below the top level, which git itself reports, so a subst or mapped drive
+ * or a junction in the path cannot make them disagree. Each command lists the whole mount once (`ls-tree`, `status`) and the
+ * batch is looked up in the result, so no command line ever grows with the batch. A repository committed inside the mount
+ * (a submodule under Content/) is its own: git lists its gitlink and never a file below it, so committed facts and status
+ * of those files are asked of a provider of that repository, made on first use, and its locks make this one busy.
  *
  * IsBusy, IsRewritingTree and the path getters only stat or read what Detect resolved: they spawn nothing and are safe on
  * the owner thread. Every other call that asks git blocks on a process, so it belongs on a worker. All are thread-safe after
@@ -79,6 +83,21 @@ private:
 	[[nodiscard]] FString MakeGitName (const FString& File) const;
 	// `git mv` needs names relative to where it runs; false when a file is not under this mount.
 	[[nodiscard]] bool MakeMountRelative (const FString& File, FString& Out) const;
+	// The provider of the repository committed at Gitlink (its git name, "/"-ended), made on first use; null, after one
+	// warning, when it is not checked out.
+	[[nodiscard]] CGitVcsProvider* FindNested (const FString& Gitlink);
+	// Takes from InOutOwn the files below one of Gitlinks and asks each one's provider about them, Ask(provider, indices).
+	template <typename TAsk>
+	[[nodiscard]] SVcsResult AskNested (std::span<const FString> Files, std::span<const FString> Gitlinks,
+		std::vector<size_t>& InOutOwn, TAsk&& Ask);
+
+	struct SNested
+	{
+		FString Gitlink;
+		std::unique_ptr<CGitVcsProvider> Provider;   // null: not checked out
+	};
+	mutable std::mutex NestedMutex;   // IsBusy reads Nested on the owner thread while a worker may add to it
+	std::vector<SNested> Nested;
 
 	std::filesystem::path Git;        // empty until Detect succeeds
 	std::filesystem::path MountRoot;

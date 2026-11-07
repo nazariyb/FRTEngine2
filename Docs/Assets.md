@@ -356,7 +356,7 @@ operation forward at start-up detects its providers on its own thread, and only 
 | `Add` | nothing | nothing: new files are left for the user to stage |
 | `Move` | `platform::MoveFileNoReplace`, and one warning on a case-only rename | the same, with `git mv` for a case-only rename of a tracked file, which `core.ignorecase=true` would hide; refused over `index.lock` it returns `Busy` |
 | `Delete` | `platform::MoveToTrash` | the same |
-| `GetCommittedFacts` | all false | `git ls-tree -r -z --full-name --name-only HEAD`; an unborn HEAD (`FRT.bat new` commits nothing) means nothing is committed |
+| `GetCommittedFacts` | all false | `git ls-tree -r -z --full-name HEAD`; an unborn HEAD (`FRT.bat new` commits nothing) means nothing is committed |
 | `StatusOf` | all `Untracked` | `git --no-optional-locks status --porcelain=v2 -z --no-renames --untracked-files=all --ignored -- .`; an ignored file is `Untracked` |
 | `GetStaged` | empty | `git diff --cached --name-only -z --no-renames --relative` |
 
@@ -389,7 +389,12 @@ new` only prints the hint, and `git commit --no-verify` skips it once. It parses
 A file name is always quoted in the commands a person is shown to paste (`GetRestoreCommand`, `GetAddCommand`), so a name
 with `&` in it stays one argument. A case-only rename of a tracked file is `git mv -f`, since git's own same-file test folds
 ASCII only; the batch has already made sure the target is that very file. A repository nested in the mount and never
-committed there is one untracked entry to git, and every file below it is `Untracked`.
+committed there is one untracked entry to git, and every file below it is `Untracked`. One committed there (a submodule
+under `Content/`, a gitlink) is its own repository: git lists the gitlink and never a file below it, so committed facts
+(from the gitlinks `ls-tree` lists) and status (from the submodule entries `status` lists, `S` in their `<sub>` field) of
+the files below it are asked of a provider of that submodule, made on first use, whose locks then hold the mount too. A
+clean submodule is not in `status`, and its files are `Clean`; one that is not checked out is one warning, and its files
+are not committed.
 
 ## The meta lifecycle's runtime (M4, `Assets/Meta/AssetRepairs.h`)
 

@@ -1,6 +1,7 @@
 #include "Assets/Vcs/GitVcsProvider.h"
 
 #include <chrono>
+#include <numeric>
 #include <optional>
 #include <utility>
 
@@ -269,7 +270,24 @@ CGitVcsProvider::ELockHeld CGitVcsProvider::CheckLocks () const
 
 bool CGitVcsProvider::IsRewritingTree () const
 {
-	return !Git.empty() && CheckLocks() == ELockHeld::Rewriting;
+	if (Git.empty())
+	{
+		return false;
+	}
+	if (CheckLocks() == ELockHeld::Rewriting)
+	{
+		return true;
+	}
+	// A `git submodule update` or a checkout in a repository committed inside this mount rewrites this mount's files too.
+	const std::scoped_lock lock(NestedMutex);
+	for (const SNested& nested : Nested)
+	{
+		if (nested.Provider != nullptr && nested.Provider->IsRewritingTree())
+		{
+			return true;
+		}
+	}
+	return false;
 }
 
 bool CGitVcsProvider::IsBusy () const
@@ -290,7 +308,95 @@ bool CGitVcsProvider::IsBusy () const
 			return true;
 		}
 	}
+	const std::scoped_lock lock(NestedMutex);
+	for (const SNested& nested : Nested)
+	{
+		if (nested.Provider != nullptr && nested.Provider->IsBusy())
+		{
+			return true;
+		}
+	}
 	return false;
+}
+
+CGitVcsProvider* CGitVcsProvider::FindNested (const FString& Gitlink)
+{
+	{
+		const std::scoped_lock lock(NestedMutex);
+		for (const SNested& nested : Nested)
+		{
+			if (nested.Gitlink.View().Equals<ESearchCase::IgnoreCase>(Gitlink.View()))
+			{
+				return nested.Provider.get();
+			}
+		}
+	}
+
+	// Detected outside the lock, which IsBusy takes on the owner thread. A submodule that is not checked out is an empty
+	// folder of this repository, or none, and its provider would be this repository's: nothing there is known.
+	const std::filesystem::path root = (TopLevel / Gitlink.View().TrimEnd("/").ToPath()).make_preferred();
+	std::unique_ptr<CGitVcsProvider> provider = std::make_unique<CGitVcsProvider>();
+	if (!provider->Detect(FString::FromPath(root)) || !IsSameDirectory(provider->TopLevel, root))
+	{
+		log::Warning(log::Assets, "'{}' is a repository of its own (a submodule) that is not checked out: its files have no "
+			"version control facts.", unicode::ToDisplayText(FString::FromPath(root)));
+		provider.reset();
+	}
+	const std::scoped_lock lock(NestedMutex);
+	for (const SNested& nested : Nested)
+	{
+		if (nested.Gitlink.View().Equals<ESearchCase::IgnoreCase>(Gitlink.View()))
+		{
+			return nested.Provider.get();
+		}
+	}
+	Nested.push_back({ Gitlink, std::move(provider) });
+	return Nested.back().Provider.get();
+}
+
+template <typename TAsk>
+SVcsResult CGitVcsProvider::AskNested (std::span<const FString> Files, std::span<const FString> Gitlinks,
+	std::vector<size_t>& InOutOwn, TAsk&& Ask)
+{
+	if (Gitlinks.empty())
+	{
+		return {};
+	}
+	std::vector<std::vector<size_t>> below(Gitlinks.size());
+	std::erase_if(InOutOwn, [&] (size_t File)
+	{
+		const FString name = MakeGitName(Files[File]);
+		size_t deepest = Gitlinks.size();
+		for (size_t link = 0u; link < Gitlinks.size(); ++link)
+		{
+			if (name.View().StartsWith<ESearchCase::IgnoreCase>(Gitlinks[link].View())
+				&& (deepest == Gitlinks.size() || Gitlinks[link].Len() > Gitlinks[deepest].Len()))
+			{
+				deepest = link;
+			}
+		}
+		if (deepest == Gitlinks.size())
+		{
+			return false;
+		}
+		below[deepest].push_back(File);
+		return true;
+	});
+	for (size_t link = 0u; link < Gitlinks.size(); ++link)
+	{
+		if (below[link].empty())
+		{
+			continue;
+		}
+		if (CGitVcsProvider* nested = FindNested(Gitlinks[link]); nested != nullptr)
+		{
+			if (SVcsResult result = Ask(*nested, below[link]); result.Error != EVcsError::None)
+			{
+				return result;
+			}
+		}
+	}
+	return {};
 }
 
 SVcsResult CGitVcsProvider::CheckOut (std::span<const FString> Files)
@@ -352,8 +458,9 @@ SVcsResult CGitVcsProvider::GetCommittedFacts (std::span<const FString> Files, s
 		return { EVcsError::Failed, "git provider used before Detect" };
 	}
 
-	// Below the working directory only, and -z so that non-ASCII names arrive as they are, not quoted.
-	const platform::SToolProcessResult listed = RunGit({ "ls-tree", "-r", "-z", "--full-name", "--name-only", "HEAD" });
+	// Below the working directory only, and -z so that non-ASCII names arrive as they are, not quoted. With the modes, for the
+	// gitlinks.
+	const platform::SToolProcessResult listed = RunGit({ "ls-tree", "-r", "-z", "--full-name", "HEAD" });
 	if (!listed.bStarted || listed.bTimedOut)
 	{
 		return MakeFailure("ls-tree", listed);
@@ -365,12 +472,41 @@ SVcsResult CGitVcsProvider::GetCommittedFacts (std::span<const FString> Files, s
 		return head.bStarted && !head.bTimedOut && head.ExitCode != 0 ? SVcsResult {} : MakeFailure("ls-tree", listed);
 	}
 
+	// "<mode> <type> <object>\t<name>". A gitlink (mode 160000) is a repository committed inside this one (a submodule under
+	// Content/): git here lists it and never a file below it, so those are asked of that repository.
 	FStringSetIgnoreCase committed;
-	for (const FStringView name : AsText(listed.Stdout).Split('\0', EStringSplit::SkipEmpty))
+	std::vector<FString> gitlinks;
+	for (const FStringView entry : AsText(listed.Stdout).Split('\0', EStringSplit::SkipEmpty))
 	{
-		committed.emplace(name);
+		const auto split = entry.SplitFirst('\t');
+		committed.emplace(split.Right);
+		if (split.Left.StartsWith("160000 "))
+		{
+			gitlinks.push_back(FString(split.Right) + "/");
+		}
 	}
-	for (size_t file = 0u; file < Files.size(); ++file)
+	std::vector<size_t> own(Files.size());
+	std::iota(own.begin(), own.end(), size_t(0));
+	const SVcsResult nested = AskNested(Files, gitlinks, own, [&] (CGitVcsProvider& Nested, std::span<const size_t> Below)
+	{
+		std::vector<FString> files;
+		for (const size_t file : Below)
+		{
+			files.push_back(Files[file]);
+		}
+		std::vector<bool> facts;
+		const SVcsResult result = Nested.GetCommittedFacts(files, facts);
+		for (size_t one = 0u; one < Below.size() && one < facts.size(); ++one)
+		{
+			OutCommitted[Below[one]] = facts[one];
+		}
+		return result;
+	});
+	if (nested.Error != EVcsError::None)
+	{
+		return nested;
+	}
+	for (const size_t file : own)
 	{
 		const FString name = MakeGitName(Files[file]);
 		OutCommitted[file] = !name.IsEmpty() && committed.contains(name);
@@ -411,6 +547,19 @@ SVcsResult CGitVcsProvider::StatusOf (std::span<const FString> Files, std::vecto
 	// Even with --untracked-files=all, a repository inside this one, never committed here, is one `?` or `!` entry: its folder,
 	// with a trailing '/'. Every file below it is as untracked as the folder.
 	bool bUntrackedFolders = false;
+	// A repository committed here (a submodule) with anything changed in it is one entry whose <sub> field starts with 'S',
+	// and git lists no file below it: those are asked of that repository. One with nothing changed is not listed, and its
+	// files are as committed, so Clean below.
+	std::vector<FString> gitlinks;
+	const auto recordChanged = [&] (FStringView Entry, uint32 Fields)
+	{
+		const FStringView path = SkipFields(Entry, Fields);
+		record(path, ToVcsState(Entry[2], Entry[3]));
+		if (SkipFields(Entry, 2u).StartsWith('S'))
+		{
+			gitlinks.push_back(FString(path) + "/");
+		}
+	};
 	for (const FStringView entry : AsText(run.Stdout).Split('\0', EStringSplit::SkipEmpty))
 	{
 		if (bOriginalPath)
@@ -421,10 +570,10 @@ SVcsResult CGitVcsProvider::StatusOf (std::span<const FString> Files, std::vecto
 		switch (entry.First())
 		{
 		case '1':
-			record(SkipFields(entry, 8u), ToVcsState(entry[2], entry[3]));
+			recordChanged(entry, 8u);
 			break;
 		case '2':
-			record(SkipFields(entry, 9u), ToVcsState(entry[2], entry[3]));
+			recordChanged(entry, 9u);
 			bOriginalPath = true;
 			break;
 		case 'u':
@@ -440,7 +589,28 @@ SVcsResult CGitVcsProvider::StatusOf (std::span<const FString> Files, std::vecto
 		}
 	}
 
-	for (size_t file = 0u; file < Files.size(); ++file)
+	std::vector<size_t> own(Files.size());
+	std::iota(own.begin(), own.end(), size_t(0));
+	const SVcsResult nested = AskNested(Files, gitlinks, own, [&] (CGitVcsProvider& Nested, std::span<const size_t> Below)
+	{
+		std::vector<FString> files;
+		for (const size_t file : Below)
+		{
+			files.push_back(Files[file]);
+		}
+		std::vector<SVcsStatus> status;
+		const SVcsResult result = Nested.StatusOf(files, status);
+		for (size_t one = 0u; one < Below.size() && one < status.size(); ++one)
+		{
+			Out[Below[one]] = std::move(status[one]);
+		}
+		return result;
+	});
+	if (nested.Error != EVcsError::None)
+	{
+		return nested;
+	}
+	for (const size_t file : own)
 	{
 		const FString name = MakeGitName(Files[file]);
 		if (name.IsEmpty())
