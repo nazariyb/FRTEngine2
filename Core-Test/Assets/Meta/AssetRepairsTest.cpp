@@ -1466,10 +1466,7 @@ TEST(AssetRepairs, EveryRootWithAnUnfinishedOperationIsReportedAtStartUpWhatever
 	EXPECT_TRUE(refusedLines[0].Contains(projectJournal)) << refusedLines[0].CStr();
 	EXPECT_TRUE(refusedLines[0].Contains(self + " finishes it")) << refusedLines[0].CStr();
 
-	ASSERT_TRUE(platform::WriteFileText(request.RulesFile, "FormatVersion: 1
-Safety:
-  GuestProcesses: true
-"));
+	ASSERT_TRUE(platform::WriteFileText(request.RulesFile, "FormatVersion: 1\nSafety:\n  GuestProcesses: true\n"));
 	const SAssetOwnership guest = ClaimAssetOwnership(request);
 	ASSERT_EQ(guest.Role, EOwnerRole::Guest);
 	const std::vector<FString> guestLines = DescribeUnfinishedOperations(request, guest, false);
@@ -1504,10 +1501,7 @@ TEST(AssetRepairs, AHostAppliesSafetyBuilderSourceGuardOfItsRuleFile)
 		~SRestore () { SetBuilderSourceGuardEnabled(true); }
 	} restore;
 	ASSERT_TRUE(IsBuilderSourceGuardEnabled());
-	tree.WriteProjectRules("FormatVersion: 1
-Safety:
-  BuilderSourceGuard: false
-");
+	tree.WriteProjectRules("FormatVersion: 1\nSafety:\n  BuilderSourceGuard: false\n");
 	EXPECT_FALSE(ApplySafetyOfRuleFile(tree.ProjectRules()).bBuilderSourceGuard);
 	EXPECT_FALSE(IsBuilderSourceGuardEnabled());
 	EXPECT_TRUE(ApplySafetyOfRuleFile(tree.ProjectRules().parent_path() / "Missing.yml").bBuilderSourceGuard);
