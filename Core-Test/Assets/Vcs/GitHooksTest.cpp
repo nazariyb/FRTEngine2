@@ -229,6 +229,42 @@ TEST_F(GitHooksTest, EveryCheckReportsInOneRefusedCommit)
 	EXPECT_EQ(RunGit({ "rev-parse", "HEAD" }).Output.TrimEnd(), gBase) << "nothing was committed";
 }
 
+// A sparse, blobless partial clone whose remote is gone (offline): a tracked meta outside the cone has no blob here, and git
+// grep dies trying to fetch it. Check 3 reads only the staged metas, whose blobs always are here, so a good staged meta is
+// not called broken; check 2, which has to read every meta, says it could not and refuses, never passes as if there were no
+// duplicates.
+TEST_F(GitHooksTest, AMetaAPartialCloneCannotReadIsSaidAndBreaksNoOtherCheck)
+{
+	// Outside the cone, in a folder git sorts before Content/.
+	Write("Aside/Content/Far.png");
+	Write("Aside/Content/Far.png.meta", MetaText("abababababababababababababababab"));
+	Stage({ "Aside/Content/Far.png", "Aside/Content/Far.png.meta" });
+	ASSERT_EQ(RunGit({ "commit", "-q", "--no-verify", "-m", "Far" }).ExitCode, 0);
+	const std::filesystem::path remote = gDir / "Remote.git";
+	const std::filesystem::path partial = gDir / FStringView("Частковий").ToPath();
+	std::error_code ec;
+	std::filesystem::remove_all(remote, ec);
+	std::filesystem::remove_all(partial, ec);
+	ASSERT_EQ(test::RunGit(gGit, gDir, { "clone", "-q", "--bare", FString::FromPath(gRepo), FString::FromPath(remote) }).ExitCode, 0);
+	ASSERT_EQ(test::RunGit(gGit, remote, { "config", "uploadpack.allowFilter", "true" }).ExitCode, 0);
+	const test::SProcessResult cloned = test::RunGit(gGit, gDir, { "clone", "-q", "--no-local", "--filter=blob:none", "--sparse",
+		FString::FromPath(remote), FString::FromPath(partial) });
+	ASSERT_EQ(cloned.ExitCode, 0) << cloned.Errors.CStr();
+	ASSERT_EQ(test::RunGit(gGit, partial, { "sparse-checkout", "set", "Content" }).ExitCode, 0);
+	std::filesystem::rename(remote, gDir / "Remote gone.git", ec);
+	ASSERT_FALSE(ec) << FString::FromUtf8Lossy(ec.message()).CStr();
+
+	ASSERT_TRUE(platform::WriteFileText(partial / "Content" / "Near.png", "x\n"));
+	ASSERT_TRUE(platform::WriteFileText(partial / "Content" / "Near.png.meta", MetaText(GuidC)));
+	ASSERT_EQ(test::RunGit(gGit, partial, { "add", "--", "Content/Near.png", "Content/Near.png.meta" }).ExitCode, 0);
+	const FString hooks = FString::FromPath(gDir / "Hooks" / "Tools" / "GitHooks", EPathStyle::Generic);
+	const test::SProcessResult commit = test::RunGit(gGit, partial, { "-c", "core.hooksPath=" + hooks, "commit", "-q", "-m", "Near" });
+	const FString all = commit.Output + commit.Errors;
+	EXPECT_EQ(commit.ExitCode, 1) << all.CStr();
+	EXPECT_TRUE(all.Contains("META003 not checked: git grep could not read every meta")) << all.CStr();
+	EXPECT_FALSE(all.Contains("META004")) << all.CStr();
+}
+
 TEST_F(GitHooksTest, BuildersAreCheckedOnlyInAnEngineCheckoutAndOnlyForEngineSources)
 {
 	// A check-builders that fails, not yet in an engine checkout.

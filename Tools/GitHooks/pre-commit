@@ -7,8 +7,10 @@
 #   1. pairs: a staged meta whose source is neither staged nor tracked, and a staged delete or rename of
 #      a source whose tracked meta did not go along. A new source without a meta is left to check 6,
 #      which knows the rules and companions: Demo's .bin files have no meta and need none.
-#   2. duplicate GUIDs in the index (META003);
-#   3. exactly one valid Guid: line per staged meta, and no conflict markers (META004);
+#   2. duplicate GUIDs in the index (META003), which reads every meta: one git cannot read (a partial
+#      clone offline) refuses the commit with that said, never passes as no duplicates;
+#   3. exactly one valid Guid: line per staged meta, and no conflict markers (META004), reading the
+#      staged metas alone, whose blobs are always here;
 #   4. portable paths on staged names: case-only collisions in the index and between index and disk
 #      (PATH001; core.ignorecase=true hides a case rename made in Explorer), and names illegal on a
 #      supported platform (PATH002);
@@ -39,11 +41,25 @@ if [ ! -s "$staged" ]; then
 	exit 0
 fi
 git ls-files --cached -z > "$index" || exit 1
-git -c core.quotePath=false grep --cached -E '^(Guid:|<<<<<<<|=======|>>>>>>>)' -- '*.meta' > "$guids"
 : > "$dirs"
 
+# 3 reads the staged metas alone: their blobs are always here, even in a partial clone that has not fetched the others
+# (git grep would fetch each, or fail offline). In batches, as a commit can stage more metas than one command line holds.
+# git grep's 1 is no match, and anything above it an error, never "0 Guid: lines".
+awk 'BEGIN { RS = "\0" } !bHaveStatus { status = $0; bHaveStatus = 1; next }
+	{ bHaveStatus = 0; if (status != "D" && $0 ~ /\.meta$/) printf "%s%c", $0, 0 }' "$staged" > "$scratch/stagedMetas"
+: > "$guids"
+guidsRead=1
+if [ -s "$scratch/stagedMetas" ] && ! xargs -0 sh -c 'git --literal-pathspecs -c core.quotePath=false grep --cached \
+	-E "^(Guid:|<<<<<<<|=======|>>>>>>>)" -- "$@" 2>> "$0"; [ $? -le 1 ]' "$scratch/guidErrors" \
+	< "$scratch/stagedMetas" > "$guids"; then
+	guidsRead=0
+	echo "  META004 not checked: git grep could not read the staged metas: $(head -n 1 "$scratch/guidErrors")"
+	failed=1
+fi
+
 # Read with one awk: a bash loop over a repository's file list reads a byte per system call.
-awk -v dirsFile="$dirs" '
+awk -v dirsFile="$dirs" -v bGuidsRead="$guidsRead" '
 function isContent(path) { return path ~ /(^|\/)Content\// }
 function report(text) { print "  " text; failed = 1 }
 function illegalReason(name, base)
@@ -91,9 +107,11 @@ END {
 		if (isContent(path) && path ~ /\.meta$/) {
 			source = substr(path, 1, length(path) - 5)
 			if (!(source in inIndex)) report("META002 " path ": staged without its source, which is neither staged nor tracked")
-			if (path in conflicted) report("META004 " path ": it holds conflict markers")
-			if (guidLines[path] != 1) report("META004 " path ": it has " (guidLines[path] + 0) " Guid: lines, not one")
-			else if (validGuids[path] != 1) report("META004 " path ": its Guid: line is not 32 lowercase hexadecimal digits")
+			if (bGuidsRead) {
+				if (path in conflicted) report("META004 " path ": it holds conflict markers")
+				if (guidLines[path] != 1) report("META004 " path ": it has " (guidLines[path] + 0) " Guid: lines, not one")
+				else if (validGuids[path] != 1) report("META004 " path ": its Guid: line is not 32 lowercase hexadecimal digits")
+			}
 		}
 		count = split(path, names, "/")
 		prefix = ""
@@ -152,14 +170,30 @@ part == "staged" {
 END { exit failed }
 ' part=disk RS='\0' "$disk" part=staged RS='\0' "$staged" || failed=1
 
-# 2. The GUIDs of every meta in the index, not only the staged ones: a staged copy duplicates a tracked one.
-duplicates=$(git grep --cached -h -E '^Guid: [0-9a-f]{32}$' -- '*.meta' | LC_ALL=C sort | uniq -d)
-if [ -n "$duplicates" ]; then
+# 2. The GUIDs of every meta in the index, not only the staged ones: a staged copy duplicates a tracked one. So this one
+# reads every meta; a partial clone fetches what it lacks, and one that cannot (offline) is said, never a silent pass.
+if git -c core.quotePath=false grep --cached -E '^Guid: [0-9a-f]{32}$' -- '*.meta' > "$scratch/allGuids" \
+	2> "$scratch/allGuidErrors" || [ $? -eq 1 ]; then
+	awk '
+	{
+		colon = index($0, ":Guid: ")
+		guid = substr($0, colon + 7)
+		paths[guid] = paths[guid] "\n    " substr($0, 1, colon - 1)
+		count[guid]++
+	}
+	END {
+		for (guid in count) {
+			if (count[guid] > 1) {
+				print "  META003 " guid " is in more than one meta:" paths[guid]
+				failed = 1
+			}
+		}
+		exit failed
+	}' "$scratch/allGuids" || failed=1
+else
+	echo "  META003 not checked: git grep could not read every meta in the index (a partial clone offline?):" \
+		"$(head -n 1 "$scratch/allGuidErrors")"
 	failed=1
-	while IFS= read -r line; do
-		echo "  META003 ${line#Guid: } is in more than one meta:"
-		git -c core.quotePath=false grep --cached -l -E "^$line$" -- '*.meta' | sed 's/^/    /'
-	done <<< "$duplicates"
 fi
 
 # 5.

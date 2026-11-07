@@ -371,8 +371,10 @@ new` only prints the hint, and `git commit --no-verify` skips it once. It parses
 
 1. pairs: a staged meta whose source is neither staged nor tracked, and a staged delete or rename of a source whose tracked
    meta did not go along (`META002`). A new source without a meta is left to check 6, which knows the rules and companions;
-2. duplicate GUIDs in the index (`META003`);
-3. exactly one valid `Guid:` line per staged meta, and no conflict markers (`META004`);
+2. duplicate GUIDs in the index (`META003`), which reads every meta: one git cannot read (a sparse, blobless partial clone
+   offline) refuses the commit and says so, never passes as no duplicates;
+3. exactly one valid `Guid:` line per staged meta, and no conflict markers (`META004`), reading only the staged metas,
+   whose blobs are always local;
 4. on staged names, case-only collisions in the index and between index and disk (`PATH001`), and illegal names (`PATH002`);
 5. `FRT.bat check-builders`, in an engine checkout, when a staged path is under `Core/Source` (`BUILD003`): a builder's
    sources lie wherever its code is (the shader builder's are in `Core/Source/Graphics`), and the check is one process;
