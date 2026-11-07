@@ -265,6 +265,51 @@ TEST_F(GitHooksTest, AMetaAPartialCloneCannotReadIsSaidAndBreaksNoOtherCheck)
 	EXPECT_FALSE(all.Contains("META004")) << all.CStr();
 }
 
+// META003 is a rule of one owner root, a project's or an engine's: a template an engine holds and a project made from it
+// share GUIDs (FRT.bat new copies metas byte for byte), and so does a submodule, which git grep reads under the common
+// submodule.recurse=true unless told not to. Two metas with one GUID in one root are still refused.
+TEST_F(GitHooksTest, DuplicateGuidsCountOnlyWithinOneProjectOrEngine)
+{
+	Write("Templates/Demo/Demo.frtproject", "[Project]\nName=Demo\n");
+	Write("Templates/Demo/Content/Base.png");
+	Write("Templates/Demo/Content/Base.png.meta", MetaText(GuidA));
+	Write("Templates/Demo/Plugins/Pack/Content/Other.png");
+	Write("Templates/Demo/Plugins/Pack/Content/Other.png.meta", MetaText(GuidB));
+	Stage({ "Templates/Demo/Demo.frtproject", "Templates/Demo/Content/Base.png", "Templates/Demo/Content/Base.png.meta",
+		"Templates/Demo/Plugins/Pack/Content/Other.png", "Templates/Demo/Plugins/Pack/Content/Other.png.meta" });
+	// A submodule whose meta has the GUID of Content/Base.png.meta.
+	const std::filesystem::path source = gDir / FStringView("Підмодуль").ToPath();
+	std::error_code ec;
+	std::filesystem::remove_all(source, ec);
+	std::filesystem::create_directories(source / "Content", ec);
+	ASSERT_EQ(test::RunGit(gGit, source, { "init", "-q" }).ExitCode, 0);
+	ASSERT_TRUE(platform::WriteFileText(source / "Content" / "Base.png", "base\n"));
+	ASSERT_TRUE(platform::WriteFileText(source / "Content" / "Base.png.meta", MetaText(GuidA)));
+	ASSERT_EQ(test::RunGit(gGit, source, { "add", "--all" }).ExitCode, 0);
+	ASSERT_EQ(test::RunGit(gGit, source, { "commit", "-q", "-m", "Sub" }).ExitCode, 0);
+	const test::SProcessResult added = RunGit({ "-c", "protocol.file.allow=always", "submodule", "add", "-q", FString::FromPath(source), "Sub" });
+	ASSERT_EQ(added.ExitCode, 0) << added.Errors.CStr();
+
+	const test::SProcessResult apart = Commit({ "-c", "submodule.recurse=true" });
+	EXPECT_EQ(apart.ExitCode, 0) << apart.Output.CStr() << apart.Errors.CStr();
+	EXPECT_FALSE((apart.Output + apart.Errors).Contains("META003")) << apart.Output.CStr() << apart.Errors.CStr();
+
+	// A copy within the template, and one within its plugin: the template's root, refused.
+	Write("Templates/Demo/Plugins/Pack/Content/Copy.png.meta", MetaText(GuidA));
+	Write("Templates/Demo/Plugins/Pack/Content/Copy.png");
+	Stage({ "Templates/Demo/Plugins/Pack/Content/Copy.png", "Templates/Demo/Plugins/Pack/Content/Copy.png.meta" });
+	const test::SProcessResult together = Commit({ "-c", "submodule.recurse=true" });
+	const FString all = together.Output + together.Errors;
+	EXPECT_EQ(together.ExitCode, 1) << all.CStr();
+	EXPECT_TRUE(all.Contains("META003 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa is in more than one meta under Templates/Demo/:")) << all.CStr();
+	EXPECT_TRUE(all.Contains("Templates/Demo/Content/Base.png.meta")) << all.CStr();
+	EXPECT_TRUE(all.Contains("Templates/Demo/Plugins/Pack/Content/Copy.png.meta")) << all.CStr();
+	EXPECT_FALSE(all.Contains("\n    Content/Base.png.meta")) << all.CStr();
+	EXPECT_FALSE(all.Contains("Sub/Content")) << all.CStr();
+	// A reset leaves a submodule's folder behind, and clean -fd a repository.
+	std::filesystem::remove_all(gRepo / "Sub", ec);
+}
+
 TEST_F(GitHooksTest, BuildersAreCheckedOnlyInAnEngineCheckoutAndOnlyForEngineSources)
 {
 	// A check-builders that fails, not yet in an engine checkout.

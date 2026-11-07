@@ -371,8 +371,11 @@ new` only prints the hint, and `git commit --no-verify` skips it once. It parses
 
 1. pairs: a staged meta whose source is neither staged nor tracked, and a staged delete or rename of a source whose tracked
    meta did not go along (`META002`). A new source without a meta is left to check 6, which knows the rules and companions;
-2. duplicate GUIDs in the index (`META003`), which reads every meta: one git cannot read (a sparse, blobless partial clone
-   offline) refuses the commit and says so, never passes as no duplicates;
+2. duplicate GUIDs in the index (`META003`) within one owner root: the deepest folder above a meta holding a `.frtproject`
+   or an `Engine.frtengine` in the index, else the top (a plugin counts with its project). A template an engine holds and a
+   project made from it share GUIDs, which is fine, and a submodule is never read, whatever `submodule.recurse` says. It
+   reads every meta: one git cannot read (a sparse, blobless partial clone offline) refuses the commit and says so, never
+   passes as no duplicates;
 3. exactly one valid `Guid:` line per staged meta, and no conflict markers (`META004`), reading only the staged metas,
    whose blobs are always local;
 4. on staged names, case-only collisions in the index and between index and disk (`PATH001`), and illegal names (`PATH002`);
