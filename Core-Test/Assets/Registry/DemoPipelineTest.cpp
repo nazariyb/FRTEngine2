@@ -1,5 +1,6 @@
 // The M3 pipeline end to end over the Demo template, the contract F3 builds on: a temp copy of the engine's content,
-// Core/Config/Assets.yml and Templates/Demo goes through CMountTable -> CRulesEngine -> CMountScanner -> ResolveFile ->
+// Core/Config/Assets.yml and Templates/Demo goes through CMountTable -> CRulesEngine -> CMountScanner -> (each file's
+// committed meta, M4: its GUID, values and hash) -> ResolveFile ->
 // AnalyzeFile -> AppendRecordUpsert -> CRegistryStore::Commit, with the companions known before RULE002 is computed,
 // as F3 will run it. Then: no RULE001 or RULE002, no error, no unresolved edge; the records per type are what the
 // files on disk say; two scans (different thread counts) dump identically; the engine and project snapshots written
@@ -23,6 +24,7 @@
 #include "Assets/AssetTypes.h"
 #include "Assets/Discovery/Mounts.h"
 #include "Assets/Discovery/MountScanner.h"
+#include "Assets/Meta/MetaFile.h"
 #include "Assets/Pipeline/ImporterTable.h"
 #include "Assets/Pipeline/Importers/AssetImporter.h"
 #include "Assets/Pipeline/Rules.h"
@@ -112,11 +114,61 @@ SPipelineRun RunPipeline (const CMountTable& Mounts, uint32 Threads)
 				delta.RuleFileUpserts.push_back(SRuleFileUpsert { mount.Name, folder.MountPath, folder.RulesHash });
 			}
 		}
-		for (const SScanFile& file : batch.Files)
+		// Each file's meta (M4): its own FILES row; its GUID, values and hash go to its source's record and row. A meta
+		// no file takes is an orphan's row.
+		std::vector<uint32> metaOfFile(batch.Files.size(), ~0u);
+		for (uint32 m = 0u; m < batch.Metas.size(); ++m)
 		{
+			const SScanMeta& meta = batch.Metas[m];
+			const FString metaPath = batch.Folders[meta.Folder].MountPath + "/" + meta.Name;
+			const bool bTaken = meta.SourceFile != ~0u && metaOfFile[meta.SourceFile] == ~0u;
+			if (bTaken)
+			{
+				metaOfFile[meta.SourceFile] = m;
+			}
+			SFileUpsert row;
+			row.MountPath = metaPath;
+			row.Size = meta.Size;
+			row.MTime = meta.MTime;
+			row.Identity = meta.Identity;
+			row.Class = EFileClass::Meta;
+			row.Meta = SFileMetaState { bTaken ? EMetaState::Paired : EMetaState::Orphan, 0u };
+			delta.FileUpserts.push_back(std::move(row));
+		}
+		for (uint32 index = 0u; index < batch.Files.size(); ++index)
+		{
+			const SScanFile& file = batch.Files[index];
 			const SScanFolder& folder = batch.Folders[file.Folder];
 			const FString path = folder.MountPath + "/" + file.Name;
-			const SEffectiveFileSettings settings = rules.ResolveFile(*folder.Scope, path, {}, false);
+			std::optional<SMetaParseResult> meta;
+			uint64 metaHash = 0u;
+			if (metaOfFile[index] != ~0u)
+			{
+				const SScanMeta& scanned = batch.Metas[metaOfFile[index]];
+				const FString metaPath = batch.Folders[scanned.Folder].MountPath + "/" + scanned.Name;
+				FStringView mountName;
+				FStringView relative;
+				EXPECT_TRUE(SplitMountPath(metaPath, mountName, relative)) << metaPath.CStr();
+				const std::optional<std::filesystem::path> absolute = mount.ToAbsolute(relative);
+				const std::optional<std::vector<uint8>> bytes = absolute ? platform::ReadFileBytesUncached(*absolute) : std::nullopt;
+				EXPECT_TRUE(bytes.has_value()) << metaPath.CStr();
+				if (bytes.has_value())
+				{
+					const FStringView text(reinterpret_cast<const char*>(bytes->data()), static_cast<uint32>(bytes->size()));
+					ParseMeta(text, meta.emplace());
+					metaHash = HashMetaBytes(text);
+					EXPECT_EQ(meta->State, EMetaParseState::Ok) << metaPath.CStr();
+					for (SFileUpsert& row : delta.FileUpserts)
+					{
+						if (row.MountPath == metaPath)
+						{
+							row.Meta = SFileMetaState { meta->State == EMetaParseState::Ok ? EMetaState::Paired : EMetaState::Broken, metaHash };
+						}
+					}
+				}
+			}
+			const SAssetMeta* metaValues = meta.has_value() && meta->State == EMetaParseState::Ok ? &meta->Meta : nullptr;
+			const SEffectiveFileSettings settings = rules.ResolveFile(*folder.Scope, path, SFileFacts { reflect::InvalidTypeId, metaValues }, false);
 			SFileUpsert row;
 			row.MountPath = path;
 			row.Size = file.Size;
@@ -124,6 +176,10 @@ SPipelineRun RunPipeline (const CMountTable& Mounts, uint32 Threads)
 			row.Identity = file.Identity;
 			row.Class = settings.Class;
 			row.ContentHash = hash::SContentHash {};   // changed, not hashed (F3 hashes lazily)
+			if (meta.has_value())
+			{
+				row.Meta = SFileMetaState { metaValues != nullptr ? EMetaState::Paired : EMetaState::Broken, metaHash };
+			}
 			++run.Files;
 			if (settings.Importer != nullptr && settings.Class != EFileClass::Excluded)
 			{
@@ -140,7 +196,7 @@ SPipelineRun RunPipeline (const CMountTable& Mounts, uint32 Threads)
 					}
 					RemoveSubEntries(result, path, [&] (reflect::TypeId Type) { return rules.IsTypeIncluded(*folder.Scope, Type); });
 					run.Diagnostics.insert(run.Diagnostics.end(), result.Diagnostics.begin(), result.Diagnostics.end());
-					AppendRecordUpsert(std::move(result), settings, path, delta);
+					AppendRecordUpsert(std::move(result), settings, path, delta, metaValues != nullptr ? metaValues->Guid : SGuid {}, metaValues);
 				}
 			}
 			else if (settings.Class == EFileClass::Unclaimed)
