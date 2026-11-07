@@ -1127,6 +1127,32 @@ TEST(AssetRepairs, RunNowsReportSaysARepairGivenBackStaleWasNotRun)
 	EXPECT_EQ(tree.MetaGuid("a.png"), MakeGuid(GuidA));
 }
 
+// The same race a step later: the meta lands while the create's CheckOut waits (a sync during a p4 edit), after the
+// writer's first check. The writer leaves it and the op fails stale, so the repair is not applied, not counted, and the
+// meta it did not write is never VCS003 ("generated locally") though it is untracked beside a tracked source.
+TEST(AssetRepairs, ARepairLeftStaleWhileItRanIsNeitherAppliedNorTakenForItsOwnMeta)
+{
+	CRepairTree tree("Під час ремонту");
+	tree.WritePng("a.png");
+	CRig rig(tree);
+	rig.Vcs.SetStatus(tree.Vcs("a.png"), SVcsStatus { EVcsState::Clean, {} });
+	rig.Open();
+	rig.Settle();
+	rig.Vcs.SetDuringNextCheckOut([&] { tree.WriteMeta("a.png", MetaText(GuidA)); });
+	const SRepairReport report = rig.Repairs().RunNow(SRepairOptions {});
+	ASSERT_EQ(report.Planned.size(), 1u);
+	EXPECT_EQ(report.Applied, 0u);
+	EXPECT_EQ(report.Refused, 0u);
+	EXPECT_EQ(GetRepairOutcome(report, report.Planned[0]), ERepairOutcome::NotRun);
+	EXPECT_EQ(tree.MetaGuid("a.png"), MakeGuid(GuidA));
+	EXPECT_EQ(rig.Registry->GetCounters().RepairsApplied, 0u);
+	EXPECT_TRUE(rig.Problems(Vcs003).empty()) << rig.DescribeProblems().CStr();
+	rig.Settle(1600u);
+	EXPECT_EQ(rig.GuidAt(P("a.png")), MakeGuid(GuidA));
+	EXPECT_EQ(rig.Registry->GetCounters().RepairsApplied, 0u);
+	EXPECT_TRUE(rig.Problems(Vcs003).empty()) << rig.DescribeProblems().CStr();
+}
+
 TEST(AssetRepairs, ARefusalGoesWithTheFolderItWasIn)
 {
 	CRepairTree tree("Відмова в теці");

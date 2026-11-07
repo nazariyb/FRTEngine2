@@ -394,8 +394,17 @@ SResaveMetasResult ResaveMetas (CAssetRegistry& Registry, std::span<const MountI
 			const SAssetCommandResult result = RunAssetOp(*writer, op);
 			if (!result.IsOk())
 			{
-				// Nothing of it was written, or what was is the journal's: the next run of the writer finishes it.
+				// Nothing of it was written, or what was is the journal's: the next run of the writer finishes it. A
+				// run that left one meta as it found it (changed meanwhile) wrote the others, which the registry reads
+				// again.
 				out.Problems.insert(out.Problems.end(), result.Problems.begin(), result.Problems.end());
+				if (result.Report.bChangedDisk)
+				{
+					for (const SAssetOpStep& step : op.Steps)
+					{
+						touched.push_back(step.Path);
+					}
+				}
 				continue;
 			}
 			for (const SAssetOpStep& step : op.Steps)

@@ -709,6 +709,27 @@ TEST(MetaVerbs, ResaveMetasRewritesOnlyMetasThatAreNotCanonicalAndEveryCrashPoin
 }
 
 
+// An orphan meta is a Meta row too, and as stale after an emitter change as any: it is rewritten with the paired metas
+// of its batch, never holding the batch back as a change that did not happen.
+TEST(MetaVerbs, ResaveMetasRewritesAnOrphanMetaWithTheRestOfItsBatch)
+{
+	CVerbTree tree("Перезапис сироти");
+	tree.WritePng("Messy.png", 5u);
+	const FString messy = FString::Format("Labels: [ b, a ]\nGuid: {}\nFormatVersion: 1\n", GuidB);
+	tree.WriteMeta("Messy.png", messy);
+	const FString orphan = FString::Format("Guid: {}\nFormatVersion: 1\n", GuidA);
+	tree.WriteMeta("Gone.png", orphan);   // its source was deleted
+	CVerbRig rig(tree);
+	ASSERT_TRUE(rig.bOpened);
+	const MountId mounts[] = { ProjectMountId };
+	const SResaveMetasResult result = ResaveMetas(*rig.Registry, mounts, false);
+	EXPECT_TRUE(result.Problems.empty()) << Describe(result.Problems).CStr();
+	EXPECT_EQ(result.Rewritten, (std::vector<FString> { P("Gone.png.meta"), P("Messy.png.meta") }));
+	EXPECT_EQ(tree.Read("Gone.png.meta"), FString::Format("FormatVersion: 1\nGuid: {}\n", GuidA));
+	EXPECT_EQ(tree.Read("Messy.png.meta"), FString::Format("FormatVersion: 1\nGuid: {}\nLabels:\n  - a\n  - b\n", GuidB));
+}
+
+
 // ---------------- The crash points of migrate metas and fix ----------------
 
 namespace

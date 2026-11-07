@@ -131,19 +131,26 @@ using FPathRoles = std::unordered_map<FString, bool>;   // folded path -> a Move
 }
 
 // Whether a file named Path's leaf, in any spelling equal under the portable fold, is in its folder: what a create's
-// Prior Absent asks. Stat covers NTFS; the listing a case-sensitive folder, where "Rock.png.META" would not open as
-// "Rock.png.meta" and yet pairs with Rock.png (MetaPaths.h).
-[[nodiscard]] bool ExistsInAnySpelling (const std::filesystem::path& Path)
+// Prior Absent asks. On a case-insensitive mount Stat is the whole answer, and the folder is never listed (a create
+// per file of a flat folder would list it twice each). On a case-sensitive one the listing finds "Rock.png.META",
+// which would not open as "Rock.png.meta" and yet pairs with Rock.png (MetaPaths.h); a folder in another spelling is
+// no file, as the planner's listing (AssetCommands.cpp, FindSpelling) skips it too, or the create would be stale on
+// every pass.
+[[nodiscard]] bool ExistsInAnySpelling (const std::filesystem::path& Path, bool bCaseSensitive)
 {
 	if (platform::Stat(Path).has_value())
 	{
 		return true;
 	}
+	if (!bCaseSensitive)
+	{
+		return false;
+	}
 	const FString leaf = FString::FromPath(Path.filename()).FoldCase();
 	bool bFound = false;
 	platform::EnumerateDirectory(Path.parent_path(), [&leaf, &bFound] (const platform::SDirectoryEntry& Entry)
 	{
-		bFound = FString(Entry.Name).FoldCase() == leaf;
+		bFound = !Entry.Stat.bDirectory && FString(Entry.Name).FoldCase() == leaf;
 		return !bFound;
 	});
 	return bFound;
@@ -151,12 +158,12 @@ using FPathRoles = std::unordered_map<FString, bool>;   // folded path -> a Move
 
 // Whether the file at Path is what Step's planner saw there (OpJournal.h's Prior). Unchecked (a format-1 journal's step)
 // passes: a replay writes it as the build that logged it would have.
-[[nodiscard]] bool HoldsPrior (const std::filesystem::path& Path, const SAssetOpStep& Step)
+[[nodiscard]] bool HoldsPrior (const std::filesystem::path& Path, const SAssetOpStep& Step, bool bCaseSensitive)
 {
 	switch (Step.Prior)
 	{
 	case EAssetOpPrior::Absent:
-		return !ExistsInAnySpelling(Path);
+		return !ExistsInAnySpelling(Path, bCaseSensitive);
 	case EAssetOpPrior::Holds:
 	{
 		if (!Exists(Path))
@@ -325,16 +332,23 @@ void CAssetWriter::SetBeforeRunForTest (TUniqueFunction<void (const SAssetOp&)> 
 
 /**
  * Why the WriteFile Step cannot be written now, empty when it can: its target (at Target) is not what its planner read, or
- * it is a meta whose source (at Source, when given) is gone, so that the meta would pair with nothing and, since no write
- * makes a folder, perhaps have nowhere to go.
+ * it creates a meta whose source (at Source, when given) is gone, so that the meta would pair with nothing and, since
+ * no write makes a folder, perhaps have nowhere to go. A rewrite's source is never looked for: the prior bytes it
+ * matched prove the meta and its folder are there, and an orphan meta's rewrite (resave --metas, a broken orphan's
+ * KeepAlias) or one paired by the fold on a case-sensitive mount ("rock.PNG.meta" beside "Rock.png") is what was asked
+ * for.
  */
 FString CAssetWriter::GetStaleReason (const SAssetOpStep& Step, const std::filesystem::path& Target, const std::optional<std::filesystem::path>& Source) const
 {
-	if (!HoldsPrior(Target, Step))
+	FStringView mountName;
+	FStringView relative;
+	const SMount* mount = Desc.Mounts != nullptr && SplitMountPath(Step.Path, mountName, relative)
+		? Desc.Mounts->Find(mountName) : nullptr;
+	if (!HoldsPrior(Target, Step, mount != nullptr && mount->Volume.bCaseSensitive))
 	{
 		return Step.Prior == EAssetOpPrior::Absent ? FString("another file is there now") : FString("it changed, or is gone, since it was planned");
 	}
-	if (Source.has_value() && !Exists(*Source))
+	if (Step.Prior == EAssetOpPrior::Absent && Source.has_value() && !Exists(*Source))
 	{
 		return "its source is gone";
 	}
@@ -895,6 +909,16 @@ SVcsResult CAssetWriter::Run (const SAssetOp& Op, SAssetWriteReport& OutReport)
 		{
 			OutReport.bLeftUnfinished = true;
 		}
+		return result;
+	}
+	if (OutReport.bStale)
+	{
+		// A file landed or changed after Prepare's check (during CheckOut, a p4 edit, or Begin) and was left as it is.
+		// The op is finished, the rest of it written, but it was not run as planned: its caller plans again from what
+		// is there now, never counts it as applied, and never takes the file it left for one this op created.
+		const FString changed = OutReport.Changed.empty() ? FString() : OutReport.Changed.front();
+		return Failure(FString::Format("'{}' changed while the operation '{}' ran, so it was left as it is: it is "
+			"planned again from what is there now", ToDisplayText(changed), Op.Verb));
 	}
 	return result;
 }

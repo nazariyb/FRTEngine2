@@ -446,7 +446,7 @@ it, means none at all. With one:
   writing, on the first run and in a roll-forward alike: a meta that a sync delivered or a person edited after the plan
   is never written over. A whole op whose file changed is then given back unwritten, a step that changed during a run
   or before a roll-forward is skipped with a warning and never added to the VCS, and a create cannot replace a meta
-  that lands at the last moment. No write makes a folder, and a meta whose source is gone is not written. An op left
+  that lands at the last moment. No write makes a folder, and a meta whose source is gone is not created (an orphan meta is still rewritten). An op left
   half done, or planned before the writer finished an earlier one, is planned again by the next run rather than run
   over what the roll-forward wrote; none of these is a refusal. A meta beside
   a file the rules exclude is no asset's, so it takes part in no duplicate group.

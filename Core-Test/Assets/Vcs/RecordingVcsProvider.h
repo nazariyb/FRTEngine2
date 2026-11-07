@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <span>
@@ -22,7 +23,8 @@ namespace frt::test
  * that nothing was written after a refusal. It spawns nothing and needs no repository. Move and Delete do what they say on
  * the disk, since a writer goes on to rely on it; the others touch nothing. CheckOut refuses a read-only file with ReadOnly
  * naming it, as both real providers do (VcsFileOps.h's CheckOutFiles), so a test sees the refusal a host would; a test of
- * something else can turn that off (SetRefuseReadOnly). Safe from a worker.
+ * something else can turn that off (SetRefuseReadOnly). A test can make a file land while a CheckOut waits, as a sync
+ * does during a p4 edit (SetDuringNextCheckOut). Safe from a worker.
  */
 class CRecordingVcsProvider final : public assets::IVcsProvider
 {
@@ -39,6 +41,16 @@ public:
 
 	assets::SVcsResult CheckOut (std::span<const FString> Files) override
 	{
+		std::function<void ()> during;
+		{
+			const std::lock_guard lock(Mutex);
+			during = std::move(DuringNextCheckOut);
+			DuringNextCheckOut = nullptr;
+		}
+		if (during)
+		{
+			during();
+		}
 		assets::SVcsResult result = Record("CheckOut", Files);
 		if (result.Error != assets::EVcsError::None || !bRefuseReadOnly)
 		{
@@ -160,6 +172,13 @@ public:
 		bRefuseReadOnly = bRefuse;
 	}
 
+	// Runs once, inside the next CheckOut, outside the provider's lock.
+	void SetDuringNextCheckOut (std::function<void ()> During)
+	{
+		const std::lock_guard lock(Mutex);
+		DuringNextCheckOut = std::move(During);
+	}
+
 	void SetCommitted (std::span<const FString> Files)
 	{
 		const std::lock_guard lock(Mutex);
@@ -220,6 +239,7 @@ private:
 	FStringSet Committed;
 	TStringMap<assets::SVcsStatus> Statuses;
 	std::vector<FString> Staged;
+	std::function<void ()> DuringNextCheckOut;
 	bool bBusy = false;
 	bool bRewriting = false;
 	bool bRefuseReadOnly = true;

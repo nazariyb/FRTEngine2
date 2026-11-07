@@ -1,15 +1,17 @@
-// The asset writer (Assets/Meta/AssetWriter.h, design §4.6, §4.7, §12.9), against the recording provider: nothing without
-// the writer lock; an asset and its meta in the same CheckOut, Move, Delete and Add; metas written before sources; bytes
-// that would not change are not rewritten and ask nobody; a refused CheckOut (ReadOnly, LockedByOther, Busy) or Move
-// writes, moves and logs nothing; a read-only file under None is refused and keeps its attribute; a Move across two
-// providers and a path outside the owner root are refused; a refused Add after the writes leaves the op for roll-forward,
-// which a process without the lock never does; a torn log is emptied before the next op is logged; an op in which a path
-// plays two roles (a swap, a write then a move of it), a copy and a write past the journal's frame limit are refused; the
-// expected writes are the meta bytes in hand. F1: a write is checked against what its planner read (its Prior) right
-// before it happens, on the first run and on a replay: a whole op whose file changed since its plan is given back stale
-// with nothing written or asked, a meta whose source is gone is not written and no folder is made for it, a replay keeps
-// a meta that arrived after the crash and never adds it, a create keeps a meta that lands between plan and write, and an
-// op planned before Run finished an earlier one is given back to be planned again.
+// The asset writer (Assets/Meta/AssetWriter.h, design §4.6, §4.7, §12.9), against the recording provider: nothing
+// without the writer lock; an asset and its meta in the same CheckOut, Move, Delete and Add; metas written before
+// sources; bytes that would not change are not rewritten and ask nobody; a refused CheckOut (ReadOnly, LockedByOther,
+// Busy) or Move writes, moves and logs nothing; a read-only file under None is refused and keeps its attribute; a Move
+// across two providers and a path outside the owner root are refused; a refused Add after the writes leaves the op for
+// roll-forward, which a process without the lock never does; a torn log is emptied before the next op is logged; an op
+// in which a path plays two roles (a swap, a write then a move of it), a copy and a write past the journal's frame
+// limit are refused; the expected writes are the meta bytes in hand. F1: a write is checked against what its planner
+// read (its Prior) right before it happens, on the first run and on a replay: a whole op whose file changed since its
+// plan is given back stale with nothing written or asked, a meta whose source is gone is not created and no folder is
+// made for it (an orphan meta is still rewritten), a replay keeps a meta that arrived after the crash and never adds
+// it, a create keeps a meta that lands between plan and write (and the op that left it fails stale), a case-sensitive
+// mount pairs a meta by the fold and takes no folder for a file, and an op planned before Run finished an earlier one
+// is given back to be planned again.
 #include <gtest/gtest.h>
 
 #include "Assets/Meta/AssetWriterTestUtils.h"
@@ -512,6 +514,87 @@ TEST(AssetWriterTest, AFolderWhereACreatesFileGoesIsRefusedAndNotGivenBackStale)
 	EXPECT_TRUE(std::filesystem::is_directory(tree.Abs("/Project/a.png.meta")));
 	EXPECT_TRUE(tree.Vcs.GetCalls().empty());
 	EXPECT_FALSE(tree.JournalExists());
+}
+
+// A meta that lands after the op's check, while a CheckOut waits (a sync during a p4 edit), is left as it is, and the
+// op, finished with the rest written, fails stale: its caller plans again and counts nothing of it as applied.
+TEST(AssetWriterTest, AMetaThatLandsWhileTheOpRunsIsKeptAndTheOpFailsStale)
+{
+	CWriterTree tree("Під час запису");
+	tree.Write("/Project/a.png", "png");
+	tree.Write("/Project/b.png", "png");
+	const FString delivered = MakeMetaText(SGuid::NewRandom());
+	tree.Vcs.SetDuringNextCheckOut([&] { tree.Write("/Project/a.png.meta", delivered); });
+	SAssetWriteReport report;
+	const SVcsResult result = tree.Writer->Run(MakeOp({ WriteStep("/Project/a.png.meta", MakeMetaText(SGuid::NewRandom())),
+		WriteStep("/Project/b.png.meta", MakeMetaText(SGuid::NewRandom())) }), report);
+	EXPECT_NE(result.Error, EVcsError::None) << "not run as planned";
+	EXPECT_TRUE(report.bStale);
+	EXPECT_TRUE(report.bChangedDisk);
+	EXPECT_FALSE(report.bLeftUnfinished);
+	EXPECT_EQ(report.Changed, std::vector<FString> { "/Project/a.png.meta" });
+	EXPECT_EQ(tree.Read("/Project/a.png.meta"), delivered);
+	EXPECT_TRUE(tree.Exists("/Project/b.png.meta"));
+	EXPECT_FALSE(tree.JournalExists()) << "the op is finished";
+	for (const CRecordingVcsProvider::SCall& call : tree.Vcs.GetWriteCalls())
+	{
+		EXPECT_FALSE(call.Name == "Add" && std::count(call.Files.begin(), call.Files.end(), tree.VcsPath("/Project/a.png.meta")) != 0)
+			<< "a meta this op did not write is not its to add";
+	}
+}
+
+// A rewrite matched its prior bytes, which prove the meta is there: its source is never looked for. An orphan meta's
+// rewrite (resave --metas, a broken orphan's KeepAlias) is written, where only a create of one would pair with nothing.
+TEST(AssetWriterTest, ARewriteOfAnOrphanMetaIsWrittenThoughItHasNoSource)
+{
+	CWriterTree tree("Сирота");
+	const FString before = MakeMetaText(SGuid::NewRandom());
+	tree.Write("/Project/Gone.png.meta", before);
+	const FString after = MakeMetaText(SGuid::NewRandom(), { "/Project/old.png" });
+	SAssetWriteReport report;
+	const SVcsResult result = tree.Writer->Run(MakeOp({ RewriteStep("/Project/Gone.png.meta", after, before) }), report);
+	EXPECT_EQ(result.Error, EVcsError::None) << result.Message.CStr();
+	EXPECT_FALSE(report.bStale);
+	EXPECT_EQ(tree.Read("/Project/Gone.png.meta"), after);
+}
+
+// On a case-sensitive mount a meta the scan pairs by the fold ("rock.PNG.meta" beside "Rock.png") is rewritten, a
+// folder in another spelling of a create's meta is no file (as the planner, which skips folders, sees it), and a file
+// in another spelling still stops the create.
+TEST(AssetWriterTest, OnACaseSensitiveMountTheFoldPairsAMetaAndAFolderIsNoFile)
+{
+	CWriterTree tree("Регістр літер");
+	if (!test::discovery::MakeCaseSensitive(tree.Tree.ProjectContent()))
+	{
+		GTEST_SKIP() << "the per-directory case-sensitive attribute cannot be set here";
+	}
+	tree.Mounts = test::meta::ResolveMounts(tree.Tree.EngineDir(), tree.Tree.EngineContent(), tree.Tree.EngineConfig(), tree.Tree.ProjectDir());
+	tree.Writer = tree.MakeWriter();
+	ASSERT_TRUE(tree.Mounts.Find("Project")->Volume.bCaseSensitive);
+
+	tree.Write("/Project/Rock.png", "png");
+	const FString before = MakeMetaText(SGuid::NewRandom());
+	tree.Write("/Project/rock.PNG.meta", before);
+	const FString after = MakeMetaText(SGuid::NewRandom(), { "/Project/old.png" });
+	SAssetWriteReport report;
+	SVcsResult result = tree.Writer->Run(MakeOp({ RewriteStep("/Project/rock.PNG.meta", after, before) }), report);
+	EXPECT_EQ(result.Error, EVcsError::None) << result.Message.CStr();
+	EXPECT_FALSE(report.bStale);
+	EXPECT_EQ(tree.Read("/Project/rock.PNG.meta"), after);
+
+	tree.Write("/Project/a.png", "png");
+	std::error_code ec;
+	ASSERT_TRUE(std::filesystem::create_directory(tree.Abs("/Project/a.png.META"), ec));
+	result = tree.Writer->Run(MakeOp({ WriteStep("/Project/a.png.meta", MakeMetaText(SGuid::NewRandom())) }), report);
+	EXPECT_EQ(result.Error, EVcsError::None) << result.Message.CStr();
+	EXPECT_FALSE(report.bStale) << "a folder in another spelling is never stale on every pass";
+	EXPECT_TRUE(tree.IsSpelled("/Project/a.png.meta"));
+
+	tree.Write("/Project/b.png", "png");
+	tree.Write("/Project/b.PNG.META", MakeMetaText(SGuid::NewRandom()));
+	EXPECT_NE(tree.Writer->Run(MakeOp({ WriteStep("/Project/b.png.meta", MakeMetaText(SGuid::NewRandom())) }), report).Error, EVcsError::None);
+	EXPECT_TRUE(report.bStale);
+	EXPECT_FALSE(tree.IsSpelled("/Project/b.png.meta"));
 }
 
 TEST(AssetWriterTest, AnOpWithoutAPreconditionIsRefusedOnItsFirstRun)

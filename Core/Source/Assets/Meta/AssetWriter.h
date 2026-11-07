@@ -44,9 +44,9 @@
  *    step moves, would replay wrongly. A meta swap is therefore two WriteFiles, whose bytes are in hand, never Moves.
  *    A WriteFile whose frame is past the journal's limit (FitsOpJournalFrame) is refused, and so is any CopyFile until
  *    duplicate (M11) settles its replay. A WriteFile whose target no longer holds what its planner read (its Prior,
- *    OpJournal.h, looked at under the name the file has before the op), or a meta's whose source is gone, makes the whole
- *    op stale: nothing is asked or logged, and its caller plans again from what is there now. Half an op is never run on
- *    the first try: the losers of one ReGuid set reference each other.
+ *    OpJournal.h, looked at under the name the file has before the op), or a create's of a meta whose source is gone,
+ *    makes the whole op stale: nothing is asked or logged, and its caller plans again from what is there now. Half an
+ *    op is never run on the first try: the losers of one ReGuid set reference each other.
  *    Within each run of consecutive writes, metas go before sources (a crash between them then leaves an orphan meta,
  *    which pairs, rather than a metaless source, which the lifecycle would give a new identity). A WriteFile whose target
  *    already holds its bytes, and which no earlier step moves, is dropped: a file is rewritten only when its canonical
@@ -58,9 +58,12 @@
  * 4. The steps in order. Consecutive Moves go to the provider as one call per provider, asset and meta in one span, and
  *    consecutive Trashes as one Delete. Every step is idempotent, as OpJournal.h says, and so is the op by step 1's
  *    one-role rule, so a replay is the same code. Right before each WriteFile its Prior is checked again (the first run
- *    and a replay alike): a target that changed meanwhile, a meta whose source is gone, is skipped with a warning and
- *    reported (bStale), never written over. A create goes in with WriteFileNew, so a meta that lands between the check and
- *    the write is kept too. No write creates a folder: one renamed or deleted since the plan is not brought back.
+ *    and a replay alike): a target that changed meanwhile, a created meta whose source is gone, is skipped with a
+ *    warning and reported (bStale), never written over. A create goes in with WriteFileNew, so a meta that lands
+ *    between the check and the write is kept too. No write creates a folder: one renamed or deleted since the plan is
+ *    not brought back. A first run that skipped a step so fails stale when it is done, like one stale before step 2:
+ *    the rest of it is written and finished, and its caller plans again from what is there now, so nothing counts it
+ *    as applied.
  * 5. Add, one call per provider, of the files the op created and their pairs, leaving out what step 4 skipped.
  * 6. The journal's End, which empties it.
  * A step that fails before anything changed gives the op up (the log is emptied); one that fails after leaves the op in
@@ -116,8 +119,8 @@ public:
 	// False when one could not be finished (it stays in the log), or without the writer lock: a read-only process or a guest
 	// reports an unfinished journal and never rolls it forward. A step whose file is gone by now (deleted meanwhile) is
 	// skipped with a warning: no replay can bring it back, and the lifecycle reconciles what is on disk. So is a WriteFile
-	// whose target no longer holds its Prior, or a meta's whose source is gone (bStale): a meta a pull or a teammate put
-	// there after the crash is theirs. The op is finished all the same.
+	// whose target no longer holds its Prior, or a created meta's whose source is gone (bStale): a meta a pull or a
+	// teammate put there after the crash is theirs. The op is finished all the same.
 	bool RollForward (FString* OutError = nullptr);
 	bool RollForward (SAssetWriteReport& OutReport, FString* OutError = nullptr);
 
