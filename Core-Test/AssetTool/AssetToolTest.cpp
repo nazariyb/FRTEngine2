@@ -1475,3 +1475,43 @@ TEST_F(AssetToolRegistryTest, ScanWithEngineWritesTheEnginesSnapshot)
 	EXPECT_TRUE(dump.Output.Contains("file /Engine/Textures/Default.png Asset")) << dump.Output.CStr();
 	EXPECT_FALSE(dump.Output.Contains("mount /Project")) << dump.Output.CStr();
 }
+
+// Two machines agree on a new meta (design §4.2, §16.2 M4 "two fresh clones of a commit with a metaless PNG give
+// byte-identical metas"): a repository whose project commits a texture without its meta, cloned twice to other paths,
+// one clone with core.autocrlf=true as Git for Windows has it by default; `fix` in each derives the same GUID from the
+// folded mount path, the file's bytes and the project's salt, so both metas have the same bytes, LF and canonical. Two
+// launches.
+TEST_F(AssetToolRegistryTest, TwoFreshClonesOfACommitGiveAMetalessFileByteIdenticalMetas)
+{
+	const std::filesystem::path git = platform::FindOnPath("git");
+	if (git.empty())
+	{
+		GTEST_SKIP() << "git is not on PATH";
+	}
+	const std::filesystem::path origin = Dir / FStringView("Джерело").ToPath();
+	const std::filesystem::path texture = FStringView("Content/Textures/Камінь.png").ToPath();
+	WritePng(origin / texture, 16u);
+	WriteText(origin / "Config" / "Assets.yml", "FormatVersion: 1\n");
+	WriteText(origin / "Clone.frtproject", FString::Format("[Project]\nName=Clone\nEngine={}\n", FString::FromPath(paths::GetEngineDir())));
+	test::meta::WriteCurrentMigrations(origin);
+	ASSERT_EQ(test::RunGit(git, origin, { "init", "-q" }).ExitCode, 0);
+	ASSERT_EQ(test::RunGit(git, origin, { "add", "--all" }).ExitCode, 0);
+	ASSERT_EQ(test::RunGit(git, origin, { "commit", "-q", "-m", "A texture without its meta" }).ExitCode, 0);
+
+	std::vector<FString> metas;
+	for (const auto& [name, autocrlf] : { std::pair<FStringView, FStringView> { "Перший", "false" }, { "Другий 第二", "true" } })
+	{
+		const std::filesystem::path clone = Dir / name.ToPath();
+		const test::SProcessResult cloned = test::RunGit(git, Dir, { "clone", "-q", "--local", "-c", FString::Format("core.autocrlf={}", autocrlf),
+			FString::FromPath(origin), FString::FromPath(clone) });
+		ASSERT_EQ(cloned.ExitCode, 0) << cloned.Errors.CStr();
+		const test::SProcessResult fixed = Run({ "-Project=" + FString::FromPath(clone / "Clone.frtproject"), "fix" }, clone);
+		ASSERT_EQ(fixed.ExitCode, 0) << fixed.Output.CStr() << fixed.Errors.CStr();
+		const std::optional<std::vector<uint8>> bytes = platform::ReadFileBytesUncached(clone / (FString::FromPath(texture) + ".meta").ToPath());
+		ASSERT_TRUE(bytes.has_value()) << "fix created the meta: " << fixed.Output.CStr();
+		metas.emplace_back(FStringView(reinterpret_cast<const char*>(bytes->data()), static_cast<uint32>(bytes->size())));
+	}
+	EXPECT_EQ(metas[0], metas[1]);
+	EXPECT_TRUE(metas[0].StartsWith("FormatVersion: 1\nGuid: ")) << metas[0].CStr();
+	EXPECT_FALSE(metas[0].Contains("\r")) << metas[0].CStr();
+}

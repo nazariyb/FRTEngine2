@@ -10,6 +10,7 @@
 #include "Config/Config.h"
 #include "Engine/Engine.h"
 #include "Engine/LaunchConfig.h"
+#include "Platform/FileSystem.h"
 
 #if !defined(FRT_HEADLESS)
 #include "Graphics/Render/Renderer.h"
@@ -41,7 +42,14 @@ bool CAutomation::IsScriptedRun (const config::CConfig& Config)
 void CAutomation::ApplyScriptedRunRules (config::CConfig& Config)
 {
 	Config.SetOverride("Assets", "Watch", "0");
-	Config.SetOverride("Assets", "ReadOnly", "1");
+	// The smoke test's file edits write a scratch copy, never the engine checkout (EditorSmokeTest.h): there the run is
+	// the copy's writer. Anywhere else it stays read-only, SmokeTestEdits or not.
+	const bool bScratchEdits = Config.Get("Editor", "SmokeTestEdits", false) && paths::HasProject()
+		&& !platform::IsAtOrBelow(platform::NormalizePath(paths::GetProjectDir()), platform::NormalizePath(paths::GetEngineDir()));
+	if (!bScratchEdits)
+	{
+		Config.SetOverride("Assets", "ReadOnly", "1");
+	}
 }
 
 void CAutomation::Configure (CEngine& Engine, const CWorldScene& World)

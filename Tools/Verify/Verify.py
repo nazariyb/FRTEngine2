@@ -28,7 +28,9 @@ script, behind FRT.bat verify (Premake/tools.lua). A milestone branch merges onl
      what validate does over every mount, with the lifecycle's providers ("[smoke] ok the Asset problems panel lists"); then its steps that edit files, on a
      scratch copy of Templates/Demo made with
      FRT.bat new and a copy of the shaders (Gate.smoke_scratch): a material rewritten must reload and a
-     shader include edited must rebuild exactly the programs that include it, through the file watcher;
+     shader include edited must rebuild exactly the programs that include it, through the file watcher, and a
+     metaless PNG added must get its meta from the editor's lifecycle through the copy's Git provider, both files
+     left untracked; then, with the copy's .git deleted and nothing rebuilt, the same run once more through None;
   6. automation captures of Templates/Demo through the launcher, in Debug and in Development: one raster,
      compared byte for byte with its baseline, and one path traced, compared by relative RMSE - path
      tracing still varies a little from run to run, as its radiance cache inserts with GPU atomics, so a
@@ -975,6 +977,31 @@ class Gate:
         ('the material reload', re.compile(r'^\[smoke\]\s+ok\s+.* reloaded: version', re.MULTILINE)),
         ('the shader rebuild', re.compile(r'^\[smoke\]\s+ok\s+exactly the \d+ program\(s\) that read ', re.MULTILINE)),
     )
+    # The lifecycle's meta for the PNG the smoke test adds, through the provider named (edit [4]).
+    SCRATCH_META_LINE = re.compile(r'^\[smoke\]\s+ok\s+the lifecycle created (\S+\.png)\.meta through the (\w+) provider', re.MULTILINE)
+
+    def scratch_smoke_run(self, log, env, config, project, project_dir, shaders, output, provider, root):
+        """One editor smoke run with file edits over the scratch copy (Env: the user-data directory FRT.bat new
+        registered the engine in); the meta it creates goes through Provider."""
+        exe = BINARIES / f'Editor-{config}-Default.exe'
+        since = Path(log).stat().st_size if Path(log).exists() else 0
+        code, seconds = run([exe, f'-Project={project}', '-Editor:SmokeTest=1', f'-Editor:SmokeTestDir={output}',
+                             '-Editor:SmokeTestEdits=1', f'-Render:ShaderRoot={shaders}'],
+                            log, cwd=project_dir, env=env, timeout=SMOKE_TIMEOUT)
+        self.timings.append((f'editor smoke test with file edits, scratch copy ({config}, {provider})', f'{seconds:.1f} s'))
+        text = Path(log).read_bytes()[since:].decode('utf-8', errors='replace')   # this run's lines alone
+        if code != 0:
+            failures = re.findall(r'^\[smoke\]\s+FAIL\s+(.*)$', text, re.MULTILINE)
+            raise StepFailed(('timed out' if code is None else f'exit code {code}') + f' ({provider})' +
+                             (': ' + '; '.join(f.strip() for f in failures[:3]) if failures else '') +
+                             f' (the copy is kept: {root})')
+        missing = [what for what, pattern in self.SCRATCH_EDIT_CHECKS if not pattern.search(text)]
+        if missing:
+            raise StepFailed(f'no check of {" or ".join(missing)} passed ({provider}; the copy is kept: {root})')
+        metas = [m for m in self.SCRATCH_META_LINE.finditer(text) if m.group(2) == provider]
+        if not metas:
+            raise StepFailed(f'no "[smoke] ok the lifecycle created ... through the {provider} provider" line (the copy is kept: {root})')
+        return text, metas[-1].group(1)
 
     def smoke_scratch(self, log, config):
         """The smoke steps that edit files, on a scratch copy (design 13.5, step 3), never on the engine
@@ -1013,27 +1040,31 @@ class Gate:
         shaders = root / 'Shaders'
         shutil.copytree(ROOT / 'Core' / 'Content' / 'Shaders', shaders, ignore=shutil.ignore_patterns('Bin'))
 
-        exe = BINARIES / f'Editor-{config}-Default.exe'
+        # The copy is a git repository (FRT.bat new: git init, everything staged, nothing committed), so the editor, its
+        # writer here (Engine/Automation.h), creates the added PNG's meta through Git, which stages nothing: both files
+        # stay untracked (edit [4]).
         output = self.run_dir / 'Smoke' / f'{SCRATCH_NAME}-{config}'
-        code, seconds = run([exe, f'-Project={project}', '-Editor:SmokeTest=1', f'-Editor:SmokeTestDir={output}',
-                             '-Editor:SmokeTestEdits=1', f'-Render:ShaderRoot={shaders}'],
-                            log, cwd=project_dir, env=env, timeout=SMOKE_TIMEOUT)
-        self.timings.append((f'editor smoke test with file edits, scratch copy ({config})', f'{seconds:.1f} s'))
-        text = Path(log).read_bytes().decode('utf-8', errors='replace')
+        repository = (project_dir / '.git').exists()
+        first = 'Git' if repository else 'None'
+        text, added = self.scratch_smoke_run(log, env, config, project, project_dir, shaders, output, first, root)
         checks = len(re.findall(r'^\[smoke\]\s+ok\s', text, re.MULTILINE))
         skips = len(re.findall(r'^\[smoke\]\s+skip\s', text, re.MULTILINE))
-        if code != 0:
-            failures = re.findall(r'^\[smoke\]\s+FAIL\s+(.*)$', text, re.MULTILINE)
-            raise StepFailed(('timed out' if code is None else f'exit code {code}') +
-                             (': ' + '; '.join(f.strip() for f in failures[:3]) if failures else '') +
-                             f' (the copy is kept: {root})')
-        missing = [what for what, pattern in self.SCRATCH_EDIT_CHECKS if not pattern.search(text)]
-        if missing:
-            raise StepFailed(f'no check of {" or ".join(missing)} passed (the copy is kept: {root})')
+        detail = f'{checks} checks passed' + (f', {skips} skipped' if skips else '')
+        if repository:
+            status = output_of(['git', '-C', str(project_dir), 'status', '--porcelain', '--untracked-files=all', '--', 'Content'])
+            lines = (status or b'').decode('utf-8', errors='replace').splitlines()
+            for path in (f'Content/{added}', f'Content/{added}.meta'):
+                if f'?? {path}' not in lines:
+                    raise StepFailed(f'git status does not list {path} as untracked: {"; ".join(lines[:4]) or "nothing"} '
+                                     f'(the copy is kept: {root})')
+            # The same copy without its repository: None, with nothing generated or built again.
+            remove_tree(project_dir / '.git')
+            text, _ = self.scratch_smoke_run(log, env, config, project, project_dir, shaders, self.run_dir / 'Smoke' / f'{SCRATCH_NAME}-{config}-None',
+                                             'None', root)
+            detail += '; then without .git, through None'
         remove_tree(root)
-        return (f'{checks} checks passed' + (f', {skips} skipped' if skips else '') +
-                ', the material reloaded and the shader programs rebuilt' + (f'; build {retries}' if retries else '') +
-                f'; output in {output}')
+        return (detail + f', the material reloaded, the shader programs rebuilt and {added}\'s meta created through {first}' +
+                (f'; build {retries}' if retries else '') + f'; output in {output}')
 
     # ---- captures ----
 

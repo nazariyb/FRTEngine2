@@ -572,13 +572,18 @@ A removed file keeps what was loaded. The game module's DLL keeps its own exclus
 Automation runs (an `[Automation]` key that makes a run scripted) and the editor's smoke tests are scripted:
 `CEngine::StartUp` forces `[Assets] Watch=0` (nothing reloads behind a capture's back) and `[Assets] ReadOnly=1`
 (the asset system writes nothing: no writer lock, so no registry file and no meta; its lifecycle only reports)
-(`CAutomation::IsScriptedRun`, `ApplyScriptedRunRules`). A
+(`CAutomation::IsScriptedRun`, `ApplyScriptedRunRules`). The one exception is `-Editor:SmokeTestEdits=1` on a project
+outside the engine checkout, which is that copy's writer. A
 smoke step that needs the watcher turns it on for its own directories only (the input overrides' `Local/SmokeTest`; the
 scratch copy and its shader copy) and flushes it after writing, so its result never depends on timing and nothing of the
 checkout it runs in reloads behind its back. With `-Editor:SmokeTestEdits=1` the smoke test also edits files - a
-material, which must reload, and a shader include, which must rebuild exactly the programs that read it - but only on a
+material, which must reload, and a shader include, which must rebuild exactly the programs that read it - and adds a
+metaless 1x1 PNG, `Content/SmokeTest<Provider>.png`, whose meta the lifecycle must create through the copy's provider
+and pair with its record (`[smoke] ok the lifecycle created ... through the <Provider> provider`), but only on a
 project outside the engine checkout and with the shaders read from a copy, `-Render:ShaderRoot=<dir>` (dev builds).
-`FRT.bat verify` runs it on a scratch copy of `Templates/Demo` made with `FRT.bat new` in `%TEMP%`.
+`FRT.bat verify` runs it on a scratch copy of `Templates/Demo` made with `FRT.bat new` in `%TEMP%` (a git repository:
+Git, and `git status` must list the PNG and its meta untracked, since FRT never stages), then once more on the same
+copy with its `.git` deleted and nothing rebuilt (None).
 
 ## Tool host, worker pool, derived-data cache, shader cache (M1)
 
@@ -782,7 +787,8 @@ folders only. Invalid patterns are reported, never guessed at.
 - `FRT.bat verify` is the merge gate: builds, Core-Test, lints, the registry verbs with `--json`, the registry's golden
   dumps, a check that this file names every `FRT.bat assets` verb and every diagnostic code, `validate --ci` of the
   engine and both templates (full mode), the editor's smoke tests (in place, read-only, with the registry, Assets panel
-  and Asset problems panel checks, and with file edits on a scratch copy), automation
+  and Asset problems panel checks, and with file edits and a meta created on a scratch copy, through Git and then
+  None), automation
   captures against baselines (raster byte for byte, path tracing within a tolerance), the Release package's captures,
   and a clean `git status` at the end; the summary lists each host's initial scan and BuildWorld wait. `--quick` runs
   the pre-commit subset; `--record-baselines` records new baselines in `Local/Verify/Baselines`, which belong to the

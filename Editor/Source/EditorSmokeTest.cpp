@@ -15,8 +15,12 @@
 #include "Assets/FileWatcherService.h"
 #include "Assets/Discovery/Mounts.h"
 #include "Assets/Meta/AssetRepairs.h"
+#include "Assets/Meta/MetaFile.h"
+#include "Assets/Meta/MetaPaths.h"
 #include "Assets/Meta/ProblemList.h"
+#include "Assets/Registry/RegistryRecords.h"
 #include "Assets/Registry/RegistryView.h"
+#include "Assets/Vcs/VcsProvider.h"
 #include "Config/Config.h"
 #include "Containers/String.h"
 #include "Engine/Engine.h"
@@ -26,7 +30,9 @@
 #include "Graphics/Camera.h"
 #include "Graphics/Render/MaterialLibrary.h"
 #include "Graphics/Render/Renderer.h"
+#include "Platform/FileSystem.h"
 #include "Platform/Platform.h"
+#include "Platform/Timestamp.h"
 #include "UI/DebugTools.h"
 
 #include "imgui.h"
@@ -105,6 +111,17 @@ bool Near (float A, float B, float Tolerance = 1e-4f)
 {
 	return std::abs(A - B) <= Tolerance;
 }
+
+// A 1x1 RGBA PNG: a texture the Demo's rules import, small enough to hash at once.
+constexpr uint8 TinyPng[] = {
+	0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01,
+	0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0A, 0x49, 0x44, 0x41,
+	0x54, 0x78, 0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00, 0x00, 0x00, 0x00, 0x49,
+	0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+};
+
+// How long the lifecycle may take to create the meta: its creation delay and VCS settle time, and a slow machine.
+constexpr double MetaCreationTimeoutSeconds = 30.0;
 
 // Path is Directory or below it (both made canonical as far as they exist, so spelling and case
 // do not matter).
@@ -285,6 +302,112 @@ void CEditorSmokeTest::CheckProgramsRebuilt (CEngine& Engine)
 	Check(pipelines.GetHotReloadCount() == HotReloads + IncludePrograms && pipelines.GetErrors().empty(),
 		FString::Format("exactly the {} program(s) that read {} were rebuilt ({}), without errors ({})", IncludePrograms,
 			FString::FromPath(EditedInclude.filename()), pipelines.GetHotReloadCount() - HotReloads, pipelines.GetErrors().size()));
+}
+
+void CEditorSmokeTest::BeginMetaCreation (CEngine& Engine)
+{
+	if (!bCanEditFiles)
+	{
+		return;
+	}
+	assets::CAssetRegistry* registry = Engine.GetAssetRegistry();
+	if (registry == nullptr || registry->GetRepairs() == nullptr || !registry->IsWriter())
+	{
+		Check(false, "the scratch copy's editor is its writer, with a lifecycle that repairs");
+		WatchFiles(Engine, false);
+		MetaStep = EMetaStep::Done;
+		return;
+	}
+	MetaStep = EMetaStep::AwaitProvider;
+	MetaDeadline = platform::MakeDeadline(MetaCreationTimeoutSeconds);
+}
+
+void CEditorSmokeTest::UpdateMetaCreation (CEngine& Engine)
+{
+	assets::CAssetRegistry* registry = Engine.GetAssetRegistry();
+	const bool bLate = platform::ReadTimestamp() >= MetaDeadline;
+	if (MetaStep == EMetaStep::AwaitProvider)
+	{
+		// Detected on a worker at start-up (CEngine::StartUp): settled long before this, but never assumed.
+		const assets::IVcsProvider* provider = registry->GetRepairs()->GetProvider(assets::ProjectMountId);
+		if (provider == nullptr)
+		{
+			if (bLate)
+			{
+				Check(false, "the provider of /Project was detected");
+				WatchFiles(Engine, false);
+				MetaStep = EMetaStep::Done;
+			}
+			return;
+		}
+		MetaProvider = FString(provider->GetName());
+		// Named after the provider, so a second run over the same copy with another one adds a file of its own.
+		AddedFile = paths::GetProjectContentDir() / ("SmokeTest" + MetaProvider + ".png").ToPath();
+		const std::filesystem::path metaPath = assets::GetMetaPath(FString::FromPath(AddedFile)).ToPath();
+		std::error_code ec;
+		Check(!std::filesystem::exists(AddedFile, ec) && !std::filesystem::exists(metaPath, ec),
+			FString::Format("{} is new, with no meta", FString::FromPath(AddedFile.filename())));
+		FString error;
+		Check(platform::WriteFileAtomic(AddedFile, std::span<const uint8>(TinyPng), true, &error),
+			FString::Format("{} added to Content/{}", FString::FromPath(AddedFile.filename()), error.IsEmpty() ? FString() : ": " + error));
+		FlushWatcher(Engine, AddedFile.parent_path(), "the new file");
+		MetaStep = EMetaStep::AwaitMeta;
+		MetaDeadline = platform::MakeDeadline(MetaCreationTimeoutSeconds);
+		return;
+	}
+
+	// The meta on disk, parsed, and the registry's record of the file taking its GUID (Paired): the lifecycle's whole loop,
+	// from the watcher's event through the creation delay, the writer and the provider to the rescan.
+	const std::filesystem::path metaPath = assets::GetMetaPath(FString::FromPath(AddedFile)).ToPath();
+	std::optional<assets::SGuid> guid;
+	if (const std::optional<std::vector<uint8>> bytes = platform::ReadFileBytesUncached(metaPath); bytes.has_value())
+	{
+		assets::SMetaParseResult parse;
+		assets::ParseMeta(FStringView(reinterpret_cast<const char*>(bytes->data()), static_cast<uint32>(bytes->size())), parse);
+		if (parse.State == assets::EMetaParseState::Ok)
+		{
+			guid = parse.Meta.Guid;
+		}
+	}
+	const std::optional<FString> mountPath = registry->GetMounts().ToMountPath(AddedFile);
+	const std::optional<assets::SStoredFile> stored = mountPath.has_value() ? assets::FindStoredFile(registry->Live(), *mountPath) : std::nullopt;
+	const bool bPaired = guid.has_value() && stored.has_value() && stored->MetaState == assets::EMetaState::Paired && stored->Guid == *guid;
+	if (!bPaired && !bLate)
+	{
+		return;
+	}
+	Check(bPaired, FString::Format("the lifecycle created {}.meta through the {} provider (GUID {}), and the registry pairs it",
+		FString::FromPath(AddedFile.filename()), MetaProvider, guid.has_value() ? guid->ToString() : FString("none")));
+	if (!bPaired)
+	{
+		// What a failure needs: whether the registry saw the file, whether the lifecycle ran, and what could hold it.
+		const assets::SAssetRepairsStats stats = registry->GetRepairs()->GetStats();
+		const assets::CFileWatcherService* watcher = Engine.GetFileWatcher();
+		Log(FString::Format("  registry: {} ({}), idle {}, revision {}, repairs {} applied / {} refused; lifecycle runs {}, events {}; "
+			"watcher {} (holding {}, pending {})", stored.has_value() ? "has the file" : "has no row of the file",
+			stored.has_value() ? enum_::ToString(stored->MetaState) : FStringView("-"), registry->IsIdle(), registry->GetRevision(),
+			registry->GetCounters().RepairsApplied, registry->GetCounters().RepairsRefused, stats.Runs, stats.TrackedEvents,
+			watcher != nullptr && watcher->IsEnabled() ? "on" : "off", watcher != nullptr && watcher->GetStats().bHolding,
+			watcher != nullptr ? watcher->GetStats().PendingPaths : 0u));
+		for (const assets::SMount& mount : registry->GetMounts().GetMounts())
+		{
+			const assets::IVcsProvider* provider = registry->GetRepairs()->GetProvider(mount.Id);
+			Log(FString::Format("  {}: provider {}{}", mount.GetRootMountPath(), provider != nullptr ? provider->GetName() : FStringView("(not settled)"),
+				provider != nullptr && provider->IsBusy() ? ", busy" : ""));
+		}
+		if (mountPath.has_value())
+		{
+			registry->Live().ForEachProblem([&] (FStringView Subject, assets::EProblemSource, const SDiagnostic& Problem)
+			{
+				if (Subject == mountPath->View())
+				{
+					Log(FString::Format("  problem {} {}", FormatDiagnosticCode(Problem.Code), Problem.Message));
+				}
+			});
+		}
+	}
+	WatchFiles(Engine, false);
+	MetaStep = EMetaStep::Done;
 }
 
 void CEditorSmokeTest::CheckCameraController ()
@@ -771,18 +894,17 @@ void CEditorSmokeTest::Update (CEditor& Editor, CEngine& Engine)
 		{ 1051u, "edit a material", [] (CEditorSmokeTest& T, CEditor&, CEngine& G) { T.EditMaterial(G); } },
 		{ 1060u, "material reloaded", [] (CEditorSmokeTest& T, CEditor&, CEngine&) { T.CheckMaterialReloaded(); } },
 		{ 1061u, "edit a shader include", [] (CEditorSmokeTest& T, CEditor&, CEngine& G) { T.EditShaderInclude(G); } },
-		{ 1070u, "programs rebuilt", [] (CEditorSmokeTest& T, CEditor&, CEngine& G)
-		{
-			T.CheckProgramsRebuilt(G);
-			if (T.bCanEditFiles)
-			{
-				T.WatchFiles(G, false);
-			}
-		} },
+		{ 1070u, "programs rebuilt", [] (CEditorSmokeTest& T, CEditor&, CEngine& G) { T.CheckProgramsRebuilt(G); } },
+		// The lifecycle, live (§4.7): a file added with no meta gets one from this writer, through /Project's provider.
+		{ 1080u, "add a metaless file", [] (CEditorSmokeTest& T, CEditor&, CEngine& G) { T.BeginMetaCreation(G); } },
 	};
 
 	// Hitches: the longest frame between two steps goes into the log with the next step.
 	LongestFrameMs = (std::max)(LongestFrameMs, Engine.GetClock().GetDeltaSeconds() * 1000.0f);
+	if (MetaStep == EMetaStep::AwaitProvider || MetaStep == EMetaStep::AwaitMeta)
+	{
+		UpdateMetaCreation(Engine);
+	}
 	while (NextStep < std::size(steps) && frame >= steps[NextStep].Frame)
 	{
 		const SStep& step = steps[NextStep++];
@@ -791,8 +913,9 @@ void CEditorSmokeTest::Update (CEditor& Editor, CEngine& Engine)
 		step.Run(*this, Editor, Engine);
 	}
 
-	// Done: quit once the captures are on disk.
-	if (NextStep == std::size(steps) && !bFinished && !Engine.GetRenderer()->HasPendingCaptures())
+	// Done: quit once the captures are on disk and nothing is awaited.
+	const bool bAwaiting = MetaStep == EMetaStep::AwaitProvider || MetaStep == EMetaStep::AwaitMeta;
+	if (NextStep == std::size(steps) && !bFinished && !bAwaiting && !Engine.GetRenderer()->HasPendingCaptures())
 	{
 		bFinished = true;
 		// Glyphs are rasterised as text first needs them: the atlas grows with what the run drew.

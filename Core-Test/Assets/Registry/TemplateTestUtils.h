@@ -87,14 +87,17 @@ public:
  * <root>/Engine/Templates/<Template>/{Content,Config/Assets.yml} - so that everything the registry derives from where
  * a file lies (a diagnostic's File, "Core/Config/Assets.yml" or "Content/Models/x.frtmat.yml") reads as it does for
  * the checkout itself: the registry's golden dumps, which `FRT.bat assets dump registry` makes in place, compare
- * byte for byte. Template empty: the engine alone.
+ * byte for byte. Template empty: the engine alone. bCaseSensitive: the copy's root is given the per-directory
+ * case-sensitive attribute while it is still empty, so every directory of the copy inherits it (bIsCaseSensitive says
+ * whether it could be set: discovery::MakeCaseSensitive).
  */
 class CCheckoutCopy
 {
 public:
-	explicit CCheckoutCopy (FStringView Name, FStringView Template = {})
+	explicit CCheckoutCopy (FStringView Name, FStringView Template = {}, bool bCaseSensitive = false)
 		: Tree(Name)
 	{
+		bIsCaseSensitive = bCaseSensitive && discovery::MakeCaseSensitive(Tree.Root);
 		const FStringView skipShaderBinaries[] = { "Shaders/Bin" };
 		CopyTree(paths::GetEngineContentDir(), EngineDir() / "Core" / "Content", skipShaderBinaries);
 		std::error_code ec;
@@ -120,5 +123,6 @@ public:
 	discovery::CDiscoveryTree Tree;
 	std::shared_ptr<const assets::CMountTable> Mounts;
 	std::vector<SDiagnostic> MountDiagnostics;
+	bool bIsCaseSensitive = false;
 };
 }

@@ -6,7 +6,8 @@
 // compares the same files with `FRT.bat assets dump registry --text --ci` run in place. A content change that changes
 // a dump is committed with its golden file: `FRT.bat verify --update-goldens` rewrites them and shows the diff.
 // Since M4 the registry runs its lifecycle as every host's does (reporting only), so a committed file without its meta
-// is a META001 error here.
+// is a META001 error here; and the Demo copied into a case-sensitive directory dumps the same text (§16.2 M4): the
+// identities its committed metas give do not depend on how the file system compares names.
 #include <gtest/gtest.h>
 
 #include <filesystem>
@@ -177,4 +178,21 @@ TEST(RegistryGoldenTest, TheBlankTemplatesDumpMatchesItsGoldenFile)
 	ASSERT_FALSE(HasFailure());
 	const FStringView mounts[] = { "Project" };
 	ExpectGoldenDump(copy, "Blank", mounts);
+}
+
+// A clone into a case-sensitive directory (WSL's, or one a developer set up for Linux tools) scans to the same dump: a
+// per-directory attribute on a temp directory, not a system setting; skipped where it cannot be set.
+TEST(RegistryGoldenTest, TheDemoTemplateInACaseSensitiveDirectoryDumpsTheSameText)
+{
+	const CCheckoutCopy copy("Golden Demo Case", "Demo", true);
+	if (!copy.bIsCaseSensitive)
+	{
+		GTEST_SKIP() << "this volume cannot make a directory case-sensitive (NTFS, and on some Windows versions WSL, is needed)";
+	}
+	ASSERT_FALSE(HasFailure());
+	const SMount* project = copy.Mounts->Find("Project");
+	ASSERT_NE(project, nullptr);
+	EXPECT_TRUE(project->Volume.bCaseSensitive) << "the copy's mount reads as case-sensitive";
+	const FStringView mounts[] = { "Project" };
+	ExpectGoldenDump(copy, "Demo", mounts);
 }

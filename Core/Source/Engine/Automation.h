@@ -59,7 +59,10 @@ namespace frt
  * makes it scripted, or the editor's smoke test ([Editor] SmokeTest) - before anything is created
  * from the config. [Assets] Watch=0: no file is reloaded behind the run's back (the file watcher
  * starts disabled; a smoke step that edits files turns it on for itself). [Assets] ReadOnly=1: the
- * asset system writes nothing (nothing writes yet; the switch is there for M4's metas).
+ * asset system writes nothing - no meta, snapshot, journal or Rules.cache - and takes no writer lock. The one
+ * exception is the smoke test's file edits on a scratch copy ([Editor] SmokeTestEdits=1 with a project outside
+ * the engine checkout, which FRT.bat verify makes with FRT.bat new): that run is the copy's writer, so its
+ * lifecycle creates the meta of the file it adds through the copy's VCS provider (edit [4]).
  */
 class FRT_CORE_API CAutomation
 {
@@ -68,7 +71,8 @@ public:
 	// or [Editor] SmokeTest.
 	[[nodiscard]] static bool IsScriptedRun (const config::CConfig& Config);
 	// Forces what every scripted run runs with, as overrides (never saved): [Assets] Watch=0 and
-	// [Assets] ReadOnly=1. Before anything reads them (CEngine::StartUp, right after the command line).
+	// [Assets] ReadOnly=1 (not for SmokeTestEdits on a project outside the engine checkout). Before anything
+	// reads them (CEngine::StartUp, right after the command line).
 	static void ApplyScriptedRunRules (config::CConfig& Config);
 
 	// Reads the [Automation] keys; a scripted run also switches the renderer to deterministic

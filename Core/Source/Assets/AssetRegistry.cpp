@@ -1662,10 +1662,13 @@ struct CAssetRegistry::SImpl final : IAssetRepairsHost
 
 	// ---- the watcher ----
 
+	// Subscribed even while the watcher is off ([Assets] Watch=0, every scripted run), as its other subscribers are: it
+	// tells nothing until it is on, and a scripted step that turns it on for its own files (the smoke test's scratch copy,
+	// where it adds a file whose meta the lifecycle must create) is told about them like any other change.
 	void Subscribe ()
 	{
 		CFileWatcherService* watcher = Desc.Watcher;
-		if (watcher == nullptr || !watcher->IsEnabled())
+		if (watcher == nullptr)
 		{
 			return;
 		}
