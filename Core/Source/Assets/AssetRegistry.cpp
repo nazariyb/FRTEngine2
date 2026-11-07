@@ -193,10 +193,15 @@ struct SReadMeta
 	uint64 Hash = 0u;
 	std::vector<uint8> Bytes;                           // an Ok meta's raw bytes (empty for a Broken one)
 	bool bFromCopy = false;                             // parsed from the view's METAS copy
+	std::shared_ptr<const SReadMeta> LastGood;          // a Broken meta's last good meta (ReadLastGoodMeta); null: none
 
 	[[nodiscard]] bool IsOk () const noexcept { return Parse.State == EMetaParseState::Ok; }
-	// The values the rules engine applies (SFileFacts::Meta): an Ok parse's; a Broken meta's are meaningless.
-	[[nodiscard]] const SAssetMeta* GetValues () const noexcept { return IsOk() ? &Parse.Meta : nullptr; }
+	// The values the rules engine applies (SFileFacts::Meta): an Ok parse's; a Broken meta's own are meaningless, so
+	// its last good meta's (§4.6: the record keeps what that meta gave it), or none.
+	[[nodiscard]] const SAssetMeta* GetValues () const noexcept
+	{
+		return IsOk() ? &Parse.Meta : LastGood != nullptr ? LastGood->GetValues() : nullptr;
+	}
 	// The FILES columns of the meta's source, and of the meta's own row.
 	[[nodiscard]] SFileMetaState GetColumns () const noexcept { return SFileMetaState { IsOk() ? EMetaState::Paired : EMetaState::Broken, Hash }; }
 };
@@ -267,6 +272,35 @@ std::shared_ptr<const SReadMeta> ReadMetaCopy (const CRegistryView& View, const 
 }
 
 /**
+ * The last good meta of a record whose meta is Broken or gone (§4.6: a broken meta blocks import until fixed, a lost one
+ * never changes identity): the view's METAS copy of the record's meta-given GUID, when this file's meta wrote it and it
+ * parses Ok with that GUID. Its hash is not compared with the file's MetaHash, which holds the broken bytes' once a
+ * Broken read is committed. Null: none, and a Broken meta then blocks the record's import.
+ */
+std::shared_ptr<const SReadMeta> ReadLastGoodMeta (const CRegistryView& View, const SStoredFile& Stored, FStringView Path)
+{
+	if (!HasMetaGivenGuid(Stored, Path))
+	{
+		return nullptr;
+	}
+	const std::optional<SMetaCopyView> copy = View.FindMetaCopy(Stored.Guid);
+	if (!copy.has_value() || copy->SourcePath != Path)
+	{
+		return nullptr;
+	}
+	auto meta = std::make_shared<SReadMeta>();
+	ParseMeta(FStringView(reinterpret_cast<const char*>(copy->Bytes.data()), static_cast<uint32>(copy->Bytes.size())), meta->Parse);
+	if (!meta->IsOk() || meta->Parse.Meta.Guid != Stored.Guid)
+	{
+		return nullptr;
+	}
+	meta->Hash = copy->Hash;
+	meta->Bytes.assign(copy->Bytes.begin(), copy->Bytes.end());
+	meta->bFromCopy = true;
+	return meta;
+}
+
+/**
  * The identity state a conversion commits beside a file's record (§5.3, M4): the METAS copy of an Ok meta read from the
  * file, when the view's differs (another hash or source); for a record whose meta-given GUID goes away - its file
  * removed, its GUID changed in place - a tombstone {GUID, last path, hash, identity, time} and the copy's removal, which
@@ -312,7 +346,8 @@ void AppendLostIdentity (std::optional<STombstone>&& Tombstone, SRegistryDelta& 
 }
 
 // A record of a file whose meta is gone keeps what its meta gave it (§4.6: a lost meta never changes identity), until
-// the lifecycle restores the meta: the stored consolidated aliases and former paths.
+// the lifecycle restores the meta: with no last good copy to take its values from (ReadLastGoodMeta), at least the
+// stored consolidated aliases and former paths.
 void KeepStoredRedirects (const CRegistryView& View, SRecordId Record, SRecordUpsert& Upsert)
 {
 	View.ForEachAlias(Record, [&] (const SAssetId& Alias)
@@ -832,12 +867,31 @@ SConversion ConvertBatch (SConvertInput& In)
 					continue;
 				}
 			}
-			const SAssetMeta* metaValues = read != nullptr ? read->GetValues() : nullptr;
 			const std::optional<SFileMetaState> metaColumns = read != nullptr ? std::optional<SFileMetaState>(read->GetColumns()) : std::nullopt;
 			const SGuid guid = ChooseRecordGuid(read.get(), stored, path);
+			// A Broken meta's values, and a lost one's, are its last good meta's while the record keeps the identity that
+			// meta gave it (§4.6): its Importer pin, Settings, Targets, Cook, Chunk, Labels and SubAssets, never the rules'
+			// alone. The read's columns stay Broken with the broken bytes' hash, and the copy is never replaced by them.
+			if (bHasRecord && guid == stored->Guid && (read == nullptr || !read->IsOk()))
+			{
+				if (std::shared_ptr<const SReadMeta> lastGood = ReadLastGoodMeta(view, *stored, path); lastGood != nullptr)
+				{
+					if (read == nullptr)
+					{
+						read = std::move(lastGood);
+					}
+					else
+					{
+						auto broken = std::make_shared<SReadMeta>(*read);
+						broken->LastGood = std::move(lastGood);
+						read = std::move(broken);
+					}
+				}
+			}
+			const SAssetMeta* metaValues = read != nullptr ? read->GetValues() : nullptr;
 			// The meta's row goes with what used its values: an unreadable meta commits nothing, so it is read again.
 			std::optional<SFileUpsert> metaRow;
-			if (read != nullptr && (metaState != EScanFileState::Unchanged || storedMeta->MetaState != metaColumns->State
+			if (meta != nullptr && (metaState != EScanFileState::Unchanged || storedMeta->MetaState != metaColumns->State
 				|| storedMeta->MetaHash != metaColumns->Hash || storedMeta->BaseClass != EFileClass::Meta))
 			{
 				metaRow = MakeMetaRow(metaPaths[metaIndex], *meta, metaColumns);
@@ -850,6 +904,40 @@ SConversion ConvertBatch (SConvertInput& In)
 					metaRow.reset();
 				}
 			};
+			if (metaColumns.has_value() && metaValues == nullptr && bHasRecord && HasMetaGivenGuid(*stored, path))
+			{
+				/**
+				 * Import blocked until the meta is fixed (§4.6): a Broken meta with no last good copy leaves the record as
+				 * its last good meta made it - neither analyzed nor re-evaluated nor removed under the rules alone. Only
+				 * the meta's columns go in, beside the stored stat, so a content change made meanwhile is still a change
+				 * once the meta is fixed. A GUID the broken bytes name instead of the record's (edited by hand) still
+				 * replaces it, with the record's stored values, and tombstones the old one. A record no meta ever gave
+				 * anything (first sight, PendingMeta) has only the rules' values to lose: it is resolved as before.
+				 */
+				if (stored->MetaState != metaColumns->State || stored->MetaHash != metaColumns->Hash)
+				{
+					SFileUpsert& row = part.FileUpserts.emplace_back();
+					row.MountPath = path;
+					row.Size = stored->Stat.Size;
+					row.MTime = stored->Stat.MTime;
+					row.Identity = stored->Stat.Identity;
+					row.Class = stored->BaseClass;
+					row.Meta = metaColumns;
+				}
+				addMetaRow();
+				if (stored->Guid != guid)
+				{
+					SRecordUpsert upsert = MakeRecordUpsertFromView(view, stored->Record);
+					upsert.Guid = guid;
+					for (SAssetId& alias : upsert.Aliases)
+					{
+						alias.Guid = alias.SubId != 0u ? guid : alias.Guid;   // a renamed sub-asset's alias names its record's id
+					}
+					AppendLostIdentity(MakeTombstone(view, *stored, path, now), part);
+					part.RecordUpserts.push_back(std::move(upsert));
+				}
+				continue;
+			}
 
 			const SScanScope& scope = *folder.Scope;
 			const SFileFacts facts { bHasRecord ? stored->Type : reflect::InvalidTypeId, metaValues };

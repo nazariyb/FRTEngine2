@@ -7,11 +7,14 @@
 // records with one GUID answer for the smallest path and a move with its meta is a move to listeners; SubAssets
 // renames keep an id and remaps add an edge. E4b: the meta's Aliases and FormerPaths resolve lookups and its bytes are
 // kept in METAS (a re-evaluation reads them there, never the disk); a removed file with a meta-given GUID, or a GUID
-// edited by hand, leaves a tombstone that the identity's return clears; a warm start keeps all of it. Small non-ASCII
-// trees in the temp directory, no lifecycle (null desc).
+// edited by hand, leaves a tombstone that the identity's return clears; a warm start keeps all of it. F3: a Broken or
+// lost meta keeps the values of its last good METAS copy (labels, cook rule, Importer pin, SubAssets renames), on the
+// re-evaluate and the analyze path; without a copy a Broken meta blocks its record's import until it is fixed. Small
+// non-ASCII trees in the temp directory, no lifecycle (null desc).
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -967,5 +970,161 @@ TEST(RegistryMeta, AReEvaluationTakesAnUnchangedMetaFromItsCopyAndAWarmStartKeep
 	EXPECT_FALSE(registry->Live().Find(SAssetId { MakeGuid(GuidB), 0u }).has_value());
 	EXPECT_FALSE(registry->Live().FindByPath("/Project/Textures/Старий.png").has_value());
 	EXPECT_EQ(registry->Live().FindMetaCopy(MakeGuid(GuidA))->Hash, HashMetaBytes(MetaText(GuidA, "Labels:\n  - Rock\n")));
+	registry->ShutDown();
+}
+
+
+// ---------------- F3: what a Broken or lost meta leaves a record ----------------
+
+namespace
+{
+// A conflict inside a meta's Labels (one Guid: line, salvaged), its Rest kept below.
+FString ConflictedMeta (FStringView Guid, FStringView Rest)
+{
+	return MetaText(Guid, FString::Format("<<<<<<< HEAD\nLabels:\n  - Ours\n=======\nLabels:\n  - Theirs\n>>>>>>> theirs\n{}", Rest));
+}
+
+constexpr FStringView BoxJson = R"({"asset":{"version":"2.0"},"meshes":[{"name":"Body","primitives":[]}]})";
+}
+
+/**
+ * A meta broken by a merge (§4.6: never overwritten, import blocked until fixed) keeps what its last good meta gave the
+ * record, taken from that meta's METAS copy: the authored labels and cook rule, an Importer pin (a file only the pin
+ * claims keeps its record and its copy), and a SubAssets rename's kept id and alias - on the re-evaluate path, and on
+ * the analyze path when the source changes while the meta is broken. Nothing is analyzed under the rules alone.
+ */
+TEST(RegistryMeta, ABrokenMetaKeepsTheValuesOfItsLastGoodCopy)
+{
+	CMetaTree tree("Злиття");
+	tree.WritePng("Textures/Камінь.png");
+	tree.WriteMeta("Textures/Камінь.png", MetaText(GuidA, "Labels:\n  - Rock\nCook: Never\n"));
+	tree.WriteProjectContent("Notes/дані.bin", "data");
+	tree.WriteMeta("Notes/дані.bin", MetaText(GuidC, "Importer: Raw\n"));
+	tree.WriteProjectContent("Models/Box.gltf", BoxJson);
+	tree.WriteMeta("Models/Box.gltf", MetaText(GuidB, "SubAssets:\n  Renamed:\n    \"mesh:Body\": \"mesh:Torso\"\n"));
+	jobs::CWorkerPool pool(MakePoolDesc());
+	std::unique_ptr<CAssetRegistry> registry = Open(pool, tree.Mounts());
+	const FString before = DumpOf(registry->Live());
+	const SGuid box = MakeGuid(GuidB);
+	const auto expectKept = [&] (FStringView Context)
+	{
+		const CRegistryView& view = registry->Live();
+		for (const FStringView path : { FStringView("/Project/Textures/Камінь.png"), FStringView("/Project/Notes/дані.bin"),
+			FStringView("/Project/Models/Box.gltf") })
+		{
+			const std::optional<SStoredFile> stored = FindStoredFile(view, path);
+			ASSERT_TRUE(stored.has_value() && stored->Record.IsValid()) << FString(path).CStr() << ", " << FString(Context).CStr();
+			EXPECT_EQ(stored->MetaState, EMetaState::Broken) << FString(path).CStr() << ", " << FString(Context).CStr();
+			EXPECT_TRUE(view.FindMetaCopy(stored->Guid).has_value()) << FString(path).CStr() << ", " << FString(Context).CStr();
+		}
+		const FString dump = DumpOf(view);
+		EXPECT_TRUE(dump.View().Contains(FStringView("cook=Never"))) << Context.GetData() << "\n" << dump.CStr();
+		EXPECT_TRUE(dump.View().Contains(FStringView("labels authored:Rock\n"))) << Context.GetData() << "\n" << dump.CStr();
+		EXPECT_FALSE(dump.View().Contains(FStringView("Ours"))) << Context.GetData() << "\n" << dump.CStr();
+		EXPECT_EQ(FindStoredFile(view, "/Project/Notes/дані.bin")->Type, asset_types::Raw) << Context.GetData();
+		const std::optional<SAssetData> torso = FindById(view, SAssetId { box, MakeSubId("mesh:Torso") });
+		ASSERT_TRUE(torso.has_value()) << Context.GetData() << "\n" << dump.CStr();
+		EXPECT_EQ(torso->Name, "mesh:Body");
+		bool bRedirected = false;
+		EXPECT_EQ(view.Find(SAssetId { box, MakeSubId("mesh:Body") }, &bRedirected), std::optional<SRecordId>(torso->Record)) << Context.GetData();
+		EXPECT_TRUE(bRedirected) << Context.GetData();
+	};
+
+	const uint64 analyzed = registry->GetCounters().Analyzed;
+	tree.WriteMeta("Textures/Камінь.png", ConflictedMeta(GuidA, "Cook: Never\n"));
+	tree.WriteMeta("Notes/дані.bin", ConflictedMeta(GuidC, "Importer: Raw\n"));
+	tree.WriteMeta("Models/Box.gltf", ConflictedMeta(GuidB, "SubAssets:\n  Renamed:\n    \"mesh:Body\": \"mesh:Torso\"\n"));
+	const std::vector<FString> root = { "/Project" };
+	ASSERT_TRUE(registry->ScanPathsSynchronous(root, 30.0));
+	expectKept("re-evaluated");
+	EXPECT_EQ(registry->GetCounters().Analyzed, analyzed) << "nothing is analyzed under the rules alone";
+	EXPECT_EQ(DumpOf(registry->Live()), before.Replace("meta=Paired", "meta=Broken")) << "only the meta state differs";
+
+	// The model changes while its meta is broken: analyzed again with its last good meta's SubAssets.
+	tree.WriteProjectContent("Models/Box.gltf", R"({"asset":{"version":"2.0"},"meshes":[{"name":"Body","primitives":[]},{"name":"Lid","primitives":[]}]})");
+	ASSERT_TRUE(registry->ScanPathsSynchronous(root, 30.0));
+	EXPECT_EQ(registry->GetCounters().Analyzed, analyzed + 1u);
+	expectKept("analyzed");
+	EXPECT_TRUE(FindById(registry->Live(), SAssetId { box, MakeSubId("mesh:Lid") }).has_value());
+	registry->ShutDown();
+}
+
+/**
+ * A Broken meta with no last good copy - here a file first seen with a broken meta, whose salvaged GUID is its identity -
+ * blocks the import (§4.6): a source edit is not analyzed while the meta is broken, and the file's row keeps the stat
+ * its record was made from, so once the meta is fixed the edit is analyzed with the meta's values.
+ */
+TEST(RegistryMeta, ABrokenMetaWithNoLastGoodCopyBlocksTheImportUntilItIsFixed)
+{
+	CMetaTree tree("Заблоковано");
+	constexpr FStringView path = "/Project/Textures/Камінь.png";
+	tree.WritePng("Textures/Камінь.png");
+	tree.WriteMeta("Textures/Камінь.png", MetaText(GuidA, "Labels: [\n"));
+	jobs::CWorkerPool pool(MakePoolDesc());
+	std::unique_ptr<CAssetRegistry> registry = Open(pool, tree.Mounts());
+	const std::optional<SStoredFile> first = FindStoredFile(registry->Live(), path);
+	ASSERT_TRUE(first.has_value() && first->Record.IsValid());
+	EXPECT_EQ(first->Guid, MakeGuid(GuidA)) << "first sight: the salvaged GUID, the rules' values";
+	EXPECT_EQ(first->MetaState, EMetaState::Broken);
+	EXPECT_FALSE(registry->Live().FindMetaCopy(MakeGuid(GuidA)).has_value());
+
+	const std::vector<FString> folder = { "/Project/Textures" };
+	const uint64 analyzed = registry->GetCounters().Analyzed;
+	std::error_code ec;
+	const std::filesystem::path png = tree.Tree.ProjectContent() / FStringView("Textures/Камінь.png").ToPath();
+	ASSERT_TRUE(platform::WriteFileBytes(png, MakePng(8u)));
+	std::filesystem::last_write_time(png, std::filesystem::last_write_time(png, ec) + std::chrono::seconds(5), ec);
+	tree.WriteMeta("Textures/Камінь.png", MetaText(GuidA, "Labels: [ Rock\n"));
+	ASSERT_TRUE(registry->ScanPathsSynchronous(folder, 30.0));
+	EXPECT_EQ(registry->GetCounters().Analyzed, analyzed) << "import blocked until the meta is fixed";
+	const std::optional<SStoredFile> blocked = FindStoredFile(registry->Live(), path);
+	ASSERT_TRUE(blocked.has_value() && blocked->Record.IsValid());
+	EXPECT_EQ(blocked->Guid, MakeGuid(GuidA));
+	EXPECT_EQ(blocked->Stat.MTime, first->Stat.MTime) << "the stat its record was made from";
+	EXPECT_EQ(blocked->MetaHash, HashMetaBytes(MetaText(GuidA, "Labels: [ Rock\n"))) << "the broken bytes' hash";
+
+	tree.WriteMeta("Textures/Камінь.png", MetaText(GuidA, "Labels:\n  - Rock\n"));
+	ASSERT_TRUE(registry->ScanPathsSynchronous(folder, 30.0));
+	EXPECT_EQ(registry->GetCounters().Analyzed, analyzed + 1u) << "the edit made while it was broken";
+	const std::optional<SStoredFile> fixed = FindStoredFile(registry->Live(), path);
+	ASSERT_TRUE(fixed.has_value());
+	EXPECT_EQ(fixed->MetaState, EMetaState::Paired);
+	EXPECT_NE(fixed->Stat.MTime, first->Stat.MTime);
+	EXPECT_TRUE(DumpOf(registry->Live()).View().Contains(FStringView("labels authored:Rock\n")));
+	registry->ShutDown();
+}
+
+/**
+ * A lost meta never changes identity (§4.6), nor what it gave the record: while the lifecycle has not restored it, a
+ * rule edit or a source edit takes the meta's values from its METAS copy, so a file only its Importer pin claims keeps
+ * its record, its type and its authored labels.
+ */
+TEST(RegistryMeta, ALostMetasValuesComeFromItsCopyWhenItsFileIsWorkedOn)
+{
+	CMetaTree tree("Загублено");
+	constexpr FStringView path = "/Project/Notes/дані.bin";
+	tree.WriteProjectContent("Notes/дані.bin", "data");
+	tree.WriteMeta("Notes/дані.bin", MetaText(GuidA, "Importer: Raw\nLabels:\n  - Дані\n"));
+	jobs::CWorkerPool pool(MakePoolDesc());
+	std::unique_ptr<CAssetRegistry> registry = Open(pool, tree.Mounts());
+	const std::vector<FString> folder = { "/Project/Notes" };
+	tree.Remove("Notes/дані.bin.meta");
+	ASSERT_TRUE(registry->ScanPathsSynchronous(folder, 30.0));
+	ASSERT_EQ(GuidAt(registry->Live(), path), MakeGuid(GuidA));
+
+	tree.WriteProjectContent("Notes/Assets.yml", "FormatVersion: 1\nRules:\n  - { Match: \"**/*.bin\", Labels: [ Stone ] }\n");
+	ASSERT_TRUE(registry->ScanPathsSynchronous(folder, 30.0));
+	EXPECT_EQ(GuidAt(registry->Live(), path), MakeGuid(GuidA)) << "the pin still claims it";
+	EXPECT_TRUE(DumpOf(registry->Live()).View().Contains(FStringView("labels authored:Дані, rule:Stone\n"))) << DumpOf(registry->Live()).CStr();
+
+	tree.WriteProjectContent("Notes/дані.bin", "more data");
+	ASSERT_TRUE(registry->ScanPathsSynchronous(folder, 30.0));
+	const std::optional<SStoredFile> stored = FindStoredFile(registry->Live(), path);
+	ASSERT_TRUE(stored.has_value() && stored->Record.IsValid());
+	EXPECT_EQ(stored->Type, asset_types::Raw);
+	EXPECT_EQ(stored->Guid, MakeGuid(GuidA));
+	EXPECT_EQ(stored->MetaState, EMetaState::Paired) << "a lost meta's state is the lifecycle's to change";
+	EXPECT_TRUE(registry->Live().FindMetaCopy(MakeGuid(GuidA)).has_value());
+	EXPECT_TRUE(DumpOf(registry->Live()).View().Contains(FStringView("labels authored:Дані, rule:Stone\n")));
 	registry->ShutDown();
 }

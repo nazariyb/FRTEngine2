@@ -73,7 +73,13 @@ Development `CEngine` installs (nullopt in tool hosts, which resolve their own t
   - `METAS`: the raw bytes of each meta's last Ok parse, one copy per GUID, kept only when they hash to the copy's
     `MetaHash` (checked again at every load), for the lifecycle's verified restore. A re-evaluation (a changed rule
     chain) and a pinned file's class take an unchanged meta's values from its copy, never from the disk; a meta that
-    changed is read from the file and its copy replaced.
+    changed is read from the file and its copy replaced. A broken meta, and a lost one, keep the values of the copy its
+    file last wrote while the record keeps that copy's GUID (Importer pin, settings, targets, cook rule, chunk, labels,
+    sub-asset renames and remaps), and the copy is never replaced by broken bytes. A broken meta with no such copy
+    blocks its record's import until it is fixed: the record is neither analyzed nor re-evaluated nor removed, and its
+    file row keeps the stat the record was made from, so an edit made meanwhile is analyzed once the meta is fixed. A
+    file first seen with a broken meta has nothing better than the rules: it is registered under the salvaged GUID with
+    the rules' values, so references to that GUID resolve, and analyzed again once the meta is fixed.
   - `TOMBSTONES`: a record with a meta-given GUID whose file is removed, or whose GUID is edited by hand, leaves
     `{GUID, last path, content hash, file identity, time}`; a record that registers the GUID again (a move, a restore)
     clears it, a provisional id never leaves one, and a snapshot written more than 30 days later drops it. While

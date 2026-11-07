@@ -122,6 +122,21 @@ SRecordUpsert MakeRecordUpsertFromView (const CRegistryView& View, SRecordId Rec
 	return upsert;
 }
 
+SRecordUpsert MakeRecordUpsertFromView (const CRegistryView& View, SRecordId Record)
+{
+	SEffectiveFileSettings stored;
+	ERecordFlags flags = ERecordFlags::None;
+	if (View.IsValid(Record) && !Record.IsSubEntry())
+	{
+		const SRegistryTables& tables = GetTables(View);
+		stored.CookRule = tables.Assets.CookRule[Record.Value];
+		stored.Chunk = tables.Assets.Chunk[Record.Value];
+		flags = tables.Assets.Flags[Record.Value];
+		View.ForEachLabel(Record, [&] (FStringView Label, bool bRule) { (bRule ? stored.RuleLabels : stored.AuthoredLabels).push_back(FString(Label)); });
+	}
+	return MakeRecordUpsertFromView(View, Record, stored, flags);
+}
+
 void SetMetaRedirects (SRecordUpsert& Upsert, const SAssetMeta& Meta)
 {
 	Upsert.Aliases.clear();

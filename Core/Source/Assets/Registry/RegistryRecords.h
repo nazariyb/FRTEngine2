@@ -78,6 +78,9 @@ struct SStoredFile
  */
 [[nodiscard]] FRT_CORE_API SRecordUpsert MakeRecordUpsertFromView (const CRegistryView& View, SRecordId Record, const SEffectiveFileSettings& Settings,
 	ERecordFlags Flags);
+// The record again with the rule outputs and flags it holds: committing it changes nothing but what the caller sets
+// (a GUID that a broken meta changes while the record's import is blocked).
+[[nodiscard]] FRT_CORE_API SRecordUpsert MakeRecordUpsertFromView (const CRegistryView& View, SRecordId Record);
 
 // The aliases (its sub-entries' renamed ones, then the meta's Aliases) and former paths a record has from its meta (M4).
 FRT_CORE_API void SetMetaRedirects (SRecordUpsert& Upsert, const SAssetMeta& Meta);
