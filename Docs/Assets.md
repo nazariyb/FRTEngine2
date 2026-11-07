@@ -57,11 +57,15 @@ Development `CEngine` installs (nullopt in tool hosts, which resolve their own t
   internal, never written to a meta or a content file, never handed to runtime code, and no identity (never tombstoned;
   that broken meta deleted, the file is a new file again). A meta is read on a worker only when it changed or when its
   file is analyzed or re-evaluated; an unchanged meta of an unchanged file is never opened. A meta that changes while it
-  is read (git or an editor writing it) leaves its file out of that pass, keeping what is committed of it, rather than
-  committing a record made without it; the write's watcher event or the next scan reads it again. A meta edit is
-  re-evaluated in memory and re-analyzes only when the `AnalyzeStamp` changes. Two records with one GUID (a copy, until
-  the lifecycle re-GUIDs it) are kept, and every lookup by id answers the one whose path sorts first under the portable
-  fold. A rename or a move inside one scan pass, with its meta, reaches `OnAssetsChanged` as `Moved` (in one commit);
+  is read (git or an editor writing it) leaves its file out of that conversion, keeping what is committed of it, rather
+  than committing a record made without it; the pass reads it again after the settle window (`RetryDelayMs`), up to
+  `SourceChangedRetries` times, so a host without a watcher registers it in the same run, then reports an error on the
+  meta. A meta that cannot be opened (no access, an I/O error, a cloud file not fetched) is an error on the meta at
+  once: a new file is not registered without it, a record keeps what was registered of it, and the scan that reads the
+  meta clears the error. A meta edit is re-evaluated in memory and re-analyzes only when the `AnalyzeStamp` changes.
+  Two records with one GUID (a copy, until the lifecycle re-GUIDs it) are kept, and every lookup by id answers the one
+  whose path sorts first under the portable fold. A rename or a move inside one scan pass, with its meta, reaches
+  `OnAssetsChanged` as `Moved` (in one commit);
   within one broadcast, an id that left a path and holds another at its end is a `Moved`, while a record added and
   removed again or a path that went and came back stays a removal and an addition. A file without a meta has a
   path-derived id, so its move is a removal and an addition, and a record whose id changes in place (its meta appears, a

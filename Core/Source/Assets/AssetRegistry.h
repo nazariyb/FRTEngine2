@@ -334,7 +334,8 @@ public:
 	struct SImpl;
 
 private:
-	// Core-Test: breaks the journal as a failed write would; makes a file keep changing while it is analyzed.
+	// Core-Test: breaks the journal as a failed write would; makes a file keep changing while it is analyzed, or a meta
+	// unreadable.
 	friend struct SAssetRegistryTestAccess;
 	// The writer's journal while it is open (null for a reader, and before the snapshots loaded or after ShutDown).
 	[[nodiscard]] CRegistryJournal* GetJournal () noexcept;
@@ -342,6 +343,9 @@ private:
 	// retry cap that ends every wait); for a meta's path, every read of the meta changed while read. Owner thread,
 	// before Start.
 	void SetSourceChangedForTest (FString MountPath);
+	// Every read of the meta at MountPath fails as for a file that cannot be opened (no access, an I/O error). Owner
+	// thread, before Start.
+	void SetMetaUnreadableForTest (FString MountPath);
 
 	std::unique_ptr<SImpl> Impl;
 };

@@ -8,7 +8,8 @@
 // change notification; a pass cut short after its conversion (a clean exit while Analyze is pending, a crash) persists
 // nothing that claims work it did not do; a broken journal is mended by the full write its break triggers, and loses no
 // commit; a mount-rule edit over many files is committed in deltas of bounded size; a project writer's Flush fences only
-// its own mounts. Every tree has non-ASCII names and lives in the temp directory.
+// its own mounts. A meta that changes while read is read again within the pass (an error once it kept changing), one held
+// by another process during the initial scan is registered in that scan, and one that cannot be read is an error on it. Every tree has non-ASCII names and lives in the temp directory.
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -39,6 +40,8 @@
 #include "Platform/Process.h"
 #include "Platform/Timestamp.h"
 
+#include <Windows.h>
+
 using namespace frt;
 using namespace frt::assets;
 using frt::test::rules::CRulesTree;
@@ -52,6 +55,7 @@ struct SAssetRegistryTestAccess
 {
 	static CRegistryJournal* GetJournal (CAssetRegistry& Registry) { return Registry.GetJournal(); }
 	static void SetSourceChanged (CAssetRegistry& Registry, FStringView MountPath) { Registry.SetSourceChangedForTest(FString(MountPath)); }
+	static void SetMetaUnreadable (CAssetRegistry& Registry, FStringView MountPath) { Registry.SetMetaUnreadableForTest(FString(MountPath)); }
 };
 }
 
@@ -955,12 +959,30 @@ TEST(AssetRegistry, AFileThatKeepsChangingIsCommittedAnalyzeFailedAfterItsRetrie
 	registry.ShutDown();
 }
 
-// A meta that changes while it is read (git or an editor writing it) leaves its file out of the pass, rather than
-// committing a record made without it (a provisional id, no pin); the next read takes the meta's GUID.
-TEST(AssetRegistry, AFileWhoseMetaChangesWhileReadIsLeftForTheNextReadNotCommittedWithoutIt)
+namespace
+{
+// The registry's Scan problems on Subject whose message contains Text, with error severity.
+uint32 CountScanErrors (const CRegistryView& View, FStringView Subject, FStringView Text)
+{
+	uint32 found = 0u;
+	View.ForEachProblem([&] (FStringView ProblemSubject, EProblemSource Source, const SDiagnostic& Diagnostic)
+	{
+		const FStringView subject = Diagnostic.Subject.IsEmpty() ? ProblemSubject : Diagnostic.Subject.View();
+		found += subject == Subject && Source == EProblemSource::Scan && Diagnostic.Severity == ESeverity::Error && Diagnostic.Message.Contains(Text)
+			? 1u : 0u;
+	});
+	return found;
+}
+}
+
+// A meta that changes while it is read (git or an editor writing it) leaves its file out of the conversion, rather than
+// committing a record made without it (a provisional id, no pin). The pass reads it again after the settle window,
+// SourceChangedRetries times, and then reports an error on the meta; the next read takes the meta's GUID and clears it.
+TEST(AssetRegistry, AFileWhoseMetaKeepsChangingWhileReadIsNeverCommittedWithoutItAndIsAnErrorOnIt)
 {
 	const CServiceTree tree("Meta Changing");
 	constexpr FStringView path = "/Project/Textures/Трава.png";
+	const FString metaPath = FString(path) + ".meta";
 	constexpr FStringLiteral guidText = "5d1e7a3b9c0f42d68e1a2b3c4d5e6f70";
 	tree.WriteProjectContent("Textures/Трава.png.meta", FString::Format("FormatVersion: 1\nGuid: {}\n", guidText));
 	const std::optional<SGuid> guid = SGuid::Parse(guidText);
@@ -973,18 +995,25 @@ TEST(AssetRegistry, AFileWhoseMetaChangesWhileReadIsLeftForTheNextReadNotCommitt
 		desc.Pool = &pool;
 		desc.bWriter = true;
 		desc.bLoadSnapshots = true;
+		desc.RetryDelayMs = 50u;
 		return desc;
 	};
 	{
 		CAssetRegistry registry(makeDesc());
-		SAssetRegistryTestAccess::SetSourceChanged(registry, FString(path) + ".meta");
+		SAssetRegistryTestAccess::SetSourceChanged(registry, metaPath);
+		const uint64 start = platform::ReadTimestamp();
 		registry.Start();
 		ASSERT_TRUE(registry.WaitForInitialScan(60.0));
+		const double milliseconds = platform::TimestampToMilliseconds(platform::ReadTimestamp() - start);
 		const CRegistryView& view = registry.Live();
 		EXPECT_FALSE(FindStoredFile(view, path).has_value()) << "nothing of the file without its meta";
-		EXPECT_FALSE(FindStoredFile(view, FString(path) + ".meta").has_value());
+		EXPECT_FALSE(FindStoredFile(view, metaPath).has_value());
 		EXPECT_FALSE(view.Find(SAssetId { MakeProvisionalGuid(path), 0u }).has_value()) << "no provisional id for a file with a meta";
 		EXPECT_TRUE(FindStoredFile(view, "/Project/Textures/Камінь.png").has_value()) << "the rest of the folder is committed";
+		const uint32 retries = SAssetRegistryDesc {}.SourceChangedRetries;
+		EXPECT_EQ(registry.GetCounters().MetasRead, retries + 1u) << "the first read and its retries, in the initial scan";
+		EXPECT_GE(milliseconds, retries * 50.0) << "each retry waits for the settle window";
+		EXPECT_EQ(CountScanErrors(view, metaPath, "kept changing"), 1u);
 		registry.ShutDown();
 	}
 	CAssetRegistry registry(makeDesc());
@@ -994,6 +1023,99 @@ TEST(AssetRegistry, AFileWhoseMetaChangesWhileReadIsLeftForTheNextReadNotCommitt
 	ASSERT_TRUE(stored.has_value() && stored->Record.IsValid());
 	EXPECT_EQ(stored->Guid, *guid);
 	EXPECT_EQ(stored->MetaState, EMetaState::Paired);
+	EXPECT_EQ(CountScanErrors(registry.Live(), metaPath, "kept changing"), 0u) << "the scan that read it cleared it";
+	registry.ShutDown();
+}
+
+// A meta another process holds while the initial scan reads it (a sharing violation reads as a change) is read again
+// in that scan once it is let go: a host without a watcher (validate --ci, migrate metas) registers it in this run.
+TEST(AssetRegistry, AMetaHeldWhileTheInitialScanReadsItIsRegisteredInThatScan)
+{
+	const CServiceTree tree("Meta Held");
+	constexpr FStringView path = "/Project/Textures/Трава.png";
+	constexpr FStringLiteral guidText = "3f2a9c4e7b1d4e0f9a8b6c5d4e3f2a1b";
+	tree.WriteProjectContent("Textures/Трава.png.meta", FString::Format("FormatVersion: 1\nGuid: {}\n", guidText));
+	jobs::CWorkerPool pool(MakePoolDesc(2u));
+	SAssetRegistryDesc desc;
+	desc.Mounts = tree.Project();
+	desc.Pool = &pool;
+	desc.RetryDelayMs = 50u;
+	CAssetRegistry registry(std::move(desc));
+	const HANDLE held = CreateFileW(tree.ProjectContent("Textures/Трава.png.meta").c_str(), GENERIC_READ, 0u, nullptr, OPEN_EXISTING,
+		FILE_ATTRIBUTE_NORMAL, nullptr);
+	ASSERT_NE(held, INVALID_HANDLE_VALUE);
+	registry.Start();
+	const uint64 deadline = platform::MakeDeadline(30.0);
+	while (registry.GetCounters().MetasRead == 0u && platform::ReadTimestamp() < deadline)
+	{
+		EXPECT_FALSE(registry.WaitForInitialScan(0.01)) << "the initial scan waits for the meta's retry";
+	}
+	EXPECT_EQ(registry.GetCounters().MetasRead, 1u) << "read once while it was held";
+	CloseHandle(held);
+	ASSERT_TRUE(registry.WaitForInitialScan(60.0));
+	const std::optional<SStoredFile> stored = FindStoredFile(registry.Live(), path);
+	ASSERT_TRUE(stored.has_value() && stored->Record.IsValid());
+	EXPECT_EQ(stored->Guid, SGuid::Parse(guidText).value_or(SGuid {}));
+	EXPECT_EQ(stored->MetaState, EMetaState::Paired);
+	EXPECT_EQ(registry.GetCounters().MetasRead, 2u);
+	EXPECT_EQ(CountScanErrors(registry.Live(), FString(path) + ".meta", "meta"), 0u);
+	registry.ShutDown();
+}
+
+// A meta that cannot be opened (no access, an I/O error, a cloud file not fetched) is no silent hole, though no event
+// follows it and every scan fails alike: it is an error on the meta at once, in every host. A new file stays out
+// rather than being committed without its meta; an existing record keeps what was registered of it; the scan that
+// reads the meta clears the error.
+TEST(AssetRegistry, AMetaThatCannotBeReadIsAnErrorOnItAndItsFileIsNeverRegisteredWithoutIt)
+{
+	const CServiceTree tree("Meta Unreadable");
+	constexpr FStringView path = "/Project/Textures/Трава.png";
+	const FString metaPath = FString(path) + ".meta";
+	constexpr FStringLiteral guidText = "1c7e0a9b33d24f1e9a6b0c1d2e3f4a5b";
+	tree.WriteProjectContent("Textures/Трава.png.meta", FString::Format("FormatVersion: 1\nGuid: {}\n", guidText));
+	const SGuid guid = SGuid::Parse(guidText).value_or(SGuid {});
+	jobs::CWorkerPool pool(MakePoolDesc(2u));
+	const auto makeDesc = [&]
+	{
+		SAssetRegistryDesc desc;
+		desc.Mounts = tree.Project();
+		desc.Pool = &pool;
+		desc.bWriter = true;
+		desc.bLoadSnapshots = true;
+		return desc;
+	};
+	{
+		CAssetRegistry registry(makeDesc());
+		SAssetRegistryTestAccess::SetMetaUnreadable(registry, metaPath);
+		registry.Start();
+		ASSERT_TRUE(registry.WaitForInitialScan(60.0));
+		const CRegistryView& view = registry.Live();
+		EXPECT_FALSE(FindStoredFile(view, path).has_value()) << "nothing of the file without its meta";
+		EXPECT_FALSE(view.Find(SAssetId { MakeProvisionalGuid(path), 0u }).has_value());
+		EXPECT_EQ(CountScanErrors(view, metaPath, "is not registered"), 1u);
+		EXPECT_EQ(registry.GetCounters().MetasRead, 1u) << "no retry: it would fail alike";
+		registry.ShutDown();
+	}
+	{
+		CAssetRegistry registry(makeDesc());
+		registry.Start();
+		ASSERT_TRUE(registry.WaitForInitialScan(60.0));
+		EXPECT_EQ(FindStoredFile(registry.Live(), path).value_or(SStoredFile {}).Guid, guid);
+		EXPECT_EQ(CountScanErrors(registry.Live(), metaPath, "cannot read"), 0u) << "the scan that read it cleared it";
+		registry.ShutDown();
+	}
+
+	// An asset whose meta changes and can then not be read keeps what was registered of it.
+	tree.WriteProjectContent("Textures/Трава.png.meta", FString::Format("FormatVersion: 1\nGuid: {}\nLabels:\n  - Трава\n", guidText));
+	CAssetRegistry registry(makeDesc());
+	SAssetRegistryTestAccess::SetMetaUnreadable(registry, metaPath);
+	registry.Start();
+	ASSERT_TRUE(registry.WaitForInitialScan(60.0));
+	const std::optional<SStoredFile> stored = FindStoredFile(registry.Live(), path);
+	ASSERT_TRUE(stored.has_value() && stored->Record.IsValid());
+	EXPECT_EQ(stored->Guid, guid);
+	EXPECT_EQ(stored->MetaState, EMetaState::Paired);
+	EXPECT_EQ(CountScanErrors(registry.Live(), metaPath, "keeps what was registered of it"), 1u);
 	registry.ShutDown();
 }
 
