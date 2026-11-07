@@ -238,9 +238,16 @@ int32 Validate (CCommandletContext& Context, FStringView Verb, bool bFix)
 		const assets::CRegistryView& view = run.View();
 		for (const assets::SLifecycleAction& action : report.Planned)
 		{
-			Context.Print(FString::Format("  {:<12} {}", enum_::ToString(action.Kind), ToDisplayText(action.Path)));
+			// Each as what it was: a refused one wrote nothing (its VCS002 is among what remains), and one no op ran neither.
+			const assets::ERepairOutcome outcome = assets::GetRepairOutcome(report, action);
+			const bool bApplied = outcome == assets::ERepairOutcome::Applied;
+			const FStringView outcomeName = bApplied ? FStringView("applied") : outcome == assets::ERepairOutcome::Refused ? FStringView("refused")
+				: FStringView("not-run");
+			Context.Print(FString::Format("  {:<12} {}{}", enum_::ToString(action.Kind), ToDisplayText(action.Path),
+				bApplied ? FString() : FString::Format("  ({}{})", outcomeName, outcome == assets::ERepairOutcome::Refused ? ": VCS002" : "")));
 			Context.PrintJson(CJsonObject().AddString("kind", "repair").AddString("action", enum_::ToString(action.Kind)).AddString("path", action.Path)
-				.AddString("to", action.ToPath).AddString("guid", action.Kind == assets::ELifecycleAction::CreateMeta ? GuidOf(view, action.Path).View() : FStringView()));
+				.AddString("to", action.ToPath).AddString("outcome", outcomeName)
+				.AddString("guid", bApplied && action.Kind == assets::ELifecycleAction::CreateMeta ? GuidOf(view, action.Path).View() : FStringView()));
 		}
 		Context.Print(FString::Format("Repaired {}, refused {} (the VCS or the writer refused: VCS002)", report.Applied, report.Refused));
 	}

@@ -115,10 +115,25 @@ struct SRepairReport
 	std::vector<SLifecycleAction> Planned;
 	uint32 Applied = 0u;
 	uint32 Refused = 0u;
+	// Of Planned, the actions whose op ran, and those whose op the VCS or the writer refused (VCS002; they stay proposals):
+	// each as its op carried it. An action in neither was not run (GetRepairOutcome).
+	std::vector<SLifecycleAction> AppliedActions;
+	std::vector<SLifecycleAction> RefusedActions;
 	std::vector<SDiagnostic> Problems;
 	// A live host's ApplyFix: the queued fix, whose outcome GetFixResult tells (0: nothing was queued).
 	uint64 Ticket = 0u;
 };
+
+// What became of one of a report's Planned actions, so that a verb prints a repair only as what it was.
+enum class ERepairOutcome : uint8
+{
+	NotRun,       // no op ran it: a dry run, a held run, a reader's, an op planned for a writer since rebuilt, a queued fix
+	Applied,      // its op ran
+	Refused,      // its op was refused (VCS002): nothing written, and it stays a proposal
+};
+
+// Action's outcome in Report, by kind, path and destination.
+[[nodiscard]] FRT_CORE_API ERepairOutcome GetRepairOutcome (const SRepairReport& Report, const SLifecycleAction& Action);
 
 // What became of a fix a live host queued (CAssetRepairs::GetFixResult).
 enum class EFixResult : uint8

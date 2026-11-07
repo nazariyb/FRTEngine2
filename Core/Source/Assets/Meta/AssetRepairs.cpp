@@ -1143,6 +1143,16 @@ struct SOpsOutput
 	std::vector<FString> Touched;         // mount paths whose folders a rescan must read again
 };
 
+// Each op's actions into Report's AppliedActions or RefusedActions, before ApplyOps moves the refused ones away.
+void RecordOutcomes (const SOpsOutput& Output, SRepairReport& Report)
+{
+	for (const SOpResult& result : Output.Results)
+	{
+		std::vector<SLifecycleAction>& into = result.Result.Vcs.Error == EVcsError::None ? Report.AppliedActions : Report.RefusedActions;
+		into.insert(into.end(), result.Actions.begin(), result.Actions.end());
+	}
+}
+
 // The ops of one proposal set, in order, on a worker; then what StatusOf says of the metas they created (VCS003), in one
 // call per provider: Git's StatusOf reads the status of the whole mount, so a call per meta would be one per file.
 [[nodiscard]] SOpsOutput RunOps (std::span<CAssetWriter* const> Writers, std::vector<SPlannedOp>&& Ops)
@@ -2251,6 +2261,17 @@ bool CAssetRepairs::Settle (uint64 NowMs, double TimeoutSeconds)
 	return false;
 }
 
+ERepairOutcome GetRepairOutcome (const SRepairReport& Report, const SLifecycleAction& Action)
+{
+	const FString key = MakeActionKey(Action);
+	const auto contains = [&] (std::span<const SLifecycleAction> Actions)
+	{
+		return std::any_of(Actions.begin(), Actions.end(), [&] (const SLifecycleAction& Done) { return MakeActionKey(Done) == key; });
+	};
+	// Applied first: an action refused in one round and applied in a later one was applied.
+	return contains(Report.AppliedActions) ? ERepairOutcome::Applied : contains(Report.RefusedActions) ? ERepairOutcome::Refused : ERepairOutcome::NotRun;
+}
+
 SRepairReport CAssetRepairs::RunNow (const SRepairOptions& Options)
 {
 	SImpl& impl = *Impl;
@@ -2298,6 +2319,7 @@ SRepairReport CAssetRepairs::RunNow (const SRepairOptions& Options)
 			break;
 		}
 		SOpsOutput ops = impl.RunOpsNow(std::move(output.Ops));
+		RecordOutcomes(ops, report);
 		uint32 applied = 0u;
 		uint32 refused = 0u;
 		impl.ApplyOps(ops, applied, refused);
@@ -2392,6 +2414,7 @@ SRepairReport CAssetRepairs::ApplyFix (const SLifecycleAction& FixIt)
 		return report;
 	}
 	SOpsOutput ops = impl.RunOpsNow(std::move(planned.Ops));
+	RecordOutcomes(ops, report);
 	std::vector<SDiagnostic> stale;
 	impl.ApplyOps(ops, report.Applied, report.Refused, nullptr, &stale);
 	report.Problems.insert(report.Problems.end(), stale.begin(), stale.end());

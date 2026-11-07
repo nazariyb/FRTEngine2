@@ -11,7 +11,7 @@
 // tracked source is VCS003 (asked in one StatusOf per round, and again later, until the VCS tracks it); a read-only
 // process, a mount it does not own and a pending provider detection write nothing, and a provider detected while a run
 // is in flight is the one the repairs then use; RunNow has no delays, honours its Kinds (reporting what they leave out)
-// and dry run, and keeps the other mounts' fix-its; "keep A, alias B" never overwrites a meta resolved since; an
+// and dry run, says whether each planned repair was applied, refused or not run, and keeps the other mounts' fix-its; "keep A, alias B" never overwrites a meta resolved since; an
 // unfinished operation is rolled forward before the first scan (and by TakeOwnership); problems carry their file and the
 // rule files' Validation: severities; CRLF in a meta is VCS001 and an LFS pointer VCS004. F4b: a second writer is refused
 // naming the owner, unless Safety.GuestProcesses makes it a read-only guest that writes nothing and names the owner in its
@@ -1071,6 +1071,39 @@ TEST(AssetRepairs, AReadOnlyMetaInAnotherCaseIsReportedAndNotRenamed)
 	EXPECT_EQ(rig.Problems(Meta006).size(), 1u) << rig.DescribeProblems().CStr();
 	EXPECT_TRUE(rig.Vcs.GetWriteCalls().empty());
 	SetReadOnly(tree.Abs("a.PNG.meta"), false);
+}
+
+// RunNow's report says what became of each planned action (GetRepairOutcome), so that `fix` never prints a refused repair
+// as made: a dry run's plan was not run, a refused CheckOut's action was refused (and nothing written), and the same
+// action, proposed again after an event on its path, was applied.
+TEST(AssetRepairs, RunNowsReportSaysWhetherEachPlannedRepairWasAppliedRefusedOrNotRun)
+{
+	CRepairTree tree("Підсумок");
+	tree.WritePng("a.png");
+	CRig rig(tree);
+	rig.Open();
+	SRepairOptions dryRun;
+	dryRun.bDryRun = true;
+	const SRepairReport planned = rig.Repairs().RunNow(dryRun);
+	ASSERT_EQ(planned.Planned.size(), 1u);
+	EXPECT_EQ(GetRepairOutcome(planned, planned.Planned[0]), ERepairOutcome::NotRun);
+
+	rig.Vcs.Refuse("CheckOut", EVcsError::LockedByOther, "held by a colleague");
+	const SRepairReport refused = rig.Repairs().RunNow(SRepairOptions {});
+	ASSERT_EQ(refused.Planned.size(), 1u);
+	EXPECT_EQ(refused.Applied, 0u);
+	EXPECT_EQ(refused.Refused, 1u);
+	EXPECT_EQ(GetRepairOutcome(refused, refused.Planned[0]), ERepairOutcome::Refused);
+	EXPECT_FALSE(tree.Exists("a.png.meta"));
+
+	rig.Vcs.Refuse("CheckOut", EVcsError::None);
+	tree.WritePng("a.png", 6u);
+	rig.Scan();
+	const SRepairReport applied = rig.Repairs().RunNow(SRepairOptions {});
+	ASSERT_EQ(applied.Planned.size(), 1u);
+	EXPECT_EQ(applied.Applied, 1u);
+	EXPECT_EQ(GetRepairOutcome(applied, applied.Planned[0]), ERepairOutcome::Applied);
+	EXPECT_EQ(tree.MetaGuid("a.png"), DerivedGuid(P("a.png"), 6u));
 }
 
 TEST(AssetRepairs, ARefusalGoesWithTheFolderItWasIn)

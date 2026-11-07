@@ -1381,6 +1381,41 @@ TEST_F(AssetToolRegistryTest, TheMetaVerbsCreateValidateRestoreAndExplainMetasTh
 	EXPECT_TRUE(stoneMeta.Contains("Guid: " + JsonText(lines[0], "meta.guid") + "\n")) << explained.Output.CStr();
 }
 
+// fix prints each planned repair as what became of it: a metaless source whose meta cannot be written (a directory holds
+// its name, so the writer's step fails) is a CreateMeta whose {"kind":"repair"} line says "refused" with no GUID, the text
+// line says so too, and the summary counts it as refused, not repaired; nothing is written.
+TEST_F(AssetToolRegistryTest, FixPrintsARefusedRepairAsRefused)
+{
+	const std::filesystem::path meta = ProjectDir / FStringView("Content/Textures/Камінь.png.meta").ToPath();
+	std::error_code ec;
+	std::filesystem::remove(meta, ec);
+	ASSERT_TRUE(std::filesystem::create_directory(meta, ec)) << FString::FromUtf8Lossy(ec.message()).CStr();
+	const test::SProcessResult fixed = RunOnProject({ "fix", "--json" });
+	const test::SProcessResult text = RunOnProject({ "fix" });
+
+	EXPECT_EQ(fixed.ExitCode, 1) << fixed.Output.CStr() << fixed.Errors.CStr();
+	uint32 repairs = 0u;
+	for (const reflect::CDataTree& line : ParseJsonLines(fixed.Output))
+	{
+		if (JsonText(line, "kind") == "repair")
+		{
+			++repairs;
+			EXPECT_EQ(JsonText(line, "action"), "CreateMeta");
+			EXPECT_EQ(JsonText(line, "path"), "/Project/Textures/Камінь.png");
+			EXPECT_EQ(JsonText(line, "outcome"), "refused") << fixed.Output.CStr();
+			EXPECT_EQ(JsonText(line, "guid"), "") << fixed.Output.CStr();
+		}
+		if (JsonText(line, "kind") == "summary")
+		{
+			EXPECT_EQ(JsonInt(line, "repaired"), 0) << fixed.Output.CStr();
+			EXPECT_EQ(JsonInt(line, "refused"), 1) << fixed.Output.CStr();
+		}
+	}
+	EXPECT_EQ(repairs, 1u) << fixed.Output.CStr();
+	EXPECT_TRUE(text.Output.Contains("(refused: VCS002)")) << text.Output.CStr();
+	EXPECT_TRUE(std::filesystem::is_directory(meta));
+}
+
 // validate --staged, the pre-commit hook's check 6, over what a commit stages outside every mount's content, which the
 // mounts' providers (rooted at Content/) never list: the project's own Config/Assets.yml brings in its rule-file problems
 // (CRLF: VCS001, an unknown key: RULE001, both named /Project), and a staged deletion of Schemas/Migrations.yml the root's
