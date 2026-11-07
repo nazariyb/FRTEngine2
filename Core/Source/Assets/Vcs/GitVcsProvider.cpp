@@ -208,10 +208,12 @@ bool CGitVcsProvider::Detect (const FString& InMountRoot)
 	// would read it without a word, as an empty index or as somebody else's. Without the hook's word the variable is the
 	// person's, and git's own rules apply.
 	UnsetEnvironment.clear();
+	bAnotherRepositoryIsCommitting = false;
 	const std::optional<FString> committing = platform::GetEnvironmentValue("FRT_HOOK_TOPLEVEL");
 	if (committing.has_value() && !committing->IsEmpty() && !IsSameDirectory(committing->ToPath(), TopLevel))
 	{
 		UnsetEnvironment.emplace_back("GIT_INDEX_FILE");
+		bAnotherRepositoryIsCommitting = true;
 	}
 	return true;
 }
@@ -471,6 +473,12 @@ SVcsResult CGitVcsProvider::GetStaged (std::vector<FString>& OutFiles)
 	if (Git.empty())
 	{
 		return { EVcsError::Failed, "git provider used before Detect" };
+	}
+	// Nothing staged in this repository is in another one's commit, which records at most its gitlink: a plugin in a
+	// submodule, staged but not committed, is checked by its own commit's hook, never refuses its parent's.
+	if (bAnotherRepositoryIsCommitting)
+	{
+		return {};
 	}
 	// --relative: below the working directory only, and named from it. On an unborn HEAD, everything staged is listed. From
 	// above a mount folder that does not exist, only what is under its missing rest is the mount's.

@@ -710,6 +710,8 @@ TEST_F(VcsProviderTest, GetStagedListsOnlyThisMountsFilesByAbsolutePath)
 
 // A pre-commit hook hands its tool GIT_INDEX_FILE, relative as git leaves it or absolute (a worktree, `commit -a`). It belongs
 // to the committing repository alone: git in any other reads it without a word, as an empty index or as somebody else's.
+// What is staged in another repository (a plugin's submodule; here another work tree, with an index of its own) is not in
+// this commit either, so its provider lists nothing staged under the hook, and only there.
 TEST_F(VcsProviderTest, OnlyTheCommittingRepositoryReadsTheIndexAHookWasGiven)
 {
 	Write("Hook/Staged.png");
@@ -719,6 +721,8 @@ TEST_F(VcsProviderTest, OnlyTheCommittingRepositoryReadsTheIndexAHookWasGiven)
 	ASSERT_EQ(RunGit({ "worktree", "add", "-q", "--detach", FString::FromPath(tree) }).ExitCode, 0);
 	const FString treeMount = FString::FromPath(tree / gMount.filename());
 	const FString baseInTree = FString::FromPath(tree / gMount.filename() / "Base.png");
+	ASSERT_TRUE(platform::WriteFileText(tree / gMount.filename() / "Other.png", "staged in the other work tree\n"));
+	ASSERT_EQ(test::RunGit(gGit, tree, { "add", "--", FString::FromPath(gMount.filename()) + "/Other.png" }).ExitCode, 0);
 
 	for (const FString& index : { FString(".git/index"), FString::FromPath(gRepo / ".git" / "index") })
 	{
@@ -735,7 +739,7 @@ TEST_F(VcsProviderTest, OnlyTheCommittingRepositoryReadsTheIndexAHookWasGiven)
 		CGitVcsProvider other;
 		ASSERT_TRUE(other.Detect(treeMount));
 		EXPECT_EQ(other.GetStaged(files).Error, EVcsError::None);
-		EXPECT_EQ(files, std::vector<FString> {}) << "nothing is staged in the other work tree";
+		EXPECT_EQ(files, std::vector<FString> {}) << "what is staged in the other work tree is not in this commit";
 		std::vector<SVcsStatus> status;
 		EXPECT_EQ(other.StatusOf(std::span(&baseInTree, 1u), status).Error, EVcsError::None);
 		EXPECT_EQ(status[0].State, EVcsState::Clean);
@@ -754,6 +758,11 @@ TEST_F(VcsProviderTest, OnlyTheCommittingRepositoryReadsTheIndexAHookWasGiven)
 	EXPECT_TRUE(bDetected);
 	EXPECT_EQ(result.Error, EVcsError::None);
 	EXPECT_EQ(files.size(), 1u);
+	// And without any of it, the other work tree's own staged file.
+	CGitVcsProvider own;
+	ASSERT_TRUE(own.Detect(treeMount));
+	EXPECT_EQ(own.GetStaged(files).Error, EVcsError::None);
+	EXPECT_EQ(files, std::vector<FString> { FString::FromPath(tree / gMount.filename() / "Other.png") });
 
 	EXPECT_EQ(RunGit({ "worktree", "remove", "--force", FString::FromPath(tree) }).ExitCode, 0);
 }

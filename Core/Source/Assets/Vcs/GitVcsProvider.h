@@ -34,7 +34,8 @@ public:
 	// A mount root that does not exist yet is in the repository of the nearest folder above it, and git runs from there
 	// until the root appears.
 	// Under a pre-commit hook (FRT_HOOK_TOPLEVEL set), only the provider of the committing repository keeps the hook's
-	// GIT_INDEX_FILE; every other one's git runs without it.
+	// GIT_INDEX_FILE; every other one's git runs without it, and its GetStaged lists nothing: that repository's staged
+	// files are not in this commit, and its own commit's hook checks them.
 	bool Detect (const FString& MountRoot) override;
 	bool IsBusy () const override;
 	bool IsRewritingTree () const override;
@@ -92,6 +93,7 @@ private:
 	std::filesystem::path HeadLock;
 	std::filesystem::path CommitMessage;   // COMMIT_EDITMSG
 	std::vector<FString> UnsetEnvironment;   // GIT_INDEX_FILE when a hook gave it for another repository (Detect)
+	bool bAnotherRepositoryIsCommitting = false;   // and then GetStaged lists nothing
 	uint32 LockWarningMs = StaleLockWarningMs;
 	mutable std::atomic<uint64> LockHeldSinceMs = 0u;   // 0: not held at the last look
 	mutable std::atomic<bool> bLockWarned = false;

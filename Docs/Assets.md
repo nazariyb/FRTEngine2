@@ -383,7 +383,8 @@ new` only prints the hint, and `git commit --no-verify` skips it once. It parses
    index (a project in a folder of its repository), one run each. The tool inherits git's `GIT_INDEX_FILE`, so it sees
    what `git commit -a` is about to commit; the hook names the committing repository in `FRT_HOOK_TOPLEVEL`, and the Git
    provider of any other repository (an `Engine/` submodule, a shared engine) runs its git without that variable, which
-   would otherwise read as an empty index there.
+   would otherwise read as an empty index there, and lists nothing staged (`GetStaged`): what is staged in a plugin's
+   submodule is not in its parent's commit, which records at most the gitlink, and that submodule's own hook checks it.
 
 A file name is always quoted in the commands a person is shown to paste (`GetRestoreCommand`, `GetAddCommand`), so a name
 with `&` in it stays one argument. A case-only rename of a tracked file is `git mv -f`, since git's own same-file test folds

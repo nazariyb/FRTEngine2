@@ -46,7 +46,7 @@ public:
 	virtual SVcsResult StatusOf (std::span<const FString> Files, std::vector<SVcsStatus>& Out) = 0;
 	// validate --staged (added at M4). OutFiles: absolute paths, like every other call here, and only those under this
 	// provider's mount, whatever form the VCS prints them in (git: relative to a top level that can sit above the mount).
-	// None: empty.
+	// None: empty. Git under a pre-commit hook of another repository: empty, since nothing staged here is in that commit.
 	virtual SVcsResult GetStaged (std::vector<FString>& OutFiles) = 0;
 	// The file watcher's hold (added at M4), narrower than IsBusy so that an open merge holds repairs but never hot reload.
 	// Git: index.lock or HEAD.lock only, and not an index.lock a commit keeps while it waits for its message.
