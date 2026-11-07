@@ -326,9 +326,12 @@ void KeepStoredRedirects (const CRegistryView& View, SRecordId Record, SRecordUp
 }
 
 /**
- * A record's GUID (§4.1, M4), in order: the meta's (a Broken meta's first salvaged one); else the stored record's when
- * its file had a meta, because a lost meta never changes identity; else the provisional id of a file with no meta yet
- * (PendingMeta), which never reaches a written meta.
+ * A record's GUID (§4.1, M4), in order: an Ok meta's; a Broken meta's salvaged one - the stored record's GUID while the
+ * broken bytes still name it, else the first in file order (a GUID edited by hand); else the stored record's when a
+ * meta gave it, because a lost meta never changes identity; else the provisional id of a file with no meta yet
+ * (PendingMeta, or a Broken meta that salvaged none), which never reaches a written meta. A conflict between two Guid:
+ * lines keeps the record's own whichever side git wrote first (a rebase puts upstream's first): flipping it would
+ * tombstone the GUID the local references name and drop its last good METAS copy, which "keep A, alias B" rebuilds from.
  */
 SGuid ChooseRecordGuid (const SReadMeta* Meta, const std::optional<SStoredFile>& Stored, FStringView MountPath)
 {
@@ -336,11 +339,17 @@ SGuid ChooseRecordGuid (const SReadMeta* Meta, const std::optional<SStoredFile>&
 	{
 		return Meta->Parse.Meta.Guid;
 	}
+	const bool bStoredGiven = Stored.has_value() && HasMetaGivenGuid(*Stored, MountPath);
 	if (Meta != nullptr && !Meta->Parse.SalvagedGuids.empty())
 	{
-		return Meta->Parse.SalvagedGuids.front();
+		const std::vector<SGuid>& salvaged = Meta->Parse.SalvagedGuids;
+		if (bStoredGiven && std::find(salvaged.begin(), salvaged.end(), Stored->Guid) != salvaged.end())
+		{
+			return Stored->Guid;
+		}
+		return salvaged.front();
 	}
-	if (Stored.has_value() && HasMetaGivenGuid(*Stored, MountPath))
+	if (bStoredGiven)
 	{
 		return Stored->Guid;
 	}

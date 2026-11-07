@@ -29,7 +29,8 @@
 // read-only source is META001 with no meta, and its fix-it ends in VCS002 keeping the attribute; a read-only meta in
 // another case is reported, not renamed. F30: repairs hold for VcsSettleMs after a busy provider goes quiet, and the
 // watcher's hold asks the providers' IsRewritingTree only while the repairs exist (ShutDown or destruction clears it).
-// F19: a new file's Broken meta that salvaged no GUID, once deleted, leaves a new file that gets its derived meta, never
+// F2: a rebase conflict between two Guid: lines keeps the record's GUID and its copy, so "keep B, alias A" restores the
+// settings. F19: a new file's Broken meta that salvaged no GUID, once deleted, leaves a new file that gets its derived meta, never
 // META008 or a fix-it carrying the file's provisional id.
 #include <gtest/gtest.h>
 
@@ -1424,6 +1425,41 @@ TEST(AssetRepairs, ABrokenMetaWithTwoGuidsOffersKeepAAliasBAndTheFixRewritesItCa
 	ASSERT_TRUE(meta.has_value());
 	EXPECT_EQ(meta->Guid, MakeGuid(GuidA));
 	EXPECT_EQ(meta->Aliases, std::vector<SGuid> { MakeGuid(GuidB) });
+	EXPECT_EQ(rig.StateOf(P("a.png")), EMetaState::Paired);
+	EXPECT_TRUE(rig.Problems().empty()) << rig.DescribeProblems().CStr();
+}
+
+// F2: a rebase writes upstream's Guid: line first. The record keeps its own GUID (the second), so its METAS copy stays,
+// "keep B, alias A" comes first, and the fix rewrites the meta from that copy, settings included.
+TEST(AssetRepairs, ARebaseConflictKeepsTheRecordsGuidFirstAndItsFixRestoresTheSettingsFromItsCopy)
+{
+	CRepairTree tree("Перебазування");
+	tree.WritePng("a.png");
+	tree.WriteMeta("a.png", MetaText(GuidB, "Labels:\n  - Камінь\n"));
+	CRig rig(tree);
+	rig.Open();
+	rig.Settle();
+	ASSERT_EQ(rig.StateOf(P("a.png")), EMetaState::Paired);
+
+	tree.WriteMeta("a.png", FString::Format("FormatVersion: 1\n<<<<<<< HEAD\nGuid: {}\n=======\nGuid: {}\n>>>>>>> local\n", GuidA, GuidB));
+	rig.Scan();
+	rig.Settle();
+	EXPECT_EQ(rig.StateOf(P("a.png")), EMetaState::Broken);
+	EXPECT_EQ(rig.GuidAt(P("a.png")), MakeGuid(GuidB));
+	EXPECT_TRUE(rig.View().FindMetaCopy(MakeGuid(GuidB)).has_value());
+	EXPECT_FALSE(rig.View().FindTombstone(MakeGuid(GuidB)).has_value());
+	const std::vector<SDiagnostic> meta004 = rig.Problems(Meta004);
+	ASSERT_EQ(meta004.size(), 1u) << rig.DescribeProblems().CStr();
+	const std::vector<SLifecycleAction> fixIts = rig.Repairs().GetFixIts(meta004[0]);
+	ASSERT_EQ(fixIts.size(), 2u);
+	EXPECT_EQ(fixIts[0].Guid, MakeGuid(GuidB)) << "the record's GUID first";
+
+	EXPECT_EQ(rig.Repairs().ApplyFix(fixIts[0]).Applied, 1u);
+	const std::optional<SAssetMeta> meta = tree.ReadMeta("a.png");
+	ASSERT_TRUE(meta.has_value());
+	EXPECT_EQ(meta->Guid, MakeGuid(GuidB));
+	EXPECT_EQ(meta->Aliases, std::vector<SGuid> { MakeGuid(GuidA) });
+	EXPECT_EQ(meta->Labels, std::vector<FString> { "Камінь" }) << "the settings come back from the copy";
 	EXPECT_EQ(rig.StateOf(P("a.png")), EMetaState::Paired);
 	EXPECT_TRUE(rig.Problems().empty()) << rig.DescribeProblems().CStr();
 }

@@ -50,8 +50,9 @@ Development `CEngine` installs (nullopt in tool hosts, which resolve their own t
   (`Paired`, `Orphan` or `Broken`), that no file count, `files` field or dump line shows.
 - **Records**: every claimed file has one record - type, importer, Analyze stamp and status, cook rule, chunk, labels,
   typed tags, edges, companions, and sub-entries (a glTF's meshes, materials and images).
-- **Ids** (M4). A record's GUID is its meta's (a broken meta's salvaged one); else the stored record's once its file had
-  a meta, since a lost meta never changes identity; else, for a file with no meta yet (`PendingMeta`) or whose first
+- **Ids** (M4). A record's GUID is its meta's (a broken meta's salvaged one: the record's own while the broken bytes
+  still name it, whichever side of a conflict git wrote first, else the first); else the stored record's once its file
+  had a meta, since a lost meta never changes identity; else, for a file with no meta yet (`PendingMeta`) or whose first
   meta is broken and salvages no GUID, `MakeProvisionalGuid(<mount path>)` (`MakeDerivedGuid(0, "path", path)`):
   internal, never written to a meta or a content file, never handed to runtime code, and no identity (never tombstoned;
   that broken meta deleted, the file is a new file again). A meta is read on a worker only when it changed or when its

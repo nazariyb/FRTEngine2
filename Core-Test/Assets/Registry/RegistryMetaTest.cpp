@@ -2,8 +2,8 @@
 // meta's GUID, and a FILES row of class Meta that no count, `files` field or dump line shows; a file without a meta
 // keeps its provisional id and dumps as in M3, so a provisional id never reaches a golden; an unchanged meta of an
 // unchanged file is never opened, a meta edit re-evaluates the record in memory, a lost meta keeps the identity and a
-// broken one its salvaged GUID (a provisional id, when it salvages none, is no identity: fixing that meta tombstones
-// nothing); the meta's values beat the rules (an Importer pin claims a file no rule claims); two
+// broken one its salvaged GUID (the record's own while a conflict's two Guid: lines still name it, whichever comes
+// first; a provisional id, when it salvages none, is no identity: fixing that meta tombstones nothing); the meta's values beat the rules (an Importer pin claims a file no rule claims); two
 // records with one GUID answer for the smallest path and a move with its meta is a move to listeners; SubAssets
 // renames keep an id and remaps add an edge. E4b: the meta's Aliases and FormerPaths resolve lookups and its bytes are
 // kept in METAS (a re-evaluation reads them there, never the disk); a removed file with a meta-given GUID, or a GUID
@@ -344,6 +344,88 @@ TEST(RegistryMeta, AWarmStartOpensNoMetaAndAMetaEditIsReEvaluatedWithoutAnalyze)
 	EXPECT_EQ(PathOf(registry->Live(), GuidD), "/Project/Textures/Трава.png");
 	EXPECT_FALSE(registry->Live().FindTombstone(MakeProvisionalGuid("/Project/Textures/Трава.png")).has_value());
 	EXPECT_EQ(registry->Live().GetTombstoneCount(), tombstones);
+	registry->ShutDown();
+}
+
+/**
+ * A conflict between two Guid: lines (§4.6's Broken row) keeps the record's own GUID whichever side git wrote first; a
+ * rebase writes upstream's first, so the GUID the record holds is often the second. The record keeps it with its METAS
+ * copy, leaves no tombstone and no Removed/Added to listeners, and a reference to it stays resolved, on the re-evaluate
+ * path (only the meta changed) as on the analyze path (the source in conflict too). A stored GUID that neither side
+ * names is a GUID edited by hand: the first salvaged one replaces it and the old one is tombstoned.
+ */
+TEST(RegistryMeta, AConflictBetweenTwoGuidLinesKeepsTheRecordsOwnGuidWhicheverSideComesFirst)
+{
+	CMetaTree tree("Перебазування");
+	constexpr FStringView logo = "/Project/Textures/Лого.png";
+	tree.WritePng("Textures/Лого.png");
+	tree.WriteMeta("Textures/Лого.png", MetaText(GuidB));
+	tree.WriteProjectContent("Models/Box.gltf", R"({"asset":{"version":"2.0"},"materials":[{"name":"Skin"}]})");
+	tree.WriteMeta("Models/Box.gltf", MetaText(GuidC, "SubAssets:\n  Remap:\n    \"material:Skin\": { $asset: " + FString(GuidB)
+		+ ", path: /Project/Textures/Лого.png }\n"));
+	jobs::CWorkerPool pool(MakePoolDesc());
+	std::unique_ptr<CAssetRegistry> registry = Open(pool, tree.Mounts());
+	const SGuid b = MakeGuid(GuidB);
+	ASSERT_TRUE(registry->Live().FindMetaCopy(b).has_value());
+	const auto remapResolved = [&]
+	{
+		const CRegistryView& view = registry->Live();
+		const std::optional<SRecordId> box = view.Find(SAssetId { MakeGuid(GuidC), 0u });
+		const std::optional<SRecordId> target = view.FindByPath(logo);
+		bool bResolved = false;
+		if (box.has_value() && target.has_value())
+		{
+			view.ForEachDependency(*box, EDepFlags {}, EDepFlags {}, [&] (const SDependencyView& Edge)
+			{
+				bResolved = bResolved || (Edge.FieldPath == "SubAssets.Remap.material:Skin" && Edge.To == *target);
+			});
+		}
+		return bResolved;
+	};
+	ASSERT_TRUE(remapResolved());
+
+	const auto conflict = [] (FStringView First, FStringView Second)
+	{
+		return FString::Format("FormatVersion: 1\n<<<<<<< HEAD\nGuid: {}\n=======\nGuid: {}\n>>>>>>> local\n", First, Second);
+	};
+	const std::vector<FString> folder = { "/Project/Textures" };
+	const uint64 before = registry->GetRevision();
+	struct SStep
+	{
+		FStringView First;
+		FStringView Second;
+		bool bSourceToo;
+	};
+	for (const SStep& step : { SStep { GuidA, GuidB, false }, SStep { GuidB, GuidA, false }, SStep { GuidA, GuidB, true } })
+	{
+		if (step.bSourceToo)
+		{
+			ASSERT_TRUE(platform::WriteFileBytes(tree.Tree.ProjectContent() / FStringView("Textures/Лого.png").ToPath(), MakePng(8u)));
+		}
+		tree.WriteMeta("Textures/Лого.png", conflict(step.First, step.Second) + (step.bSourceToo ? "# the image too\n" : ""));
+		ASSERT_TRUE(registry->ScanPathsSynchronous(folder, 30.0));
+		const CRegistryView& view = registry->Live();
+		const FString context = FString::Format("{} first, the source changed: {}", step.First, step.bSourceToo);
+		EXPECT_EQ(PathOf(view, GuidB), logo) << context.CStr();
+		EXPECT_EQ(FindStoredFile(view, logo)->MetaState, EMetaState::Broken) << context.CStr();
+		EXPECT_TRUE(view.FindMetaCopy(b).has_value()) << context.CStr();
+		EXPECT_FALSE(view.FindTombstone(b).has_value()) << context.CStr();
+		EXPECT_TRUE(remapResolved()) << context.CStr();
+	}
+	EXPECT_GE(registry->GetCounters().Analyzed, 1u) << "the last step analyzed the image";
+	EXPECT_TRUE(registry->ForEachChangeSince(before, [&] (const SRecordChange& Change)
+	{
+		EXPECT_FALSE(Change.Kind == ERecordChange::Added || Change.Kind == ERecordChange::Removed) << Change.MountPath.CStr();
+	}));
+
+	// Neither side names the record's GUID (D, edited in by hand before): the first salvaged one replaces it.
+	tree.WriteMeta("Textures/Лого.png", MetaText(GuidD));
+	ASSERT_TRUE(registry->ScanPathsSynchronous(folder, 30.0));
+	ASSERT_EQ(PathOf(registry->Live(), GuidD), logo);
+	tree.WriteMeta("Textures/Лого.png", conflict(GuidA, GuidB));
+	ASSERT_TRUE(registry->ScanPathsSynchronous(folder, 30.0));
+	EXPECT_EQ(PathOf(registry->Live(), GuidA), logo);
+	EXPECT_TRUE(registry->Live().FindTombstone(MakeGuid(GuidD)).has_value());
 	registry->ShutDown();
 }
 
