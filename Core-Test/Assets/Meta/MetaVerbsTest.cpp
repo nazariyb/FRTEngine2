@@ -778,45 +778,64 @@ TEST(MetaVerbs, EveryCrashPointOfMigrateMetasRollsForwardToTheSameBytesAndOneRea
 	}
 
 	// In-process: the first op stops after k of its steps (its meta not yet written, or written without Add and End); the
-	// run goes on, the next op's Run finishing it first, and a second run records the step.
+	// run goes on, a later Run finishing it first, and the step is recorded. With random GUIDs (DerivedAutoGuids off) only
+	// a replay of the journal can put the stopped op's own bytes there: a create planned again would mint another GUID, and
+	// a lost Add would never be made.
 	for (uint32 stop = 0u; stop <= 1u; ++stop)
 	{
 		CVerbTree tree(FString::Format("Збій міграції {}", stop));
+		tree.WriteProjectRules("FormatVersion: 1\nSafety:\n  DerivedAutoGuids: false\n");
 		tree.WritePng("A.png", 4u);
 		tree.WritePng("B.png", 5u);
 		{
 			CVerbRig rig(tree);
 			ASSERT_TRUE(rig.bOpened);
-			std::vector<SGuid> planned;
+			std::optional<SOpJournalEntry> stopped;
 			CAssetWriter& writer = *rig.Repairs().GetWriter();
-			writer.SetStopAfterStepForTest(stop, [&writer, &planned]
+			writer.SetStopAfterStepForTest(stop, [&writer, &stopped] { stopped = writer.GetUnfinished(); });
+			(void)rig.Migrate();
+			ASSERT_TRUE(stopped.has_value());
+			ASSERT_EQ(stopped->Op.PlannedGuids.size(), 1u) << "the stopped op holds the GUID it promised";
+			ASSERT_EQ(stopped->Op.Steps.size(), 1u);
+			const FString& metaPath = stopped->Op.Steps[0].Path;
+			const FString metaFile = FString(metaPath.View().Mid(FStringView("/Project/").Len()));
+			const std::vector<uint8>& journalled = stopped->Op.Steps[0].Bytes;
+			EXPECT_EQ(tree.Read(metaFile), FString(FStringView(reinterpret_cast<const char*>(journalled.data()), static_cast<uint32>(journalled.size()))))
+				<< stop << ": the journalled bytes, replayed";
+			EXPECT_EQ(tree.MetaGuid(GetMetaSource(metaFile).value_or(FStringView())), stopped->Op.PlannedGuids[0]) << stop;
+			bool bAdded = false;
+			for (const CRecordingVcsProvider::SCall& call : rig.Vcs.GetWriteCalls())
 			{
-				planned = writer.GetUnfinished().value_or(SOpJournalEntry {}).Op.PlannedGuids;
-			});
-			(void)rig.Migrate();
-			ASSERT_EQ(planned.size(), 1u) << "the stopped op holds the GUID it promised";
-			EXPECT_TRUE(planned[0] == DerivedGuid(P("A.png"), 4u) || planned[0] == DerivedGuid(P("B.png"), 5u));
+				bAdded = bAdded || (call.Name == "Add" && std::count(call.Files.begin(), call.Files.end(), tree.Vcs(metaFile)) > 0);
+			}
+			EXPECT_TRUE(bAdded) << stop << ": the stopped op's Add, replayed";
 			(void)rig.Migrate();
 		}
-		for (const FStringView file : { FStringView("A.png.meta"), FStringView("B.png.meta") })
-		{
-			EXPECT_EQ(tree.Read(file), reference.Read(file)) << stop;
-		}
+		EXPECT_TRUE(tree.MetaGuid("A.png").IsValid()) << stop;
+		EXPECT_TRUE(tree.MetaGuid("B.png").IsValid()) << stop;
 		EXPECT_EQ(tree.Migrations(), FString(MigrationsWithMetas)) << stop;
 	}
 
-	// One real kill, after the first op's write: start-up rolls it forward, and the run again completes and records.
+	// One real kill, before the first op's write: start-up rolls it forward before anything else runs, so its meta is there
+	// with the journalled bytes before migrate runs again, which then completes and records.
 	CVerbTree killed("Вбита міграція");
 	killed.WritePng("A.png", 4u);
 	killed.WritePng("B.png", 5u);
-	const std::optional<SOpJournalEntry> left = KillMidVerb(killed, "migrate", 1u);
+	const std::optional<SOpJournalEntry> left = KillMidVerb(killed, "migrate", 0u);
 	ASSERT_TRUE(left.has_value()) << "the killed process left its op in the journal";
 	EXPECT_EQ(left->Op.Verb, "create-meta");
 	ASSERT_EQ(left->Op.PlannedGuids.size(), 1u);
+	ASSERT_EQ(left->Op.Steps.size(), 1u);
+	const FString leftMeta = FString(left->Op.Steps[0].Path.View().Mid(FStringView("/Project/").Len()));
+	EXPECT_FALSE(killed.Exists(leftMeta)) << "killed before its write";
 	{
 		CVerbRig rig(killed);
 		ASSERT_TRUE(rig.bOpened);
 		EXPECT_FALSE(rig.Repairs().GetWriter()->GetUnfinished().has_value()) << "rolled forward before the first scan";
+		const std::vector<uint8>& journalled = left->Op.Steps[0].Bytes;
+		EXPECT_EQ(killed.Read(leftMeta), FString(FStringView(reinterpret_cast<const char*>(journalled.data()), static_cast<uint32>(journalled.size()))))
+			<< "written by the roll-forward, before migrate runs again";
+		EXPECT_EQ(killed.MetaGuid(GetMetaSource(leftMeta).value_or(FStringView())), left->Op.PlannedGuids[0]);
 		ASSERT_TRUE(rig.Migrate().bRecorded);
 	}
 	for (const FStringView file : { FStringView("A.png.meta"), FStringView("B.png.meta") })
