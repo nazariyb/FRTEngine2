@@ -62,7 +62,8 @@ struct SValidateOptions
 	// each repository root whose Schemas/Migrations.yml is staged, which brings in that root's MIG001.
 	std::vector<FString> StagedRuleMounts;
 	std::vector<FString> StagedMigrationRoots;
-	bool bQuick = false;                              // no reads of text sources but those in Paths (no hashing anywhere)
+	bool bQuick = false;                              // no reads of text sources but those in Paths (the lifecycle hashes
+	                                                  // nothing; the scan still hashes new and changed files)
 	std::vector<std::pair<MountId, IVcsProvider*>> Providers;   // VCS003; absent, null or None: no status asked
 };
 

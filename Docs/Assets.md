@@ -501,9 +501,8 @@ meta.
 - **Who runs.** All five take the mount's writer lock unless the run is read-only, so beside another owner they exit with
   4. Only `validate` runs as a read-only guest when `Safety.GuestProcesses` says so (§5.9), reporting, and its META001s
   name the owner. The others, and `validate --fix`, exist to write: as a guest they exit with 4, and with `--ci` or
-  `-Assets:ReadOnly=1` they are a usage error. `migrate --dry-run` is read-only by request itself: no lock, so it runs
-  beside an owner. `validate --fix --quick` is one too: a
-  meta's GUID needs its content's hash.
+  `-Assets:ReadOnly=1` they are a usage error, as is `validate --fix --quick` (a meta's GUID needs its content's hash).
+  `migrate --dry-run` is read-only by request itself: no lock, so it runs beside an owner.
 - **`RunValidation`** is the one list `validate` prints and the Asset problems panel shows: every problem the
   registry holds in scope (Scan, Rules, Unclaimed, Analyze, Registry, and the Lifecycle's as the verb's report-only or
   repairing run committed them), plus the rules only it runs: `META005`; `META007`; a meta's unknown keys, a newer
@@ -666,7 +665,7 @@ run from the engine checkout's own `FRT.bat`: a project's `FRT.bat` always names
 | `explain <file>` | a file's importer, class, settings, cook rule, chunk and labels (the meta's marked authored), each with the rule file and line or the meta that set it (`Content/Art/Assets.yml:4 (rule 2)`, `Content/Art/Rock.png.meta:5`), the rule files consulted, notes, its meta (file, state, GUID), and the aliases and former paths that resolve to its record; `<file>` is a mount path or a disk path (absolute or relative to the working directory) |
 | `list-rules` | every rule file of the mounts with its normalised entries; with `--json` exactly Rules.cache's lines (it writes no Rules.cache: an M3 deviation, only the lock holder writes it) |
 | `dump registry [--text\|--json] [--mount=<name>,...]` | the deterministic registry dump (design §5.3; the golden files), of every mount or the ones named |
-| `validate [paths] [--staged] [--quick] [--fix] [--ci]` | design §13.4 over the run's own mounts (below): the registry's problems, the lifecycle's, and the rules only it runs. `--staged`: the files the VCS has staged (Git), a mount under `None` whole; `--quick`: hashes nothing; `--fix`: `fix` first. Exit 1 on an error, with `--ci` also on a warning (infos pass) |
+| `validate [paths] [--staged] [--quick] [--fix] [--ci]` | design §13.4 over the run's own mounts (below): the registry's problems, the lifecycle's, and the rules only it runs. `--staged`: the files the VCS has staged (Git), a mount under `None` whole; `--quick`: the lifecycle hashes nothing (no new file is paired or given a meta by content) and no text source is read but the paths asked for; the scan still analyzes, and so hashes, new and changed files; `--fix`: `fix` first. Exit 1 on an error, with `--ci` also on a warning (infos pass) |
 | `fix [paths]` | `validate --fix` under another name: the safe repairs (create a missing meta, restore a verified copy, fix a meta's case, re-GUID duplicates while `Safety.AutoResolveDuplicates` is on), then what remains. Never a relink, "keep A, alias B" or a canonical rewrite |
 | `new-meta <file...>` | a meta now for each file named, with the GUID automatic creation derives (not gated by `Safety.AutoRepairMetas`); a file that has a meta, or takes none, is an error, and then nothing is written. Exit 1 then |
 | `migrate <step>\|--all [--dry-run]` | content migrations (design §14.8), each recorded in the root's `Schemas/Migrations.yml`. M4 has `metas`: a meta for every included file that has none, with reproducible GUIDs; recorded once no file is left without one (exit 1 until then). `--all` runs every step this engine has; a later step names its milestone. `--dry-run` writes nothing, neither metas nor the registry's own `Local/Assets` files: it is read-only by request, as `--ci` is, so it takes no lock and runs beside an open editor. Its preview is the run's: a file or meta with the read-only attribute, which the run leaves without a meta, is listed as remaining |

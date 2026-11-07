@@ -71,7 +71,8 @@ constexpr SCommandlet Commandlets[] =
 	// validate --fix included (its WriteOption), exits with 1 (AssetTool.cpp).
 	{ "validate", &RunValidate, "validate [paths] [--staged] [--quick] [--fix] [--ci]: the rules of design §13.4 over the mounts (the registry's "
 		"problems, the lifecycle's META and VCS codes, non-canonical metas, metas of excluded files, CRLF in FRT text, VCS003, MIG001); "
-		"--staged only what the VCS has staged, --quick hashes nothing, --fix applies the safe repairs first (as fix); exit 1 on an error, "
+		"--staged only what the VCS has staged, --quick hashes nothing for the lifecycle and reads no text source but the paths asked for "
+		"(the scan still hashes new and changed files), --fix applies the safe repairs first (as fix); exit 1 on an error, "
 		"with --ci also on a warning", true, ValidateOptions, false, true, {}, "fix" },
 	{ "fix", &RunFix, "fix [paths]: validate --fix: creates missing metas, restores verified copies, fixes a meta's case and re-GUIDs "
 		"duplicates (with Safety.AutoResolveDuplicates), then prints what remains; never relinks, aliases or rewrites a meta by hand",

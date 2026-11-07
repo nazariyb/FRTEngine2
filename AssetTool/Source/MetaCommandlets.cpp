@@ -168,7 +168,8 @@ int32 Validate (CCommandletContext& Context, FStringView Verb, bool bFix)
 	}
 	if (bFix && bQuick)
 	{
-		return Context.Fail(ExitUsage, FString::Format("{}: --quick hashes nothing, and a meta's GUID is derived from its content: drop --quick", Verb));
+		return Context.Fail(ExitUsage, FString::Format("{}: --quick hashes no content for the lifecycle, and a meta's GUID is derived from its "
+			"content: drop --quick", Verb));
 	}
 	if (bStaged && !Context.Arguments.empty())
 	{

@@ -412,7 +412,8 @@ end
 
 -- The template's name in a file's path becomes the project's, and so a source and its meta
 -- (X.png and X.png.meta, design §13.3) are renamed alike: the meta's name is its source's with
--- ".meta", and the rename touches the part they share. A meta's bytes are copied as they are:
+-- ".meta", and the rename touches the part they share. A meta's bytes are copied as they are but
+-- for LF (.gitattributes says eol=lf):
 -- ".meta" is no templated extension, so its GUID and paths are never rewritten (projects made
 -- from one template share asset GUIDs, which is fine: §13.3). Schemas/ comes along, so a new
 -- project has its template's Schemas/Migrations.yml and is not behind the engine (MIG001).
