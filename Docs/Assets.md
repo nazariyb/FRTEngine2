@@ -69,7 +69,10 @@ Development `CEngine` installs (nullopt in tool hosts, which resolve their own t
     changed is read from the file and its copy replaced.
   - `TOMBSTONES`: a record with a meta-given GUID whose file is removed, or whose GUID is edited by hand, leaves
     `{GUID, last path, content hash, file identity, time}`; a record that registers the GUID again (a move, a restore)
-    clears it, a provisional id never leaves one, and a snapshot written more than 30 days later drops it.
+    clears it, a provisional id never leaves one, and a snapshot written more than 30 days later drops it. While
+    another live record holds the GUID (a copy of the asset, a pass on another mount that committed first) neither a
+    tombstone nor the removal of its copy applies: the store decides at commit, so the order commits arrive in never
+    changes the result.
   - The **alias index**: a meta's `Aliases` resolve to its record (`{B, s}` to `{A, s}`), and a sub-asset renamed with
     `SubAssets.Renamed` keeps its old label's id while its new label's id resolves to it. `Find` and id edges try the
     canonical id first.
