@@ -25,7 +25,9 @@
 // Aliases and FormerPaths up to the winner, and a copied referrer of an alias references the copy. F5: a file whose content
 // cannot be read is named with META001 and stops no other file's meta. F20: on a case-sensitive mount the lifecycle pairs a
 // meta with its source as the scan does, so a meta in another case gets its case fixed, never a restore beside it. F21: a
-// refused dedupe shows VCS002 on every loser, and its fix-it, or an event on any one loser, retries the whole set.
+// refused dedupe shows VCS002 on every loser, and its fix-it, or an event on any one loser, retries the whole set. F23: a
+// read-only source is META001 with no meta, and its fix-it ends in VCS002 keeping the attribute; a read-only meta in
+// another case is reported, not renamed.
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -926,6 +928,61 @@ TEST(AssetRepairs, AnEventOnOneLoserOfARefusedDedupeProposesTheWholeSetAgain)
 	rig.Settle(1600u);
 	ExpectPackRemappedToItsCopies(tree, "after the event");
 	EXPECT_TRUE(rig.Problems(Vcs002).empty()) << rig.DescribeProblems().CStr();
+}
+
+namespace
+{
+void SetReadOnly (const std::filesystem::path& File, bool bReadOnly)
+{
+	const std::filesystem::perms write = std::filesystem::perms::owner_write | std::filesystem::perms::group_write | std::filesystem::perms::others_write;
+	std::filesystem::permissions(File, write, bReadOnly ? std::filesystem::perm_options::remove : std::filesystem::perm_options::add);
+}
+}
+
+TEST(AssetRepairs, AReadOnlySourceGetsMeta001AndNoMetaAndItsFixItEndsInVcs002KeepingTheAttribute)
+{
+	CRepairTree tree("Лише читання");
+	tree.WritePng("a.png");
+	SetReadOnly(tree.Abs("a.png"), true);
+	CRig rig(tree);
+	rig.Open();
+	rig.Settle();
+	rig.Settle(1600u);
+	(void)rig.Repairs().RunNow(SRepairOptions {});
+	EXPECT_FALSE(tree.Exists("a.png.meta"));
+	const std::vector<SDiagnostic> meta001 = rig.Problems(Meta001);
+	ASSERT_EQ(meta001.size(), 1u) << rig.DescribeProblems().CStr();
+	EXPECT_TRUE(meta001[0].Message.Contains("read-only")) << meta001[0].Message.CStr();
+
+	const std::vector<SLifecycleAction> fixIts = rig.Repairs().GetFixIts(meta001[0]);
+	ASSERT_EQ(fixIts.size(), 1u);
+	const SRepairReport report = rig.Repairs().ApplyFix(fixIts.front());
+	EXPECT_EQ(report.Refused, 1u);
+	EXPECT_TRUE(std::any_of(report.Problems.begin(), report.Problems.end(), [] (const SDiagnostic& Problem) { return Problem.Code == Vcs002; }));
+	EXPECT_FALSE(tree.Exists("a.png.meta")) << "the providers refuse a read-only file, and so does the recording one";
+	EXPECT_TRUE(platform::Stat(tree.Abs("a.png"))->bReadOnly);
+	SetReadOnly(tree.Abs("a.png"), false);
+}
+
+TEST(AssetRepairs, AReadOnlyMetaInAnotherCaseIsReportedAndNotRenamed)
+{
+	CRepairTree tree("Регістр лише читання");
+	tree.WritePng("a.png");
+	tree.WriteProjectContent("a.PNG.meta", MetaText(GuidA));
+	SetReadOnly(tree.Abs("a.PNG.meta"), true);
+	CRig rig(tree);
+	rig.Open();
+	rig.Settle();
+	rig.Settle(1100u);
+	bool bOld = false;
+	platform::EnumerateDirectory(tree.Tree.ProjectContent(), [&] (const platform::SDirectoryEntry& Entry)
+	{
+		bOld = bOld || Entry.Name == FStringView("a.PNG.meta");
+	});
+	EXPECT_TRUE(bOld) << "a read-only meta is not renamed";
+	EXPECT_EQ(rig.Problems(Meta006).size(), 1u) << rig.DescribeProblems().CStr();
+	EXPECT_TRUE(rig.Vcs.GetWriteCalls().empty());
+	SetReadOnly(tree.Abs("a.PNG.meta"), false);
 }
 
 TEST(AssetRepairs, ARefusalGoesWithTheFolderItWasIn)

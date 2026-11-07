@@ -224,7 +224,14 @@ SMigrateMetasResult MigrateMetas (CAssetRegistry& Registry, std::span<const Moun
 	if (bDryRun)
 	{
 		// A reader (a dry run with --ci) plans nothing, since it writes nowhere: what it would create are its META001s' fix-its,
-		// derived alike.
+		// derived alike. A source or meta with the read-only attribute is left out, as the writer's run would leave it (the
+		// lifecycle makes no repair of it, and its fix-it ends in VCS002): the preview stays the run's.
+		const auto isReadOnly = [&Registry] (FStringView MountPath)
+		{
+			const std::optional<std::filesystem::path> path = Registry.GetMounts().FromMountPath(MountPath);
+			const std::optional<platform::SFileStat> stat = path.has_value() ? platform::Stat(*path) : std::nullopt;
+			return stat.has_value() && stat->bReadOnly;
+		};
 		for (const SDiagnostic& problem : out.Report.Problems)
 		{
 			if (problem.Code != Meta001)
@@ -235,7 +242,7 @@ SMigrateMetasResult MigrateMetas (CAssetRegistry& Registry, std::span<const Moun
 			{
 				const bool bKnown = std::any_of(out.Report.Planned.begin(), out.Report.Planned.end(),
 					[&] (const SLifecycleAction& Action) { return Action.Kind == fixIt.Kind && Action.Path == fixIt.Path; });
-				if (fixIt.Kind == ELifecycleAction::CreateMeta && !bKnown)
+				if (fixIt.Kind == ELifecycleAction::CreateMeta && !bKnown && !isReadOnly(fixIt.Path) && !isReadOnly(GetMetaPath(fixIt.Path)))
 				{
 					out.Report.Planned.push_back(std::move(fixIt));
 				}

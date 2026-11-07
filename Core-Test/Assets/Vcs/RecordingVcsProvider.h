@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <system_error>
 #include <vector>
@@ -10,6 +11,7 @@
 #include "Containers/String.h"
 #include "Containers/StringMap.h"
 #include "Platform/FileMove.h"
+#include "Platform/FileSystem.h"
 
 
 namespace frt::test
@@ -18,7 +20,9 @@ namespace frt::test
  * The fake every command is tested against (design §15 I26): it records each call as one entry, so a test can say that an
  * asset and its meta went through in the same CheckOut, Add, Move or Delete, and it refuses on demand, so a test can say
  * that nothing was written after a refusal. It spawns nothing and needs no repository. Move and Delete do what they say on
- * the disk, since a writer goes on to rely on it; the others touch nothing. Safe from a worker.
+ * the disk, since a writer goes on to rely on it; the others touch nothing. CheckOut refuses a read-only file with ReadOnly
+ * naming it, as both real providers do (VcsFileOps.h's CheckOutFiles), so a test sees the refusal a host would; a test of
+ * something else can turn that off (SetRefuseReadOnly). Safe from a worker.
  */
 class CRecordingVcsProvider final : public assets::IVcsProvider
 {
@@ -35,7 +39,25 @@ public:
 
 	assets::SVcsResult CheckOut (std::span<const FString> Files) override
 	{
-		return Record("CheckOut", Files);
+		assets::SVcsResult result = Record("CheckOut", Files);
+		if (result.Error != assets::EVcsError::None || !bRefuseReadOnly)
+		{
+			return result;
+		}
+		FString readOnly;
+		for (const FString& file : Files)
+		{
+			const std::optional<platform::SFileStat> stat = platform::Stat(file.ToPath());
+			if (stat.has_value() && stat->bReadOnly && !stat->bDirectory)
+			{
+				readOnly.AppendFormat("{}'{}'", readOnly.IsEmpty() ? "" : ", ", file);
+			}
+		}
+		if (!readOnly.IsEmpty())
+		{
+			return { assets::EVcsError::ReadOnly, FString::Format("read-only, so not written: {}", readOnly) };
+		}
+		return result;
 	}
 
 	assets::SVcsResult Add (std::span<const FString> Files) override
@@ -131,6 +153,13 @@ public:
 		bRewriting = bInRewriting;
 	}
 
+	// False: CheckOut takes a read-only file as a VCS that opens it for edit would (and leaves its attribute alone).
+	void SetRefuseReadOnly (bool bRefuse)
+	{
+		const std::lock_guard lock(Mutex);
+		bRefuseReadOnly = bRefuse;
+	}
+
 	void SetCommitted (std::span<const FString> Files)
 	{
 		const std::lock_guard lock(Mutex);
@@ -193,5 +222,6 @@ private:
 	std::vector<FString> Staged;
 	bool bBusy = false;
 	bool bRewriting = false;
+	bool bRefuseReadOnly = true;
 };
 }

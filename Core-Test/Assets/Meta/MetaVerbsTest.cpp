@@ -547,6 +547,42 @@ TEST(MetaVerbs, NewMetaCreatesTheDerivedMetaAndRefusesAFileWithOneOrNoneWritingN
 	EXPECT_EQ(tree.MetaGuid("Rock.png"), DerivedGuid(P("Rock.png"), 4u)) << "Safety.AutoRepairMetas gates no command";
 }
 
+// The read-only attribute (F23): migrate's preview and its run agree that such a file stays without a meta, and new-meta
+// ends in VCS002 with nothing written and the attribute kept, as with the real providers.
+TEST(MetaVerbs, AReadOnlySourceIsRemainingInMigrateAndItsDryRunAlikeAndNewMetaEndsInVcs002)
+{
+	CVerbTree tree("Лише читання");
+	tree.WritePng("a.png", 4u);
+	tree.WritePng("ro.png", 5u);
+	const std::filesystem::perms write = std::filesystem::perms::owner_write | std::filesystem::perms::group_write | std::filesystem::perms::others_write;
+	std::filesystem::permissions(tree.Abs("ro.png"), write, std::filesystem::perm_options::remove);
+	{
+		CVerbRig reader(tree, true);
+		ASSERT_TRUE(reader.bOpened);
+		const SMigrateMetasResult preview = reader.Migrate(true);
+		EXPECT_EQ(preview.Remaining, std::vector<FString> { P("ro.png") }) << "the preview leaves it out as the run does";
+		EXPECT_EQ(preview.Report.Planned.size(), 1u);
+	}
+	{
+		CVerbRig rig(tree);
+		ASSERT_TRUE(rig.bOpened);
+		const SMigrateMetasResult run = rig.Migrate(false);
+		EXPECT_EQ(run.Remaining, std::vector<FString> { P("ro.png") });
+		EXPECT_FALSE(run.bRecorded);
+		EXPECT_TRUE(tree.Exists("a.png.meta"));
+		EXPECT_FALSE(tree.Exists("ro.png.meta"));
+
+		const FString sources[] = { P("ro.png") };
+		const SNewMetasResult created = NewMetas(*rig.Registry, sources);
+		EXPECT_TRUE(created.Created.empty());
+		EXPECT_TRUE(std::any_of(created.Problems.begin(), created.Problems.end(), [] (const SDiagnostic& Problem) { return Problem.Code == Vcs002; }))
+			<< Describe(created.Problems).CStr();
+		EXPECT_FALSE(tree.Exists("ro.png.meta"));
+		EXPECT_TRUE(platform::Stat(tree.Abs("ro.png"))->bReadOnly) << "the attribute is kept";
+	}
+	std::filesystem::permissions(tree.Abs("ro.png"), std::filesystem::perms::owner_write, std::filesystem::perm_options::add);
+}
+
 TEST(MetaVerbs, FixAppliesTheSafeRepairsAndNeverARelink)
 {
 	CVerbTree tree("Виправити");
