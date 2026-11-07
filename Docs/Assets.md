@@ -39,13 +39,30 @@ paths into mount paths and back; `paths::ToMountPath` and `paths::FromMountPath`
 Development `CEngine` installs (nullopt in tool hosts, which resolve their own table, and in Release).
 
 - **FILES** has a row per file a scan kept: class (`Asset` claimed by an importer, `Raw`, `Unclaimed`, `Companion`,
-  `Excluded`), size, mtime, file identity, a content hash once something read the bytes. A file excluded by a rule is
-  never in FILES.
+  `Excluded`, `Meta`), size, mtime, file identity, a content hash once something read the bytes, and the meta columns
+  (`MetaState`, `MetaHash` = XXH3 of the meta's raw bytes). A file excluded by a rule is never in FILES. A `.meta` stays
+  a built-in exclude, so no rule classifies it: the scanner splits metas out of each listing before the rules see it and
+  pairs each with its source (byte-exact, else under the portable fold). A meta has a row of its own, class `Meta`
+  (`Paired`, `Orphan` or `Broken`), that no file count, `files` field or dump line shows.
 - **Records**: every claimed file has one record - type, importer, Analyze stamp and status, cook rule, chunk, labels,
   typed tags, edges, companions, and sub-entries (a glTF's meshes, materials and images).
-- **Provisional ids.** M3 has no `.meta` files, so every record's GUID is `MakeProvisionalGuid(<mount path>)`
-  (`MakeDerivedGuid(0, "path", path)`): internal, never written to a content file, never handed to runtime code. A
-  rename is a removal and a new record. M4's metas make ids authoritative.
+- **Ids** (M4). A record's GUID is its meta's (a broken meta's salvaged one); else the stored record's once its file
+  had a meta, since a lost meta never changes identity; else, for a file with no meta yet (`PendingMeta`),
+  `MakeProvisionalGuid(<mount path>)` (`MakeDerivedGuid(0, "path", path)`): internal, never written to a meta or a
+  content file, never handed to runtime code. A meta is read on a worker only when it changed or when its file is
+  analyzed or re-evaluated; an unchanged meta of an unchanged file is never opened. A meta edit is re-evaluated in
+  memory and re-analyzes only when the `AnalyzeStamp` changes. Two records with one GUID (a copy, until the lifecycle
+  re-GUIDs it) are kept, and every lookup by id answers the one whose path sorts first under the portable fold. A
+  rename or a move inside one scan pass, with its meta, reaches `OnAssetsChanged` as `Moved`; a file without a meta
+  has a path-derived id, so its move is a removal and an addition. With `SAssetRegistryDesc::Lifecycle` null (every
+  host until M4's switch-on) metas are read, nothing is written and no `META` problem is reported.
+- **The meta's values** apply last: importer default < rules < meta. Its `Importer:` pin replaces the rules' choice of
+  importer (still subject to `Importers.Exclude` and availability; an unknown name pins nothing), its `Cook`, `Chunk`,
+  `Settings` and `Targets` override the rules', and `explain`'s provenance names the meta
+  (`Content/Rock.png.meta`); its `Labels` are the record's authored labels, which `Label` rule selectors match.
+  `SubAssets` applies to the sub-entries: `Renamed` keeps an old label's id for a new label, `Remap` adds a
+  `Hard|Declared` edge from the sub-entry to the external asset, `Overrides` only names sub-assets in M4; a label the
+  file lacks is a warning, and any `SubAssets` edit re-analyzes the file.
 - **Companions**: files a record's importer reads besides its own (a glTF's `.bin` buffers) have class `Companion` and
   no record; they return to `Unclaimed` when no record names them.
 - **Importers' Analyze** (cheap facts of the source, never a build): `Texture` (`stbi_info` on a header prefix: Width,
@@ -64,7 +81,7 @@ rules ever apply. Per field, the deepest file that sets it wins, and within a fi
 - `Scan.Include` narrows (every chain file that lists patterns must match), `Scan.Exclude` accumulates and always
   wins (an excluded folder is not descended, its rule files are never read), `Scan.Raw` makes files `Raw`,
   `Scan.Quiet` keeps an unclaimed file out of `RULE002`. Built-in excludes cover dot-names (watcher fences
-  among them), `~$*`, `*.tmp`, `*.orig`, `*.meta` (M4's), Blender's and Krita's backups, `Thumbs.db` and
+  among them), `~$*`, `*.tmp`, `*.orig`, `*.meta` (split out as metas, see above), Blender's and Krita's backups, `Thumbs.db` and
   `desktop.ini`; symlinks and junctions are never descended.
 - `Importers.Exclude`, `Types.Include`/`Types.Exclude`, `Presets` (`<Importer>/<Name>`, typed by the importer's
   settings table, the innermost definition wins), `Rules` (`Match`, `Type`, `Label`, `Preset`, `For`, `Settings`,
@@ -75,7 +92,8 @@ rules ever apply. Per field, the deepest file that sets it wins, and within a fi
 - M3 deviations from the design: `Scan.Quiet` alone makes an unclaimed file quiet - a file of an excluded or
   unavailable importer (`Document`, `Texture.Psd`, `Texture.Krita`, `Model.Blender`, `DataTable.Csv`) stays
   `Unclaimed` and raises `RULE002` unless quiet; `Type`/`Label` rules may not set the importer or an Analyze-relevant
-  setting; `Validation.Naming`, `Cook`, `PrimaryAssetTypes` and `Safety` are validated and listed, never acted on;
+  setting; `Validation.Naming`, `Cook` and `PrimaryAssetTypes` are validated and listed, never acted on; `Safety` is a
+  mount's own (`CRulesEngine::GetSafety`, `ReadSafetyOfRuleFile` for hosts), read by M4's lifecycle;
   type names outside `frt.` are kept and match nothing until reflection (M5). No setting is Analyze-relevant in M3, so
   a settings edit never re-analyzes; an `Importer:` or `Scan.Raw` change does. So does a `Types` or `Validation:` edit
   that changes what they filter, for the files under it: a record keeps its sub-entries and Analyze problems as they
@@ -103,8 +121,8 @@ and `Registry`, whose severities are fixed in M3.
 
 | Code | Rule | Severity in M3 | Source |
 |---|---|---|---|
-| `PATH001` | two files or folders whose names differ only in case (portable fold) in one folder; an edge whose path matches two records | warning (error from M4) | Scan, Registry |
-| `PATH002` | a name illegal on a supported platform, or not valid UTF-8 | warning (error from M4) | Scan |
+| `PATH001` | two files or folders whose names differ only in case (portable fold) in one folder (so, at the first differing folder, any two paths of a mount); an edge whose path matches two records | error (a warning in M3) | Scan, Registry |
+| `PATH002` | a name illegal on a supported platform, or not valid UTF-8 | error (a warning in M3) | Scan |
 | `PATH003` | a mount-relative path longer than 180 UTF-8 bytes | warning | Scan |
 | `RULE001` | a rule file error: unknown key, wrong type, bad glob, unknown importer, setting, preset or target, a mount-level section in a folder file | error | Rules |
 | `RULE002` | an unclaimed file not in `Scan.Quiet`, once per folder and extension | warning | Unclaimed |

@@ -8,8 +8,8 @@
  * The asset system's diagnostic codes (design §13.4), as packed constants for SDiagnostic::Code. One place
  * spells each code, so a typo is a compile error instead of a code nobody groups by. Codes arrive with the
  * milestone that first reports them; M3 reports these:
- *	PATH001  two files or folders of one mount equal under the portable fold (a warning until M4)
- *	PATH002  a name illegal on a supported platform, or not valid UTF-8 (a warning until M4)
+ *	PATH001  two files or folders of one mount equal under the portable fold (an error from M4)
+ *	PATH002  a name illegal on a supported platform, or not valid UTF-8 (an error from M4)
  *	PATH003  a mount-relative path longer than 180 UTF-8 bytes (warning)
  *	RULE001  a rule file error, with file and line (error)
  *	RULE002  an unclaimed file not listed in Scan.Quiet (warning)
