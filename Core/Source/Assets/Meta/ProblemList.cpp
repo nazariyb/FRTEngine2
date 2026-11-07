@@ -90,7 +90,7 @@ struct SPortableThenBytes
 // create's VCS002 asks the same).
 enum class ECreateKind : uint8
 {
-	First,     // the file never had a meta (none stored, or PendingMeta): META001, or its refusal retried
+	First,     // the file never had a meta-given GUID (none, PendingMeta, provisional): META001, or its refusal retried
 	Again,     // the identity it had: a lost meta (META008)
 	NewGuid,   // another identity: a meta swap's old source, whose GUID now lives in another meta (META008)
 };
@@ -98,7 +98,7 @@ enum class ECreateKind : uint8
 [[nodiscard]] ECreateKind ClassifyCreate (const SLifecycleAction& Action, const CRegistryView* View)
 {
 	const std::optional<SStoredFile> stored = View != nullptr ? FindStoredFile(*View, Action.Path) : std::nullopt;
-	if (!stored.has_value() || stored->MetaState == EMetaState::PendingMeta || !stored->Guid.IsValid())
+	if (!stored.has_value() || !HasMetaGivenGuid(*stored, Action.Path))
 	{
 		return ECreateKind::First;
 	}

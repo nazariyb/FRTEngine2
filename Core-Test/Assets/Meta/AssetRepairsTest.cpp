@@ -29,6 +29,8 @@
 // read-only source is META001 with no meta, and its fix-it ends in VCS002 keeping the attribute; a read-only meta in
 // another case is reported, not renamed. F30: repairs hold for VcsSettleMs after a busy provider goes quiet, and the
 // watcher's hold asks the providers' IsRewritingTree only while the repairs exist (ShutDown or destruction clears it).
+// F19: a new file's Broken meta that salvaged no GUID, once deleted, leaves a new file that gets its derived meta, never
+// META008 or a fix-it carrying the file's provisional id.
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -1424,6 +1426,44 @@ TEST(AssetRepairs, ABrokenMetaWithTwoGuidsOffersKeepAAliasBAndTheFixRewritesItCa
 	EXPECT_EQ(meta->Aliases, std::vector<SGuid> { MakeGuid(GuidB) });
 	EXPECT_EQ(rig.StateOf(P("a.png")), EMetaState::Paired);
 	EXPECT_TRUE(rig.Problems().empty()) << rig.DescribeProblems().CStr();
+}
+
+// F19: a new file whose first meta is Broken with no Guid: line to salvage keeps a provisional id, which is no identity.
+// Once the broken meta is deleted the file is new again and gets its derived meta, never META008 with a "create from
+// registry" fix-it that would write its path-derived id into a meta.
+TEST(AssetRepairs, ADeletedBrokenMetaThatSalvagedNoGuidLeavesANewFileNeverALostIdentity)
+{
+	CRepairTree tree("Без ідентичності");
+	tree.WritePng("Textures/Трава.png");
+	tree.WriteMeta("Textures/Трава.png", "FormatVersion: 1\nSettings: [\n");
+	CRig rig(tree);
+	rig.Open();
+	rig.Settle();
+	const FString path = P("Textures/Трава.png");
+	const SGuid provisional = MakeProvisionalGuid(path);
+	ASSERT_EQ(rig.StateOf(path), EMetaState::Broken);
+	ASSERT_EQ(rig.GuidAt(path), provisional);
+	EXPECT_EQ(rig.Problems(Meta004).size(), 1u) << rig.DescribeProblems().CStr();
+
+	tree.Remove("Textures/Трава.png.meta");
+	rig.Scan();
+	for (const uint64 advance : { 0u, 1100u })
+	{
+		rig.Settle(advance);
+		EXPECT_TRUE(rig.Problems(Meta008).empty()) << rig.DescribeProblems().CStr();
+		for (const SDiagnostic& problem : rig.Problems())
+		{
+			for (const SLifecycleAction& fixIt : rig.Repairs().GetFixIts(problem))
+			{
+				EXPECT_NE(fixIt.Guid, provisional) << rig.DescribeProblems().CStr();
+			}
+		}
+	}
+	rig.Settle(1600u);
+	EXPECT_EQ(tree.MetaGuid("Textures/Трава.png"), DerivedGuid(path));
+	EXPECT_EQ(rig.StateOf(path), EMetaState::Paired);
+	EXPECT_TRUE(rig.Problems().empty()) << rig.DescribeProblems().CStr();
+	EXPECT_EQ(rig.View().GetTombstoneCount(), 0u) << "a provisional id is never tombstoned";
 }
 
 TEST(AssetRepairs, KeepAliasBNeverOverwritesAMetaResolvedByHandAfterTheFixItWasOffered)

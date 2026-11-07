@@ -2,7 +2,8 @@
 // meta's GUID, and a FILES row of class Meta that no count, `files` field or dump line shows; a file without a meta
 // keeps its provisional id and dumps as in M3, so a provisional id never reaches a golden; an unchanged meta of an
 // unchanged file is never opened, a meta edit re-evaluates the record in memory, a lost meta keeps the identity and a
-// broken one its salvaged GUID; the meta's values beat the rules (an Importer pin claims a file no rule claims); two
+// broken one its salvaged GUID (a provisional id, when it salvages none, is no identity: fixing that meta tombstones
+// nothing); the meta's values beat the rules (an Importer pin claims a file no rule claims); two
 // records with one GUID answer for the smallest path and a move with its meta is a move to listeners; SubAssets
 // renames keep an id and remaps add an edge. E4b: the meta's Aliases and FormerPaths resolve lookups and its bytes are
 // kept in METAS (a re-evaluation reads them there, never the disk); a removed file with a meta-given GUID, or a GUID
@@ -40,6 +41,7 @@ namespace
 constexpr FStringLiteral GuidA = "5d1e7a3b9c0f42d68e1a2b3c4d5e6f70";
 constexpr FStringLiteral GuidB = "3f2a9c4e7b1d4e0f9a8b6c5d4e3f2a1b";
 constexpr FStringLiteral GuidC = "1c7e0a9b33d24f1e9a6b0c1d2e3f4a5b";
+constexpr FStringLiteral GuidD = "8b4d2f6a1e9c4a7b8d3e5f60718293a4";
 
 SGuid MakeGuid (FStringView Text)
 {
@@ -333,6 +335,15 @@ TEST(RegistryMeta, AWarmStartOpensNoMetaAndAMetaEditIsReEvaluatedWithoutAnalyze)
 		guids += Line.Contains(FStringView("\"guid\"")) ? 1u : 0u;
 	});
 	EXPECT_EQ(guids, 1u) << "only Камінь.png's record has a meta GUID";
+
+	// That meta fixed by hand: the provisional id was never an identity, so it leaves no tombstone (§4.6's "GUID edited
+	// by hand" is about a meta-given one).
+	const uint32 tombstones = registry->Live().GetTombstoneCount();
+	tree.WriteMeta("Textures/Трава.png", MetaText(GuidD));
+	ASSERT_TRUE(registry->ScanPathsSynchronous(folder, 30.0));
+	EXPECT_EQ(PathOf(registry->Live(), GuidD), "/Project/Textures/Трава.png");
+	EXPECT_FALSE(registry->Live().FindTombstone(MakeProvisionalGuid("/Project/Textures/Трава.png")).has_value());
+	EXPECT_EQ(registry->Live().GetTombstoneCount(), tombstones);
 	registry->ShutDown();
 }
 

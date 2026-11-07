@@ -51,11 +51,12 @@ Development `CEngine` installs (nullopt in tool hosts, which resolve their own t
 - **Records**: every claimed file has one record - type, importer, Analyze stamp and status, cook rule, chunk, labels,
   typed tags, edges, companions, and sub-entries (a glTF's meshes, materials and images).
 - **Ids** (M4). A record's GUID is its meta's (a broken meta's salvaged one); else the stored record's once its file had
-  a meta, since a lost meta never changes identity; else, for a file with no meta yet (`PendingMeta`),
-  `MakeProvisionalGuid(<mount path>)` (`MakeDerivedGuid(0, "path", path)`): internal, never written to a meta or a
-  content file, never handed to runtime code. A meta is read on a worker only when it changed or when its file is
-  analyzed or re-evaluated; an unchanged meta of an unchanged file is never opened. A meta that changes while it is read
-  (git or an editor writing it) leaves its file out of that pass, keeping what is committed of it, rather than
+  a meta, since a lost meta never changes identity; else, for a file with no meta yet (`PendingMeta`) or whose first
+  meta is broken and salvages no GUID, `MakeProvisionalGuid(<mount path>)` (`MakeDerivedGuid(0, "path", path)`):
+  internal, never written to a meta or a content file, never handed to runtime code, and no identity (never tombstoned;
+  that broken meta deleted, the file is a new file again). A meta is read on a worker only when it changed or when its
+  file is analyzed or re-evaluated; an unchanged meta of an unchanged file is never opened. A meta that changes while it
+  is read (git or an editor writing it) leaves its file out of that pass, keeping what is committed of it, rather than
   committing a record made without it; the write's watcher event or the next scan reads it again. A meta edit is
   re-evaluated in memory and re-analyzes only when the `AnalyzeStamp` changes. Two records with one GUID (a copy, until
   the lifecycle re-GUIDs it) are kept, and every lookup by id answers the one whose path sorts first under the portable

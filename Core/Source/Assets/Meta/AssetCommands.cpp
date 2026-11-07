@@ -257,7 +257,9 @@ bool PlanCreateMeta (const CAssetWriter& Writer, const SCreateMetaRequest& Reque
 	}
 
 	SAssetMeta meta = Request.Meta;
-	if (!meta.Guid.IsValid())
+	// The source's provisional id is a registry-internal key, never written (RegistryTypes.h MakeProvisionalGuid): a
+	// request that carries it, whoever sent it, gets a fresh GUID as one without a GUID does.
+	if (!meta.Guid.IsValid() || meta.Guid == MakeProvisionalGuid(Request.Source))
 	{
 		meta.Guid = SGuid::NewRandom();
 	}

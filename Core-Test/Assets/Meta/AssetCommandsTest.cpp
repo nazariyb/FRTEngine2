@@ -1,6 +1,6 @@
 // M4's journalled commands (Assets/Meta/AssetCommands.h, design §4.6, §12.6) against the recording provider: create meta
-// writes one meta with its pre-allocated GUID and checks out and adds it with its source, and never remints an existing
-// meta in any spelling; a move carries the meta and declared companions in one provider call, records the old path in
+// writes one meta with its pre-allocated GUID and checks out and adds it with its source, never writes a source's
+// provisional id, and never remints an existing meta in any spelling; a move carries the meta and declared companions in one provider call, records the old path in
 // FormerPaths (and drops the new one from it), records nothing for a case-only rename, renames a meta spelled in another
 // case to the asset's case, moves a broken meta and a newer engine's meta unchanged (nor does a dedupe rewrite the latter),
 // and refuses an occupied target, another file's meta, a
@@ -226,6 +226,18 @@ TEST(AssetCommandsTest, CreateMetaWritesThePlannedGuidAndChecksOutAndAddsThePair
 	ASSERT_EQ(second.Op.PlannedGuids.size(), 1u);
 	EXPECT_TRUE(second.Op.PlannedGuids[0].IsValid());
 	EXPECT_EQ(tree.ReadMeta("/Project/b.png.meta").value_or(SAssetMeta()).Guid, second.Op.PlannedGuids[0]);
+
+	// The source's provisional id, whoever asks for it, is never written: a random one instead (F19).
+	tree.Write("/Project/c.png", "png");
+	SCreateMetaRequest provisional;
+	provisional.Source = "/Project/c.png";
+	provisional.Meta.Guid = MakeProvisionalGuid("/Project/c.png");
+	const SAssetCommandResult third = CreateMeta(*tree.Writer, provisional);
+	ASSERT_TRUE(third.IsOk());
+	ASSERT_EQ(third.Op.PlannedGuids.size(), 1u);
+	EXPECT_TRUE(third.Op.PlannedGuids[0].IsValid());
+	EXPECT_NE(third.Op.PlannedGuids[0], provisional.Meta.Guid);
+	EXPECT_EQ(tree.ReadMeta("/Project/c.png.meta").value_or(SAssetMeta()).Guid, third.Op.PlannedGuids[0]);
 }
 
 TEST(AssetCommandsTest, CreateMetaNeverRemintsAMetaInAnySpellingOrMakesOneForNothing)

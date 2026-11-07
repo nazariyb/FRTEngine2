@@ -44,8 +44,26 @@ struct SStoredFile
 	uint64 AnalyzeStamp = 0u;
 };
 
+/**
+ * Whether a record's GUID came from a meta (§4.1, M4) and so is the asset's identity: a lost meta keeps it, its removal
+ * or another GUID in place tombstones it, the lifecycle restores or recreates the meta with it. A provisional id never
+ * is: a file that never had a meta (PendingMeta), and a new file whose first meta was Broken with no Guid: line to
+ * salvage, which keeps MakeProvisionalGuid of its path beside the state Broken. The provisional id is always that of
+ * the file's current path, so the comparison is exact, and it never reaches a written meta.
+ */
+[[nodiscard]] inline bool IsMetaGivenGuid (EMetaState State, const SGuid& Guid, FStringView MountPath) noexcept
+{
+	return Guid.IsValid() && State != EMetaState::PendingMeta && Guid != MakeProvisionalGuid(MountPath);
+}
+
 // The file of MountPath, matched byte-exact (what a scan compares against); nullopt when the view has none.
 [[nodiscard]] FRT_CORE_API std::optional<SStoredFile> FindStoredFile (const CRegistryView& View, FStringView MountPath);
+
+// Whether the stored file of MountPath has a record whose GUID a meta gave it (IsMetaGivenGuid).
+[[nodiscard]] inline bool HasMetaGivenGuid (const SStoredFile& Stored, FStringView MountPath) noexcept
+{
+	return Stored.Record.IsValid() && IsMetaGivenGuid(Stored.MetaState, Stored.Guid, MountPath);
+}
 
 // Whether the record's stored rule outputs - cook rule, chunk, rule labels, authored labels (the meta's) and the
 // TypeExcluded flag - differ from Settings and Flags.

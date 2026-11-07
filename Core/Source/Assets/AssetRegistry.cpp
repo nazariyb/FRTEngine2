@@ -270,8 +270,8 @@ std::shared_ptr<const SReadMeta> ReadMetaCopy (const CRegistryView& View, const 
  * The identity state a conversion commits beside a file's record (§5.3, M4): the METAS copy of an Ok meta read from the
  * file, when the view's differs (another hash or source); for a record whose meta-given GUID goes away - its file
  * removed, its GUID changed in place - a tombstone {GUID, last path, hash, identity, time} and the copy's removal, which
- * the store ignores while another live record holds the GUID. A provisional id (PendingMeta) is never tombstoned: no
- * meta holds it.
+ * the store ignores while another live record holds the GUID. A provisional id (HasMetaGivenGuid: PendingMeta, or a
+ * new file's Broken meta that salvaged none) is never tombstoned: no meta holds it.
  */
 void AppendMetaCopy (const CRegistryView& View, const SReadMeta* Meta, FStringView SourcePath, SRegistryDelta& Delta)
 {
@@ -290,7 +290,7 @@ void AppendMetaCopy (const CRegistryView& View, const SReadMeta* Meta, FStringVi
 
 std::optional<STombstone> MakeTombstone (const CRegistryView& View, const SStoredFile& Stored, FStringView Path, int64 Now)
 {
-	if (!Stored.Record.IsValid() || Stored.MetaState == EMetaState::PendingMeta)
+	if (!HasMetaGivenGuid(Stored, Path))
 	{
 		return std::nullopt;
 	}
@@ -340,7 +340,7 @@ SGuid ChooseRecordGuid (const SReadMeta* Meta, const std::optional<SStoredFile>&
 	{
 		return Meta->Parse.SalvagedGuids.front();
 	}
-	if (Stored.has_value() && Stored->Record.IsValid() && Stored->MetaState != EMetaState::PendingMeta)
+	if (Stored.has_value() && HasMetaGivenGuid(*Stored, MountPath))
 	{
 		return Stored->Guid;
 	}
@@ -881,7 +881,7 @@ SConversion ConvertBatch (SConvertInput& In)
 				if (bHasRecord)
 				{
 					part.RecordRemoves.push_back(path);   // its importer went away (Importers.Exclude, a rule)
-					if (stored->MetaState != EMetaState::PendingMeta)
+					if (HasMetaGivenGuid(*stored, path))
 					{
 						part.MetaCopyRemoves.push_back(stored->Guid);   // unless another record holds it; the meta stays on disk
 					}
@@ -924,7 +924,7 @@ SConversion ConvertBatch (SConvertInput& In)
 						request.MetaCopy = std::move(copies.MetaCopies.front());
 					}
 				}
-				if (metaValues == nullptr && bHasRecord && stored->MetaState != EMetaState::PendingMeta)
+				if (metaValues == nullptr && bHasRecord && HasMetaGivenGuid(*stored, path))
 				{
 					SRecordUpsert kept;
 					KeepStoredRedirects(view, stored->Record, kept);
@@ -1091,7 +1091,7 @@ SConversion ConvertBatch (SConvertInput& In)
 		std::erase_if(fileRemoves, [&] (const FString& Removed)
 		{
 			const std::optional<SStoredFile> stored = FindStoredFile(view, Removed);
-			if (!stored.has_value() || !stored->Record.IsValid() || stored->MetaState == EMetaState::PendingMeta)
+			if (!stored.has_value() || !HasMetaGivenGuid(*stored, Removed))
 			{
 				return false;
 			}
