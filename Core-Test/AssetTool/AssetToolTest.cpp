@@ -1272,10 +1272,12 @@ TEST_F(AssetToolRegistryTest, TheMetaVerbsCreateValidateRestoreAndExplainMetasTh
 		EXPECT_EQ(count(preview.Output, "meta"), 3u) << preview.Output.CStr();
 		EXPECT_FALSE(std::filesystem::exists(stone));
 		EXPECT_FALSE(std::filesystem::exists(migrations));
+		const std::filesystem::path lock = assets::GetOwnerLockPath(ProjectDir).filename();
 		std::error_code ec;
 		for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(assets::GetMountAssetsLocalDir(ProjectDir), ec))
 		{
-			EXPECT_EQ(entry.path().filename(), assets::GetOwnerLockPath(ProjectDir).filename()) << "a dry run wrote " << FString::FromPath(entry.path()).CStr();
+			const FString written = FString::FromPath(entry.path());
+			EXPECT_TRUE(entry.path().filename() == lock) << "a dry run wrote " << written.CStr();
 		}
 	}
 
