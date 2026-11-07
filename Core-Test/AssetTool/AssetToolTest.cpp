@@ -1480,7 +1480,9 @@ TEST_F(AssetToolRegistryTest, ScanWithEngineWritesTheEnginesSnapshot)
 // byte-identical metas"): a repository whose project commits a texture without its meta, cloned twice to other paths,
 // one clone with core.autocrlf=true as Git for Windows has it by default; `fix` in each derives the same GUID from the
 // folded mount path, the file's bytes and the project's salt, so both metas have the same bytes, LF and canonical. Two
-// launches.
+// launches. The project carries the .gitattributes every project gets (Templates/Common's, FRT.bat new): the CRLF clone
+// checks the project file out CRLF, and the hashed rule file LF, as without it `fix` would refuse (VCS001); the PNG is
+// binary either way.
 TEST_F(AssetToolRegistryTest, TwoFreshClonesOfACommitGiveAMetalessFileByteIdenticalMetas)
 {
 	const std::filesystem::path git = platform::FindOnPath("git");
@@ -1494,6 +1496,9 @@ TEST_F(AssetToolRegistryTest, TwoFreshClonesOfACommitGiveAMetalessFileByteIdenti
 	WriteText(origin / "Config" / "Assets.yml", "FormatVersion: 1\n");
 	WriteText(origin / "Clone.frtproject", FString::Format("[Project]\nName=Clone\nEngine={}\n", FString::FromPath(paths::GetEngineDir())));
 	test::meta::WriteCurrentMigrations(origin);
+	std::error_code ec;
+	ASSERT_TRUE(std::filesystem::copy_file(paths::GetEngineDir() / "Templates" / "Common" / ".gitattributes", origin / ".gitattributes", ec))
+		<< ec.message();
 	ASSERT_EQ(test::RunGit(git, origin, { "init", "-q" }).ExitCode, 0);
 	ASSERT_EQ(test::RunGit(git, origin, { "add", "--all" }).ExitCode, 0);
 	ASSERT_EQ(test::RunGit(git, origin, { "commit", "-q", "-m", "A texture without its meta" }).ExitCode, 0);
@@ -1502,9 +1507,17 @@ TEST_F(AssetToolRegistryTest, TwoFreshClonesOfACommitGiveAMetalessFileByteIdenti
 	for (const auto& [name, autocrlf] : { std::pair<FStringView, FStringView> { "Перший", "false" }, { "Другий 第二", "true" } })
 	{
 		const std::filesystem::path clone = Dir / name.ToPath();
-		const test::SProcessResult cloned = test::RunGit(git, Dir, { "clone", "-q", "--local", "-c", FString::Format("core.autocrlf={}", autocrlf),
+		// Top-level, after RunGit's own core.autocrlf=false, so that the later one wins for clone's checkout; `clone -c`
+		// keeps it in the clone's config for the git that `fix` runs.
+		const FString setting = FString::Format("core.autocrlf={}", autocrlf);
+		const test::SProcessResult cloned = test::RunGit(git, Dir, { "-c", setting, "clone", "-q", "--local", "-c", setting,
 			FString::FromPath(origin), FString::FromPath(clone) });
 		ASSERT_EQ(cloned.ExitCode, 0) << cloned.Errors.CStr();
+		const std::optional<FString> projectFile = platform::ReadFileText(clone / "Clone.frtproject");
+		const std::optional<FString> rules = platform::ReadFileText(clone / "Config" / "Assets.yml");
+		ASSERT_TRUE(projectFile.has_value() && rules.has_value());
+		EXPECT_EQ(projectFile->Contains("\r\n"), autocrlf == "true") << "the clone checked its text out with " << setting.CStr();
+		EXPECT_FALSE(rules->Contains("\r")) << "a hashed rule file is LF in every checkout (.gitattributes)";
 		const test::SProcessResult fixed = Run({ "-Project=" + FString::FromPath(clone / "Clone.frtproject"), "fix" }, clone);
 		ASSERT_EQ(fixed.ExitCode, 0) << fixed.Output.CStr() << fixed.Errors.CStr();
 		const std::optional<std::vector<uint8>> bytes = platform::ReadFileBytesUncached(clone / (FString::FromPath(texture) + ".meta").ToPath());
