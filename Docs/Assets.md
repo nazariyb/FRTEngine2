@@ -257,8 +257,9 @@ Assets toggles it. The smoke test checks it against the registry's own answer fo
 
 FRT is not a version-control client: it never commits, syncs or reverts. `IVcsProvider` (`Assets/Vcs/VcsProvider.h`) is what
 it needs from one: writes the VCS accepts, an asset and its meta kept together in every move and delete, and knowing when
-the VCS is rewriting the tree. One instance per mount, from `MakeVcsProvider` (`[AssetsEditor] VcsProvider=Auto|None|Git`).
-No host reaches any of this yet: the asset writer and the repairs that use it arrive later in M4.
+the VCS is rewriting the tree. One instance per mount, from `MakeVcsProvider` (`[AssetsEditor] VcsProvider=Auto|None|Git`); `CVcsProviderSet`
+(`Assets/Vcs/VcsProviderSet.h`) detects and owns one per mount, at once in a tool host or on a worker in a live one, and
+the meta lifecycle's repairs (below) are their only writer. No host creates providers yet: that switch is H4b's.
 
 | Call | `CNoneVcsProvider` | `CGitVcsProvider` |
 |---|---|---|
@@ -301,6 +302,53 @@ A file name is always quoted in the commands a person is shown to paste (`GetRes
 with `&` in it stays one argument. A case-only rename of a tracked file is `git mv -f`, since git's own same-file test folds
 ASCII only; the batch has already made sure the target is that very file. A repository nested in the mount and never
 committed there is one untracked entry to git, and every file below it is `Untracked`.
+
+## The meta lifecycle's runtime (M4, `Assets/Meta/AssetRepairs.h`)
+
+`CAssetRepairs` drives the pure lifecycle (`Assets/Meta/Lifecycle.h`) from a registry: `SAssetRegistryDesc::Lifecycle`
+(`SLifecycleDesc`) gives it one, owned by the registry (`GetRepairs()`). Null, which every host still passes until H4b,
+means none at all, exactly as before. With one:
+
+- **When it runs.** Every finished pass hands it the paths its deltas touched; the time of the next tick after that is
+  the path's event time (kept in memory only, so a restart counts from then). A run starts when something was touched,
+  a delay ran out (the last result's `WakeAtMs`) or a VCS hold ended, and only while the registry is quiet: the initial
+  scan complete, nothing queued, scanning or analyzing. It runs on a worker against an acquired view, one mount at a time:
+  the facts as `Lifecycle.h`'s contract asks (only the rows not `Paired`, those touched, metas whose case differs and
+  duplicate groups; orphans and broken metas are read from their files, a hash the lifecycle asks for is computed then
+  and committed into the file's row, committed facts are asked of the provider only when a run needs them). Its states,
+  hashes and `Lifecycle` problems (with their `File` and the rule files' `Validation:` severities) come back as one
+  delta against that view, committed only if the registry is still at that revision; otherwise the run is dropped and
+  made again. A `SLifecycleDesc::bLive` registry ticks from `Pump` with the wall clock; otherwise a caller ticks
+  (`Tick`, `Settle` with its own clock: tests) or runs a command.
+- **Repairs.** A writer with `bRepairs` (only on the mounts it owns: `/Project` and its plugins, or `/Engine` for an
+  engine owner) plans each repair into one op, and every re-GUID of one result into a single op (`PlanRepairOp`: the
+  losers' `Aliases` and every `SubAssets` `$asset` rewritten through the batch's map; random GUIDs minted for the stand-ins
+  when `Safety.DerivedAutoGuids` is off; a restore writes the verified `METAS` bytes as they were; a relink and a case
+  fix are moves). The ops of one result run in one worker job through a `CAssetWriter` on the owner root, after
+  `IsBusy` is asked once more and their expected writes are registered with the watcher (`ExpectWrite`); the touched
+  folders are then rescanned. It is level-triggered: the rescan of a repair's own write proposes nothing.
+  `SAssetRegistryCounters::RepairsApplied` and `RepairsRefused` count them.
+- **Holding for the VCS** (`[AssetsEditor] WaitForVcs`, default on): no automatic repair while any provider `IsBusy`, and
+  for `VcsSettleMs` after; `IsBusy` is polled every 100 ms only while something waits on that hold. A live host that
+  detects its providers on a worker sets `bProvidersPending` and holds everything until the last `SetProvider`. The
+  watcher's own hold (`SetVcsBusyQuery`) is the narrower `IsRewritingTree` of every mount, so an open merge holds repairs
+  but never hot reload; with `WaitForVcs=0` it is left unset.
+- **What it remembers.** A repair the VCS refused stays a proposal with `VCS002` and is not tried again until an event on
+  its path or an explicit fix, so a read-only file cannot spin. A meta created beside a source `StatusOf` calls tracked,
+  when the meta itself is untracked, is `VCS003` ("generated locally: commit it", with the provider's add command) for
+  as long as the source stands. A meta whose bytes hold CRLF is `VCS001`, checked once over every `METAS` copy and then
+  on each meta touched.
+- **For verbs and the panel.** `RunNow(SRepairOptions)` runs without delays and blocks until it has applied (the
+  options' `Kinds`, `Paths` and `bDryRun`; the run's mounts by default), rescanning after each round. `GetFixIts`
+  gives the fix-its of a problem (the last run's, and the refused repair of a `VCS002`), `ApplyFix` applies one (a re-GUID
+  together with the other losers of its batch), blocking in a tool host and queued in a live one.
+- **Start-up.** The registry's `Start` rolls an operation the owner root's `OpJournal.log` holds unfinished forward
+  before anything is scanned. `TakeOwnership(Root, Mounts, Providers)` is the hosts' form of it: the `Owner.lock`, then the
+  roll-forward; a process that does not get the lock rolls nothing forward and reports the unfinished operation.
+
+Known exception until M7 and M10: the create-on-load writes of `CMaterialLibrary` and `CInputActionLibrary` do not go
+through the provider. The file one of them creates is an ordinary new file to the lifecycle, which gives it a meta on the
+owner like any other.
 
 ## One file watcher (M2)
 
