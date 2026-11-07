@@ -18,8 +18,10 @@
  *
  * A commandlet that writes what only the mount's owner may write (SCommandlet::bWritesProject) runs
  * only while this process holds the mount's writer lock, Local/Assets/Owner.lock (§5.9): if another
- * process owns the mount, the run ends with exit code 4 and names it. --ci and -Assets:ReadOnly=1 make
- * a run read-only by request: it never takes the lock, and so runs beside an open editor.
+ * process owns the mount, the run ends with exit code 4 and names it - unless the opened project's
+ * Safety.GuestProcesses (the engine's with --engine) lets it run as a read-only guest, which says so on
+ * stderr and writes nothing (lock never runs as one). --ci and -Assets:ReadOnly=1 make a run read-only
+ * by request: it never takes the lock, and so runs beside an open editor.
  *
  * Output: human text, or with --json one JSON object per line on stdout (stable field names); errors
  * and warnings on stderr in either mode. Exit codes: Commandlet.h (0 success, 1 problems, 2 usage,
@@ -35,6 +37,9 @@
 
 #include "EnginePaths.h"
 #include "Precision.h"
+#include "Assets/Discovery/BuiltinExcludes.h"
+#include "Assets/Meta/AssetRepairs.h"
+#include "Assets/MountPaths.h"
 #include "Assets/OwnerLock.h"
 #include "Engine/Engine.h"
 #include "Jobs/WorkerPool.h"
@@ -197,22 +202,46 @@ int32 RunAssetTool ()
 	context.bReadOnly = context.bCi || engine.GetConfig().Get("Assets", "ReadOnly", false);
 	context.SetWorkerPool(engine.GetWorkerPool());
 
-	// Held until the commandlet returns; the OS lets go of it if the process dies first.
+	// Held until the commandlet returns; the OS lets go of it if the process dies first. The decision is the one the
+	// editor makes (assets::ClaimAssetOwnership), for the run's own mount set only: never /Project and /Engine together.
 	std::optional<platform::CExclusiveFileLock> ownerLock;
-	if (commandlet->bWritesProject && !context.bReadOnly)
+	if (commandlet->bWritesProject)
 	{
-		FString owner;
-		FString error;
-		ownerLock = assets::TryTakeOwnerLock(context.GetMountRoot(), &owner, &error);
-		if (!ownerLock.has_value())
+		assets::SAssetOwnershipRequest request;
+		request.Root = context.GetMountRoot();
+		// Safety.GuestProcesses governs a process: the opened project's file, the engine's with --engine.
+		request.RulesFile = context.bEngineOwner ? paths::GetEngineConfigPath().parent_path() / assets::RuleFileName.ToPath()
+			: context.ProjectRoot / "Config" / assets::RuleFileName.ToPath();
+		request.bReadOnly = context.bReadOnly;
+		assets::SAssetOwnership ownership = assets::ClaimAssetOwnership(request);
+		const FString& owner = ownership.Root.Owner;
+		if (ownership.Role == assets::EOwnerRole::Writer)
 		{
-			if (owner.IsEmpty())
-			{
-				return context.Fail(ExitInternalError, FString::Format("{}: cannot take the writer lock of {}: {}", commandlet->Name,
-					context.GetMountName(), error));
-			}
+			ownerLock = std::move(ownership.Root.Lock);
+		}
+		else if (ownership.Role == assets::EOwnerRole::Guest && commandlet->bGuestRuns)
+		{
+			// §5.9: it loads, scans and reports as any read-only run does, and writes nothing a mount owns.
+			context.bReadOnly = true;
+			context.bGuest = true;
+			context.PrintError(FString::Format("warning: {} owns {}: {} runs as a read-only guest (Safety.GuestProcesses) and writes "
+				"nothing", owner, context.GetMountName(), commandlet->Name));
+		}
+		else if (ownership.Role == assets::EOwnerRole::Guest || ownership.Role == assets::EOwnerRole::Refused)
+		{
 			return context.Fail(ExitOwned, FString::Format("{} owns {}: close it, or run with --ci", owner, context.GetMountName()),
 				CJsonObject().AddString("owner", owner).AddString("mount", context.GetMountName()));
+		}
+		else if (ownership.Role == assets::EOwnerRole::Failed)
+		{
+			return context.Fail(ExitInternalError, FString::Format("{}: cannot take the writer lock of {}: {}", commandlet->Name,
+				context.GetMountName(), ownership.Root.Error));
+		}
+		if (ownership.Root.bUnfinished && !ownerLock.has_value())
+		{
+			// A process without the lock rolls nothing forward (§4.7): the owner finishes it.
+			context.PrintError(FString::Format("warning: an unfinished operation waits in {}: the owner of {} finishes it",
+				FString::FromPath(assets::GetOpJournalPath(context.GetMountRoot())), context.GetMountName()));
 		}
 	}
 

@@ -4,7 +4,8 @@
 // the --json lines (one object per line, stable field names), help's list of verbs, newguid's GUIDs, the
 // asset registry's verbs (scan, status, query, refs, referencers, explain, list-rules, dump registry: only scan
 // writes, and only under the lock; their answers, exit codes and positioned query errors), the
-// writer lock of /Project and, with --engine, of /Engine: a read-only run never takes it, and AssetTool's
+// writer lock of /Project and, with --engine, of /Engine: a read-only run never takes it, a second writer runs as a
+// read-only guest only when the project's Safety.GuestProcesses says so, and AssetTool's
 // own lock verb keeps every other writer out until its input ends. A verb that writes nothing runs beside a
 // working directory's project it cannot use. The ddc verbs (§7.4, §13.2) count, trim and check the store
 // FRT_DDC_DIR or --ddc names, never create one, keep what every BuildState log of the machine names (the
@@ -994,6 +995,32 @@ TEST_F(AssetToolRegistryTest, OnlyAScanUnderTheLockWritesAndAWarmScanLoadsItsSna
 	const test::SProcessResult coldDump = RunOnProject({ "dump", "registry", "--mount=Project" });
 	EXPECT_EQ(warmDump.Output, coldDump.Output);
 	EXPECT_FALSE(WroteLocalAssets());
+}
+
+// A second writer (§5.9): while this test process owns the project, scan exits with 4 naming it - until the project's
+// Safety.GuestProcesses lets it run as a read-only guest, which says so, scans, and writes no snapshot. lock is never a
+// guest: holding the lock is its point.
+TEST_F(AssetToolRegistryTest, AScanBesideTheOwnerRunsAsAReadOnlyGuestOnlyWhenTheProjectSaysSo)
+{
+	FString error;
+	const std::optional<platform::CExclusiveFileLock> owned = assets::TryTakeOwnerLock(ProjectDir, nullptr, &error);
+	ASSERT_TRUE(owned.has_value()) << error.CStr();
+	const FString owner = assets::GetThisProcessAsOwner().Describe();
+
+	const test::SProcessResult refused = RunOnProject({ "scan" });
+	EXPECT_EQ(refused.ExitCode, 4) << refused.Errors.CStr();
+	EXPECT_TRUE(refused.Errors.Contains(owner + " owns /Project: close it, or run with --ci")) << refused.Errors.CStr();
+
+	WriteText(ProjectDir / "Config" / "Assets.yml", "FormatVersion: 1\nSafety:\n  GuestProcesses: true\n");
+	const test::SProcessResult guest = RunOnProject({ "scan" });
+	EXPECT_EQ(guest.ExitCode, 0) << guest.Errors.CStr();
+	EXPECT_TRUE(guest.Errors.Contains(owner + " owns /Project: scan runs as a read-only guest (Safety.GuestProcesses)")) << guest.Errors.CStr();
+	EXPECT_TRUE(guest.Output.Contains("read-only: wrote nothing")) << guest.Output.CStr();
+	EXPECT_FALSE(std::filesystem::exists(assets::GetRegistrySnapshotPath(ProjectDir)));
+
+	const test::SProcessResult lock = RunOnProject({ "lock" });
+	EXPECT_EQ(lock.ExitCode, 4) << lock.Errors.CStr();
+	EXPECT_TRUE(lock.Errors.Contains(owner + " owns /Project")) << lock.Errors.CStr();
 }
 
 // query: the records in the query engine's order with the columns asked for, a limit, and positioned errors.

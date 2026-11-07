@@ -102,13 +102,21 @@ int RunEditor ()
 	desc.bMaximizeWindow = bOpenProject;
 	// Exclusive fullscreen minimises on every focus change; tools need the desktop.
 	desc.bAllowExclusiveFullscreen = false;
-	// The editor of a project writes its registry files (snapshot, journal, Rules.cache) when no other process
-	// owns the project; the project manager has no registry.
+	// The editor of a project is its writer (registry files, metas); while another process owns the project it does
+	// not start, unless the project lets it be a read-only guest (Safety.GuestProcesses). The project manager has no
+	// registry.
 	desc.bAssetWriter = bOpenProject;
 
 	CEngine engine;
 	if (!engine.StartUp(desc))
 	{
+		// A second writer: one message naming the owner, then the editor quits (scripted runs never get here: they are
+		// read-only and never ask for the lock).
+		if (!engine.GetStartUpError().IsEmpty())
+		{
+			std::cout << engine.GetStartUpError() << std::endl;
+			platform::ShowErrorMessage(desc.WindowTitle, engine.GetStartUpError());
+		}
 		return 1;
 	}
 

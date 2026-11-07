@@ -71,15 +71,17 @@ class CWorkerPool;
  * after a newer one of the same file. The pool's completions and the watcher's callbacks only queue work. Other
  * threads Acquire views and never wait for a commit.
  *
- * Writes (§5.9, the M3 lock deviation). Whether the registry writes is decided only by SAssetRegistryDesc::bWriter,
- * which the host sets exactly when it holds the owner root's Owner.lock (the editor: CEngine with
- * SEngineDesc::bAssetWriter; AssetTool: a verb that took the lock); the registry never takes a lock and never decides
+ * Writes (§5.9). Whether the registry writes is decided only by SAssetRegistryDesc::bWriter, which the host sets
+ * exactly when it holds the owner root's Owner.lock (ClaimAssetOwnership, Assets/Meta/AssetRepairs.h: the editor through
+ * CEngine with SEngineDesc::bAssetWriter; AssetTool: a verb that took the lock; a read-only guest is a reader); the
+ * registry never takes a lock and never decides
  * from config. A writer writes its snapshot file and journal (Project: AssetRegistry.snapshot of /Project and its
  * plugins; Engine: Engine.snapshot of /Engine), Rules.cache and ProjectId under its owner root; a reader writes
  * nothing at all - no journal (opening one writes), no ProjectId (ReadProjectId: a root without one starts cold), no
- * Rules.cache, no watcher fences (a writer's Flush writes fence files into its own mounts). The editor never writes
- * /Engine in M3, fences included: engine files changed since the last `FRT.bat assets scan --engine` are analyzed
- * in memory at every start (logged once).
+ * Rules.cache, no watcher fences (a writer's Flush writes fence files into its own mounts). A Project owner never writes
+ * Engine.snapshot or a journal of /Engine, fences included, even in engine-owner mode (bEngineMetasWritable, which lets
+ * the lifecycle repair /Engine's metas and nothing else): engine files changed since the last `FRT.bat assets scan
+ * --engine` are analyzed in memory at every start (logged once).
  * Snapshots are written from an acquired view on a worker after a batch of SnapshotBatchRecords records, after
  * SnapshotIdleSeconds without a commit, and at ShutDown (clean exit).
  *
@@ -88,8 +90,8 @@ class CWorkerPool;
  * pass hands it the paths it touched, and Pump ticks it (SLifecycleDesc::bLive), so the lifecycle runs on a worker
  * against the committed view whenever the registry is quiet, commits its states and problems (EProblemSource::Lifecycle)
  * and, for a writer with bRepairs, applies its repairs through a CAssetWriter on the owner root and rescans what they
- * touched. Only the mounts the writer owns are repaired (Project: /Project and its plugins; Engine: /Engine); every
- * mount is reported.
+ * touched. Only the mounts the writer owns are repaired (Project: /Project and its plugins, and /Engine too through a
+ * writer of the engine root with SAssetRegistryDesc::bEngineMetasWritable; Engine: /Engine); every mount is reported.
  *
  * Change notification (§5.9). Panels poll GetRevision() once per frame and re-run their queries when it moved;
  * ForEachChangeSince walks the store's change ring. Engine systems may subscribe to OnAssetsChanged, which fires once
@@ -133,6 +135,11 @@ struct SAssetRegistryDesc
 	EAssetRegistryOwner Owner = EAssetRegistryOwner::Project;
 	// The host holds the owner root's Owner.lock (see the class comment): only then is anything written.
 	bool bWriter = false;
+	// Engine-owner mode of a Project-owner writer (§4.7, ClaimAssetOwnership in Assets/Meta/AssetRepairs.h): the host holds
+	// <engine>/Local/Assets/Owner.lock too, so the lifecycle repairs metas in /Engine through a second CAssetWriter on the
+	// engine root. Nothing more: no Engine.snapshot, no journal of /Engine, no fences there (only --engine runs, Owner
+	// Engine, write those). Ignored without bWriter, without Lifecycle and for an Engine owner.
+	bool bEngineMetasWritable = false;
 	// The file watcher to subscribe to (every mount's content root and rule-file directory); null or disabled: none.
 	CFileWatcherService* Watcher = nullptr;
 	// Default (empty Target) in every host, so the editor, headless hosts and AssetTool share one RulesBasis. Tests

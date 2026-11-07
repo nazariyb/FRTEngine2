@@ -20,7 +20,9 @@
  *
  * AssetTool takes it from M1 for every commandlet that writes; the editor takes the same lock from
  * M3 (CEngine, SEngineDesc::bAssetWriter), for the registry's snapshot, journal, Rules.cache and
- * ProjectId - and runs without writing them when another process holds it. The lock itself is platform::TryLockFileExclusive (the OS drops
+ * ProjectId and, from M4, metas. From M4 both decide through assets::ClaimAssetOwnership
+ * (Assets/Meta/AssetRepairs.h): a second writer exits naming the holder, unless the project's
+ * Safety.GuestProcesses makes it a read-only guest. The lock itself is platform::TryLockFileExclusive (the OS drops
  * it when the holder dies, so a crash never leaves a stale owner); this file is what the holder
  * writes into it - {pid, exe, start time} - and how a refused process reads that back.
  *

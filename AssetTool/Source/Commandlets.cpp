@@ -34,7 +34,7 @@ constexpr SCommandlet Commandlets[] =
 	{ "newguid", &RunNewGuid, "newguid [n]: n fresh GUIDs (default 1) for builder versions and built-in assets, each as meta "
 		"text and as a C++ initializer", false },
 	{ "lock", &RunLock, "lock: takes the writer lock of the project (with --engine, of /Engine) and holds it until Enter or "
-		"the end of input, so no other process that writes the mount can run meanwhile", true },
+		"the end of input, so no other process that writes the mount can run meanwhile", true, {}, false, false },
 	// The DDC is shared by every process on the machine and safe without locks (§7.4): no writer lock.
 	{ "ddc", &RunDdc, "ddc stats|gc [--max-gb=<n>]|verify [--ddc=<dir>]: the derived-data cache (default: FRT_DDC_DIR, "
 		"[DerivedDataCache] Path, the user's own): stats counts its files and bytes; gc trims its content to n GiB "

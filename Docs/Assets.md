@@ -237,13 +237,34 @@ deltas per frame; panels poll `GetRevision()`, engine systems may subscribe to `
 Writes are the lock holder's alone. The editor (`SEngineDesc::bAssetWriter`) takes `<project>/Local/Assets/Owner.lock`
 unless the run is read-only; holding it, the registry writes `Local/Assets/AssetRegistry.snapshot` (`/Project` and its
 plugins) with its journal, `Rules.cache` and `ProjectId`, the snapshot after 1000 records, after 60 s idle and at a clean
-exit. A second editor logs the holder and writes nothing (an M3 deviation: the spec's default is to exit). Without the
-lock nothing is written at all. `/Engine` lives in `<engine>/Local/Registry/Engine.snapshot`, written only by an
-engine-owner registry; an editor analyzes engine files changed since then in memory at every start and says so once.
-A writer's `Flush` fences the watcher only in the mounts it owns, so the editor writes no fence file into `/Engine`
-either; of `/Engine` it waits only for what the watcher reported already. AssetTool takes no such deviation: its
-`scan` takes the lock like any writing verb (exit code 4 beside an owner, `--ci` to read instead), and its other
-registry verbs never take it and write nothing (M3 has no guest mode).
+exit. Without the lock nothing is written at all. `/Engine` lives in `<engine>/Local/Registry/Engine.snapshot`, written
+only by an engine-owner registry (`--engine`); an editor analyzes engine files changed since then in memory at every
+start and says so once. A writer's `Flush` fences the watcher only in the mounts it owns, so the editor writes no fence
+file into `/Engine` either; of `/Engine` it waits only for what the watcher reported already. AssetTool's `scan` takes
+the lock like any writing verb, and its other registry verbs never take it and write nothing.
+
+**A second process (M4, §5.9).** Who writes is decided once, before a registry exists, by
+`assets::ClaimAssetOwnership` (`Assets/Meta/AssetRepairs.h`), which the editor (`CEngine::StartUp`) and AssetTool share.
+A run that is read-only by request (`--ci`, `-Assets:ReadOnly=1`, every scripted run, the runtime and the dev Launcher)
+never asks for the lock and always runs. Any other takes the owner root's `Owner.lock`; while another process holds it, a
+second writer does not start: the editor shows one message naming the holder ("close it, or set
+`Safety.GuestProcesses: true`") and quits, AssetTool exits with code 4 (the M3 deviation, an editor that stayed open
+writing nothing, is over). With the opened project's `Safety.GuestProcesses: true` (the engine's file for `--engine`
+runs; the switch governs a process, so no other file sets it) the second process runs as a **read-only guest** instead:
+it loads, scans and reports like a read-only run, writes no meta, snapshot, journal or `BuildState`, says so (the
+editor in its title, AssetTool on stderr), and a `META001` it reports names the owner, who creates the meta. `lock` is
+never a guest. A process without the lock rolls no unfinished operation forward and says one waits.
+
+**Engine-owner mode (M4, §4.7).** `/Engine` is owner-writable when the opened project lies inside the engine checkout
+(`Templates/*`), with `FRT.bat assets <verb> --engine` (no project: that run owns `<engine>/Local/Registry`), or in the
+editor with `-Assets:EngineWritable=1`; it stays read-only for an engine that external projects use. An editor in that
+mode takes `<engine>/Local/Assets/Owner.lock` best-effort, after its project's: without it (another in-engine editor has
+it) `/Engine` is read-only for this process, one line says who holds it, and the project still opens; only the
+project's own lock makes a second writer exit. With it the editor passes `SAssetRegistryDesc::bEngineMetasWritable`,
+and the lifecycle repairs metas in `/Engine` through a second `CAssetWriter` on the engine root, with that root's own
+`OpJournal.log` (rolled forward at start-up), and nothing more: no `Engine.snapshot`, no journal of `/Engine`, no fences
+there, so `/Engine`'s `METAS` copies are as fresh as the last `--engine` run. AssetTool never owns both: `--engine` runs
+act on `/Engine` alone, other runs on `/Project` and its plugins.
 
 ### The editor's Assets panel
 
@@ -323,8 +344,8 @@ means none at all, exactly as before. With one:
   delta against that view, committed only if the registry is still at that revision; otherwise the run is dropped and
   made again. A `SLifecycleDesc::bLive` registry ticks from `Pump` with the wall clock; otherwise a caller ticks
   (`Tick`, `Settle` with its own clock: tests) or runs a command.
-- **Repairs.** A writer with `bRepairs` (only on the mounts it owns: `/Project` and its plugins, or `/Engine` for an
-  engine owner) plans each repair into one op, and every re-GUID of one result into a single op (`PlanRepairOp`: the
+- **Repairs.** A writer with `bRepairs` (only on the mounts it owns: `/Project` and its plugins, and `/Engine` too in
+  engine-owner mode through a writer of the engine root; or `/Engine` for an engine owner) plans each repair into one op, and every re-GUID of one result into a single op (`PlanRepairOp`: the
   losers' `Aliases` and every `SubAssets` `$asset` rewritten through the batch's map; random GUIDs minted for the stand-ins
   when `Safety.DerivedAutoGuids` is off; a restore writes the verified `METAS` bytes as they were; a relink and a case
   fix are moves). The ops of one result run in one worker job through a `CAssetWriter` on the owner root, after
@@ -481,7 +502,9 @@ Options: `--json` (one object per line), `--ci` or `-Assets:ReadOnly=1` (read-on
 starts with (`refs -- -Odd`, `query -- -json`). Exit codes: 0 success, 1 problems found, 2 usage error, 3 internal error, 4 the mount is
 owned by another process. **One writer per mount**: a writing run takes `<mount>/Local/Assets/Owner.lock` (an exclusive
 handle the OS releases when the process dies; its text names the holder), and a second writer exits with code 4 naming
-the owner. The editor takes the same lock from M3, for the registry's files (see Registry service above).
+the owner, unless the project's `Safety.GuestProcesses` (the engine's with `--engine`) lets it run as a read-only guest,
+which warns on stderr and writes nothing (`lock` exits with 4 even then). The editor takes the same lock (see "A second
+process" above).
 
 The registry's golden dumps, `Core-Test/Assets/Golden/Registry-{Engine,Demo,Blank}.txt` (`/Engine`, and each
 template's `/Project`), are compared by Core-Test (temp copies) and by `FRT.bat verify` (in place, on a tree git says

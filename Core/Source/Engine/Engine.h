@@ -67,10 +67,14 @@ struct SEngineDesc
 	// standard output, which is the tool's (a --json stream). The frame calls and the services those
 	// steps would have made are not for it.
 	bool bToolHost = false;
-	// This host writes the project's registry files when it can (design §5.9, the M3 lock deviation): StartUp takes
+	// This host is the project's writer (design §4.7, §5.9; assets::ClaimAssetOwnership): StartUp takes
 	// <project>/Local/Assets/Owner.lock and, holding it, lets the registry write its snapshot, journal, Rules.cache
 	// and ProjectId. Only the editor sets it, when it opens a project; [Assets] ReadOnly=1 (every scripted run) skips
-	// the attempt. Another process holding the lock is said once, and this host then writes nothing.
+	// the attempt. While another process holds the lock StartUp fails, naming it (GetStartUpError), unless the
+	// project's Safety.GuestProcesses makes this host a read-only guest, which writes nothing and says so in its title.
+	// Engine-owner mode (a project inside the engine checkout, or [Assets] EngineWritable=1): the engine's lock is taken
+	// best-effort as well, and with it the registry repairs /Engine's metas (SAssetRegistryDesc::bEngineMetasWritable);
+	// without it /Engine stays read-only and one line says who holds it.
 	bool bAssetWriter = false;
 };
 
@@ -115,6 +119,9 @@ public:
 
 	bool StartUp (const SEngineDesc& Desc);
 	void ShutDown ();
+	// Why StartUp returned false, as a host shows it to a person (a second writer of the project: who owns it, and the
+	// ways on); empty for a failure already reported where it happened.
+	const FString& GetStartUpError () const { return StartUpError; }
 
 	// ---- frame ----
 	// Dispatches every pending OS message. False once the application should quit.
@@ -190,6 +197,7 @@ private:
 	bool IsExclusiveFullscreen () const;
 
 	SEngineDesc Desc;
+	FString StartUpError;
 	bool bStarted = false;
 	bool bQuitRequested = false;
 	int ExitCode = 0;
@@ -211,10 +219,11 @@ private:
 	// (whose libraries subscribe) and before the worker pool. A member in every build, like DerivedData.
 	std::unique_ptr<assets::CFileWatcherService> FileWatcher;
 	// Dev builds: the process's mounts (installed for paths::ToMountPath while the engine runs), the project's writer
-	// lock when this host holds it (SEngineDesc::bAssetWriter), and the registry, ended in ShutDown before the file
-	// watcher it subscribes to. Members in every build, like FileWatcher.
+	// lock when this host holds it (SEngineDesc::bAssetWriter) and the engine's in engine-owner mode, and the registry,
+	// ended in ShutDown before the file watcher it subscribes to. Members in every build, like FileWatcher.
 	std::shared_ptr<const assets::CMountTable> MountTable;
 	std::unique_ptr<platform::CExclusiveFileLock> AssetOwnerLock;
+	std::unique_ptr<platform::CExclusiveFileLock> EngineOwnerLock;
 	std::unique_ptr<assets::CAssetRegistry> AssetRegistry;
 	std::unique_ptr<CTimer> Clock;
 	// Window, renderer, UI. One opaque block defined in Engine.cpp: headless builds compile none

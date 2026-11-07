@@ -1396,9 +1396,14 @@ struct CAssetRegistry::SImpl final : IAssetRepairsHost
 			repairs.Host = this;
 			repairs.OwnerRoot = OwnerRoot;
 			repairs.bWriter = Desc.bWriter;
-			if (Desc.bWriter)
+			// The mounts of the owner root: /Project and its plugins, or /Engine. Written only by a writer; a guest's problems
+			// there name their owner.
+			repairs.OwnedMounts = SnapshotMounts;
+			if (Desc.bWriter && Desc.bEngineMetasWritable && Desc.Owner == EAssetRegistryOwner::Project)
 			{
-				repairs.OwnedMounts = SnapshotMounts;   // the mounts this owner writes: /Project and its plugins, or /Engine
+				// Engine-owner mode: metas repaired in /Engine through a writer of its own root, nothing else of it written.
+				repairs.EngineRoot = EngineDir;
+				repairs.EngineMounts = { EngineMountId };
 			}
 			Repairs = std::make_unique<CAssetRepairs>(std::move(repairs));
 		}

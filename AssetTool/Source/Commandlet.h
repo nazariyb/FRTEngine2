@@ -66,6 +66,9 @@ public:
 	// writer lock, and so runs beside an open editor (§13.1, O3DE RFC-77).
 	bool bReadOnly = false;
 	bool bEngineOwner = false;   // --engine: acts on /Engine as its owner, with no project (§4.7)
+	// Another process owns the mount and Safety.GuestProcesses let this run go on as a read-only guest (§5.9):
+	// bReadOnly is set as well, so a verb writes nothing; it may say so.
+	bool bGuest = false;
 
 	// The project's directory; empty with --engine, or when a verb that needs none runs without one.
 	std::filesystem::path ProjectRoot;
@@ -138,6 +141,9 @@ private:
  *                   -label:Debug): an argument with one dash that is no option of the host or the verb
  *                   is one of its arguments, not an unknown option. Two dashes still make an option, so
  *                   a typo of one (--limt=3) is still refused.
+ *   bGuestRuns      a bWritesProject verb with a read-only form worth running beside the owner: with the
+ *                   project's Safety.GuestProcesses on it runs as a guest instead of exiting with
+ *                   ExitOwned (§5.9). False for lock, whose point is the lock itself.
  */
 struct SCommandlet
 {
@@ -147,6 +153,7 @@ struct SCommandlet
 	bool bWritesProject = false;
 	std::span<const FStringLiteral> Options;
 	bool bTakesText = false;
+	bool bGuestRuns = true;
 };
 
 // Verbs with a file of their own (their table rows, options included, are in Commandlets.cpp).

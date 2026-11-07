@@ -16,6 +16,8 @@
 #include "Assets/DerivedDataCache.h"
 #include "Assets/Discovery/Mounts.h"
 #include "Assets/FileWatcherService.h"
+#include "Assets/Meta/AssetRepairs.h"
+#include "Assets/MountPaths.h"
 #include "Assets/OwnerLock.h"
 #include "ECS/CoreComponents.h"
 #include "Engine/Automation.h"
@@ -152,7 +154,9 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 	// 4d. The asset registry, for a project (design §5.4): its snapshots load and its scans run on the workers
 	//     while the window and the renderer come up; hosts wait for the initial scan only before their first
 	//     BuildWorld. Only a host that asked to write (the editor) takes the project's writer lock, and only
-	//     outside read-only runs; without the lock the registry writes nothing.
+	//     outside read-only runs; without the lock the registry writes nothing. A second writer does not start
+	//     (§5.9) unless the project lets it be a read-only guest; in engine-owner mode the engine's lock is taken
+	//     best-effort too (assets::ClaimAssetOwnership says why).
 	if (paths::HasProject() && Config.Get("Assets", "Registry", true))
 	{
 		assets::SAssetRegistryDesc registry;
@@ -160,24 +164,59 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 		registry.Pool = WorkerPool.get();
 		registry.Watcher = FileWatcher.get();
 		registry.Owner = assets::EAssetRegistryOwner::Project;
-		if (Desc.bAssetWriter && !Config.Get("Assets", "ReadOnly", false))
+		const assets::SMount* project = MountTable->Find(assets::ProjectMountId);
+		const assets::SMount* engine = MountTable->Find(assets::EngineMountId);
+		assets::SAssetOwnershipRequest request;
+		request.Root = paths::GetProjectDir();
+		request.RulesFile = project != nullptr ? project->RulesFile : std::filesystem::path();
+		request.bReadOnly = !Desc.bAssetWriter || Config.Get("Assets", "ReadOnly", false);
+		if (engine != nullptr && assets::IsEngineOwnerMode(engine->OwnerRoot, request.Root, Config.Get("Assets", "EngineWritable", false)))
 		{
-			FString owner;
-			FString error;
-			std::optional<platform::CExclusiveFileLock> lock = assets::TryTakeOwnerLock(paths::GetProjectDir(), &owner, &error);
-			if (lock.has_value())
-			{
-				AssetOwnerLock = std::make_unique<platform::CExclusiveFileLock>(std::move(*lock));
-				registry.bWriter = true;
-			}
-			else if (!owner.IsEmpty())
-			{
-				log::Info(log::Assets, "{} owns /Project: this editor writes no registry files", owner);
-			}
-			else
-			{
-				log::Warning(log::Assets, "cannot take the writer lock of /Project ({}): this editor writes no registry files", error);
-			}
+			request.EngineRoot = engine->OwnerRoot;
+		}
+		// The lock alone: an unfinished operation is rolled forward by the registry's lifecycle when it starts (H4b gives
+		// the hosts their providers).
+		assets::SAssetOwnership ownership = assets::ClaimAssetOwnership(request);
+		switch (ownership.Role)
+		{
+		case assets::EOwnerRole::Writer:
+			AssetOwnerLock = std::make_unique<platform::CExclusiveFileLock>(std::move(*ownership.Root.Lock));
+			registry.bWriter = true;
+			break;
+		case assets::EOwnerRole::Guest:
+			log::Info(log::Assets, "{} owns /Project: this editor runs as a read-only guest (Safety.GuestProcesses) and writes no registry "
+				"files or metas", ownership.Root.Owner);
+			Desc.WindowTitle += " (read-only guest)";
+			break;
+		case assets::EOwnerRole::Refused:
+			StartUpError = FString::Format("{} owns /Project.\n\nClose it, or set Safety.GuestProcesses: true in the project's "
+				"Config/Assets.yml to open it read-only beside it.", ownership.Root.Owner);
+			log::Error(log::Assets, "{} owns /Project: this editor does not start", ownership.Root.Owner);
+			// Everything made so far goes as ShutDown takes it down: no window or renderer exists yet.
+			bStarted = true;
+			ShutDown();
+			return false;
+		case assets::EOwnerRole::Failed:
+			log::Warning(log::Assets, "cannot take the writer lock of /Project ({}): this editor writes no registry files", ownership.Root.Error);
+			break;
+		case assets::EOwnerRole::ReadOnly:
+			break;
+		}
+		if (ownership.Root.bUnfinished && !registry.bWriter)
+		{
+			log::Warning(log::Assets, "an unfinished operation waits in {}: its owner finishes it",
+				FString::FromPath(assets::GetOpJournalPath(paths::GetProjectDir())));
+		}
+		if (ownership.OwnsEngine())
+		{
+			EngineOwnerLock = std::make_unique<platform::CExclusiveFileLock>(std::move(*ownership.Engine.Lock));
+			registry.bEngineMetasWritable = true;
+		}
+		else if (!request.EngineRoot.empty() && registry.bWriter)
+		{
+			log::Info(log::Assets, "{}: /Engine stays read-only for this editor", ownership.Engine.Owner.IsEmpty()
+				? FString::Format("cannot take the writer lock of /Engine ({})", ownership.Engine.Error)
+				: FString::Format("{} owns /Engine", ownership.Engine.Owner));
 		}
 		AssetRegistry = std::make_unique<assets::CAssetRegistry>(std::move(registry));
 		AssetRegistry->Start();
@@ -274,7 +313,8 @@ void CEngine::EndAssetRegistry ()
 		AssetRegistry->ShutDown();
 		AssetRegistry.reset();
 	}
-	// The lock goes once nothing writes any more.
+	// The locks go once nothing writes any more.
+	EngineOwnerLock.reset();
 	AssetOwnerLock.reset();
 }
 

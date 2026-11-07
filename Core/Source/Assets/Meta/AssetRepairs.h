@@ -83,6 +83,9 @@ struct SLifecycleDesc
 	std::vector<std::pair<MountId, IVcsProvider*>> Providers;
 	SAssetEditorSettings Settings;
 	FString ProjectSalt;              // SProjectDescriptor::GetAssetSalt(), for GetMountAssetSalt; unused by an Engine-owner run
+	// A guest's (EOwnerRole::Guest, bRepairs false): the process that owns its mounts (SOwnership::Owner). A META001 there
+	// names it, since that process creates the meta (§5.9). Empty otherwise.
+	FString Owner;
 	bool bRepairs = false;
 	bool bProvidersPending = false;
 	bool bLive = false;
@@ -150,11 +153,17 @@ struct SAssetRepairsDesc
 	jobs::CWorkerPool* Pool = nullptr;
 	CFileWatcherService* Watcher = nullptr;      // null or disabled: no ExpectWrite, no busy query
 	IAssetRepairsHost* Host = nullptr;
-	// The mounts this process writes, all under OwnerRoot (Project owner: /Project and its plugins; Engine owner: /Engine).
-	// Empty, or bWriter false: a reader, which reports and writes nothing.
+	// The mounts of OwnerRoot (Project owner: /Project and its plugins; Engine owner: /Engine), which this process writes when
+	// bWriter. Empty, or bWriter false: a reader, which reports and writes nothing (a guest's problems there name
+	// SLifecycleDesc::Owner).
 	std::vector<MountId> OwnedMounts;
 	std::filesystem::path OwnerRoot;
 	bool bWriter = false;                        // the host holds OwnerRoot's Owner.lock
+	// Engine-owner mode of a Project-owner writer (SAssetRegistryDesc::bEngineMetasWritable): the host holds the engine
+	// root's Owner.lock too, so EngineMounts (/Engine) are repaired through a second CAssetWriter on EngineRoot, with its
+	// own OpJournal.log. Nothing else of them is written. Empty, or bWriter false: none.
+	std::filesystem::path EngineRoot;
+	std::vector<MountId> EngineMounts;
 };
 
 /**
@@ -214,6 +223,8 @@ public:
 	[[nodiscard]] bool IsWorking () const noexcept;
 	// The writer of the owner root (null for a reader): Core-Test's crash points.
 	[[nodiscard]] CAssetWriter* GetWriter () noexcept;
+	// The writer that repairs Mount: the owner root's, the engine root's in engine-owner mode, null where nothing is written.
+	[[nodiscard]] CAssetWriter* GetWriterOf (MountId Mount) noexcept;
 	// The provider a mount uses now (null: None, or not settled yet). `status` and the Stats panel name it per mount.
 	[[nodiscard]] IVcsProvider* GetProvider (MountId Mount) const noexcept;
 	[[nodiscard]] SAssetRepairsStats GetStats () const noexcept;
@@ -267,4 +278,70 @@ struct SOwnership
 
 [[nodiscard]] FRT_CORE_API SOwnership TakeOwnership (const std::filesystem::path& Root, const CMountTable& Mounts,
 	std::span<const std::pair<MountId, IVcsProvider*>> Providers);
+
+/**
+ * How a host stands to the mounts it opens (design §4.7, §5.9), decided once at start-up, before a registry exists: the
+ * one decision CEngine and AssetTool share, so the editor and the tool cannot differ in who writes.
+ *
+ * The lock is always on (§4.8). A process that is read-only by request (--ci, -Assets:ReadOnly=1, every scripted run, a
+ * host that writes nothing such as the runtime) never asks for it and always runs. Any other takes the owner root's
+ * Owner.lock; while another process holds it, the second writer exits naming the holder (the M3 deviation, an editor that
+ * stayed open without writing, is over), unless the opened project's `Safety.GuestProcesses` (the engine's for an --engine
+ * run: the switch governs a process, so it is read from that one file and never per mount) lets it run as a read-only
+ * guest. A guest writes no meta, snapshot, journal or BuildState, and reports what an owner would repair, naming the owner.
+ *
+ * Engine-owner mode (§4.7) for a Project-owner writer: `/Engine` is this process's too when the project lies inside the
+ * engine checkout (Templates/*) or with -Assets:EngineWritable=1 (IsEngineOwnerMode); then <engine>/Local/Assets/Owner.lock
+ * is taken best-effort. Not getting it is no reason to exit: `/Engine` stays read-only for this process and the project
+ * still opens (the host logs one line). Only the project's own lock makes a second writer exit. With the engine's lock the
+ * host sets SAssetRegistryDesc::bEngineMetasWritable, which allows meta repairs in `/Engine` through a second CAssetWriter
+ * and nothing more: Engine.snapshot and its journal stay the `--engine` runs' alone. AssetTool never asks for both: a run
+ * acts on its own mount set, `/Project` and its plugins, or `/Engine` with --engine.
+ */
+enum class EOwnerRole : uint8
+{
+	ReadOnly,   // read-only by request: the lock was never asked for
+	Writer,     // holds the owner root's Owner.lock
+	Guest,      // another process holds it, and Safety.GuestProcesses lets this one run read-only
+	Refused,    // another process holds it: a second writer exits, naming it (Root.Owner)
+	Failed,     // the lock could not be taken for another reason (Root.Error): the host's own failure, not an owner
+};
+
+struct SAssetOwnershipRequest
+{
+	// The owner root: the project's directory, or the engine checkout for an Engine-owner run (--engine).
+	std::filesystem::path Root;
+	// Where Safety.GuestProcesses is read, only when another process holds the lock: the opened project's
+	// Config/Assets.yml, the engine's Core/Config/Assets.yml for --engine. Missing or malformed: the default (off).
+	std::filesystem::path RulesFile;
+	bool bReadOnly = false;
+	// Engine-owner mode of a Project-owner host (IsEngineOwnerMode): the engine checkout, whose Owner.lock a Writer then
+	// takes best-effort. Empty, or equal to Root: none.
+	std::filesystem::path EngineRoot;
+	// Each root this process takes has an unfinished operation of its OpJournal.log rolled forward (TakeOwnership) when
+	// Mounts is given, through Providers (absent or null: None). Null: the lock alone, and the registry's lifecycle rolls
+	// it forward at its Start; an unfinished operation is still reported.
+	const CMountTable* Mounts = nullptr;
+	std::span<const std::pair<MountId, IVcsProvider*>> Providers;
+};
+
+struct SAssetOwnership
+{
+	EOwnerRole Role = EOwnerRole::ReadOnly;
+	SOwnership Root;     // Lock: Writer only. Owner: Guest and Refused. bUnfinished: an operation waits in the root's journal
+	                     // (every role: a process that does not hold the lock reports it and rolls nothing forward)
+	SOwnership Engine;   // engine-owner mode: Lock when /Engine is this process's too, else Owner or Error says why not
+
+	[[nodiscard]] bool IsWriter () const noexcept { return Role == EOwnerRole::Writer; }
+	// SAssetRegistryDesc::bEngineMetasWritable.
+	[[nodiscard]] bool OwnsEngine () const noexcept { return Engine.Lock.has_value(); }
+};
+
+[[nodiscard]] FRT_CORE_API SAssetOwnership ClaimAssetOwnership (const SAssetOwnershipRequest& Request);
+
+// Engine-owner mode (§4.7) of a host with a project: the project's directory lies inside the engine checkout
+// (Templates/*: the engine developer's own projects), or the host asked with -Assets:EngineWritable=1. An engine used as a
+// submodule or shared checkout by an external project stays read-only for it.
+[[nodiscard]] FRT_CORE_API bool IsEngineOwnerMode (const std::filesystem::path& EngineRoot, const std::filesystem::path& ProjectRoot,
+	bool bEngineWritable);
 }

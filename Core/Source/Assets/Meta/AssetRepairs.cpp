@@ -203,10 +203,13 @@ struct SCaches
 	return out;
 }
 
+constexpr uint8 NoRoot = 0xFFu;
+
 struct SPlannedOp
 {
 	SAssetOp Op;
 	std::vector<SLifecycleAction> Actions;
+	uint8 Root = 0u;                               // the writer it runs through (SCycleInput::Writers)
 };
 
 struct SCycleInput
@@ -226,7 +229,9 @@ struct SCycleInput
 	FStringSet CrLfMetas;                          // metas known to hold CRLF (VCS001)
 	FStringSet Refused;                            // MakeActionKey of the repairs the VCS refused
 	std::vector<ELifecycleAction> Kinds;           // empty: all
-	const CAssetWriter* Writer = nullptr;          // plans when set
+	std::vector<const CAssetWriter*> Writers;      // by root (0: the owner root, 1: the engine root); plans when any is set
+	std::vector<uint8> RootOf;                     // by MountId: the root whose writer repairs it, NoRoot for none
+	std::vector<uint8> OwnerMounts;                // by MountId: the owner root's mounts (a guest's META001 names the owner)
 	std::vector<SLifecycleAction> FixActions;      // a fix: plans these and gathers nothing
 	uint64 NowMs = 0u;
 	bool bCommand = false;
@@ -287,7 +292,7 @@ public:
 		AddMemoryProblems(problems);
 		FinishProblems(problems);
 		AddStates();
-		if (In.Writer != nullptr && !In.bHold)
+		if (HasWriters() && !In.bHold)
 		{
 			Plan(Out.Repairs);
 		}
@@ -930,6 +935,13 @@ private:
 			{
 				problem.File = mount->GetSourceFile(relative);
 			}
+			// A guest names the owner, who creates the meta (§5.9).
+			const bool bOwnersMount = mount->Id < In.OwnerMounts.size() && In.OwnerMounts[mount->Id] != 0u;
+			const bool bRepairedHere = mount->Id < In.RootOf.size() && In.RootOf[mount->Id] != NoRoot;
+			if (problem.Code == Meta001 && !In.Lifecycle->Owner.IsEmpty() && bOwnersMount && !bRepairedHere)
+			{
+				problem.Message += FString::Format(" ({} owns /{}: it creates the meta)", In.Lifecycle->Owner, mount->Name);
+			}
 			const FString folder(GetMountPathParent(problem.Subject).IsEmpty() ? problem.Subject.View() : GetMountPathParent(problem.Subject));
 			std::shared_ptr<const SScanScope>& scope = scopes[folder];
 			if (scope == nullptr)
@@ -1034,32 +1046,64 @@ private:
 
 	// ---- Planning ----
 
+	[[nodiscard]] bool HasWriters () const noexcept
+	{
+		return std::any_of(In.Writers.begin(), In.Writers.end(), [] (const CAssetWriter* Writer) { return Writer != nullptr; });
+	}
+
+	// The root whose writer repairs the mount Path is in, NoRoot where nothing is written.
+	[[nodiscard]] uint8 GetRootOf (FStringView Path) const noexcept
+	{
+		FStringView mountName;
+		FStringView relative;
+		const SMount* mount = SplitMountPath(Path, mountName, relative) ? In.Mounts->Find(mountName) : nullptr;
+		if (mount == nullptr || mount->Id >= In.RootOf.size())
+		{
+			return NoRoot;
+		}
+		const uint8 root = In.RootOf[mount->Id];
+		return root < In.Writers.size() && In.Writers[root] != nullptr ? root : NoRoot;
+	}
+
+	// Each action through the writer of its mount's root; the ReGuids of one result as one op per root (a batch's losers lie
+	// in one mount, so in one root).
 	void Plan (std::span<const SLifecycleAction> Actions)
 	{
-		if (In.Writer == nullptr)
+		if (!HasWriters())
 		{
 			return;
 		}
-		std::vector<SLifecycleAction> reGuids;
+		std::map<uint8, std::vector<SLifecycleAction>> reGuids;
 		for (const SLifecycleAction& action : Actions)
 		{
-			if (action.Kind == ELifecycleAction::ReGuid)
+			const uint8 root = GetRootOf(action.Path);
+			if (root == NoRoot)
 			{
-				reGuids.push_back(action);
+				SDiagnostic problem;
+				problem.Severity = ESeverity::Warning;
+				problem.Subject = action.Path;
+				problem.Message = "this process does not write this mount";
+				Out.PlanProblems.push_back(std::move(problem));
 				continue;
 			}
-			PlanOne(std::span<const SLifecycleAction>(&action, 1u));
+			if (action.Kind == ELifecycleAction::ReGuid)
+			{
+				reGuids[root].push_back(action);
+				continue;
+			}
+			PlanOne(root, std::span<const SLifecycleAction>(&action, 1u));
 		}
-		if (!reGuids.empty())
+		for (const auto& [root, actions] : reGuids)
 		{
-			PlanOne(reGuids);
+			PlanOne(root, actions);
 		}
 	}
 
-	void PlanOne (std::span<const SLifecycleAction> Actions)
+	void PlanOne (uint8 Root, std::span<const SLifecycleAction> Actions)
 	{
 		SPlannedOp planned;
-		if (PlanRepairOp(*In.Writer, View, Actions, planned.Op, Out.PlanProblems) && !planned.Op.Steps.empty())
+		planned.Root = Root;
+		if (PlanRepairOp(*In.Writers[Root], View, Actions, planned.Op, Out.PlanProblems) && !planned.Op.Steps.empty())
 		{
 			planned.Actions.assign(Actions.begin(), Actions.end());
 			Out.Ops.push_back(std::move(planned));
@@ -1082,7 +1126,7 @@ struct SOpsOutput
 
 // The ops of one proposal set, in order, on a worker; then what StatusOf says of the metas they created (VCS003), in one
 // call per provider: Git's StatusOf reads the status of the whole mount, so a call per meta would be one per file.
-[[nodiscard]] SOpsOutput RunOps (CAssetWriter& Writer, std::vector<SPlannedOp>&& Ops)
+[[nodiscard]] SOpsOutput RunOps (std::span<CAssetWriter* const> Writers, std::vector<SPlannedOp>&& Ops)
 {
 	SOpsOutput out;
 	struct SCreated
@@ -1095,7 +1139,12 @@ struct SOpsOutput
 	{
 		SOpResult result;
 		result.Actions = std::move(planned.Actions);
-		result.Result = RunAssetOp(Writer, std::move(planned.Op));
+		if (planned.Root >= Writers.size() || Writers[planned.Root] == nullptr)
+		{
+			continue;   // planned for a writer since rebuilt without that root: proposed again by the next run
+		}
+		CAssetWriter& writer = *Writers[planned.Root];
+		result.Result = RunAssetOp(writer, std::move(planned.Op));
 		if (result.Result.Report.bChangedDisk)
 		{
 			for (const SAssetOpStep& step : result.Result.Op.Steps)
@@ -1108,14 +1157,14 @@ struct SOpsOutput
 			}
 		}
 		const bool bCreated = result.Result.Op.Verb == FStringView("create-meta") || result.Result.Op.Verb == FStringView("restore-meta");
-		if (result.Result.Vcs.Error == EVcsError::None && bCreated && Writer.GetMounts() != nullptr)
+		if (result.Result.Vcs.Error == EVcsError::None && bCreated && writer.GetMounts() != nullptr)
 		{
 			for (const SAssetOpStep& step : result.Result.Op.Steps)
 			{
 				const std::optional<FStringView> source = GetMetaSource(step.Path);
-				IVcsProvider* provider = source.has_value() ? Writer.FindProvider(*source) : nullptr;
-				const std::optional<std::filesystem::path> sourcePath = source.has_value() ? Writer.GetMounts()->FromMountPath(*source) : std::nullopt;
-				const std::optional<std::filesystem::path> metaPath = Writer.GetMounts()->FromMountPath(step.Path);
+				IVcsProvider* provider = source.has_value() ? writer.FindProvider(*source) : nullptr;
+				const std::optional<std::filesystem::path> sourcePath = source.has_value() ? writer.GetMounts()->FromMountPath(*source) : std::nullopt;
+				const std::optional<std::filesystem::path> metaPath = writer.GetMounts()->FromMountPath(step.Path);
 				if (provider == nullptr || !sourcePath.has_value() || !metaPath.has_value())
 				{
 					continue;
@@ -1173,6 +1222,15 @@ struct CAssetRepairs::SImpl
 		Providers.assign(mountCount, nullptr);
 		Settled.assign(mountCount, uint8(Lifecycle.bProvidersPending ? 0u : 1u));
 		Writable.assign(mountCount, uint8(0u));
+		RootOf.assign(mountCount, NoRoot);
+		OwnerMounts.assign(mountCount, uint8(0u));
+		for (const MountId mount : Desc.OwnedMounts)
+		{
+			if (mount < mountCount)
+			{
+				OwnerMounts[mount] = 1u;
+			}
+		}
 		for (const auto& [mount, provider] : Lifecycle.Providers)
 		{
 			if (mount < mountCount)
@@ -1182,17 +1240,27 @@ struct CAssetRepairs::SImpl
 			}
 		}
 		bProvidersPending = std::any_of(Settled.begin(), Settled.end(), [] (uint8 Value) { return Value == 0u; });
+		// Root 0 is the owner root's, root 1 the engine root's in engine-owner mode (SAssetRepairsDesc::EngineRoot).
+		Roots.push_back(SRoot { Desc.OwnerRoot, Desc.OwnedMounts, nullptr });
+		if (!Desc.EngineRoot.empty() && !Desc.EngineMounts.empty())
+		{
+			Roots.push_back(SRoot { Desc.EngineRoot, Desc.EngineMounts, nullptr });
+		}
 		if (Desc.bWriter && Lifecycle.bRepairs)
 		{
-			for (const MountId mount : Desc.OwnedMounts)
+			for (size_t root = 0u; root < Roots.size(); ++root)
 			{
-				if (mount < mountCount)
+				for (const MountId mount : Roots[root].Mounts)
 				{
-					Writable[mount] = 1u;
+					if (mount < mountCount && RootOf[mount] == NoRoot)
+					{
+						Writable[mount] = 1u;
+						RootOf[mount] = static_cast<uint8>(root);
+					}
 				}
 			}
 		}
-		MakeWriter();
+		MakeWriters();
 		if (Desc.Watcher != nullptr && Lifecycle.Settings.bWaitForVcs)
 		{
 			// The watcher's hold (edit [56]): the narrower question, any mount's tree being rewritten, so an open merge
@@ -1221,25 +1289,65 @@ struct CAssetRepairs::SImpl
 		return std::any_of(Writable.begin(), Writable.end(), [] (uint8 Value) { return Value != 0u; });
 	}
 
-	void MakeWriter ()
+	// A writer exists for some root (they are made with the writable mounts, and only then).
+	[[nodiscard]] bool HasWriterObject () const noexcept
 	{
-		if (!HasWriter())
+		return std::any_of(Roots.begin(), Roots.end(), [] (const SRoot& Root) { return Root.Writer != nullptr; });
+	}
+
+	// One writer per root with a writable mount, each with its mounts' providers known now.
+	void MakeWriters ()
+	{
+		for (size_t root = 0u; root < Roots.size(); ++root)
 		{
-			return;
-		}
-		SAssetWriterDesc desc;
-		desc.Mounts = Desc.Mounts;
-		desc.OwnerRoot = Desc.OwnerRoot;
-		desc.bHoldsLock = Desc.bWriter;
-		for (const MountId mount : Desc.OwnedMounts)
-		{
-			if (mount < Providers.size() && Providers[mount] != nullptr)
+			SRoot& entry = Roots[root];
+			const bool bWrites = std::any_of(entry.Mounts.begin(), entry.Mounts.end(), [&] (MountId Mount)
 			{
-				desc.Providers.emplace_back(mount, Providers[mount]);
+				return Mount < RootOf.size() && RootOf[Mount] == root;
+			});
+			if (!bWrites)
+			{
+				continue;
+			}
+			SAssetWriterDesc desc;
+			desc.Mounts = Desc.Mounts;
+			desc.OwnerRoot = entry.Path;
+			desc.bHoldsLock = Desc.bWriter;
+			for (const MountId mount : entry.Mounts)
+			{
+				if (mount < Providers.size() && Providers[mount] != nullptr)
+				{
+					desc.Providers.emplace_back(mount, Providers[mount]);
+				}
+			}
+			entry.Writer.reset();   // one writer of a root's journal at a time
+			entry.Writer = std::make_unique<CAssetWriter>(std::move(desc));
+		}
+	}
+
+	// By root, for an op job (SPlannedOp::Root).
+	[[nodiscard]] std::vector<CAssetWriter*> GetWriters () const
+	{
+		std::vector<CAssetWriter*> writers;
+		for (const SRoot& root : Roots)
+		{
+			writers.push_back(root.Writer.get());
+		}
+		return writers;
+	}
+
+	// The mounts this process repairs, in mount order.
+	[[nodiscard]] std::vector<MountId> GetWritableMounts () const
+	{
+		std::vector<MountId> mounts;
+		for (size_t mount = 0u; mount < Writable.size(); ++mount)
+		{
+			if (Writable[mount] != 0u)
+			{
+				mounts.push_back(static_cast<MountId>(mount));
 			}
 		}
-		Writer.reset();   // one writer of the owner root's journal at a time
-		Writer = std::make_unique<CAssetWriter>(std::move(desc));
+		return mounts;
 	}
 
 	// ---- The VCS hold ----
@@ -1441,7 +1549,15 @@ struct CAssetRepairs::SImpl
 		{
 			input->Refused.insert(MakeActionKey(action));
 		}
-		input->Writer = bPlan && Writer != nullptr ? Writer.get() : nullptr;
+		if (bPlan)
+		{
+			for (const SRoot& root : Roots)
+			{
+				input->Writers.push_back(root.Writer.get());
+			}
+		}
+		input->RootOf = RootOf;
+		input->OwnerMounts = OwnerMounts;
 		input->NowMs = NowMs;
 		input->bCommand = bCommand;
 		input->bHold = bHold;
@@ -1614,7 +1730,7 @@ struct CAssetRepairs::SImpl
 			return;
 		}
 		MaybeRebuildWriter();   // ops are plain data: they run through the providers known now
-		if (Writer == nullptr)
+		if (!HasWriterObject())
 		{
 			return;
 		}
@@ -1632,7 +1748,7 @@ struct CAssetRepairs::SImpl
 		auto output = std::make_shared<SOpsOutput>();
 		auto ops = std::make_shared<std::vector<SPlannedOp>>(std::move(Ops));
 		Desc.Pool->Submit(jobs::EWorkPriority::Normal, jobs::NoCancelGroup,
-			[ops, output, writer = Writer.get()] () { *output = RunOps(*writer, std::move(*ops)); },
+			[ops, output, writers = GetWriters()] () { *output = RunOps(writers, std::move(*ops)); },
 			[this, output] ()
 			{
 				bWorking = false;
@@ -1670,7 +1786,7 @@ struct CAssetRepairs::SImpl
 		bool bDone = false;
 		bWorking = true;
 		Desc.Pool->Submit(jobs::EWorkPriority::High, jobs::NoCancelGroup,
-			[ops, output, writer = Writer.get()] () { *output = RunOps(*writer, std::move(*ops)); },
+			[ops, output, writers = GetWriters()] () { *output = RunOps(writers, std::move(*ops)); },
 			[&bDone] () { bDone = true; });
 		(void)Desc.Host->WaitUntil([&bDone] { return bDone; }, -1.0);
 		bWorking = false;
@@ -1682,7 +1798,7 @@ struct CAssetRepairs::SImpl
 		if (bRebuildWriter && !bWorking)
 		{
 			bRebuildWriter = false;
-			MakeWriter();
+			MakeWriters();
 		}
 	}
 
@@ -1729,8 +1845,16 @@ struct CAssetRepairs::SImpl
 	std::vector<IVcsProvider*> Providers;
 	std::vector<uint8> Settled;
 	std::vector<uint8> Writable;
+	std::vector<uint8> RootOf;          // by MountId: the index in Roots of the writer that repairs it, NoRoot for none
+	std::vector<uint8> OwnerMounts;     // by MountId: OwnerRoot's mounts
 	bool bProvidersPending = false;
-	std::unique_ptr<CAssetWriter> Writer;
+	struct SRoot
+	{
+		std::filesystem::path Path;
+		std::vector<MountId> Mounts;
+		std::unique_ptr<CAssetWriter> Writer;   // null: nothing of the root is written
+	};
+	std::vector<SRoot> Roots;
 	bool bRebuildWriter = false;
 	bool bBusyQuerySet = false;
 
@@ -1772,19 +1896,23 @@ CAssetRepairs::~CAssetRepairs () = default;
 
 void CAssetRepairs::Start ()
 {
-	CAssetWriter* writer = Impl->Writer.get();
-	if (writer == nullptr || !writer->GetUnfinished().has_value())
+	// Each root this process writes: in engine-owner mode the engine's journal too.
+	for (const SImpl::SRoot& root : Impl->Roots)
 	{
-		return;
-	}
-	FString error;
-	if (writer->RollForward(&error))
-	{
-		log::Info(log::Assets, "finished an operation a previous run left unfinished ({})", FString::FromPath(writer->GetJournalPath()));
-	}
-	else
-	{
-		log::Warning(log::Assets, "an unfinished operation in {} could not be finished: {}", FString::FromPath(writer->GetJournalPath()), error);
+		CAssetWriter* writer = root.Writer.get();
+		if (writer == nullptr || !writer->GetUnfinished().has_value())
+		{
+			continue;
+		}
+		FString error;
+		if (writer->RollForward(&error))
+		{
+			log::Info(log::Assets, "finished an operation a previous run left unfinished ({})", FString::FromPath(writer->GetJournalPath()));
+		}
+		else
+		{
+			log::Warning(log::Assets, "an unfinished operation in {} could not be finished: {}", FString::FromPath(writer->GetJournalPath()), error);
+		}
 	}
 }
 
@@ -1858,7 +1986,7 @@ void CAssetRepairs::Tick (uint64 NowMs)
 	impl.MaybeRebuildWriter();   // a provider settled while a job ran: what is planned now goes through it
 	if (!impl.PendingFixes.empty())
 	{
-		if (impl.Desc.Host->IsQuiet() && impl.Writer != nullptr && !impl.bProvidersPending)
+		if (impl.Desc.Host->IsQuiet() && impl.HasWriterObject() && !impl.bProvidersPending)
 		{
 			std::shared_ptr<SCycleInput> input = impl.MakeInput(NowMs, true, false, true);
 			input->FixActions = std::move(impl.PendingFixes.front());
@@ -1937,7 +2065,7 @@ SRepairReport CAssetRepairs::RunNow (const SRepairOptions& Options)
 	}
 	if (Options.Paths.empty())
 	{
-		mounts = impl.HasWriter() ? impl.Desc.OwnedMounts : impl.GetAllMounts();
+		mounts = impl.HasWriter() ? impl.GetWritableMounts() : impl.GetAllMounts();
 	}
 	const bool bHold = Options.bCommand ? false : impl.ComputeHold(now);
 	for (uint32 round = 0u; round < MaxCommandRounds; ++round)
@@ -1951,7 +2079,7 @@ SRepairReport CAssetRepairs::RunNow (const SRepairOptions& Options)
 		report.Planned.insert(report.Planned.end(), output.Repairs.begin(), output.Repairs.end());
 		report.Problems = output.Problems;
 		report.Problems.insert(report.Problems.end(), output.PlanProblems.begin(), output.PlanProblems.end());
-		if (Options.bDryRun || output.Ops.empty() || impl.Writer == nullptr || bHold)
+		if (Options.bDryRun || output.Ops.empty() || !impl.HasWriterObject() || bHold)
 		{
 			break;
 		}
@@ -2012,7 +2140,7 @@ SRepairReport CAssetRepairs::ApplyFix (const SLifecycleAction& FixIt)
 		impl.Refusals.erase(action.Path);
 	}
 	report.Planned = actions;
-	if (impl.Writer == nullptr || impl.bStopping)
+	if (!impl.HasWriterObject() || impl.bStopping)
 	{
 		return report;
 	}
@@ -2064,7 +2192,13 @@ bool CAssetRepairs::IsWorking () const noexcept
 
 CAssetWriter* CAssetRepairs::GetWriter () noexcept
 {
-	return Impl->Writer.get();
+	return Impl->Roots.front().Writer.get();
+}
+
+CAssetWriter* CAssetRepairs::GetWriterOf (MountId Mount) noexcept
+{
+	const SImpl& impl = *Impl;
+	return Mount < impl.RootOf.size() && impl.RootOf[Mount] < impl.Roots.size() ? impl.Roots[impl.RootOf[Mount]].Writer.get() : nullptr;
 }
 
 IVcsProvider* CAssetRepairs::GetProvider (MountId Mount) const noexcept
@@ -2117,5 +2251,74 @@ SOwnership TakeOwnership (const std::filesystem::path& Root, const CMountTable& 
 		out.Error = std::move(rollError);
 	}
 	return out;
+}
+
+namespace
+{
+[[nodiscard]] bool HasUnfinishedOperation (const std::filesystem::path& Root)
+{
+	SOpJournalContents contents;
+	return ReadOpJournal(GetOpJournalPath(Root), contents) && contents.Unfinished.has_value();
+}
+
+// TakeOwnership when the request can roll forward, else the lock alone, with an unfinished operation reported either way.
+[[nodiscard]] SOwnership TakeRoot (const std::filesystem::path& Root, const SAssetOwnershipRequest& Request)
+{
+	if (Request.Mounts != nullptr)
+	{
+		return TakeOwnership(Root, *Request.Mounts, Request.Providers);
+	}
+	SOwnership out;
+	FString owner;
+	FString error;
+	out.Lock = TryTakeOwnerLock(Root, &owner, &error);
+	if (!out.Lock.has_value())
+	{
+		out.Owner = std::move(owner);
+		out.Error = std::move(error);
+	}
+	out.bUnfinished = HasUnfinishedOperation(Root);
+	return out;
+}
+}
+
+SAssetOwnership ClaimAssetOwnership (const SAssetOwnershipRequest& Request)
+{
+	SAssetOwnership out;
+	if (Request.bReadOnly)
+	{
+		out.Role = EOwnerRole::ReadOnly;
+		out.Root.bUnfinished = HasUnfinishedOperation(Request.Root);
+		return out;
+	}
+	out.Root = TakeRoot(Request.Root, Request);
+	if (out.Root.Lock.has_value())
+	{
+		out.Role = EOwnerRole::Writer;
+	}
+	else if (!out.Root.Owner.IsEmpty())
+	{
+		// Read only now: a writer never needs it, and the file may not exist.
+		out.Role = ReadSafetyOfRuleFile(Request.RulesFile).bGuestProcesses ? EOwnerRole::Guest : EOwnerRole::Refused;
+	}
+	else
+	{
+		out.Role = EOwnerRole::Failed;
+	}
+	std::error_code ec;
+	if (out.Role == EOwnerRole::Writer && !Request.EngineRoot.empty() && !std::filesystem::equivalent(Request.EngineRoot, Request.Root, ec))
+	{
+		out.Engine = TakeRoot(Request.EngineRoot, Request);
+	}
+	return out;
+}
+
+bool IsEngineOwnerMode (const std::filesystem::path& EngineRoot, const std::filesystem::path& ProjectRoot, bool bEngineWritable)
+{
+	if (EngineRoot.empty() || ProjectRoot.empty())
+	{
+		return false;
+	}
+	return bEngineWritable || platform::IsAtOrBelow(platform::NormalizePath(ProjectRoot), platform::NormalizePath(EngineRoot));
 }
 }

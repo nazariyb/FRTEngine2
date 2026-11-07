@@ -13,7 +13,11 @@
 // is in flight is the one the repairs then use; RunNow has no delays, honours its Kinds (reporting what they leave out)
 // and dry run, and keeps the other mounts' fix-its; "keep A, alias B" never overwrites a meta resolved since; an
 // unfinished operation is rolled forward before the first scan (and by TakeOwnership); problems carry their file and the
-// rule files' Validation: severities; CRLF in a meta is VCS001 and an LFS pointer VCS004. Each test holds at most fourteen
+// rule files' Validation: severities; CRLF in a meta is VCS001 and an LFS pointer VCS004. F4b: a second writer is refused
+// naming the owner, unless Safety.GuestProcesses makes it a read-only guest that writes nothing and names the owner in its
+// META001; a read-only run never asks for the lock; engine-owner mode is a project inside the engine checkout or
+// EngineWritable, and in it a file added under a scratch engine's Core/Content gets its meta through a writer of the engine
+// root, whose own journal is rolled forward first, while no Engine.snapshot or journal of /Engine is written. Each test holds at most fourteen
 // files and drives the lifecycle with its own clock (Settle), never with sleeps: three tests go through the file watcher
 // with small delays. The dedupe op's crash points are rolled forward in-process, and one real child is killed.
 #include <gtest/gtest.h>
@@ -44,6 +48,7 @@
 #include "Assets/Meta/MetaFile.h"
 #include "Assets/Meta/MetaPaths.h"
 #include "Assets/MountPaths.h"
+#include "Assets/OwnerLock.h"
 #include "Assets/Registry/RegistryRecords.h"
 #include "Assets/Registry/RegistryStore.h"
 #include "Assets/Vcs/VcsProviderSet.h"
@@ -1150,6 +1155,247 @@ TEST(AssetRepairs, TakeOwnershipTakesTheLockThenRollsAnUnfinishedOperationForwar
 	const SOwnership second = TakeOwnership(tree.Tree.ProjectDir(), mounts, providers);
 	EXPECT_FALSE(second.Lock.has_value());
 	EXPECT_FALSE(second.Owner.IsEmpty()) << "a second writer is told who owns the root";
+}
+
+// ---------------- Second processes and engine-owner mode ----------------
+
+namespace
+{
+// A scratch engine checkout with a project inside it, as Templates/* lie in the engine (§4.7): <root>/Core/Content and
+// <root>/Core/Config for /Engine, <root>/Templates/<Project> for /Project. Nothing of the real checkout is copied.
+struct SScratchEngine
+{
+	explicit SScratchEngine (const CRepairTree& Tree, FStringView Project = "Гра")
+		: Root(Tree.Tree.Root / FStringView("Рушій 引擎").ToPath())
+		, ProjectDir(Root / "Templates" / Project.ToPath())
+	{
+		for (const std::filesystem::path& dir : { Content(), Root / "Core" / "Config", ProjectDir / "Content", ProjectDir / "Config" })
+		{
+			frt::test::rules::MakeDirectories(dir);
+		}
+	}
+
+	[[nodiscard]] std::filesystem::path Content () const { return Root / "Core" / "Content"; }
+	[[nodiscard]] std::filesystem::path Font (FStringView Name) const { return Content() / "Fonts" / Name.ToPath(); }
+	void WriteFont (FStringView Name, uint32 Size) const
+	{
+		frt::test::rules::MakeDirectories(Font(Name).parent_path());
+		ASSERT_TRUE(platform::WriteFileBytes(Font(Name), MakePng(Size)));
+	}
+
+	[[nodiscard]] std::shared_ptr<const CMountTable> Mounts () const
+	{
+		SMountRoots roots;
+		roots.EngineDir = Root;
+		roots.EngineContentDir = Content();
+		roots.EngineConfigDir = Root / "Core" / "Config";
+		roots.ProjectDir = ProjectDir;
+		return std::make_shared<const CMountTable>(CMountTable::Resolve(roots, nullptr));
+	}
+
+	[[nodiscard]] SAssetOwnershipRequest Request () const
+	{
+		SAssetOwnershipRequest request;
+		request.Root = ProjectDir;
+		request.RulesFile = ProjectDir / "Config" / "Assets.yml";
+		if (IsEngineOwnerMode(Root, ProjectDir, false))
+		{
+			request.EngineRoot = Root;
+		}
+		return request;
+	}
+
+	std::filesystem::path Root;
+	std::filesystem::path ProjectDir;
+};
+
+[[nodiscard]] FString ReadBytes (const std::filesystem::path& Path)
+{
+	const std::optional<std::vector<uint8>> bytes = platform::ReadFileBytes(Path);
+	return bytes.has_value() ? FString(FStringView(reinterpret_cast<const char*>(bytes->data()), static_cast<uint32>(bytes->size()))) : FString();
+}
+
+[[nodiscard]] SGuid ReadMetaGuidAt (const std::filesystem::path& Source)
+{
+	SMetaParseResult parsed;
+	ParseMeta(ReadBytes(GetMetaPath(FString::FromPath(Source)).ToPath()), parsed);
+	return parsed.State == EMetaParseState::Ok ? parsed.Meta.Guid : SGuid {};
+}
+}
+
+// §5.9: one writer per mount. A second process that wants to write is refused and told who owns the root (the M3
+// deviation, an editor that stayed open writing nothing, is over); a read-only run never asks for the lock; once the
+// owner lets go the next writer takes it.
+TEST(AssetRepairs, ASecondWriterIsRefusedNamingTheOwnerAndAReadOnlyRunNeverAsksForTheLock)
+{
+	CRepairTree tree("Другий процес");
+	SAssetOwnershipRequest request;
+	request.Root = tree.Tree.ProjectDir();
+	request.RulesFile = tree.ProjectRules();
+	SAssetOwnership first = ClaimAssetOwnership(request);
+	ASSERT_EQ(first.Role, EOwnerRole::Writer) << first.Root.Error.CStr();
+	ASSERT_TRUE(first.Root.Lock.has_value());
+
+	const SAssetOwnership second = ClaimAssetOwnership(request);
+	EXPECT_EQ(second.Role, EOwnerRole::Refused);
+	EXPECT_FALSE(second.Root.Lock.has_value());
+	EXPECT_EQ(second.Root.Owner, GetThisProcessAsOwner().Describe());
+
+	request.bReadOnly = true;
+	const SAssetOwnership readOnly = ClaimAssetOwnership(request);
+	EXPECT_EQ(readOnly.Role, EOwnerRole::ReadOnly);
+	EXPECT_FALSE(readOnly.Root.Lock.has_value());
+	EXPECT_TRUE(readOnly.Root.Owner.IsEmpty()) << "it never asked";
+
+	first.Root.Lock.reset();
+	request.bReadOnly = false;
+	EXPECT_EQ(ClaimAssetOwnership(request).Role, EOwnerRole::Writer);
+}
+
+// Safety.GuestProcesses (opt-in, §4.8, §5.9): the second process runs as a read-only guest instead of exiting. It rolls no
+// unfinished operation forward (it reports one), writes no meta, snapshot or journal, and its META001 names the owner,
+// who creates the meta.
+TEST(AssetRepairs, SafetyGuestProcessesMakesASecondProcessAReadOnlyGuestThatWritesNothingAndNamesTheOwner)
+{
+	CRepairTree tree("Гість");
+	tree.WriteProjectRules("FormatVersion: 1\nSafety:\n  GuestProcesses: true\n");
+	tree.WritePng("a.png");
+	tree.WritePng("b.png", 5u);
+	(void)LeaveUnfinishedCreate(tree, "b.png");
+	const CMountTable mounts = tree.Resolve();
+
+	SAssetOwnershipRequest request;
+	request.Root = tree.Tree.ProjectDir();
+	request.RulesFile = tree.ProjectRules();
+	const SAssetOwnership owner = ClaimAssetOwnership(request);   // the lock alone: the owner rolls forward when it likes
+	ASSERT_EQ(owner.Role, EOwnerRole::Writer) << owner.Root.Error.CStr();
+	EXPECT_TRUE(owner.Root.bUnfinished);
+
+	request.Mounts = &mounts;
+	const SAssetOwnership guest = ClaimAssetOwnership(request);
+	ASSERT_EQ(guest.Role, EOwnerRole::Guest);
+	EXPECT_FALSE(guest.Root.Lock.has_value());
+	EXPECT_EQ(guest.Root.Owner, GetThisProcessAsOwner().Describe());
+	EXPECT_TRUE(guest.Root.bUnfinished) << "reported";
+	EXPECT_FALSE(guest.Root.bRolledForward);
+	EXPECT_FALSE(tree.Exists("b.png.meta")) << "a guest finishes nobody's operation";
+
+	{
+		CRig rig(tree, [&guest] (SLifecycleDesc& Lifecycle, SAssetRegistryDesc& Desc)
+		{
+			Lifecycle.bRepairs = false;
+			Lifecycle.Owner = guest.Root.Owner;
+			Desc.bWriter = false;
+			Desc.bSnapshotAtShutDown = true;
+		});
+		rig.Open();
+		rig.Settle();
+		rig.Settle(1600u);
+		EXPECT_FALSE(tree.Exists("a.png.meta"));
+		EXPECT_EQ(rig.Repairs().GetWriter(), nullptr);
+		EXPECT_TRUE(rig.Vcs.GetCalls().empty());
+		const std::vector<SDiagnostic> meta001 = rig.Problems(Meta001);
+		ASSERT_EQ(meta001.size(), 2u) << rig.DescribeProblems().CStr();
+		for (const SDiagnostic& problem : meta001)
+		{
+			EXPECT_TRUE(problem.Message.Contains(guest.Root.Owner + " owns /Project: it creates the meta")) << problem.Message.CStr();
+		}
+	}
+	std::error_code ec;
+	EXPECT_FALSE(std::filesystem::exists(GetRegistrySnapshotPath(tree.Tree.ProjectDir()), ec)) << "a guest writes no snapshot";
+	EXPECT_FALSE(tree.Exists("a.png.meta"));
+}
+
+// §4.7: /Engine is owner-writable for a project inside the engine checkout (Templates/*) or with
+// -Assets:EngineWritable=1, and read-only for an engine an external project uses.
+TEST(AssetRepairs, EngineOwnerModeIsAProjectInsideTheEngineCheckoutOrEngineWritableAndNeverAnExternalProjectByItself)
+{
+	CRepairTree tree("Режим рушія");
+	const std::filesystem::path engine = tree.Tree.Root / "Engine";
+	EXPECT_TRUE(IsEngineOwnerMode(engine, engine / "Templates" / "Demo", false));
+	EXPECT_FALSE(IsEngineOwnerMode(engine, tree.Tree.Root / "Game", false));
+	EXPECT_FALSE(IsEngineOwnerMode(engine, tree.Tree.Root / "Engine2" / "Game", false)) << "a sibling whose name starts alike";
+	EXPECT_FALSE(IsEngineOwnerMode(engine, engine.parent_path(), false)) << "an engine inside the project (a submodule)";
+	EXPECT_TRUE(IsEngineOwnerMode(engine, tree.Tree.Root / "Game", true));
+	EXPECT_FALSE(IsEngineOwnerMode(engine, std::filesystem::path(), true)) << "no project: an --engine run, which owns /Engine itself";
+}
+
+// The M4 row's proof: a file added under a scratch engine's Core/Content gets its meta in engine-owner mode, through the
+// provider and a writer of the engine root, whose own OpJournal.log is rolled forward at start-up. The editor writes no
+// Engine.snapshot and no journal of /Engine: only --engine runs do. A second in-engine editor of another project gets
+// its own project's lock but not the engine's (best-effort: /Engine stays read-only for it, naming the holder).
+TEST(AssetRepairs, AFileAddedUnderAScratchEnginesCoreContentGetsAMetaInEngineOwnerModeWithoutAnEngineSnapshot)
+{
+	CRepairTree tree("Власник рушія з проєкту");
+	const SScratchEngine engine(tree);
+	engine.WriteFont("z.png", 7u);
+	const std::shared_ptr<const CMountTable> mounts = engine.Mounts();
+	SGuid unfinished;
+	{
+		SAssetWriterDesc desc;
+		desc.Mounts = mounts.get();
+		desc.OwnerRoot = engine.Root;
+		desc.bHoldsLock = true;
+		CAssetWriter writer(std::move(desc));
+		writer.SetStopAfterStepForTest(0u);
+		SCreateMetaRequest create;
+		create.Source = "/Engine/Fonts/z.png";
+		create.Meta.Guid = SGuid::NewRandom();
+		unfinished = create.Meta.Guid;
+		(void)CreateMeta(writer, create);
+		ASSERT_TRUE(writer.GetUnfinished().has_value());
+	}
+
+	SAssetOwnership ownership = ClaimAssetOwnership(engine.Request());
+	ASSERT_EQ(ownership.Role, EOwnerRole::Writer) << ownership.Root.Error.CStr();
+	ASSERT_TRUE(ownership.OwnsEngine()) << ownership.Engine.Error.CStr();
+	EXPECT_TRUE(ownership.Engine.bUnfinished) << "left for the lifecycle's start";
+
+	// Another in-engine project's editor beside it: its own project, a read-only /Engine.
+	const SScratchEngine other(tree, "Інша");
+	const SAssetOwnership second = ClaimAssetOwnership(other.Request());
+	EXPECT_EQ(second.Role, EOwnerRole::Writer) << "only the project's own lock makes a second writer exit";
+	EXPECT_FALSE(second.OwnsEngine());
+	EXPECT_EQ(second.Engine.Owner, GetThisProcessAsOwner().Describe());
+
+	CRig rig(tree, [&] (SLifecycleDesc&, SAssetRegistryDesc& Desc)
+	{
+		Desc.Mounts = mounts;
+		Desc.bEngineMetasWritable = ownership.OwnsEngine();
+		Desc.bSnapshotAtShutDown = true;
+	});
+	rig.Lifecycle.Providers = { { EngineMountId, &rig.Vcs }, { ProjectMountId, &rig.Vcs } };
+	rig.Open();
+	EXPECT_EQ(ReadMetaGuidAt(engine.Font("z.png")), unfinished) << "the engine root's journal is rolled forward too";
+	CAssetWriter* engineWriter = rig.Repairs().GetWriterOf(EngineMountId);
+	ASSERT_NE(engineWriter, nullptr);
+	EXPECT_EQ(engineWriter->GetJournalPath(), GetOpJournalPath(engine.Root));
+	EXPECT_FALSE(engineWriter->GetUnfinished().has_value());
+	ASSERT_NE(rig.Repairs().GetWriterOf(ProjectMountId), nullptr);
+	EXPECT_EQ(rig.Repairs().GetWriterOf(ProjectMountId)->GetJournalPath(), GetOpJournalPath(engine.ProjectDir));
+	rig.Settle();
+
+	engine.WriteFont("x.png", 9u);
+	rig.Scan("/Engine");
+	rig.Settle();
+	EXPECT_FALSE(std::filesystem::exists(GetMetaPath(FString::FromPath(engine.Font("x.png"))).ToPath())) << "its delay first";
+	rig.Settle(1600u);
+	const SGuid expected = MakeCreateMetaGuid(EngineAssetSalt, "/Engine/Fonts/x.png", hash::HashContent(MakePng(9u)));
+	EXPECT_EQ(ReadMetaGuidAt(engine.Font("x.png")), expected);
+	EXPECT_EQ(rig.GuidAt("/Engine/Fonts/x.png"), expected);
+	EXPECT_EQ(rig.StateOf("/Engine/Fonts/x.png"), EMetaState::Paired);
+	const std::vector<CRecordingVcsProvider::SCall> writes = rig.Vcs.GetWriteCalls();
+	ASSERT_FALSE(writes.empty());
+	EXPECT_TRUE(writes.back().Files.front().Contains("x.png")) << "through the provider";
+	EXPECT_TRUE(rig.Problems(Meta001).empty()) << rig.DescribeProblems().CStr();
+
+	rig.Registry->ShutDown();
+	rig.Registry.reset();
+	std::error_code ec;
+	EXPECT_TRUE(std::filesystem::exists(GetRegistrySnapshotPath(engine.ProjectDir), ec)) << "the project's own snapshot";
+	EXPECT_FALSE(std::filesystem::exists(GetEngineSnapshotPath(engine.Root), ec));
+	EXPECT_TRUE(!std::filesystem::exists(GetEngineSnapshotPath(engine.Root).parent_path(), ec)
+		|| std::filesystem::is_empty(GetEngineSnapshotPath(engine.Root).parent_path(), ec)) << "no journal of /Engine either";
 }
 
 // ---------------- What gets reported ----------------
