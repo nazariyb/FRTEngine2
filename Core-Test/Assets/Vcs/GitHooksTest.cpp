@@ -4,7 +4,8 @@
 // engine checkout and only for staged engine sources, and a missing AssetTool is a message, not a refusal), and tells the tool
 // which repository is committing; with the engine's AssetTool, check 6 refuses a meta that does not parse, as `git commit -a`
 // is about to commit it. The hook is LF whatever core.autocrlf says, or bash could not read its first line.
-// `FRT.bat setup --hooks` sets core.hooksPath and nothing else, `=off` clears it, relative for an engine inside the clone.
+// `FRT.bat setup --hooks` sets core.hooksPath and nothing else, `=off` clears it, relative for an engine inside the clone,
+// and neither touches another tool's; FRT's hooks pass on to the clone's own (and to Git LFS), which it would silence.
 // A failing commit costs a bash and a few git processes, so one commit asserts many messages. Skipped without git on PATH.
 #include <gtest/gtest.h>
 
@@ -14,6 +15,7 @@
 
 #include <filesystem>
 #include <memory>
+#include <set>
 #include <system_error>
 #include <vector>
 
@@ -35,6 +37,15 @@ constexpr FStringLiteral GuidC = "cccccccccccccccccccccccccccccccc";
 [[nodiscard]] FString MetaText (FStringView Guid)
 {
 	return FString::Format("FormatVersion: 1\nGuid: {}\n", Guid);
+}
+
+// The engine's Tools/GitHooks, every file of it (the hooks source their sibling `chain`), into To.
+void CopyHooks (const std::filesystem::path& To)
+{
+	std::error_code ec;
+	std::filesystem::create_directories(To, ec);
+	std::filesystem::copy(paths::GetEngineDir() / "Tools" / "GitHooks", To, std::filesystem::copy_options::overwrite_existing, ec);
+	ASSERT_FALSE(ec) << FString::FromUtf8Lossy(ec.message()).CStr();
 }
 
 std::filesystem::path gGit;
@@ -72,9 +83,7 @@ protected:
 
 		// A copy of the hook outside any engine, so that nothing finds an AssetTool beside it.
 		const std::filesystem::path hooks = gDir / "Hooks" / "Tools" / "GitHooks";
-		std::filesystem::create_directories(hooks, ec);
-		std::filesystem::copy_file(paths::GetEngineDir() / "Tools" / "GitHooks" / "pre-commit", hooks / "pre-commit", ec);
-		ASSERT_FALSE(ec) << FString::FromUtf8Lossy(ec.message()).CStr();
+		CopyHooks(hooks);
 		ASSERT_EQ(test::RunGit(gGit, gRepo, { "config", "core.hooksPath", FString::FromPath(hooks, EPathStyle::Generic) }).ExitCode, 0);
 	}
 
@@ -140,12 +149,111 @@ protected:
 }
 
 
-TEST_F(GitHooksTest, TheHookIsLfWhateverCoreAutocrlfSays)
+TEST_F(GitHooksTest, TheHooksAreLfWhateverCoreAutocrlfSays)
 {
-	const FString text = platform::ReadFileText(paths::GetEngineDir() / "Tools" / "GitHooks" / "pre-commit", ETextFileEncoding::Raw).value_or(FString());
-	ASSERT_FALSE(text.IsEmpty());
-	EXPECT_TRUE(text.StartsWith("#!/usr/bin/env bash\n"));
-	EXPECT_FALSE(text.Contains('\r')) << "bash cannot read a first line that ends in a CR";
+	for (const FStringView name : { "pre-commit", "pre-push", "post-checkout", "post-commit", "post-merge", "chain" })
+	{
+		SCOPED_TRACE(FString(name).CStr());
+		const FString text = platform::ReadFileText(paths::GetEngineDir() / "Tools" / "GitHooks" / name.ToPath(), ETextFileEncoding::Raw).value_or(FString());
+		ASSERT_FALSE(text.IsEmpty());
+		EXPECT_EQ(text.StartsWith("#!/usr/bin/env bash\n"), name != "chain") << "chain is sourced, never run";
+		EXPECT_FALSE(text.Contains('\r')) << "bash cannot read a first line that ends in a CR";
+	}
+}
+
+// core.hooksPath makes git run the hooks of FRT's folder and no other, so each passes on to the clone's own (Git LFS's, the
+// person's): a pre-commit of the clone still runs once FRT's checks passed, and refuses the commit; a pre-push still runs,
+// with git's arguments and its list of refs; and a clone that uses Git LFS without hook files of its own (installed after
+// setup --hooks, when they had nowhere to go) still uploads its objects on a push, while Git LFS, which writes the hooks it
+// misses into core.hooksPath, finds FRT's there and writes nothing into the engine's folder.
+TEST_F(GitHooksTest, TheClonesOwnHooksAndGitLfsStillRun)
+{
+	const std::filesystem::path own = gRepo / ".git" / "hooks";
+	std::error_code ec;
+	std::filesystem::create_directories(own, ec);
+	// However the test ends, so that no later test runs them.
+	const struct SRemoveOwnHooks
+	{
+		std::filesystem::path Own;
+		~SRemoveOwnHooks ()
+		{
+			std::error_code ignored;
+			std::filesystem::remove(Own / "pre-commit", ignored);
+			std::filesystem::remove(Own / "pre-push", ignored);
+		}
+	} removeOwnHooks { own };
+	const std::filesystem::path marker = gDir / "Marker.txt";
+	std::filesystem::remove(marker, ec);
+	const FString markerName = FString::FromPath(marker, EPathStyle::Generic);
+	ASSERT_TRUE(platform::WriteFileText(own / "pre-commit", FString::Format("#!/bin/sh\necho pre-commit >> \"{}\"\nexit 0\n", markerName)));
+	Write("Docs/Page.md");
+	Stage({ "Docs/Page.md" });
+	const test::SProcessResult passed = Commit();
+	EXPECT_EQ(passed.ExitCode, 0) << passed.Output.CStr() << passed.Errors.CStr();
+	EXPECT_EQ(platform::ReadFileText(marker).value_or(FString()), "pre-commit\n");
+
+	ASSERT_TRUE(platform::WriteFileText(own / "pre-commit", "#!/bin/sh\necho the clone says no >&2\nexit 1\n"));
+	Write("Docs/Other.md");
+	Stage({ "Docs/Other.md" });
+	const test::SProcessResult refused = Commit();
+	EXPECT_EQ(refused.ExitCode, 1) << refused.Output.CStr() << refused.Errors.CStr();
+	EXPECT_TRUE(refused.Errors.Contains("the clone says no")) << refused.Errors.CStr();
+	std::filesystem::remove(own / "pre-commit", ec);
+
+	const std::filesystem::path remote = gDir / FStringView("Віддалене.git").ToPath();
+	std::filesystem::remove_all(remote, ec);
+	ASSERT_EQ(test::RunGit(gGit, gDir, { "init", "-q", "--bare", FString::FromPath(remote) }).ExitCode, 0);
+	ASSERT_TRUE(platform::WriteFileText(own / "pre-push", FString::Format("#!/bin/sh\necho \"pre-push $1\" >> \"{}\"\ncat >> \"{}\"\n", markerName, markerName)));
+	const test::SProcessResult pushed = RunGit({ "push", "-q", FString::FromPath(remote), "HEAD:refs/heads/main" });
+	EXPECT_EQ(pushed.ExitCode, 0) << pushed.Output.CStr() << pushed.Errors.CStr();
+	const FString pushedMarker = platform::ReadFileText(marker).value_or(FString());
+	EXPECT_TRUE(pushedMarker.Contains("pre-push ")) << pushedMarker.CStr();
+	EXPECT_TRUE(pushedMarker.Contains("refs/heads/main")) << "the refs reach the clone's hook on its stdin: " << pushedMarker.CStr();
+	std::filesystem::remove(own / "pre-push", ec);
+
+	// Git LFS's filter in this clone's config, and no hook file of its own.
+	if (!test::RunGit(gGit, gRepo, { "lfs", "version" }).Output.StartsWith("git-lfs/"))
+	{
+		GTEST_SKIP() << "no git-lfs";
+	}
+	const std::filesystem::path lfs = gDir / "Lfs";
+	const std::filesystem::path lfsRemote = gDir / "Lfs remote.git";
+	std::filesystem::remove_all(lfs, ec);
+	std::filesystem::remove_all(lfsRemote, ec);
+	std::filesystem::create_directories(lfs, ec);
+	ASSERT_EQ(test::RunGit(gGit, lfs, { "init", "-q" }).ExitCode, 0);
+	ASSERT_EQ(test::RunGit(gGit, gDir, { "init", "-q", "--bare", FString::FromPath(lfsRemote) }).ExitCode, 0);
+	const test::SProcessResult installed = test::RunGit(gGit, lfs, { "lfs", "install", "--local", "--skip-repo" });
+	ASSERT_EQ(installed.ExitCode, 0) << installed.Output.CStr() << installed.Errors.CStr();
+	ASSERT_EQ(test::RunGit(gGit, lfs, { "config", "core.hooksPath", FString::FromPath(gDir / "Hooks" / "Tools" / "GitHooks", EPathStyle::Generic) }).ExitCode, 0);
+	ASSERT_TRUE(platform::WriteFileText(lfs / ".gitattributes", "*.bin filter=lfs diff=lfs merge=lfs -text\n"));
+	ASSERT_TRUE(platform::WriteFileText(lfs / "Big.bin", "large binary content\n"));
+	ASSERT_EQ(test::RunGit(gGit, lfs, { "add", "--all" }).ExitCode, 0);
+	const test::SProcessResult lfsCommit = test::RunGit(gGit, lfs, { "commit", "-q", "-m", "LFS" });
+	ASSERT_EQ(lfsCommit.ExitCode, 0) << lfsCommit.Output.CStr() << lfsCommit.Errors.CStr();
+	// A file:// remote, which Git LFS serves itself (its standalone transfer), and no locking API to ask.
+	ASSERT_EQ(test::RunGit(gGit, lfs, { "remote", "add", "origin", "file:///" + FString::FromPath(lfsRemote, EPathStyle::Generic) }).ExitCode, 0);
+	ASSERT_EQ(test::RunGit(gGit, lfs, { "config", "lfs.locksverify", "false" }).ExitCode, 0);
+	const test::SProcessResult lfsPush = test::RunGit(gGit, lfs, { "push", "-q", "origin", "HEAD:refs/heads/main" });
+	EXPECT_EQ(lfsPush.ExitCode, 0) << lfsPush.Output.CStr() << lfsPush.Errors.CStr();
+	EXPECT_TRUE(std::filesystem::exists(lfsRemote / "lfs" / "objects")) << "the push carried its LFS objects: " << lfsPush.Output.CStr() << lfsPush.Errors.CStr();
+	// Git LFS writes the hooks it misses into core.hooksPath when it runs (here as the filter of `git add`): in the engine's
+	// tracked Tools/GitHooks, that would leave the engine's checkout changed. FRT's are all there, so it writes none.
+	std::set<FString> copied;
+	for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(gDir / "Hooks" / "Tools" / "GitHooks"))
+	{
+		const FString name = FString::FromPath(entry.path().filename());
+		copied.insert(name);
+		EXPECT_EQ(platform::ReadFileText(entry.path(), ETextFileEncoding::Raw).value_or(FString()),
+			platform::ReadFileText(paths::GetEngineDir() / "Tools" / "GitHooks" / name.ToPath(), ETextFileEncoding::Raw).value_or(FString("not the engine's")))
+			<< name.CStr();
+	}
+	std::set<FString> engines;
+	for (const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(paths::GetEngineDir() / "Tools" / "GitHooks"))
+	{
+		engines.insert(FString::FromPath(entry.path().filename()));
+	}
+	EXPECT_EQ(copied, engines);
 }
 
 TEST_F(GitHooksTest, AGoodCommitGoesThroughAndEveryPairMovesTogether)
@@ -368,9 +476,7 @@ TEST_F(GitHooksTest, TheToolIsToldWhatToValidateAndWhichRepositoryIsCommitting)
 	const std::filesystem::path hooks = stub / "Tools" / "GitHooks";
 	std::error_code ec;
 	std::filesystem::create_directories(binaries, ec);
-	std::filesystem::create_directories(hooks, ec);
-	std::filesystem::copy_file(paths::GetEngineDir() / "Tools" / "GitHooks" / "pre-commit", hooks / "pre-commit", std::filesystem::copy_options::overwrite_existing, ec);
-	ASSERT_FALSE(ec) << FString::FromUtf8Lossy(ec.message()).CStr();
+	CopyHooks(hooks);
 	ASSERT_TRUE(platform::WriteFileText(binaries / "AssetTool-Development-Default.exe", "#!/usr/bin/env bash\n"
 		"printf '%s' \"$FRT_HOOK_TOPLEVEL\" > \"${0%/*}/toplevel.txt\"\n"
 		"printf 'index=%s\\n' \"$GIT_INDEX_FILE\"\n"
@@ -445,10 +551,8 @@ TEST_F(GitHooksTest, AModifiedMetaThatDoesNotParseIsRefusedThroughTheToolsQuickV
 	const std::filesystem::path engineHooks = engine / "Tools" / "GitHooks";
 	const std::filesystem::path binaries = engine / "Binaries" / "Win64";
 	std::error_code ec;
-	std::filesystem::create_directories(engineHooks, ec);
 	std::filesystem::create_directories(binaries, ec);
-	std::filesystem::copy_file(paths::GetEngineDir() / "Tools" / "GitHooks" / "pre-commit", engineHooks / "pre-commit", std::filesystem::copy_options::overwrite_existing, ec);
-	ASSERT_FALSE(ec) << FString::FromUtf8Lossy(ec.message()).CStr();
+	CopyHooks(engineHooks);
 	ASSERT_TRUE(platform::WriteFileText(binaries / "AssetTool-Development-Default.exe",
 		FString::Format("#!/usr/bin/env bash\nexec \"{}\" \"$@\"\n", FString::FromPath(tool, EPathStyle::Generic))));
 
@@ -491,9 +595,26 @@ TEST_F(GitHooksTest, SetupHooksSetsCoreHooksPathAndNothingElse)
 		return test::RunGit(gGit, Clone.empty() ? engine : Clone, { "config", "--local", "--get", "core.hooksPath" }).Output.TrimEnd();
 	};
 
+	// Another tool's hooks (husky, a team's folder): git runs one folder's, so setup neither replaces nor removes them.
+	ASSERT_EQ(test::RunGit(gGit, engine, { "config", "--local", "core.hooksPath", ".husky" }).ExitCode, 0);
+	const test::SProcessResult foreign = setup({ "--hooks" });
+	EXPECT_NE(foreign.ExitCode, 0) << foreign.Output.CStr() << foreign.Errors.CStr();
+	EXPECT_TRUE((foreign.Output + foreign.Errors).Contains(".husky")) << foreign.Output.CStr() << foreign.Errors.CStr();
+	EXPECT_EQ(hooksPath(), ".husky");
+	const test::SProcessResult foreignOff = setup({ "--hooks=off" });
+	EXPECT_EQ(foreignOff.ExitCode, 0) << foreignOff.Output.CStr() << foreignOff.Errors.CStr();
+	EXPECT_TRUE(foreignOff.Output.Contains("left as it is")) << foreignOff.Output.CStr();
+	EXPECT_EQ(hooksPath(), ".husky");
+	ASSERT_EQ(test::RunGit(gGit, engine, { "config", "--local", "--unset", "core.hooksPath" }).ExitCode, 0);
+
+	// The clone's own hooks are named: FRT's run them too.
+	ASSERT_TRUE(platform::WriteFileText(engine / ".git" / "hooks" / "pre-push", "#!/bin/sh\nexit 0\n"));
 	const test::SProcessResult on = setup({ "--hooks" });
 	EXPECT_EQ(on.ExitCode, 0) << on.Output.CStr() << on.Errors.CStr();
 	EXPECT_EQ(hooksPath(), "Tools/GitHooks") << on.Output.CStr();
+	EXPECT_TRUE(on.Output.Contains("run this clone's own as well: pre-push.")) << on.Output.CStr();
+	// FRT's own, set again: replaced, not refused.
+	EXPECT_EQ(setup({ "--hooks" }).ExitCode, 0);
 	EXPECT_FALSE(std::filesystem::exists(engine / "FRTEngine2.sln")) << "--hooks generates nothing";
 
 	const test::SProcessResult off = setup({ "--hooks=off" });

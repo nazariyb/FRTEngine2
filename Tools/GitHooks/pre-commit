@@ -24,11 +24,14 @@
 #      .frtproject at the top of the work tree, else the engine in an engine checkout together with each
 #      .frtproject in the index with a staged path below its folder (its templates), else each
 #      .frtproject in the index (a project in a folder of its repository), one run each.
+# Then, once they passed, the clone's own .git/hooks/pre-commit, which core.hooksPath would silence
+# (chain; the other hooks here only pass on).
 
 # A UTF-8 locale, so that awk folds non-ASCII names (the content of a game is rarely all ASCII).
 export LC_ALL=C.UTF-8
 
 hookDir=${0%/*}
+. "$hookDir/chain" || exit 1
 scratch=$(mktemp -d) || exit 1
 trap 'rm -rf "$scratch"' EXIT
 staged=$scratch/staged
@@ -41,7 +44,8 @@ failed=0
 # --no-renames: a rename is a delete and an add, and each half has to have its meta.
 git diff --cached --name-status -z --no-renames > "$staged" || exit 1
 if [ ! -s "$staged" ]; then
-	exit 0
+	chainHook pre-commit "$@"
+	exit
 fi
 git ls-files --cached -z > "$index" || exit 1
 : > "$dirs"
@@ -284,4 +288,4 @@ if [ "$failed" -ne 0 ]; then
 	echo "pre-commit: commit refused (FRT's asset checks, Docs/Assets.md; git commit --no-verify skips them)." >&2
 	exit 1
 fi
-exit 0
+chainHook pre-commit "$@"

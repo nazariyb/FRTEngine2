@@ -367,7 +367,15 @@ design's long-lived `SpawnToolProcess` and `IToolPipe` wait for their first clie
 
 **The pre-commit hook** (`Tools/GitHooks/pre-commit`, bash under Git for Windows) is opt-in per clone: `FRT.bat setup --hooks`
 sets `core.hooksPath` (relative for an engine inside the clone, absolute for a shared one), `--hooks=off` clears it, `FRT.bat
-new` only prints the hint, and `git commit --no-verify` skips it once. It parses no YAML and reports everything at once:
+new` only prints the hint, and `git commit --no-verify` skips it once. A `core.hooksPath` that is not FRT's (husky, a team's
+folder) is never replaced or cleared: setup refuses and names it, since git runs the hooks of one folder only. That folder
+would silence the clone's own `.git/hooks`, so `Tools/GitHooks` also holds `pre-push`, `post-checkout`, `post-commit` and
+`post-merge`, which only pass on (`Tools/GitHooks/chain`): to the clone's own hook of that name (Git LFS's, the person's;
+the common git dir's, so a worktree reaches the clone's), else, in a clone that uses Git LFS (its filter configured and a
+`.gitattributes` in the index naming it), to `git lfs <hook>`, which is all LFS's hook files do. So a push still carries its
+LFS objects whether `git lfs install` ran before `setup --hooks` or after, and LFS, which writes the hooks it misses into
+`core.hooksPath`, finds them there and writes nothing into the engine's folder. `pre-commit` runs the clone's own
+`pre-commit` once its checks passed. It parses no YAML and reports everything at once:
 
 1. pairs: a staged meta whose source is neither staged nor tracked, and a staged delete or rename of a source whose tracked
    meta did not go along (`META002`). A new source without a meta is left to check 6, which knows the rules and companions;

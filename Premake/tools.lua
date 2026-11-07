@@ -1404,7 +1404,13 @@ end
 -- registration and no solution, so a project's clone can turn it on, and nothing installs it implicitly. An engine
 -- inside the clone (the engine's own checkout, a project's Engine/ submodule) is named relatively, from the top of the
 -- work tree, as git reads it, so it holds wherever the clone is and in every worktree of it; a shared engine elsewhere
--- has only its absolute path. The hook itself: Tools/GitHooks/pre-commit.
+-- has only its absolute path. The hook itself: Tools/GitHooks/pre-commit; the others there pass on to the clone's
+-- own .git/hooks (Git LFS's, the person's), which core.hooksPath would otherwise silence. A core.hooksPath that is
+-- not FRT's (husky, a team's folder) is never replaced or removed: git runs the hooks of one folder only.
+local function isFrtHooksPath(value)
+	return value ~= nil and value:gsub("\\", "/"):gsub("/+$", ""):match("Tools/GitHooks$") ~= nil
+end
+
 local function setupHooks(value)
 	if value ~= "" and value ~= "off" then
 		fail("setup: --hooks takes no value, or =off to turn the hook off")
@@ -1424,12 +1430,25 @@ local function setupHooks(value)
 		fail("setup --hooks: " .. winpath(clone) .. " is not in a git repository")
 	end
 
+	local current = outputOf(gitConfig .. "--local --get core.hooksPath")
+	if current == "" then
+		current = nil
+	end
 	if value == "off" then
-		if outputOf(gitConfig .. "--local --get core.hooksPath") and not runCommand(gitConfig .. "--local --unset core.hooksPath") then
+		if current and not isFrtHooksPath(current) then
+			print("core.hooksPath of " .. winpath(clone) .. " is " .. current .. ", not FRT's hooks: left as it is.")
+			return
+		end
+		if current and not runCommand(gitConfig .. "--local --unset core.hooksPath") then
 			fail("setup --hooks=off: git config failed in " .. winpath(clone))
 		end
 		print("The pre-commit hook is off for " .. winpath(clone) .. ".")
 		return
+	end
+	if current and not isFrtHooksPath(current) then
+		fail("setup --hooks: core.hooksPath of " .. winpath(clone) .. " is already " .. current .. ", another tool's " ..
+			"hooks, and git runs the hooks of one folder only. Unset it (git config --unset core.hooksPath) to use FRT's, " ..
+			"which run the clone's own .git/hooks too.")
 	end
 
 	local hooks = path.join(ROOT_DIR, "Tools/GitHooks")
@@ -1443,6 +1462,16 @@ local function setupHooks(value)
 		fail("setup --hooks: git config failed in " .. winpath(clone))
 	end
 	print("The pre-commit hook is on for " .. winpath(clone) .. " (core.hooksPath=" .. hooks .. ").")
+	local commonDir = outputOf("git -C " .. quoted(clone) .. " rev-parse --path-format=absolute --git-common-dir")
+	local own = {}
+	for _, file in ipairs(commonDir and os.matchfiles(path.join(commonDir, "hooks/*")) or {}) do
+		if not file:match("%.sample$") then
+			table.insert(own, path.getname(file))
+		end
+	end
+	if #own > 0 then
+		print("FRT's hooks run this clone's own as well: " .. table.concat(own, ", ") .. ".")
+	end
 end
 
 newaction
