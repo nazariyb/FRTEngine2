@@ -550,7 +550,10 @@ TEST(RegistryBenchmarkTest, DISABLED_TheStoreAt100kAssetsAnd500kRows)
 	budgets.GuidLookup = SBudget { 50.0, -1.0, 40.0, 80.0 };
 	budgets.AssetId64Lookup = SBudget { 50.0, -1.0, 20.0, 40.0 };
 	budgets.PathLookup = SBudget { 0.5, -1.0, 0.5, 1.0 };
-	budgets.ResidentMemory = SBudget { 150.0, -1.0, 155.0, 155.0 };
+	// A meta per asset (edit [63]) costs about 51 MB here: 197.3 MB against 146.2 MB without them (Development, alone,
+	// 9950X3D): METAS 13.8, the metas' FILES rows 10.3, their paths 11.9 and names 7.8, indices 6.0. Over §5.11's
+	// 150 MB (FRT_PERF_STRICT says MISSED); the guard holds what was measured.
+	budgets.ResidentMemory = SBudget { 150.0, -1.0, 205.0, 205.0 };
 	budgets.bMetas = true;
 	MeasureStoreAtScale(100000u, 500000u, budgets);
 }
