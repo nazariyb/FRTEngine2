@@ -27,7 +27,8 @@
 // meta with its source as the scan does, so a meta in another case gets its case fixed, never a restore beside it. F21: a
 // refused dedupe shows VCS002 on every loser, and its fix-it, or an event on any one loser, retries the whole set. F23: a
 // read-only source is META001 with no meta, and its fix-it ends in VCS002 keeping the attribute; a read-only meta in
-// another case is reported, not renamed.
+// another case is reported, not renamed. F30: repairs hold for VcsSettleMs after a busy provider goes quiet, and the
+// watcher's hold asks the providers' IsRewritingTree only while the repairs exist (ShutDown or destruction clears it).
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -370,6 +371,90 @@ TEST(AssetRepairs, ASlowCheckoutNeverMintsAMetaWhileTheProviderIsBusyOrTheMetaIs
 	EXPECT_EQ(rig.GuidAt(P("Textures/b.png")), MakeGuid(GuidB));
 	EXPECT_TRUE(rig.Vcs.GetWriteCalls().empty()) << "no CreateMeta at any step";
 	EXPECT_TRUE(rig.Problems().empty()) << rig.DescribeProblems().CStr();
+}
+
+// WaitForVcs is IsBusy and then VcsSettleMs of quiet (§4.7): a VCS writes the last files of a checkout just after it
+// stops saying busy, so a metaless file is given its meta only once the window after the last busy poll is over.
+TEST(AssetRepairs, AfterABusyProviderGoesQuietRepairsStillHoldForVcsSettleMs)
+{
+	CRepairTree tree("Тиша після");
+	CRig rig(tree, [] (SLifecycleDesc& Lifecycle, SAssetRegistryDesc&) { Lifecycle.Settings.VcsSettleMs = 1500u; });
+	rig.Open();
+	rig.Settle();
+	rig.Vcs.SetBusy(true);
+	tree.WritePng("c.png");
+	rig.Scan();
+	rig.Settle();
+	rig.Settle(3000u);
+	EXPECT_FALSE(tree.Exists("c.png.meta")) << "busy";
+	rig.Vcs.SetBusy(false);
+	rig.Settle(150u);
+	EXPECT_FALSE(tree.Exists("c.png.meta")) << "not busy any more, but 150 ms after the last busy poll";
+	rig.Settle(1000u);
+	EXPECT_FALSE(tree.Exists("c.png.meta")) << "1150 ms: still inside VcsSettleMs";
+	rig.Settle(600u);
+	EXPECT_EQ(tree.MetaGuid("c.png"), DerivedGuid(P("c.png"))) << "1750 ms: the window is over";
+	EXPECT_EQ(rig.Registry->GetCounters().RepairsApplied, 1u);
+}
+
+// The watcher's own hold (edit [56]) is the providers' IsRewritingTree, through the query the repairs install; it is gone
+// once they shut down (it captures them; a registry is never destroyed before its ShutDown, which ends its repairs), and
+// never installed with WaitForVcs off.
+TEST(AssetRepairs, TheWatchersHoldAsksWhetherAProviderRewritesTheTreeOnlyWhileTheRepairsExist)
+{
+	CRepairTree tree("Запит сторожа");
+	SFileWatcherSettings settings;
+	settings.SettleMs = 300u;   // past VcsPollMs: a new file is still pending when the query is next asked
+	settings.VcsSettleMs = 50u;
+	const auto run = [&] (bool bWaitForVcs)
+	{
+		CFileWatcherService watcher(settings);
+		CRig rig(tree, [&] (SLifecycleDesc& Lifecycle, SAssetRegistryDesc& Desc)
+		{
+			Lifecycle.Settings.bWaitForVcs = bWaitForVcs;
+			Desc.Watcher = &watcher;
+		});
+		for (const SMount& mount : rig.Desc.Mounts->GetMounts())
+		{
+			watcher.AddMount(mount.ContentDir);
+		}
+		rig.Open();
+		const auto pump = [&]
+		{
+			watcher.Pump();
+			rig.Pool.PumpCompletions();
+			if (rig.Registry != nullptr)
+			{
+				rig.Registry->Pump();
+			}
+		};
+		rig.Vcs.SetBusy(true, true);
+		const FString name = FString::Format("{}.png", bWaitForVcs ? "wait" : "nowait");
+		tree.WritePng(name);
+		if (!bWaitForVcs)
+		{
+			EXPECT_TRUE(test::WaitUntil([&] { pump(); return FindStoredFile(rig.View(), P(name)).has_value(); }))
+				<< "with WaitForVcs off the watcher does not hold for a rewriting VCS";
+			EXPECT_FALSE(watcher.GetStats().bHolding);
+			rig.Registry->ShutDown();
+			rig.Registry.reset();
+			return;
+		}
+		ASSERT_TRUE(test::WaitUntil([&] { pump(); return watcher.GetStats().bHolding; })) << "held while the provider rewrites the tree";
+		rig.Vcs.SetBusy(false, false);
+		ASSERT_TRUE(test::WaitUntil([&] { pump(); return !watcher.GetStats().bHolding; })) << "and no longer once it does not";
+		ASSERT_TRUE(test::WaitUntil([&] { pump(); return FindStoredFile(rig.View(), P(name)).has_value(); }));
+
+		rig.Vcs.SetBusy(true, true);
+		tree.WritePng(FString::Format("again-{}", name), 5u);
+		ASSERT_TRUE(test::WaitUntil([&] { pump(); return watcher.GetStats().bHolding; }));
+		rig.Registry->ShutDown();
+		EXPECT_TRUE(test::WaitUntil([&] { watcher.Pump(); return !watcher.GetStats().bHolding; }))
+			<< "the provider still rewrites, but nothing asks it any more";
+		rig.Registry.reset();
+	};
+	run(true);
+	run(false);
 }
 
 // Only the VCS of a mount the repair writes holds it (edit [56]): /Engine, read-only to a project's writer, may sit in
