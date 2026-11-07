@@ -497,7 +497,7 @@ struct SAliasEntry
 };
 
 // The aliases and former paths of the records that have any (SAssetsTable::Redirect): few do, so one 4-byte column per
-// record instead of two ranges. A replaced list leaves the old one behind (never read again).
+// record instead of two ranges. A replaced list leaves the old one behind (never read again; CompactTables drops it).
 struct SRedirectsTable
 {
 	CPagedColumn<SPoolRange> Aliases;                     // in SRegistryTables::AliasEntries
@@ -728,9 +728,11 @@ struct SRegistryTables
 	uint32 LiveRuleFiles = 0u;
 	uint32 LiveRecords = 0u;
 	uint32 LiveSubEntries = 0u;
-	// Items of Labels, Companions, the type tables' Multi pools and STRINGS that no live row uses any more
-	// (replaced lists, dead rows' values): what CRegistryStore::CompactTables reclaims.
+	// Items of Labels, Companions, the type tables' Multi pools, STRINGS, AliasEntries, FormerPaths and the REDIRECTS
+	// rows that no live row uses any more (replaced lists, dead rows' values): what CRegistryStore::CompactTables
+	// reclaims, with dead METAS and TOMBSTONES rows and the MetaBytes of replaced or removed copies.
 	uint32 GarbagePoolItems = 0u;
+	uint64 GarbageMetaBytes = 0u;
 };
 
 inline constexpr uint32 RuleLabelBit = 1u << 31u;   // SRegistryTables::Labels: a rule label (Assets.yml), else authored

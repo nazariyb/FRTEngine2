@@ -32,6 +32,9 @@ namespace
 // The epoch of the writer's own hash indices: they are never published, so their pages are never frozen.
 constexpr uint64 WriterEpoch = 0u;
 
+// MetaBytes of replaced or removed meta copies that make a table compaction due (with a quarter of the pool).
+constexpr uint64 MetaBytesGarbageThreshold = 1024u * 1024u;
+
 // A companion path (portable fold) and how many committed records name it.
 struct SCompanionRef
 {
@@ -1483,6 +1486,7 @@ private:
 			T.Indices.RecordsByFormerPath.Erase(HashPortable(formerPath), Row, Epoch);
 			TouchedRecordPaths.insert(FString(formerPath));
 		}
+		T.GarbagePoolItems += aliases.Count + former.Count + 1u;   // the lists and the REDIRECTS row
 		T.Assets.Redirect.Set(Row, InvalidRow, Epoch);
 	}
 
@@ -1675,6 +1679,7 @@ private:
 			++T.LiveMetaCopies;
 			return;
 		}
+		T.GarbageMetaBytes += T.MetaBytes.Get(copies.Bytes[row]).Len();
 		copies.Hash.Set(row, Copy.Hash, Epoch);
 		copies.Bytes.Set(row, bytesId, Epoch);
 		copies.SourcePath.Set(row, path, Epoch);
@@ -1691,6 +1696,7 @@ private:
 		{
 			T.Indices.MetaCopiesByGuid.Erase(HashGuid(Guid), row, Epoch);
 			T.MetaCopies.Guid.Set(row, SGuid {}, Epoch);
+			T.GarbageMetaBytes += T.MetaBytes.Get(T.MetaCopies.Bytes[row]).Len();
 			--T.LiveMetaCopies;
 		}
 	}
@@ -3782,8 +3788,14 @@ bool CRegistryStore::RecordTablesNeedCompaction () const noexcept
 			poolItems += column.Multi.Size();
 		}
 	}
+	// Identity state (M4): dead METAS and TOMBSTONES rows, replaced alias and former-path lists, replaced copies' bytes.
+	rows += tables.MetaCopies.Guid.Size() + tables.Tombstones.Guid.Size();
+	deadRows += (tables.MetaCopies.Guid.Size() - tables.LiveMetaCopies) + (tables.Tombstones.Guid.Size() - tables.LiveTombstones);
+	poolItems += static_cast<uint64>(tables.AliasEntries.Size()) + tables.FormerPaths.Size() + tables.Redirects.Aliases.Size();
 	const uint64 garbage = tables.GarbagePoolItems;
-	return (deadRows >= 4096u && deadRows * 4u >= rows) || (garbage >= 16384u && garbage * 4u >= poolItems);
+	const uint64 metaBytes = tables.MetaBytes.GetResidentBytes();
+	return (deadRows >= 4096u && deadRows * 4u >= rows) || (garbage >= 16384u && garbage * 4u >= poolItems)
+		|| (tables.GarbageMetaBytes >= MetaBytesGarbageThreshold && tables.GarbageMetaBytes * 4u >= metaBytes);
 }
 
 bool CRegistryStore::NeedsCompaction () const noexcept
@@ -3835,8 +3847,10 @@ void CRegistryStore::RunCompaction (bool bGraph, bool bTables)
 
 /**
  * Rebuilds SUBENTRY, the type tables, the label, companion, Multi and STRINGS pools and the AssetId64 index
- * from the live rows, then remaps FirstSub and TypeRow. New columns are built (as CompactGraphTables does),
- * so views that hold the old ones keep them; Names and Paths stay (NAMES is interned, PATHS ids are stable).
+ * from the live rows, then remaps FirstSub and TypeRow; and the identity state (M4): ALIASES, FORMERPATHS and
+ * REDIRECTS with the alias index (Redirect remapped), METAS with its bytes and TOMBSTONES, each with its GUID
+ * index. New columns are built (as CompactGraphTables does), so views that hold the old ones keep them; Names
+ * and Paths stay (NAMES is interned, PATHS ids are stable).
  */
 void CRegistryStore::CompactRecordTables ()
 {
@@ -3981,6 +3995,78 @@ void CRegistryStore::CompactRecordTables ()
 		byId64.Insert(MixRegistryKey(subs.AssetId64[sub]), SubEntryBit | sub, epoch);
 	}
 
+	// Identity state (M4): each live record's alias and former-path lists (a new REDIRECTS row each, the alias index
+	// rebuilt; RecordsByFormerPath names ASSETS rows, which stay), and the live METAS and TOMBSTONES rows with their
+	// indices and the live copies' bytes.
+	CPagedColumn<SAliasEntry> aliasEntries;
+	CPagedPool<uint32> formerPaths;
+	SRedirectsTable redirects;
+	CPagedHashIndex aliasIndex;
+	for (uint32 row = 0u; row < assetRows; ++row)
+	{
+		const uint32 redirect = assets.Redirect[row];
+		if (redirect == InvalidRow)
+		{
+			continue;
+		}
+		if (assets.File[row] == InvalidRow)
+		{
+			assets.Redirect.Set(row, InvalidRow, epoch);
+			continue;
+		}
+		const SPoolRange aliases = tables.Redirects.Aliases[redirect];
+		const uint32 aliasBegin = aliasEntries.Size();
+		for (uint32 i = aliases.Begin; i < aliases.Begin + aliases.Count; ++i)
+		{
+			const SAliasEntry& entry = tables.AliasEntries[i];
+			aliasIndex.Insert(HashGuid(entry.Id.Guid), aliasEntries.Append(entry, epoch), epoch);
+		}
+		const SPoolRange former = tables.Redirects.FormerPaths[redirect];
+		items.resize(former.Count);
+		for (uint32 i = 0u; i < former.Count; ++i)
+		{
+			items[i] = tables.FormerPaths[former.Begin + i];
+		}
+		const uint32 formerBegin = items.empty() ? 0u : formerPaths.Append(items, epoch);
+		const uint32 compacted = redirects.Aliases.Append(SPoolRange { aliases.Count > 0u ? aliasBegin : 0u, aliases.Count }, epoch);
+		redirects.FormerPaths.Append(SPoolRange { formerBegin, former.Count }, epoch);
+		assets.Redirect.SetIfChanged(row, compacted, epoch);
+	}
+	SMetaCopiesTable metaCopies;
+	CStringPool metaBytes;
+	CPagedHashIndex metaCopiesByGuid;
+	metaCopiesByGuid.Reserve(tables.LiveMetaCopies, epoch);
+	for (uint32 row = 0u; row < tables.MetaCopies.Guid.Size(); ++row)
+	{
+		const SGuid& guid = tables.MetaCopies.Guid[row];
+		if (!guid.IsValid())
+		{
+			continue;
+		}
+		const uint32 compacted = metaCopies.Guid.Append(guid, epoch);
+		metaCopies.Hash.Append(tables.MetaCopies.Hash[row], epoch);
+		metaCopies.Bytes.Append(metaBytes.Add(tables.MetaBytes.Get(tables.MetaCopies.Bytes[row]), epoch), epoch);
+		metaCopies.SourcePath.Append(tables.MetaCopies.SourcePath[row], epoch);
+		metaCopiesByGuid.Insert(HashGuid(guid), compacted, epoch);
+	}
+	STombstonesTable tombstones;
+	CPagedHashIndex tombstonesByGuid;
+	tombstonesByGuid.Reserve(tables.LiveTombstones, epoch);
+	for (uint32 row = 0u; row < tables.Tombstones.Guid.Size(); ++row)
+	{
+		const SGuid& guid = tables.Tombstones.Guid[row];
+		if (!guid.IsValid())
+		{
+			continue;
+		}
+		const uint32 compacted = tombstones.Guid.Append(guid, epoch);
+		tombstones.LastPath.Append(tables.Tombstones.LastPath[row], epoch);
+		tombstones.Hash.Append(tables.Tombstones.Hash[row], epoch);
+		tombstones.Identity.Append(tables.Tombstones.Identity[row], epoch);
+		tombstones.RemovedFileTime.Append(tables.Tombstones.RemovedFileTime[row], epoch);
+		tombstonesByGuid.Insert(HashGuid(guid), compacted, epoch);
+	}
+
 	tables.SubEntries = std::move(subs);
 	tables.LiveSubEntries = tables.SubEntries.Owner.Size();
 	tables.Types = std::move(types);
@@ -3988,7 +4074,17 @@ void CRegistryStore::CompactRecordTables ()
 	tables.Labels = std::move(labels);
 	tables.Companions = std::move(companions);
 	tables.Indices.RecordsById64 = std::move(byId64);
+	tables.AliasEntries = std::move(aliasEntries);
+	tables.FormerPaths = std::move(formerPaths);
+	tables.Redirects = std::move(redirects);
+	tables.Indices.Aliases = std::move(aliasIndex);
+	tables.MetaCopies = std::move(metaCopies);
+	tables.MetaBytes = std::move(metaBytes);
+	tables.Indices.MetaCopiesByGuid = std::move(metaCopiesByGuid);
+	tables.Tombstones = std::move(tombstones);
+	tables.Indices.TombstonesByGuid = std::move(tombstonesByGuid);
 	tables.GarbagePoolItems = 0u;
+	tables.GarbageMetaBytes = 0u;
 }
 
 /**

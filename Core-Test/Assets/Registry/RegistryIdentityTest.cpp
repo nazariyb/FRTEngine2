@@ -382,6 +382,115 @@ TEST(RegistryIdentityTest, AMoveAcrossMountsKeepsOneIdentityStateInAnyCommitOrde
 	}
 }
 
+// ---------------- Compaction ----------------
+
+// Replaced alias and former-path lists, replaced and removed copies and removed tombstones are garbage that a table
+// compaction drops; what is live resolves as before, in the compacted store and in a view held across it.
+TEST(RegistryIdentityTest, ACompactionDropsReplacedRedirectsAndDeadCopiesAndTombstones)
+{
+	CRegistryStore store;
+	SRegistryDelta delta = MakeMountsDelta();
+	AddMaterial(delta, "/Project/M/m.frtmat.yml", { "/Project/T/Old0.png" });
+	delta.RecordUpserts.back().Edges.push_back(MakeIdEdge(SAssetId { Guid("absorbed"), 0u }));
+	for (const FStringView label : { FStringView("a"), FStringView("b"), FStringView("c") })
+	{
+		delta.MetaCopies.push_back(MakeMetaCopy(Guid(label), FString::Format("/Project/T/{}.png", label)));
+		delta.Tombstones.push_back(STombstone { Guid(FString::Format("gone {}", label)), FString::Format("/Project/T/Gone {}.png", label), {}, {}, 10 });
+	}
+	store.Commit(std::move(delta));
+	for (uint32 round = 0u; round < 8u; ++round)
+	{
+		SRegistryDelta change;
+		SRecordUpsert record = MakeTexture(change, "/Project/T/Moved.png", "moved");
+		record.Aliases = { SAssetId { Guid("absorbed"), 0u }, SAssetId { Guid(FString::Format("round {}", round)), 0u } };
+		record.FormerPaths = { FString::Format("/Project/T/Old{}.png", round % 2u), "/Project/T/Older.png" };
+		change.RecordUpserts.push_back(std::move(record));
+		SMetaCopy copy = MakeMetaCopy(Guid("a"), "/Project/T/a.png");
+		copy.Bytes.push_back(static_cast<uint8>('#'));
+		copy.Bytes.push_back(static_cast<uint8>('0' + round));
+		copy.Hash = hash::Xxh3_64(copy.Bytes);
+		change.MetaCopies.push_back(std::move(copy));
+		store.Commit(std::move(change));
+	}
+	SRegistryDelta removes;
+	removes.MetaCopyRemoves = { Guid("b") };
+	removes.TombstoneRemoves = { Guid("gone a"), Guid("gone b") };
+	store.Commit(std::move(removes));
+	EXPECT_GT(GetTables(store.Live()).GarbagePoolItems, 0u);
+	EXPECT_GT(GetTables(store.Live()).GarbageMetaBytes, 0u);
+
+	const std::shared_ptr<const CRegistryView> held = store.Acquire();
+	const FString before = Dump(*held);
+	EXPECT_TRUE(before.View().Contains(FStringView("Resolved redirected"))) << before.CStr();
+	store.CompactTables();
+	const CRegistryView& view = store.Live();
+	EXPECT_EQ(Dump(view), before);
+	EXPECT_EQ(Dump(*held), before);
+	ExpectSameIdentity(*held, view);
+	const SRegistryTables& tables = GetTables(view);
+	EXPECT_EQ(tables.AliasEntries.Size(), 2u);
+	EXPECT_EQ(tables.FormerPaths.Size(), 2u);
+	EXPECT_EQ(tables.Redirects.Aliases.Size(), 1u);
+	EXPECT_EQ(tables.MetaCopies.Guid.Size(), 2u);
+	EXPECT_EQ(tables.MetaBytes.Size(), 2u);
+	EXPECT_EQ(tables.Tombstones.Guid.Size(), 1u);
+	EXPECT_EQ(tables.GarbagePoolItems, 0u);
+	EXPECT_EQ(tables.GarbageMetaBytes, 0u);
+	bool bRedirected = false;
+	EXPECT_EQ(view.Find(SAssetId { Guid("round 7"), 0u }, &bRedirected), FindRecord(view, "/Project/T/Moved.png"));
+	EXPECT_TRUE(bRedirected);
+	EXPECT_FALSE(view.Find(SAssetId { Guid("round 6"), 0u }).has_value());
+	EXPECT_EQ(view.FindByPath("/Project/T/Old1.png"), FindRecord(view, "/Project/T/Moved.png"));
+	EXPECT_EQ(view.FindMetaCopy(Guid("a"))->Bytes.back(), static_cast<uint8>('7'));
+	EXPECT_FALSE(view.FindMetaCopy(Guid("b")).has_value());
+	EXPECT_TRUE(view.FindTombstone(Guid("gone c")).has_value());
+
+	// Commits after it append behind the compacted rows.
+	SRegistryDelta later;
+	SRecordUpsert record = MakeTexture(later, "/Project/T/Moved.png", "moved");
+	record.Aliases = { SAssetId { Guid("absorbed"), 0u } };
+	later.RecordUpserts.push_back(std::move(record));
+	later.MetaCopyRemoves = { Guid("c") };
+	later.Tombstones.push_back(STombstone { Guid("gone d"), "/Project/T/Gone d.png", {}, {}, 20 });
+	store.Commit(std::move(later));
+	EXPECT_FALSE(store.Live().FindByPath("/Project/T/Old1.png").has_value());
+	EXPECT_TRUE(store.Live().Find(SAssetId { Guid("absorbed"), 0u }).has_value());
+	EXPECT_FALSE(store.Live().Find(SAssetId { Guid("round 7"), 0u }).has_value());
+	EXPECT_EQ(store.Live().GetMetaCopyCount(), 1u);
+	EXPECT_EQ(store.Live().GetTombstoneCount(), 2u);
+}
+
+// A megabyte of removed copies' bytes makes a compaction due (Commit never runs it), and the compaction reclaims it.
+TEST(RegistryIdentityTest, EnoughGarbageMetaBytesMakeACompactionDue)
+{
+	CRegistryStore store;
+	store.Commit(MakeMountsDelta());
+	SRegistryDelta copies;
+	std::vector<SGuid> guids;
+	for (uint32 i = 0u; i < 300u; ++i)
+	{
+		guids.push_back(Guid(FString::Format("big {}", i)));
+		SMetaCopy copy = MakeMetaCopy(guids.back(), FString::Format("/Project/Big/{}.png", i));
+		copy.Bytes.resize(copy.Bytes.size() + 4000u, static_cast<uint8>('x'));
+		copy.Hash = hash::Xxh3_64(copy.Bytes);
+		copies.MetaCopies.push_back(std::move(copy));
+	}
+	store.Commit(std::move(copies));
+	EXPECT_FALSE(store.NeedsCompaction());
+	SRegistryDelta removes;
+	removes.MetaCopyRemoves.assign(guids.begin(), guids.end() - 10);
+	store.Commit(std::move(removes));
+	EXPECT_FALSE(store.GetLastCommitStats().bCompactedTables);
+	ASSERT_TRUE(store.NeedsCompaction());
+	const uint64 resident = GetTables(store.Live()).MetaBytes.GetResidentBytes();
+	store.Compact();
+	EXPECT_TRUE(store.GetLastCommitStats().bCompactedTables);
+	EXPECT_FALSE(store.NeedsCompaction());
+	EXPECT_EQ(store.Live().GetMetaCopyCount(), 10u);
+	EXPECT_LT(GetTables(store.Live()).MetaBytes.GetResidentBytes() * 4u, resident);
+	EXPECT_TRUE(store.Live().FindMetaCopy(guids.back()).has_value());
+}
+
 // ---------------- Images, snapshots, journals ----------------
 
 TEST(RegistryIdentityTest, ABulkAdoptionAndAReplayOfAnImageGiveTheSameIdentity)
