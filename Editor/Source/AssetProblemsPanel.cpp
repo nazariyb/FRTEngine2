@@ -1,12 +1,7 @@
 #include "AssetProblemsPanel.h"
 
 #include <algorithm>
-#include <cwctype>
-#include <string>
 #include <system_error>
-
-#include <Windows.h>
-#include <shellapi.h>
 
 #include "imgui.h"
 
@@ -17,6 +12,7 @@
 #include "Assets/Registry/RegistryView.h"
 #include "Engine/Engine.h"
 #include "Jobs/WorkerPool.h"
+#include "Platform/Platform.h"
 #include "Platform/Timestamp.h"
 #include "UI/ImGuiString.h"
 #include "Unicode/DisplayText.h"
@@ -57,49 +53,6 @@ const ImVec4 InfoColor(0.65f, 0.65f, 0.65f, 1.0f);
 		where += FString::Format(" ({})", Problem.FieldPath);
 	}
 	return where;
-}
-
-// The shell would run it rather than open it (an executable, a script, a shortcut): PATHEXT's extensions and the other
-// kinds Windows runs on a double click.
-[[nodiscard]] bool IsShellRunnable (const std::filesystem::path& File)
-{
-	const auto upper = [] (std::wstring Text)
-	{
-		for (wchar_t& ch : Text)
-		{
-			ch = static_cast<wchar_t>(std::towupper(ch));
-		}
-		return Text;
-	};
-	const std::wstring extension = upper(File.extension().wstring());
-	if (extension.empty())
-	{
-		return false;
-	}
-	std::wstring runnable = L".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC;.PS1;.LNK;.URL;.SCR;.PIF;.MSI;.MSP;.CPL;.HTA;.REG;.JAR;.APPREF-MS;";
-	wchar_t pathExt[1024] = {};
-	const DWORD length = GetEnvironmentVariableW(L"PATHEXT", pathExt, static_cast<DWORD>(std::size(pathExt)));
-	if (length > 0u && length < std::size(pathExt))
-	{
-		runnable += pathExt;
-		runnable += L';';
-	}
-	runnable = upper(std::move(runnable));
-	size_t start = 0u;
-	while (start < runnable.size())
-	{
-		const size_t end = runnable.find(L';', start);
-		if (end == std::wstring::npos)
-		{
-			break;
-		}
-		if (runnable.compare(start, end - start, extension) == 0)
-		{
-			return true;
-		}
-		start = end + 1u;
-	}
-	return false;
 }
 
 void Tooltip (FStringView Text)
@@ -507,20 +460,17 @@ void CAssetProblemsPanel::DrawEntry (CEngine& Engine, CAssetsPanel& Assets, uint
 			ImGui::SameLine();
 			std::error_code ec;
 			const bool bExists = std::filesystem::is_regular_file(*file, ec);
-			const bool bRunnable = IsShellRunnable(*file);
+			const bool bRunnable = platform::IsShellRunnable(*file);
 			const FString shown = unicode::ToDisplayText(FString::FromPath(*file));
 			ImGui::BeginDisabled(!bExists);
 			if (ImGui::SmallButton(bRunnable ? "Show" : "Open"))
 			{
-				// A document opens with its default verb; a file the shell would run is only shown in Explorer.
-				const std::wstring select = L"/select,\"" + file->wstring() + L"\"";
-				const HINSTANCE result = bRunnable ? ShellExecuteW(nullptr, L"open", L"explorer.exe", select.c_str(), nullptr, SW_SHOWNORMAL)
-					: ShellExecuteW(nullptr, L"open", file->c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-				const INT_PTR code = reinterpret_cast<INT_PTR>(result);
-				if (code <= 32)
+				// A document opens in its program; a file the shell would run is only shown in Explorer.
+				const platform::EShellOpen result = bRunnable ? platform::ShowInFileManager(*file) : platform::OpenWithShell(*file);
+				if (result != platform::EShellOpen::Done)
 				{
-					Post(FString::Format("Cannot open {}: {}", shown, code == SE_ERR_FNF || code == SE_ERR_PNF ? "it does not exist"
-						: code == SE_ERR_NOASSOC || code == SE_ERR_ASSOCINCOMPLETE ? "no program is set to open it" : "the shell refused"), true);
+					Post(FString::Format("Cannot open {}: {}", shown, result == platform::EShellOpen::NotFound ? "it does not exist"
+						: result == platform::EShellOpen::NoProgram ? "no program is set to open it" : "the shell refused"), true);
 				}
 			}
 			ImGui::EndDisabled();
