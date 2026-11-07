@@ -13,12 +13,14 @@
 #include "Assets/Vcs/GitTestUtils.h"
 
 #include <filesystem>
+#include <memory>
 #include <system_error>
 #include <vector>
 
 #include "EnginePaths.h"
 #include "Containers/String.h"
 #include "Platform/FileSystem.h"
+#include "Platform/Platform.h"
 #include "Platform/Process.h"
 
 using namespace frt;
@@ -39,6 +41,7 @@ std::filesystem::path gGit;
 std::filesystem::path gDir;
 std::filesystem::path gRepo;
 FString gBase;
+std::unique_ptr<test::CScopedEnvironment> gUserData;
 
 class GitHooksTest : public ::testing::Test
 {
@@ -53,6 +56,8 @@ protected:
 		gDir = std::filesystem::temp_directory_path() / FString::Format("FRT Гачки 钩子 {}", platform::GetCurrentProcessId()).ToPath();
 		std::error_code ec;
 		std::filesystem::remove_all(gDir, ec);
+		// The AssetTool a hook starts, and premake, read per-user data (the registry of engines, the DDC): the suite's own.
+		gUserData = std::make_unique<test::CScopedEnvironment>("FRT_USER_DATA_DIR", FString::FromPath(gDir / "UserData"));
 		gRepo = gDir / FStringView("Сховище").ToPath();
 		std::filesystem::create_directories(gRepo / "Content", ec);
 		ASSERT_EQ(test::RunGit(gGit, gRepo, { "init", "-q" }).ExitCode, 0);
@@ -75,6 +80,7 @@ protected:
 
 	static void TearDownTestSuite ()
 	{
+		gUserData.reset();
 		if (!gDir.empty())
 		{
 			std::error_code ec;
@@ -324,21 +330,36 @@ TEST_F(GitHooksTest, TheToolIsToldWhatToValidateAndWhichRepositoryIsCommitting)
 	EXPECT_FALSE(all.Contains("arg=--project")) << all.CStr();
 }
 
-// The engine's own hook with the engine's own AssetTool (Development, as the hook runs it): check 6 refuses a meta that
-// checks 1-5 let through, one whose Guid line is valid but which does not parse (META004), and it sees what `git commit -a`
-// is about to commit, a working-tree change nobody staged, through the GIT_INDEX_FILE git hands the hook. A usage error of a
-// tool that knows the verb refuses too; only a tool built before the verb existed is skipped (B4 left that open).
+// The engine's own hook with the engine's own AssetTool: check 6 refuses a meta that checks 1-5 let through, one whose Guid
+// line is valid but which does not parse (META004), and it sees what `git commit -a` is about to commit, a working-tree
+// change nobody staged, through the GIT_INDEX_FILE git hands the hook. A usage error of a tool that knows the verb refuses
+// too; only a tool built before the verb existed is skipped (B4 left that open). The hook names the Development AssetTool;
+// a copy of it runs beside a stand-in for that name which runs the AssetTool of this very build, which the build made with
+// Core-Test, so a Debug run never tests a stale Development tool.
 TEST_F(GitHooksTest, AModifiedMetaThatDoesNotParseIsRefusedThroughTheToolsQuickValidate)
 {
-	const std::filesystem::path tool = paths::GetEngineDir() / "Binaries" / "Win64" / "AssetTool-Development-Default.exe";
+	const FString stem = FString::FromPath(platform::GetExecutablePath().stem());
+	const FStringView configuration = stem.View().RightChop(stem.StartsWith("Core-Test") ? FStringView("Core-Test").Len() : stem.Len());
+	const std::filesystem::path tool = platform::GetExecutablePath().parent_path() / ("AssetTool" + FString(configuration) + ".exe").ToPath();
 	if (!std::filesystem::exists(tool))
 	{
-		GTEST_SKIP() << "the hook runs the Development AssetTool, which is not built";
+		GTEST_SKIP() << "this build's AssetTool is not built";
 	}
+	const std::filesystem::path engine = gDir / "Engine";
+	const std::filesystem::path engineHooks = engine / "Tools" / "GitHooks";
+	const std::filesystem::path binaries = engine / "Binaries" / "Win64";
+	std::error_code ec;
+	std::filesystem::create_directories(engineHooks, ec);
+	std::filesystem::create_directories(binaries, ec);
+	std::filesystem::copy_file(paths::GetEngineDir() / "Tools" / "GitHooks" / "pre-commit", engineHooks / "pre-commit", std::filesystem::copy_options::overwrite_existing, ec);
+	ASSERT_FALSE(ec) << FString::FromUtf8Lossy(ec.message()).CStr();
+	ASSERT_TRUE(platform::WriteFileText(binaries / "AssetTool-Development-Default.exe",
+		FString::Format("#!/usr/bin/env bash\nexec \"{}\" \"$@\"\n", FString::FromPath(tool, EPathStyle::Generic))));
+
 	Write("Game.frtproject", FString::Format("[Project]\nName=Game\nEngine={}\n", FString::FromPath(paths::GetEngineDir(), EPathStyle::Generic)));
 	Write("Content/Гра.png.meta", MetaText(GuidB) + "Labels: [ unclosed\n");
 
-	const FString hooks = FString::FromPath(paths::GetEngineDir() / "Tools" / "GitHooks", EPathStyle::Generic);
+	const FString hooks = FString::FromPath(engineHooks, EPathStyle::Generic);
 	const test::SProcessResult commit = RunGit({ "-c", "core.hooksPath=" + hooks, "commit", "-a", "-q", "-m", "A test's commit" });
 	const FString all = commit.Output + commit.Errors;
 	EXPECT_EQ(commit.ExitCode, 1) << all.CStr();
@@ -429,8 +450,20 @@ TEST_F(GitHooksTest, SetupHooksSetsCoreHooksPathAndNothingElse)
 		ASSERT_TRUE(platform::WriteFileText(other / "Other.frtproject", FString::Format("[Project]\nName=Other\nEngine={}\n", FString::FromPath(realEngine, EPathStyle::Generic))));
 		const std::vector<FString> driveOptions = { "--file=" + FString::FromPath(realEngine / "premake5.lua"), "setup", "--hooks",
 			"--project=" + FString::FromPath(other / "Other.frtproject") };
+		// This runs the real engine's setup from the real engine: whatever goes wrong, the developer's own clone keeps its
+		// core.hooksPath (setup falls back to the engine's clone when no project resolves).
+		const test::SProcessResult realBefore = test::RunGit(gGit, realEngine, { "config", "--local", "--get", "core.hooksPath" });
 		const test::SProcessResult drive = test::RunProcess(premake, driveOptions, realEngine);
+		const test::SProcessResult realAfter = test::RunGit(gGit, realEngine, { "config", "--local", "--get", "core.hooksPath" });
+		EXPECT_EQ(realAfter.Output, realBefore.Output) << "the real engine's clone was changed";
+		if (realAfter.Output != realBefore.Output)
+		{
+			(void)(realBefore.ExitCode == 0
+				? test::RunGit(gGit, realEngine, { "config", "--local", "core.hooksPath", realBefore.Output.TrimEnd() })
+				: test::RunGit(gGit, realEngine, { "config", "--local", "--unset", "core.hooksPath" }));
+		}
 		EXPECT_EQ(drive.ExitCode, 0) << drive.Output.CStr() << drive.Errors.CStr();
+		EXPECT_TRUE(drive.Output.Contains(FString::FromPath(other.filename()))) << "set for the project's clone: " << drive.Output.CStr();
 		EXPECT_EQ(platform::GetFileIdentity(hooksPath(other).ToPath()), platform::GetFileIdentity(realEngine / "Tools" / "GitHooks")) << hooksPath(other).CStr();
 	}
 }
