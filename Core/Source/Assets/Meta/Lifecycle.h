@@ -74,11 +74,5 @@
  *	- Problems have Subject (the mount path as spelled) and no File: the caller, which knows the mounts, fills it. Every
  *	  output list is in a deterministic order.
  */
-namespace frt::assets
-{
-// The file classes that get a meta (§3.2): imported assets and raw files. Companions, unclaimed and excluded files do not.
-[[nodiscard]] constexpr bool GetsMeta (EFileClass Class) noexcept
-{
-	return Class == EFileClass::Asset || Class == EFileClass::Raw;
-}
-}
+// GetsMeta, the file classes that get a meta, is in Assets/Registry/RegistryTypes.h beside EFileClass: the registry's
+// is:pending-meta asks it too.

@@ -189,9 +189,9 @@ of name or path), `type:Texture` / `t:` / `type=frt.Texture`, `dir:/Project/Data
 Errors carry the column of the term at fault.
 
 - `is:` with data: `broken-ref`, `unused`, `legacy-ref`, `excluded`, `problem`, `stale-tags`, `primary`,
-  `redirected` (an edge of its own resolved through an alias or a former path) and `pending-meta` (its file has no
-  meta yet); `unsaved` parses and matches nothing until M5-M6 (a note says so). `rows` matches nothing until data
-  tables (M5).
+  `redirected` (an edge of its own resolved through an alias or a former path) and `pending-meta` (its file gets a
+  meta and has none yet; a type-excluded file never gets one); `unsaved` parses and matches nothing until M5-M6 (a
+  note says so). `rows` matches nothing until data tables (M5).
 - System columns, for predicates, `order:` and result columns: `$Type`, `$Name`, `$Path`, `$Folder`, `$Labels`,
   `$Size`, `$ImportStatus`, `$Problems`, `$Referencers` (distinct referencing files), `$Dependencies`, `$CookRule`,
   `$Chunk`, `$PrimaryName`; tag keys per type (`frt.Texture`: Width, Height, Channels, HasAlpha; `frt.Model`:

@@ -304,6 +304,36 @@ TEST(QueryEngineCaseTest, ATargetThatMatchesTwoFilesUnderTheFoldIsPath001)
 	EXPECT_EQ(Query(store.Live(), "dir:/project/case").size(), 2u);
 }
 
+// is:pending-meta is a file that waits for a meta: one of a class that gets one (Asset, Raw) and has none yet. A
+// record whose file the Types filter excludes (class Excluded, TypeExcluded) never gets a meta, so it never matches; a
+// sub-asset excluded by type inside an included file shows its file's state.
+TEST(QueryEnginePendingMetaTest, OnlyAFileThatGetsAMetaWaitsForOne)
+{
+	CRegistryStore store;
+	SRegistryDelta delta;
+	delta.Mounts.push_back(SMountUpsert { "Project", false, ProjectMountId });
+	AddTexture(delta, "/Project/T/Камінь.png", 64, 64, 3, {});
+	AddTexture(delta, "/Project/T/Виключено.png", 64, 64, 3, {});
+	delta.FileUpserts.back().Class = EFileClass::Excluded;
+	delta.RecordUpserts.back().Flags = ERecordFlags::TypeExcluded;
+	delta.FileUpserts.push_back(MakeFile("/Project/T/Дані.txt", 10u, EFileClass::Raw));
+	delta.RecordUpserts.push_back(MakeRecord("/Project/T/Дані.txt", asset_types::Raw, "Raw"));
+	delta.FileUpserts.push_back(MakeFile("/Project/M/Box.gltf", 100u));
+	SRecordUpsert model = MakeRecord("/Project/M/Box.gltf", asset_types::Model, "Model");
+	model.SubEntries.push_back(SSubEntryDecl { "mesh:Body", MakeSubId("mesh:Body"), asset_types::Mesh, ERecordFlags::TypeExcluded, {} });
+	delta.RecordUpserts.push_back(std::move(model));
+	SFileUpsert paired = MakeFile("/Project/T/Пара.png", 4096u);
+	paired.Meta = SFileMetaState { EMetaState::Paired, 1u };
+	delta.FileUpserts.push_back(std::move(paired));
+	delta.RecordUpserts.push_back(MakeRecord("/Project/T/Пара.png", asset_types::Texture, "Texture"));
+	store.Commit(std::move(delta));
+
+	EXPECT_EQ(Query(store.Live(), "is:pending-meta"), List({ "/Project/M/Box.gltf", "/Project/T/Дані.txt", "/Project/T/Камінь.png" }));
+	EXPECT_EQ(Query(store.Live(), "is:excluded"), List({ "/Project/T/Виключено.png" }));
+	EXPECT_EQ(Query(store.Live(), "type:Mesh is:pending-meta"), List({ "/Project/M/Box.gltf#mesh:Body" }));
+	EXPECT_EQ(Query(store.Live(), "type:Mesh is:excluded"), List({ "/Project/M/Box.gltf#mesh:Body" }));
+}
+
 TEST_F(QueryEngineTest, SystemPredicatesReadFlagsEdgesAndProblems)
 {
 	EXPECT_EQ(Query(View(), "is:broken-ref"), List({ "/Project/Materials/M_Hero.frtmat.yml" }));
@@ -314,10 +344,13 @@ TEST_F(QueryEngineTest, SystemPredicatesReadFlagsEdgesAndProblems)
 	EXPECT_EQ(Query(View(), "is:stale-tags"), List({ "/Project/Data/DT_Ammo.frt" }));
 	EXPECT_EQ(Query(View(), "type:Texture is:unused"), List({ "/Project/Textures/Old/T_Old.png" }));
 	EXPECT_EQ(Query(View(), "type:Mesh is:unused"), List({ "/Project/Models/SM_Rock.gltf#mesh:Rock_LOD1" }));
-	// M4's: no edge here resolves through an alias or a former path, and no file has a meta.
+	// M4's: no edge here resolves through an alias or a former path, and no file has a meta; T_Old.png's file is
+	// excluded by type, so it never gets one and never waits for one.
 	EXPECT_TRUE(Query(View(), "is:redirected").empty());
-	EXPECT_EQ(Query(View(), "type:Texture is:pending-meta"), Query(View(), "type:Texture"));
-	EXPECT_FALSE(Query(View(), "type:Texture").empty());
+	EXPECT_EQ(Query(View(), "type:Texture is:pending-meta"),
+		List({ "/Project/Textures/Hero/T_Hero.png", "/Project/Textures/Hero/T_Hero_N.png", "/Project/Textures/T_Rock.png",
+			"/Project/Textures/T_Sand.png" }));
+	EXPECT_TRUE(Query(View(), "is:excluded is:pending-meta").empty());
 	// A predicate without data yet compiles, matches nothing and says why.
 	for (const FStringView text : { FStringView("is:unsaved"), FStringView("type:Texture is:unsaved") })
 	{

@@ -62,6 +62,12 @@ struct SRecordId
 
 // Meta (M4): a `.meta` file's own FILES row, so that it has a stat and an identity and an orphan has a home.
 enum class EFileClass : uint8 { Asset, Companion, Raw, Unclaimed, Excluded, Meta };
+// The file classes that get a meta (§3.2): imported assets and raw files. Companions, unclaimed and excluded files (a
+// type the scope's Types filter leaves out included) do not, so nothing ever creates one for them.
+[[nodiscard]] constexpr bool GetsMeta (EFileClass Class) noexcept
+{
+	return Class == EFileClass::Asset || Class == EFileClass::Raw;
+}
 // §4.7's ErrorMissingMeta is PendingMeta plus an error-severity META001; MissingMeta is a lost meta (META008).
 enum class EMetaState : uint8 { Paired, PendingMeta, Orphan, Broken, MissingMeta };   // a scan sets Paired/Broken/Orphan, the lifecycle the rest
 enum class ERecordFlags : uint16

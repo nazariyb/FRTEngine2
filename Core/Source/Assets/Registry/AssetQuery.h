@@ -55,7 +55,7 @@ enum class ESystemPredicate : uint8
 	Primary,       // a primary asset (ERecordFlags::Primary)
 	Redirected,    // has an edge resolved through an alias or a FormerPath (REF006, M4)
 	Unsaved,       // has unsaved editor changes (M5/M6)
-	PendingMeta,   // its file has no .meta yet (FILES MetaState PendingMeta, M4)
+	PendingMeta,   // its file gets a meta (Asset/Raw, GetsMeta) and has none yet (FILES MetaState PendingMeta, M4)
 };
 
 inline constexpr uint32 SystemPredicateCount = 10u;
