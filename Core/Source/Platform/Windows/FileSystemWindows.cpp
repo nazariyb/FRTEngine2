@@ -376,6 +376,22 @@ std::optional<FString> GetRelativePath (const std::filesystem::path& Path, const
 	return FString(below.TrimStart("/"));
 }
 
+bool IsAtOrBelowResolved (const std::filesystem::path& Path, const std::filesystem::path& Directory)
+{
+	std::error_code ec;
+	std::filesystem::path path = std::filesystem::weakly_canonical(Path, ec);
+	if (ec)
+	{
+		path = Path;
+	}
+	std::filesystem::path directory = std::filesystem::weakly_canonical(Directory, ec);
+	if (ec)
+	{
+		directory = Directory;
+	}
+	return IsAtOrBelow(NormalizePath(path), NormalizePath(directory));
+}
+
 std::optional<SFileStat> Stat (const std::filesystem::path& Path, FString* OutError)
 {
 	const CScopedHandle handle(OpenForAttributes(Path));

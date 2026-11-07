@@ -112,6 +112,11 @@ struct SFileStat
 	return GetRelativePath(Path, Directory, bCaseSensitive).has_value();
 }
 
+// IsAtOrBelow of the two paths as the disk resolves them, as far as each exists (std::filesystem::weakly_canonical: links and
+// junctions followed, 8.3 names expanded, the names in their spelling on disk): for a decision about where a process may
+// write, which no other spelling of the same directory may slip past (the scripted runs' scratch copy, Engine/Automation.h).
+[[nodiscard]] FRT_CORE_API bool IsAtOrBelowResolved (const std::filesystem::path& Path, const std::filesystem::path& Directory);
+
 template <NarrowText T>
 std::filesystem::path NormalizePath (const T&) = delete;
 

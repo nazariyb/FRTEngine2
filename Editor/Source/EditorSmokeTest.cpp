@@ -23,6 +23,7 @@
 #include "Assets/Vcs/VcsProvider.h"
 #include "Config/Config.h"
 #include "Containers/String.h"
+#include "Engine/Automation.h"
 #include "Engine/Engine.h"
 #include "Engine/GameModule.h"
 #include "Entity.h"
@@ -123,15 +124,10 @@ constexpr uint8 TinyPng[] = {
 // How long the lifecycle may take to create the meta: its creation delay and VCS settle time, and a slow machine.
 constexpr double MetaCreationTimeoutSeconds = 30.0;
 
-// Path is Directory or below it (both made canonical as far as they exist, so spelling and case
-// do not matter).
+// Path is Directory or below it, as the disk resolves both (spelling, case and links do not matter).
 bool IsInside (const std::filesystem::path& Path, const std::filesystem::path& Directory)
 {
-	std::error_code ec;
-	const std::filesystem::path path = std::filesystem::weakly_canonical(Path, ec);
-	const std::filesystem::path directory = std::filesystem::weakly_canonical(Directory, ec);
-	const std::filesystem::path relative = path.lexically_relative(directory);
-	return !relative.empty() && *relative.begin() != "..";
+	return platform::IsAtOrBelowResolved(Path, Directory);
 }
 }
 
@@ -209,6 +205,12 @@ void CEditorSmokeTest::BeginFileEdits (CEngine& Engine)
 	Check(bProjectOutside, "the project is a copy outside the engine checkout: " + FString::FromPath(paths::GetProjectDir()));
 	Check(bShadersOutside, "the shaders are a copy outside the engine checkout ([Render] ShaderRoot): " + FString::FromPath(paths::GetShaderRootDir()));
 	bCanEditFiles = bProjectOutside && bShadersOutside;
+	// The engine made the same decision at start-up (CAutomation::IsScratchEditRun): the run writes the copy's assets
+	// exactly when it edits its files, and is read-only everywhere else.
+	const assets::CAssetRegistry* registry = Engine.GetAssetRegistry();
+	Check(bCanEditFiles == CAutomation::IsScratchEditRun(Engine.GetConfig(), paths::GetProjectDir(), engineDir)
+		&& registry != nullptr && registry->IsWriter() == bCanEditFiles,
+		bCanEditFiles ? FString("the run is the scratch copy's asset writer") : FString("the run writes no asset (read-only)"));
 	if (!bCanEditFiles)
 	{
 		Log("  refusing to edit files of the engine checkout");

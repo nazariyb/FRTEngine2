@@ -123,12 +123,17 @@ int RunEditor ()
 	CEngine engine;
 	if (!engine.StartUp(desc))
 	{
-		// A second writer: one message naming the owner, then the editor quits (scripted runs never get here: they are
-		// read-only and never ask for the lock).
+		// A second writer: one message naming the owner, then the editor quits. A scripted run is read-only and never asks
+		// for the lock, except the smoke test's file edits on a scratch copy (CAutomation::IsScratchEditRun), the copy's
+		// writer: it prints the message alone and exits at once, as no one is there to close a dialog. The config is
+		// loaded before the claim, and StartUp's failure leaves it.
 		if (!engine.GetStartUpError().IsEmpty())
 		{
 			std::cout << engine.GetStartUpError() << std::endl;
-			platform::ShowErrorMessage(desc.WindowTitle, engine.GetStartUpError());
+			if (!CAutomation::IsScriptedRun(engine.GetConfig()))
+			{
+				platform::ShowErrorMessage(desc.WindowTitle, engine.GetStartUpError());
+			}
 		}
 		return 1;
 	}

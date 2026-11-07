@@ -58,11 +58,12 @@ namespace frt
  * ApplyScriptedRunRules to every run IsScriptedRun recognises - one with an [Automation] key that
  * makes it scripted, or the editor's smoke test ([Editor] SmokeTest) - before anything is created
  * from the config. [Assets] Watch=0: no file is reloaded behind the run's back (the file watcher
- * starts disabled; a smoke step that edits files turns it on for itself). [Assets] ReadOnly=1: the
- * asset system writes nothing - no meta, snapshot, journal or Rules.cache - and takes no writer lock. The one
- * exception is the smoke test's file edits on a scratch copy ([Editor] SmokeTestEdits=1 with a project outside
- * the engine checkout, which FRT.bat verify makes with FRT.bat new): that run is the copy's writer, so its
- * lifecycle creates the meta of the file it adds through the copy's VCS provider (edit [4]).
+ * starts disabled; a smoke step that edits files turns it on for itself). [Assets] EngineWritable=0: no
+ * scripted run writes the engine checkout's /Engine. [Assets] ReadOnly=1: the asset system writes nothing - no
+ * meta, snapshot, journal or Rules.cache - and takes no writer lock. The one exception is the smoke test's file
+ * edits on a scratch copy (IsScratchEditRun, the same decision the smoke test's BeginFileEdits makes; FRT.bat
+ * verify makes the copy with FRT.bat new): that run is the copy's writer, so its lifecycle creates the meta of
+ * the file it adds through the copy's VCS provider (edit [4]).
  */
 class FRT_CORE_API CAutomation
 {
@@ -70,10 +71,17 @@ public:
 	// The run Config describes is scripted: an [Automation] key that makes a run scripted (IsActive),
 	// or [Editor] SmokeTest.
 	[[nodiscard]] static bool IsScriptedRun (const config::CConfig& Config);
-	// Forces what every scripted run runs with, as overrides (never saved): [Assets] Watch=0 and
-	// [Assets] ReadOnly=1 (not for SmokeTestEdits on a project outside the engine checkout). Before anything
-	// reads them (CEngine::StartUp, right after the command line).
+	// The editor smoke test's file edits on a scratch copy (Editor/Source/EditorSmokeTest.h): [Editor] SmokeTest and
+	// SmokeTestEdits on, a project (ProjectDir; empty: none) and a [Render] ShaderRoot directory (a dev build's, which
+	// alone reads it) both outside EngineDir as the disk resolves them (platform::IsAtOrBelowResolved). The one run
+	// ApplyScriptedRunRules leaves writable, and the one whose files the smoke test edits.
+	[[nodiscard]] static bool IsScratchEditRun (const config::CConfig& Config, const std::filesystem::path& ProjectDir,
+		const std::filesystem::path& EngineDir);
+	// Forces what every scripted run runs with, as overrides (never saved): [Assets] Watch=0, [Assets] EngineWritable=0
+	// and, unless IsScratchEditRun, [Assets] ReadOnly=1. Before anything reads them (CEngine::StartUp, right after the
+	// command line), for the opened project and this engine (the paths overload; the other passes them explicitly).
 	static void ApplyScriptedRunRules (config::CConfig& Config);
+	static void ApplyScriptedRunRules (config::CConfig& Config, const std::filesystem::path& ProjectDir, const std::filesystem::path& EngineDir);
 
 	// Reads the [Automation] keys; a scripted run also switches the renderer to deterministic
 	// texture streaming.
