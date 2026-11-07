@@ -61,6 +61,10 @@ public:
 	void SetStaleLockWarningMsForTest (uint32 Ms) { LockWarningMs = Ms; }
 
 private:
+	// Which of the two locks git holds: none, one that rewrites the tree, or index.lock kept by a commit that waits for its
+	// message (CheckLocks says how it tells). Stats only, and warns once of a lock held too long.
+	enum class ELockHeld : uint8 { None, Rewriting, CommitMessage };
+	[[nodiscard]] ELockHeld CheckLocks () const;
 	[[nodiscard]] platform::SToolProcessResult RunGit (std::vector<FString> Arguments) const;
 	[[nodiscard]] SVcsResult MoveOne (const SVcsMove& Move) const;
 	// The name below the top level git would print for File; empty when File is not under this mount.
@@ -77,6 +81,7 @@ private:
 	std::vector<std::filesystem::path> OtherBusyFiles;
 	std::filesystem::path IndexLock;
 	std::filesystem::path HeadLock;
+	std::filesystem::path CommitMessage;   // COMMIT_EDITMSG
 	std::vector<FString> UnsetEnvironment;   // GIT_INDEX_FILE when a hook gave it for another repository (Detect)
 	uint32 LockWarningMs = StaleLockWarningMs;
 	mutable std::atomic<uint64> LockHeldSinceMs = 0u;   // 0: not held at the last look

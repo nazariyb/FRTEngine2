@@ -49,7 +49,7 @@ public:
 	// None: empty.
 	virtual SVcsResult GetStaged (std::vector<FString>& OutFiles) = 0;
 	// The file watcher's hold (added at M4), narrower than IsBusy so that an open merge holds repairs but never hot reload.
-	// Git: index.lock or HEAD.lock only.
+	// Git: index.lock or HEAD.lock only, and not an index.lock a commit keeps while it waits for its message.
 	virtual bool IsRewritingTree () const { return IsBusy(); }
 	// Added at M4, for what a person is shown, so that no caller downcasts or hard-codes one VCS's text. The name is what
 	// `status` and the Stats panel print per mount: "None", "Git". The commands are never run, only shown and copied, since

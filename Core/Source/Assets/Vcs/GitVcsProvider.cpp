@@ -169,6 +169,7 @@ bool CGitVcsProvider::Detect (const FString& InMountRoot)
 	Prefix = lines.size() > 3u ? FString(lines[3]) : FString();
 	IndexLock = GitDir / "index.lock";
 	HeadLock = GitDir / "HEAD.lock";
+	CommitMessage = GitDir / "COMMIT_EDITMSG";
 	// What `git status` calls an operation in progress, by the same files. REBASE_HEAD is not one: a rebase is open while
 	// rebase-merge/ or rebase-apply/ is there, and git can leave REBASE_HEAD behind after one that ended, which would hold
 	// every repair for good with nothing said. sequencer/todo is a cherry-pick or revert of several commits between steps.
@@ -188,19 +189,29 @@ bool CGitVcsProvider::Detect (const FString& InMountRoot)
 	return true;
 }
 
-bool CGitVcsProvider::IsRewritingTree () const
+// `git commit -a` and `git commit <paths>` take index.lock before their pre-commit hook and keep it while the person writes
+// the message, which git asks for in a COMMIT_EDITMSG it writes once the hook passed. From then to its end a commit writes
+// no working file, so a COMMIT_EDITMSG no older than the lock is a commit waiting for its message: busy for repairs, which
+// must not write a meta in the middle of a commit, but no rewrite to hold hot reload for. A checkout, merge or rebase step
+// takes a new index.lock, newer than any COMMIT_EDITMSG before it, and HEAD.lock is always a ref update in progress.
+CGitVcsProvider::ELockHeld CGitVcsProvider::CheckLocks () const
 {
-	if (Git.empty())
-	{
-		return false;
-	}
-	const std::filesystem::path* held = platform::Stat(IndexLock).has_value() ? &IndexLock
-		: platform::Stat(HeadLock).has_value() ? &HeadLock : nullptr;
-	if (held == nullptr)
+	const std::optional<platform::SFileStat> index = platform::Stat(IndexLock);
+	const bool bHead = platform::Stat(HeadLock).has_value();
+	if (!index.has_value() && !bHead)
 	{
 		LockHeldSinceMs = 0u;
 		bLockWarned = false;
-		return false;
+		return ELockHeld::None;
+	}
+	ELockHeld held = ELockHeld::Rewriting;
+	if (!bHead)
+	{
+		const std::optional<platform::SFileStat> message = platform::Stat(CommitMessage);
+		if (message.has_value() && message->LastWriteTime >= index->LastWriteTime)
+		{
+			held = ELockHeld::CommitMessage;
+		}
 	}
 
 	const uint64 nowMs = static_cast<uint64>(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -212,23 +223,37 @@ bool CGitVcsProvider::IsRewritingTree () const
 	}
 	if (nowMs - since >= LockWarningMs && !bLockWarned.exchange(true))
 	{
-		log::Warning(log::Assets, "'{}' has been there for {} s, and everything that waits for git is waiting: a stale lock? "
-			"Delete it if no git is running.", unicode::ToDisplayText(FString::FromPath(*held)), (nowMs - since) / 1000u);
+		const FString file = unicode::ToDisplayText(FString::FromPath(index.has_value() ? IndexLock : HeadLock));
+		if (held == ELockHeld::CommitMessage)
+		{
+			log::Warning(log::Assets, "'{}' has been held for {} s by a git commit waiting for its message, and repairs wait "
+				"until it ends. If no git is running, the lock is stale: delete it.", file, (nowMs - since) / 1000u);
+		}
+		else
+		{
+			log::Warning(log::Assets, "'{}' has been there for {} s, and everything that waits for git is waiting. A git "
+				"command may still be running; if none is, the lock is stale: delete it.", file, (nowMs - since) / 1000u);
+		}
 	}
-	return true;
+	return held;
+}
+
+bool CGitVcsProvider::IsRewritingTree () const
+{
+	return !Git.empty() && CheckLocks() == ELockHeld::Rewriting;
 }
 
 bool CGitVcsProvider::IsBusy () const
 {
-	// An open merge, rebase, cherry-pick or revert stays for as long as the person takes, unlike the two locks.
-	if (IsRewritingTree())
-	{
-		return true;
-	}
 	if (Git.empty())
 	{
 		return false;
 	}
+	if (CheckLocks() != ELockHeld::None)
+	{
+		return true;
+	}
+	// An open merge, rebase, cherry-pick or revert stays for as long as the person takes, unlike the two locks.
 	for (const std::filesystem::path& file : OtherBusyFiles)
 	{
 		if (platform::Stat(file).has_value())

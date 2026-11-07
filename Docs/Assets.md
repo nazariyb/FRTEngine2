@@ -351,7 +351,7 @@ operation forward at start-up detects its providers on its own thread, and only 
 |---|---|---|
 | `Detect` | always | `git rev-parse` from the mount root, so worktrees, submodules and `.git` files resolve to their own git dir; a `.git` without `git` on `PATH`, or one git refuses (dubious ownership), gives `None` and one warning |
 | `IsBusy` | never | stats only, what `git status` calls an operation in progress: `index.lock`, `HEAD.lock`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `rebase-merge/`, `rebase-apply/`, `sequencer/todo` in that git dir. Not `REBASE_HEAD` alone, which git can leave behind after a rebase ended |
-| `IsRewritingTree` | never | `index.lock` or `HEAD.lock` only, so an open merge holds repairs but never hot reload. Held 30 s without a break logs one warning naming the file; it is never deleted |
+| `IsRewritingTree` | never | `index.lock` or `HEAD.lock` only, so an open merge holds repairs but never hot reload. Not an `index.lock` with a `COMMIT_EDITMSG` no older than it: `git commit -a` or `git commit <paths>` waiting for its message, which writes no working file (`IsBusy` still counts it, so repairs wait for the commit). A lock held 30 s without a break logs one warning naming the file (and saying when it is a commit waiting for its message); it is never deleted |
 | `CheckOut` | a read-only file fails with `ReadOnly`, naming it; the attribute is never cleared | the same |
 | `Add` | nothing | nothing: new files are left for the user to stage |
 | `Move` | `platform::MoveFileNoReplace`, and one warning on a case-only rename | the same, with `git mv` for a case-only rename of a tracked file, which `core.ignorecase=true` would hide; refused over `index.lock` it returns `Busy` |

@@ -14,6 +14,7 @@
 #include "Log/LogCapture.h"
 #include "Platform/RecycleBinTestUtils.h"
 
+#include <chrono>
 #include <filesystem>
 #include <random>
 #include <set>
@@ -306,6 +307,38 @@ TEST_F(VcsProviderTest, ALockHeldTooLongWarnsOnceAndIsNeverDeleted)
 	EXPECT_TRUE(Git.IsBusy());
 	EXPECT_EQ(CountWarnings(capture), 1u);
 	std::filesystem::remove(merge);
+}
+
+// `git commit -a` keeps index.lock while the person writes the message, in a COMMIT_EDITMSG git writes after the lock. That
+// commit writes no working file: repairs wait for it, hot reload does not, and a long message is not called a stale lock.
+TEST_F(VcsProviderTest, ACommitWaitingForItsMessageHoldsRepairsButNotHotReload)
+{
+	const test::CLogCapture capture;
+	const std::filesystem::path lock = Git.GetGitDir() / "index.lock";
+	const std::filesystem::path message = Git.GetGitDir() / "COMMIT_EDITMSG";
+	ASSERT_TRUE(platform::WriteFileText(lock, ""));
+	ASSERT_TRUE(platform::WriteFileText(message, "A message being written\n"));
+	std::filesystem::last_write_time(message, std::filesystem::last_write_time(lock));
+
+	Git.SetStaleLockWarningMsForTest(0u);
+	EXPECT_TRUE(Git.IsBusy());
+	EXPECT_FALSE(Git.IsRewritingTree());
+	ASSERT_EQ(CountWarnings(capture), 1u);
+	EXPECT_TRUE(capture.GetEntries()[0].Text.Contains("waiting for its message")) << capture.GetEntries()[0].Text.CStr();
+
+	// HEAD.lock is a ref update in progress whatever the message.
+	ASSERT_TRUE(platform::WriteFileText(Git.GetGitDir() / "HEAD.lock", ""));
+	EXPECT_TRUE(Git.IsRewritingTree());
+	std::filesystem::remove(Git.GetGitDir() / "HEAD.lock");
+
+	// The message of an earlier commit: this lock is a checkout, a merge or a hook running, and rewrites.
+	std::filesystem::last_write_time(message, std::filesystem::last_write_time(lock) - std::chrono::hours(1));
+	EXPECT_TRUE(Git.IsBusy());
+	EXPECT_TRUE(Git.IsRewritingTree());
+	std::filesystem::remove(lock);
+	EXPECT_FALSE(Git.IsBusy());
+	EXPECT_FALSE(Git.IsRewritingTree());
+	std::filesystem::remove(message);
 }
 
 
