@@ -16,7 +16,9 @@
  * left without what was asked), 2 usage, 3 the registry did not finish, 4 another process owns the mount.
  */
 #include <algorithm>
+#include <filesystem>
 #include <iterator>
+#include <memory>
 #include <optional>
 #include <vector>
 
@@ -26,9 +28,11 @@
 #include "Assets/Meta/MetaPaths.h"
 #include "Assets/Meta/MetaVerbs.h"
 #include "Assets/Meta/Migrations.h"
+#include "Assets/Meta/Safety.h"
 #include "Assets/Meta/Validation.h"
 #include "Assets/Registry/RegistryRecords.h"
 #include "Assets/Vcs/VcsProvider.h"
+#include "Containers/StringMap.h"
 
 #include "Commandlet.h"
 #include "RegistryRun.h"
@@ -83,6 +87,60 @@ void PrintProblem (const CCommandletContext& Context, const SDiagnostic& Problem
 		.AddUInt("line", Problem.Line).AddUInt("column", Problem.Column).AddString("field", Problem.FieldPath).AddString("message", Problem.Message));
 }
 
+/**
+ * validate --staged: what a commit stages outside every mount's content, which the mounts' providers (rooted at the content
+ * directories) never list - each own mount's rule file (Config/Assets.yml, the engine's Core/Config/Assets.yml) and its
+ * repository root's Schemas/Migrations.yml. Each repository root is asked once, through a provider rooted there from the
+ * same factory and setting as the mounts' (so the hook's GIT_INDEX_FILE holds for it too); a root whose mounts' providers
+ * stage nothing (None) is validated whole already. Out: root mount paths, as SValidateOptions names them.
+ */
+int32 FindStagedOutsideContent (const CCommandletContext& Context, FStringView Verb, const SRegistryRun& Run, std::vector<FString>& OutRuleMounts,
+	std::vector<FString>& OutMigrationRoots)
+{
+	const auto fold = [] (const std::filesystem::path& Path) { return FString::FromPath(Path.lexically_normal().make_preferred()).FoldCase(); };
+	const FString setting = assets::SAssetEditorSettings::FromConfig(Context.GetConfig()).VcsProvider;
+	std::vector<std::filesystem::path> asked;
+	for (const assets::MountId id : Run.OwnMounts)
+	{
+		const assets::SMount* mount = Run.Mounts->Find(id);
+		assets::IVcsProvider* provider = Run.FindProvider(id);
+		if (mount == nullptr || provider == nullptr || provider->GetName() == "None"
+			|| std::find(asked.begin(), asked.end(), mount->OwnerRoot) != asked.end())
+		{
+			continue;
+		}
+		asked.push_back(mount->OwnerRoot);
+		const std::unique_ptr<assets::IVcsProvider> rootProvider = assets::MakeVcsProvider(setting, FString::FromPath(mount->OwnerRoot));
+		if (rootProvider == nullptr || rootProvider->GetName() == "None")
+		{
+			continue;
+		}
+		std::vector<FString> staged;
+		if (const assets::SVcsResult result = rootProvider->GetStaged(staged); result.Error != assets::EVcsError::None)
+		{
+			return Context.Fail(ExitInternalError, FString::Format("{} --staged: {}", Verb, result.Message));
+		}
+		FStringSet folded;
+		for (const FString& file : staged)
+		{
+			folded.insert(fold(file.ToPath()));
+		}
+		for (const assets::MountId other : Run.OwnMounts)
+		{
+			const assets::SMount* sibling = Run.Mounts->Find(other);
+			if (sibling != nullptr && sibling->OwnerRoot == mount->OwnerRoot && !sibling->RulesFile.empty() && folded.contains(fold(sibling->RulesFile)))
+			{
+				OutRuleMounts.push_back(sibling->GetRootMountPath());
+			}
+		}
+		if (folded.contains(fold(assets::GetMigrationsPath(mount->OwnerRoot))))
+		{
+			OutMigrationRoots.push_back(mount->GetRootMountPath());
+		}
+	}
+	return ExitSuccess;
+}
+
 // The GUID a source's meta gives its record now ("" for none).
 FString GuidOf (const assets::CRegistryView& View, FStringView Source)
 {
@@ -127,6 +185,8 @@ int32 Validate (CCommandletContext& Context, FStringView Verb, bool bFix)
 	{
 		return result;
 	}
+	std::vector<FString> stagedRuleMounts;
+	std::vector<FString> stagedMigrationRoots;
 	const bool bLimited = bStaged || !paths.empty();
 	if (bStaged)
 	{
@@ -153,6 +213,10 @@ int32 Validate (CCommandletContext& Context, FStringView Verb, bool bFix)
 					paths.push_back(*path);
 				}
 			}
+		}
+		if (const int32 result = FindStagedOutsideContent(Context, Verb, run, stagedRuleMounts, stagedMigrationRoots); result != ExitSuccess)
+		{
+			return result;
 		}
 	}
 
@@ -189,6 +253,8 @@ int32 Validate (CCommandletContext& Context, FStringView Verb, bool bFix)
 	{
 		options.Paths = paths;
 	}
+	options.StagedRuleMounts = std::move(stagedRuleMounts);
+	options.StagedMigrationRoots = std::move(stagedMigrationRoots);
 	options.bQuick = bQuick;
 	options.Providers = run.Providers->GetProviders();
 	std::vector<SDiagnostic> problems;

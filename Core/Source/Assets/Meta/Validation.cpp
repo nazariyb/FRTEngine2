@@ -98,10 +98,12 @@ public:
 	void Run (std::vector<SDiagnostic>& Out)
 	{
 		std::vector<SDiagnostic> found;
-		View.ForEachProblem([&] (FStringView Subject, EProblemSource, const SDiagnostic& Diagnostic)
+		View.ForEachProblem([&] (FStringView Subject, EProblemSource Source, const SDiagnostic& Diagnostic)
 		{
 			const FStringView subject = Diagnostic.Subject.IsEmpty() ? Subject : Diagnostic.Subject.View();
-			if (IsInScope(subject))
+			// A mount's own rule file is named by the mount root, which no staged content path is at or below.
+			const bool bStagedRules = Source == EProblemSource::Rules && IsInMountScope(subject) && IsStagedRuleMount(subject);
+			if (IsInScope(subject) || bStagedRules)
 			{
 				found.push_back(Diagnostic);
 				found.back().Subject = FString(subject);
@@ -208,6 +210,14 @@ private:
 	[[nodiscard]] bool IsInScope (FStringView Subject) const
 	{
 		return IsInMountScope(Subject) && IsInPaths(Subject);
+	}
+
+	// RootMountPath is one of Options.StagedRuleMounts (ASCII and Unicode case folded, as mount names are).
+	[[nodiscard]] bool IsStagedRuleMount (FStringView RootMountPath) const
+	{
+		const FString folded = FString(RootMountPath).FoldCase();
+		return std::any_of(Options.StagedRuleMounts.begin(), Options.StagedRuleMounts.end(),
+			[&] (const FString& Staged) { return FString(Staged).FoldCase() == folded; });
 	}
 
 	// A V-only problem about Subject (a file's or folder's mount path), File per the diagnostics convention.
@@ -377,8 +387,9 @@ private:
 			}
 			if (rule.Folder == InvalidRow)
 			{
-				// The mount's Config/Assets.yml lies outside its content: named by the mount root, read when not limited to paths.
-				if (Options.Paths.has_value())
+				// The mount's Config/Assets.yml lies outside its content: named by the mount root, read when not limited to paths
+				// or when it is staged itself.
+				if (Options.Paths.has_value() && !IsStagedRuleMount(mount->GetRootMountPath()))
 				{
 					return;
 				}
@@ -498,14 +509,18 @@ private:
 		if (Options.Paths.has_value())
 		{
 			// Limited (--staged, or paths named): a root is behind for a run that asks for something of its own mounts. A commit
-			// of code alone stages no content, so the hook's check 6 lets it through; content into a root behind is refused.
+			// of code alone stages no content, so the hook's check 6 lets it through; content into a root behind is refused, and
+			// so is a commit that stages the root's Schemas/Migrations.yml itself (a deletion, a file that does not parse).
+			const auto isOfRoot = [&] (const SMount* Root, const FString& Path)
+			{
+				const SMount* mount = MountOf(Path);
+				return mount != nullptr && mount->OwnerRoot == Root->OwnerRoot && IsInMountScope(Path);
+			};
 			std::erase_if(roots, [&] (const SMount* Root)
 			{
-				return std::none_of(Options.Paths->begin(), Options.Paths->end(), [&] (const FString& Path)
-				{
-					const SMount* mount = MountOf(Path);
-					return mount != nullptr && mount->OwnerRoot == Root->OwnerRoot && IsInMountScope(Path);
-				});
+				return std::none_of(Options.Paths->begin(), Options.Paths->end(), [&] (const FString& Path) { return isOfRoot(Root, Path); })
+					&& std::none_of(Options.StagedMigrationRoots.begin(), Options.StagedMigrationRoots.end(),
+						[&] (const FString& Path) { return isOfRoot(Root, Path); });
 			});
 		}
 		for (const SMount* mount : roots)

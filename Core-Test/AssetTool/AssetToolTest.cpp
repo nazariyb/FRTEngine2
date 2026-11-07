@@ -1381,6 +1381,55 @@ TEST_F(AssetToolRegistryTest, TheMetaVerbsCreateValidateRestoreAndExplainMetasTh
 	EXPECT_TRUE(stoneMeta.Contains("Guid: " + JsonText(lines[0], "meta.guid") + "\n")) << explained.Output.CStr();
 }
 
+// validate --staged, the pre-commit hook's check 6, over what a commit stages outside every mount's content, which the
+// mounts' providers (rooted at Content/) never list: the project's own Config/Assets.yml brings in its rule-file problems
+// (CRLF: VCS001, an unknown key: RULE001, both named /Project), and a staged deletion of Schemas/Migrations.yml the root's
+// MIG001; the same rule file broken on disk but not staged is not this commit's. Skipped without git on PATH.
+TEST_F(AssetToolRegistryTest, ValidateStagedSeesAStagedRuleFileAndMigrationsFileOutsideTheContent)
+{
+	const std::filesystem::path git = platform::FindOnPath("git");
+	if (git.empty())
+	{
+		GTEST_SKIP() << "no git.exe on PATH";
+	}
+	ASSERT_EQ(test::RunGit(git, ProjectDir, { "init", "-q" }).ExitCode, 0);
+	ASSERT_EQ(test::RunGit(git, ProjectDir, { "add", "--all" }).ExitCode, 0);
+	ASSERT_EQ(test::RunGit(git, ProjectDir, { "commit", "-q", "-m", "A project" }).ExitCode, 0);
+	const auto count = [] (FStringView Output, FStringView Code)
+	{
+		uint32 found = 0u;
+		for (const reflect::CDataTree& line : ParseJsonLines(Output))
+		{
+			found += JsonText(line, "kind") == "problem" && JsonText(line, "code") == Code && JsonText(line, "subject") == "/Project" ? 1u : 0u;
+		}
+		return found;
+	};
+
+	// CRLF in a rule file that loads (one that does not load holds no rules to check).
+	WriteText(ProjectDir / "Config" / "Assets.yml", "FormatVersion: 1\r\n");
+	const test::SProcessResult unstaged = RunOnProject({ "validate", "--staged", "--ci", "--json" });
+	EXPECT_EQ(unstaged.ExitCode, 0) << unstaged.Output.CStr() << unstaged.Errors.CStr();
+	EXPECT_EQ(count(unstaged.Output, "VCS001"), 0u) << "not staged: " << unstaged.Output.CStr();
+	ASSERT_EQ(test::RunGit(git, ProjectDir, { "add", "--", "Config/Assets.yml" }).ExitCode, 0);
+	const test::SProcessResult crlf = RunOnProject({ "validate", "--staged", "--ci", "--json" });
+	EXPECT_EQ(crlf.ExitCode, 1) << crlf.Output.CStr() << crlf.Errors.CStr();
+	EXPECT_EQ(count(crlf.Output, "VCS001"), 1u) << crlf.Output.CStr();
+	EXPECT_EQ(count(crlf.Output, "MIG001"), 0u) << "Migrations.yml was not staged: " << crlf.Output.CStr();
+
+	WriteText(ProjectDir / "Config" / "Assets.yml", "FormatVersion: 1\nNoSuchKey: 1\n");
+	ASSERT_EQ(test::RunGit(git, ProjectDir, { "add", "--", "Config/Assets.yml" }).ExitCode, 0);
+	const test::SProcessResult unknown = RunOnProject({ "validate", "--staged", "--ci", "--json" });
+	EXPECT_EQ(unknown.ExitCode, 1) << unknown.Output.CStr() << unknown.Errors.CStr();
+	EXPECT_GE(count(unknown.Output, "RULE001"), 1u) << unknown.Output.CStr();
+
+	ASSERT_EQ(test::RunGit(git, ProjectDir, { "reset", "-q", "--hard" }).ExitCode, 0);
+	ASSERT_EQ(test::RunGit(git, ProjectDir, { "rm", "-q", "--", "Schemas/Migrations.yml" }).ExitCode, 0);
+	const test::SProcessResult deleted = RunOnProject({ "validate", "--staged", "--ci", "--json" });
+	EXPECT_EQ(deleted.ExitCode, 1) << deleted.Output.CStr() << deleted.Errors.CStr();
+	EXPECT_EQ(count(deleted.Output, "MIG001"), 1u) << deleted.Output.CStr();
+	EXPECT_EQ(count(deleted.Output, "VCS001") + count(deleted.Output, "RULE001"), 0u) << deleted.Output.CStr();
+}
+
 // The MIG001 gate (design §14.8), on by default and named for these runs with -Assets:MigrationGate=1: in a project
 // behind the engine every run that would write ends with exit code 1 and MIG001 before it takes the lock, validate
 // --fix as well (its WriteOption), and writes nothing; a run that writes nothing goes on and reports MIG001 as an

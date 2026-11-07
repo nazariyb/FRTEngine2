@@ -33,7 +33,7 @@
  *	  VCS003   a pair the VCS tracks differently, one StatusOf per provider over every pair in scope ("commit it"), its
  *	           File the half the VCS does not track (what the problems panel's add command names);
  *	  MIG001   a repository root of the scope whose Schemas/Migrations.yml lacks a step this engine requires (with Paths, a
- *	           root that one of them lies in).
+ *	           root that one of them lies in, or whose Schemas/Migrations.yml is staged: StagedMigrationRoots).
  *	MIG002 has no data in M4: the legacy patterns it names go with steps that arrive in M7 and M9a.
  *
  * Each V-only problem carries Subject (the mount path as spelled), File (relative to its owner root) and the rule files'
@@ -56,6 +56,12 @@ struct SValidateOptions
 	// or is the meta or the source of one. MIG001 is the root's: reported for a root when one of the paths lies in its mounts
 	// (an empty list, a commit of code alone, has none). nullopt: everything.
 	std::optional<std::vector<FString>> Paths;
+	// With Paths (--staged), what a commit stages outside every mount's content: the root mount paths whose own rule file
+	// (RulesFile: Config/Assets.yml, the engine's Core/Config/Assets.yml) is staged, which brings in that file's problems
+	// (VCS001 for CRLF, the Rules source's RULE001, both named by the mount root); and the root mount path of a mount of
+	// each repository root whose Schemas/Migrations.yml is staged, which brings in that root's MIG001.
+	std::vector<FString> StagedRuleMounts;
+	std::vector<FString> StagedMigrationRoots;
 	bool bQuick = false;                              // no reads of text sources but those in Paths (no hashing anywhere)
 	std::vector<std::pair<MountId, IVcsProvider*>> Providers;   // VCS003; absent, null or None: no status asked
 };

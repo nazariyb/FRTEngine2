@@ -516,7 +516,10 @@ meta.
 - **`--staged`** takes the paths from `IVcsProvider::GetStaged` (Git: what the pre-commit hook is committing, through
   the inherited `GIT_INDEX_FILE`); a problem is in when its subject is at or below one of them, or is its meta or source.
   `MIG001` is the root's: it is in when something staged lies in one of that root's mounts, so a commit of code alone is
-  never refused for it, and content committed into a repository behind is.
+  never refused for it, and content committed into a repository behind is. What the mounts' providers cannot list,
+  being outside their content, is asked of a provider at each repository root: a staged mount rule file
+  (`Config/Assets.yml`, the engine's `Core/Config/Assets.yml`) brings in that file's problems (`VCS001`, `RULE001`, named
+  by the mount root), and a staged `Schemas/Migrations.yml` (a deletion too) that root's `MIG001`.
 - **`migrate metas`** creates a meta for every file of class Asset or Raw that has none (a broken meta counts as one: it
   is never reminted), with `MakeCreateMetaGuid` over the mount's salt, its folded mount path and its content: two people
   who migrate one commit write the same bytes. It records itself only when no such file is left without a meta (a
