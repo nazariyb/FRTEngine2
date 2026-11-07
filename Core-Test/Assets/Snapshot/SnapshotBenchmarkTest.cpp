@@ -306,6 +306,11 @@ void MeasureSnapshot (const std::filesystem::path& Dir, uint32 Assets, uint32 Ro
  * by one thread (they append to shared pools in record order). The figures are for an optimized build (Release):
  * Development, the build that runs the live registry, is about twice as slow and is reported beside them. Measured
  * (i7-13700K, affinity 0xFFFFFC, warm; the figures of P3's review): see the M3 report.
+ *
+ * §5.11 as revised at M4: the 100k fixtures carry a meta per asset (edit [63]), which doubles the file rows and adds
+ * every meta's bytes, so the 100k figures became 400 ms load, 600 ms load with 500k rows, 210 ms write CPU and 210 MB.
+ * Measured in Release, alone, on the 9950X3D: with metas 359 / 556 ms load, 193 ms write CPU, 197 MB; the same fixtures
+ * without metas 185 / 425 ms, 87 ms, 146 MB. Making the meta rows smaller is planned work, not M4's.
  */
 TEST_F(SnapshotTest, SnapshotAndJournalMeetTheirBudgetsAt10kAssets)
 {
@@ -322,8 +327,8 @@ TEST_F(SnapshotTest, SnapshotAndJournalMeetTheirBudgetsAt10kAssets)
 TEST_F(SnapshotTest, DISABLED_SnapshotAndJournalAt100kAssets)
 {
 	SSnapshotBudgets budgets;
-	budgets.Load = SBudget { 250.0, -1.0, 220.0, 450.0 };
-	budgets.WriteCpu = SBudget { 80.0, -1.0, 90.0, 180.0 };
+	budgets.Load = SBudget { 400.0, -1.0, 400.0, 800.0 };
+	budgets.WriteCpu = SBudget { 210.0, -1.0, 215.0, 430.0 };
 	budgets.WriteTotal = SBudget {};
 	budgets.Append = SBudget { 0.1, -1.0, 0.05, 0.1 };
 	budgets.Restart = SBudget { -1.0, 1.0, 1.5, 2.0 };
@@ -334,13 +339,13 @@ TEST_F(SnapshotTest, DISABLED_SnapshotAndJournalAt100kAssets)
 TEST_F(SnapshotTest, DISABLED_SnapshotAndJournalAt100kAssetsAnd500kRows)
 {
 	SSnapshotBudgets budgets;
-	budgets.Load = SBudget { 550.0, -1.0, 520.0, 1000.0 };
-	budgets.WriteCpu = SBudget { -1.0, -1.0, 300.0, 600.0 };
+	budgets.Load = SBudget { 600.0, -1.0, 610.0, 1150.0 };
+	budgets.WriteCpu = SBudget { -1.0, -1.0, 340.0, 680.0 };
 	budgets.Append = SBudget { 0.1, -1.0, 0.05, 0.1 };
 	budgets.Restart = SBudget { -1.0, 1.0, 1.5, 2.0 };
-	// With a meta per asset (edit [63]): 197.2 MB measured (Development, alone, 9950X3D), over §5.11's 150 MB; the
-	// guard holds what was measured (RegistryBenchmarkTest has the breakdown).
-	budgets.Memory = SBudget { 150.0, -1.0, 205.0, 205.0 };
+	// With a meta per asset (edit [63]): 197.2 MB measured (alone, 9950X3D), §5.11's 210 MB since M4 (150 MB before;
+	// RegistryBenchmarkTest has the breakdown).
+	budgets.Memory = SBudget { 210.0, -1.0, 205.0, 205.0 };
 	budgets.bMetas = true;
 	MeasureSnapshot(Dir, 100000u, 500000u, budgets);
 }

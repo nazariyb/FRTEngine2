@@ -209,7 +209,7 @@ void RunSuite (uint32 Assets, uint32 Rows, EBudgetColumn Column)
 
 	const SRegistryMemoryStats memory = store.GetMemoryStats();
 	std::printf("[query] resident memory %.1f MB (type tables %.1f, sub-entries %.1f, graph %.1f, names %.1f, strings %.1f, indices %.1f); "
-		"§5.11: 15 MB at 10k assets, 150 MB at 100k + 500k rows (B3's row)\n", memory.Total / 1048576.0, memory.TypeTables / 1048576.0,
+		"§5.11: 15 MB at 10k assets, 150 MB at 100k + 500k rows without metas (B3's row; 210 MB with a meta per asset since M4)\n", memory.Total / 1048576.0, memory.TypeTables / 1048576.0,
 		memory.SubEntries / 1048576.0, memory.Graph / 1048576.0, memory.Names / 1048576.0, memory.Strings / 1048576.0, memory.Indices / 1048576.0);
 	// §5.11's 10k memory cell has no row count (the load row's reads "no rows"; RegistryBenchmarkTest and
 	// SnapshotBenchmarkTest judge it so): with this suite's 50k rows it is printed against 15 MB, unjudged.
