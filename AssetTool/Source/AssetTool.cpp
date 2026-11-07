@@ -249,26 +249,30 @@ int32 RunAssetTool ()
 		request.RulesFile = rulesFile;
 		request.bReadOnly = context.bReadOnly;
 		// An operation a previous run left unfinished is rolled forward right after the lock is taken, before the verb runs
-		// (assets::TakeOwnership), through the providers of the run's own mounts, detected for that alone: a run that finds
-		// no such operation resolves and spawns nothing here.
+		// (assets::TakeOwnership), through the providers of the run's own mounts, detected for that alone and only once
+		// the lock is held: a run that finds no such operation resolves and spawns nothing here, and one another process
+		// owns (it exits 4, or runs as a guest) spawns no git.
 		std::shared_ptr<const assets::CMountTable> rollMounts;
 		assets::CVcsProviderSet rollProviders;
 		std::vector<std::pair<assets::MountId, assets::IVcsProvider*>> rollProviderList;
 		if (!request.bReadOnly && assets::HasUnfinishedOperation(request.Root))
 		{
 			rollMounts = std::make_shared<const assets::CMountTable>(ResolveRunMounts(context));
-			std::vector<assets::MountId> own;
-			for (const assets::SMount& mount : rollMounts->GetMounts())
-			{
-				if ((mount.Kind == assets::EMountKind::Engine) == context.bEngineOwner)
-				{
-					own.push_back(mount.Id);
-				}
-			}
-			rollProviders.DetectNow(*rollMounts, own, assets::SAssetEditorSettings::FromConfig(engine.GetConfig()).VcsProvider);
-			rollProviderList = rollProviders.GetProviders();
 			request.Mounts = rollMounts.get();
-			request.Providers = rollProviderList;
+			request.DetectProviders = [&] () -> std::span<const std::pair<assets::MountId, assets::IVcsProvider*>>
+			{
+				std::vector<assets::MountId> own;
+				for (const assets::SMount& mount : rollMounts->GetMounts())
+				{
+					if ((mount.Kind == assets::EMountKind::Engine) == context.bEngineOwner)
+					{
+						own.push_back(mount.Id);
+					}
+				}
+				rollProviders.DetectNow(*rollMounts, own, assets::SAssetEditorSettings::FromConfig(engine.GetConfig()).VcsProvider);
+				rollProviderList = rollProviders.GetProviders();
+				return rollProviderList;
+			};
 		}
 		assets::SAssetOwnership ownership = assets::ClaimAssetOwnership(request);
 		// A process without the lock rolls nothing forward (§4.7): the owner finishes it. With the lock it was finished

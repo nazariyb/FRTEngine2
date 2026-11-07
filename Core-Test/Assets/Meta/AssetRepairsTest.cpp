@@ -1176,6 +1176,55 @@ TEST(AssetRepairs, TakeOwnershipTakesTheLockThenRollsAnUnfinishedOperationForwar
 	EXPECT_FALSE(second.Owner.IsEmpty()) << "a second writer is told who owns the root";
 }
 
+// The roll-forward's providers are detected (git spawned once per mount, in a host) only once the claim holds the lock of a
+// root whose journal holds an unfinished operation (edit [55]): never for a refused second writer or a guest, which leave
+// the operation to its owner, and never over a finished journal.
+TEST(AssetRepairs, ARollForwardDetectsItsProvidersOnlyOnceTheLockIsHeldAndAnOperationIsDue)
+{
+	CRepairTree tree("Виявлення");
+	tree.WritePng("a.png");
+	const SGuid guid = LeaveUnfinishedCreate(tree, "a.png");
+	const CMountTable mounts = tree.Resolve();
+	CRecordingVcsProvider vcs;
+	const std::pair<MountId, IVcsProvider*> providers[] = { { ProjectMountId, &vcs } };
+	uint32 detections = 0u;
+
+	SAssetOwnershipRequest request;
+	request.Root = tree.Tree.ProjectDir();
+	request.RulesFile = tree.ProjectRules();
+	SAssetOwnership owner = ClaimAssetOwnership(request);   // the lock alone: another process, in effect
+	ASSERT_EQ(owner.Role, EOwnerRole::Writer) << owner.Root.Error.CStr();
+
+	request.Mounts = &mounts;
+	request.DetectProviders = [&] () -> std::span<const std::pair<MountId, IVcsProvider*>>
+	{
+		++detections;
+		return providers;
+	};
+	const SAssetOwnership refused = ClaimAssetOwnership(request);
+	EXPECT_EQ(refused.Role, EOwnerRole::Refused);
+	EXPECT_TRUE(refused.Root.bUnfinished);
+	EXPECT_EQ(detections, 0u) << "a refused second writer detects no provider";
+
+	tree.WriteProjectRules("FormatVersion: 1\nSafety:\n  GuestProcesses: true\n");
+	const SAssetOwnership guest = ClaimAssetOwnership(request);
+	EXPECT_EQ(guest.Role, EOwnerRole::Guest);
+	EXPECT_EQ(detections, 0u) << "a guest detects no provider";
+	EXPECT_FALSE(tree.Exists("a.png.meta"));
+
+	owner.Root.Lock.reset();
+	SAssetOwnership writer = ClaimAssetOwnership(request);
+	ASSERT_EQ(writer.Role, EOwnerRole::Writer) << writer.Root.Error.CStr();
+	EXPECT_EQ(detections, 1u) << "the owner of a due roll-forward detects its providers once";
+	EXPECT_TRUE(writer.Root.bRolledForward) << writer.Root.Error.CStr();
+	EXPECT_EQ(tree.MetaGuid("a.png"), guid);
+	EXPECT_FALSE(vcs.GetWriteCalls().empty()) << "through the detected provider";
+
+	writer.Root.Lock.reset();
+	EXPECT_EQ(ClaimAssetOwnership(request).Role, EOwnerRole::Writer);
+	EXPECT_EQ(detections, 1u) << "a finished journal needs no provider";
+}
+
 // ---------------- Second processes and engine-owner mode ----------------
 
 namespace

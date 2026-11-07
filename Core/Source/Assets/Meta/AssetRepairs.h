@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -303,12 +304,22 @@ struct SOwnership
 [[nodiscard]] FRT_CORE_API SOwnership TakeOwnership (const std::filesystem::path& Root, const CMountTable& Mounts,
 	std::span<const std::pair<MountId, IVcsProvider*>> Providers);
 
+// The providers of a roll-forward, asked for only when one is due: detecting them spawns git once per mount, which a process
+// that does not hold the lock, or holds it over a finished journal, never needs (edit [55]). Called at most once per root,
+// on the claiming thread; what it returns must outlive the claim.
+using FRollForwardProviders = std::function<std::span<const std::pair<MountId, IVcsProvider*>> ()>;
+
+// TakeOwnership with the providers detected only once the lock is held and the journal holds an unfinished operation.
+[[nodiscard]] FRT_CORE_API SOwnership TakeOwnership (const std::filesystem::path& Root, const CMountTable& Mounts,
+	const FRollForwardProviders& DetectProviders);
+
 /**
  * How a host stands to the mounts it opens (design §4.7, §5.9), decided once at start-up, before a registry exists: the
  * one decision CEngine and AssetTool share, so the editor and the tool cannot differ in who writes.
  *
- * The lock is always on (§4.8). A process that is read-only by request (--ci, -Assets:ReadOnly=1, every scripted run, a
- * host that writes nothing such as the runtime) never asks for it and always runs. Any other takes the owner root's
+ * The lock is always on (§4.8). A process that is read-only by request (--ci, -Assets:ReadOnly=1, every scripted run but
+ * the smoke test's file edits on a scratch copy (Engine/Automation.h), a host that writes nothing such as the runtime) never
+ * asks for it and always runs. Any other takes the owner root's
  * Owner.lock; while another process holds it, the second writer exits naming the holder (the M3 deviation, an editor that
  * stayed open without writing, is over), unless the opened project's `Safety.GuestProcesses` (the engine's for an --engine
  * run: the switch governs a process, so it is read from that one file and never per mount) lets it run as a read-only
@@ -347,6 +358,10 @@ struct SAssetOwnershipRequest
 	// it forward at its Start; an unfinished operation is still reported.
 	const CMountTable* Mounts = nullptr;
 	std::span<const std::pair<MountId, IVcsProvider*>> Providers;
+	// Set: the providers are detected only for a roll-forward that is due, once this process holds that root's lock
+	// (FRollForwardProviders), and Providers is not read. A host that will not own the root, a refused second writer or a
+	// guest, spawns no git for it.
+	FRollForwardProviders DetectProviders;
 };
 
 struct SAssetOwnership
@@ -363,8 +378,8 @@ struct SAssetOwnership
 
 [[nodiscard]] FRT_CORE_API SAssetOwnership ClaimAssetOwnership (const SAssetOwnershipRequest& Request);
 
-// Root's OpJournal.log holds an operation a previous run left unfinished (one file read; no lock asked). A host claiming a
-// root detects its providers before the claim only then, so the roll-forward goes through them (CEngine, AssetTool).
+// Root's OpJournal.log holds an operation a previous run left unfinished (one file read; no lock asked). A claim with
+// SAssetOwnershipRequest::DetectProviders asks for the providers only then, once it holds the lock (CEngine, AssetTool).
 [[nodiscard]] FRT_CORE_API bool HasUnfinishedOperation (const std::filesystem::path& Root);
 
 // Engine-owner mode (§4.7) of a host with a project: the project's directory lies inside the engine checkout

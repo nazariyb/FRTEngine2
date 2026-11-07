@@ -225,20 +225,24 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 			}
 		}
 		// The lock, then the roll-forward of an operation a previous run left unfinished (assets::TakeOwnership), before
-		// anything is scanned. It goes through the mounts' providers: detected here, on this thread, only when a journal
-		// holds such an operation (a crash mid-command: git is spawned once per mount); otherwise a writer detects them
-		// on a worker once its registry runs, and nothing waits for git at start-up.
+		// anything is scanned. It goes through the mounts' providers: detected here, on this thread, only once this
+		// process holds a root's lock and its journal holds such an operation (a crash mid-command: git is spawned once
+		// per mount); a refused second writer or a guest spawns none. Otherwise a writer detects them on a worker once its
+		// registry runs, and nothing waits for git at start-up.
 		std::vector<std::pair<assets::MountId, assets::IVcsProvider*>> rollProviders;
 		if (!request.bReadOnly)
 		{
 			request.Mounts = MountTable.get();
-			if (assets::HasUnfinishedOperation(request.Root) || (!request.EngineRoot.empty() && assets::HasUnfinishedOperation(request.EngineRoot)))
+			request.DetectProviders = [this, &rollProviders] () -> std::span<const std::pair<assets::MountId, assets::IVcsProvider*>>
 			{
-				VcsProviders = std::make_unique<assets::CVcsProviderSet>();
-				VcsProviders->DetectNow(*MountTable, {}, AssetLifecycle->Settings.VcsProvider);
-				rollProviders = VcsProviders->GetProviders();
-				request.Providers = rollProviders;
-			}
+				if (VcsProviders == nullptr)
+				{
+					VcsProviders = std::make_unique<assets::CVcsProviderSet>();
+					VcsProviders->DetectNow(*MountTable, {}, AssetLifecycle->Settings.VcsProvider);
+					rollProviders = VcsProviders->GetProviders();
+				}
+				return rollProviders;
+			};
 		}
 		assets::SAssetOwnership ownership = assets::ClaimAssetOwnership(request);
 		const std::vector<FString> unfinished = assets::DescribeUnfinishedOperations(request, ownership, ownership.IsWriter()

@@ -2302,6 +2302,11 @@ SAssetRepairsStats CAssetRepairs::GetStats () const noexcept
 
 SOwnership TakeOwnership (const std::filesystem::path& Root, const CMountTable& Mounts, std::span<const std::pair<MountId, IVcsProvider*>> Providers)
 {
+	return TakeOwnership(Root, Mounts, [Providers] { return Providers; });
+}
+
+SOwnership TakeOwnership (const std::filesystem::path& Root, const CMountTable& Mounts, const FRollForwardProviders& DetectProviders)
+{
 	SOwnership out;
 	FString owner;
 	FString error;
@@ -2310,14 +2315,22 @@ SOwnership TakeOwnership (const std::filesystem::path& Root, const CMountTable& 
 	{
 		out.Owner = std::move(owner);
 		out.Error = std::move(error);
-		SOpJournalContents contents;
-		out.bUnfinished = ReadOpJournal(GetOpJournalPath(Root), contents) && contents.Unfinished.has_value();
+		out.bUnfinished = HasUnfinishedOperation(Root);
+		return out;
+	}
+	// Held: nothing writes the journal now but this process. Its providers only for an operation to finish.
+	if (!HasUnfinishedOperation(Root))
+	{
 		return out;
 	}
 	SAssetWriterDesc desc;
 	desc.Mounts = &Mounts;
 	desc.OwnerRoot = Root;
-	desc.Providers.assign(Providers.begin(), Providers.end());
+	if (DetectProviders)
+	{
+		const std::span<const std::pair<MountId, IVcsProvider*>> providers = DetectProviders();
+		desc.Providers.assign(providers.begin(), providers.end());
+	}
 	desc.bHoldsLock = true;
 	CAssetWriter writer(std::move(desc));
 	if (!writer.GetUnfinished().has_value())
@@ -2351,7 +2364,8 @@ namespace
 {
 	if (Request.Mounts != nullptr)
 	{
-		return TakeOwnership(Root, *Request.Mounts, Request.Providers);
+		return Request.DetectProviders ? TakeOwnership(Root, *Request.Mounts, Request.DetectProviders)
+			: TakeOwnership(Root, *Request.Mounts, Request.Providers);
 	}
 	SOwnership out;
 	FString owner;
