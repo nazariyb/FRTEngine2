@@ -39,6 +39,7 @@ struct SSnapshotBudgets
 	SBudget Append;        // journal append per commit
 	SBudget Restart;       // journal restart after a full write, the owner thread's part (not in §5.11)
 	SBudget Memory;        // resident memory of the loaded store with a full change ring
+	bool bMetas = false;   // every asset with a meta (M4, edit [63]): the 100k columns
 };
 
 void Check (const char* Name, double Measured, const SBudget& Budget, const char* Unit, const char* Note = "")
@@ -58,9 +59,11 @@ void MeasureSnapshot (const std::filesystem::path& Dir, uint32 Assets, uint32 Ro
 	query_bench::SGeneratorSpec spec;
 	spec.Assets = Assets;
 	spec.Rows = Rows;
-	query_bench::Generate(store, spec);
-	std::printf("[snapshot] generated %u assets, %u rows: %u records, %u sub-entries, %u files, %u edges\n", Assets, Rows,
-		store.Live().GetRecordCount(), store.Live().GetSubEntryCount(), store.Live().GetFileCount(), GetTables(store.Live()).Graph.LiveEdges);
+	spec.bMetas = Budgets.bMetas;
+	const query_bench::SGeneratorReport generated = query_bench::Generate(store, spec);
+	std::printf("[snapshot] generated %u assets, %u rows: %u records, %u sub-entries, %u files, %u edges; %u metas, %.2f MB of meta bytes\n", Assets,
+		Rows, store.Live().GetRecordCount(), store.Live().GetSubEntryCount(), store.Live().GetFileCount(), GetTables(store.Live()).Graph.LiveEdges,
+		generated.Metas, generated.MetaBytes / 1048576.0);
 	// The engine's content for the two-file load: textures under /Engine, written to a file of their own.
 	{
 		SRegistryDelta engine;
@@ -213,6 +216,12 @@ void MeasureSnapshot (const std::filesystem::path& Dir, uint32 Assets, uint32 Ro
 		}
 		const SRegistryMemoryStats memory = loaded.GetMemoryStats();
 		Check("LoadedMemoryMB", afterLoadMB, SBudget {}, "MB", "(right after the load)");
+		if (Budgets.bMetas)
+		{
+			EXPECT_EQ(loaded.Live().GetMetaCopyCount(), Assets);
+			Check("LoadedIdentityMemoryMB", memory.Identity / 1048576.0, SBudget {}, "MB",
+				"(METAS bytes and columns, aliases, former paths, tombstones; part of the total below)");
+		}
 		const double ringMB = memory.ChangeRing / 1048576.0;
 		const FString note = FString::Format("(change ring full: {:.2f} MB of it)", ringMB);
 		Check("LoadedMemoryFullRingMB", memory.Total / 1048576.0, Budgets.Memory, "MB", note.CStr());
@@ -305,6 +314,7 @@ TEST_F(SnapshotTest, DISABLED_SnapshotAndJournalAt100kAssets)
 	budgets.WriteTotal = SBudget {};
 	budgets.Append = SBudget { 0.1, -1.0, 0.05, 0.1 };
 	budgets.Restart = SBudget { -1.0, 1.0, 1.5, 2.0 };
+	budgets.bMetas = true;
 	MeasureSnapshot(Dir, 100000u, 0u, budgets);
 }
 
@@ -316,5 +326,6 @@ TEST_F(SnapshotTest, DISABLED_SnapshotAndJournalAt100kAssetsAnd500kRows)
 	budgets.Append = SBudget { 0.1, -1.0, 0.05, 0.1 };
 	budgets.Restart = SBudget { -1.0, 1.0, 1.5, 2.0 };
 	budgets.Memory = SBudget { 150.0, -1.0, 155.0, 155.0 };
+	budgets.bMetas = true;
 	MeasureSnapshot(Dir, 100000u, 500000u, budgets);
 }
