@@ -461,7 +461,7 @@ TEST(AssetRepairs, TheWatchersHoldAsksWhetherAProviderRewritesTheTreeOnlyWhileTh
 }
 
 // Only the VCS of a mount the repair writes holds it (edit [56]): /Engine, read-only to a project's writer, may sit in
-// another checkout that is mid-rebase (a REBASE_HEAD git left behind is busy too, §12.9), and its project's new file
+// another checkout that is mid-rebase (busy for as long as the rebase is open, §12.9), and its project's new file
 // still gets its meta.
 TEST(AssetRepairs, ABusyProviderOfAMountThisProcessDoesNotRepairHoldsNothing)
 {

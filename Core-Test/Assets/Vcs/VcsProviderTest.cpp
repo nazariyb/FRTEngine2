@@ -239,30 +239,44 @@ TEST_F(VcsProviderTest, BusyWhileAnyOfTheFilesExistsInTheGitDir)
 	EXPECT_FALSE(Git.IsBusy());
 	EXPECT_FALSE(Git.IsRewritingTree());
 
-	const struct { FStringView Name; bool bDirectory; bool bRewriting; } cases[] = {
-		{ "index.lock", false, true },
-		{ "HEAD.lock", false, true },
-		{ "MERGE_HEAD", false, false },
-		{ "REBASE_HEAD", false, false },
-		{ "CHERRY_PICK_HEAD", false, false },
-		{ "rebase-merge", true, false },
-		{ "rebase-apply", true, false },
+	// A name ending in '/' is a directory. What `git status` calls an operation in progress is busy, by the same files: a
+	// conflicted revert, a cherry-pick or revert of several commits between steps, a rebase by its directory.
+	const struct { std::vector<FStringView> Names; bool bBusy; bool bRewriting; } cases[] = {
+		{ { "index.lock" }, true, true },
+		{ { "HEAD.lock" }, true, true },
+		{ { "MERGE_HEAD" }, true, false },
+		{ { "CHERRY_PICK_HEAD" }, true, false },
+		{ { "REVERT_HEAD" }, true, false },
+		{ { "sequencer/", "sequencer/todo" }, true, false },
+		{ { "rebase-merge/" }, true, false },
+		{ { "rebase-apply/" }, true, false },
+		{ { "REBASE_HEAD", "rebase-merge/" }, true, false },
+		// Left behind by a rebase that ended: no rebase is open, as git status says, and it must not hold repairs for good.
+		{ { "REBASE_HEAD" }, false, false },
+		{ { "sequencer/" }, false, false },
 	};
 	for (const auto& one : cases)
 	{
-		SCOPED_TRACE(FString(one.Name).CStr());
-		const std::filesystem::path file = Git.GetGitDir() / FStringView(one.Name).ToPath();
-		if (one.bDirectory)
+		SCOPED_TRACE(FString(one.Names.front()).CStr());
+		for (const FStringView name : one.Names)
 		{
-			ASSERT_TRUE(std::filesystem::create_directory(file));
+			const std::filesystem::path file = Git.GetGitDir() / name.TrimEnd("/").ToPath();
+			if (name.EndsWith('/'))
+			{
+				ASSERT_TRUE(std::filesystem::create_directory(file));
+			}
+			else
+			{
+				ASSERT_TRUE(platform::WriteFileText(file, ""));
+			}
 		}
-		else
-		{
-			ASSERT_TRUE(platform::WriteFileText(file, ""));
-		}
-		EXPECT_TRUE(Git.IsBusy());
+		EXPECT_EQ(Git.IsBusy(), one.bBusy);
 		EXPECT_EQ(Git.IsRewritingTree(), one.bRewriting) << "an open merge holds repairs, never hot reload";
-		std::filesystem::remove(file);
+		for (const FStringView name : one.Names)
+		{
+			std::error_code ec;
+			std::filesystem::remove_all(Git.GetGitDir() / name.TrimEnd("/").ToPath(), ec);
+		}
 		EXPECT_FALSE(Git.IsBusy());
 	}
 }

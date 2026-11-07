@@ -169,8 +169,11 @@ bool CGitVcsProvider::Detect (const FString& InMountRoot)
 	Prefix = lines.size() > 3u ? FString(lines[3]) : FString();
 	IndexLock = GitDir / "index.lock";
 	HeadLock = GitDir / "HEAD.lock";
-	OtherBusyFiles = { GitDir / "MERGE_HEAD", GitDir / "REBASE_HEAD", GitDir / "CHERRY_PICK_HEAD", GitDir / "rebase-merge",
-		GitDir / "rebase-apply" };
+	// What `git status` calls an operation in progress, by the same files. REBASE_HEAD is not one: a rebase is open while
+	// rebase-merge/ or rebase-apply/ is there, and git can leave REBASE_HEAD behind after one that ended, which would hold
+	// every repair for good with nothing said. sequencer/todo is a cherry-pick or revert of several commits between steps.
+	OtherBusyFiles = { GitDir / "MERGE_HEAD", GitDir / "CHERRY_PICK_HEAD", GitDir / "REVERT_HEAD", GitDir / "rebase-merge",
+		GitDir / "rebase-apply", GitDir / "sequencer" / "todo" };
 
 	// A pre-commit hook hands its tool GIT_INDEX_FILE and names the repository committing (Tools/GitHooks/pre-commit). That
 	// index is the committing repository's alone: git in any other (an Engine/ submodule, a shared engine, another worktree)
@@ -217,7 +220,7 @@ bool CGitVcsProvider::IsRewritingTree () const
 
 bool CGitVcsProvider::IsBusy () const
 {
-	// An open merge or rebase stays for as long as the person takes, unlike the two locks.
+	// An open merge, rebase, cherry-pick or revert stays for as long as the person takes, unlike the two locks.
 	if (IsRewritingTree())
 	{
 		return true;

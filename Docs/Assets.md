@@ -350,7 +350,7 @@ operation forward at start-up detects its providers on its own thread, and only 
 | Call | `CNoneVcsProvider` | `CGitVcsProvider` |
 |---|---|---|
 | `Detect` | always | `git rev-parse` from the mount root, so worktrees, submodules and `.git` files resolve to their own git dir; a `.git` without `git` on `PATH`, or one git refuses (dubious ownership), gives `None` and one warning |
-| `IsBusy` | never | stats only: `index.lock`, `HEAD.lock`, `MERGE_HEAD`, `REBASE_HEAD`, `CHERRY_PICK_HEAD`, `rebase-merge/`, `rebase-apply/` in that git dir |
+| `IsBusy` | never | stats only, what `git status` calls an operation in progress: `index.lock`, `HEAD.lock`, `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `rebase-merge/`, `rebase-apply/`, `sequencer/todo` in that git dir. Not `REBASE_HEAD` alone, which git can leave behind after a rebase ended |
 | `IsRewritingTree` | never | `index.lock` or `HEAD.lock` only, so an open merge holds repairs but never hot reload. Held 30 s without a break logs one warning naming the file; it is never deleted |
 | `CheckOut` | a read-only file fails with `ReadOnly`, naming it; the attribute is never cleared | the same |
 | `Add` | nothing | nothing: new files are left for the user to stage |
