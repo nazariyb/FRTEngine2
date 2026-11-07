@@ -306,6 +306,122 @@ uint32 FindProblemSubject (const SRegistryTables& Tables, FStringView Subject) n
 	return found;
 }
 
+uint32 FindRecordRowsByFormerPath (const SRegistryTables& Tables, FStringView FileMountPath, uint64 PortableHash, uint32& OutRow) noexcept
+{
+	OutRow = InvalidRow;
+	uint32 matches = 0u;
+	Tables.Indices.RecordsByFormerPath.ForEach(PortableHash, [&] (uint32 Row)
+	{
+		const uint32 redirect = Tables.Assets.File[Row] != InvalidRow ? Tables.Assets.Redirect[Row] : InvalidRow;
+		if (redirect == InvalidRow)
+		{
+			return true;
+		}
+		const SPoolRange range = Tables.Redirects.FormerPaths[redirect];
+		for (uint32 i = 0u; i < range.Count; ++i)
+		{
+			if (EqualPortable(Tables.Paths.Get(Tables.FormerPaths[range.Begin + i]), FileMountPath))
+			{
+				++matches;
+				OutRow = IsPreferredGuidRow(Tables, Row, OutRow) ? Row : OutRow;
+				break;
+			}
+		}
+		return true;
+	});
+	return matches;
+}
+
+bool ResolveAlias (const SRegistryTables& Tables, const SAssetId& Id, uint32& OutRow, uint64& OutSub) noexcept
+{
+	OutRow = InvalidRow;
+	OutSub = 0u;
+	if (!Id.IsValid())
+	{
+		return false;
+	}
+	uint32 exact = InvalidRow;
+	uint64 exactSub = 0u;
+	uint32 whole = InvalidRow;
+	Tables.Indices.Aliases.ForEach(HashGuid(Id.Guid), [&] (uint32 Index)
+	{
+		const SAliasEntry& entry = Tables.AliasEntries[Index];
+		if (entry.Record == InvalidRow || Tables.Assets.File[entry.Record] == InvalidRow || entry.Id.Guid != Id.Guid)
+		{
+			return true;
+		}
+		if (entry.Id.SubId == Id.SubId && IsPreferredGuidRow(Tables, entry.Record, exact))
+		{
+			exact = entry.Record;
+			exactSub = entry.Id.SubId != 0u ? entry.TargetSub : 0u;
+		}
+		else if (entry.Id.SubId == 0u && IsPreferredGuidRow(Tables, entry.Record, whole))
+		{
+			whole = entry.Record;
+		}
+		return true;
+	});
+	if (exact != InvalidRow)
+	{
+		OutRow = exact;
+		OutSub = exactSub;
+		return true;
+	}
+	if (whole != InvalidRow)
+	{
+		OutRow = whole;
+		OutSub = Id.SubId;
+		return true;
+	}
+	return false;
+}
+
+uint64 GetResolvedSub (const SRegistryTables& Tables, const STargetRow& Target) noexcept
+{
+	if (Target.Kind != ETargetKind::Guid || !Target.bRedirected || Target.State != ETargetState::Resolved)
+	{
+		return Target.TargetSub;
+	}
+	uint32 row = InvalidRow;
+	uint64 sub = 0u;
+	if (Target.TargetSub != 0u && Tables.Assets.Guid[Target.Resolved] == Target.Guid)
+	{
+		// The record's own GUID with an id no sub-entry has: a renamed sub-asset's alias.
+		return ResolveAlias(Tables, SAssetId { Target.Guid, Target.TargetSub }, row, sub) && row == Target.Resolved ? sub : Target.TargetSub;
+	}
+	return Target.TargetSub;   // a consolidated GUID: the same sub-entry of the record it resolves to
+}
+
+uint32 FindMetaCopyRow (const SRegistryTables& Tables, const SGuid& Guid) noexcept
+{
+	uint32 found = InvalidRow;
+	Tables.Indices.MetaCopiesByGuid.ForEach(HashGuid(Guid), [&] (uint32 Row)
+	{
+		if (Tables.MetaCopies.Guid[Row] == Guid)
+		{
+			found = Row;
+			return false;
+		}
+		return true;
+	});
+	return found;
+}
+
+uint32 FindTombstoneRow (const SRegistryTables& Tables, const SGuid& Guid) noexcept
+{
+	uint32 found = InvalidRow;
+	Tables.Indices.TombstonesByGuid.ForEach(HashGuid(Guid), [&] (uint32 Row)
+	{
+		if (Tables.Tombstones.Guid[Row] == Guid)
+		{
+			found = Row;
+			return false;
+		}
+		return true;
+	});
+	return found;
+}
+
 bool IsEdgeLive (const SRegistryTables& Tables, uint32 Source, uint32 Edge) noexcept
 {
 	const SAssetsTable& assets = Tables.Assets;
@@ -351,7 +467,13 @@ SRegistryMemoryStats ComputeMemoryStats (const SRegistryTables& Tables)
 		+ assets.NumSubs.GetResidentBytes() + assets.TypeRow.GetResidentBytes() + assets.ImportStatus.GetResidentBytes()
 		+ assets.Problems.GetResidentBytes() + assets.AnalyzeStamp.GetResidentBytes() + assets.Name.GetResidentBytes()
 		+ assets.ChangedRevision.GetResidentBytes() + assets.Companions.GetResidentBytes() + assets.BaseEdges.GetResidentBytes()
-		+ assets.BaseEdgesMasked.GetResidentBytes() + assets.OverflowEdges.GetResidentBytes();
+		+ assets.BaseEdgesMasked.GetResidentBytes() + assets.OverflowEdges.GetResidentBytes() + assets.Redirect.GetResidentBytes();
+	stats.Identity = Tables.AliasEntries.GetResidentBytes() + Tables.FormerPaths.GetResidentBytes()
+		+ Tables.Redirects.Aliases.GetResidentBytes() + Tables.Redirects.FormerPaths.GetResidentBytes()
+		+ Tables.MetaCopies.Guid.GetResidentBytes() + Tables.MetaCopies.Hash.GetResidentBytes() + Tables.MetaCopies.Bytes.GetResidentBytes()
+		+ Tables.MetaCopies.SourcePath.GetResidentBytes() + Tables.MetaBytes.GetResidentBytes()
+		+ Tables.Tombstones.Guid.GetResidentBytes() + Tables.Tombstones.LastPath.GetResidentBytes() + Tables.Tombstones.Hash.GetResidentBytes()
+		+ Tables.Tombstones.Identity.GetResidentBytes() + Tables.Tombstones.RemovedFileTime.GetResidentBytes();
 	const SSubEntryTable& subs = Tables.SubEntries;
 	stats.SubEntries = subs.Owner.GetResidentBytes() + subs.SubId.GetResidentBytes() + subs.Key.GetResidentBytes()
 		+ subs.Type.GetResidentBytes() + subs.Flags.GetResidentBytes() + subs.TypeRow.GetResidentBytes()
@@ -392,9 +514,10 @@ SRegistryMemoryStats ComputeMemoryStats (const SRegistryTables& Tables)
 	stats.Indices = indices.FilesByPath.GetResidentBytes() + indices.FilesByPortablePath.GetResidentBytes()
 		+ indices.FoldersByPath.GetResidentBytes() + indices.FoldersByPortablePath.GetResidentBytes()
 		+ indices.RecordsByPortablePath.GetResidentBytes() + indices.RecordsByGuid.GetResidentBytes()
-		+ indices.RecordsById64.GetResidentBytes() + indices.Aliases.GetResidentBytes();
+		+ indices.RecordsById64.GetResidentBytes() + indices.Aliases.GetResidentBytes() + indices.RecordsByFormerPath.GetResidentBytes()
+		+ indices.MetaCopiesByGuid.GetResidentBytes() + indices.TombstonesByGuid.GetResidentBytes();
 	stats.Total = stats.Files + stats.Folders + stats.RuleFiles + stats.Assets + stats.SubEntries + stats.TypeTables + stats.Graph
-		+ stats.Names + stats.Strings + stats.Labels + stats.Problems + stats.Indices;
+		+ stats.Names + stats.Strings + stats.Labels + stats.Problems + stats.Identity + stats.Indices;
 	return stats;
 }
 
@@ -461,12 +584,41 @@ EExists CRegistryView::Exists (const SAssetId& Id) const
 	return Find(Id).has_value() ? EExists::Yes : EExists::No;
 }
 
-std::optional<SRecordId> CRegistryView::Find (const SAssetId& Id) const
+std::optional<SRecordId> CRegistryView::Find (const SAssetId& Id, bool* bOutRedirected) const
 {
+	if (bOutRedirected != nullptr)
+	{
+		*bOutRedirected = false;
+	}
 	if (!Id.IsValid())
 	{
 		return std::nullopt;
 	}
+	if (std::optional<SRecordId> canonical = FindCanonical(Id))
+	{
+		return canonical;
+	}
+	// The alias index (§5.2): a consolidated GUID, a renamed sub-asset's new label.
+	uint32 row = InvalidRow;
+	uint64 sub = 0u;
+	if (!ResolveAlias(Tables, Id, row, sub))
+	{
+		return std::nullopt;
+	}
+	if (bOutRedirected != nullptr)
+	{
+		*bOutRedirected = true;
+	}
+	if (sub == 0u)
+	{
+		return MakeRecordId(row);
+	}
+	const uint32 subRow = FindSubEntryRow(Tables, row, sub);
+	return subRow != InvalidRow ? std::optional<SRecordId>(MakeRecordId(SubEntryBit | subRow)) : std::nullopt;
+}
+
+std::optional<SRecordId> CRegistryView::FindCanonical (const SAssetId& Id) const
+{
 	if (Id.SubId == 0u)
 	{
 		uint32 found = InvalidRow;
@@ -496,7 +648,6 @@ std::optional<SRecordId> CRegistryView::Find (const SAssetId& Id) const
 			}
 		}
 	}
-	// The alias index (consolidated GUIDs, renamed labels, §5.2) holds nothing until M4.
 	return std::nullopt;
 }
 
@@ -510,7 +661,7 @@ std::optional<SRecordId> CRegistryView::Find (SAssetId64 Id) const
 	return value != InvalidRow ? std::optional<SRecordId>(MakeRecordId(value)) : std::nullopt;
 }
 
-std::optional<SRecordId> CRegistryView::FindByPath (FStringView MountPath, SDiagnostic* OutError) const
+std::optional<SRecordId> CRegistryView::FindByPath (FStringView MountPath, SDiagnostic* OutError, SDiagnostic* OutNotice) const
 {
 	std::vector<uint32> splits;
 	splits.push_back(MountPath.Len());
@@ -521,55 +672,90 @@ std::optional<SRecordId> CRegistryView::FindByPath (FStringView MountPath, SDiag
 			splits.push_back(i - 1u);
 		}
 	}
-	for (const uint32 split : splits)
+	const auto notice = [&] (uint32 Row, FStringView FilePart, bool bFormer)
 	{
-		const FStringView filePart = MountPath.Left(split);
-		uint32 row = InvalidRow;
-		const uint32 matches = FindRecordRowsPortable(Tables, filePart, row);
-		if (matches == 0u)
+		const FStringView onDisk = Tables.Paths.Get(Tables.Files.Path[Tables.Assets.File[Row]]);
+		if (OutNotice == nullptr || (!bFormer && onDisk == FilePart))
 		{
-			continue;
+			return;
 		}
-		if (matches > 1u)
+		*OutNotice = SDiagnostic {};
+		OutNotice->Severity = ESeverity::Info;
+		OutNotice->Code = Ref006;
+		OutNotice->Subject = FString(onDisk);
+		OutNotice->Message = bFormer ? FString::Format("'{}' is a former path of '{}' (FormerPaths)", FilePart, onDisk)
+			: FString::Format("'{}' is spelled '{}' on disk", FilePart, onDisk);
+	};
+	if (OutNotice != nullptr)
+	{
+		*OutNotice = SDiagnostic {};
+	}
+	// Every spelling of a current path first, then the records' FormerPaths (a file now at an old path takes it over).
+	for (const bool bFormer : { false, true })
+	{
+		if (bFormer && Tables.Indices.RecordsByFormerPath.GetCount() == 0u)
 		{
-			if (OutError != nullptr)
+			break;
+		}
+		for (const uint32 split : splits)
+		{
+			const FStringView filePart = MountPath.Left(split);
+			uint32 row = InvalidRow;
+			const uint32 matches = bFormer ? FindRecordRowsByFormerPath(Tables, filePart, HashPortable(filePart), row)
+				: FindRecordRowsPortable(Tables, filePart, row);
+			if (matches == 0u)
 			{
-				*OutError = SDiagnostic {};
-				OutError->Severity = ESeverity::Error;
-				OutError->Code = Path001;
-				OutError->Subject = FString(filePart);
-				OutError->Message = FString::Format("'{}' matches {} files that differ only in case", filePart, matches);
+				continue;
 			}
-			return std::nullopt;
-		}
-		if (split == MountPath.Len())
-		{
-			return MakeRecordId(row);
-		}
-		const FStringView label = MountPath.RightChop(split + 1u);
-		const uint32 exact = FindSubEntryRow(Tables, row, MakeSubId(label));
-		if (exact != InvalidRow)
-		{
-			return MakeRecordId(SubEntryBit | exact);
-		}
-		uint32 folded = InvalidRow;
-		uint32 foldedMatches = 0u;
-		for (uint32 i = 0u; i < Tables.Assets.NumSubs[row]; ++i)
-		{
-			const uint32 sub = Tables.Assets.FirstSub[row] + i;
-			if (EqualPortable(Tables.Names.Get(Tables.SubEntries.Key[sub]), label))
+			if (matches > 1u && !bFormer)
 			{
-				folded = sub;
-				++foldedMatches;
+				if (OutError != nullptr)
+				{
+					*OutError = SDiagnostic {};
+					OutError->Severity = ESeverity::Error;
+					OutError->Code = Path001;
+					OutError->Subject = FString(filePart);
+					OutError->Message = FString::Format("'{}' matches {} files that differ only in case", filePart, matches);
+				}
+				return std::nullopt;
 			}
+			notice(row, filePart, bFormer);
+			return FindInRecord(row, split == MountPath.Len() ? std::optional<FStringView>() : std::optional<FStringView>(MountPath.RightChop(split + 1u)));
 		}
-		if (foldedMatches == 1u)
-		{
-			return MakeRecordId(SubEntryBit | folded);
-		}
-		return std::nullopt;
 	}
 	return std::nullopt;
+}
+
+// The record of an ASSETS row (no label), or its sub-entry of that label: exact, else the one equal under the fold.
+std::optional<SRecordId> CRegistryView::FindInRecord (uint32 Row, std::optional<FStringView> Label) const
+{
+	if (!Label.has_value())
+	{
+		return MakeRecordId(Row);
+	}
+	const FStringView label = *Label;
+	const uint32 exact = FindSubEntryRow(Tables, Row, MakeSubId(label));
+	if (exact != InvalidRow)
+	{
+		return MakeRecordId(SubEntryBit | exact);
+	}
+	uint32 folded = InvalidRow;
+	uint32 foldedMatches = 0u;
+	for (uint32 i = 0u; i < Tables.Assets.NumSubs[Row]; ++i)
+	{
+		const uint32 sub = Tables.Assets.FirstSub[Row] + i;
+		const FStringView key = Tables.Names.Get(Tables.SubEntries.Key[sub]);
+		if (key == label)
+		{
+			return MakeRecordId(SubEntryBit | sub);   // a renamed sub-asset: its label, its old label's id
+		}
+		if (EqualPortable(key, label))
+		{
+			folded = sub;
+			++foldedMatches;
+		}
+	}
+	return foldedMatches == 1u ? std::optional<SRecordId>(MakeRecordId(SubEntryBit | folded)) : std::nullopt;
 }
 
 bool CRegistryView::GetRecord (SRecordId Record, SAssetData& Out) const
@@ -748,6 +934,92 @@ void CRegistryView::ForEachCompanion (SRecordId Record, TFunctionRef<void (FStri
 	}
 }
 
+void CRegistryView::ForEachAlias (SRecordId Record, TFunctionRef<void (const SAssetId& Alias)> Visit) const
+{
+	if (!IsValid(Record) || Record.IsSubEntry() || Tables.Assets.Redirect[Record.Value] == InvalidRow)
+	{
+		return;
+	}
+	const SPoolRange range = Tables.Redirects.Aliases[Tables.Assets.Redirect[Record.Value]];
+	for (uint32 i = 0u; i < range.Count; ++i)
+	{
+		Visit(Tables.AliasEntries[range.Begin + i].Id);
+	}
+}
+
+void CRegistryView::ForEachFormerPath (SRecordId Record, TFunctionRef<void (FStringView MountPath)> Visit) const
+{
+	if (!IsValid(Record) || Record.IsSubEntry() || Tables.Assets.Redirect[Record.Value] == InvalidRow)
+	{
+		return;
+	}
+	const SPoolRange range = Tables.Redirects.FormerPaths[Tables.Assets.Redirect[Record.Value]];
+	for (uint32 i = 0u; i < range.Count; ++i)
+	{
+		Visit(Tables.Paths.Get(Tables.FormerPaths[range.Begin + i]));
+	}
+}
+
+namespace
+{
+SMetaCopyView MakeMetaCopyView (const SRegistryTables& Tables, uint32 Row) noexcept
+{
+	const FStringView bytes = Tables.MetaBytes.Get(Tables.MetaCopies.Bytes[Row]);
+	return SMetaCopyView { Tables.MetaCopies.Guid[Row], Tables.MetaCopies.Hash[Row],
+		std::span<const uint8>(reinterpret_cast<const uint8*>(bytes.GetData()), bytes.Len()), Tables.Paths.Get(Tables.MetaCopies.SourcePath[Row]) };
+}
+
+STombstoneView MakeTombstoneView (const SRegistryTables& Tables, uint32 Row) noexcept
+{
+	return STombstoneView { Tables.Tombstones.Guid[Row], Tables.Paths.Get(Tables.Tombstones.LastPath[Row]), Tables.Tombstones.Hash[Row],
+		Tables.Tombstones.Identity[Row], Tables.Tombstones.RemovedFileTime[Row] };
+}
+}
+
+std::optional<SMetaCopyView> CRegistryView::FindMetaCopy (const SGuid& Guid) const noexcept
+{
+	const uint32 row = Tables.LiveMetaCopies != 0u ? FindMetaCopyRow(Tables, Guid) : InvalidRow;
+	return row != InvalidRow ? std::optional<SMetaCopyView>(MakeMetaCopyView(Tables, row)) : std::nullopt;
+}
+
+void CRegistryView::ForEachMetaCopy (TFunctionRef<void (const SMetaCopyView&)> Visit) const
+{
+	for (uint32 row = 0u; row < Tables.MetaCopies.Guid.Size(); ++row)
+	{
+		if (Tables.MetaCopies.Guid[row].IsValid())
+		{
+			Visit(MakeMetaCopyView(Tables, row));
+		}
+	}
+}
+
+std::optional<STombstoneView> CRegistryView::FindTombstone (const SGuid& Guid) const noexcept
+{
+	const uint32 row = Tables.LiveTombstones != 0u ? FindTombstoneRow(Tables, Guid) : InvalidRow;
+	return row != InvalidRow ? std::optional<STombstoneView>(MakeTombstoneView(Tables, row)) : std::nullopt;
+}
+
+void CRegistryView::ForEachTombstone (TFunctionRef<void (const STombstoneView&)> Visit) const
+{
+	for (uint32 row = 0u; row < Tables.Tombstones.Guid.Size(); ++row)
+	{
+		if (Tables.Tombstones.Guid[row].IsValid())
+		{
+			Visit(MakeTombstoneView(Tables, row));
+		}
+	}
+}
+
+uint32 CRegistryView::GetMetaCopyCount () const noexcept
+{
+	return Tables.LiveMetaCopies;
+}
+
+uint32 CRegistryView::GetTombstoneCount () const noexcept
+{
+	return Tables.LiveTombstones;
+}
+
 FStringView CRegistryView::GetImporterName (SRecordId Record) const noexcept
 {
 	const SRecordId owner = GetOwner(Record);
@@ -781,9 +1053,15 @@ SDependencyView CRegistryView::MakeDependencyView (uint32 Source, uint32 EdgeRef
 	}
 	if (target.State == ETargetState::Resolved)
 	{
-		const uint32 toSub = target.TargetSub != 0u ? FindSubEntryRow(Tables, target.Resolved, target.TargetSub) : InvalidRow;
+		const uint64 resolvedSub = GetResolvedSub(Tables, target);
+		const uint32 toSub = resolvedSub != 0u ? FindSubEntryRow(Tables, target.Resolved, resolvedSub) : InvalidRow;
 		view.To = MakeRecordId(toSub != InvalidRow ? (SubEntryBit | toSub) : target.Resolved);
-		view.TargetId = SAssetId { Tables.Assets.Guid[target.Resolved], target.TargetSub };
+		if (target.Kind == ETargetKind::Path)
+		{
+			view.TargetId = SAssetId { Tables.Assets.Guid[target.Resolved], resolvedSub };   // a Guid target keeps its id as declared
+		}
+		view.TargetSub = resolvedSub;
+		view.bRedirected = target.bRedirected;
 	}
 	return view;
 }
@@ -824,7 +1102,7 @@ void CRegistryView::ForEachReferencer (SRecordId Record, EDepFlags Require, EDep
 	Tables.Graph.TargetsByResolved.ForEach(MixRegistryKey(row), [&] (uint32 TargetRow)
 	{
 		const STargetRow& target = Tables.Graph.Targets[TargetRow];
-		if (target.Resolved != row || (bSub && target.TargetSub != subId))
+		if (target.Resolved != row || (bSub && GetResolvedSub(Tables, target) != subId))
 		{
 			return true;
 		}

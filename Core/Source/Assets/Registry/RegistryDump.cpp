@@ -109,6 +109,7 @@ struct SDumpEdge
 	FString FieldPath;
 	FString From;
 	FStringLiteral State;
+	bool bRedirected = false;   // through an alias or a FormerPath (M4)
 };
 
 struct SDumpLabel
@@ -135,6 +136,8 @@ struct SDumpRecord
 	std::vector<SDumpSub> Subs;
 	std::vector<SDumpEdge> Edges;
 	std::vector<FStringView> Companions;
+	std::vector<FString> Aliases;            // "{guid}" or "{guid}#<sub id hex>", in stored order (M4)
+	std::vector<FStringView> FormerPaths;    // as stored (M4)
 };
 
 struct SDumpFile
@@ -380,6 +383,7 @@ struct CRegistryView::SDumpBuilder
 					? FString(tables.Names.Get(tables.SubEntries.Key[fromSub])) : FString("?");
 			}
 			edge.State = enum_::ToString(target.State);
+			edge.bRedirected = target.State == ETargetState::Resolved && target.bRedirected;
 			Out.Edges.push_back(std::move(edge));
 		});
 		std::sort(Out.Edges.begin(), Out.Edges.end(), [] (const SDumpEdge& A, const SDumpEdge& B)
@@ -393,6 +397,17 @@ struct CRegistryView::SDumpBuilder
 
 		View.ForEachCompanion(record, [&] (FStringView Companion) { Out.Companions.push_back(Companion); });
 		std::sort(Out.Companions.begin(), Out.Companions.end(), LessPortableThenBytes);
+		View.ForEachAlias(record, [&] (const SAssetId& Alias)
+		{
+			FString text = "{" + Alias.Guid.ToString() + "}";
+			if (Alias.SubId != 0u)
+			{
+				text += '#';
+				AppendHex64(text, Alias.SubId);
+			}
+			Out.Aliases.push_back(std::move(text));
+		});
+		View.ForEachFormerPath(record, [&] (FStringView FormerPath) { Out.FormerPaths.push_back(FormerPath); });
 	}
 
 	// Calls Visit(SDumpMount&&) per dumped mount, by MountId, then Unmounted(problems no mount took) when every
@@ -591,6 +606,22 @@ void AppendMountText (FString& Out, const SDumpMount& Mount)
 			}
 			Out += ' ';
 			Out += edge.State;
+			if (edge.bRedirected)
+			{
+				Out += " redirected";
+			}
+			Out += '\n';
+		}
+		for (const FString& alias : record.Aliases)
+		{
+			Out += "    alias ";
+			Out += alias;
+			Out += '\n';
+		}
+		for (const FStringView formerPath : record.FormerPaths)
+		{
+			Out += "    formerpath ";
+			AppendShown(Out, formerPath);
 			Out += '\n';
 		}
 		for (const FStringView companion : record.Companions)
@@ -681,8 +712,14 @@ void EmitMountJson (const SDumpMount& Mount, TEmit&& Emit)
 		for (const SDumpEdge& edge : record.Edges)
 		{
 			const std::vector<FString> flags = enum_::GetFlagNames(edge.Flags);
-			edges.push_back(CJsonObject().AddString("target", edge.Target).AddString("sub", Hex64(edge.TargetSub)).AddStringArray("flags", flags)
-				.AddString("field", edge.FieldPath).AddString("from", edge.From).AddString("state", edge.State));
+			CJsonObject edgeObject;
+			edgeObject.AddString("target", edge.Target).AddString("sub", Hex64(edge.TargetSub)).AddStringArray("flags", flags)
+				.AddString("field", edge.FieldPath).AddString("from", edge.From).AddString("state", edge.State);
+			if (edge.bRedirected)
+			{
+				edgeObject.AddBool("redirected", true);
+			}
+			edges.push_back(std::move(edgeObject));
 		}
 		std::vector<FString> companions(record.Companions.begin(), record.Companions.end());
 		const std::vector<FString> flags = enum_::GetFlagNames(record.Flags);
@@ -698,6 +735,13 @@ void EmitMountJson (const SDumpMount& Mount, TEmit&& Emit)
 			.AddString("cook", enum_::ToString(record.Cook)).AddUInt("chunk", record.Chunk).AddStringArray("flags", flags)
 			.AddString("primary", record.Primary).AddStringArray("labels", labels).AddObjectArray("tags", tags)
 			.AddObjectArray("subEntries", subs).AddObjectArray("edges", edges).AddStringArray("companions", companions));
+		if (!record.Aliases.empty() || !record.FormerPaths.empty())
+		{
+			// A record's redirects only when it has any, so metaless content dumps as it did before M4.
+			const std::vector<FString> formerPaths(record.FormerPaths.begin(), record.FormerPaths.end());
+			Emit(CJsonObject().AddString("kind", "redirects").AddString("mount", mount).AddString("path", file.Path)
+				.AddStringArray("aliases", record.Aliases).AddStringArray("formerPaths", formerPaths));
+		}
 	}
 	for (const SDumpProblem* problem : Mount.Problems)
 	{

@@ -211,7 +211,7 @@ void CheckTags (reflect::TypeId Type, const std::vector<STagDecl>& Tags)
 
 template <typename TResult>
 void AppendRecordUpsertImpl (TResult&& Result, const SEffectiveFileSettings& Settings, FStringView FileMountPath, SRegistryDelta& Delta,
-	const SGuid& Guid)
+	const SGuid& Guid, const SAssetMeta* Meta)
 {
 	constexpr bool bMove = !std::is_lvalue_reference_v<TResult>;
 	const auto take = [] (auto& Member) -> decltype(auto)
@@ -252,6 +252,15 @@ void AppendRecordUpsertImpl (TResult&& Result, const SEffectiveFileSettings& Set
 	record.SubEntries = take(Result.SubEntries);
 	record.Edges = take(Result.Edges);
 	record.Companions = take(Result.Companions);
+	AppendRenamedSubAliases(record.Guid, record.SubEntries, record.Aliases);
+	if (Meta != nullptr)
+	{
+		for (const SGuid& alias : Meta->Aliases)
+		{
+			record.Aliases.push_back(SAssetId { alias, 0u });
+		}
+		record.FormerPaths = Meta->FormerPaths;
+	}
 
 	Delta.ProblemClears.push_back(SProblemsClear { FString(FileMountPath), EProblemSource::Analyze });
 	// One set per subject, subjects in their first diagnostic's order, diagnostics in theirs (a map from subject
@@ -506,14 +515,14 @@ void ApplySubAssetOverrides (SAnalyzeResult& Result, const SAnalyzeInput& In, co
 }
 
 void AppendRecordUpsert (const SAnalyzeResult& Result, const SEffectiveFileSettings& Settings, FStringView FileMountPath, SRegistryDelta& Delta,
-	const SGuid& Guid)
+	const SGuid& Guid, const SAssetMeta* Meta)
 {
-	AppendRecordUpsertImpl(Result, Settings, FileMountPath, Delta, Guid);
+	AppendRecordUpsertImpl(Result, Settings, FileMountPath, Delta, Guid, Meta);
 }
 
 void AppendRecordUpsert (SAnalyzeResult&& Result, const SEffectiveFileSettings& Settings, FStringView FileMountPath, SRegistryDelta& Delta,
-	const SGuid& Guid)
+	const SGuid& Guid, const SAssetMeta* Meta)
 {
-	AppendRecordUpsertImpl(std::move(Result), Settings, FileMountPath, Delta, Guid);
+	AppendRecordUpsertImpl(std::move(Result), Settings, FileMountPath, Delta, Guid, Meta);
 }
 }

@@ -1,5 +1,6 @@
 #include "Assets/Registry/RegistryRecords.h"
 
+#include "Assets/Meta/MetaTypes.h"
 #include "Assets/Registry/RegistryTables.h"
 
 
@@ -116,6 +117,46 @@ SRecordUpsert MakeRecordUpsertFromView (const CRegistryView& View, SRecordId Rec
 		decl.FieldPath = FString(Edge.FieldPath);
 	});
 	View.ForEachCompanion(Record, [&] (FStringView Companion) { upsert.Companions.push_back(FString(Companion)); });
+	View.ForEachAlias(Record, [&] (const SAssetId& Alias) { upsert.Aliases.push_back(Alias); });
+	View.ForEachFormerPath(Record, [&] (FStringView FormerPath) { upsert.FormerPaths.push_back(FString(FormerPath)); });
 	return upsert;
+}
+
+void SetMetaRedirects (SRecordUpsert& Upsert, const SAssetMeta& Meta)
+{
+	Upsert.Aliases.clear();
+	AppendRenamedSubAliases(Upsert.Guid, Upsert.SubEntries, Upsert.Aliases);
+	for (const SGuid& alias : Meta.Aliases)
+	{
+		Upsert.Aliases.push_back(SAssetId { alias, 0u });
+	}
+	Upsert.FormerPaths = Meta.FormerPaths;
+}
+
+bool MetaRedirectsDiffer (const CRegistryView& View, SRecordId Record, const SAssetMeta& Meta)
+{
+	if (!View.IsValid(Record) || Record.IsSubEntry())
+	{
+		return true;
+	}
+	// The stored consolidated aliases and former paths against the meta's lists as written; a meta whose lists the
+	// store normalises (a repeat, its own GUID or path) differs here every time, which costs only a re-upsert.
+	uint32 alias = 0u;
+	bool bDiffers = false;
+	View.ForEachAlias(Record, [&] (const SAssetId& Stored)
+	{
+		if (Stored.SubId == 0u)
+		{
+			bDiffers = bDiffers || alias >= Meta.Aliases.size() || Meta.Aliases[alias] != Stored.Guid;
+			++alias;
+		}
+	});
+	uint32 former = 0u;
+	View.ForEachFormerPath(Record, [&] (FStringView Stored)
+	{
+		bDiffers = bDiffers || former >= Meta.FormerPaths.size() || Meta.FormerPaths[former].View() != Stored;
+		++former;
+	});
+	return bDiffers || alias != Meta.Aliases.size() || former != Meta.FormerPaths.size();
 }
 }

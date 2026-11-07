@@ -314,8 +314,12 @@ TEST_F(QueryEngineTest, SystemPredicatesReadFlagsEdgesAndProblems)
 	EXPECT_EQ(Query(View(), "is:stale-tags"), List({ "/Project/Data/DT_Ammo.frt" }));
 	EXPECT_EQ(Query(View(), "type:Texture is:unused"), List({ "/Project/Textures/Old/T_Old.png" }));
 	EXPECT_EQ(Query(View(), "type:Mesh is:unused"), List({ "/Project/Models/SM_Rock.gltf#mesh:Rock_LOD1" }));
-	// The predicates without data yet compile, match nothing and say why.
-	for (const FStringView text : { FStringView("is:redirected"), FStringView("is:unsaved"), FStringView("type:Texture is:pending-meta") })
+	// M4's: no edge here resolves through an alias or a former path, and no file has a meta.
+	EXPECT_TRUE(Query(View(), "is:redirected").empty());
+	EXPECT_EQ(Query(View(), "type:Texture is:pending-meta"), Query(View(), "type:Texture"));
+	EXPECT_FALSE(Query(View(), "type:Texture").empty());
+	// A predicate without data yet compiles, matches nothing and says why.
+	for (const FStringView text : { FStringView("is:unsaved"), FStringView("type:Texture is:unsaved") })
 	{
 		const std::optional<SAssetQuery> parsed = SAssetQuery::Parse(text);
 		ASSERT_TRUE(parsed.has_value());
@@ -328,15 +332,15 @@ TEST_F(QueryEngineTest, SystemPredicatesReadFlagsEdgesAndProblems)
 		EXPECT_EQ(View().Run(compiled, records), 0u);
 	}
 	// Inside an alternative, only that alternative matches nothing.
-	EXPECT_EQ(Query(View(), "is:redirected or is:primary"), List({ "/Project/Input/IMC_Default.frtinputmap" }));
+	EXPECT_EQ(Query(View(), "is:unsaved or is:primary"), List({ "/Project/Input/IMC_Default.frtinputmap" }));
 	// The text entry point hands the notes on (the search box shows them).
 	std::vector<SRecordId> records;
 	std::vector<SDiagnostic> notes(3u);
-	EXPECT_EQ(View().RunText("is:primary or is:redirected", records, nullptr, nullptr, &notes), 1u);
+	EXPECT_EQ(View().RunText("is:primary or is:unsaved", records, nullptr, nullptr, &notes), 1u);
 	ASSERT_EQ(notes.size(), 1u);
 	EXPECT_EQ(notes[0].Severity, ESeverity::Info);
 	EXPECT_EQ(notes[0].Column, 15u);
-	EXPECT_TRUE(notes[0].Message.View().Contains("is:redirected")) << notes[0].Message.CStr();
+	EXPECT_TRUE(notes[0].Message.View().Contains("is:unsaved")) << notes[0].Message.CStr();
 	EXPECT_EQ(View().RunText("is:primary", records, nullptr, nullptr, &notes), 1u);
 	EXPECT_TRUE(notes.empty());
 }

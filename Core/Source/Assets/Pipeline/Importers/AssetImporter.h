@@ -153,7 +153,8 @@ FRT_CORE_API void ApplySubAssetOverrides (SAnalyzeResult& Result, const SAnalyze
 /**
  * Appends the record of FileMountPath to Delta: an SRecordUpsert (Guid - the meta's; invalid: MakeProvisionalGuid of
  * the path, for a file with no meta yet -, Type, importer name, flags, cook rule, chunk, rule and authored labels from
- * Settings; status, AnalyzeStamp, tags, sub-entries, edges and companions from Result), then the file's Analyze problems - an SProblemsClear of the Analyze source at the file (its sub-entries'
+ * Settings; status, AnalyzeStamp, tags, sub-entries, edges and companions from Result; aliases - the renamed sub-entries'
+ * (AppendRenamedSubAliases), then Meta's Aliases - and Meta's FormerPaths, M4), then the file's Analyze problems - an SProblemsClear of the Analyze source at the file (its sub-entries'
  * subjects included), and one SProblemsSet per subject Result's diagnostics name - so problems an earlier Analyze
  * reported do not survive. File rows are the caller's (Result.ContentHash can fill the SFileUpsert). The rvalue
  * form moves Result's vectors instead of copying them. Severities are stored as given: the caller applies a rule
@@ -161,9 +162,9 @@ FRT_CORE_API void ApplySubAssetOverrides (SAnalyzeResult& Result, const SAnalyze
  * scope), as it does for the scan's and RULE002 diagnostics.
  */
 FRT_CORE_API void AppendRecordUpsert (const SAnalyzeResult& Result, const SEffectiveFileSettings& Settings, FStringView FileMountPath, SRegistryDelta& Delta,
-	const SGuid& Guid = SGuid {});
+	const SGuid& Guid = SGuid {}, const SAssetMeta* Meta = nullptr);
 FRT_CORE_API void AppendRecordUpsert (SAnalyzeResult&& Result, const SEffectiveFileSettings& Settings, FStringView FileMountPath, SRegistryDelta& Delta,
-	const SGuid& Guid = SGuid {});
+	const SGuid& Guid = SGuid {}, const SAssetMeta* Meta = nullptr);
 
 /**
  * The schema-free scan of §5.5 step 4 over a parsed document, run on every CDataTree an importer produces (the

@@ -11,6 +11,7 @@
 #include "Assets/Registry/RegistryParallel.h"
 #include "Assets/Registry/RegistryStore.h"
 #include "Assets/Registry/RegistryView.h"
+#include "Hash/Compression.h"
 #include "Platform/Platform.h"
 #include "Platform/Timestamp.h"
 #include "Profiler/CpuProfiler.h"
@@ -26,8 +27,9 @@ using binary::AppendVarint;
 using binary::CByteReader;
 using namespace registry_binary;
 
-// Every section is at layout 1 in M3; a section's layout changes alone (its readers drop it, nothing else).
-constexpr uint32 SectionLayoutVersion = 1u;
+// One layout version for every section (§5.3): 1 in M3, 2 since M4 filled ALIASES, FORMERPATHS, METAS and TOMBSTONES, so
+// a file of layout 1 lacks every required section and is not used (a cold start, once).
+constexpr uint32 SectionLayoutVersion = 2u;
 
 constexpr std::array<ESnapshotSection, 17u> SectionOrder = {
 	ESnapshotSection::Mounts, ESnapshotSection::Strings, ESnapshotSection::Names, ESnapshotSection::Folders, ESnapshotSection::Files,
@@ -100,6 +102,8 @@ size_t EstimateSectionBytes (const SRegistryImage& Image, ESnapshotSection Secti
 	case ESnapshotSection::Labels: return 16u + Image.Labels.size() * 5u;
 	case ESnapshotSection::Deps: return 32u + Image.Edges.size() * 48u + Image.Companions.size() * 5u;
 	case ESnapshotSection::TypeTables: return 64u + Image.Tags.size() * 15u + (Image.Records.size() + Image.SubEntries.size()) * 6u;
+	case ESnapshotSection::Tombstones: return 16u + Image.Tombstones.size() * 72u;
+	case ESnapshotSection::Metas: return 32u + Image.Metas.size() * 40u;
 	default: return 256u;
 	}
 }
@@ -371,9 +375,75 @@ void EncodeSection (const SRegistryImage& Image, ESnapshotSection Section, CFast
 	}
 	case ESnapshotSection::Aliases:
 	case ESnapshotSection::FormerPaths:
+	{
+		// Sparse (few records have any): the records that do by record index, increasing, then their entries.
+		const bool bAliases = Section == ESnapshotSection::Aliases;
+		uint32 records = 0u;
+		for (const SImageRecord& record : Image.Records)
+		{
+			records += (bAliases ? record.Aliases.Count : record.FormerPaths.Count) != 0u ? 1u : 0u;
+		}
+		out.Varint(records);
+		for (uint32 i = 0u; i < Image.Records.size(); ++i)
+		{
+			const SPoolRange range = bAliases ? Image.Records[i].Aliases : Image.Records[i].FormerPaths;
+			if (range.Count == 0u)
+			{
+				continue;
+			}
+			out.Varint(i);
+			out.Varint(range.Count);
+			for (uint32 k = range.Begin; k < range.Begin + range.Count; ++k)
+			{
+				if (bAliases)
+				{
+					out.Guid(Image.Aliases[k].Guid);
+					out.LittleEndian(Image.Aliases[k].SubId, 8u);
+				}
+				else
+				{
+					out.Varint(Image.FormerPaths[k]);
+				}
+			}
+		}
+		break;
+	}
 	case ESnapshotSection::Metas:
+	{
+		// The entries, then every copy's bytes in entry order as one zstd frame (§5.3: about 200 B a meta, which
+		// compress well together and badly alone).
+		std::vector<uint8> bytes;
+		size_t total = 0u;
+		for (const SImageMetaCopy& copy : Image.Metas)
+		{
+			total += copy.Bytes.size();
+		}
+		bytes.reserve(total);
+		out.Varint(Image.Metas.size());
+		for (const SImageMetaCopy& copy : Image.Metas)
+		{
+			out.Guid(copy.Guid);
+			out.LittleEndian(copy.Hash, 8u);
+			out.Varint(copy.SourcePath);
+			out.Varint(copy.Bytes.size());
+			bytes.insert(bytes.end(), copy.Bytes.begin(), copy.Bytes.end());
+		}
+		const std::vector<uint8> frame = compression::CompressZstd(bytes);
+		out.Varint(bytes.size());
+		out.Varint(frame.size());
+		out.Raw(frame);
+		break;
+	}
 	case ESnapshotSection::Tombstones:
-		out.Varint(0u);   // M4 fills them
+		out.Varint(Image.Tombstones.size());
+		for (const SImageTombstone& tombstone : Image.Tombstones)
+		{
+			out.Guid(tombstone.Guid);
+			out.Varint(tombstone.LastPath);
+			out.Hash(tombstone.Hash);
+			out.Identity(tombstone.Identity);
+			out.SignedVarint(tombstone.RemovedFileTime);
+		}
 		break;
 	}
 }
@@ -486,6 +556,8 @@ private:
 	SRegistryImage* Image = nullptr;
 	std::array<SSectionSpan, SectionOrder.size()> Sections {};
 	std::vector<SRecordCounts> Counts;
+	std::vector<std::pair<uint32, SPoolRange>> AliasRanges;        // ALIASES: (record, its range in Aliases)
+	std::vector<std::pair<uint32, SPoolRange>> FormerPathRanges;   // FORMERPATHS: (record, its range in FormerPaths)
 	SGuid ProjectId;
 	bool bStringsParsed = false;            // STRINGS parsed (Decode)
 	bool bTypesParsed = false;              // TYPES parsed (Decode)
@@ -852,6 +924,120 @@ private:
 			}
 			return true;
 		}); };
+		bool bAliases = false;
+		bool bFormerPaths = false;
+		bool bMetas = false;
+		bool bTombstones = false;
+		const auto parseRedirects = [&] (ESnapshotSection Section)
+		{
+			const bool bIsAliases = Section == ESnapshotSection::Aliases;
+			return bAssets && (bIsAliases || bStrings) && Parse(Section, [&] (CByteReader& Reader)
+			{
+				uint32 records = 0u;
+				if (!ReadCount(Reader, 3u, records))
+				{
+					return false;
+				}
+				std::vector<std::pair<uint32, SPoolRange>>& ranges = bIsAliases ? AliasRanges : FormerPathRanges;
+				ranges.reserve(records);
+				uint32 previous = ~0u;
+				for (uint32 r = 0u; r < records; ++r)
+				{
+					uint32 record = 0u;
+					uint32 count = 0u;
+					if (!ReadU32Varint(Reader, record) || record >= image.Records.size() || (previous != ~0u && record <= previous)
+						|| !ReadCount(Reader, bIsAliases ? 24u : 1u, count) || count == 0u)
+					{
+						return false;
+					}
+					previous = record;
+					ranges.emplace_back(record, SPoolRange { static_cast<uint32>(bIsAliases ? image.Aliases.size() : image.FormerPaths.size()), count });
+					for (uint32 k = 0u; k < count; ++k)
+					{
+						if (bIsAliases)
+						{
+							SAssetId& alias = image.Aliases.emplace_back();
+							if (!ReadGuid(Reader, alias.Guid) || !ReadU64(Reader, alias.SubId))
+							{
+								return false;
+							}
+						}
+						else
+						{
+							uint32 path = 0u;
+							if (!ReadU32Varint(Reader, path) || path >= image.Strings.size())
+							{
+								return false;
+							}
+							image.FormerPaths.push_back(path);
+						}
+					}
+				}
+				return true;
+			});
+		};
+		const auto parseAliases = [&] { bAliases = parseRedirects(ESnapshotSection::Aliases); };
+		const auto parseFormerPaths = [&] { bFormerPaths = parseRedirects(ESnapshotSection::FormerPaths); };
+		// METAS: each copy is checked against its hash (a copy that is not what it claims is dropped alone).
+		const auto parseMetas = [&] { bMetas = bStrings && Parse(ESnapshotSection::Metas, [&] (CByteReader& Reader)
+		{
+			uint32 count = 0u;
+			if (!ReadCount(Reader, 26u, count))
+			{
+				return false;
+			}
+			std::vector<uint64> sizes(count);
+			image.Metas.resize(count);
+			uint64 total = 0u;
+			for (uint32 i = 0u; i < count; ++i)
+			{
+				SImageMetaCopy& copy = image.Metas[i];
+				if (!ReadGuid(Reader, copy.Guid) || !ReadU64(Reader, copy.Hash) || !ReadU32Varint(Reader, copy.SourcePath)
+					|| copy.SourcePath >= image.Strings.size() || !Reader.ReadVarint(sizes[i]) || !copy.Guid.IsValid())
+				{
+					return false;
+				}
+				total += sizes[i];
+			}
+			uint64 rawSize = 0u;
+			std::span<const uint8> frame;
+			if (!Reader.ReadVarint(rawSize) || rawSize != total || !Reader.ReadSized(frame))
+			{
+				return false;
+			}
+			const std::optional<std::vector<uint8>> bytes = compression::DecompressZstd(frame, static_cast<size_t>(rawSize));
+			if (!bytes.has_value())
+			{
+				return false;
+			}
+			size_t at = 0u;
+			for (uint32 i = 0u; i < count; ++i)
+			{
+				SImageMetaCopy& copy = image.Metas[i];
+				copy.Bytes.assign(bytes->begin() + static_cast<ptrdiff_t>(at), bytes->begin() + static_cast<ptrdiff_t>(at + sizes[i]));
+				at += static_cast<size_t>(sizes[i]);
+			}
+			std::erase_if(image.Metas, [] (const SImageMetaCopy& Copy) { return hash::Xxh3_64(Copy.Bytes) != Copy.Hash; });
+			return true;
+		}); };
+		const auto parseTombstones = [&] { bTombstones = bStrings && Parse(ESnapshotSection::Tombstones, [&] (CByteReader& Reader)
+		{
+			uint32 count = 0u;
+			if (!ReadCount(Reader, 62u, count))
+			{
+				return false;
+			}
+			image.Tombstones.resize(count);
+			for (SImageTombstone& tombstone : image.Tombstones)
+			{
+				if (!ReadGuid(Reader, tombstone.Guid) || !ReadU32Varint(Reader, tombstone.LastPath) || tombstone.LastPath >= image.Strings.size()
+					|| !Reader.ReadHash(tombstone.Hash) || !ReadIdentity(Reader, tombstone.Identity) || !ReadSignedVarint(Reader, tombstone.RemovedFileTime))
+				{
+					return false;
+				}
+			}
+			return true;
+		}); };
 		const auto parseProblems = [&] { bProblems = bStrings && Parse(ESnapshotSection::Problems, [&] (CByteReader& Reader)
 		{
 			uint32 count = 0u;
@@ -871,8 +1057,34 @@ private:
 			return true;
 		}); };
 		{
-			const TFunctionRef<void ()> tasks[] = { parseDeps, parseSubs, parseLabels, parseProblems };
+			const TFunctionRef<void ()> tasks[] = { parseDeps, parseSubs, parseLabels, parseProblems, parseAliases, parseFormerPaths, parseMetas, parseTombstones };
 			RunTasks(Pool, tasks);
+		}
+		if (!bAliases)
+		{
+			image.Aliases.clear();
+			AliasRanges.clear();
+		}
+		if (!bFormerPaths)
+		{
+			image.FormerPaths.clear();
+			FormerPathRanges.clear();
+		}
+		if (!bMetas)
+		{
+			image.Metas.clear();
+		}
+		if (!bTombstones)
+		{
+			image.Tombstones.clear();
+		}
+		for (const auto& [record, range] : AliasRanges)
+		{
+			image.Records[record].Aliases = range;
+		}
+		for (const auto& [record, range] : FormerPathRanges)
+		{
+			image.Records[record].FormerPaths = range;
 		}
 		if (!bSubs)
 		{
@@ -953,7 +1165,9 @@ private:
 
 		// Losses (Snapshot.h): Analyze outputs make records stale, rule outputs drop the rule hashes.
 		const bool bAllStale = !bTypes || !bProblems;
-		const bool bDropRuleFiles = !bRuleFiles || (bAssets && !bLabels) || !bProblems;
+		// The meta's outputs (aliases, former paths) and the meta copies come back when the mounts are re-evaluated: a
+		// re-evaluation reads each file's meta (its METAS copy, else the file) and commits what differs.
+		const bool bDropRuleFiles = !bRuleFiles || (bAssets && (!bLabels || !bAliases || !bFormerPaths)) || !bProblems || !bMetas;
 		for (uint32 i = 0u; i < image.Records.size(); ++i)
 		{
 			if (bAllStale || stale[i] != 0u)
@@ -973,7 +1187,9 @@ private:
 		for (const auto& [section, bOk] : { std::pair(ESnapshotSection::Strings, bStrings), std::pair(ESnapshotSection::Types, bTypes),
 			std::pair(ESnapshotSection::RuleFiles, !bDropRuleFiles), std::pair(ESnapshotSection::SubEntry, bSubs || !bAssets),
 			std::pair(ESnapshotSection::Labels, bLabels || !bAssets), std::pair(ESnapshotSection::Deps, bDeps || !bAssets),
-			std::pair(ESnapshotSection::Problems, bProblems) })
+			std::pair(ESnapshotSection::Problems, bProblems), std::pair(ESnapshotSection::Aliases, bAliases || !bAssets),
+			std::pair(ESnapshotSection::FormerPaths, bFormerPaths || !bAssets), std::pair(ESnapshotSection::Metas, bMetas),
+			std::pair(ESnapshotSection::Tombstones, bTombstones) })
 		{
 			if (!bOk)
 			{
@@ -982,7 +1198,8 @@ private:
 		}
 		if (!bAssets)
 		{
-			for (const ESnapshotSection section : { ESnapshotSection::SubEntry, ESnapshotSection::Labels, ESnapshotSection::Deps, ESnapshotSection::TypeTables })
+			for (const ESnapshotSection section : { ESnapshotSection::SubEntry, ESnapshotSection::Labels, ESnapshotSection::Deps, ESnapshotSection::TypeTables,
+				ESnapshotSection::Aliases, ESnapshotSection::FormerPaths })
 			{
 				Drop(section);
 			}
@@ -1364,11 +1581,14 @@ void FilterImageMounts (SRegistryImage& Image, const std::vector<uint8>& Keep)
 	{
 		record.File = fileIndex[record.File];
 	}
-	std::erase_if(Image.Problems, [&] (const SImageProblems& Problems)
+	const auto isKept = [&] (uint32 Path)
 	{
-		const FStringView mount = GetMountNameOf(Image.Strings[Problems.Subject]);
-		return std::none_of(keptNames.begin(), keptNames.end(), [&] (const FString& Name) { return Name.View() == mount; });
-	});
+		const FStringView mount = Path < Image.Strings.size() ? GetMountNameOf(Image.Strings[Path]) : FStringView();
+		return std::any_of(keptNames.begin(), keptNames.end(), [&] (const FString& Name) { return Name.View() == mount; });
+	};
+	std::erase_if(Image.Problems, [&] (const SImageProblems& Problems) { return !isKept(Problems.Subject); });
+	std::erase_if(Image.Metas, [&] (const SImageMetaCopy& Copy) { return !isKept(Copy.SourcePath); });
+	std::erase_if(Image.Tombstones, [&] (const SImageTombstone& Tombstone) { return !isKept(Tombstone.LastPath); });
 }
 
 // Appends From to Into with every index shifted past Into's tables.
@@ -1399,6 +1619,8 @@ void AppendImage (SRegistryImage& Into, SRegistryImage&& From)
 	const uint32 tagBase = static_cast<uint32>(Into.Tags.size());
 	const uint32 edgeBase = static_cast<uint32>(Into.Edges.size());
 	const uint32 companionBase = static_cast<uint32>(Into.Companions.size());
+	const uint32 aliasBase = static_cast<uint32>(Into.Aliases.size());
+	const uint32 formerPathBase = static_cast<uint32>(Into.FormerPaths.size());
 	const auto shift = [] (uint32 Index, uint32 Base) { return Index != ~0u ? Index + Base : ~0u; };
 	const auto moveAll = [] (auto& To, auto& Items)
 	{
@@ -1452,6 +1674,8 @@ void AppendImage (SRegistryImage& Into, SRegistryImage&& From)
 		record.Tags.Begin += tagBase;
 		record.Edges.Begin += edgeBase;
 		record.Companions.Begin += companionBase;
+		record.Aliases.Begin += aliasBase;
+		record.FormerPaths.Begin += formerPathBase;
 		Into.Records.push_back(record);
 	}
 	for (const uint32 label : From.Labels)
@@ -1492,6 +1716,21 @@ void AppendImage (SRegistryImage& Into, SRegistryImage&& From)
 	{
 		problems.Subject += stringBase;
 		Into.Problems.push_back(std::move(problems));
+	}
+	moveAll(Into.Aliases, From.Aliases);
+	for (const uint32 path : From.FormerPaths)
+	{
+		Into.FormerPaths.push_back(path + stringBase);
+	}
+	for (SImageMetaCopy& copy : From.Metas)
+	{
+		copy.SourcePath += stringBase;
+		Into.Metas.push_back(std::move(copy));
+	}
+	for (SImageTombstone& tombstone : From.Tombstones)
+	{
+		tombstone.LastPath += stringBase;
+		Into.Tombstones.push_back(tombstone);
 	}
 }
 }
@@ -1535,6 +1774,19 @@ std::filesystem::path GetJournalPath (const std::filesystem::path& SnapshotPath)
 
 
 // ---------------- Writing ----------------
+
+int64 GetFileTimeNow () noexcept
+{
+	// MSVC's file clock counts 100 ns ticks since 1601, SFileStat's unit (as the derived-data cache's clock does).
+	return static_cast<int64>(std::filesystem::file_time_type::clock::now().time_since_epoch().count());
+}
+
+uint32 PruneTombstones (SRegistryImage& Image, int64 NowFileTime)
+{
+	const size_t before = Image.Tombstones.size();
+	std::erase_if(Image.Tombstones, [&] (const SImageTombstone& Tombstone) { return NowFileTime - Tombstone.RemovedFileTime > TombstoneLifetimeFileTicks; });
+	return static_cast<uint32>(before - Image.Tombstones.size());
+}
 
 std::vector<uint8> EncodeSnapshot (const SRegistryImage& Image, const SGuid& ProjectId, uint64 JournalBase, uint64 RulesBasis)
 {
@@ -1581,7 +1833,8 @@ bool WriteSnapshot (const CRegistryView& View, std::span<const MountId> Mounts, 
 	FRT_CPU_SCOPE("Assets.Snapshot.Write");
 	SSnapshotWriteStats stats;
 	uint64 start = platform::ReadTimestamp();
-	const SRegistryImage image = View.ExportImage(Mounts);
+	SRegistryImage image = View.ExportImage(Mounts);
+	stats.PrunedTombstones = PruneTombstones(image, GetFileTimeNow());
 	stats.ExportMs = platform::TimestampToMilliseconds(platform::ReadTimestamp() - start);
 	stats.Records = static_cast<uint32>(image.Records.size());
 	stats.JournalBase = View.GetRevision();

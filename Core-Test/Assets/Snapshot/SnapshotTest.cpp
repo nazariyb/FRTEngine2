@@ -353,8 +353,9 @@ TEST_F(SnapshotRoundTripTest, LostAnalyzeOutputsMakeOnlyTheirRecordsStale)
 		CRegistryStore loaded;
 		const SSnapshotFileReport report = Load(loaded, Path, ProjectId).Files[0];
 		EXPECT_TRUE(HasDropped(report, ESnapshotSection::Deps));
-		EXPECT_EQ(report.StaleRecords, 4u);   // two materials, the model, the input map
-		for (const FStringView path : { "/Project/M/m.frtmat.yml", "/Plugin.Trees/Oak.frtmat.yml", "/Project/Hero.gltf", "/Project/Input/Map.frtinputmap" })
+		EXPECT_EQ(report.StaleRecords, 5u);   // three materials, the model, the input map
+		for (const FStringView path : { "/Project/M/m.frtmat.yml", "/Plugin.Trees/Oak.frtmat.yml", "/Project/M/old.frtmat.yml", "/Project/Hero.gltf",
+			"/Project/Input/Map.frtinputmap" })
 		{
 			EXPECT_TRUE(HasAnyFlags(GetData(loaded.Live(), path).Flags, ERecordFlags::StaleTags)) << FString(path).CStr();
 		}
@@ -436,14 +437,27 @@ TEST_F(SnapshotRoundTripTest, LostRuleOutputsDropTheRuleHashes)
 		STagValue width;
 		EXPECT_TRUE(loaded.Live().GetTag(FindRecord(loaded.Live(), "/Project/T/Rock.png"), "Width", width));
 	}
-	// The sections M3 writes empty are not read: damage there costs nothing.
+	// METAS (and the metas' outputs, ALIASES and FORMERPATHS): the copies go, and the mounts are re-evaluated, which
+	// reads every meta again. TOMBSTONES alone: forgotten, nothing else.
+	for (const ESnapshotSection section : { ESnapshotSection::Metas, ESnapshotSection::Aliases, ESnapshotSection::FormerPaths })
 	{
 		ASSERT_TRUE(WriteSnapshot(Original.Live(), {}, Path, ProjectId, 0u));
-		DamageSection(Path, ESnapshotSection::Metas);
+		DamageSection(Path, section);
 		CRegistryStore loaded;
 		const SSnapshotFileReport report = Load(loaded, Path, ProjectId).Files[0];
-		EXPECT_TRUE(report.DroppedSections.empty());
-		ExpectSameContent(Original.Live(), loaded.Live());
+		EXPECT_TRUE(HasDropped(report, section)) << FString(enum_::ToString(section)).CStr();
+		EXPECT_TRUE(report.bRuleFilesDropped) << FString(enum_::ToString(section)).CStr();
+		EXPECT_EQ(report.StaleRecords, 0u);
+	}
+	{
+		ASSERT_TRUE(WriteSnapshot(Original.Live(), {}, Path, ProjectId, 0u));
+		DamageSection(Path, ESnapshotSection::Tombstones);
+		CRegistryStore loaded;
+		const SSnapshotFileReport report = Load(loaded, Path, ProjectId).Files[0];
+		EXPECT_EQ(report.DroppedSections, std::vector<ESnapshotSection> { ESnapshotSection::Tombstones });
+		EXPECT_EQ(Dump(loaded.Live()), Dump(Original.Live()));
+		EXPECT_EQ(loaded.Live().GetTombstoneCount(), 0u);
+		EXPECT_EQ(loaded.Live().GetMetaCopyCount(), Original.Live().GetMetaCopyCount());
 	}
 }
 
@@ -477,8 +491,8 @@ TEST_F(SnapshotRoundTripTest, OneDamagedTypeTableDropsOnlyItsType)
 	ASSERT_EQ(report.State, ESnapshotFileState::Loaded);
 	EXPECT_EQ(report.DroppedTypeTables, std::vector<FString> { "frt.Texture" });
 	EXPECT_FALSE(HasDropped(report, ESnapshotSection::TypeTables));
-	// Four texture files and the model (one of its sub-entries is a texture) are analyzed again.
-	EXPECT_EQ(report.StaleRecords, 5u);
+	// Five texture files and the model (one of its sub-entries is a texture) are analyzed again.
+	EXPECT_EQ(report.StaleRecords, 6u);
 	STagValue value;
 	EXPECT_FALSE(loaded.Live().GetTag(FindRecord(loaded.Live(), "/Project/T/Rock.png"), "Width", value));
 	EXPECT_TRUE(HasAnyFlags(GetData(loaded.Live(), "/Project/T/Rock.png").Flags, ERecordFlags::StaleTags));

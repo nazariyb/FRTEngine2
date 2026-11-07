@@ -76,7 +76,7 @@
 namespace frt::assets
 {
 inline constexpr uint8 JournalMagic[8] = { 'F', 'R', 'T', 'A', 'J', 'R', 'N', '1' };
-inline constexpr uint32 JournalFormatVersion = 3u;   // 2: types by stable name; 3: a file's meta columns optional, authored labels
+inline constexpr uint32 JournalFormatVersion = 4u;   // 2: types by stable name; 3: a file's meta columns optional, authored labels; 4: METAS, TOMBSTONES, aliases, former paths
 inline constexpr uint32 JournalHeaderBytes = 40u;
 
 // The delta encoding (the journal's commit payload): every member of SRegistryDelta, Sequence included.
@@ -86,8 +86,10 @@ FRT_CORE_API void EncodeRegistryDelta (const SRegistryDelta& Delta, std::vector<
 
 /**
  * The part of a delta whose paths lie in the mounts Keep accepts (by mount name): removes, upserts, problem
- * clears and problems by their path's first segment, rule files and mount upserts by their mount name.
- * Sequence is kept. A delta for a set of mounts is what a journal of a snapshot of those mounts holds.
+ * clears and problems by their path's first segment, rule files and mount upserts by their mount name, meta copies
+ * by their source's and tombstones by their last path. The removals of copies and tombstones name only a GUID, which
+ * has one of each in the whole store, so every part keeps them (where a file's mounts never held it, it removes
+ * nothing). Sequence is kept. A delta for a set of mounts is what a journal of a snapshot of those mounts holds.
  */
 [[nodiscard]] FRT_CORE_API SRegistryDelta FilterDeltaByMount (const SRegistryDelta& Delta, TFunctionRef<bool (FStringView MountName)> Keep);
 

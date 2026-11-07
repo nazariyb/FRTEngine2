@@ -4,7 +4,10 @@
 // unchanged file is never opened, a meta edit re-evaluates the record in memory, a lost meta keeps the identity and a
 // broken one its salvaged GUID; the meta's values beat the rules (an Importer pin claims a file no rule claims); two
 // records with one GUID answer for the smallest path and a move with its meta is a move to listeners; SubAssets
-// renames keep an id and remaps add an edge. Small non-ASCII trees in the temp directory, no lifecycle (null desc).
+// renames keep an id and remaps add an edge. E4b: the meta's Aliases and FormerPaths resolve lookups and its bytes are
+// kept in METAS (a re-evaluation reads them there, never the disk); a removed file with a meta-given GUID, or a GUID
+// edited by hand, leaves a tombstone that the identity's return clears; a warm start keeps all of it. Small non-ASCII
+// trees in the temp directory, no lifecycle (null desc).
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -548,7 +551,14 @@ TEST(RegistryMeta, SubAssetsRenamesKeepAnIdAndRemapsAddAnEdgeToTheExternalAsset)
 	const std::optional<SAssetData> torso = FindById(view, SAssetId { box, MakeSubId("mesh:Torso") });
 	ASSERT_TRUE(torso.has_value()) << DumpOf(view).CStr();
 	EXPECT_EQ(torso->Name, "mesh:Body") << "the new label keeps the old id";
-	EXPECT_FALSE(FindById(view, SAssetId { box, MakeSubId("mesh:Body") }).has_value());
+	// The new label's own id resolves to it through the alias index (E4b), flagged as a redirect.
+	bool bRedirected = false;
+	const std::optional<SRecordId> byNewLabel = view.Find(SAssetId { box, MakeSubId("mesh:Body") }, &bRedirected);
+	ASSERT_TRUE(byNewLabel.has_value());
+	EXPECT_EQ(byNewLabel->Value, torso->Record.Value);
+	EXPECT_TRUE(bRedirected);
+	(void)view.Find(SAssetId { box, MakeSubId("mesh:Torso") }, &bRedirected);
+	EXPECT_FALSE(bRedirected) << "the id it keeps is its own";
 
 	const std::optional<SRecordId> record = view.Find(SAssetId { box, 0u });
 	ASSERT_TRUE(record.has_value());
@@ -662,4 +672,136 @@ TEST(RegistryMeta, TheStoreAnswersForTheSmallestPathOfAGuidAndForgetsAReplacedOn
 	EXPECT_EQ(PathOf(store.Live(), GuidA), "/Project/T/Zebra.png");
 	EXPECT_EQ(GetDependencies(store.Live(), FindRecord(store.Live(), "/Project/M/m.frtmat.yml"))[0].To, FindRecord(store.Live(), "/Project/T/Zebra.png"));
 	EXPECT_EQ(store.Live().GetMetaFileCount(), 0u);
+}
+
+
+// ---------------- E4b: what a meta gives beside its GUID, and what a removal leaves ----------------
+
+namespace
+{
+FString RedirectingMeta ()
+{
+	return MetaText(GuidA, FString::Format("Labels:\n  - Rock\nAliases:\n  - {}\nFormerPaths:\n  - /Project/Textures/Старий.png\n", GuidB));
+}
+}
+
+TEST(RegistryMeta, AMetasAliasesAndFormerPathsResolveAndItsBytesAreKeptInMetas)
+{
+	CMetaTree tree("Перенаправлення");
+	tree.WritePng("Textures/Камінь.png");
+	tree.WriteMeta("Textures/Камінь.png", RedirectingMeta());
+	tree.WritePng("Textures/Трава.png");
+	jobs::CWorkerPool pool(MakePoolDesc());
+	std::unique_ptr<CAssetRegistry> registry = Open(pool, tree.Mounts());
+	const CRegistryView& view = registry->Live();
+
+	const SRecordId rock = view.FindByPath("/Project/Textures/Камінь.png").value_or(SRecordId {});
+	ASSERT_TRUE(rock.IsValid());
+	bool bRedirected = false;
+	EXPECT_EQ(view.Find(SAssetId { MakeGuid(GuidB), 0u }, &bRedirected), std::optional<SRecordId>(rock));
+	EXPECT_TRUE(bRedirected);
+	SDiagnostic notice;
+	EXPECT_EQ(view.FindByPath("/Project/Textures/старий.png", nullptr, &notice), std::optional<SRecordId>(rock));
+	EXPECT_EQ(notice.Code, Ref006);
+
+	const std::optional<SMetaCopyView> copy = view.FindMetaCopy(MakeGuid(GuidA));
+	ASSERT_TRUE(copy.has_value());
+	EXPECT_EQ(FStringView(reinterpret_cast<const char*>(copy->Bytes.data()), static_cast<uint32>(copy->Bytes.size())), RedirectingMeta().View());
+	EXPECT_EQ(copy->Hash, HashMetaBytes(RedirectingMeta()));
+	EXPECT_EQ(copy->SourcePath, "/Project/Textures/Камінь.png");
+	EXPECT_EQ(view.GetMetaCopyCount(), 1u) << "a file without a meta has no copy";
+
+	const FString dump = DumpOf(view);
+	EXPECT_TRUE(dump.View().Contains(FString::Format("    alias {{{}}}\n    formerpath /Project/Textures/Старий.png\n", GuidB).View())) << dump.CStr();
+	std::vector<SRecordId> pending;
+	EXPECT_EQ(view.RunText("is:pending-meta", pending).value_or(0u), 1u);
+	EXPECT_EQ(pending, std::vector<SRecordId> { view.FindByPath("/Project/Textures/Трава.png").value_or(SRecordId {}) }) << "only Трава.png has no meta";
+	registry->ShutDown();
+}
+
+TEST(RegistryMeta, ARemovedFileLeavesATombstoneAndARestoredOneTakesItsIdentityBack)
+{
+	CMetaTree tree("Надгробок");
+	tree.WritePng("Textures/Камінь.png");
+	tree.WriteMeta("Textures/Камінь.png", MetaText(GuidA));
+	tree.WritePng("Textures/Трава.png");
+	jobs::CWorkerPool pool(MakePoolDesc());
+	std::unique_ptr<CAssetRegistry> registry = Open(pool, tree.Mounts());
+	const std::vector<FString> folder = { "/Project/Textures" };
+	ASSERT_TRUE(registry->Live().FindMetaCopy(MakeGuid(GuidA)).has_value());
+	SFileData stat;
+	ASSERT_TRUE(registry->Live().GetFile(*registry->Live().FindFileExact("/Project/Textures/Камінь.png"), stat));
+
+	// The source goes, its meta stays (an orphan): a tombstone of what was there, the copy dropped with the record.
+	tree.Remove("Textures/Камінь.png");
+	tree.Remove("Textures/Трава.png");
+	ASSERT_TRUE(registry->ScanPathsSynchronous(folder, 30.0));
+	const CRegistryView& gone = registry->Live();
+	EXPECT_TRUE(PathOf(gone, GuidA).IsEmpty());
+	EXPECT_EQ(gone.GetTombstoneCount(), 1u) << "a provisional id leaves none";
+	const std::optional<STombstoneView> tombstone = gone.FindTombstone(MakeGuid(GuidA));
+	ASSERT_TRUE(tombstone.has_value());
+	EXPECT_EQ(tombstone->LastPath, "/Project/Textures/Камінь.png");
+	EXPECT_EQ(tombstone->Identity, stat.Identity);
+	EXPECT_GT(tombstone->RemovedFileTime, stat.MTime) << "now, as a file time";
+	EXPECT_FALSE(gone.FindMetaCopy(MakeGuid(GuidA)).has_value());
+	EXPECT_EQ(FindStoredFile(gone, "/Project/Textures/Камінь.png.meta")->MetaState, EMetaState::Orphan);
+
+	// It comes back beside its meta: the same identity, no tombstone, the copy again.
+	tree.WritePng("Textures/Камінь.png");
+	ASSERT_TRUE(registry->ScanPathsSynchronous(folder, 30.0));
+	EXPECT_EQ(PathOf(registry->Live(), GuidA), "/Project/Textures/Камінь.png");
+	EXPECT_EQ(registry->Live().GetTombstoneCount(), 0u);
+	EXPECT_TRUE(registry->Live().FindMetaCopy(MakeGuid(GuidA)).has_value());
+
+	// A GUID edited by hand: the old one is tombstoned (§4.6), the new one registered with its copy.
+	tree.WriteMeta("Textures/Камінь.png", MetaText(GuidC));
+	ASSERT_TRUE(registry->ScanPathsSynchronous(folder, 30.0));
+	EXPECT_EQ(PathOf(registry->Live(), GuidC), "/Project/Textures/Камінь.png");
+	ASSERT_TRUE(registry->Live().FindTombstone(MakeGuid(GuidA)).has_value());
+	EXPECT_EQ(registry->Live().FindTombstone(MakeGuid(GuidA))->LastPath, "/Project/Textures/Камінь.png");
+	EXPECT_FALSE(registry->Live().FindMetaCopy(MakeGuid(GuidA)).has_value());
+	EXPECT_TRUE(registry->Live().FindMetaCopy(MakeGuid(GuidC)).has_value());
+	registry->ShutDown();
+}
+
+TEST(RegistryMeta, AReEvaluationTakesAnUnchangedMetaFromItsCopyAndAWarmStartKeepsTheIdentityState)
+{
+	CMetaTree tree("Копія");
+	tree.WritePng("Textures/Камінь.png");
+	tree.WriteMeta("Textures/Камінь.png", RedirectingMeta());
+	jobs::CWorkerPool pool(MakePoolDesc());
+	FString cold;
+	{
+		std::unique_ptr<CAssetRegistry> registry = Open(pool, tree.Mounts(), true);
+		cold = DumpOf(registry->Live());
+		registry->ShutDown();
+	}
+
+	std::unique_ptr<CAssetRegistry> registry = Open(pool, tree.Mounts(), true);
+	EXPECT_EQ(DumpOf(registry->Live()), cold);
+	EXPECT_EQ(registry->GetCounters().MetasRead, 0u);
+	ASSERT_TRUE(registry->Live().FindMetaCopy(MakeGuid(GuidA)).has_value()) << "METAS comes back with the snapshot";
+	bool bRedirected = false;
+	EXPECT_TRUE(registry->Live().Find(SAssetId { MakeGuid(GuidB), 0u }, &bRedirected).has_value() && bRedirected);
+
+	// A rule edit re-evaluates the folder in memory: the meta's values come from its copy, never the disk.
+	tree.WriteProjectContent("Textures/Assets.yml", "FormatVersion: 1\nRules:\n  - { Match: \"**/*.png\", Labels: [ Stone ] }\n");
+	const std::vector<FString> folder = { "/Project/Textures" };
+	ASSERT_TRUE(registry->ScanPathsSynchronous(folder, 30.0));
+	EXPECT_GE(registry->GetCounters().ReEvaluated, 1u);
+	EXPECT_EQ(registry->GetCounters().MetasRead, 0u);
+	EXPECT_EQ(registry->GetCounters().Analyzed, 0u);
+	const FString edited = DumpOf(registry->Live());
+	EXPECT_TRUE(edited.View().Contains(FStringView("    labels authored:Rock, rule:Stone\n"))) << edited.CStr();
+	EXPECT_TRUE(edited.View().Contains(FStringView("    formerpath /Project/Textures/Старий.png\n"))) << edited.CStr();
+
+	// A meta edit that drops an alias: re-evaluated from the file, and the alias resolves no more.
+	tree.WriteMeta("Textures/Камінь.png", MetaText(GuidA, "Labels:\n  - Rock\n"));
+	ASSERT_TRUE(registry->ScanPathsSynchronous(folder, 30.0));
+	EXPECT_EQ(registry->GetCounters().MetasRead, 1u);
+	EXPECT_FALSE(registry->Live().Find(SAssetId { MakeGuid(GuidB), 0u }).has_value());
+	EXPECT_FALSE(registry->Live().FindByPath("/Project/Textures/Старий.png").has_value());
+	EXPECT_EQ(registry->Live().FindMetaCopy(MakeGuid(GuidA))->Hash, HashMetaBytes(MetaText(GuidA, "Labels:\n  - Rock\n")));
+	registry->ShutDown();
 }

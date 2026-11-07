@@ -43,6 +43,8 @@ SRegistryDelta MakeEveryMember ()
 	delta.Problems.push_back(SProblemsSet { "/Project/T/Rock.png", EProblemSource::Analyze, { full } });
 	delta.Problems.push_back(SProblemsSet { "/Project/T", EProblemSource::Unclaimed, { MakeWarning("/Project/T", "unclaimed", DiagnosticCode("RULE002")) } });
 	delta.RecordUpserts[0].Tags.push_back(STagDecl { "Channels", STagValue::FromInt64(-3) });
+	delta.MetaCopyRemoves = { MakeTestGuid("gone copy") };
+	delta.TombstoneRemoves = { MakeTestGuid("gone tombstone"), MakeTestGuid("another") };
 	return delta;
 }
 
@@ -150,6 +152,22 @@ TEST(JournalEncodingTest, EveryMemberOfADeltaSurvivesItsEncoding)
 	EXPECT_EQ(decoded->FileUpserts[1].ContentHash, delta.FileUpserts[1].ContentHash);
 	EXPECT_EQ(decoded->Problems.back().Diagnostics, delta.Problems.back().Diagnostics);
 	EXPECT_EQ(decoded->RecordUpserts[0].Tags.back().Value, STagValue::FromInt64(-3));
+	// M4's identity members (journal format 4).
+	const SRecordUpsert& moved = *std::find_if(decoded->RecordUpserts.begin(), decoded->RecordUpserts.end(),
+		[] (const SRecordUpsert& Record) { return Record.FileMountPath == "/Project/T/Moved.png"; });
+	EXPECT_EQ(moved.Aliases, (std::vector<SAssetId> { SAssetId { MakeTestGuid("absorbed"), 0u } }));
+	EXPECT_EQ(moved.FormerPaths, std::vector<FString> { "/Project/T/Stone.png" });
+	ASSERT_EQ(decoded->MetaCopies.size(), delta.MetaCopies.size());
+	EXPECT_EQ(decoded->MetaCopies[0].Bytes, delta.MetaCopies[0].Bytes);
+	EXPECT_EQ(decoded->MetaCopies[0].Hash, delta.MetaCopies[0].Hash);
+	EXPECT_EQ(decoded->MetaCopies[0].SourcePath, delta.MetaCopies[0].SourcePath);
+	ASSERT_EQ(decoded->Tombstones.size(), delta.Tombstones.size());
+	EXPECT_EQ(decoded->Tombstones[0].LastPath, delta.Tombstones[0].LastPath);
+	EXPECT_EQ(decoded->Tombstones[0].Identity, delta.Tombstones[0].Identity);
+	EXPECT_EQ(decoded->Tombstones[0].Hash, delta.Tombstones[0].Hash);
+	EXPECT_EQ(decoded->Tombstones[0].RemovedFileTime, delta.Tombstones[0].RemovedFileTime);
+	EXPECT_EQ(decoded->MetaCopyRemoves, delta.MetaCopyRemoves);
+	EXPECT_EQ(decoded->TombstoneRemoves, delta.TombstoneRemoves);
 
 	// Both stores answer alike.
 	CRegistryStore a;
@@ -246,6 +264,13 @@ TEST(JournalEncodingTest, ADeltaSplitByMountKeepsEachPartWhole)
 	EXPECT_EQ(project.Problems.size() + others.Problems.size(), delta.Problems.size());
 	EXPECT_EQ(project.RuleFileUpserts.size() + others.RuleFileUpserts.size(), delta.RuleFileUpserts.size());
 	EXPECT_EQ(project.ProblemClears.size(), 2u);
+	// Meta copies by their source, tombstones by their last path; a removal by GUID goes to every part.
+	EXPECT_EQ(project.MetaCopies.size(), 1u);
+	EXPECT_EQ(others.MetaCopies.size(), 1u);
+	EXPECT_EQ(project.Tombstones.size(), 1u);
+	EXPECT_EQ(others.Tombstones.size(), 1u);
+	EXPECT_EQ(project.MetaCopyRemoves, delta.MetaCopyRemoves);
+	EXPECT_EQ(others.TombstoneRemoves, delta.TombstoneRemoves);
 	for (const SRecordUpsert& record : others.RecordUpserts)
 	{
 		EXPECT_FALSE(record.FileMountPath.StartsWith("/Project/")) << record.FileMountPath.CStr();

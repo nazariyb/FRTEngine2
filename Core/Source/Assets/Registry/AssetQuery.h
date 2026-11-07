@@ -41,9 +41,8 @@ struct SDiagnostic;
 namespace frt::assets
 {
 /**
- * The `is:` predicates of §5.8. The text names are kebab-case ("broken-ref"). Redirected (M4), Unsaved (the editor
- * overlay, M5/M6) and PendingMeta (M4's .meta files) parse today but have no data until their milestone, so they
- * match nothing yet (HasSystemPredicateData).
+ * The `is:` predicates of §5.8. The text names are kebab-case ("broken-ref"). Unsaved (the editor overlay, M5/M6)
+ * parses today but has no data until its milestone, so it matches nothing yet (HasSystemPredicateData).
  */
 enum class ESystemPredicate : uint8
 {
@@ -54,9 +53,9 @@ enum class ESystemPredicate : uint8
 	Problem,       // has diagnostics
 	StaleTags,     // tags from an older schema (ERecordFlags::StaleTags)
 	Primary,       // a primary asset (ERecordFlags::Primary)
-	Redirected,    // loaded through a redirect (M4)
+	Redirected,    // has an edge resolved through an alias or a FormerPath (REF006, M4)
 	Unsaved,       // has unsaved editor changes (M5/M6)
-	PendingMeta,   // has no .meta yet (M4)
+	PendingMeta,   // its file has no .meta yet (FILES MetaState PendingMeta, M4)
 };
 
 inline constexpr uint32 SystemPredicateCount = 10u;
@@ -66,7 +65,7 @@ inline constexpr uint32 SystemPredicateCount = 10u;
 [[nodiscard]] FRT_CORE_API FStringLiteral GetSystemPredicateName (ESystemPredicate Predicate) noexcept;
 // By text name, ASCII case ignored; nullopt for anything else.
 [[nodiscard]] FRT_CORE_API std::optional<ESystemPredicate> FindSystemPredicate (FStringView Name) noexcept;
-// False for the predicates that match nothing until their milestone (Redirected, Unsaved, PendingMeta).
+// False for the predicates that match nothing until their milestone (Unsaved).
 [[nodiscard]] FRT_CORE_API bool HasSystemPredicateData (ESystemPredicate Predicate) noexcept;
 
 // Column: where the term starts in the query text (bytes, from 1); 0 for a term built in code. The query engine

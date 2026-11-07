@@ -20,6 +20,7 @@
 #include "Assets/Registry/Journal.h"
 #include "Assets/Registry/RegistryParallel.h"
 #include "Assets/Registry/RegistryRecords.h"
+#include "Assets/Registry/Snapshot.h"
 #include "Containers/StringMap.h"
 #include "Jobs/WorkerPool.h"
 #include "Log/Log.h"
@@ -169,20 +170,27 @@ void MergeDelta (SRegistryDelta& To, SRegistryDelta&& From)
 	AppendMoved(To.RuleFileUpserts, From.RuleFileUpserts);
 	AppendMoved(To.RecordUpserts, From.RecordUpserts);
 	AppendMoved(To.Problems, From.Problems);
+	AppendMoved(To.MetaCopies, From.MetaCopies);
+	AppendMoved(To.MetaCopyRemoves, From.MetaCopyRemoves);
+	AppendMoved(To.Tombstones, From.Tombstones);
+	AppendMoved(To.TombstoneRemoves, From.TombstoneRemoves);
 }
 
 
 // ---------------- The work of one pass (on workers) ----------------
 
 /**
- * A meta as a conversion read it (design §5.4 step 5, M4): its raw bytes' parse and hash (FILES' MetaHash). Read on a
- * worker only when the meta changed, or when its file is analyzed or re-evaluated and needs its values (until E4b keeps
- * the bytes in METAS); shared by the requests that use it.
+ * A meta as a conversion read it (design §5.4 step 5, M4): its raw bytes' parse and hash (FILES' MetaHash), and an Ok
+ * meta's bytes for METAS. Read on a worker only when the meta changed, or when its file is analyzed or re-evaluated and
+ * needs its values: from the view's METAS copy when the meta did not change and the copy verifies (no disk read), else
+ * from the file; shared by the requests that use it.
  */
 struct SReadMeta
 {
 	SMetaParseResult Parse;
 	uint64 Hash = 0u;
+	std::vector<uint8> Bytes;                           // an Ok meta's raw bytes (empty for a Broken one)
+	bool bFromCopy = false;                             // parsed from the view's METAS copy
 
 	[[nodiscard]] bool IsOk () const noexcept { return Parse.State == EMetaParseState::Ok; }
 	// The values the rules engine applies (SFileFacts::Meta): an Ok parse's; a Broken meta's are meaningless.
@@ -223,7 +231,92 @@ std::shared_ptr<const SReadMeta> ReadMetaFile (const SMount& Mount, FStringView 
 	auto meta = std::make_shared<SReadMeta>();
 	ParseMeta(bytes, meta->Parse);
 	meta->Hash = HashMetaBytes(bytes);
+	if (meta->IsOk())
+	{
+		meta->Bytes.assign(reinterpret_cast<const uint8*>(bytes.GetData()), reinterpret_cast<const uint8*>(bytes.GetData()) + bytes.Len());
+	}
 	return meta;
+}
+
+// The meta of a file whose meta did not change, from the view's METAS copy of its GUID (§5.3: re-evaluation and a
+// pinned file's class need the meta's values, never the disk): null when there is no copy whose hash is the file's
+// MetaHash, which then reads the file.
+std::shared_ptr<const SReadMeta> ReadMetaCopy (const CRegistryView& View, const SStoredFile& Stored)
+{
+	if (!Stored.Record.IsValid() || Stored.MetaState != EMetaState::Paired)
+	{
+		return nullptr;
+	}
+	const std::optional<SMetaCopyView> copy = View.FindMetaCopy(Stored.Guid);
+	if (!copy.has_value() || copy->Hash != Stored.MetaHash)
+	{
+		return nullptr;
+	}
+	auto meta = std::make_shared<SReadMeta>();
+	ParseMeta(FStringView(reinterpret_cast<const char*>(copy->Bytes.data()), static_cast<uint32>(copy->Bytes.size())), meta->Parse);
+	if (!meta->IsOk() || meta->Parse.Meta.Guid != Stored.Guid)
+	{
+		return nullptr;
+	}
+	meta->Hash = copy->Hash;
+	meta->Bytes.assign(copy->Bytes.begin(), copy->Bytes.end());
+	meta->bFromCopy = true;
+	return meta;
+}
+
+/**
+ * The identity state a conversion commits beside a file's record (§5.3, M4): the METAS copy of an Ok meta read from the
+ * file, when the view's differs (another hash or source); for a record whose meta-given GUID goes away - its file
+ * removed, its GUID changed in place - a tombstone {GUID, last path, hash, identity, time} and the copy's removal. A
+ * provisional id (PendingMeta) is never tombstoned: no meta holds it.
+ */
+void AppendMetaCopy (const CRegistryView& View, const SReadMeta* Meta, FStringView SourcePath, SRegistryDelta& Delta)
+{
+	if (Meta == nullptr || !Meta->IsOk() || Meta->bFromCopy)
+	{
+		return;
+	}
+	const SGuid& guid = Meta->Parse.Meta.Guid;
+	const std::optional<SMetaCopyView> stored = View.FindMetaCopy(guid);
+	if (stored.has_value() && stored->Hash == Meta->Hash && stored->SourcePath == SourcePath)
+	{
+		return;
+	}
+	Delta.MetaCopies.push_back(SMetaCopy { guid, Meta->Hash, Meta->Bytes, FString(SourcePath) });
+}
+
+std::optional<STombstone> MakeTombstone (const CRegistryView& View, const SStoredFile& Stored, FStringView Path, int64 Now)
+{
+	if (!Stored.Record.IsValid() || Stored.MetaState == EMetaState::PendingMeta)
+	{
+		return std::nullopt;
+	}
+	SFileData file;
+	(void)View.GetFile(Stored.FileRow, file);
+	return STombstone { Stored.Guid, FString(Path), file.ContentHash, Stored.Stat.Identity, Now };
+}
+
+void AppendLostIdentity (std::optional<STombstone>&& Tombstone, SRegistryDelta& Delta)
+{
+	if (Tombstone.has_value())
+	{
+		Delta.MetaCopyRemoves.push_back(Tombstone->Guid);
+		Delta.Tombstones.push_back(std::move(*Tombstone));
+	}
+}
+
+// A record of a file whose meta is gone keeps what its meta gave it (§4.6: a lost meta never changes identity), until
+// the lifecycle restores the meta: the stored consolidated aliases and former paths.
+void KeepStoredRedirects (const CRegistryView& View, SRecordId Record, SRecordUpsert& Upsert)
+{
+	View.ForEachAlias(Record, [&] (const SAssetId& Alias)
+	{
+		if (Alias.SubId == 0u)
+		{
+			Upsert.Aliases.push_back(Alias);
+		}
+	});
+	View.ForEachFormerPath(Record, [&] (FStringView FormerPath) { Upsert.FormerPaths.push_back(FString(FormerPath)); });
 }
 
 /**
@@ -282,6 +375,10 @@ struct SAnalyzeRequest
 	std::optional<SFileUpsert> MetaRow;                 // the meta's own row, committed with the record its values went into
 	bool bHadRecord = false;                            // the view held a record of the file
 	std::vector<FString> FileRemoves;                   // files of the pass this record moved from (ConvertBatch's move pairing)
+	std::optional<STombstone> LostIdentity;             // the stored GUID, when the meta gave the record another one
+	std::optional<SMetaCopy> MetaCopy;                  // METAS: the Ok meta read from the file, when the view's copy differs
+	std::vector<SAssetId> KeptAliases;                  // a lost meta's: the stored consolidated aliases (KeepStoredRedirects)
+	std::vector<FString> KeptFormerPaths;
 };
 
 // One analyzed file's delta: its file row (the stat the scan saw, the hash when Analyze computed one), record and
@@ -393,10 +490,21 @@ SAnalyzeOutcome RunAnalyze (std::vector<SAnalyzeRequest>& Requests, const CRules
 		{
 			file.Delta.FileUpserts.push_back(std::move(*request.MetaRow));
 		}
-		AppendRecordUpsert(std::move(result), settings, request.Path, file.Delta, request.Guid);
+		AppendRecordUpsert(std::move(result), settings, request.Path, file.Delta, request.Guid, meta);
+		SRecordUpsert& record = file.Delta.RecordUpserts.back();
 		if (!bTypeIncluded)
 		{
-			file.Delta.RecordUpserts.back().Flags |= ERecordFlags::TypeExcluded;
+			record.Flags |= ERecordFlags::TypeExcluded;
+		}
+		if (meta == nullptr)
+		{
+			record.Aliases.insert(record.Aliases.end(), request.KeptAliases.begin(), request.KeptAliases.end());
+			record.FormerPaths = std::move(request.KeptFormerPaths);
+		}
+		AppendLostIdentity(std::move(request.LostIdentity), file.Delta);
+		if (request.MetaCopy.has_value())
+		{
+			file.Delta.MetaCopies.push_back(std::move(*request.MetaCopy));
 		}
 	}
 	return outcome;
@@ -510,6 +618,7 @@ SConversion ConvertBatch (SConvertInput& In)
 	SConversion out;
 	SScanBatch& batch = In.Batch;
 	const CRegistryView& view = *In.View;
+	const int64 now = GetFileTimeNow();   // the removal time of the tombstones this batch writes
 	const CRulesEngine& rules = *In.Rules;
 	const SMount& mount = *In.Mount;
 	const FString& root = batch.RootMountPath;
@@ -688,8 +797,17 @@ SConversion ConvertBatch (SConvertInput& In)
 			std::shared_ptr<const SReadMeta> read;
 			if (meta != nullptr)
 			{
-				read = ReadMetaFile(mount, metaPaths[metaIndex], In.KeepsChanging);
-				++chunkOut.MetasRead;
+				// An unchanged meta's values from the view's METAS copy (a rule-chain change, a pinned file's class); a
+				// changed one, or one with no verified copy, from the file.
+				if (!bMetaBytesChanged && storedMeta.has_value() && stored.has_value())
+				{
+					read = ReadMetaCopy(view, *stored);
+				}
+				if (read == nullptr)
+				{
+					read = ReadMetaFile(mount, metaPaths[metaIndex], In.KeepsChanging);
+					++chunkOut.MetasRead;
+				}
 				if (read == nullptr)
 				{
 					// Changed while read (git or an editor writing it) or not opened: nothing of the file this pass, so
@@ -757,6 +875,10 @@ SConversion ConvertBatch (SConvertInput& In)
 				if (bHasRecord)
 				{
 					part.RecordRemoves.push_back(path);   // its importer went away (Importers.Exclude, a rule)
+					if (stored->MetaState != EMetaState::PendingMeta)
+					{
+						part.MetaCopyRemoves.push_back(stored->Guid);   // no record holds the GUID; the meta stays on disk
+					}
 				}
 				continue;
 			}
@@ -783,6 +905,26 @@ SConversion ConvertBatch (SConvertInput& In)
 				request.bContentChanged = !stored.has_value() || bContentChanged;
 				request.bHadRecord = bHasRecord;
 				request.Guid = guid;
+				if (bHasRecord && stored->Guid != guid)
+				{
+					request.LostIdentity = MakeTombstone(view, *stored, path, now);
+				}
+				if (read != nullptr && read->IsOk() && !read->bFromCopy)
+				{
+					SRegistryDelta copies;
+					AppendMetaCopy(view, read.get(), path, copies);
+					if (!copies.MetaCopies.empty())
+					{
+						request.MetaCopy = std::move(copies.MetaCopies.front());
+					}
+				}
+				if (metaValues == nullptr && bHasRecord && stored->MetaState != EMetaState::PendingMeta)
+				{
+					SRecordUpsert kept;
+					KeepStoredRedirects(view, stored->Record, kept);
+					request.KeptAliases = std::move(kept.Aliases);
+					request.KeptFormerPaths = std::move(kept.FormerPaths);
+				}
 				request.Meta = std::move(read);
 				request.MetaColumns = metaColumns;
 				request.MetaRow = std::move(metaRow);
@@ -793,15 +935,32 @@ SConversion ConvertBatch (SConvertInput& In)
 				addRow();
 			}
 			addMetaRow();
+			AppendMetaCopy(view, read.get(), path, part);
 			if (bDirty || bClassDiffers || bMetaBytesChanged)
 			{
 				// Re-evaluated in memory: the rules' and the meta's outputs, and the meta's GUID, against the record.
 				++chunkOut.ReEvaluated;
 				const ERecordFlags flags = (stored->Flags & ~ERecordFlags::TypeExcluded) | (bTypeIncluded ? ERecordFlags::None : ERecordFlags::TypeExcluded);
-				if (RuleOutputsDiffer(view, stored->Record, settings, flags) || stored->Guid != guid)
+				if (RuleOutputsDiffer(view, stored->Record, settings, flags) || stored->Guid != guid
+					|| (metaValues != nullptr && MetaRedirectsDiffer(view, stored->Record, *metaValues)))
 				{
 					SRecordUpsert upsert = MakeRecordUpsertFromView(view, stored->Record, settings, flags);
 					upsert.Guid = guid;
+					if (metaValues != nullptr)
+					{
+						SetMetaRedirects(upsert, *metaValues);
+					}
+					else
+					{
+						for (SAssetId& alias : upsert.Aliases)
+						{
+							alias.Guid = alias.SubId != 0u ? guid : alias.Guid;   // a renamed sub-asset's alias names its record's id
+						}
+					}
+					if (stored->Guid != guid)
+					{
+						AppendLostIdentity(MakeTombstone(view, *stored, path, now), part);
+					}
 					part.RecordUpserts.push_back(std::move(upsert));
 				}
 			}
@@ -948,6 +1107,35 @@ SConversion ConvertBatch (SConvertInput& In)
 	if (!out.RemovedFolders.empty() || !fileRemoves.empty())
 	{
 		SRegistryDelta& removals = out.Deltas.emplace_back();
+		// Every record that goes with a meta-given GUID leaves a tombstone (§4.6, §4.7: the lifecycle's grace, its
+		// orphan pairing); a GUID the pass registers again (a move) loses it in that commit.
+		for (const FString& removed : fileRemoves)
+		{
+			if (const std::optional<SStoredFile> stored = FindStoredFile(view, removed); stored.has_value())
+			{
+				AppendLostIdentity(MakeTombstone(view, *stored, removed, now), removals);
+			}
+		}
+		for (const FString& folder : out.RemovedFolders)
+		{
+			const std::optional<uint32> folderRow = view.FindFolder(folder);
+			SFolderData folderData;
+			if (!folderRow.has_value() || !view.GetFolder(*folderRow, folderData) || folderData.MountPath != folder.View())
+			{
+				continue;
+			}
+			view.ForEachFileUnder(*folderRow, [&] (uint32 Row)
+			{
+				SFileData data;
+				if (view.GetFile(Row, data) && data.Record.IsValid() && data.MetaState != EMetaState::PendingMeta)
+				{
+					if (const std::optional<SStoredFile> stored = FindStoredFile(view, data.MountPath); stored.has_value())
+					{
+						AppendLostIdentity(MakeTombstone(view, *stored, data.MountPath, now), removals);
+					}
+				}
+			});
+		}
 		removals.FolderRemoves = out.RemovedFolders;
 		removals.FileRemoves = std::move(fileRemoves);
 	}

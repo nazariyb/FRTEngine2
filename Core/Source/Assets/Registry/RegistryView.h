@@ -77,6 +77,26 @@ struct SDependencyView
 	bool bAmbiguous = false;
 	bool bCompanion = false;            // the target is a companion file (no record, To invalid, not Unresolved)
 	bool bGuidTarget = false;           // declared by id (TargetId as declared), else by TargetPath
+	bool bRedirected = false;           // resolved through an alias or a FormerPath (REF006, is:redirected; M4)
+};
+
+// A METAS entry (M4): Bytes views the view's pool.
+struct SMetaCopyView
+{
+	SGuid Guid;
+	uint64 Hash = 0u;
+	std::span<const uint8> Bytes;
+	FStringView SourcePath;
+};
+
+// A TOMBSTONES entry (M4).
+struct STombstoneView
+{
+	SGuid Guid;
+	FStringView LastPath;
+	hash::SContentHash Hash;
+	platform::SFileIdentity Identity;
+	int64 RemovedFileTime = 0;
 };
 
 struct SMountInfo
@@ -152,11 +172,15 @@ public:
 
 	// ---- Records (§5.7) ----
 	[[nodiscard]] EExists Exists (const SAssetId& Id) const;                    // Yes or No (a view is complete)
-	[[nodiscard]] std::optional<SRecordId> Find (const SAssetId& Id) const;     // canonical, then the alias index
+	// Canonical, then the alias index (§5.2: a consolidated GUID, a renamed sub-asset's new label); bOutRedirected says
+	// the hit came through an alias (is:redirected, REF006).
+	[[nodiscard]] std::optional<SRecordId> Find (const SAssetId& Id, bool* bOutRedirected = nullptr) const;
 	[[nodiscard]] std::optional<SRecordId> Find (SAssetId64 Id) const;
-	// Portable fold (§5.2); "path#label" names a sub-entry (the label matched exactly, then under the fold).
-	// A folded path that matches two records (PATH001) fails: nullopt, and OutError says so.
-	[[nodiscard]] std::optional<SRecordId> FindByPath (FStringView MountPath, SDiagnostic* OutError = nullptr) const;
+	// Portable fold (§5.2); "path#label" names a sub-entry (its id, its label, then the label under the fold). A path
+	// no record has may be a record's former path (FormerPaths, M4). A folded path that matches two records (PATH001)
+	// fails: nullopt, and OutError says so. OutNotice: REF006 (info) when the hit came through a former path or a
+	// spelling other than the file's; cleared otherwise.
+	[[nodiscard]] std::optional<SRecordId> FindByPath (FStringView MountPath, SDiagnostic* OutError = nullptr, SDiagnostic* OutNotice = nullptr) const;
 	bool GetRecord (SRecordId Record, SAssetData& Out) const;
 	// The record's sub-entries (an asset record's), in the order its producer declared them.
 	void ForEachSubEntry (SRecordId Record, TFunctionRef<void (SRecordId)> Visit) const;
@@ -175,6 +199,18 @@ public:
 	void ForEachCompanion (SRecordId Record, TFunctionRef<void (FStringView MountPath)> Visit) const;
 	// The importer that analyzed the record, "" for none.
 	[[nodiscard]] FStringView GetImporterName (SRecordId Record) const noexcept;
+	// An asset record's aliases (the ids that resolve to it, RegistryDelta.h) and former paths, as stored.
+	void ForEachAlias (SRecordId Record, TFunctionRef<void (const SAssetId& Alias)> Visit) const;
+	void ForEachFormerPath (SRecordId Record, TFunctionRef<void (FStringView MountPath)> Visit) const;
+
+	// ---- Identity state (§5.3 METAS, TOMBSTONES; M4) ----
+	// The last Ok meta bytes kept for a GUID, verified against Hash; the views point into the view's pools.
+	[[nodiscard]] std::optional<SMetaCopyView> FindMetaCopy (const SGuid& Guid) const noexcept;
+	void ForEachMetaCopy (TFunctionRef<void (const SMetaCopyView&)> Visit) const;
+	[[nodiscard]] std::optional<STombstoneView> FindTombstone (const SGuid& Guid) const noexcept;
+	void ForEachTombstone (TFunctionRef<void (const STombstoneView&)> Visit) const;
+	[[nodiscard]] uint32 GetMetaCopyCount () const noexcept;
+	[[nodiscard]] uint32 GetTombstoneCount () const noexcept;
 
 	// ---- Dependencies (§5.2, §5.7) ----
 	// An asset record's dependencies are every edge of its file (FromSub tells the declaring sub-entry); a
@@ -296,6 +332,8 @@ private:
 	friend FRT_CORE_API const SRegistryTables& GetTables (const CRegistryView& View) noexcept;
 
 	[[nodiscard]] SRecordId MakeRecordId (uint32 Value) const noexcept { return SRecordId { Value, static_cast<uint32>(Tables.Revision) }; }
+	[[nodiscard]] std::optional<SRecordId> FindCanonical (const SAssetId& Id) const;
+	[[nodiscard]] std::optional<SRecordId> FindInRecord (uint32 Row, std::optional<FStringView> Label) const;
 	[[nodiscard]] SDependencyView MakeDependencyView (uint32 Source, uint32 EdgeRef) const;
 	[[nodiscard]] std::vector<uint32> GetRootRows (std::span<const SRecordId> Roots) const;
 	void ListFiles (std::span<const SRecordId> Roots, std::span<const uint32> Rows, std::vector<SRecordId>& Out) const;

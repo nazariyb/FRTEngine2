@@ -121,8 +121,9 @@ public:
 	 * an item the delta contract rejects, gets the image replayed as a delta, with the same result. Images of different mounts can be adopted one after the
 	 * other (Engine.snapshot, then AssetRegistry.snapshot). The change ring reports nothing for an image:
 	 * readers refresh everything (ForEachChangeSince returns false for older revisions). A type name the
-	 * table does not know leaves its records frt.Unknown with Schemaless | StaleTags and no tags. Labels
-	 * without RuleLabelBit (authored, M4) are not kept yet. Owner thread.
+	 * table does not know leaves its records frt.Unknown with Schemaless | StaleTags and no tags. Aliases,
+	 * former paths, meta copies and tombstones (M4) are applied as a delta of the image would (a tombstone of a
+	 * GUID a record holds is dropped). Owner thread.
 	 *
 	 * Pool: the bulk path rebuilds independent tables and indices on it at once (RegistryParallel.h: the
 	 * calling thread takes part and never waits for a busy worker, so the call may run on one of Pool's own

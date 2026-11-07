@@ -223,6 +223,13 @@ void AppendRecord (std::vector<uint8>& Out, const SRecordUpsert& Record, const C
 		AppendText(Out, edge.FieldPath);
 	}
 	AppendTexts(Out, Record.Companions);
+	AppendVarint(Out, Record.Aliases.size());
+	for (const SAssetId& alias : Record.Aliases)
+	{
+		AppendGuid(Out, alias.Guid);
+		AppendLittleEndian(Out, alias.SubId, 8u);
+	}
+	AppendTexts(Out, Record.FormerPaths);
 }
 
 /**
@@ -279,7 +286,47 @@ bool ReadRecord (CByteReader& Reader, const TDecodedTypes& Types, SRecordUpsert&
 			return false;
 		}
 	}
-	return ReadTexts(Reader, Out.Companions);
+	uint32 aliasCount = 0u;
+	if (!ReadTexts(Reader, Out.Companions) || !ReadCount(Reader, 24u, aliasCount))
+	{
+		return false;
+	}
+	Out.Aliases.resize(aliasCount);
+	for (SAssetId& alias : Out.Aliases)
+	{
+		if (!ReadGuid(Reader, alias.Guid) || !ReadU64(Reader, alias.SubId))
+		{
+			return false;
+		}
+	}
+	return ReadTexts(Reader, Out.FormerPaths);
+}
+
+void AppendGuids (std::vector<uint8>& Out, const std::vector<SGuid>& Guids)
+{
+	AppendVarint(Out, Guids.size());
+	for (const SGuid& guid : Guids)
+	{
+		AppendGuid(Out, guid);
+	}
+}
+
+bool ReadGuids (CByteReader& Reader, std::vector<SGuid>& Out)
+{
+	uint32 count = 0u;
+	if (!ReadCount(Reader, 16u, count))
+	{
+		return false;
+	}
+	Out.resize(count);
+	for (SGuid& guid : Out)
+	{
+		if (!ReadGuid(Reader, guid))
+		{
+			return false;
+		}
+	}
+	return true;
 }
 
 
@@ -447,6 +494,25 @@ void EncodeRegistryDelta (const SRegistryDelta& Delta, std::vector<uint8>& Out)
 		AppendEnum(Out, problems.Source);
 		AppendDiagnostics(Out, problems.Diagnostics);
 	}
+	AppendVarint(Out, Delta.MetaCopies.size());
+	for (const SMetaCopy& copy : Delta.MetaCopies)
+	{
+		AppendGuid(Out, copy.Guid);
+		AppendLittleEndian(Out, copy.Hash, 8u);
+		binary::AppendSized(Out, copy.Bytes);
+		AppendText(Out, copy.SourcePath);
+	}
+	AppendGuids(Out, Delta.MetaCopyRemoves);
+	AppendVarint(Out, Delta.Tombstones.size());
+	for (const STombstone& tombstone : Delta.Tombstones)
+	{
+		AppendGuid(Out, tombstone.Guid);
+		AppendText(Out, tombstone.LastPath);
+		binary::AppendHash(Out, tombstone.Hash);
+		AppendIdentity(Out, tombstone.Identity);
+		AppendSignedVarint(Out, tombstone.RemovedFileTime);
+	}
+	AppendGuids(Out, Delta.TombstoneRemoves);
 }
 
 std::optional<SRegistryDelta> DecodeRegistryDelta (std::span<const uint8> Bytes)
@@ -580,7 +646,34 @@ std::optional<SRegistryDelta> DecodeRegistryDelta (std::span<const uint8> Bytes)
 			return std::nullopt;
 		}
 	}
-	if (!reader.IsAtEnd())
+	if (!ReadCount(reader, 26u, count))
+	{
+		return std::nullopt;
+	}
+	delta.MetaCopies.resize(count);
+	for (SMetaCopy& copy : delta.MetaCopies)
+	{
+		std::span<const uint8> bytes;
+		if (!ReadGuid(reader, copy.Guid) || !ReadU64(reader, copy.Hash) || !reader.ReadSized(bytes) || !reader.ReadText(copy.SourcePath))
+		{
+			return std::nullopt;
+		}
+		copy.Bytes.assign(bytes.begin(), bytes.end());
+	}
+	if (!ReadGuids(reader, delta.MetaCopyRemoves) || !ReadCount(reader, 62u, count))
+	{
+		return std::nullopt;
+	}
+	delta.Tombstones.resize(count);
+	for (STombstone& tombstone : delta.Tombstones)
+	{
+		if (!ReadGuid(reader, tombstone.Guid) || !reader.ReadText(tombstone.LastPath) || !reader.ReadHash(tombstone.Hash)
+			|| !ReadIdentity(reader, tombstone.Identity) || !ReadSignedVarint(reader, tombstone.RemovedFileTime))
+		{
+			return std::nullopt;
+		}
+	}
+	if (!ReadGuids(reader, delta.TombstoneRemoves) || !reader.IsAtEnd())
 	{
 		return std::nullopt;
 	}
@@ -661,6 +754,22 @@ SRegistryDelta FilterDeltaByMount (const SRegistryDelta& Delta, TFunctionRef<boo
 			out.Problems.push_back(problems);
 		}
 	}
+	for (const SMetaCopy& copy : Delta.MetaCopies)
+	{
+		if (keepPath(copy.SourcePath))
+		{
+			out.MetaCopies.push_back(copy);
+		}
+	}
+	for (const STombstone& tombstone : Delta.Tombstones)
+	{
+		if (keepPath(tombstone.LastPath))
+		{
+			out.Tombstones.push_back(tombstone);
+		}
+	}
+	out.MetaCopyRemoves = Delta.MetaCopyRemoves;
+	out.TombstoneRemoves = Delta.TombstoneRemoves;
 	return out;
 }
 

@@ -24,6 +24,8 @@
  */
 namespace frt::assets
 {
+struct SAssetMeta;   // Meta/MetaTypes.h
+
 // A FILES row and, when it has one, its record.
 struct SStoredFile
 {
@@ -52,10 +54,15 @@ struct SStoredFile
 
 /**
  * The record again as an upsert - its type, importer, status, AnalyzeStamp, primary name, tags, sub-entries, edges
- * (as declared: by id or by path, with their field paths) and companions as the view holds them - with the rule
- * outputs of Settings (cook rule, chunk, rule labels, authored labels) and Flags as its flags. Committing it changes
- * nothing else; the caller sets another Guid when the meta's changed.
+ * (as declared: by id or by path, with their field paths), companions, aliases and former paths as the view holds
+ * them - with the rule outputs of Settings (cook rule, chunk, rule labels, authored labels) and Flags as its flags.
+ * Committing it changes nothing else; the caller sets another Guid when the meta's changed (then SetMetaRedirects).
  */
 [[nodiscard]] FRT_CORE_API SRecordUpsert MakeRecordUpsertFromView (const CRegistryView& View, SRecordId Record, const SEffectiveFileSettings& Settings,
 	ERecordFlags Flags);
+
+// The aliases (its sub-entries' renamed ones, then the meta's Aliases) and former paths a record has from its meta (M4).
+FRT_CORE_API void SetMetaRedirects (SRecordUpsert& Upsert, const SAssetMeta& Meta);
+// Whether the record's stored consolidated aliases or former paths differ from Meta's (a re-evaluation's test).
+[[nodiscard]] FRT_CORE_API bool MetaRedirectsDiffer (const CRegistryView& View, SRecordId Record, const SAssetMeta& Meta);
 }
