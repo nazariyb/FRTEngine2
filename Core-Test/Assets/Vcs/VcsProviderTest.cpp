@@ -232,6 +232,51 @@ TEST_F(VcsProviderTest, ADotGitGitRefusesIsNoneAndAWarningQuotingGit)
 	EXPECT_TRUE(capture.GetEntries()[0].Text.Contains("not a git repository")) << capture.GetEntries()[0].Text.CStr();
 }
 
+// A mount whose folder does not exist (MakeMount keeps one, empty, and git keeps no empty folder) is in the repository
+// above it, without a word about git, and its files are that repository's once the folder appears, and after it goes.
+TEST_F(VcsProviderTest, AMountFolderThatDoesNotExistIsInTheRepositoryAboveIt)
+{
+	const test::CLogCapture capture;
+	const FStringView missingName = "Ще немає 还没有/Content";
+	const std::filesystem::path missing = (gMount / missingName.ToPath()).make_preferred();
+	CGitVcsProvider provider;
+	ASSERT_TRUE(provider.Detect(FString::FromPath(missing)));
+	EXPECT_EQ(CountWarnings(capture), 0u) << (capture.GetEntries().empty() ? "" : capture.GetEntries()[0].Text.CStr());
+	EXPECT_EQ(platform::GetFileIdentity(provider.GetTopLevel()), platform::GetFileIdentity(gRepo));
+	const std::vector<FString> files = { FString::FromPath(missing / "A.png"), FString::FromPath(missing / "B.png") };
+	std::vector<SVcsStatus> status;
+	EXPECT_EQ(provider.StatusOf(files, status).Error, EVcsError::None);
+	EXPECT_EQ(status[0].State, EVcsState::Untracked);
+	std::vector<FString> staged;
+	EXPECT_EQ(provider.GetStaged(staged).Error, EVcsError::None);
+	EXPECT_TRUE(staged.empty());
+
+	// It appears: A is committed, B staged.
+	const FString mountName = FString::FromPath(gMount.filename());
+	Write(FString::Format("{}/A.png", missingName));
+	CommitAll();
+	Write(FString::Format("{}/B.png", missingName));
+	ASSERT_EQ(RunGit({ "add", "--", FString::Format("{}/{}/B.png", mountName, missingName) }).ExitCode, 0);
+	std::vector<bool> facts;
+	EXPECT_EQ(provider.GetCommittedFacts(files, facts).Error, EVcsError::None);
+	EXPECT_EQ(facts, (std::vector<bool> { true, false }));
+	EXPECT_EQ(provider.StatusOf(files, status).Error, EVcsError::None);
+	EXPECT_EQ(status[0].State, EVcsState::Clean);
+	EXPECT_EQ(status[1].State, EVcsState::Added);
+	EXPECT_EQ(provider.GetStaged(staged).Error, EVcsError::None);
+	EXPECT_EQ(staged, std::vector<FString> { files[1] });
+
+	// It goes again, its delete staged: git runs from above, and only what was below the folder is the mount's.
+	ASSERT_EQ(RunGit({ "rm", "-q", "-r", "-f", "--", FString::Format("{}/{}", mountName, FStringView("Ще немає 还没有")) }).ExitCode, 0);
+	ASSERT_FALSE(std::filesystem::exists(missing));
+	Write("Elsewhere.png");
+	ASSERT_EQ(RunGit({ "add", "--", mountName + "/Elsewhere.png" }).ExitCode, 0);
+	EXPECT_EQ(provider.GetStaged(staged).Error, EVcsError::None);
+	EXPECT_EQ(staged, std::vector<FString> { files[0] });
+	EXPECT_EQ(provider.StatusOf(files, status).Error, EVcsError::None);
+	EXPECT_EQ(status[0].State, EVcsState::Deleted);
+}
+
 
 // ---------------- IsBusy ----------------
 

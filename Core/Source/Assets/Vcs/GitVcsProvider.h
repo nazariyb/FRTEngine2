@@ -13,7 +13,8 @@
  * client: it never commits, syncs or reverts, and stages exactly one kind of change, a case-only rename of a tracked file,
  * which `core.ignorecase=true` would otherwise hide. New files are left for the user to stage.
  *
- * Every git command runs from the mount root, so a mount in a submodule or a worktree talks to its own repository, and never
+ * Every git command runs from the mount root (while that does not exist, from the nearest folder above it), so a mount in a
+ * submodule or a worktree talks to its own repository, and never
  * compares a path git prints with one FRT holds: a path is the mount-relative name plus the mount's prefix below the top
  * level, which git itself reports, so a subst or mapped drive or a junction in the path cannot make them disagree. Each
  * command lists the whole mount once (`ls-tree`, `status`) and the batch is looked up in the result, so no command line ever
@@ -30,6 +31,8 @@ class FRT_CORE_API CGitVcsProvider final : public IVcsProvider
 public:
 	// True when MountRoot is in a work tree. False leaves this provider unusable (the caller falls back to None), and warns
 	// once if a `.git` is there all the same: no git on PATH, or git refusing it (dubious ownership), quoting git's reason.
+	// A mount root that does not exist yet is in the repository of the nearest folder above it, and git runs from there
+	// until the root appears.
 	// Under a pre-commit hook (FRT_HOOK_TOPLEVEL set), only the provider of the committing repository keeps the hook's
 	// GIT_INDEX_FILE; every other one's git runs without it.
 	bool Detect (const FString& MountRoot) override;
@@ -65,7 +68,11 @@ private:
 	// message (CheckLocks says how it tells). Stats only, and warns once of a lock held too long.
 	enum class ELockHeld : uint8 { None, Rewriting, CommitMessage };
 	[[nodiscard]] ELockHeld CheckLocks () const;
+	// The mount root, or while it does not exist the nearest folder above it that did at Detect (git cannot start in a folder
+	// that is not there). RunGit runs there; RunGitIn where it is told.
+	[[nodiscard]] std::filesystem::path GetWorkingDir () const;
 	[[nodiscard]] platform::SToolProcessResult RunGit (std::vector<FString> Arguments) const;
+	[[nodiscard]] platform::SToolProcessResult RunGitIn (const std::filesystem::path& WorkingDir, std::vector<FString> Arguments) const;
 	[[nodiscard]] SVcsResult MoveOne (const SVcsMove& Move) const;
 	// The name below the top level git would print for File; empty when File is not under this mount.
 	[[nodiscard]] FString MakeGitName (const FString& File) const;
@@ -78,6 +85,8 @@ private:
 	std::filesystem::path GitDir;
 	std::filesystem::path CommonDir;
 	FString Prefix;                   // the mount below the top level: "" or "Content/"
+	FString MissingTail;              // the part of the prefix that did not exist at Detect, "/"-ended; "" when it all did
+	std::filesystem::path WorkingDirWhileMissing;   // the folder above it that did; empty when the mount root existed
 	std::vector<std::filesystem::path> OtherBusyFiles;
 	std::filesystem::path IndexLock;
 	std::filesystem::path HeadLock;

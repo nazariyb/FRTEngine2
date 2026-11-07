@@ -39,6 +39,12 @@ constexpr uint32 GitTimeoutMs = 120000u;
 	}
 }
 
+[[nodiscard]] bool IsDirectory (const std::filesystem::path& Path)
+{
+	const std::optional<platform::SFileStat> stat = platform::Stat(Path);
+	return stat.has_value() && stat->bDirectory;
+}
+
 [[nodiscard]] FStringView FirstLine (FStringView Text) noexcept
 {
 	return Text.TrimStartAndEnd().SplitFirst('\n').Left.TrimEnd();
@@ -139,6 +145,22 @@ bool CGitVcsProvider::Detect (const FString& InMountRoot)
 	}
 
 	Git = git;
+	// A mount whose folder does not exist (MakeMount keeps it, empty, and git keeps no empty folder) is still in the
+	// repository above it, and it may appear while the editor runs: git runs from the nearest folder that exists, and the
+	// missing rest is part of the prefix. Git cannot start in a folder that is not there.
+	MissingTail = FString();
+	WorkingDirWhileMissing.clear();
+	std::filesystem::path existing = MountRoot;
+	while (!IsDirectory(existing) && existing != existing.parent_path())
+	{
+		existing = existing.parent_path();
+	}
+	if (existing != MountRoot)
+	{
+		MissingTail = platform::GetRelativePath(MountRoot, existing).value_or(FString()) + "/";
+		WorkingDirWhileMissing = existing;
+	}
+
 	const platform::SToolProcessResult run = RunGit({ "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir",
 		"--git-common-dir", "--show-prefix" });
 	std::vector<FStringView> lines;
@@ -156,9 +178,14 @@ bool CGitVcsProvider::Detect (const FString& InMountRoot)
 		Git.clear();
 		if (HasDotGitAbove(MountRoot))
 		{
+			// Git's own words when it has any; a run that did not start says why in Stderr.
+			const FString reason = !run.bStarted ? FString(FirstLine(run.Stderr))
+				: run.bTimedOut ? FString::Format("git rev-parse did not finish within {} s", GitTimeoutMs / 1000u)
+				: run.ExitCode != 0 ? (run.Stderr.IsEmpty() ? FString::Format("git rev-parse failed with exit code {}", run.ExitCode)
+					: FString(FirstLine(run.Stderr)))
+				: FString("git 2.31 or later is needed");
 			log::Warning(log::Assets, "git cannot use the repository of '{}', so it has no version control: {}",
-				unicode::ToDisplayText(FString::FromPath(MountRoot)),
-				run.Stderr.IsEmpty() ? FStringView("git 2.31 or later is needed") : FirstLine(run.Stderr));
+				unicode::ToDisplayText(FString::FromPath(MountRoot)), reason);
 		}
 		return false;
 	}
@@ -166,7 +193,7 @@ bool CGitVcsProvider::Detect (const FString& InMountRoot)
 	TopLevel = lines[0].ToPath();
 	GitDir = lines[1].ToPath();
 	CommonDir = lines[2].ToPath();
-	Prefix = lines.size() > 3u ? FString(lines[3]) : FString();
+	Prefix = (lines.size() > 3u ? FString(lines[3]) : FString()) + MissingTail;
 	IndexLock = GitDir / "index.lock";
 	HeadLock = GitDir / "HEAD.lock";
 	CommitMessage = GitDir / "COMMIT_EDITMSG";
@@ -271,7 +298,8 @@ SVcsResult CGitVcsProvider::CheckOut (std::span<const FString> Files)
 
 SVcsResult CGitVcsProvider::MoveOne (const SVcsMove& Move) const
 {
-	if (!IsCaseOnlyRename(Move))
+	// Names relative to the mount root, so git runs there: a mount folder that does not exist has nothing to move.
+	if (!IsCaseOnlyRename(Move) || !IsDirectory(MountRoot))
 	{
 		return MoveFilePlain(Move);
 	}
@@ -281,7 +309,7 @@ SVcsResult CGitVcsProvider::MoveOne (const SVcsMove& Move) const
 	{
 		return MoveFilePlain(Move);
 	}
-	const platform::SToolProcessResult tracked = RunGit({ "ls-files", "--error-unmatch", "--", from });
+	const platform::SToolProcessResult tracked = RunGitIn(MountRoot, { "ls-files", "--error-unmatch", "--", from });
 	if (!tracked.bStarted || tracked.bTimedOut || (tracked.ExitCode != 0 && tracked.ExitCode != 1))
 	{
 		return MakeFailure("ls-files", tracked);
@@ -292,7 +320,7 @@ SVcsResult CGitVcsProvider::MoveOne (const SVcsMove& Move) const
 	}
 	// -f: git's own "is it the same file in another spelling" folds ASCII only, so it refuses `текстура` to `Текстура` as
 	// "destination exists". RunMoves has made sure the target is this very file or absent, so -f overwrites nothing.
-	const platform::SToolProcessResult moved = RunGit({ "mv", "-f", "--", from, to });
+	const platform::SToolProcessResult moved = RunGitIn(MountRoot, { "mv", "-f", "--", from, to });
 	if (!moved.bStarted || moved.bTimedOut || moved.ExitCode != 0)
 	{
 		return MakeFailure("mv", moved);
@@ -444,14 +472,22 @@ SVcsResult CGitVcsProvider::GetStaged (std::vector<FString>& OutFiles)
 	{
 		return { EVcsError::Failed, "git provider used before Detect" };
 	}
-	// --relative: below the working directory only, and named from it. On an unborn HEAD, everything staged is listed.
-	const platform::SToolProcessResult run = RunGit({ "diff", "--cached", "--name-only", "-z", "--no-renames", "--relative" });
+	// --relative: below the working directory only, and named from it. On an unborn HEAD, everything staged is listed. From
+	// above a mount folder that does not exist, only what is under its missing rest is the mount's.
+	const std::filesystem::path workingDir = GetWorkingDir();
+	const platform::SToolProcessResult run = RunGitIn(workingDir, { "diff", "--cached", "--name-only", "-z", "--no-renames",
+		"--relative" });
 	if (!run.bStarted || run.bTimedOut || run.ExitCode != 0)
 	{
 		return MakeFailure("diff --cached", run);
 	}
-	for (const FStringView name : AsText(run.Stdout).Split('\0', EStringSplit::SkipEmpty))
+	const bool bFromAbove = workingDir != MountRoot;
+	for (FStringView name : AsText(run.Stdout).Split('\0', EStringSplit::SkipEmpty))
 	{
+		if (bFromAbove && !name.RemoveFromStart<ESearchCase::IgnoreCase>(MissingTail.View()))
+		{
+			continue;
+		}
 		OutFiles.push_back(FString::FromPath((MountRoot / name.ToPath()).make_preferred()));
 	}
 	return {};
@@ -467,7 +503,17 @@ FString CGitVcsProvider::GetAddCommand (const FString& File) const
 	return FString::Format("git add {}", QuoteForShell(File));
 }
 
+std::filesystem::path CGitVcsProvider::GetWorkingDir () const
+{
+	return WorkingDirWhileMissing.empty() || IsDirectory(MountRoot) ? MountRoot : WorkingDirWhileMissing;
+}
+
 platform::SToolProcessResult CGitVcsProvider::RunGit (std::vector<FString> Arguments) const
+{
+	return RunGitIn(GetWorkingDir(), std::move(Arguments));
+}
+
+platform::SToolProcessResult CGitVcsProvider::RunGitIn (const std::filesystem::path& WorkingDir, std::vector<FString> Arguments) const
 {
 	// --no-optional-locks: a look at the tree never takes index.lock, so FRT never makes git, or its own IsBusy, see a lock.
 	// --literal-pathspecs: a name with [ or * in it is that name. core.fsmonitor off: the daemon it starts would be in this
@@ -477,7 +523,7 @@ platform::SToolProcessResult CGitVcsProvider::RunGit (std::vector<FString> Argum
 	platform::SToolProcessDesc desc;
 	desc.Executable = Git;
 	desc.Arguments = std::move(arguments);
-	desc.WorkingDir = MountRoot;
+	desc.WorkingDir = WorkingDir;
 	desc.TimeoutMs = GitTimeoutMs;
 	desc.UnsetEnvironment = UnsetEnvironment;
 	return platform::RunToolProcess(desc);
