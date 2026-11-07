@@ -55,8 +55,10 @@ class CEditor;
  * <Provider> provider ..."; such a run is the copy's writer, Engine/Automation.h). They refuse, and
  * fail, when the project or the shaders are in the engine checkout.
  *
- * It also checks the asset registry (read-only, as every scripted run is): its initial scan was
- * complete before the first world was built ("[smoke] ok registry: <n> records, initial scan <ms> ms"),
+ * It also checks the asset registry (read-only in place, the scratch copy's writer with the file edits;
+ * its meta lifecycle runs either way, "[smoke] ok the read-only registry runs the meta lifecycle,
+ * reporting only" in place): its initial scan was complete before the first world was built
+ * ("[smoke] ok registry: <n> records, initial scan <ms> ms"),
  * the editor's Assets panel shows what the registry answers for type:Texture, and the Asset problems
  * panel lists exactly what RunValidation returns over every mount with the panel's options ("[smoke] ok
  * the Asset problems panel lists <n> problem(s) ..."; validate's but for the providers, the lifecycle's),

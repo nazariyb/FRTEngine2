@@ -71,9 +71,10 @@ struct SEngineDesc
 	bool bToolHost = false;
 	// This host is the project's writer (design §4.7, §5.9; assets::ClaimAssetOwnership): StartUp takes
 	// <project>/Local/Assets/Owner.lock and, holding it, lets the registry write its snapshot, journal, Rules.cache
-	// and ProjectId. Only the editor sets it, when it opens a project; [Assets] ReadOnly=1 (every scripted run) skips
-	// the attempt. While another process holds the lock StartUp fails, naming it (GetStartUpError), unless the
-	// project's Safety.GuestProcesses makes this host a read-only guest, which writes nothing and says so in its title.
+	// and ProjectId. Only the editor sets it, when it opens a project; [Assets] ReadOnly=1 (every scripted run but the
+	// smoke test's file edits on a scratch copy, CAutomation::IsScratchEditRun) skips the attempt. While another process
+	// holds the lock StartUp fails, naming it (GetStartUpError), unless the project's Safety.GuestProcesses makes this
+	// host a read-only guest, which writes nothing and says so in its title.
 	// The writer's registry repairs metas (its lifecycle, assets::SLifecycleDesc, through each mount's VCS provider); every
 	// other host's only reports. Engine-owner mode (a project inside the engine checkout, or [Assets] EngineWritable=1):
 	// the writer takes the engine's lock best-effort as well (assets::ClaimsEngineOwnership), and with it the registry
@@ -175,9 +176,9 @@ public:
 	// drop their handles.
 	assets::CFileWatcherService* GetFileWatcher () { return FileWatcher.get(); }
 	// The asset registry (Assets/AssetRegistry.h): the project's mounts scanned, analyzed and kept current through the
-	// file watcher, read-only in M3. Started in StartUp (its scan overlaps the window and renderer coming up) and
-	// pumped in BeginFrame right after the worker completions; hosts wait for its initial scan before their first
-	// BuildWorld (CAssetRegistry::WaitBeforeBuildWorld). In Debug and Development with a project, headless too; null
+	// file watcher; its lifecycle writes metas for the writer. Started in StartUp (its scan overlaps the window and
+	// renderer coming up) and pumped in BeginFrame right after the worker completions; hosts wait for its initial scan
+	// before their first BuildWorld (CAssetRegistry::WaitBeforeBuildWorld). In Debug and Development with a project, headless too; null
 	// in Release, in tool hosts (AssetTool builds its own), without a project (the project manager) and with
 	// [Assets] Registry=0. Never reachable from game code. Valid from StartUp until ShutDown, which ends it before
 	// the file watcher and the worker pool.

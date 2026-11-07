@@ -6,7 +6,8 @@ are compiled once and served from the derived-data cache, everything that reload
 changes from one file watcher, and the asset registry catalogs every mount - rules, records, typed tags, dependencies -
 for queries from `FRT.bat assets` and the editor's Assets and Asset problems panels. Every included file of the engine
 and the templates has a committed `.meta` whose GUID is its identity; the editor that owns a project creates, restores
-and re-GUIDs metas through each mount's VCS provider, and metas are all it writes into `Content/`. Nothing reads assets
+and re-GUIDs metas through each mount's VCS provider, and the meta lifecycle writes only metas into `Content/` (the
+material and input libraries' create-on-load writes aside, until M7 and M10: see below). Nothing reads assets
 through the registry yet: materials, textures, models and input files still load by path as before, and no runtime
 code or package reads a meta.
 
@@ -253,9 +254,12 @@ the lock like any writing verb, and its other registry verbs never take it and w
 
 **A second process (M4, §5.9).** Who writes is decided once, before a registry exists, by
 `assets::ClaimAssetOwnership` (`Assets/Meta/AssetRepairs.h`), which the editor (`CEngine::StartUp`) and AssetTool share.
-A run that is read-only by request (`--ci`, `-Assets:ReadOnly=1`, `migrate --dry-run`, every scripted run, the runtime
-and the dev Launcher) never asks for the lock and always runs. Any other takes the owner root's `Owner.lock`; while another process holds it, a
-second writer does not start: the editor shows one message naming the holder ("close it, or set
+A run that is read-only by request (`--ci`, `-Assets:ReadOnly=1`, `migrate --dry-run`, every scripted run but the smoke
+test's file edits on a scratch copy, the runtime and the dev Launcher) never asks for the lock and always runs. The
+scratch copy's smoke run (`-Editor:SmokeTest=1 -Editor:SmokeTestEdits=1` with a project and a `-Render:ShaderRoot` both
+outside the engine checkout, `CAutomation::IsScratchEditRun` in `Engine/Automation.h`) is that copy's writer, never
+`/Engine`'s, and exits at once, with no dialog, when another process owns the copy. Any other takes the owner root's
+`Owner.lock`; while another process holds it, a second writer does not start: the editor shows one message naming the holder ("close it, or set
 `Safety.GuestProcesses: true`") and quits, and AssetTool exits with code 4. With the opened project's `Safety.GuestProcesses: true` (the engine's file for `--engine`
 runs; the switch governs a process, so no other file sets it) the second process runs as a **read-only guest** instead:
 it loads, scans and reports like a read-only run, writes no meta, snapshot, journal or `BuildState`, says so (the
@@ -326,8 +330,10 @@ the VCS is rewriting the tree. One instance per mount, from `MakeVcsProvider` (`
 (`Assets/Vcs/VcsProviderSet.h`) detects and owns one per mount, at once in a tool host or on a worker in a live one, and
 the meta lifecycle's repairs (below) are their only writer. The editor that owns its project detects one per mount, `/Engine`
 included, on a worker at start-up (`CEngine`); AssetTool's `status` and meta verbs create them for their own run (below).
-A read-only editor, a guest, a scripted run, the dev Launcher and every other verb create none and spawn no git: a
-mount without a provider is `None` to them.
+A read-only editor, a guest, a scripted run (but the smoke test's scratch copy, its writer), the dev Launcher and every
+other verb create none and spawn no git: a mount without a provider is `None` to them. A host rolling an unfinished
+operation forward at start-up detects its providers on its own thread, and only once it holds that root's lock
+(`SAssetOwnershipRequest::DetectProviders`): a refused second writer or a guest spawns no git for it.
 
 | Call | `CNoneVcsProvider` | `CGitVcsProvider` |
 |---|---|---|
@@ -377,9 +383,9 @@ committed there is one untracked entry to git, and every file below it is `Untra
 `CAssetRepairs` drives the pure lifecycle (`Assets/Meta/Lifecycle.h`) from a registry: `SAssetRegistryDesc::Lifecycle`
 (`SLifecycleDesc`) gives it one, owned by the registry (`GetRepairs()`). Every host passes one: `CEngine` a live one
 (`bLive`, its settings from `[AssetsEditor]`, the project's salt), repairing for the project's writer and reporting
-for every other host (a read-only editor, a guest, whose `META001` names the owner, a scripted run, the dev
-Launcher); each AssetTool run its own (below). Null, in tests and benchmarks that predate it, means none at all. With
-one:
+for every other host (a read-only editor, a guest, whose `META001` names the owner, every scripted run but the smoke
+test's scratch copy, the dev Launcher); each AssetTool run its own (below). Null, in tests and benchmarks that predate
+it, means none at all. With one:
 
 - **When it runs.** Every finished pass hands it the paths its deltas touched; the time of the next tick after that is
   the path's event time (kept in memory only, so a restart counts from then). Of the initial scan's passes only the
