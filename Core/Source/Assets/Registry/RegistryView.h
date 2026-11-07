@@ -278,8 +278,9 @@ public:
 	 * One section per mount (by MountId): folders, rule files and files sorted by mount path under the
 	 * portable fold, then bytes. Per file: class, size and - when it has a record - importer, type, flags,
 	 * cook rule, chunk, labels, AnalyzeStamp and import status, then its sub-entries (by label), tags (by key
-	 * name; doubles in shortest round-trip form), edges (by target path, TargetSub, flags, field path) and
-	 * companions; then the mount's diagnostics by (code, subject, message). Never mtime, identity, hashes,
+	 * name; doubles in shortest round-trip form), edges (by target path, TargetSub, flags, field path; "redirected"
+	 * when resolved through an alias or a former path), aliases and former paths (only a record that has any, M4)
+	 * and companions; then the mount's diagnostics by (code, subject, message). Meta copies and tombstones never. Never mtime, identity, hashes,
 	 * revisions, record ids, page layout, the volume's case rule or absolute paths: equal content dumps
 	 * identically, fresh or warm, on any machine. A diagnostic's message is printed only for coded
 	 * diagnostics (code 0 messages may hold absolute paths). Paths and subjects are shown with ToDisplayText
@@ -292,8 +293,9 @@ public:
 	void DumpText (FString& Out, EDumpFlags Flags = EDumpFlags::None, std::span<const MountId> Mounts = {}) const;
 	/**
 	 * The same content as JSON lines (Text/JsonWriter.h), in DumpText's order: one object per mount, rule file,
-	 * folder, file, record (its labels, tags, sub-entries, edges and companions as arrays) and problem, each with a
-	 * "kind" field ("mount", "rules", "folder", "file", "record", "problem"). A "rules" line names its file by
+	 * folder, file, record (its labels, tags, sub-entries, edges and companions as arrays), a record's redirects (only
+	 * when it has any) and problem, each with a "kind" field ("mount", "rules", "folder", "file", "record",
+	 * "redirects", "problem"). A "rules" line names its file by
 	 * "folder" and "level" as Rules.cache does (the mount root and "Mount" for a mount's Config/Assets.yml), never by
 	 * a file name: the view knows no disk layout. Paths are the stored spellings (the
 	 * JSON writer escapes an unpaired surrogate). Emit gets each line without a line break.

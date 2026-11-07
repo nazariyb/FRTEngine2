@@ -61,6 +61,23 @@ Development `CEngine` installs (nullopt in tool hosts, which resolve their own t
   path-derived id, so its move is a removal and an addition, and a record whose id changes in place (its meta appears, a
   GUID is edited) is a removal of the old id and an addition of the new one. With `SAssetRegistryDesc::Lifecycle` null
   (every host until M4's switch-on) metas are read, nothing is written and no `META` problem is reported.
+- **Identity state** (M4, design §5.2, §5.3), all keyed by GUID and travelling in the same deltas, journal and snapshot
+  as the records:
+  - `METAS`: the raw bytes of each meta's last Ok parse, one copy per GUID, kept only when they hash to the copy's
+    `MetaHash` (checked again at every load), for the lifecycle's verified restore. A re-evaluation (a changed rule
+    chain) and a pinned file's class take an unchanged meta's values from its copy, never from the disk; a meta that
+    changed is read from the file and its copy replaced.
+  - `TOMBSTONES`: a record with a meta-given GUID whose file is removed, or whose GUID is edited by hand, leaves
+    `{GUID, last path, content hash, file identity, time}`; a record that registers the GUID again (a move, a restore)
+    clears it, a provisional id never leaves one, and a snapshot written more than 30 days later drops it.
+  - The **alias index**: a meta's `Aliases` resolve to its record (`{B, s}` to `{A, s}`), and a sub-asset renamed with
+    `SubAssets.Renamed` keeps its old label's id while its new label's id resolves to it. `Find` and id edges try the
+    canonical id first.
+  - **Former paths**: a meta's `FormerPaths` answer `FindByPath` and path edges when no file has the path under the
+    portable fold, so a file created at an old path takes the references over.
+  - An edge resolved through an alias or a former path keeps its target, matches `is:redirected` and adds `REF006`
+    (info) to its record; `FindByPath` hands a `REF006` notice back. A lost or broken meta's record keeps its
+    redirects, as it keeps its GUID.
 - **The meta's values** apply last: importer default < rules < meta. Its `Importer:` pin replaces the rules' choice of
   importer (still subject to `Importers.Exclude` and availability; an unknown name pins nothing), its `Cook`, `Chunk`,
   `Settings` and `Targets` override the rules', and `explain`'s provenance names the meta
@@ -131,7 +148,7 @@ and `Registry`, whose severities are fixed in M3.
 | `PATH003` | a mount-relative path longer than 180 UTF-8 bytes | warning | Scan |
 | `RULE001` | a rule file error: unknown key, wrong type, bad glob, unknown importer, setting, preset or target, a mount-level section in a folder file | error | Rules |
 | `RULE002` | an unclaimed file not in `Scan.Quiet`, once per folder and extension | warning | Unclaimed |
-| `REF006` | a reference that resolved through a path spelled differently from the file on disk | info | Registry |
+| `REF006` | a reference that resolved through an alias (a meta's `Aliases`, a renamed sub-asset's new label), a former path (`FormerPaths`), or a path spelled differently from the file on disk | info | Registry |
 | `REF007` | a legacy path reference in data (a material's texture path), until `migrate material-refs` | info | Analyze |
 | `META001` | an included file without a `.meta` after the creation delay | from M4: error with `--ci`, guests or `Safety.AutoRepairMetas: false`; otherwise the owner creates the meta | Lifecycle |
 | `META002` | an orphan `.meta`: its source is gone | from M4: warning | Lifecycle |
@@ -160,9 +177,10 @@ of name or path), `type:Texture` / `t:` / `type=frt.Texture`, `dir:/Project/Data
 `#label`, or a unique name), `is:<predicate>`, `or`, `( )`, `order:Key [asc|desc]`, `limit:N`, `rows` / `table:X`.
 Errors carry the column of the term at fault.
 
-- `is:` with data in M3: `broken-ref`, `unused`, `legacy-ref`, `excluded`, `problem`, `stale-tags`, `primary`;
-  `redirected`, `unsaved` and `pending-meta` parse and match nothing until M4-M6 (a note says so). `rows` matches
-  nothing until data tables (M5).
+- `is:` with data: `broken-ref`, `unused`, `legacy-ref`, `excluded`, `problem`, `stale-tags`, `primary`, and from M4
+  `redirected` (an edge of its own resolved through an alias or a former path) and `pending-meta` (its file has no
+  meta yet); `unsaved` parses and matches nothing until M5-M6 (a note says so). `rows` matches nothing until data
+  tables (M5).
 - System columns, for predicates, `order:` and result columns: `$Type`, `$Name`, `$Path`, `$Folder`, `$Labels`,
   `$Size`, `$ImportStatus`, `$Problems`, `$Referencers` (distinct referencing files), `$Dependencies`, `$CookRule`,
   `$Chunk`, `$PrimaryName`; tag keys per type (`frt.Texture`: Width, Height, Channels, HasAlpha; `frt.Model`:
@@ -186,7 +204,10 @@ Errors carry the column of the term at fault.
 | `<root>/Local/Assets/Rules.cache` | the rule files as JSON lines | the root's writer |
 
 A snapshot is sections with their own layout versions and checksums; a bad section is dropped alone and only what it
-held is rebuilt (design §5.3). The journal holds the deltas committed since the snapshot (one checksummed frame per
+held is rebuilt (design §5.3). Every section is at layout 2 since M4 filled `ALIASES`, `FORMERPATHS`, `METAS` (one
+zstd frame of every copy's bytes) and `TOMBSTONES`, so an M3 snapshot is not used: one cold start. Losing `METAS`,
+`ALIASES` or `FORMERPATHS` re-evaluates the file's mounts, which reads the metas again; losing `TOMBSTONES` forgets
+them. The journal is at format 4 (the identity state) and is replayed only beside its own snapshot. The journal holds the deltas committed since the snapshot (one checksummed frame per
 commit; a torn tail is dropped) and is replayed when its header names the snapshot. The **loss contract**: losing any
 of these files costs time, never correctness - a missing or rejected snapshot is a cold scan, a lost journal a rescan
 of what it held, a lost ProjectId a cold start; the scan, rules and Analyze rebuild everything from `Content/`.
@@ -391,7 +412,7 @@ not parse or compile, and an `<asset>` that names no record or several, exit wit
 | `refs`, `referencers` | one per edge: `from`, `target` (as written), `resolved` (the record reached, else ""), `flags` (array), `field`, `state` (`Resolved`, `Unresolved`, `Ambiguous`, `Companion`); `referencers --transitive`: one per record, `path`, `type` |
 | `explain` | one: `path`, `excluded`, `excludedBy`, `importer`, `class`, `quiet`, `cook`, `chunk`, each source as `{"file","line","rule"}` (`importerSource`, `cookSource`, `chunkSource`), `labels` and `settings` (with `source`), `settingsTable`, `typeIncluded`, `chain`, `notes`, `record`, `recordType` |
 | `list-rules` | Rules.cache's lines (see Rules above) |
-| `dump registry` | one per mount, rule file, folder, file, record and problem, `kind` first: `mount`; `rules` (`folder`, `level`, `hash`: the file named by folder and level as Rules.cache names it - a mount's `Config/Assets.yml` is the mount root with level `Mount` - since the registry knows no disk layout; `list-rules` gives its `file`); `folder` (`path`); `file` (`path`, `class`, `size`); `record` (`path`, `type`, `importer`, `status`, `stamp`, `cook`, `chunk`, `flags`, `primary`, `labels`, `tags`, `subEntries`, `edges`, `companions`); `problem` (`code`, `severity`, `source`, `subject`, `file`, `line`, `column`, `field`, `message`) |
+| `dump registry` | one per mount, rule file, folder, file, record and problem, `kind` first: `mount`; `rules` (`folder`, `level`, `hash`: the file named by folder and level as Rules.cache names it - a mount's `Config/Assets.yml` is the mount root with level `Mount` - since the registry knows no disk layout; `list-rules` gives its `file`); `folder` (`path`); `file` (`path`, `class`, `size`, and `meta` unless PendingMeta); `record` (`path`, `guid` when a meta gave it, `type`, `importer`, `status`, `stamp`, `cook`, `chunk`, `flags`, `primary`, `labels`, `tags`, `subEntries`, `edges` - `redirected` when resolved through an alias or a former path -, `companions`); `redirects` after a record that has any (`path`, `aliases`, `formerPaths`); `problem` (`code`, `severity`, `source`, `subject`, `file`, `line`, `column`, `field`, `message`) |
 
 Options: `--json` (one object per line), `--ci` or `-Assets:ReadOnly=1` (read-only, never takes the writer lock),
 `--project=<file>`, `--engine`, and the verb's own; any other argument that starts with `-` is a usage error, except a
