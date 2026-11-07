@@ -518,9 +518,9 @@ private:
 			};
 			std::erase_if(roots, [&] (const SMount* Root)
 			{
-				return std::none_of(Options.Paths->begin(), Options.Paths->end(), [&] (const FString& Path) { return isOfRoot(Root, Path); })
-					&& std::none_of(Options.StagedMigrationRoots.begin(), Options.StagedMigrationRoots.end(),
-						[&] (const FString& Path) { return isOfRoot(Root, Path); });
+				const auto ofRoot = [&] (const FString& Path) { return isOfRoot(Root, Path); };
+				return std::none_of(Options.Paths->begin(), Options.Paths->end(), ofRoot)
+					&& std::none_of(Options.StagedMigrationRoots.begin(), Options.StagedMigrationRoots.end(), ofRoot);
 			});
 		}
 		for (const SMount* mount : roots)

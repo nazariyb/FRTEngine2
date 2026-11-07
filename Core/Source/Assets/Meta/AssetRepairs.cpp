@@ -1148,7 +1148,8 @@ void RecordOutcomes (const SOpsOutput& Output, SRepairReport& Report)
 {
 	for (const SOpResult& result : Output.Results)
 	{
-		std::vector<SLifecycleAction>& into = result.Result.Vcs.Error == EVcsError::None ? Report.AppliedActions : Report.RefusedActions;
+		const bool bApplied = result.Result.Vcs.Error == EVcsError::None;
+		std::vector<SLifecycleAction>& into = bApplied ? Report.AppliedActions : Report.RefusedActions;
 		into.insert(into.end(), result.Actions.begin(), result.Actions.end());
 	}
 }
@@ -2269,7 +2270,11 @@ ERepairOutcome GetRepairOutcome (const SRepairReport& Report, const SLifecycleAc
 		return std::any_of(Actions.begin(), Actions.end(), [&] (const SLifecycleAction& Done) { return MakeActionKey(Done) == key; });
 	};
 	// Applied first: an action refused in one round and applied in a later one was applied.
-	return contains(Report.AppliedActions) ? ERepairOutcome::Applied : contains(Report.RefusedActions) ? ERepairOutcome::Refused : ERepairOutcome::NotRun;
+	if (contains(Report.AppliedActions))
+	{
+		return ERepairOutcome::Applied;
+	}
+	return contains(Report.RefusedActions) ? ERepairOutcome::Refused : ERepairOutcome::NotRun;
 }
 
 SRepairReport CAssetRepairs::RunNow (const SRepairOptions& Options)

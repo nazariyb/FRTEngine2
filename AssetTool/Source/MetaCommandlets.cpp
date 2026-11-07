@@ -94,10 +94,13 @@ void PrintProblem (const CCommandletContext& Context, const SDiagnostic& Problem
  * same factory and setting as the mounts' (so the hook's GIT_INDEX_FILE holds for it too); a root whose mounts' providers
  * stage nothing (None) is validated whole already. Out: root mount paths, as SValidateOptions names them.
  */
-int32 FindStagedOutsideContent (const CCommandletContext& Context, FStringView Verb, const SRegistryRun& Run, std::vector<FString>& OutRuleMounts,
-	std::vector<FString>& OutMigrationRoots)
+int32 FindStagedOutsideContent (const CCommandletContext& Context, FStringView Verb, const SRegistryRun& Run,
+	std::vector<FString>& OutRuleMounts, std::vector<FString>& OutMigrationRoots)
 {
-	const auto fold = [] (const std::filesystem::path& Path) { return FString::FromPath(Path.lexically_normal().make_preferred()).FoldCase(); };
+	const auto fold = [] (const std::filesystem::path& Path)
+	{
+		return FString::FromPath(Path.lexically_normal().make_preferred()).FoldCase();
+	};
 	const FString setting = assets::SAssetEditorSettings::FromConfig(Context.GetConfig()).VcsProvider;
 	std::vector<std::filesystem::path> asked;
 	for (const assets::MountId id : Run.OwnMounts)
@@ -110,7 +113,8 @@ int32 FindStagedOutsideContent (const CCommandletContext& Context, FStringView V
 			continue;
 		}
 		asked.push_back(mount->OwnerRoot);
-		const std::unique_ptr<assets::IVcsProvider> rootProvider = assets::MakeVcsProvider(setting, FString::FromPath(mount->OwnerRoot));
+		const std::unique_ptr<assets::IVcsProvider> rootProvider =
+			assets::MakeVcsProvider(setting, FString::FromPath(mount->OwnerRoot));
 		if (rootProvider == nullptr || rootProvider->GetName() == "None")
 		{
 			continue;
@@ -128,7 +132,8 @@ int32 FindStagedOutsideContent (const CCommandletContext& Context, FStringView V
 		for (const assets::MountId other : Run.OwnMounts)
 		{
 			const assets::SMount* sibling = Run.Mounts->Find(other);
-			if (sibling != nullptr && sibling->OwnerRoot == mount->OwnerRoot && !sibling->RulesFile.empty() && folded.contains(fold(sibling->RulesFile)))
+			if (sibling != nullptr && sibling->OwnerRoot == mount->OwnerRoot && !sibling->RulesFile.empty()
+				&& folded.contains(fold(sibling->RulesFile)))
 			{
 				OutRuleMounts.push_back(sibling->GetRootMountPath());
 			}
@@ -215,7 +220,8 @@ int32 Validate (CCommandletContext& Context, FStringView Verb, bool bFix)
 				}
 			}
 		}
-		if (const int32 result = FindStagedOutsideContent(Context, Verb, run, stagedRuleMounts, stagedMigrationRoots); result != ExitSuccess)
+		if (const int32 result = FindStagedOutsideContent(Context, Verb, run, stagedRuleMounts, stagedMigrationRoots);
+			result != ExitSuccess)
 		{
 			return result;
 		}
@@ -242,13 +248,13 @@ int32 Validate (CCommandletContext& Context, FStringView Verb, bool bFix)
 			// Each as what it was: a refused one wrote nothing (its VCS002 is among what remains), and one no op ran neither.
 			const assets::ERepairOutcome outcome = assets::GetRepairOutcome(report, action);
 			const bool bApplied = outcome == assets::ERepairOutcome::Applied;
-			const FStringView outcomeName = bApplied ? FStringView("applied") : outcome == assets::ERepairOutcome::Refused ? FStringView("refused")
-				: FStringView("not-run");
-			Context.Print(FString::Format("  {:<12} {}{}", enum_::ToString(action.Kind), ToDisplayText(action.Path),
-				bApplied ? FString() : FString::Format("  ({}{})", outcomeName, outcome == assets::ERepairOutcome::Refused ? ": VCS002" : "")));
-			Context.PrintJson(CJsonObject().AddString("kind", "repair").AddString("action", enum_::ToString(action.Kind)).AddString("path", action.Path)
-				.AddString("to", action.ToPath).AddString("outcome", outcomeName)
-				.AddString("guid", bApplied && action.Kind == assets::ELifecycleAction::CreateMeta ? GuidOf(view, action.Path).View() : FStringView()));
+			const bool bRefused = outcome == assets::ERepairOutcome::Refused;
+			const FStringView outcomeName = bApplied ? FStringView("applied") : bRefused ? FStringView("refused") : FStringView("not-run");
+			const FString note = bApplied ? FString() : FString::Format("  ({}{})", outcomeName, bRefused ? ": VCS002" : "");
+			Context.Print(FString::Format("  {:<12} {}{}", enum_::ToString(action.Kind), ToDisplayText(action.Path), note));
+			const FString guid = bApplied && action.Kind == assets::ELifecycleAction::CreateMeta ? GuidOf(view, action.Path) : FString();
+			Context.PrintJson(CJsonObject().AddString("kind", "repair").AddString("action", enum_::ToString(action.Kind))
+				.AddString("path", action.Path).AddString("to", action.ToPath).AddString("outcome", outcomeName).AddString("guid", guid));
 		}
 		Context.Print(FString::Format("Repaired {}, refused {} (the VCS or the writer refused: VCS002)", report.Applied, report.Refused));
 	}

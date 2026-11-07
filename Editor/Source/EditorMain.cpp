@@ -150,11 +150,12 @@ int RunEditor ()
 	int exitCode = 1;
 	bool bRunManager = !bOpenProject;
 	const bool bTellMig001 = bOpenProject && !engine.GetMigrationNotice().IsEmpty() && !CAutomation::IsScriptedRun(engine.GetConfig());
-	if (bTellMig001 && engine.IsMigrationNoticeOfNewerEngine())
+	const bool bNewerEngine = engine.IsMigrationNoticeOfNewerEngine();
+	if (bTellMig001 && bNewerEngine)
 	{
 		TellNewerEngine(desc.WindowTitle, gameProject.Name, engine.GetMigrationNotice());
 	}
-	if (bTellMig001 && !engine.IsMigrationNoticeOfNewerEngine() && AskToMigrate(desc.WindowTitle, gameProject.Name, engine.GetMigrationNotice()))
+	if (bTellMig001 && !bNewerEngine && AskToMigrate(desc.WindowTitle, gameProject.Name, engine.GetMigrationNotice()))
 	{
 		manager.Message = gameProject.Name + " (MIG001): " + engine.GetMigrationNotice();
 		manager.Project = gameProject.File;

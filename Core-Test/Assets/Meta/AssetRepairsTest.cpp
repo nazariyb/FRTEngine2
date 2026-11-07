@@ -11,8 +11,8 @@
 // tracked source is VCS003 (asked in one StatusOf per round, and again later, until the VCS tracks it); a read-only
 // process, a mount it does not own and a pending provider detection write nothing, and a provider detected while a run
 // is in flight is the one the repairs then use; RunNow has no delays, honours its Kinds (reporting what they leave out)
-// and dry run, says whether each planned repair was applied, refused or not run, and keeps the other mounts' fix-its; "keep A, alias B" never overwrites a meta resolved since; an
-// unfinished operation is rolled forward before the first scan (and by TakeOwnership); problems carry their file and the
+// and dry run, says whether each planned repair was applied, refused or not run, and keeps the other mounts' fix-its;
+// "keep A, alias B" never overwrites a meta resolved since; an unfinished operation is rolled forward before the first scan (and by TakeOwnership); problems carry their file and the
 // rule files' Validation: severities; CRLF in a meta is VCS001 and an LFS pointer VCS004. F4b: a second writer is refused
 // naming the owner, unless Safety.GuestProcesses makes it a read-only guest that writes nothing and names the owner in its
 // META001; a read-only run never asks for the lock; engine-owner mode is a project inside the engine checkout or

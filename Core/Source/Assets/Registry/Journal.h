@@ -199,8 +199,9 @@ public:
 	[[nodiscard]] CJournalRestart BeginRestart (uint64 JournalBase);
 	// The owner thread's part once the worker is done: a prepared restart takes the new file's handle, leaves the
 	// replaced one open in Prepared for its caller to close (CJournalRestart), and appends the commits made since
-	// BeginRestart (one write); one the worker could not prepare restarts here (Restart). Clears a broken state. False when the restart is stale (an Open, Close or restart came in
-	// between: nothing changes) or failed (the journal is broken, the frames in memory).
+	// BeginRestart (one write); one the worker could not prepare restarts here (Restart). Clears a broken state.
+	// False when the restart is stale (an Open, Close or restart came in between: nothing changes) or failed (the
+	// journal is broken, the frames in memory).
 	bool FinishRestart (CJournalRestart&& Prepared, FString* OutError = nullptr);
 
 	// An Append failed (or a Restart did) since the last Restart or Open: F3 schedules a full write.

@@ -286,7 +286,8 @@ void CProjectManager::Refresh ()
 				// project is that engine's to judge, so only this one's are asked, and only while the gate is on.
 				if (assets::IsMigrationGateOn(Engine.GetConfig()))
 				{
-					if (const std::optional<SDiagnostic> gap = assets::FindMigrationGap(descriptor.GetDir(), "/Project", false, &entry.bNewerEngine))
+					if (const std::optional<SDiagnostic> gap =
+						assets::FindMigrationGap(descriptor.GetDir(), "/Project", false, &entry.bNewerEngine))
 					{
 						entry.Behind = gap->Message;
 					}

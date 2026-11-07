@@ -222,7 +222,8 @@ bool RecordMigration (const std::filesystem::path& Root, FStringView Step, IVcsP
 	return true;
 }
 
-std::optional<SDiagnostic> FindMigrationGap (const std::filesystem::path& Root, FStringView RootMountPath, bool bEngine, bool* OutNewerEngine)
+std::optional<SDiagnostic> FindMigrationGap (const std::filesystem::path& Root, FStringView RootMountPath, bool bEngine,
+	bool* OutNewerEngine)
 {
 	SMigrationsFile file;
 	SDiagnostic error;

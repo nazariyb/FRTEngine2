@@ -214,7 +214,8 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 				request.bReadOnly = true;
 				if (Desc.bAssetWriter)
 				{
-					Desc.WindowTitle += bNewerEngine ? " (read-only: content of a newer engine, MIG001)" : " (read-only: content behind the engine, MIG001)";
+					Desc.WindowTitle += bNewerEngine ? " (read-only: content of a newer engine, MIG001)"
+						: " (read-only: content behind the engine, MIG001)";
 				}
 			}
 			else if (!request.EngineRoot.empty())
