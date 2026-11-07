@@ -3,8 +3,8 @@
 // file - not even when the writing process is killed at a random moment - and works on every path
 // WriteFileBytes can write, every call reads, stats and lists what the layer writes past MAX_PATH,
 // appends from several handles never tear each other, RemoveFile frees a name a reader still holds,
-// TouchFile moves only the write time, and ReadFileChunksStable never calls a read stable when the file
-// changed underneath it, and retries a file a writer still holds. Everything runs in directories
+// TouchFile moves only the write time, WriteFileNew never replaces a file, and ReadFileChunksStable
+// never calls a read stable when the file changed underneath it, and retries a file a writer still holds. Everything runs in directories
 // with non-ASCII names, which every path conversion on the way has to survive, and nothing is left
 // behind - not even in the Recycle Bin.
 #include <gtest/gtest.h>
@@ -1412,6 +1412,30 @@ TEST_F(FileSystemTest, MoveFileNoReplaceMovesAReadOnlyFile)
 	EXPECT_TRUE(platform::MoveFileNoReplace(from, to, &error)) << error.CStr();
 	EXPECT_TRUE(platform::Stat(to)->bReadOnly);
 	std::filesystem::permissions(to, std::filesystem::perms::owner_write, std::filesystem::perm_options::add);
+}
+
+// The asset writer's creates: a meta that is there by the time the bytes would go in is kept, and nothing is left behind.
+TEST_F(FileSystemTest, WriteFileNewCreatesAFileAndNeverReplacesOne)
+{
+	const std::filesystem::path path = File("Новий 新.meta");
+	FString error;
+	bool bExists = true;
+	EXPECT_TRUE(platform::WriteFileNew(path, AsBytes("перший"), &error, &bExists)) << error.CStr();
+	EXPECT_FALSE(bExists);
+	EXPECT_EQ(platform::ReadFileText(path).value_or(FString()), "перший");
+
+	EXPECT_FALSE(platform::WriteFileNew(path, AsBytes("другий"), &error, &bExists));
+	EXPECT_TRUE(bExists);
+	EXPECT_EQ(platform::ReadFileText(path).value_or(FString()), "перший");
+	EXPECT_FALSE(platform::WriteFileNew(File("Немає/x.meta"), AsBytes("x"), &error, &bExists)) << "no folder is made";
+	EXPECT_FALSE(bExists);
+	EXPECT_FALSE(std::filesystem::exists(File("Немає")));
+	size_t count = 0u;
+	for ([[maybe_unused]] const std::filesystem::directory_entry& entry : std::filesystem::directory_iterator(Dir))
+	{
+		++count;
+	}
+	EXPECT_EQ(count, 1u) << "no temporary file is left";
 }
 
 

@@ -1140,6 +1140,7 @@ struct SOpsOutput
 		std::vector<FString> Files;      // source and meta, absolute, two per subject
 	};
 	std::map<IVcsProvider*, SCreated> created;
+	bool bUnfinished = false;
 	for (SPlannedOp& planned : Ops)
 	{
 		SOpResult result;
@@ -1148,10 +1149,31 @@ struct SOpsOutput
 		{
 			continue;   // planned for a writer since rebuilt without that root: proposed again by the next run
 		}
+		if (bUnfinished)
+		{
+			// An op of this set was left in the journal: the next would roll it forward first and then be stale, or fail on
+			// the same cause and be refused for it. Nothing more is run; the next run plans from what is on disk then.
+			result.Result.Op = std::move(planned.Op);
+			result.Result.Report.bStale = true;
+			result.Result.Vcs = { EVcsError::Failed, "not run: an earlier repair of this round was left unfinished" };
+			out.Results.push_back(std::move(result));
+			continue;
+		}
 		CAssetWriter& writer = *Writers[planned.Root];
 		result.Result = RunAssetOp(writer, std::move(planned.Op));
-		if (result.Result.Report.bChangedDisk)
+		bUnfinished = result.Result.Report.bLeftUnfinished;
+		if (bUnfinished && !result.Result.Report.bRefusedByVcs)
 		{
+			// A write failed halfway (a sharing violation): not the VCS's refusal, and not to wait for an event. The next run
+			// plans again, and its first op rolls this one forward first and is then planned again itself; a cause that
+			// persists fails that roll-forward, which refuses the next op.
+			result.Result.Report.bStale = true;
+		}
+		const SAssetWriteReport& report = result.Result.Report;
+		if (report.bChangedDisk || report.bStale)
+		{
+			// A stale op's own files too: the change that made it stale may not be in the registry yet, and the next run
+			// must plan from it rather than make the same plan again.
 			for (const SAssetOpStep& step : result.Result.Op.Steps)
 			{
 				out.Touched.push_back(step.Path);
@@ -1160,6 +1182,7 @@ struct SOpsOutput
 					out.Touched.push_back(step.ToPath);
 				}
 			}
+			out.Touched.insert(out.Touched.end(), report.RolledForward.begin(), report.RolledForward.end());
 		}
 		const bool bCreated = result.Result.Op.Verb == FStringView("create-meta") || result.Result.Op.Verb == FStringView("restore-meta");
 		if (result.Result.Vcs.Error == EVcsError::None && bCreated && writer.GetMounts() != nullptr)
@@ -1639,9 +1662,12 @@ struct CAssetRepairs::SImpl
 		++Changes;   // the fix-its were replaced, though the delta may be empty
 	}
 
-	// Each op's outcome: counted, a refusal kept as a proposal (with its VCS002), VCS003 kept for its source.
-	// OutRefusal: the first refusal's message.
-	void ApplyOps (SOpsOutput& Output, uint32& OutApplied, uint32& OutRefused, FString* OutRefusal = nullptr)
+	// Each op's outcome: counted, a refusal kept as a proposal (with its VCS002), VCS003 kept for its source. A stale op
+	// (the disk moved on since its plan) is neither: nothing is remembered of it, and the run that follows (bDirty, after
+	// the rescan of its files) plans from what is there now. OutRefusal: the first refusal's message; OutStale: the first
+	// stale op's problems.
+	void ApplyOps (SOpsOutput& Output, uint32& OutApplied, uint32& OutRefused, FString* OutRefusal = nullptr,
+		std::vector<SDiagnostic>* OutStale = nullptr)
 	{
 		OutApplied = 0u;
 		OutRefused = 0u;
@@ -1651,6 +1677,15 @@ struct CAssetRepairs::SImpl
 			if (result.Result.Vcs.Error == EVcsError::None)
 			{
 				OutApplied += count;
+				continue;
+			}
+			if (result.Result.Report.bStale)
+			{
+				log::Info(log::Assets, "repair planned again: {}", result.Result.Vcs.Message);
+				if (OutStale != nullptr)
+				{
+					OutStale->insert(OutStale->end(), result.Result.Problems.begin(), result.Result.Problems.end());
+				}
 				continue;
 			}
 			OutRefused += count;
@@ -1799,8 +1834,16 @@ struct CAssetRepairs::SImpl
 				uint32 applied = 0u;
 				uint32 refused = 0u;
 				FString refusal;
-				ApplyOps(*output, applied, refused, &refusal);
-				RecordFix(FixTicket, refused > 0u ? EFixResult::Refused : EFixResult::Applied, std::move(refusal));
+				std::vector<SDiagnostic> stale;
+				ApplyOps(*output, applied, refused, &refusal, &stale);
+				if (refused == 0u && applied == 0u && !stale.empty())
+				{
+					RecordFix(FixTicket, EFixResult::NotApplied, stale.front().Message);   // the tree moved on since the fix was offered
+				}
+				else
+				{
+					RecordFix(FixTicket, refused > 0u ? EFixResult::Refused : EFixResult::Applied, std::move(refusal));
+				}
 				if (!bStopping && !output->Touched.empty())
 				{
 					Desc.Host->RequestRescan(output->Touched);
@@ -2232,7 +2275,9 @@ SRepairReport CAssetRepairs::ApplyFix (const SLifecycleAction& FixIt)
 		return report;
 	}
 	SOpsOutput ops = impl.RunOpsNow(std::move(planned.Ops));
-	impl.ApplyOps(ops, report.Applied, report.Refused);
+	std::vector<SDiagnostic> stale;
+	impl.ApplyOps(ops, report.Applied, report.Refused, nullptr, &stale);
+	report.Problems.insert(report.Problems.end(), stale.begin(), stale.end());
 	if (!ops.Touched.empty())
 	{
 		(void)impl.Desc.Host->ScanNow(ops.Touched);

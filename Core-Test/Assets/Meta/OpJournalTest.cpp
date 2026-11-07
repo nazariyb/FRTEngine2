@@ -1,15 +1,19 @@
 // The operation journal (Assets/Meta/OpJournal.h, design §4.6): an op logged with Begin reads back exactly, steps, meta
 // bytes, hashes, planned GUIDs and the files to add included, until End empties the log; a log torn anywhere before its
 // last step frame, or damaged in a frame, holds no unfinished op, because its writer had not touched the disk yet; a
-// finished op is nothing to do; frames of another op are never taken for this one's; a missing log is empty.
+// finished op is nothing to do; frames of another op are never taken for this one's; a missing log is empty. Each
+// WriteFile's precondition (Prior, PriorHash) reads back too, and a log an earlier build wrote without them (payload format
+// 1) still reads back, its writes Unchecked.
 #include <gtest/gtest.h>
 
 #include <filesystem>
 #include <system_error>
 #include <vector>
 
+#include "Assets/ByteStream.h"
 #include "Assets/Meta/OpJournal.h"
 #include "Assets/MountPaths.h"
+#include "Assets/RecordFrames.h"
 #include "Containers/String.h"
 #include "Platform/FileSystem.h"
 #include "Platform/Platform.h"
@@ -38,6 +42,8 @@ SOpJournalEntry MakeEntry ()
 	const FStringView meta = "FormatVersion: 1\nGuid: 5d1e7a3b9c0f42d68e1a2b3c4d5e6f70\n";
 	write.Bytes.assign(meta.AsBytes().begin(), meta.AsBytes().end());
 	write.Hash = hash::HashContent(write.Bytes);
+	write.Prior = EAssetOpPrior::Holds;
+	write.PriorHash = hash::HashContent(FStringView("FormatVersion: 1\nGuid: 3f2a9c4e7b1d4e0f9a8b6c5d4e3f2a1b\n").AsBytes());
 	SAssetOpStep copy;
 	copy.Kind = EAssetOpStep::CopyFile;
 	copy.Path = "/Project/a.png";
@@ -65,6 +71,8 @@ void ExpectSameEntry (const SOpJournalEntry& Actual, const SOpJournalEntry& Expe
 		EXPECT_EQ(Actual.Op.Steps[i].ToPath, Expected.Op.Steps[i].ToPath) << i;
 		EXPECT_EQ(Actual.Op.Steps[i].Bytes, Expected.Op.Steps[i].Bytes) << i;
 		EXPECT_EQ(Actual.Op.Steps[i].Hash, Expected.Op.Steps[i].Hash) << i;
+		EXPECT_EQ(Actual.Op.Steps[i].Prior, Expected.Op.Steps[i].Prior) << i;
+		EXPECT_EQ(Actual.Op.Steps[i].PriorHash, Expected.Op.Steps[i].PriorHash) << i;
 	}
 }
 
@@ -218,4 +226,38 @@ TEST_F(OpJournalTest, FramesOfAnotherOpAreNeverTakenForThisOnes)
 	ASSERT_TRUE(contents.Unfinished.has_value());
 	EXPECT_EQ(contents.Unfinished->Op.Id, a.Op.Id);
 	EXPECT_TRUE(contents.bDroppedTail);
+}
+
+// An op an earlier build left unfinished is finished by this one: its steps read back with no precondition to check.
+TEST_F(OpJournalTest, ALogWrittenBeforePreconditionsReadsBackWithItsWritesUnchecked)
+{
+	const SGuid id = SGuid::NewRandom();
+	const FStringView meta = "FormatVersion: 1\nGuid: 5d1e7a3b9c0f42d68e1a2b3c4d5e6f70\n";
+	std::vector<uint8> begin = { 1u };
+	binary::AppendRaw(begin, std::span<const uint8>(id.Bytes, SGuid::Size));
+	binary::AppendText(begin, "create-meta");
+	binary::AppendVarint(begin, 0u);
+	binary::AppendVarint(begin, 1u);
+	binary::AppendText(begin, "/Project/a.png.meta");
+	binary::AppendVarint(begin, 1u);
+	std::vector<uint8> step = { 1u };
+	binary::AppendRaw(step, std::span<const uint8>(id.Bytes, SGuid::Size));
+	binary::AppendVarint(step, 0u);
+	step.push_back(static_cast<uint8>(EAssetOpStep::WriteFile));
+	binary::AppendText(step, "/Project/a.png.meta");
+	binary::AppendText(step, "");
+	binary::AppendSized(step, meta.AsBytes());
+	binary::AppendHash(step, hash::HashContent(meta.AsBytes()));
+	std::vector<uint8> bytes;
+	record_frames::AppendFrame(bytes, 'B', begin);
+	record_frames::AppendFrame(bytes, 'S', step);
+	WriteLog(bytes);
+
+	const SOpJournalContents contents = ReadBack();
+	ASSERT_TRUE(contents.Unfinished.has_value());
+	EXPECT_FALSE(contents.bDroppedTail);
+	ASSERT_EQ(contents.Unfinished->Op.Steps.size(), 1u);
+	EXPECT_EQ(contents.Unfinished->Op.Steps[0].Prior, EAssetOpPrior::Unchecked);
+	EXPECT_EQ(contents.Unfinished->Op.Steps[0].Path, "/Project/a.png.meta");
+	EXPECT_EQ(contents.Unfinished->AddFiles, std::vector<FString> { "/Project/a.png.meta" });
 }

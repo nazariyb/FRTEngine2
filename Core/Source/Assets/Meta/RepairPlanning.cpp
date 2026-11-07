@@ -66,15 +66,19 @@ namespace
 	return step;
 }
 
-[[nodiscard]] SAssetOpStep MakeWrite (FStringView Path, FStringView Text)
+// A rewrite of a meta the planner read as bytes of PriorHash: the writer writes it only while the file still holds them.
+[[nodiscard]] SAssetOpStep MakeRewrite (FStringView Path, FStringView Text, const hash::SContentHash& PriorHash)
 {
 	SAssetOpStep step = MakeStep(EAssetOpStep::WriteFile, Path);
 	step.Bytes.assign(Text.AsBytes().begin(), Text.AsBytes().end());
+	step.Prior = EAssetOpPrior::Holds;
+	step.PriorHash = PriorHash;
 	return step;
 }
 
 // The meta at MountPath, read race-free and parsed; nullopt when it cannot be read (gone, or changing while read).
-[[nodiscard]] std::optional<SMetaParseResult> ReadMeta (const CAssetWriter& Writer, FStringView MountPath)
+// OutHash: hash::HashContent of the bytes read, what a rewrite of them names as its Prior.
+[[nodiscard]] std::optional<SMetaParseResult> ReadMeta (const CAssetWriter& Writer, FStringView MountPath, hash::SContentHash* OutHash = nullptr)
 {
 	const std::optional<std::filesystem::path> path = Writer.GetMounts() != nullptr ? Writer.GetMounts()->FromMountPath(MountPath) : std::nullopt;
 	if (!path.has_value())
@@ -89,6 +93,10 @@ namespace
 	if (read != platform::EStableRead::Stable)
 	{
 		return std::nullopt;
+	}
+	if (OutHash != nullptr)
+	{
+		*OutHash = hash::HashContent(bytes.View().AsBytes());
 	}
 	SMetaParseResult parsed;
 	ParseMeta(bytes, parsed);
@@ -204,7 +212,8 @@ bool PlanReGuids (const CAssetWriter& Writer, std::span<const SLifecycleAction> 
 				"this process writes", ToDisplayText(action.Path))));
 			continue;
 		}
-		std::optional<SMetaParseResult> parsed = ReadMeta(Writer, action.Path);
+		hash::SContentHash read;
+		std::optional<SMetaParseResult> parsed = ReadMeta(Writer, action.Path, &read);
 		const SGuid oldGuid = action.Remap.front().first;
 		if (!parsed.has_value() || parsed->State != EMetaParseState::Ok || parsed->Meta.Guid != oldGuid)
 		{
@@ -229,7 +238,7 @@ bool PlanReGuids (const CAssetWriter& Writer, std::span<const SLifecycleAction> 
 				error.Message)));
 			continue;
 		}
-		OutOp.Steps.push_back(MakeWrite(action.Path, text));
+		OutOp.Steps.push_back(MakeRewrite(action.Path, text, read));
 		OutOp.PlannedGuids.push_back(newGuids[i]);
 	}
 	return OutProblems.size() == problemsBefore || !OutOp.Steps.empty();
@@ -271,7 +280,8 @@ bool PlanKeepAlias (const CAssetWriter& Writer, const CRegistryView& View, const
 	}
 	// Only the broken meta this fix-it was offered for is rewritten: one resolved by hand since (or broken another way)
 	// keeps what the person made of it.
-	const std::optional<SMetaParseResult> current = ReadMeta(Writer, Action.Path);
+	hash::SContentHash read;
+	const std::optional<SMetaParseResult> current = ReadMeta(Writer, Action.Path, &read);
 	const auto salvaged = [&current] (const SGuid& Guid)
 	{
 		return std::find(current->SalvagedGuids.begin(), current->SalvagedGuids.end(), Guid) != current->SalvagedGuids.end();
@@ -308,7 +318,7 @@ bool PlanKeepAlias (const CAssetWriter& Writer, const CRegistryView& View, const
 		OutProblems.push_back(MakeProblem(Writer, Action.Path, FString::Format("cannot rewrite '{}': {}", ToDisplayText(Action.Path), error.Message)));
 		return false;
 	}
-	OutOp.Steps.push_back(MakeWrite(Action.Path, text));
+	OutOp.Steps.push_back(MakeRewrite(Action.Path, text, read));
 	OutOp.PlannedGuids.push_back(Action.Guid);
 	return true;
 }

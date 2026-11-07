@@ -33,14 +33,20 @@
  * What Run does with an op, in order:
  * 0. Settles the journal: an unfinished op is rolled forward (Op is refused when that fails), and anything else the log
  *    holds, a finished op or a torn tail, is emptied, because Begin appends and a reader stops at a torn tail. So a host
- *    that only calls Run never loses an op to an earlier crash.
+ *    that only calls Run never loses an op to an earlier crash. When that roll-forward changed a file, Op is not run: it
+ *    was planned against the disk as it was before, so it is given back stale (SAssetWriteReport::bStale) for its caller
+ *    to plan again. Two ops of one ReGuid set would otherwise run in turn, the second planned narrower from a half-done
+ *    first, and its bytes would replace the full remap the first one finished.
  * 1. Refuses it without the writer lock, with a path outside this owner root's mounts, or with a Move across providers.
  *    A Move whose file is missing or whose target is taken by another file is refused here too, before anything moves.
  *    So is an op that touches a path in two roles (each path is moved away or trashed, or moved to and then written at
  *    most once, or written; folded): each step is idempotent, but a swap or chain, or a write of a file that a later
  *    step moves, would replay wrongly. A meta swap is therefore two WriteFiles, whose bytes are in hand, never Moves.
  *    A WriteFile whose frame is past the journal's limit (FitsOpJournalFrame) is refused, and so is any CopyFile until
- *    duplicate (M11) settles its replay.
+ *    duplicate (M11) settles its replay. A WriteFile whose target no longer holds what its planner read (its Prior,
+ *    OpJournal.h, looked at under the name the file has before the op), or a meta's whose source is gone, makes the whole
+ *    op stale: nothing is asked or logged, and its caller plans again from what is there now. Half an op is never run on
+ *    the first try: the losers of one ReGuid set reference each other.
  *    Within each run of consecutive writes, metas go before sources (a crash between them then leaves an orphan meta,
  *    which pairs, rather than a metaless source, which the lifecycle would give a new identity). A WriteFile whose target
  *    already holds its bytes, and which no earlier step moves, is dropped: a file is rewritten only when its canonical
@@ -51,8 +57,11 @@
  * 3. The journal's Begin, flushed.
  * 4. The steps in order. Consecutive Moves go to the provider as one call per provider, asset and meta in one span, and
  *    consecutive Trashes as one Delete. Every step is idempotent, as OpJournal.h says, and so is the op by step 1's
- *    one-role rule, so a replay is the same code.
- * 5. Add, one call per provider, of the files the op created and their pairs.
+ *    one-role rule, so a replay is the same code. Right before each WriteFile its Prior is checked again (the first run
+ *    and a replay alike): a target that changed meanwhile, a meta whose source is gone, is skipped with a warning and
+ *    reported (bStale), never written over. A create goes in with WriteFileNew, so a meta that lands between the check and
+ *    the write is kept too. No write creates a folder: one renamed or deleted since the plan is not brought back.
+ * 5. Add, one call per provider, of the files the op created and their pairs, leaving out what step 4 skipped.
  * 6. The journal's End, which empties it.
  * A step that fails before anything changed gives the op up (the log is emptied); one that fails after leaves the op in
  * the log, and RollForward finishes it, through the provider as well.
@@ -80,8 +89,13 @@ struct SAssetWriteReport
 	bool bRefusedByVcs = false;     // a provider refused a call (VCS002); with bChangedDisk false nothing was written
 	bool bChangedDisk = false;      // a step changed a file
 	bool bLeftUnfinished = false;   // the op stays in the journal, for RollForward
+	// Planned against files that have changed since: plan it again from what is there now. On a first run nothing was
+	// written; a step skipped while running (a race, a replay) left its file as it was.
+	bool bStale = false;
 	uint32 StepsRun = 0u;
-	uint32 StepsSkipped = 0u;       // already done (a replay), or bytes unchanged
+	uint32 StepsSkipped = 0u;       // already done (a replay), bytes unchanged, or stale
+	std::vector<FString> Changed;          // the mount paths that made it stale (a WriteFile's target, not as planned)
+	std::vector<FString> RolledForward;    // Run: the mount paths of the earlier op it finished first, for a rescan
 };
 
 class FRT_CORE_API CAssetWriter
@@ -93,14 +107,17 @@ public:
 	CAssetWriter (const CAssetWriter&) = delete;
 	CAssetWriter& operator= (const CAssetWriter&) = delete;
 
-	// An op still unfinished in the log is rolled forward first; when that fails, Op is refused. Whatever else the log holds
-	// is emptied before Begin; a log that cannot be read or emptied refuses Op.
+	// An op still unfinished in the log is rolled forward first; when that fails, Op is refused, and when that changed a
+	// file, Op is given back stale (bStale, RolledForward) without being run. Whatever else the log holds is emptied before
+	// Begin; a log that cannot be read or emptied refuses Op.
 	[[nodiscard]] SVcsResult Run (const SAssetOp& Op);
 	[[nodiscard]] SVcsResult Run (const SAssetOp& Op, SAssetWriteReport& OutReport);
 	// Finishes an op the log holds unfinished, through the provider as well, and empties a log that holds nothing unfinished.
 	// False when one could not be finished (it stays in the log), or without the writer lock: a read-only process or a guest
 	// reports an unfinished journal and never rolls it forward. A step whose file is gone by now (deleted meanwhile) is
-	// skipped with a warning: no replay can bring it back, and the lifecycle reconciles what is on disk.
+	// skipped with a warning: no replay can bring it back, and the lifecycle reconciles what is on disk. So is a WriteFile
+	// whose target no longer holds its Prior, or a meta's whose source is gone (bStale): a meta a pull or a teammate put
+	// there after the crash is theirs. The op is finished all the same.
 	bool RollForward (FString* OutError = nullptr);
 	bool RollForward (SAssetWriteReport& OutReport, FString* OutError = nullptr);
 
@@ -123,6 +140,9 @@ public:
 	 * Run returns Failed. ~0u turns it off.
 	 */
 	void SetStopAfterStepForTest (uint32 Steps, TUniqueFunction<void ()> OnStop = {});
+	// The next Run calls OnRun once, after it settled the journal and before it looks at the op: what a sync does to the
+	// disk between an op's plan and its run.
+	void SetBeforeRunForTest (TUniqueFunction<void (const SAssetOp&)> OnRun);
 
 private:
 	struct SPlan;
@@ -133,6 +153,7 @@ private:
 	COpJournal Journal;
 	uint32 StopAfterStep = ~0u;
 	TUniqueFunction<void ()> OnStopForTest;
+	TUniqueFunction<void (const SAssetOp&)> OnRunForTest;
 
 	// MountPath's absolute path and provider, when it names something in a mount of this owner root.
 	[[nodiscard]] bool Resolve (FStringView MountPath, std::filesystem::path& OutAbsolute, IVcsProvider*& OutProvider) const;
@@ -140,6 +161,8 @@ private:
 	[[nodiscard]] SVcsResult CheckOutPlanned (const SPlan& Plan, SAssetWriteReport& Report);
 	[[nodiscard]] SVcsResult Execute (const SPlan& Plan, SAssetWriteReport& Report);
 	[[nodiscard]] SVcsResult StopForTest (SAssetWriteReport& Report);
+	[[nodiscard]] FString GetStaleReason (const SAssetOpStep& Step, const std::filesystem::path& Target,
+		const std::optional<std::filesystem::path>& Source) const;
 };
 
 // The files of Op whose bytes are in hand, to register with CFileWatcherService::ExpectWrite. A Move has none: nothing is

@@ -19,7 +19,9 @@
 // EngineWritable, and in it a file added under a scratch engine's Core/Content gets its meta through a writer of the engine
 // root, whose own journal is rolled forward first, while no Engine.snapshot or journal of /Engine is written. Each test holds at most fourteen
 // files and drives the lifecycle with its own clock (Settle), never with sleeps: three tests go through the file watcher
-// with small delays. The dedupe op's crash points are rolled forward in-process, and one real child is killed.
+// with small delays. The dedupe op's crash points are rolled forward in-process, and one real child is killed. F1: a
+// meta that lands between a repair's plan and its write, or after a crash and before the roll-forward, is kept; a dedupe
+// set left half written keeps its full remap when the next run plans the rest narrower.
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -1759,6 +1761,101 @@ TEST(AssetRepairs, EveryCrashPointOfTheDedupeOpRollsForwardToBothLosersAndOneRea
 	ASSERT_TRUE(writer.GetUnfinished().has_value()) << "the killed process left its op in the journal";
 	ASSERT_TRUE(writer.RollForward(&error)) << error.CStr();
 	ExpectPackDeduped(tree, "killed after one step");
+}
+
+// ---------------- Plans that go stale (F1) ----------------
+
+// A slow sync delivers the committed meta after its source, inside the window between a create's plan and its write: the
+// committed GUID stays, nothing is refused, and the next run pairs it.
+TEST(AssetRepairs, AMetaThatArrivesBetweenARepairsPlanAndItsWriteIsKept)
+{
+	CRepairTree tree("Запізнілий мета");
+	tree.WritePng("a.png");
+	CRig rig(tree);
+	rig.Open();
+	rig.Settle();
+	bool bHooked = false;
+	rig.Repairs().GetWriter()->SetBeforeRunForTest([&] (const SAssetOp& Op)
+	{
+		bHooked = Op.Verb == FStringView("create-meta");
+		tree.WriteMeta("a.png", MetaText(GuidA));
+	});
+	rig.Settle(1600u);
+	EXPECT_TRUE(bHooked) << "the create was planned and run";
+	EXPECT_EQ(tree.MetaGuid("a.png"), MakeGuid(GuidA)) << "the delivered meta is never replaced by a derived one";
+	rig.Settle(100u);
+	EXPECT_EQ(rig.GuidAt(P("a.png")), MakeGuid(GuidA));
+	EXPECT_EQ(rig.StateOf(P("a.png")), EMetaState::Paired);
+	EXPECT_EQ(rig.Registry->GetCounters().RepairsRefused, 0u);
+	EXPECT_EQ(rig.Registry->GetCounters().RepairsApplied, 0u);
+	EXPECT_TRUE(rig.Problems().empty()) << rig.DescribeProblems().CStr();
+	for (const CRecordingVcsProvider::SCall& call : rig.Vcs.GetWriteCalls())
+	{
+		EXPECT_NE(call.Name, "Add");
+	}
+}
+
+// The editor died between a create's Begin and its write; a pull then brought the meta it was about to create. Start's
+// roll-forward keeps the pulled meta.
+TEST(AssetRepairs, AStartUpRollForwardKeepsAMetaPulledAfterTheCrash)
+{
+	CRepairTree tree("Підтягнутий мета");
+	tree.WritePng("a.png");
+	(void)LeaveUnfinishedCreate(tree, "a.png");
+	tree.WriteMeta("a.png", MetaText(GuidA));
+	CRig rig(tree);
+	rig.Open();
+	EXPECT_EQ(tree.MetaGuid("a.png"), MakeGuid(GuidA));
+	EXPECT_EQ(rig.GuidAt(P("a.png")), MakeGuid(GuidA));
+	EXPECT_FALSE(rig.Repairs().GetWriter()->GetUnfinished().has_value()) << "the op is finished";
+}
+
+namespace
+{
+// Two copies that reference each other, so either loser of their dedupe holds a reference to the other.
+void WriteTwins (const CRepairTree& Tree)
+{
+	Tree.WritePng("Twins/Rock.png", 4u);
+	Tree.WriteMeta("Twins/Rock.png", MetaText(GuidA, FString::Format("SubAssets:\n  Remap:\n    \"material:Other\": {{ $asset: {} }}\n", GuidB)));
+	Tree.WritePng("Twins/Skin.png", 5u);
+	Tree.WriteMeta("Twins/Skin.png", MetaText(GuidB, FString::Format("SubAssets:\n  Remap:\n    \"material:Other\": {{ $asset: {} }}\n", GuidA)));
+}
+
+[[nodiscard]] FString OtherTarget (const CRepairTree& Tree, FStringView Relative)
+{
+	const std::optional<SAssetMeta> meta = Tree.ReadMeta(Relative);
+	return meta.has_value() ? FString(meta->SubAssets.GetRoot().Find("Remap").FindChild("material:Other").FindChild("$asset").GetText()) : FString();
+}
+}
+
+// A dedupe op over two losers is left in the journal after its first write (a sharing violation on the second, say). The
+// next run sees only the second loser as a duplicate and plans it alone, with a narrower map; the writer finishes the first
+// op instead of running that plan over it, so the second loser keeps its reference to the first one's copy.
+TEST(AssetRepairs, ADedupeSetLeftHalfWrittenKeepsItsFullRemapWhenTheRestIsPlannedNarrower)
+{
+	CRepairTree tree("Половина набору");
+	WriteTwins(tree);
+	CRig rig(tree);
+	rig.Open();
+	rig.Settle();
+	std::error_code ec;
+	std::filesystem::copy(tree.Abs("Twins"), tree.Abs("Twins2"), std::filesystem::copy_options::recursive, ec);
+	ASSERT_FALSE(ec) << ec.message();
+	rig.Scan("/Project/Twins2");
+	rig.Settle();
+	rig.Repairs().GetWriter()->SetStopAfterStepForTest(1u);
+	rig.Settle(1600u);
+	rig.Settle(1600u);
+	rig.Settle(1600u);
+
+	const SGuid rock = MakeDedupeGuid(Salt, MakeGuid(GuidA), P("Twins2/Rock.png"));
+	const SGuid skin = MakeDedupeGuid(Salt, MakeGuid(GuidB), P("Twins2/Skin.png"));
+	EXPECT_EQ(tree.MetaGuid("Twins2/Rock.png"), rock);
+	EXPECT_EQ(tree.MetaGuid("Twins2/Skin.png"), skin);
+	EXPECT_EQ(OtherTarget(tree, "Twins2/Rock.png"), skin.ToString()) << "each copy references the other's copy";
+	EXPECT_EQ(OtherTarget(tree, "Twins2/Skin.png"), rock.ToString()) << "each copy references the other's copy";
+	EXPECT_EQ(OtherTarget(tree, "Twins/Rock.png"), FString(GuidB));
+	EXPECT_FALSE(rig.Repairs().GetWriter()->GetUnfinished().has_value());
 }
 
 // ---------------- Through the file watcher ----------------

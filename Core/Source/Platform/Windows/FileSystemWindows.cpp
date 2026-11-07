@@ -726,6 +726,70 @@ bool MoveFileNoReplace (const std::filesystem::path& From, const std::filesystem
 	return true;
 }
 
+bool WriteFileNew (const std::filesystem::path& Path, std::span<const uint8> Bytes, FString* OutError, bool* bOutExists)
+{
+	if (bOutExists != nullptr)
+	{
+		*bOutExists = false;
+	}
+	if (!Path.has_filename())
+	{
+		windows::SetErrorText(OutError, "Cannot write", Path, "no file name");
+		return false;
+	}
+	const auto exists = [&Path, bOutExists]
+	{
+		const bool bExists = GetFileAttributesW(windows::ToWin32Path(Path).c_str()) != INVALID_FILE_ATTRIBUTES;
+		if (bOutExists != nullptr)
+		{
+			*bOutExists = bExists;
+		}
+		return bExists;
+	};
+	if (exists())
+	{
+		windows::SetErrorText(OutError, "Cannot create", Path, "the file exists");
+		return false;
+	}
+
+	// As WriteFileAtomic: a new temporary file beside Path, written and flushed before it is moved in.
+	std::filesystem::path temp;
+	HANDLE rawFile = INVALID_HANDLE_VALUE;
+	for (uint32 attempt = 0u; attempt < 16u && rawFile == INVALID_HANDLE_VALUE; ++attempt)
+	{
+		temp = MakeTempPath(Path, gTempFileCounter.fetch_add(1u, std::memory_order_relaxed));
+		rawFile = CreateFileW(windows::ToWin32Path(temp).c_str(), GENERIC_WRITE, 0u, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+		if (rawFile == INVALID_HANDLE_VALUE && GetLastError() != ERROR_FILE_EXISTS)
+		{
+			break;
+		}
+	}
+	CScopedHandle file(rawFile);
+	if (!file.IsValid())
+	{
+		windows::SetError(OutError, "Cannot create a temporary file for", Path, GetLastError());
+		return false;
+	}
+	bool bWritten = WriteAll(file.Get(), Bytes, temp, OutError);
+	if (bWritten && !FlushFileBuffers(file.Get()))
+	{
+		windows::SetError(OutError, "Cannot flush", temp, GetLastError());
+		bWritten = false;
+	}
+	if (!file.Reset() && bWritten)
+	{
+		windows::SetError(OutError, "Cannot close", temp, GetLastError());
+		bWritten = false;
+	}
+	if (bWritten && MoveFileNoReplace(temp, Path, OutError))
+	{
+		return true;
+	}
+	DeleteFileW(windows::ToWin32Path(temp).c_str());
+	(void)exists();
+	return false;
+}
+
 bool WriteFileAtomic (const std::filesystem::path& Path, std::span<const uint8> Bytes, bool bCreateDirectories, FString* OutError)
 {
 	if (!CheckAtomicTarget(Path, OutError))

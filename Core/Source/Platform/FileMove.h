@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <span>
 
 #include "Core.h"
 #include "CoreTypes.h"
@@ -26,4 +27,13 @@ FRT_CORE_API bool MoveFileNoReplace (const std::filesystem::path& From, const st
 
 template <NarrowText T, NarrowText U>
 bool MoveFileNoReplace (const T&, const U&, FString* = nullptr) = delete;
+
+// A new file at Path holding Bytes, or nothing at all: WriteFileAtomic's temporary file, flushed, then moved in with
+// MoveFileNoReplace, so a file that appears at Path meanwhile is kept and the write fails (bOutExists set, Path untouched).
+// For the asset writer's creates (OpJournal.h's Prior Absent): a meta that a sync delivers between the check and the write
+// must never be replaced. Never creates folders. The temporary file is gone after any failure.
+FRT_CORE_API bool WriteFileNew (const std::filesystem::path& Path, std::span<const uint8> Bytes, FString* OutError = nullptr, bool* bOutExists = nullptr);
+
+template <NarrowText T>
+bool WriteFileNew (const T&, std::span<const uint8>, FString* = nullptr, bool* = nullptr) = delete;
 }

@@ -213,7 +213,7 @@ Errors carry the column of the term at fault.
 | `<project>/Local/Assets/AssetRegistry.snapshot` (+ `.journal`) | `/Project` and its plugins | the project's writer: the editor holding `Owner.lock`, `FRT.bat assets scan` |
 | `<root>/Local/Assets/ProjectId` | a random id, so a copied snapshot is never taken for this root's | the root's writer, once |
 | `<root>/Local/Assets/Rules.cache` | the rule files as JSON lines | the root's writer |
-| `<root>/Local/Assets/OpJournal.log` | the planned steps of the meta operation in progress (checksummed frames, flushed before the first file is touched; removed when it ends), rolled forward at the next start | the root's writer: the lifecycle's repairs and the meta verbs |
+| `<root>/Local/Assets/OpJournal.log` | the planned steps of the meta operation in progress (checksummed frames, flushed before the first file is touched; removed when it ends), each write with what its file held when it was planned; rolled forward at the next start | the root's writer: the lifecycle's repairs and the meta verbs |
 
 A snapshot is sections with their own layout versions and checksums; a bad section is dropped alone and only what it
 held is rebuilt (design §5.3). Every section is at layout 2 since M4 filled `ALIASES`, `FORMERPATHS`, `METAS` (one
@@ -407,7 +407,14 @@ it, means none at all. With one:
   when `Safety.DerivedAutoGuids` is off; a restore writes the verified `METAS` bytes as they were; a relink and a case
   fix are moves). The ops of one result run in one worker job through a `CAssetWriter` on the owner root, after
   `IsBusy` is asked once more and their expected writes are registered with the watcher (`ExpectWrite`); the touched
-  folders are then rescanned. It is level-triggered: the rescan of a repair's own write proposes nothing. A meta beside
+  folders are then rescanned. It is level-triggered: the rescan of a repair's own write proposes nothing. Each write
+  carries what its planner read (nothing, for a create; the bytes, for a rewrite), and the writer checks it right before
+  writing, on the first run and in a roll-forward alike: a meta that a sync delivered or a person edited after the plan
+  is never written over. A whole op whose file changed is then given back unwritten, a step that changed during a run
+  or before a roll-forward is skipped with a warning and never added to the VCS, and a create cannot replace a meta
+  that lands at the last moment. No write makes a folder, and a meta whose source is gone is not written. An op left
+  half done, or planned before the writer finished an earlier one, is planned again by the next run rather than run
+  over what the roll-forward wrote; none of these is a refusal. A meta beside
   a file the rules exclude is no asset's, so it takes part in no duplicate group.
   `SAssetRegistryCounters::RepairsApplied` and `RepairsRefused` count them.
 - **Holding for the VCS** (`[AssetsEditor] WaitForVcs`, default on): no automatic repair while the provider of a mount

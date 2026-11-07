@@ -11,6 +11,7 @@
 #include "Assets/MountPaths.h"
 #include "Assets/Vcs/NoneVcsProvider.h"
 #include "Log/Log.h"
+#include "Platform/FileMove.h"
 #include "Platform/FileSystem.h"
 #include "Platform/Platform.h"
 #include "Unicode/DisplayText.h"
@@ -129,6 +130,48 @@ using FPathRoles = std::unordered_map<FString, bool>;   // folded path -> a Move
 	return held.has_value() && std::equal(held->begin(), held->end(), Bytes.begin(), Bytes.end());
 }
 
+// Whether a file named Path's leaf, in any spelling equal under the portable fold, is in its folder: what a create's
+// Prior Absent asks. Stat covers NTFS; the listing a case-sensitive folder, where "Rock.png.META" would not open as
+// "Rock.png.meta" and yet pairs with Rock.png (MetaPaths.h).
+[[nodiscard]] bool ExistsInAnySpelling (const std::filesystem::path& Path)
+{
+	if (platform::Stat(Path).has_value())
+	{
+		return true;
+	}
+	const FString leaf = FString::FromPath(Path.filename()).FoldCase();
+	bool bFound = false;
+	platform::EnumerateDirectory(Path.parent_path(), [&leaf, &bFound] (const platform::SDirectoryEntry& Entry)
+	{
+		bFound = FString(Entry.Name).FoldCase() == leaf;
+		return !bFound;
+	});
+	return bFound;
+}
+
+// Whether the file at Path is what Step's planner saw there (OpJournal.h's Prior). Unchecked (a format-1 journal's step)
+// passes: a replay writes it as the build that logged it would have.
+[[nodiscard]] bool HoldsPrior (const std::filesystem::path& Path, const SAssetOpStep& Step)
+{
+	switch (Step.Prior)
+	{
+	case EAssetOpPrior::Absent:
+		return !ExistsInAnySpelling(Path);
+	case EAssetOpPrior::Holds:
+	{
+		if (!Exists(Path))
+		{
+			return false;
+		}
+		const std::optional<std::vector<uint8>> held = platform::ReadFileBytes(Path);
+		return held.has_value() && hash::HashContent(*held) == Step.PriorHash;
+	}
+	case EAssetOpPrior::Unchecked:
+		return true;
+	}
+	return false;
+}
+
 void AppendUnique (std::vector<FString>& Out, FStringView Path)
 {
 	if (std::find(Out.begin(), Out.end(), Path) == Out.end())
@@ -183,6 +226,28 @@ struct CAssetWriter::SPlan
 	std::vector<SStep> Steps;            // beside Entry.Op.Steps
 	std::vector<FString> CheckOut;       // mount paths
 };
+
+namespace
+{
+// Path as it is named before the step at Index of Steps runs: walked back through the Moves before it.
+[[nodiscard]] FString GetNameBefore (std::span<const SAssetOpStep> Steps, size_t Index, FStringView Path)
+{
+	FString name(Path);
+	for (size_t back = Index; back-- > 0u;)
+	{
+		if (Steps[back].Kind == EAssetOpStep::Move && Steps[back].ToPath == name)
+		{
+			name = Steps[back].Path;
+		}
+	}
+	return name;
+}
+
+[[nodiscard]] bool IsWrittenBy (std::span<const SAssetOpStep> Steps, FStringView Path)
+{
+	return std::any_of(Steps.begin(), Steps.end(), [&Path] (const SAssetOpStep& Step) { return IsWrite(Step.Kind) && GetWriteTarget(Step) == Path; });
+}
+}
 
 
 CAssetWriter::CAssetWriter (SAssetWriterDesc InDesc)
@@ -253,6 +318,29 @@ void CAssetWriter::SetStopAfterStepForTest (uint32 Steps, TUniqueFunction<void (
 	OnStopForTest = std::move(OnStop);
 }
 
+void CAssetWriter::SetBeforeRunForTest (TUniqueFunction<void (const SAssetOp&)> OnRun)
+{
+	OnRunForTest = std::move(OnRun);
+}
+
+/**
+ * Why the WriteFile Step cannot be written now, empty when it can: its target (at Target) is not what its planner read, or
+ * it is a meta whose source (at Source, when given) is gone, so that the meta would pair with nothing and, since no write
+ * makes a folder, perhaps have nowhere to go.
+ */
+FString CAssetWriter::GetStaleReason (const SAssetOpStep& Step, const std::filesystem::path& Target, const std::optional<std::filesystem::path>& Source) const
+{
+	if (!HoldsPrior(Target, Step))
+	{
+		return Step.Prior == EAssetOpPrior::Absent ? FString("another file is there now") : FString("it changed, or is gone, since it was planned");
+	}
+	if (Source.has_value() && !Exists(*Source))
+	{
+		return "its source is gone";
+	}
+	return {};
+}
+
 
 /**
  * Resolves and checks Op. A replay (roll-forward) takes the journalled steps as they are: they were checked and ordered
@@ -284,6 +372,7 @@ SVcsResult CAssetWriter::Prepare (const SAssetOp& Op, bool bReplay, SPlan& Out, 
 
 	std::vector<FString> touched;   // mount paths an earlier step of this op writes, moves away, moves to or trashes
 	std::vector<FString> written;   // write targets
+	std::vector<FString> stale;     // first run: WriteFiles whose target is no longer what was planned
 	FPathRoles roles;
 	for (const SAssetOpStep& step : steps)
 	{
@@ -345,6 +434,36 @@ SVcsResult CAssetWriter::Prepare (const SAssetOp& Op, bool bReplay, SPlan& Out, 
 				++Report.StepsSkipped;   // the bytes are there already: no write, no check-out
 				continue;
 			}
+			if (!bReplay)
+			{
+				// The precondition, under the names the target and a meta's source have before this op's Moves, checked
+				// before anything is asked or logged. A source the op writes itself is not looked for.
+				if (step.Prior == EAssetOpPrior::Unchecked)
+				{
+					return Failure(FString::Format("cannot write '{}': the operation '{}' does not say what the file held when it was planned",
+						ToDisplayText(step.Path), Op.Verb));
+				}
+				const std::span<const SAssetOpStep> earlier(Out.Entry.Op.Steps);
+				IVcsProvider* provider = nullptr;
+				std::optional<std::filesystem::path> source;
+				if (const std::optional<FStringView> sourcePath = GetMetaSource(step.Path);
+					sourcePath.has_value() && std::find(written.begin(), written.end(), *sourcePath) == written.end())
+				{
+					std::filesystem::path absolute;
+					if (Resolve(GetNameBefore(earlier, earlier.size(), *sourcePath), absolute, provider))
+					{
+						source = std::move(absolute);
+					}
+				}
+				std::filesystem::path target;
+				const FString reason = Resolve(GetNameBefore(earlier, earlier.size(), step.Path), target, provider)
+					? GetStaleReason(step, target, source) : FString("it names no file");
+				if (!reason.IsEmpty())
+				{
+					log::Info(log::Assets, "The operation '{}' does not write '{}': {}.", Op.Verb, ToDisplayText(step.Path), reason);
+					stale.push_back(step.Path);
+				}
+			}
 			break;
 		case EAssetOpStep::Move:
 			if (!bReplay && step.Path != step.ToPath)
@@ -374,6 +493,14 @@ SVcsResult CAssetWriter::Prepare (const SAssetOp& Op, bool bReplay, SPlan& Out, 
 		}
 		Out.Entry.Op.Steps.push_back(std::move(step));
 		Out.Steps.push_back(std::move(planned));
+	}
+	if (!stale.empty())
+	{
+		// Half an op is never run on the first try: the losers of one ReGuid set reference each other.
+		Report.bStale = true;
+		Report.Changed = std::move(stale);
+		return Failure(FString::Format("'{}' changed since the operation '{}' was planned, so nothing was written: it is planned again from what "
+			"is there now", ToDisplayText(Report.Changed.front()), Op.Verb));
 	}
 
 	// CheckOut: each written file as it is named before the op (walking back through the Moves before it), and its pair.
@@ -576,21 +703,52 @@ SVcsResult CAssetWriter::Execute (const SPlan& Plan, SAssetWriteReport& Report)
 			continue;
 		}
 
-		// A WriteFile: Prepare refuses CopyFile.
+		// A WriteFile (Prepare refuses CopyFile). Its precondition is checked right before the write, on the first run and on a
+		// replay; a create cannot replace a file that lands in between; no write makes a folder.
 		if (HoldsBytes(planned.From, step.Bytes))
 		{
 			++Report.StepsSkipped;
+			++index;
+			continue;
 		}
-		else
+		std::optional<std::filesystem::path> source;
+		if (const std::optional<FStringView> sourcePath = GetMetaSource(step.Path); sourcePath.has_value() && !IsWrittenBy(steps, *sourcePath))
 		{
-			FString error;
-			if (!platform::WriteFileAtomic(planned.From, step.Bytes, true, &error))
+			std::filesystem::path absolute;
+			IVcsProvider* provider = nullptr;
+			if (Resolve(*sourcePath, absolute, provider))
 			{
-				return Failure(FString::Format("cannot write '{}': {}", ToDisplayText(step.Path), ToDisplayText(error)));
+				source = std::move(absolute);
 			}
-			Report.bChangedDisk = true;
-			++Report.StepsRun;
 		}
+		FString reason = GetStaleReason(step, planned.From, source);
+		FString error;
+		bool bWritten = false;
+		if (reason.IsEmpty() && step.Prior == EAssetOpPrior::Absent)
+		{
+			bool bExists = false;
+			bWritten = platform::WriteFileNew(planned.From, step.Bytes, &error, &bExists);
+			reason = bExists ? FString("another file arrived there while it was written") : FString();
+		}
+		else if (reason.IsEmpty())
+		{
+			bWritten = platform::WriteFileAtomic(planned.From, step.Bytes, false, &error);
+		}
+		if (!reason.IsEmpty())
+		{
+			log::Warning(log::Assets, "The operation '{}' left '{}' as it is: {}.", Plan.Entry.Op.Verb, ToDisplayText(step.Path), reason);
+			Report.bStale = true;
+			Report.Changed.push_back(step.Path);
+			++Report.StepsSkipped;
+			++index;
+			continue;
+		}
+		if (!bWritten)
+		{
+			return Failure(FString::Format("cannot write '{}': {}", ToDisplayText(step.Path), ToDisplayText(error)));
+		}
+		Report.bChangedDisk = true;
+		++Report.StepsRun;
 		++index;
 	}
 	if (count == StopAfterStep)
@@ -598,9 +756,19 @@ SVcsResult CAssetWriter::Execute (const SPlan& Plan, SAssetWriteReport& Report)
 		return StopForTest(Report);
 	}
 
+	// A step left as it was created nothing: neither its file nor the pair added along with it goes to Add (a foreign meta,
+	// and an untracked source beside it, are not this op's to add).
+	const auto skipped = [&Report] (FStringView Path)
+	{
+		return std::find(Report.Changed.begin(), Report.Changed.end(), Path) != Report.Changed.end();
+	};
 	std::vector<SProviderBatch<FString>> adds;
 	for (const FString& path : Plan.Entry.AddFiles)
 	{
+		if (skipped(path) || (skipped(GetPairPath(path)) && !IsWrittenBy(steps, path)))
+		{
+			continue;
+		}
 		std::filesystem::path absolute;
 		IVcsProvider* provider = nullptr;
 		if (Resolve(path, absolute, provider) && Exists(absolute))
@@ -655,15 +823,40 @@ SVcsResult CAssetWriter::Run (const SAssetOp& Op, SAssetWriteReport& OutReport)
 			return Failure(FString::Format("cannot read the operation journal '{}', so '{}' does not start: {}",
 				ToDisplayText(FString::FromPath(Journal.GetPath())), Op.Verb, ToDisplayText(error)));
 		}
-		if (contents.Unfinished.has_value() && !RollForward(&error))
+		if (contents.Unfinished.has_value())
 		{
-			return Failure(FString::Format("an earlier operation could not be finished, so '{}' does not start: {}", Op.Verb, error));
+			SAssetWriteReport rolled;
+			if (!RollForward(rolled, &error))
+			{
+				return Failure(FString::Format("an earlier operation could not be finished, so '{}' does not start: {}", Op.Verb, error));
+			}
+			if (rolled.bChangedDisk)
+			{
+				// Op was planned against the disk the roll-forward has just rewritten (an op of the same ReGuid set, planned
+				// narrower from its half-done state, would replace the full remap): its caller plans it again.
+				OutReport.bStale = true;
+				for (const SAssetOpStep& step : contents.Unfinished->Op.Steps)
+				{
+					OutReport.RolledForward.push_back(step.Path);
+					if (!step.ToPath.IsEmpty())
+					{
+						OutReport.RolledForward.push_back(step.ToPath);
+					}
+				}
+				return Failure(FString::Format("the earlier operation '{}' was finished first and changed files '{}' was planned against: it is "
+					"planned again", contents.Unfinished->Op.Verb, Op.Verb));
+			}
 		}
 		if (!contents.bEmpty && !Journal.Clear(&error))
 		{
 			return Failure(FString::Format("cannot empty the operation journal '{}', so '{}' does not start: {}",
 				ToDisplayText(FString::FromPath(Journal.GetPath())), Op.Verb, ToDisplayText(error)));
 		}
+	}
+	if (OnRunForTest)
+	{
+		TUniqueFunction<void (const SAssetOp&)> onRun = std::move(OnRunForTest);
+		onRun(Op);
 	}
 
 	SPlan plan;
@@ -752,8 +945,8 @@ bool CAssetWriter::RollForward (SAssetWriteReport& OutReport, FString* OutError)
 		}
 		return false;
 	}
-	log::Info(log::Assets, "Finished the operation '{}' that an earlier process left unfinished ({} steps run, {} done already).",
-		entry.Op.Verb, OutReport.StepsRun, OutReport.StepsSkipped);
+	log::Info(log::Assets, "Finished the operation '{}' that an earlier process left unfinished ({} steps run, {} done already or left "
+		"as they were).", entry.Op.Verb, OutReport.StepsRun, OutReport.StepsSkipped);
 	return true;
 }
 

@@ -14,10 +14,13 @@ namespace frt::assets
 namespace
 {
 // Frame kinds. The payload of each starts with a format byte, so a later layout is told apart rather than misread.
+// Format 2 gave each step its precondition (SAssetOpStep::Prior); a format-1 log, which an earlier build may have left
+// unfinished, still reads back, its WriteFiles Unchecked.
 constexpr uint8 BeginKind = 'B';
 constexpr uint8 StepKind = 'S';
 constexpr uint8 EndKind = 'E';
-constexpr uint8 PayloadFormat = 1u;
+constexpr uint8 PayloadFormat = 2u;
+constexpr uint8 PayloadFormatNoPrior = 1u;
 
 void AppendGuid (std::vector<uint8>& Out, const SGuid& Guid)
 {
@@ -35,10 +38,18 @@ bool ReadGuid (binary::CByteReader& Reader, SGuid& Out) noexcept
 	return true;
 }
 
-bool ReadFormat (binary::CByteReader& Reader) noexcept
+bool ReadFormat (binary::CByteReader& Reader, uint8* OutFormat = nullptr) noexcept
 {
 	uint8 format = 0u;
-	return Reader.ReadU8(format) && format == PayloadFormat;
+	if (!Reader.ReadU8(format) || (format != PayloadFormat && format != PayloadFormatNoPrior))
+	{
+		return false;
+	}
+	if (OutFormat != nullptr)
+	{
+		*OutFormat = format;
+	}
+	return true;
 }
 
 // Begin: format, op id, verb, planned GUIDs, add files, step count.
@@ -62,7 +73,7 @@ std::vector<uint8> EncodeBeginPayload (const SOpJournalEntry& Entry)
 	return payload;
 }
 
-// Step: format, op id, index, kind, path, to-path, bytes, hash.
+// Step: format, op id, index, kind, path, to-path, bytes, hash, prior, prior hash.
 std::vector<uint8> EncodeStepPayload (const SGuid& OpId, size_t Index, const SAssetOpStep& Step)
 {
 	std::vector<uint8> payload;
@@ -74,6 +85,8 @@ std::vector<uint8> EncodeStepPayload (const SGuid& OpId, size_t Index, const SAs
 	binary::AppendText(payload, Step.ToPath);
 	binary::AppendSized(payload, Step.Bytes);
 	binary::AppendHash(payload, Step.Hash);
+	payload.push_back(static_cast<uint8>(Step.Prior));
+	binary::AppendHash(payload, Step.PriorHash);
 	return payload;
 }
 
@@ -124,13 +137,28 @@ std::optional<SAssetOpStep> DecodeStep (std::span<const uint8> Payload, const SG
 {
 	binary::CByteReader reader(Payload);
 	SGuid id;
+	uint8 format = 0u;
 	uint64 index = 0u;
 	uint8 kind = 0u;
 	SAssetOpStep step;
 	std::span<const uint8> bytes;
-	if (!ReadFormat(reader) || !ReadGuid(reader, id) || id != OpId || !reader.ReadVarint(index) || index != Index || !reader.ReadU8(kind)
+	if (!ReadFormat(reader, &format) || !ReadGuid(reader, id) || id != OpId || !reader.ReadVarint(index) || index != Index || !reader.ReadU8(kind)
 		|| kind > static_cast<uint8>(EAssetOpStep::Trash) || !reader.ReadText(step.Path) || !reader.ReadText(step.ToPath)
-		|| !reader.ReadSized(bytes) || !reader.ReadHash(step.Hash) || !reader.IsAtEnd())
+		|| !reader.ReadSized(bytes) || !reader.ReadHash(step.Hash))
+	{
+		return std::nullopt;
+	}
+	step.Prior = EAssetOpPrior::Unchecked;
+	if (format != PayloadFormatNoPrior)
+	{
+		uint8 prior = 0u;
+		if (!reader.ReadU8(prior) || prior > static_cast<uint8>(EAssetOpPrior::Unchecked) || !reader.ReadHash(step.PriorHash))
+		{
+			return std::nullopt;
+		}
+		step.Prior = static_cast<EAssetOpPrior>(prior);
+	}
+	if (!reader.IsAtEnd())
 	{
 		return std::nullopt;
 	}
@@ -190,7 +218,7 @@ bool FitsOpJournalFrame (const SAssetOpStep& Step) noexcept
 	// EncodeStepPayload's layout, with every varint at its widest.
 	constexpr size_t VarintBytes = 10u;
 	const size_t size = 1u + SGuid::Size + VarintBytes + 1u + VarintBytes + Step.Path.View().AsBytes().size() + VarintBytes
-		+ Step.ToPath.View().AsBytes().size() + VarintBytes + Step.Bytes.size() + hash::SContentHash::Size;
+		+ Step.ToPath.View().AsBytes().size() + VarintBytes + Step.Bytes.size() + hash::SContentHash::Size + 1u + hash::SContentHash::Size;
 	return size <= record_frames::MaxPayloadBytes;
 }
 

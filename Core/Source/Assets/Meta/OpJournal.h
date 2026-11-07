@@ -19,7 +19,10 @@
  * journal must be able to write them again; a source's content never does (a copy names its source and is redone).
  *
  * Replay is idempotent, step by step: a WriteFile whose target already has Hash is skipped, a Move whose From is gone and
- * whose To exists is skipped, a Trash whose file is gone is skipped. For a Move, "gone" compares the on-disk spelling
+ * whose To exists is skipped, a Trash whose file is gone is skipped. A WriteFile also carries its precondition, Prior: what
+ * its target held when the op was planned (nothing, or bytes of PriorHash). The writer checks it right before the write,
+ * on the first run and on a replay alike, so a meta that appeared or changed since the plan (a pull, a teammate's meta
+ * that a sync delivered late, a hand edit) is never overwritten: the step is skipped and reported instead. For a Move, "gone" compares the on-disk spelling
  * byte-exactly, by a listing of the folder: after a case-only Move the old spelling still opens on NTFS, and running that
  * Move again would have `git mv` refuse a name the index no longer holds. That makes each step idempotent, and the op as a
  * whole only because CAssetWriter lets each path play one role per op (AssetWriter.h). PlannedGuids are what the command pre-allocated,
@@ -30,7 +33,10 @@
  * metas` again skips the metas that exist and then records itself.
  *
  * Steps, by Kind:
- *   WriteFile   Path: the file; Bytes: what it holds afterwards (metas only); Hash: hash::HashContent(Bytes)
+ *   WriteFile   Path: the file; Bytes: what it holds afterwards (metas only); Hash: hash::HashContent(Bytes); Prior: what
+ *               it must hold right before (Absent: no file in any spelling, a create; Holds: hash::HashContent of the
+ *               bytes the planner read, PriorHash, a rewrite; where a Move of the same op carries the file there, the
+ *               bytes it held before that Move)
  *   CopyFile    Path: the source to copy; ToPath: the new file; Hash: the source's content when the op was planned.
  *               Not run in M4: CAssetWriter refuses it until duplicate (M11) settles what a replay does when the new
  *               name is taken meanwhile, since the copy must never replace another file.
@@ -41,6 +47,13 @@ namespace frt::assets
 {
 enum class EAssetOpStep : uint8 { WriteFile, CopyFile, Move, Trash };
 
+/**
+ * A WriteFile's precondition. Absent is the default, so a planner that forgets to say what it read can only create, never
+ * replace. Unchecked is what a step of a journal written before preconditions existed (payload format 1) reads back as: a
+ * replay writes it as that build would have, and a first run refuses it.
+ */
+enum class EAssetOpPrior : uint8 { Absent, Holds, Unchecked };
+
 struct SAssetOpStep
 {
 	EAssetOpStep Kind = EAssetOpStep::WriteFile;
@@ -48,6 +61,8 @@ struct SAssetOpStep
 	FString ToPath;
 	std::vector<uint8> Bytes;   // WriteFile: metas only
 	hash::SContentHash Hash;
+	EAssetOpPrior Prior = EAssetOpPrior::Absent;   // WriteFile only
+	hash::SContentHash PriorHash;                  // Prior Holds: hash::HashContent of the bytes the planner read
 };
 
 struct SAssetOp
@@ -128,3 +143,9 @@ FRT_DECLARE_ENUM_REFLECTION(
 	FRT_ENUM_ENTRY(frt::assets::EAssetOpStep, CopyFile),
 	FRT_ENUM_ENTRY(frt::assets::EAssetOpStep, Move),
 	FRT_ENUM_ENTRY(frt::assets::EAssetOpStep, Trash));
+
+FRT_DECLARE_ENUM_REFLECTION(
+	frt::assets::EAssetOpPrior,
+	FRT_ENUM_ENTRY(frt::assets::EAssetOpPrior, Absent),
+	FRT_ENUM_ENTRY(frt::assets::EAssetOpPrior, Holds),
+	FRT_ENUM_ENTRY(frt::assets::EAssetOpPrior, Unchecked));

@@ -271,6 +271,7 @@ bool PlanCreateMeta (const CAssetWriter& Writer, const SCreateMetaRequest& Reque
 	}
 	SAssetOpStep step = MakeStep(EAssetOpStep::WriteFile, GetMetaPath(Request.Source));
 	step.Bytes.assign(text.View().AsBytes().begin(), text.View().AsBytes().end());
+	step.Prior = EAssetOpPrior::Absent;   // checked again right before the write: a meta that arrives meanwhile is kept
 	OutOp.Steps.push_back(std::move(step));
 	OutOp.PlannedGuids.push_back(meta.Guid);
 	return true;
@@ -416,8 +417,11 @@ bool PlanMoveAssets (const CAssetWriter& Writer, std::span<const SAssetMove> Mov
 				const std::span<const uint8> newBytes = text.View().AsBytes();
 				if (!std::equal(newBytes.begin(), newBytes.end(), bytes->begin(), bytes->end()))
 				{
+					// The meta is rewritten where the Move puts it, from the bytes read here: the writer checks it still holds them.
 					SAssetOpStep rewrite = MakeStep(EAssetOpStep::WriteFile, metaTo);
 					rewrite.Bytes.assign(newBytes.begin(), newBytes.end());
+					rewrite.Prior = EAssetOpPrior::Holds;
+					rewrite.PriorHash = hash::HashContent(*bytes);
 					rewrites.push_back(std::move(rewrite));
 				}
 			}
@@ -528,7 +532,14 @@ SAssetCommandResult RunAssetOp (CAssetWriter& Writer, SAssetOp Op)
 		return result;
 	}
 	const FStringView subject = result.Op.Steps.empty() ? FStringView() : GetSubjectAsset(result.Op.Steps.front().Path);
-	if (result.Report.bRefusedByVcs)
+	if (result.Report.bStale)
+	{
+		// Not a refusal: the disk moved on since the plan, and the caller plans again from what is there now.
+		const FStringView changed = !result.Report.Changed.empty() ? GetSubjectAsset(result.Report.Changed.front()) : subject;
+		result.Problems.push_back(MakeProblem(Writer, ESeverity::Warning, 0u, changed, FString::Format("'{}' was not run as planned: {}",
+			result.Op.Verb, result.Vcs.Message)));
+	}
+	else if (result.Report.bRefusedByVcs)
 	{
 		const FStringView outcome = result.Report.bChangedDisk ? "the files are written and the operation is left for start-up to finish"
 			: "nothing was written";
@@ -544,43 +555,51 @@ SAssetCommandResult RunAssetOp (CAssetWriter& Writer, SAssetOp Op)
 	return result;
 }
 
-SAssetCommandResult CreateMeta (CAssetWriter& Writer, const SCreateMetaRequest& Request)
+namespace
+{
+/**
+ * Plan, then run; planned once more when the writer first finished an earlier op that changed the disk this plan read
+ * (SAssetWriteReport::RolledForward). A plan that went stale for any other reason is reported as it is: the person runs
+ * the command again on what is there now.
+ */
+template <typename FPlan>
+[[nodiscard]] SAssetCommandResult PlanAndRun (CAssetWriter& Writer, const FPlan& Plan)
 {
 	SAssetCommandResult result;
-	SAssetOp op;
-	if (!PlanCreateMeta(Writer, Request, op, result.Problems))
+	for (uint32 attempt = 0u; attempt < 2u; ++attempt)
 	{
-		result.Vcs = { EVcsError::Failed, result.Problems.empty() ? FString() : result.Problems.back().Message };
-		return result;
+		result = SAssetCommandResult();
+		SAssetOp op;
+		std::vector<SDiagnostic> problems;
+		if (!Plan(op, problems))
+		{
+			result.Problems = std::move(problems);
+			result.Vcs = { EVcsError::Failed, result.Problems.empty() ? FString() : result.Problems.back().Message };
+			return result;
+		}
+		result = RunAssetOp(Writer, std::move(op));
+		result.Problems.insert(result.Problems.begin(), problems.begin(), problems.end());
+		if (!result.Report.bStale || result.Report.RolledForward.empty())
+		{
+			break;
+		}
 	}
-	return RunAssetOp(Writer, std::move(op));
+	return result;
+}
+}
+
+SAssetCommandResult CreateMeta (CAssetWriter& Writer, const SCreateMetaRequest& Request)
+{
+	return PlanAndRun(Writer, [&] (SAssetOp& Op, std::vector<SDiagnostic>& Problems) { return PlanCreateMeta(Writer, Request, Op, Problems); });
 }
 
 SAssetCommandResult MoveAssets (CAssetWriter& Writer, std::span<const SAssetMove> Moves)
 {
-	SAssetCommandResult result;
-	SAssetOp op;
-	std::vector<SDiagnostic> problems;
-	if (!PlanMoveAssets(Writer, Moves, op, problems))
-	{
-		result.Problems = std::move(problems);
-		result.Vcs = { EVcsError::Failed, result.Problems.back().Message };
-		return result;
-	}
-	result = RunAssetOp(Writer, std::move(op));
-	result.Problems.insert(result.Problems.begin(), problems.begin(), problems.end());
-	return result;
+	return PlanAndRun(Writer, [&] (SAssetOp& Op, std::vector<SDiagnostic>& Problems) { return PlanMoveAssets(Writer, Moves, Op, Problems); });
 }
 
 SAssetCommandResult DeleteAssets (CAssetWriter& Writer, std::span<const SAssetDelete> Deletes)
 {
-	SAssetCommandResult result;
-	SAssetOp op;
-	if (!PlanDeleteAssets(Writer, Deletes, op, result.Problems))
-	{
-		result.Vcs = { EVcsError::Failed, result.Problems.back().Message };
-		return result;
-	}
-	return RunAssetOp(Writer, std::move(op));
+	return PlanAndRun(Writer, [&] (SAssetOp& Op, std::vector<SDiagnostic>& Problems) { return PlanDeleteAssets(Writer, Deletes, Op, Problems); });
 }
 }

@@ -84,9 +84,12 @@ struct SAssetDelete
 	std::vector<SDiagnostic>& OutProblems);
 
 // Runs a planned op. A refusal by the VCS is VCS002 on the op's first asset; nothing was written then, unless Report says
-// otherwise (a refused Add, after the files were written, leaves the op for RollForward).
+// otherwise (a refused Add, after the files were written, leaves the op for RollForward). An op the writer found stale
+// (Report.bStale: a file it would write is no longer what the plan read, or an earlier op it finished first changed the
+// disk) is a code-0 warning on the changed file, not a refusal: its caller plans again.
 [[nodiscard]] FRT_CORE_API SAssetCommandResult RunAssetOp (CAssetWriter& Writer, SAssetOp Op);
 
+// The one-call forms plan once more when the writer first finished an earlier op that changed the disk.
 [[nodiscard]] FRT_CORE_API SAssetCommandResult CreateMeta (CAssetWriter& Writer, const SCreateMetaRequest& Request);
 [[nodiscard]] FRT_CORE_API SAssetCommandResult MoveAssets (CAssetWriter& Writer, std::span<const SAssetMove> Moves);
 [[nodiscard]] FRT_CORE_API SAssetCommandResult DeleteAssets (CAssetWriter& Writer, std::span<const SAssetDelete> Deletes);

@@ -284,6 +284,7 @@ std::vector<SAssetOp> PlanResaveMetas (const CAssetWriter& Writer, const CRegist
 	{
 		FString Path;
 		FString Text;
+		hash::SContentHash Read;   // the bytes the rewrite replaces: the writer writes only while the meta still holds them
 	};
 	std::vector<SRewrite> rewrites;
 	const CMountTable* mounts = Writer.GetMounts();
@@ -314,7 +315,7 @@ std::vector<SAssetOp> PlanResaveMetas (const CAssetWriter& Writer, const CRegist
 			++Out.Canonical;
 			return;
 		}
-		rewrites.push_back(SRewrite { FString(file.MountPath), std::move(text) });
+		rewrites.push_back(SRewrite { FString(file.MountPath), std::move(text), hash::HashContent(bytes->View().AsBytes()) });
 	});
 	std::sort(rewrites.begin(), rewrites.end(), [] (const SRewrite& A, const SRewrite& B) { return LessPortableThenBytes(A.Path, B.Path); });
 	std::sort(Out.Broken.begin(), Out.Broken.end(), [] (const FString& A, const FString& B) { return LessPortableThenBytes(A, B); });
@@ -332,6 +333,8 @@ std::vector<SAssetOp> PlanResaveMetas (const CAssetWriter& Writer, const CRegist
 		step.Kind = EAssetOpStep::WriteFile;
 		step.Path = rewrite.Path;
 		step.Bytes.assign(rewrite.Text.View().AsBytes().begin(), rewrite.Text.View().AsBytes().end());
+		step.Prior = EAssetOpPrior::Holds;
+		step.PriorHash = rewrite.Read;
 		ops.back().Steps.push_back(std::move(step));
 		Out.Rewritten.push_back(std::move(rewrite.Path));
 	}
