@@ -108,6 +108,12 @@ newoption
 
 newoption
 {
+	trigger     = "update-goldens",
+	description = "verify: write the registry's golden dumps again after a content change, show the diff, and run nothing else"
+}
+
+newoption
+{
 	trigger     = "record-baselines",
 	description = "verify: record the captures as the new baselines instead of comparing with them"
 }
@@ -1920,7 +1926,7 @@ newaction
 newaction
 {
 	trigger     = "verify",
-	description = "Check the engine before a merge (Tools/Verify/Verify.py): [--quick|--nightly] [--record-baselines]",
+	description = "Check the engine before a merge (Tools/Verify/Verify.py): [--quick|--nightly] [--record-baselines], or --update-goldens",
 	execute     = function ()
 		if _OPTIONS["project"] then
 			fail("verify: checks the engine and its templates; it takes no --project")
@@ -1928,9 +1934,12 @@ newaction
 		if _OPTIONS["quick"] and _OPTIONS["nightly"] then
 			fail("verify: --quick or --nightly, not both")
 		end
+		if _OPTIONS["update-goldens"] and (_OPTIONS["quick"] or _OPTIONS["nightly"] or _OPTIONS["record-baselines"]) then
+			fail("verify: --update-goldens runs nothing else; give it alone")
+		end
 		local interpreter = python() or fail("verify: needs Python 3 (the py launcher or python on PATH)")
 		local command = interpreter .. " -I " .. quoted(rootpath("Tools/Verify/Verify.py"))
-		for _, switch in ipairs({ "quick", "nightly", "record-baselines" }) do
+		for _, switch in ipairs({ "quick", "nightly", "record-baselines", "update-goldens" }) do
 			if _OPTIONS[switch] then
 				command = command .. " --" .. switch
 			end
