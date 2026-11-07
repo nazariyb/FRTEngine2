@@ -25,10 +25,10 @@
  * text. A step this engine does not know (the file of a newer engine) is kept as it is when the file is written again.
  *
  * Here: the step table, the file's reading and writing, which required steps a root lacks, and the gate's switch.
- * `migrate` runs the steps (MetaVerbs.h: MigrateMetas); `validate` reports a root that lacks one as MIG001 (Validation.h).
- * The gate itself is the hosts' (FindMigrationGap, IsMigrationGateOn): CEngine opens a project behind read-only and logs
- * MIG001, the editor alone asks in a dialog (never in a scripted run), the project manager offers the migration, and
- * AssetTool refuses a writing run of every verb but `migrate` with exit code 1.
+ * `migrate` runs the steps (MetaVerbs.h: MigrateMetas); `validate` reports a root that lacks one as MIG001
+ * (Validation.h). The gate itself is the hosts' (FindMigrationGap, IsMigrationGateOn): CEngine opens a project behind
+ * read-only and logs MIG001, the editor alone asks in a dialog (never in a scripted run), the project manager offers
+ * the migration, and AssetTool refuses a writing run of every verb but `migrate` with exit code 1.
  */
 namespace frt::config
 {
@@ -98,10 +98,10 @@ struct SMigrationsFile
 	bool bEngine);
 
 /**
- * The MIG001 gate's switch, [Assets] MigrationGate, MigrationGateDefault when no layer sets it. Off until H4b: the engine
- * and both templates have no Schemas/Migrations.yml before then, so every one of them would open read-only. H4b commits
- * each repository's file and then turns MigrationGateDefault on; -Assets:MigrationGate=1 turns the gate on for one run (the
- * tests of AssetTool's gate), =0 off. Only the hosts read it: `validate` reports MIG001 either way.
+ * The MIG001 gate's switch, [Assets] MigrationGate, MigrationGateDefault when no layer sets it. Off until H4b: the
+ * engine and both templates have no Schemas/Migrations.yml before then, so every one of them would open read-only.
+ * H4b commits each repository's file and then turns MigrationGateDefault on; -Assets:MigrationGate=1 turns the gate on
+ * for one run (the tests of AssetTool's gate), =0 off. Only the hosts read it: `validate` reports MIG001 either way.
  */
 inline constexpr bool MigrationGateDefault = false;
 [[nodiscard]] FRT_CORE_API bool IsMigrationGateOn (const config::CConfig& Config);

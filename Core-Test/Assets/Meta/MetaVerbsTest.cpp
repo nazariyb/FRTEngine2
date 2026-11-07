@@ -402,9 +402,9 @@ TEST(MetaVerbs, MigrationsYmlIsCanonicalSortedMergeableAndKeepsStepsItDoesNotKno
 	EXPECT_FALSE(FindMigrationStep("material-refs")->bAvailable);
 }
 
-// The hosts' gate (CEngine, AssetTool, the project manager): a root behind is one MIG001 naming its steps and the command,
-// the engine's with --engine; a malformed file is behind too, at its line; an up-to-date root is none. The switch is off
-// by default until H4b, and [Assets] MigrationGate turns it on or off for a run.
+// The hosts' gate (CEngine, AssetTool, the project manager): a root behind is one MIG001 naming its steps and the
+// command, the engine's with --engine; a malformed file is behind too, at its line; an up-to-date root is none. The
+// switch is off by default until H4b, and [Assets] MigrationGate turns it on or off for a run.
 TEST(MetaVerbs, TheMigrationGateFindsARootBehindAndIsOffUntilTheSwitchSaysSo)
 {
 	CVerbTree tree("Ворота");

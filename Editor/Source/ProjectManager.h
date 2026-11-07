@@ -26,7 +26,7 @@ struct SProjectManagerRequest
 	FString Message;                 // shown at the top
 	bool bOpenNow = false;           // open it right away: it belongs to another engine's editor
 	bool bOfferBuild = false;        // its game would not load: offer to build it and try again
-	bool bOfferMigrate = false;      // its content is behind this engine (MIG001): offer FRT.bat assets migrate --all, then open it
+	bool bOfferMigrate = false;      // its content is behind this engine (MIG001): offer to migrate it, then open it
 };
 
 /**

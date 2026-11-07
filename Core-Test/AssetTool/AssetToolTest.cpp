@@ -1340,10 +1340,10 @@ TEST_F(AssetToolRegistryTest, TheMetaVerbsCreateValidateRestoreAndExplainMetasTh
 	EXPECT_TRUE(stoneMeta.Contains("Guid: " + JsonText(lines[0], "meta.guid") + "\n")) << explained.Output.CStr();
 }
 
-// The MIG001 gate (design §14.8), on for these runs with -Assets:MigrationGate=1 (it is off until H4b): in a project behind
-// the engine every run that would write ends with exit code 1 and MIG001 before it takes the lock, validate --fix as well
-// (its WriteOption), and writes nothing; a run that writes nothing goes on and reports MIG001 as an error (scan --ci); migrate
-// runs and brings the project up to date, and then the same scan writes. Five launches.
+// The MIG001 gate (design §14.8), on for these runs with -Assets:MigrationGate=1 (it is off until H4b): in a project
+// behind the engine every run that would write ends with exit code 1 and MIG001 before it takes the lock, validate
+// --fix as well (its WriteOption), and writes nothing; a run that writes nothing goes on and reports MIG001 as an
+// error (scan --ci); migrate runs and brings the project up to date, and then the same scan writes. Five launches.
 TEST_F(AssetToolRegistryTest, AProjectBehindTheEngineIsWrittenOnlyByItsMigrationWhileTheGateIsOn)
 {
 	const FString gate = "-Assets:MigrationGate=1";

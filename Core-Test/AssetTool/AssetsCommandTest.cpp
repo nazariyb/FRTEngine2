@@ -109,8 +109,13 @@ TEST_F(AssetsCommandTest, PremakesHelpAndVersionNeverTakeTheRunOver)
 TEST_F(AssetsCommandTest, NewKeepsEverySourceAndItsMetaAPairThroughTheTemplateRename)
 {
 	const std::filesystem::path previousUserData = platform::GetEnvironmentPath("FRT_USER_DATA_DIR");
-	ASSERT_TRUE(platform::SetEnvironmentPath("FRT_USER_DATA_DIR", Dir / "User"));   // the engine it registers, the recent project
-	struct SRestore { std::filesystem::path Saved; ~SRestore () { platform::SetEnvironmentPath("FRT_USER_DATA_DIR", Saved); } } restore { previousUserData };
+	// The engine it registers and the recent project it adds go to a scratch user directory, put back at the end.
+	ASSERT_TRUE(platform::SetEnvironmentPath("FRT_USER_DATA_DIR", Dir / "User"));
+	struct SRestore
+	{
+		std::filesystem::path Saved;
+		~SRestore () { platform::SetEnvironmentPath("FRT_USER_DATA_DIR", Saved); }
+	} restore { previousUserData };
 
 	Write(Engine / "Engine.frtengine", "[Engine]\nName=FrtNewTestEngine\n");
 	std::error_code ec;
