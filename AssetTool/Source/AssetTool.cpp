@@ -24,6 +24,11 @@
  * by request, as does a verb's own read-only option (SCommandlet::ReadOnlyOption: migrate --dry-run): it
  * never takes the lock, and so runs beside an open editor.
  *
+ * A root behind the engine's content migrations (MIG001: its Schemas/Migrations.yml lacks a step, design §14.8) is
+ * written only by migrate: every other run that would write exits with code 1 before it takes the lock, a run that
+ * writes nothing runs and reports MIG001 (scan, status, validate). The gate is [Assets] MigrationGate
+ * (assets::IsMigrationGateOn), off until H4b commits each repository's Schemas/Migrations.yml.
+ *
  * Output: human text, or with --json one JSON object per line on stdout (stable field names); errors
  * and warnings on stderr in either mode. Exit codes: Commandlet.h (0 success, 1 problems, 2 usage,
  * 3 internal error or crash, 4 owned by another process).
@@ -40,6 +45,7 @@
 #include "Precision.h"
 #include "Assets/Discovery/BuiltinExcludes.h"
 #include "Assets/Meta/AssetRepairs.h"
+#include "Assets/Meta/Migrations.h"
 #include "Assets/MountPaths.h"
 #include "Assets/OwnerLock.h"
 #include "Engine/Engine.h"
@@ -211,6 +217,23 @@ int32 RunAssetTool ()
 		? paths::GetEngineConfigPath().parent_path() / assets::RuleFileName.ToPath()
 		: context.ProjectRoot / "Config" / assets::RuleFileName.ToPath();
 	(void)assets::ApplySafetyOfRuleFile(rulesFile);
+
+	// The MIG001 gate (design §14.8; assets::IsMigrationGateOn, off until H4b): a root behind the engine's migrations - the
+	// project's, the engine's with --engine - is written by nothing but its migration. A run that would write ends here,
+	// before the lock, with exit code 1; one that writes nothing (--ci, -Assets:ReadOnly=1, migrate --dry-run, validate
+	// without --fix) runs, and the verbs that report problems list MIG001 with them (CCommandletContext::MigrationGap).
+	if (!context.GetMountRoot().empty() && assets::IsMigrationGateOn(engine.GetConfig()))
+	{
+		context.MigrationGap = assets::FindMigrationGap(context.GetMountRoot(), context.GetMountName(), context.bEngineOwner);
+		const bool bWrites = commandlet->bWritesProject && !context.bReadOnly
+			&& (commandlet->WriteOption.IsEmpty() || context.HasOption(commandlet->WriteOption));
+		if (context.MigrationGap.has_value() && bWrites && !commandlet->bRunsBehind)
+		{
+			const SDiagnostic& gap = *context.MigrationGap;
+			return context.Fail(ExitProblems, FString::Format("{}: MIG001 {}; {} writes nothing until then", commandlet->Name, gap.Message,
+				commandlet->Name), CJsonObject().AddString("code", "MIG001").AddString("subject", gap.Subject).AddString("file", gap.File));
+		}
+	}
 
 	// Held until the commandlet returns; the OS lets go of it if the process dies first. The decision is the one the
 	// editor makes (assets::ClaimAssetOwnership), for the run's own mount set only: never /Project and /Engine together.

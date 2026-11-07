@@ -123,6 +123,11 @@ public:
 	// Why StartUp returned false, as a host shows it to a person (a second writer of the project: who owns it, and the
 	// ways on); empty for a failure already reported where it happened.
 	const FString& GetStartUpError () const { return StartUpError; }
+	// The MIG001 of the opened project when StartUp found it behind the engine's content migrations (design §14.8,
+	// assets::FindMigrationGap) while the gate is on (assets::IsMigrationGateOn; off until H4b): the project runs
+	// read-only, as with [Assets] ReadOnly=1, and the log says so. The interactive editor shows it in a dialog that
+	// offers the project manager's migration; scripted runs, headless hosts and the launcher only log it. Empty otherwise.
+	const FString& GetMigrationNotice () const { return MigrationNotice; }
 
 	// ---- frame ----
 	// Dispatches every pending OS message. False once the application should quit.
@@ -199,6 +204,7 @@ private:
 
 	SEngineDesc Desc;
 	FString StartUpError;
+	FString MigrationNotice;
 	bool bStarted = false;
 	bool bQuitRequested = false;
 	int ExitCode = 0;

@@ -502,33 +502,16 @@ private:
 		}
 		for (const SMount* mount : roots)
 		{
-			SMigrationsFile file;
-			SDiagnostic error;
-			FString message;
-			if (!ReadMigrations(mount->OwnerRoot, file, &error))
-			{
-				message = error.Message + ": run FRT.bat assets migrate --all after fixing it";
-			}
-			else if (const std::vector<FStringLiteral> missing = GetMissingMigrations(file); !missing.empty())
-			{
-				FString steps;
-				for (const FStringLiteral step : missing)
-				{
-					steps += steps.IsEmpty() ? "" : ", ";
-					steps += step;
-				}
-				message = FString::Format("{} is behind this engine: {} {} not list {} (run FRT.bat assets migrate --all{})",
-					mount->GetRootMountPath(), MigrationsFile, file.bExists ? "does" : "does not exist, so it does", steps,
-					mount->Kind == EMountKind::Engine ? " --engine" : "");
-			}
-			else
+			// The hosts' gate reads the same (Migrations.h), so `validate` and a refused run say one thing.
+			std::optional<SDiagnostic> gap = FindMigrationGap(mount->OwnerRoot, mount->GetRootMountPath(), mount->Kind == EMountKind::Engine);
+			if (!gap.has_value())
 			{
 				continue;
 			}
-			SDiagnostic& problem = Add(ESeverity::Error, Mig001, mount->GetRootMountPath(), std::move(message));
-			problem.File = FString(MigrationsFile);
-			problem.Line = error.Line;
-			problem.Column = error.Column;
+			SDiagnostic& problem = Add(gap->Severity, gap->Code, gap->Subject, std::move(gap->Message));
+			problem.File = std::move(gap->File);
+			problem.Line = gap->Line;
+			problem.Column = gap->Column;
 		}
 	}
 

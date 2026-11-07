@@ -10,6 +10,7 @@
 --              --hooks[=off] it only turns the pre-commit hook on or off for one clone
 --   new        creates a project from a template, sets up its git repository, generates its
 --              solution: FRT.bat new --name=MyGame [--template=Demo] [--layout=embedded] [--build]
+--              (--no-generate: no solution)
 --   generate   (re)generates the engine's solution, or the project's
 --   build      builds the engine, or the project's game and the hosts (generating first if
 --              there is no solution yet)
@@ -85,6 +86,12 @@ newoption
 {
 	trigger     = "build",
 	description = "new: build the project once it is created"
+}
+
+newoption
+{
+	trigger     = "no-generate",
+	description = "new: create the project and its repository, and generate no solution (FRT.bat generate does, later)"
 }
 
 newoption
@@ -397,6 +404,12 @@ local function lfExtensions()
 	return extensions
 end
 
+-- The template's name in a file's path becomes the project's, and so a source and its meta
+-- (X.png and X.png.meta, design §13.3) are renamed alike: the meta's name is its source's with
+-- ".meta", and the rename touches the part they share. A meta's bytes are copied as they are:
+-- ".meta" is no templated extension, so its GUID and paths are never rewritten (projects made
+-- from one template share asset GUIDs, which is fine: §13.3). Schemas/ comes along, so a new
+-- project has its template's Schemas/Migrations.yml and is not behind the engine (MIG001).
 local function copyTree(sourceDir, destinationDir, templateName, projectName)
 	local lf = lfExtensions()
 	for _, file in ipairs(os.matchfiles(path.join(sourceDir, "**"))) do
@@ -493,14 +506,26 @@ local function copyFile(source, destination)
 	end
 end
 
+-- What no package holds, whatever tree it is copied from: a source's .meta (design §3.2: the
+-- runtime loads by path and never reads one; ids reach a package through the cook, M12), in
+-- any case, as the asset system's built-in exclude matches it.
+local packageSkippedSuffixes = { ".meta" }
+
 -- Every file under SourceDir, to the same place under DestinationDir, except those whose path
--- relative to SourceDir starts with one of the prefixes in Skipped ({ "Bin/" }), when given.
-local function copyFiles(sourceDir, destinationDir, skipped)
+-- relative to SourceDir starts with one of the prefixes in Skipped ({ "Bin/" }), and those whose
+-- name ends in one of the suffixes in SkippedSuffixes ({ ".meta" }, in any case), when given.
+local function copyFiles(sourceDir, destinationDir, skipped, skippedSuffixes)
 	for _, file in ipairs(os.matchfiles(path.join(sourceDir, "**"))) do
 		local relative = path.getrelative(sourceDir, file)
 		local skip = false
 		for _, prefix in ipairs(skipped or {}) do
 			if relative:sub(1, #prefix) == prefix then
+				skip = true
+			end
+		end
+		local lower = relative:lower()
+		for _, suffix in ipairs(skippedSuffixes or {}) do
+			if #lower > #suffix and lower:sub(-#suffix) == suffix:lower() then
 				skip = true
 			end
 		end
@@ -1448,12 +1473,16 @@ newaction
 newaction
 {
 	trigger     = "new",
-	description = "Create a project from a template: FRT.bat new --name=<Name> [--template --location --layout --build]",
+	description = "Create a project from a template: FRT.bat new --name=<Name> [--template --location --layout --build --no-generate]",
 	execute     = function ()
 		local name = _OPTIONS["name"] or fail("new: name the project with --name=<Name>")
 		local valid, why = isValidProjectName(name)
 		if not valid then
 			fail("new: " .. why)
+		end
+
+		if _OPTIONS["no-generate"] and _OPTIONS["build"] then
+			fail("new: --build needs the solution that --no-generate leaves out: give one of them")
 		end
 
 		local templateName = _OPTIONS["template"] or "Blank"
@@ -1566,7 +1595,9 @@ newaction
 
 		-- Generated and built by the project's engine: for an embedded one, the submodule.
 		local project = loadProject(projectFile)
-		if layout == "embedded" then
+		if _OPTIONS["no-generate"] then
+			print("No solution generated (--no-generate): FRT.bat generate --project=" .. quoted(winpath(projectFile)) .. " makes it.")
+		elseif layout == "embedded" then
 			local tool = quoted(path.join(projectDir, "Engine/FRT.bat"))
 			local arguments = " --project=" .. quoted(projectFile) .. " " .. generationOptions(true)
 			if not runCommand(tool .. " generate" .. arguments) then
@@ -1658,13 +1689,15 @@ newaction
 		copyFile(path.join(binaries, "dxil.dll"), path.join(dir, "dxil.dll"))
 		copyFiles(path.join(binaries, "D3D12"), path.join(dir, "D3D12"))
 
-		copyFiles(path.join(project.Dir, "Content"), path.join(dir, "Content"))
-		copyFiles(path.join(project.Dir, "Config"), path.join(dir, "Config"))
+		-- No meta goes into a package (packageSkippedSuffixes), and nothing of the project's Local/: only
+		-- these trees are copied.
+		copyFiles(path.join(project.Dir, "Content"), path.join(dir, "Content"), nil, packageSkippedSuffixes)
+		copyFiles(path.join(project.Dir, "Config"), path.join(dir, "Config"), nil, packageSkippedSuffixes)
 
 		-- The shader sources, which Release compiles at start-up until the cook ships DXIL (M12); not the
-		-- stale Bin/ an old build left there, which nothing reads.
-		copyFiles(rootpath("Core/Content/Shaders"), path.join(dir, "Engine/Content/Shaders"), { "Bin/" })
-		copyFiles(rootpath("Core/Content/Fonts"), path.join(dir, "Engine/Content/Fonts"))
+		-- stale Bin/ an old build left there, which nothing reads. The fonts are Raw assets with metas.
+		copyFiles(rootpath("Core/Content/Shaders"), path.join(dir, "Engine/Content/Shaders"), { "Bin/" }, packageSkippedSuffixes)
+		copyFiles(rootpath("Core/Content/Fonts"), path.join(dir, "Engine/Content/Fonts"), nil, packageSkippedSuffixes)
 		copyFile(rootpath("Core/Config/Engine.ini"), path.join(dir, "Engine/Config/Engine.ini"))
 
 		print("")

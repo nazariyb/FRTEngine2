@@ -125,6 +125,21 @@ SProblemCounts CountProblems (const assets::CRegistryView& View)
 	return counts;
 }
 
+// The run's root behind the engine's migrations (CCommandletContext::MigrationGap: the gate is on, and the host let this
+// run go on because it writes nothing): one error-severity problem beside the registry's, so the exit code says it.
+void ReportMigrationGap (const CCommandletContext& Context, SProblemCounts& Counts)
+{
+	if (!Context.MigrationGap.has_value())
+	{
+		return;
+	}
+	const SDiagnostic& gap = *Context.MigrationGap;
+	++Counts.Errors;
+	Context.Print(FString::Format("  MIG001   error    {} ({}): {}", gap.Subject, gap.File, gap.Message));
+	Context.PrintJson(CJsonObject().AddString("kind", "problem").AddString("code", "MIG001").AddString("severity", "error")
+		.AddString("subject", gap.Subject).AddString("file", gap.File).AddString("message", gap.Message));
+}
+
 // A record's mount path ("#label" for a sub-entry), "" for an invalid one.
 FString PathOf (const assets::CRegistryView& View, assets::SRecordId Record)
 {
@@ -305,7 +320,8 @@ int32 RunScan (CCommandletContext& Context)
 	const assets::CRegistryView& view = run.View();
 	const assets::SInitialScanReport& report = registry.GetInitialScanReport();
 	const assets::SAssetRegistryCounters& counters = registry.GetCounters();
-	const SProblemCounts problems = CountProblems(view);
+	SProblemCounts problems = CountProblems(view);
+	ReportMigrationGap(Context, problems);
 	const FString snapshot = FString::FromPath(registry.GetSnapshotPath());
 
 	Context.Print(FString::Format("Scanned {}: {} file(s), {} record(s), {} sub-entr{}, {} folder(s) in {:.1f} ms", DescribeMounts(*run.Mounts),
@@ -398,6 +414,7 @@ int32 RunStatus (CCommandletContext& Context)
 		case ESeverity::Info: ++counts.Infos; break;
 		}
 	});
+	ReportMigrationGap(Context, counts);
 	Context.Print(byCode.empty() ? FString("Problems: none") : FString("Problems by code, severity and source:"));
 	for (const auto& [key, count] : byCode)
 	{

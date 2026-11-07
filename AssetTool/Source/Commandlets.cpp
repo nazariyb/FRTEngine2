@@ -38,7 +38,7 @@ constexpr SCommandlet Commandlets[] =
 	{ "newguid", &RunNewGuid, "newguid [n]: n fresh GUIDs (default 1) for builder versions and built-in assets, each as meta "
 		"text and as a C++ initializer", false },
 	{ "lock", &RunLock, "lock: takes the writer lock of the project (with --engine, of /Engine) and holds it until Enter or "
-		"the end of input, so no other process that writes the mount can run meanwhile", true, {}, false, false },
+		"the end of input, so no other process that writes the mount can run meanwhile", true, {}, false, false, {}, {}, true },
 	// The DDC is shared by every process on the machine and safe without locks (§7.4): no writer lock.
 	{ "ddc", &RunDdc, "ddc stats|gc [--max-gb=<n>]|verify [--ddc=<dir>]: the derived-data cache (default: FRT_DDC_DIR, "
 		"[DerivedDataCache] Path, the user's own): stats counts its files and bytes; gc trims its content to n GiB "
@@ -66,11 +66,13 @@ constexpr SCommandlet Commandlets[] =
 	{ "dump", &RunDump, "dump registry [--text|--json] [--mount=<name>,...]: the registry's deterministic dump, of every mount or of the "
 		"ones named (the golden files)", false, DumpOptions },
 	// The meta verbs (M4; MetaCommandlets.cpp), each with a lifecycle of its own over the run's mounts (/Project and its plugins,
-	// or /Engine with --engine). They take the writer lock unless read-only; only validate runs as a read-only guest.
+	// or /Engine with --engine). They take the writer lock unless read-only; only validate runs as a read-only guest. In a
+	// root behind the engine's migrations (MIG001, while the gate is on) migrate alone writes: every other run that writes,
+	// validate --fix included (its WriteOption), exits with 1 (AssetTool.cpp).
 	{ "validate", &RunValidate, "validate [paths] [--staged] [--quick] [--fix] [--ci]: the rules of design §13.4 over the mounts (the registry's "
 		"problems, the lifecycle's META and VCS codes, non-canonical metas, metas of excluded files, CRLF in FRT text, VCS003, MIG001); "
 		"--staged only what the VCS has staged, --quick hashes nothing, --fix applies the safe repairs first (as fix); exit 1 on an error, "
-		"with --ci also on a warning", true, ValidateOptions },
+		"with --ci also on a warning", true, ValidateOptions, false, true, {}, "fix" },
 	{ "fix", &RunFix, "fix [paths]: validate --fix: creates missing metas, restores verified copies, fixes a meta's case and re-GUIDs "
 		"duplicates (with Safety.AutoResolveDuplicates), then prints what remains; never relinks, aliases or rewrites a meta by hand",
 		true, {}, false, false },
@@ -78,7 +80,7 @@ constexpr SCommandlet Commandlets[] =
 		"Safety.AutoRepairMetas); a file that has a meta is an error, and then nothing is written", true, {}, false, false },
 	{ "migrate", &RunMigrate, "migrate <step>|--all [--dry-run]: content migrations (design §14.8), each recorded in Schemas/Migrations.yml; "
 		"M4 has metas: a meta for every included file without one, with reproducible GUIDs; --dry-run writes nothing and takes no lock",
-		true, MigrateOptions, false, false, "dry-run" },
+		true, MigrateOptions, false, false, "dry-run", {}, true },
 	{ "resave", &RunResave, "resave --metas: rewrites every meta that is not canonical (META005), as its own commit; --references, "
 		"--redirected, --type and --drop-unknown arrive with M5", true, ResaveOptions, false, false },
 };

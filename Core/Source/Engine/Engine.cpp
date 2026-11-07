@@ -17,6 +17,7 @@
 #include "Assets/Discovery/Mounts.h"
 #include "Assets/FileWatcherService.h"
 #include "Assets/Meta/AssetRepairs.h"
+#include "Assets/Meta/Migrations.h"
 #include "Assets/MountPaths.h"
 #include "Assets/OwnerLock.h"
 #include "ECS/CoreComponents.h"
@@ -182,6 +183,29 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 			Config.Get("Assets", "EngineWritable", false)), registry.Lifecycle))
 		{
 			request.EngineRoot = engine->OwnerRoot;
+		}
+		// The MIG001 gate (design §14.8; assets::IsMigrationGateOn, off until H4b): a project behind the engine's content
+		// migrations opens read-only, as with [Assets] ReadOnly=1 - no meta, snapshot or Content/ write - until `FRT.bat
+		// assets migrate --all` brings it up to date. Every host logs it; the editor alone asks, in a dialog that offers the
+		// project manager's migration (GetMigrationNotice, EditorMain.cpp), and never in a scripted run. An engine behind
+		// keeps engine-owner mode from writing /Engine (`migrate --all --engine` is its migration).
+		if (assets::IsMigrationGateOn(Config))
+		{
+			if (const std::optional<SDiagnostic> gap = assets::FindMigrationGap(request.Root, "/Project", false))
+			{
+				MigrationNotice = gap->Message;
+				log::Error(log::Assets, "MIG001 {}: this {} opens it read-only", gap->Message, Desc.bAssetWriter ? "editor" : "host");
+				Config.SetOverride("Assets", "ReadOnly", "1");
+				request.bReadOnly = true;
+			}
+			else if (!request.EngineRoot.empty())
+			{
+				if (const std::optional<SDiagnostic> engineGap = assets::FindMigrationGap(request.EngineRoot, "/Engine", true))
+				{
+					log::Warning(log::Assets, "MIG001 {}: /Engine stays read-only for this editor", engineGap->Message);
+					request.EngineRoot.clear();
+				}
+			}
 		}
 		// The lock alone: an unfinished operation is rolled forward by the registry's lifecycle when it starts, and until
 		// H4b gives the hosts a lifecycle and its providers nothing finishes it, so it is reported below whatever the role.

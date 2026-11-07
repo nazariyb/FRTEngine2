@@ -6,7 +6,8 @@
 // writes, and only under the lock; their answers, exit codes and positioned query errors), the
 // writer lock of /Project and, with --engine, of /Engine: a read-only run never takes it, a second writer runs as a
 // read-only guest only when the project's Safety.GuestProcesses says so, and AssetTool's
-// own lock verb keeps every other writer out until its input ends. A verb that writes nothing runs beside a
+// own lock verb keeps every other writer out until its input ends. While the MIG001 gate is on, a project behind the
+// engine's migrations is written by nothing but migrate. A verb that writes nothing runs beside a
 // working directory's project it cannot use. The ddc verbs (§7.4, §13.2) count, trim and check the store
 // FRT_DDC_DIR or --ddc names, never create one, keep what every BuildState log of the machine names (the
 // project's, the engine's, the recent projects') without writing any of them, and with --ci trim nothing.
@@ -1337,6 +1338,52 @@ TEST_F(AssetToolRegistryTest, TheMetaVerbsCreateValidateRestoreAndExplainMetasTh
 	EXPECT_EQ(JsonText(lines[0], "meta.file"), "Content/Textures/Камінь.png.meta");
 	EXPECT_EQ(JsonText(lines[0], "meta.state"), "Paired");
 	EXPECT_TRUE(stoneMeta.Contains("Guid: " + JsonText(lines[0], "meta.guid") + "\n")) << explained.Output.CStr();
+}
+
+// The MIG001 gate (design §14.8), on for these runs with -Assets:MigrationGate=1 (it is off until H4b): in a project behind
+// the engine every run that would write ends with exit code 1 and MIG001 before it takes the lock, validate --fix as well
+// (its WriteOption), and writes nothing; a run that writes nothing goes on and reports MIG001 as an error (scan --ci); migrate
+// runs and brings the project up to date, and then the same scan writes. Five launches.
+TEST_F(AssetToolRegistryTest, AProjectBehindTheEngineIsWrittenOnlyByItsMigrationWhileTheGateIsOn)
+{
+	const FString gate = "-Assets:MigrationGate=1";
+	const std::filesystem::path stone = ProjectDir / FStringView("Content/Textures/Камінь.png.meta").ToPath();
+	const auto problems = [] (FStringView Output, FStringView Code)
+	{
+		uint32 found = 0u;
+		for (const reflect::CDataTree& line : ParseJsonLines(Output))
+		{
+			found += JsonText(line, "kind") == "problem" && JsonText(line, "code") == Code ? 1u : 0u;
+		}
+		return found;
+	};
+
+	const test::SProcessResult refused = RunOnProject({ "scan", gate, "--json" });
+	EXPECT_EQ(refused.ExitCode, 1) << refused.Output.CStr() << refused.Errors.CStr();
+	EXPECT_TRUE(refused.Output.Contains("\"exitCode\":1,\"code\":\"MIG001\",\"subject\":\"/Project\"")) << refused.Output.CStr();
+	EXPECT_TRUE(refused.Errors.Contains("scan: MIG001 /Project is behind this engine")) << refused.Errors.CStr();
+	EXPECT_TRUE(refused.Errors.Contains("migrate --all")) << refused.Errors.CStr();
+	EXPECT_FALSE(WroteLocalAssets()) << "refused before the lock";
+
+	const test::SProcessResult fix = RunOnProject({ "validate", "--fix", gate });
+	EXPECT_EQ(fix.ExitCode, 1) << fix.Output.CStr() << fix.Errors.CStr();
+	EXPECT_TRUE(fix.Errors.Contains("validate: MIG001")) << fix.Errors.CStr();
+	EXPECT_FALSE(std::filesystem::exists(stone)) << "--fix writes, so it is refused";
+
+	const test::SProcessResult readOnly = RunOnProject({ "scan", "--ci", gate, "--json" });
+	EXPECT_EQ(readOnly.ExitCode, 1) << readOnly.Output.CStr() << readOnly.Errors.CStr();
+	EXPECT_EQ(problems(readOnly.Output, "MIG001"), 1u) << readOnly.Output.CStr();
+	EXPECT_FALSE(WroteLocalAssets()) << "a read-only scan writes nothing";
+
+	const test::SProcessResult migrated = RunOnProject({ "migrate", "--all", gate });
+	ASSERT_EQ(migrated.ExitCode, 0) << migrated.Output.CStr() << migrated.Errors.CStr();
+	EXPECT_TRUE(std::filesystem::exists(stone));
+	EXPECT_TRUE(std::filesystem::exists(ProjectDir / "Schemas" / "Migrations.yml"));
+
+	const test::SProcessResult scanned = RunOnProject({ "scan", gate, "--json" });
+	EXPECT_EQ(scanned.ExitCode, 0) << scanned.Output.CStr() << scanned.Errors.CStr();
+	EXPECT_EQ(problems(scanned.Output, "MIG001"), 0u) << scanned.Output.CStr();
+	EXPECT_TRUE(std::filesystem::exists(assets::GetRegistrySnapshotPath(ProjectDir)));
 }
 
 // scan --engine is the engine's owner: it writes Engine.snapshot under its own engine checkout, never a project's.

@@ -1210,6 +1210,11 @@ class Gate:
             raise StepFailed('; '.join(errors) if errors else f'exit code {code}')
         if not list(output.glob('*.exe')):
             raise StepFailed(f'no executable in {output}')
+        # Metas never ship (design §3.2; FRT.bat package skips them), nor anything of a Local/ directory.
+        stray = sorted(str(p.relative_to(output)) for p in output.rglob('*')
+                       if (p.is_file() and p.name.lower().endswith('.meta')) or (p.is_dir() and p.name == 'Local'))
+        if stray:
+            raise StepFailed(f'{len(stray)} meta(s) or Local/ in the package, e.g. {stray[0]}')
         return str(output)
 
     # ---- git ----

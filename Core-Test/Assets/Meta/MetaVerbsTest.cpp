@@ -6,7 +6,9 @@
 // and never a relink; `new-meta` creates the derived meta and refuses a file that has one or takes none, writing nothing
 // then; `migrate metas` is reproducible (two trees, the same bytes), skips existing metas, records itself in
 // Schemas/Migrations.yml only once no file is left without one, and its dry run writes nothing; the Migrations.yml format
-// is canonical, sorted and keeps steps it does not know; `resave --metas` rewrites only the metas that are not canonical.
+// is canonical, sorted and keeps steps it does not know; the hosts' gate (FindMigrationGap) says what `validate`'s MIG001
+// says, and stays off until H4b unless [Assets] MigrationGate turns it on; `resave --metas` rewrites only the metas that
+// are not canonical.
 // Every crash point of `migrate metas`, `fix` and `resave --metas` is rolled forward in-process, and `migrate metas` and
 // `fix` each have one real killed child (edit [37]: the last two of M4's six). Trees hold at most eight files.
 #include <gtest/gtest.h>
@@ -40,6 +42,7 @@
 #include "Assets/Meta/Validation.h"
 #include "Assets/MountPaths.h"
 #include "Assets/Registry/RegistryRecords.h"
+#include "Config/Config.h"
 #include "Hash/StableHash.h"
 #include "Jobs/WorkerPool.h"
 #include "Platform/FileSystem.h"
@@ -397,6 +400,48 @@ TEST(MetaVerbs, MigrationsYmlIsCanonicalSortedMergeableAndKeepsStepsItDoesNotKno
 	EXPECT_EQ(broken.File, "Schemas/Migrations.yml");
 	EXPECT_EQ(FindMigrationStep("METAS"), &GetMigrationSteps()[0]);
 	EXPECT_FALSE(FindMigrationStep("material-refs")->bAvailable);
+}
+
+// The hosts' gate (CEngine, AssetTool, the project manager): a root behind is one MIG001 naming its steps and the command,
+// the engine's with --engine; a malformed file is behind too, at its line; an up-to-date root is none. The switch is off
+// by default until H4b, and [Assets] MigrationGate turns it on or off for a run.
+TEST(MetaVerbs, TheMigrationGateFindsARootBehindAndIsOffUntilTheSwitchSaysSo)
+{
+	CVerbTree tree("Ворота");
+	const std::filesystem::path root = tree.Tree.ProjectDir();
+	const std::optional<SDiagnostic> missing = FindMigrationGap(root, "/Project", false);
+	ASSERT_TRUE(missing.has_value());
+	EXPECT_EQ(missing->Code, Mig001);
+	EXPECT_EQ(missing->Severity, ESeverity::Error);
+	EXPECT_EQ(missing->Subject, "/Project");
+	EXPECT_EQ(missing->File, "Schemas/Migrations.yml");
+	EXPECT_EQ(missing->Message, "/Project is behind this engine: Schemas/Migrations.yml does not exist, so it does not list metas "
+		"(run FRT.bat assets migrate --all)");
+	const std::optional<SDiagnostic> engine = FindMigrationGap(root, "/Engine", true);
+	ASSERT_TRUE(engine.has_value());
+	EXPECT_TRUE(engine->Message.EndsWith("(run FRT.bat assets migrate --all --engine)")) << engine->Message.CStr();
+
+	ASSERT_TRUE(platform::WriteFileAtomic(GetMigrationsPath(root), FStringView("FormatVersion: 1\nApplied: [ texture-colorspaces ]\n")));
+	const std::optional<SDiagnostic> lacking = FindMigrationGap(root, "/Project", false);
+	ASSERT_TRUE(lacking.has_value());
+	EXPECT_TRUE(lacking->Message.Contains("Schemas/Migrations.yml does not list metas")) << lacking->Message.CStr();
+
+	ASSERT_TRUE(platform::WriteFileAtomic(GetMigrationsPath(root), FStringView("FormatVersion: 1\nApplied:\n  - { metas: 1 }\n")));
+	const std::optional<SDiagnostic> malformed = FindMigrationGap(root, "/Project", false);
+	ASSERT_TRUE(malformed.has_value());
+	EXPECT_EQ(malformed->Line, 3u);
+	EXPECT_TRUE(malformed->Message.EndsWith(": run FRT.bat assets migrate --all after fixing it")) << malformed->Message.CStr();
+
+	ASSERT_TRUE(platform::WriteFileAtomic(GetMigrationsPath(root), FStringView(MigrationsWithMetas)));
+	EXPECT_FALSE(FindMigrationGap(root, "/Project", false).has_value());
+
+	config::CConfig config;
+	EXPECT_FALSE(MigrationGateDefault) << "off until H4b commits each repository's Schemas/Migrations.yml";
+	EXPECT_EQ(IsMigrationGateOn(config), MigrationGateDefault);
+	config.SetOverride("Assets", "MigrationGate", "1");
+	EXPECT_TRUE(IsMigrationGateOn(config));
+	config.SetOverride("Assets", "MigrationGate", "0");
+	EXPECT_FALSE(IsMigrationGateOn(config));
 }
 
 // ---------------- migrate metas ----------------

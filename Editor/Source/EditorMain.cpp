@@ -10,8 +10,10 @@
 
 #include "EnginePaths.h"
 #include "Exception.h"
+#include "Engine/Automation.h"
 #include "Engine/Engine.h"
 #include "Engine/GameModule.h"
+#include "Containers/WideString.h"
 #include "Platform/Platform.h"
 #include "Project/Project.h"
 #include "Project/UserRegistry.h"
@@ -24,6 +26,17 @@ namespace frt::editor
 {
 namespace
 {
+// The MIG001 dialog (design §14.8): the project's content is behind this engine's migrations, so CEngine opened it
+// read-only. A person decides: the project manager's Migrate and Open, or the project read-only as it is. Blocking, and
+// only in an interactive editor: a scripted run (a smoke test, a capture) never asks, CEngine has logged it.
+bool AskToMigrate (FStringView Title, FStringView ProjectName, FStringView Notice)
+{
+	const FString text = FString::Format("{}'s content is behind this engine (MIG001):\n\n{}\n\nIt opens read-only: nothing writes "
+		"its metas, registry files or Content/ until it is migrated.\n\nYes: migrate it now in the project manager "
+		"(FRT.bat assets migrate --all), then open it.\nNo: open it read-only.", ProjectName, Notice);
+	return MessageBoxW(nullptr, ToWide(text).CStr(), ToWide(Title).CStr(), MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON1 | MB_SETFOREGROUND) == IDYES;
+}
+
 int RunEditorFor (CEngine& Engine, CGameModule& Module)
 {
 	// Destroyed before the module unloads: the edited world holds code from it. The editor
@@ -122,7 +135,15 @@ int RunEditor ()
 
 	int exitCode = 1;
 	bool bRunManager = !bOpenProject;
-	if (bOpenProject)
+	if (bOpenProject && !engine.GetMigrationNotice().IsEmpty() && !CAutomation::IsScriptedRun(engine.GetConfig())
+		&& AskToMigrate(desc.WindowTitle, gameProject.Name, engine.GetMigrationNotice()))
+	{
+		manager.Message = gameProject.Name + "'s content is behind this engine: " + engine.GetMigrationNotice();
+		manager.Project = gameProject.File;
+		manager.bOfferMigrate = true;
+		bRunManager = true;
+	}
+	else if (bOpenProject)
 	{
 		CGameModule module;
 		if (module.Load(CGameModule::GetConfiguredName(engine.GetConfig())))

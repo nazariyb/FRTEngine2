@@ -166,7 +166,7 @@ and `Registry`, whose severities are fixed in M3.
 | `VCS002` | the VCS refused a write (`CheckOut`, `Move` or `Delete` failed); the command wrote nothing | from M4: error | the command |
 | `VCS003` | an asset and its meta tracked differently ("generated locally: commit it") | from M4: warning | Lifecycle (a meta this process created), `validate` (every pair, one `StatusOf` per provider) |
 | `VCS004` | a Git LFS pointer file where a source is expected; never imported or hashed into a GUID | from M4: error | Lifecycle |
-| `MIG001` | a repository behind the engine: its `Schemas/Migrations.yml` is missing, malformed or lacks a step this engine requires | from M4: error | `validate` |
+| `MIG001` | a repository behind the engine: its `Schemas/Migrations.yml` is missing, malformed or lacks a step this engine requires | from M4: error | `validate`; the hosts' gate (`scan`, `status`, a refused AssetTool run, `CEngine`) |
 | `MIG002` | a leftover legacy pattern, such as `<stem>_mat<N>` beside a model without `SubAssets.Remap` | warning; nothing reports it in M4: its patterns go with the steps of M7 and M9a | `validate` |
 
 The engine and the templates are clean of PATH001-003, RULE001-002 and errors; the golden dumps assert it.
@@ -429,8 +429,21 @@ writes no meta.
     - metas
   ```
 
-  `validate` reports a root whose file lacks a required step as `MIG001`. The gate (a project behind opens read-only, its
-  dialog, the project manager's offer, AssetTool refusing other writes) is G4b's; real hosts open no lifecycle until H4b.
+  `validate` reports a root whose file lacks a required step as `MIG001`, and so do the hosts' gate below.
+- **The `MIG001` gate** (design §14.8; `FindMigrationGap`, `IsMigrationGateOn` in `Migrations.h`). A root behind the
+  engine (its file missing, malformed, or without a step this engine has) is written by nothing but its migration.
+  `CEngine::StartUp` opens a project behind read-only, as `[Assets] ReadOnly=1` does (no lock, no registry file, no meta),
+  logs `MIG001`, and keeps engine-owner mode out of an engine behind. Only the interactive editor asks, in a blocking
+  dialog: Yes opens the project manager with Migrate and Open (`FRT.bat assets migrate --all`, then the editor), No
+  opens the project read-only; a scripted run, a headless host and the launcher only log. The project manager marks
+  each project of this engine that is behind and offers Migrate and Open for it. AssetTool, for the run's own root
+  (the project's, the engine's with `--engine`): a run that would write ends before the lock with exit code 1 and
+  `MIG001` (`{"error":...,"exitCode":1,"code":"MIG001",...}` with `--json`); `migrate` runs, and so does `lock`, which
+  writes nothing; a run that writes nothing (`--ci`, `-Assets:ReadOnly=1`, `migrate --dry-run`, `validate` without
+  `--fix`) runs, and `scan` and `status` count `MIG001` as an error among their problems (exit 1). A project that
+  `FRT.bat new` makes has its template's `Schemas/Migrations.yml`, so it is not behind. The gate is `[Assets]
+  MigrationGate`, default `MigrationGateDefault`, which is **off until H4b** commits the engine's and both templates'
+  files and turns it on; `-Assets:MigrationGate=1` turns it on for one run (AssetTool's gate test does).
 - **`resave --metas`** rewrites in ops of at most 256 metas each, through the writer of the mount; a canonical meta is not
   touched or checked out.
 
@@ -699,6 +712,15 @@ folders only. Invalid patterns are reported, never guessed at.
 - Hashed text formats (`.meta`, `.yml`, `.frt`, `.csv`, `.ini`, shaders) are LF in every working tree, so content hashes
   are the same on every machine. `.gitattributes` says which; `FRT.bat setup` checks out again any file whose working
   copy has the wrong line endings, and `FRT.bat check-line-endings` only checks.
+- `FRT.bat new` copies a template with its metas: the template's name in a path becomes the project's, so `X.png` and
+  `X.png.meta` are renamed alike (a name that contains the template's name too), and a meta's bytes are copied as they
+  are but for LF (`.meta` is no templated extension: its GUID is never rewritten, so projects from one template share
+  asset GUIDs, design §13.3). `Schemas/` comes along. `--no-generate` makes the project and its repository and no
+  solution (`AssetsCommandTest` pins the pairs with it). `Cook.ContentId` is not written: that is M12's.
+- `FRT.bat package` ships no meta: every tree it copies (`Content`, `Config`, the engine's shaders and fonts) skips a
+  file whose name ends in `.meta`, in any case, and nothing of `Local/` is copied. The runtime loads by path and never
+  reads a meta; ids reach packages through the cook (M12). Verify's package step fails on a `.meta` or a `Local`
+  directory in a package.
 - `FRT.bat verify` is the merge gate: builds, Core-Test, lints, the registry verbs with `--json`, the registry's golden
   dumps, a check that this file names every `FRT.bat assets` verb and every diagnostic code, the editor's smoke tests
   (in place, read-only, with the registry and Assets panel check, and with file edits on a scratch copy), automation

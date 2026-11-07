@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -23,10 +24,17 @@
  * versions, so two people who migrate the same commit write the same bytes and two branches that each add a step merge as
  * text. A step this engine does not know (the file of a newer engine) is kept as it is when the file is written again.
  *
- * Here: the step table, the file's reading and writing, and which required steps a root lacks. `migrate` runs the steps
- * (MetaVerbs.h: MigrateMetas); `validate` reports a root that lacks one as MIG001 (Validation.h). The gate that makes a
- * project behind the engine open read-only, its dialog and the project manager's offer are hosts' (G4b).
+ * Here: the step table, the file's reading and writing, which required steps a root lacks, and the gate's switch.
+ * `migrate` runs the steps (MetaVerbs.h: MigrateMetas); `validate` reports a root that lacks one as MIG001 (Validation.h).
+ * The gate itself is the hosts' (FindMigrationGap, IsMigrationGateOn): CEngine opens a project behind read-only and logs
+ * MIG001, the editor alone asks in a dialog (never in a scripted run), the project manager offers the migration, and
+ * AssetTool refuses a writing run of every verb but `migrate` with exit code 1.
  */
+namespace frt::config
+{
+class CConfig;
+}
+
 namespace frt::assets
 {
 class IVcsProvider;
@@ -79,4 +87,22 @@ struct SMigrationsFile
  */
 [[nodiscard]] FRT_CORE_API bool RecordMigration (const std::filesystem::path& Root, FStringView Step, IVcsProvider* Provider,
 	FString* OutError = nullptr);
+
+/**
+ * Root behind this engine (§14.8): its file is missing, cannot be read, or lacks a step this engine requires. The MIG001
+ * the hosts and `validate` report, an error with Subject RootMountPath ("/Project", "/Engine"), File MigrationsFile (Line
+ * and Column where the file is malformed), and a message that names the steps and the command that brings it up to date
+ * (`FRT.bat assets migrate --all`, with --engine for bEngine). nullopt: Root is up to date.
+ */
+[[nodiscard]] FRT_CORE_API std::optional<SDiagnostic> FindMigrationGap (const std::filesystem::path& Root, FStringView RootMountPath,
+	bool bEngine);
+
+/**
+ * The MIG001 gate's switch, [Assets] MigrationGate, MigrationGateDefault when no layer sets it. Off until H4b: the engine
+ * and both templates have no Schemas/Migrations.yml before then, so every one of them would open read-only. H4b commits
+ * each repository's file and then turns MigrationGateDefault on; -Assets:MigrationGate=1 turns the gate on for one run (the
+ * tests of AssetTool's gate), =0 off. Only the hosts read it: `validate` reports MIG001 either way.
+ */
+inline constexpr bool MigrationGateDefault = false;
+[[nodiscard]] FRT_CORE_API bool IsMigrationGateOn (const config::CConfig& Config);
 }

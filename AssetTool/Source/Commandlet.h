@@ -7,6 +7,7 @@
 
 #include "CoreTypes.h"
 #include "Containers/String.h"
+#include "Diagnostics/Diagnostics.h"
 
 #include "Text/JsonWriter.h"
 
@@ -71,6 +72,10 @@ public:
 	bool bGuest = false;
 	// A guest's: the process that owns the mount, as SLockOwner::Describe names it ("Editor.exe, pid 1234").
 	FString Owner;
+	// The MIG001 of the run's root (the project's, the engine's with --engine) while the gate is on and that root is behind
+	// the engine's migrations (assets::FindMigrationGap): the host has refused a writing run already, so the verb sees it
+	// only in a run that writes nothing, or in migrate's; scan and status report it with the registry's problems.
+	std::optional<SDiagnostic> MigrationGap;
 
 	// The project's directory; empty with --engine, or when a verb that needs none runs without one.
 	std::filesystem::path ProjectRoot;
@@ -148,6 +153,14 @@ private:
  *                   ExitOwned (§5.9). False for lock, whose point is the lock itself.
  *   ReadOnlyOption  an option of its own that makes the run read-only by request, as --ci does: the host
  *                   then takes no lock and the verb sees bReadOnly (migrate's dry-run). Empty: none.
+ *   WriteOption     a bWritesProject verb that writes only with this option of its own (validate's fix):
+ *                   for the MIG001 gate, a run without it writes nothing. Empty: every run that is not
+ *                   read-only writes.
+ *   bRunsBehind     runs as usual where the run's root is behind the engine's migrations (MIG001, design
+ *                   §14.8): migrate, which brings it up to date, and lock, which writes nothing. Every other
+ *                   run that writes then ends with exit code 1 and MIG001 before the verb starts, while the
+ *                   gate is on (assets::IsMigrationGateOn); a run that does not write runs, and the verbs
+ *                   that report problems (scan, status, validate) report MIG001 among them.
  */
 struct SCommandlet
 {
@@ -159,6 +172,8 @@ struct SCommandlet
 	bool bTakesText = false;
 	bool bGuestRuns = true;
 	FStringLiteral ReadOnlyOption;
+	FStringLiteral WriteOption;
+	bool bRunsBehind = false;
 };
 
 // Verbs with a file of their own (their table rows, options included, are in Commandlets.cpp).

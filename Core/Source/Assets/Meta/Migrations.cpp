@@ -6,6 +6,7 @@
 
 #include "Assets/AssetDiagnosticCodes.h"
 #include "Assets/Vcs/VcsProvider.h"
+#include "Config/Config.h"
 #include "Platform/FileSystem.h"
 #include "Platform/Platform.h"
 #include "Reflect/CanonicalEmitter.h"
@@ -218,5 +219,46 @@ bool RecordMigration (const std::filesystem::path& Root, FStringView Step, IVcsP
 		return fail(FString::Format("cannot write {}: {}", unicode::ToDisplayText(FString::FromPath(path)), writeError));
 	}
 	return true;
+}
+
+std::optional<SDiagnostic> FindMigrationGap (const std::filesystem::path& Root, FStringView RootMountPath, bool bEngine)
+{
+	SMigrationsFile file;
+	SDiagnostic error;
+	FString message;
+	const FStringView command = bEngine ? FStringView("FRT.bat assets migrate --all --engine") : FStringView("FRT.bat assets migrate --all");
+	if (!ReadMigrations(Root, file, &error))
+	{
+		message = FString::Format("{}: run {} after fixing it", error.Message, command);
+	}
+	else if (const std::vector<FStringLiteral> missing = GetMissingMigrations(file); !missing.empty())
+	{
+		FString steps;
+		for (const FStringLiteral step : missing)
+		{
+			steps += steps.IsEmpty() ? "" : ", ";
+			steps += step;
+		}
+		message = FString::Format("{} is behind this engine: {} {} not list {} (run {})", RootMountPath, MigrationsFile,
+			file.bExists ? "does" : "does not exist, so it does", steps, command);
+	}
+	else
+	{
+		return std::nullopt;
+	}
+	SDiagnostic gap;
+	gap.Severity = ESeverity::Error;
+	gap.Code = Mig001;
+	gap.Subject = FString(RootMountPath);
+	gap.File = FString(MigrationsFile);
+	gap.Line = error.Line;
+	gap.Column = error.Column;
+	gap.Message = std::move(message);
+	return gap;
+}
+
+bool IsMigrationGateOn (const config::CConfig& Config)
+{
+	return Config.Get("Assets", "MigrationGate", MigrationGateDefault);
 }
 }
