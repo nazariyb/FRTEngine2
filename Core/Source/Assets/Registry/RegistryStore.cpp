@@ -787,14 +787,15 @@ private:
 		return ref != InvalidRow && W.CompanionRefs[ref].Count > 0u;
 	}
 
+	// A meta (EFileClass::Meta) is never a companion, whatever a record names.
 	EFileClass EffectiveClass (FStringView Path, EFileClass BaseClass, uint64 PortableHash) const
 	{
-		return IsNamedCompanion(Path, PortableHash) ? EFileClass::Companion : BaseClass;
+		return BaseClass != EFileClass::Meta && IsNamedCompanion(Path, PortableHash) ? EFileClass::Companion : BaseClass;
 	}
 
 	EFileClass EffectiveClass (FStringView Path, EFileClass BaseClass) const
 	{
-		return W.CompanionRefs.empty() ? BaseClass : EffectiveClass(Path, BaseClass, HashPortable(Path));
+		return W.CompanionRefs.empty() || BaseClass == EFileClass::Meta ? BaseClass : EffectiveClass(Path, BaseClass, HashPortable(Path));
 	}
 
 	// The FILES row of that exact spelling, created (with its folders) when missing. InvalidRow on a violation.
@@ -884,6 +885,7 @@ private:
 		W.FileSlot[row] = static_cast<uint32>(W.FolderFiles[Folder].size());
 		W.FolderFiles[Folder].push_back(row);
 		++T.LiveFiles;
+		T.LiveMetaFiles += File.Class == EFileClass::Meta ? 1u : 0u;
 		return row;
 	}
 
@@ -903,10 +905,17 @@ private:
 		{
 			files.ContentHash.SetIfChanged(row, *Upsert.ContentHash, Epoch);
 		}
-		files.MetaHash.SetIfChanged(row, Upsert.MetaHash, Epoch);
+		if (Upsert.Meta.has_value())
+		{
+			files.MetaHash.SetIfChanged(row, Upsert.Meta->Hash, Epoch);
+			files.MetaState.SetIfChanged(row, Upsert.Meta->State, Epoch);
+		}
+		if ((files.BaseClass[row] == EFileClass::Meta) != (Upsert.Class == EFileClass::Meta))
+		{
+			T.LiveMetaFiles = Upsert.Class == EFileClass::Meta ? T.LiveMetaFiles + 1u : T.LiveMetaFiles - 1u;
+		}
 		files.BaseClass.SetIfChanged(row, Upsert.Class, Epoch);
 		files.Class.SetIfChanged(row, EffectiveClass(Upsert.MountPath, Upsert.Class), Epoch);
-		files.MetaState.SetIfChanged(row, Upsert.MetaState, Epoch);
 	}
 
 	void RemoveFile (uint32 Row)
@@ -935,6 +944,7 @@ private:
 		siblings.pop_back();
 		files.Folder.Set(Row, InvalidRow, Epoch);
 		--T.LiveFiles;
+		T.LiveMetaFiles -= files.BaseClass[Row] == EFileClass::Meta ? 1u : 0u;
 		bFilesRemoved = true;
 		ClearProblems(path, (1u << SourceIndex(EProblemSource::Analyze)) | (1u << SourceIndex(EProblemSource::Registry)), false);
 	}
@@ -1365,8 +1375,13 @@ private:
 		assets.Name.SetIfChanged(row, T.Names.Intern(GetRecordStem(GetMountPathLeaf(path)), Epoch), Epoch);
 		assets.ChangedRevision.SetIfChanged(row, Revision, Epoch);
 
+		// Authored labels (the meta's) first, then the rule labels, each list in its producer's order.
 		std::vector<uint32> labels;
-		labels.reserve(Upsert.RuleLabels.size());
+		labels.reserve(Upsert.AuthoredLabels.size() + Upsert.RuleLabels.size());
+		for (const FString& label : Upsert.AuthoredLabels)
+		{
+			labels.push_back(T.Names.Intern(label, Epoch));
+		}
 		for (const FString& label : Upsert.RuleLabels)
 		{
 			labels.push_back(T.Names.Intern(label, Epoch) | RuleLabelBit);
@@ -1885,25 +1900,20 @@ private:
 		result.FilePartLength = 0u;
 		if (Current.Kind == ETargetKind::Guid)
 		{
-			uint32 matches = 0u;
-			uint32 first = InvalidRow;
+			// Two records with one GUID (a copy, until the lifecycle re-GUIDs it): the preferred one, never ambiguous.
+			uint32 preferred = InvalidRow;
 			T.Indices.RecordsByGuid.ForEach(HashGuid(Current.Guid), [&] (uint32 Row)
 			{
-				if (T.Assets.File[Row] != InvalidRow && T.Assets.Guid[Row] == Current.Guid)
+				if (T.Assets.File[Row] != InvalidRow && T.Assets.Guid[Row] == Current.Guid && IsPreferredGuidRow(T, Row, preferred))
 				{
-					++matches;
-					first = first == InvalidRow || Row < first ? Row : first;
+					preferred = Row;
 				}
 				return true;
 			});
-			if (matches == 1u)
+			if (preferred != InvalidRow)
 			{
 				result.State = ETargetState::Resolved;
-				result.Resolved = first;
-			}
-			else if (matches > 1u)
-			{
-				result.State = ETargetState::Ambiguous;
+				result.Resolved = preferred;
 			}
 			return result;
 		}
@@ -2307,10 +2317,7 @@ public:
 			const SPoolRange labelRange = ClampRange(image.Labels, Image.Labels.size());
 			for (uint32 i = labelRange.Begin; i < labelRange.Begin + labelRange.Count; ++i)
 			{
-				if ((Image.Labels[i] & RuleLabelBit) != 0u)
-				{
-					labels.push_back(nameIdOf(Image.Labels[i] & ~RuleLabelBit) | RuleLabelBit);
-				}
+				labels.push_back(nameIdOf(Image.Labels[i] & ~RuleLabelBit) | (Image.Labels[i] & RuleLabelBit));
 			}
 			if (!labels.empty())
 			{
@@ -2931,9 +2938,8 @@ private:
 			const FStringView text = target.Text != InvalidRow ? T.Paths.Get(target.Text) : FStringView();
 			if (target.State == ETargetState::Ambiguous)
 			{
-				SDiagnostic diagnostic = MakeRegistryDiagnostic(ESeverity::Warning, Path001, path, target.Kind == ETargetKind::Path
-					? FString::Format("reference '{}' matches several files that differ only in case: it stays unresolved", text)
-					: FString::Format("reference to {} matches several records with that id: it stays unresolved", target.Guid.ToString()));
+				SDiagnostic diagnostic = MakeRegistryDiagnostic(ESeverity::Error, Path001, path,
+					FString::Format("reference '{}' matches several files that differ only in case: it stays unresolved", text));
 				diagnostic.FieldPath = edge.FieldPath != InvalidRow ? FString(T.Names.Get(edge.FieldPath)) : FString();
 				diagnostics.push_back(std::move(diagnostic));
 			}

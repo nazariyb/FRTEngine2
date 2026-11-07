@@ -104,7 +104,7 @@ TEST(JournalEncodingTest, TheLastValuesOfTheStoredEnumsSurviveEncoding)
 {
 	SRegistryDelta delta;
 	delta.FileUpserts.push_back(MakeStatFile("/Project/T/Rock.png.meta", 90u, 1u, EFileClass::Meta));
-	delta.FileUpserts[0].MetaState = EMetaState::MissingMeta;
+	delta.FileUpserts[0].Meta = SFileMetaState { EMetaState::MissingMeta, 0x5EEDu };
 	delta.ProblemClears = { SProblemsClear { "/Project/T", EProblemSource::Lifecycle } };
 	delta.Problems.push_back(SProblemsSet { "/Project/T/Rock.png", EProblemSource::Lifecycle, { MakeWarning("/Project/T/Rock.png", "no meta", Meta001) } });
 
@@ -112,7 +112,8 @@ TEST(JournalEncodingTest, TheLastValuesOfTheStoredEnumsSurviveEncoding)
 	ASSERT_TRUE(decoded.has_value());
 	ASSERT_EQ(decoded->FileUpserts.size(), 1u);
 	EXPECT_EQ(decoded->FileUpserts[0].Class, EFileClass::Meta);
-	EXPECT_EQ(decoded->FileUpserts[0].MetaState, EMetaState::MissingMeta);
+	ASSERT_TRUE(decoded->FileUpserts[0].Meta.has_value());
+	EXPECT_EQ(*decoded->FileUpserts[0].Meta, (SFileMetaState { EMetaState::MissingMeta, 0x5EEDu }));
 	ASSERT_EQ(decoded->ProblemClears.size(), 1u);
 	EXPECT_EQ(decoded->ProblemClears[0].Source, EProblemSource::Lifecycle);
 	ASSERT_EQ(decoded->Problems.size(), 1u);

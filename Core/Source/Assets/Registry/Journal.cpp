@@ -198,6 +198,7 @@ void AppendRecord (std::vector<uint8>& Out, const SRecordUpsert& Record, const C
 	AppendEnum(Out, Record.CookRule);
 	AppendVarint(Out, Record.Chunk);
 	AppendTexts(Out, Record.RuleLabels);
+	AppendTexts(Out, Record.AuthoredLabels);
 	AppendText(Out, Record.PrimaryName);
 	AppendEnum(Out, Record.ImportStatus);
 	AppendLittleEndian(Out, Record.AnalyzeStamp, 8u);
@@ -235,7 +236,7 @@ bool ReadRecord (CByteReader& Reader, const TDecodedTypes& Types, SRecordUpsert&
 	std::optional<reflect::TypeId> type;
 	if (!Reader.ReadText(Out.FileMountPath) || !ReadGuid(Reader, Out.Guid) || !ReadTypeIndex(Reader, Types, type) || !Reader.ReadText(Out.Importer)
 		|| !ReadFlags(Reader, Out.Flags) || !ReadEnum(Reader, ECookRule::DevelopmentOnly, Out.CookRule) || !ReadU16Varint(Reader, Out.Chunk)
-		|| !ReadTexts(Reader, Out.RuleLabels) || !Reader.ReadText(Out.PrimaryName)
+		|| !ReadTexts(Reader, Out.RuleLabels) || !ReadTexts(Reader, Out.AuthoredLabels) || !Reader.ReadText(Out.PrimaryName)
 		|| !ReadEnum(Reader, EImportStatus::ImporterUnavailable, Out.ImportStatus) || !ReadU64(Reader, Out.AnalyzeStamp)
 		|| !ReadTags(Reader, Out.Tags) || !ReadCount(Reader, 12u, subCount))
 	{
@@ -420,8 +421,12 @@ void EncodeRegistryDelta (const SRegistryDelta& Delta, std::vector<uint8>& Out)
 			binary::AppendHash(Out, *file.ContentHash);
 		}
 		AppendEnum(Out, file.Class);
-		AppendEnum(Out, file.MetaState);
-		AppendLittleEndian(Out, file.MetaHash, 8u);
+		Out.push_back(file.Meta ? 1u : 0u);
+		if (file.Meta)
+		{
+			AppendEnum(Out, file.Meta->State);
+			AppendLittleEndian(Out, file.Meta->Hash, 8u);
+		}
 	}
 	AppendVarint(Out, Delta.RuleFileUpserts.size());
 	for (const SRuleFileUpsert& ruleFile : Delta.RuleFileUpserts)
@@ -500,7 +505,7 @@ std::optional<SRegistryDelta> DecodeRegistryDelta (std::span<const uint8> Bytes)
 			return std::nullopt;
 		}
 	}
-	if (!ReadCount(reader, 38u, count))
+	if (!ReadCount(reader, 30u, count))
 	{
 		return std::nullopt;
 	}
@@ -522,10 +527,19 @@ std::optional<SRegistryDelta> DecodeRegistryDelta (std::span<const uint8> Bytes)
 			}
 			file.ContentHash = contentHash;
 		}
-		if (!ReadEnum(reader, EFileClass::Meta, file.Class) || !ReadEnum(reader, EMetaState::MissingMeta, file.MetaState)
-			|| !ReadU64(reader, file.MetaHash))
+		uint8 hasMeta = 0u;
+		if (!ReadEnum(reader, EFileClass::Meta, file.Class) || !reader.ReadU8(hasMeta) || hasMeta > 1u)
 		{
 			return std::nullopt;
+		}
+		if (hasMeta != 0u)
+		{
+			SFileMetaState meta;
+			if (!ReadEnum(reader, EMetaState::MissingMeta, meta.State) || !ReadU64(reader, meta.Hash))
+			{
+				return std::nullopt;
+			}
+			file.Meta = meta;
 		}
 	}
 	if (!ReadCount(reader, 10u, count))

@@ -15,6 +15,7 @@
 
 #include "Assets/AssetTypes.h"
 #include "Assets/Discovery/MountScanner.h"
+#include "Assets/Meta/MetaTypes.h"
 #include "Assets/MountPaths.h"
 #include "Assets/Pipeline/ImporterTable.h"
 #include "Jobs/WorkerPool.h"
@@ -720,8 +721,9 @@ TEST(RulesEngine, TypeAndLabelSelectorsWaitForAnalyzeAndNeverChangeTheImporter)
 	EXPECT_EQ(typed.CookRule, ECookRule::Auto) << "no authored label Prototype";
 	EXPECT_TRUE(typed.RuleLabels.empty()) << "the Final stops the labels of later rules";
 
-	const FString prototype = "prototype";
-	facts.AuthoredLabels = std::span<const FString>(&prototype, 1u);
+	SAssetMeta meta;
+	meta.Labels = { "prototype" };
+	facts.Meta = &meta;
 	EXPECT_EQ(engine.ResolveFile(*project, "/Project/A.png", facts).CookRule, ECookRule::DevelopmentOnly);
 	facts.Type = asset_types::Model;
 	EXPECT_EQ(engine.ResolveFile(*project, "/Project/A.png", facts).CookRule, ECookRule::Auto);

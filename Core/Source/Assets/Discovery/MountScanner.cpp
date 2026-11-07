@@ -7,6 +7,7 @@
 #include "Asserts.h"
 #include "Assets/AssetDiagnosticCodes.h"
 #include "Assets/Discovery/BuiltinExcludes.h"
+#include "Assets/Meta/MetaPaths.h"
 #include "Containers/StringMap.h"
 #include "Jobs/WorkerPool.h"
 #include "Platform/FileSystem.h"
@@ -59,7 +60,7 @@ void CheckEntryName (FStringView MountPath, FStringView Name, uint32 MountNameLe
 	const FStringView reason = GetNonPortableNameReason(Name);
 	if (!reason.IsEmpty())
 	{
-		Out.push_back(MakeDiagnostic(ESeverity::Warning, Path002, MountPath,
+		Out.push_back(MakeDiagnostic(ESeverity::Error, Path002, MountPath,
 			FString::Format("'{}' is not a portable name: it {}", ToDisplayText(Name), reason)));
 	}
 	const uint32 relativeLength = GetRelativeLength(MountPath, MountNameLength);
@@ -105,10 +106,55 @@ SDiagnostic MakeCaseCollision (FStringView MountPath, FStringView Name, std::spa
 	{
 		others.AppendFormat("{}'{}'", others.IsEmpty() ? "" : ", ", ToDisplayText(other));
 	}
-	return MakeDiagnostic(ESeverity::Warning, Path001, MountPath, FString::Format("'{}' and {} differ only in case: a case-sensitive file "
+	return MakeDiagnostic(ESeverity::Error, Path001, MountPath, FString::Format("'{}' and {} differ only in case: a case-sensitive file "
 		"system keeps them apart, and lookups under the portable fold cannot tell them apart", ToDisplayText(Name), others));
 }
 
+
+// A listed file name that is a meta (MetaPaths.h): "<source>.meta" in any case, not a dot-name (the built-in excludes
+// drop those unseen, metas or not).
+bool IsMetaName (FStringView Name) noexcept
+{
+	return !Name.IsEmpty() && Name[0] != '.' && GetMetaSource(Name).has_value();
+}
+
+/**
+ * Pairs the folder's metas with its files (ScanTypes.h, SScanMeta): byte-exact first, else the first file equal under the
+ * portable fold, in listing order. Excluded: the names of the listing's files that Classify excluded and its rule files.
+ */
+void PairMetas (std::vector<SScanMeta>& Metas, const std::vector<SScanFile>& Files, const std::vector<FStringView>& Excluded)
+{
+	if (Metas.empty())
+	{
+		return;
+	}
+	TStringMap<uint32> exact;
+	TStringMapIgnoreCase<uint32> folded;
+	exact.reserve(Files.size());
+	folded.reserve(Files.size());
+	for (uint32 i = 0u; i < Files.size(); ++i)
+	{
+		exact.try_emplace(Files[i].Name, i);
+		folded.try_emplace(Files[i].Name, i);
+	}
+	for (SScanMeta& meta : Metas)
+	{
+		const FStringView source = *GetMetaSource(meta.Name);
+		if (const auto it = exact.find(source); it != exact.end())
+		{
+			meta.SourceFile = it->second;
+		}
+		else if (const auto foldedIt = folded.find(source); foldedIt != folded.end())
+		{
+			meta.SourceFile = foldedIt->second;
+		}
+		else
+		{
+			meta.bSourceExcluded = std::any_of(Excluded.begin(), Excluded.end(),
+				[source] (FStringView Name) { return Name.Equals<ESearchCase::IgnoreCase>(source); });
+		}
+	}
+}
 
 // One folder of the scan: what its parent decided (path, scope) and what its own task found. Each node is
 // written only by its own task, before the outstanding count says it is done.
@@ -123,6 +169,7 @@ struct SFolderNode
 	uint64 RulesHash = 0u;
 	std::shared_ptr<const SScanScope> Scope;
 	std::vector<SScanFile> Files;                           // sorted; Folder is set at assembly
+	std::vector<SScanMeta> Metas;                           // sorted; Folder is set at assembly, SourceFile indexes Files until then
 	std::vector<std::unique_ptr<SFolderNode>> Children;     // sorted
 	std::vector<FString> SkippedLinks;
 	std::vector<SDiagnostic> Diagnostics;
@@ -201,6 +248,7 @@ void ScanFolder (SScanState& State, SFolderNode& Node)
 	// The entries the batch records, in order: the portable-name checks look at these only.
 	std::vector<uint32> recorded;
 	recorded.reserve(entries.size());
+	std::vector<FStringView> excludedNames;   // listed files that are no file of the batch: what a meta's source may be
 	FString childPath(Node.MountPath);
 	childPath += '/';
 	const uint32 prefixLength = childPath.Len();
@@ -235,11 +283,25 @@ void ScanFolder (SScanState& State, SFolderNode& Node)
 			// The folder's rule file (or a second spelling of it): never a file of the batch, but a file of
 			// the mount all the same, so the portable-name checks see it (Assets.yml beside assets.yml).
 			recorded.push_back(i);
+			excludedNames.push_back(entry.Name.View());
+			continue;
+		}
+		if (IsMetaName(entry.Name))
+		{
+			// A meta: split out before Classify (which would drop it as a built-in exclude), recorded with its own stat,
+			// and a name of the mount for the portable-name checks like any file.
+			SScanMeta& meta = Node.Metas.emplace_back();
+			meta.Name = entry.Name;
+			meta.Size = entry.Stat.Size;
+			meta.MTime = entry.Stat.LastWriteTime;
+			meta.Identity = entry.Stat.Identity;
+			recorded.push_back(i);
 			continue;
 		}
 		const std::optional<SFileVerdict> verdict = State.Membership->Classify(*Node.Scope, childPath);
 		if (!verdict.has_value())
 		{
+			excludedNames.push_back(entry.Name.View());
 			continue;
 		}
 		SScanFile file;
@@ -252,6 +314,8 @@ void ScanFolder (SScanState& State, SFolderNode& Node)
 		Node.Files.push_back(std::move(file));
 		recorded.push_back(i);
 	}
+
+	PairMetas(Node.Metas, Node.Files, excludedNames);
 
 	// Portable names. Sorted by the fold, so siblings equal under it are adjacent.
 	const uint32 mountNameLength = State.Mount.Name.Len();
@@ -318,10 +382,17 @@ void Deliver (SScanState& State)
 			{
 				batch.FailedFolders.push_back(batch.Folders.back().MountPath);
 			}
+			const uint32 firstFile = static_cast<uint32>(batch.Files.size());
 			for (SScanFile& file : node.Files)
 			{
 				file.Folder = index;
 				batch.Files.push_back(std::move(file));
+			}
+			for (SScanMeta& meta : node.Metas)
+			{
+				meta.Folder = index;
+				meta.SourceFile = meta.SourceFile != ~0u ? firstFile + meta.SourceFile : ~0u;
+				batch.Metas.push_back(std::move(meta));
 			}
 			for (FString& link : node.SkippedLinks)
 			{

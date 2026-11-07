@@ -482,8 +482,7 @@ SRegistryDelta MakeImageDelta (SRegistryImage&& Image)
 		upsert.Identity = file.Identity;
 		upsert.ContentHash = file.ContentHash;
 		upsert.Class = file.Class;
-		upsert.MetaState = file.MetaState;
-		upsert.MetaHash = file.MetaHash;
+		upsert.Meta = SFileMetaState { file.MetaState, file.MetaHash };
 		delta.FileUpserts.push_back(std::move(upsert));
 	}
 
@@ -560,10 +559,8 @@ SRegistryDelta MakeImageDelta (SRegistryImage&& Image)
 		record.AnalyzeStamp = image.AnalyzeStamp;
 		for (uint32 i = image.Labels.Begin; i < image.Labels.Begin + image.Labels.Count && i < Image.Labels.size(); ++i)
 		{
-			if ((Image.Labels[i] & RuleLabelBit) != 0u)
-			{
-				record.RuleLabels.push_back(FString(name(Image.Labels[i] & ~RuleLabelBit)));
-			}
+			std::vector<FString>& labels = (Image.Labels[i] & RuleLabelBit) != 0u ? record.RuleLabels : record.AuthoredLabels;
+			labels.push_back(FString(name(Image.Labels[i] & ~RuleLabelBit)));
 		}
 		if (type)
 		{

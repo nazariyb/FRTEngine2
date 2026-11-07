@@ -154,6 +154,7 @@ struct SAssetRegistryCounters
 	uint64 Analyzed = 0u;       // AnalyzeFile calls (retries included)
 	uint64 Hashed = 0u;         // content hashes computed (the importers that read a whole file hash it in that pass)
 	uint64 ReEvaluated = 0u;    // records whose rule outputs were resolved again without Analyze
+	uint64 MetasRead = 0u;      // metas whose bytes a conversion read (changed ones, and those of files worked on)
 	uint64 Committed = 0u;      // deltas committed
 	uint64 Scanned = 0u;        // files listed by scans
 	uint64 Passes = 0u;         // scans completed (whole mounts and subtrees)
@@ -171,9 +172,11 @@ struct SAssetChange
 
 /**
  * What changed since the last OnAssetsChanged (§5.9). Added, Removed and Modified come from the store's change ring
- * (asset records; a sub-entry's change is its record's). M3 has no move (ids are path-derived: a move is a Removed and
- * an Added), and the store does not tell tag and edge edits apart from other edits, so Moved, TagsChanged and
- * DependenciesChanged stay empty and every edit is Modified. bRefreshAll: the ring cannot list the changes (a
+ * (asset records; a sub-entry's change is its record's). Moved: a record removed and one added with its id (from M4 the
+ * meta's GUID, so a file renamed or moved with its meta), listed once with its new path and in neither Added nor
+ * Removed; a file without a meta has a path-derived id, so its move stays a Removed and an Added. The store does not
+ * tell tag and edge edits apart from other edits, so TagsChanged and DependenciesChanged stay empty and every edit is
+ * Modified. bRefreshAll: the ring cannot list the changes (a
  * snapshot adopted, tables compacted, the ring overflowed): re-run every query. bScanCompleted: the initial scan
  * completed in this Pump.
  */

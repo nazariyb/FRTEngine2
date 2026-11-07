@@ -15,6 +15,10 @@
  *
  * One model per mount (SDumpMount, collected and sorted once) feeds both forms, so the text dump and the JSON
  * lines (`FRT.bat assets dump registry --text|--json`) can never disagree on content or order.
+ *
+ * Identity (M4): a file line carries `meta=<state>` and its record line `guid=<32 hex>` only when the file's meta
+ * state is not PendingMeta, so a provisional id never reaches a golden and metaless content dumps as in M3. A meta's
+ * own FILES row (EFileClass::Meta) has no line: an orphan shows through its problems.
  */
 namespace frt::assets
 {
@@ -115,6 +119,8 @@ struct SDumpLabel
 
 struct SDumpRecord
 {
+	SGuid Guid;
+	bool bShowGuid = false;   // the file has a meta (its state is not PendingMeta)
 	FStringView Type;
 	FStringView Importer;
 	EImportStatus Status = EImportStatus::NotAnalyzed;
@@ -135,6 +141,7 @@ struct SDumpFile
 {
 	FStringView Path;
 	EFileClass Class = EFileClass::Unclaimed;
+	EMetaState MetaState = EMetaState::PendingMeta;
 	uint64 Size = 0u;
 	bool bHasRecord = false;
 	SDumpRecord Record;
@@ -271,7 +278,7 @@ struct CRegistryView::SDumpBuilder
 		std::vector<uint32> files;
 		View.ForEachFile([&] (uint32 Row)
 		{
-			if (tables.Files.Mount[Row] == Mount.Id)
+			if (tables.Files.Mount[Row] == Mount.Id && tables.Files.BaseClass[Row] != EFileClass::Meta)
 			{
 				files.push_back(Row);
 			}
@@ -286,12 +293,15 @@ struct CRegistryView::SDumpBuilder
 			SDumpFile& entry = out.Files.emplace_back();
 			entry.Path = tables.Paths.Get(tables.Files.Path[file]);
 			entry.Class = tables.Files.Class[file];
+			entry.MetaState = tables.Files.MetaState[file];
 			entry.Size = tables.Files.Size[file];
 			const uint32 row = tables.Files.Record[file];
 			if (row != InvalidRow)
 			{
 				entry.bHasRecord = true;
 				FillRecord(View, row, entry.Record);
+				entry.Record.Guid = tables.Assets.Guid[row];
+				entry.Record.bShowGuid = entry.MetaState != EMetaState::PendingMeta;
 			}
 		}
 
@@ -499,13 +509,24 @@ void AppendMountText (FString& Out, const SDumpMount& Mount)
 		Out += enum_::ToString(file.Class);
 		Out += " size=";
 		Out.AppendNumber(file.Size);
+		if (file.MetaState != EMetaState::PendingMeta)
+		{
+			Out += " meta=";
+			Out += enum_::ToString(file.MetaState);
+		}
 		Out += '\n';
 		if (!file.bHasRecord)
 		{
 			continue;
 		}
 		const SDumpRecord& record = file.Record;
-		Out += "    record type=";
+		Out += "    record";
+		if (record.bShowGuid)
+		{
+			Out += " guid=";
+			Out += record.Guid.ToString();
+		}
+		Out += " type=";
 		Out += record.Type;
 		Out += " importer=";
 		Out += record.Importer.IsEmpty() ? FStringView("-") : record.Importer;
@@ -629,8 +650,14 @@ void EmitMountJson (const SDumpMount& Mount, TEmit&& Emit)
 	}
 	for (const SDumpFile& file : Mount.Files)
 	{
-		Emit(CJsonObject().AddString("kind", "file").AddString("mount", mount).AddString("path", file.Path)
-			.AddString("class", enum_::ToString(file.Class)).AddUInt("size", file.Size));
+		CJsonObject fileObject;
+		fileObject.AddString("kind", "file").AddString("mount", mount).AddString("path", file.Path)
+			.AddString("class", enum_::ToString(file.Class)).AddUInt("size", file.Size);
+		if (file.MetaState != EMetaState::PendingMeta)
+		{
+			fileObject.AddString("meta", enum_::ToString(file.MetaState));
+		}
+		Emit(fileObject);
 		if (!file.bHasRecord)
 		{
 			continue;
@@ -659,7 +686,13 @@ void EmitMountJson (const SDumpMount& Mount, TEmit&& Emit)
 		std::vector<FString> companions(record.Companions.begin(), record.Companions.end());
 		const std::vector<FString> flags = enum_::GetFlagNames(record.Flags);
 		const std::vector<CJsonObject> tags = TagObjects(record.Tags);
-		Emit(CJsonObject().AddString("kind", "record").AddString("mount", mount).AddString("path", file.Path).AddString("type", record.Type)
+		CJsonObject recordObject;
+		recordObject.AddString("kind", "record").AddString("mount", mount).AddString("path", file.Path);
+		if (record.bShowGuid)
+		{
+			recordObject.AddString("guid", record.Guid.ToString());
+		}
+		Emit(recordObject.AddString("type", record.Type)
 			.AddString("importer", record.Importer).AddString("status", enum_::ToString(record.Status)).AddString("stamp", Hex64(record.Stamp))
 			.AddString("cook", enum_::ToString(record.Cook)).AddUInt("chunk", record.Chunk).AddStringArray("flags", flags)
 			.AddString("primary", record.Primary).AddStringArray("labels", labels).AddObjectArray("tags", tags)

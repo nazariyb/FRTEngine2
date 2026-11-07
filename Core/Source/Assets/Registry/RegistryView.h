@@ -229,7 +229,10 @@ public:
 	void ForEachRuleFile (TFunctionRef<void (uint32 RuleFileRow)> Visit) const;
 	void ForEachRecord (TFunctionRef<void (SRecordId)> Visit) const;   // asset records, by row
 
+	// FILES rows that are no meta: a `.meta` has a row of class Meta (M4) that no count, `files` field or dump line shows.
 	[[nodiscard]] uint32 GetFileCount () const noexcept;
+	// FILES rows of class Meta.
+	[[nodiscard]] uint32 GetMetaFileCount () const noexcept;
 	[[nodiscard]] uint32 GetFolderCount () const noexcept;
 	[[nodiscard]] uint32 GetRecordCount () const noexcept;
 	[[nodiscard]] uint32 GetSubEntryCount () const noexcept;

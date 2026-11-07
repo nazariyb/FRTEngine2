@@ -245,24 +245,30 @@ uint32 FindRecordRowsPortableHashed (const SRegistryTables& Tables, FStringView 
 	return matches;
 }
 
+// Two records with one GUID share their ids: the one of the preferred row (IsPreferredGuidRow) answers.
 uint32 FindRecordValueById64 (const SRegistryTables& Tables, uint64 AssetId64) noexcept
 {
 	uint32 found = InvalidRow;
+	uint32 foundOwner = InvalidRow;
 	Tables.Indices.RecordsById64.ForEach(MixRegistryKey(AssetId64), [&] (uint32 Value)
 	{
+		uint32 owner = InvalidRow;
 		if ((Value & SubEntryBit) != 0u)
 		{
 			const uint32 sub = Value & ~SubEntryBit;
 			if (Tables.SubEntries.Owner[sub] != InvalidRow && Tables.SubEntries.AssetId64[sub] == AssetId64)
 			{
-				found = Value;
-				return false;
+				owner = Tables.SubEntries.Owner[sub];
 			}
 		}
 		else if (Tables.Assets.File[Value] != InvalidRow && Tables.Assets.AssetId64[Value] == AssetId64)
 		{
+			owner = Value;
+		}
+		if (owner != InvalidRow && IsPreferredGuidRow(Tables, owner, foundOwner))
+		{
 			found = Value;
-			return false;
+			foundOwner = owner;
 		}
 		return true;
 	});
@@ -466,9 +472,9 @@ std::optional<SRecordId> CRegistryView::Find (const SAssetId& Id) const
 		uint32 found = InvalidRow;
 		Tables.Indices.RecordsByGuid.ForEach(HashGuid(Id.Guid), [&] (uint32 Row)
 		{
-			if (Tables.Assets.File[Row] != InvalidRow && Tables.Assets.Guid[Row] == Id.Guid)
+			if (Tables.Assets.File[Row] != InvalidRow && Tables.Assets.Guid[Row] == Id.Guid && IsPreferredGuidRow(Tables, Row, found))
 			{
-				found = found == InvalidRow || Row < found ? Row : found;
+				found = Row;
 			}
 			return true;
 		});
@@ -529,7 +535,7 @@ std::optional<SRecordId> CRegistryView::FindByPath (FStringView MountPath, SDiag
 			if (OutError != nullptr)
 			{
 				*OutError = SDiagnostic {};
-				OutError->Severity = ESeverity::Warning;
+				OutError->Severity = ESeverity::Error;
 				OutError->Code = Path001;
 				OutError->Subject = FString(filePart);
 				OutError->Message = FString::Format("'{}' matches {} files that differ only in case", filePart, matches);
@@ -1294,7 +1300,12 @@ void CRegistryView::ForEachRecord (TFunctionRef<void (SRecordId)> Visit) const
 
 uint32 CRegistryView::GetFileCount () const noexcept
 {
-	return Tables.LiveFiles;
+	return Tables.LiveFiles - Tables.LiveMetaFiles;
+}
+
+uint32 CRegistryView::GetMetaFileCount () const noexcept
+{
+	return Tables.LiveMetaFiles;
 }
 
 uint32 CRegistryView::GetFolderCount () const noexcept

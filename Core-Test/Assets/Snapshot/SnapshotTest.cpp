@@ -94,7 +94,7 @@ TEST_F(SnapshotRoundTripTest, TheLastValuesOfTheStoredEnumsSurviveASnapshot)
 {
 	SRegistryDelta delta;
 	delta.FileUpserts.push_back(MakeStatFile("/Project/T/Rock.png.meta", 90u, 700u, EFileClass::Meta));
-	delta.FileUpserts[0].MetaState = EMetaState::MissingMeta;
+	delta.FileUpserts[0].Meta = SFileMetaState { EMetaState::MissingMeta, delta.FileUpserts[0].Meta->Hash };
 	delta.Problems.push_back(SProblemsSet { "/Project/T/Rock.png", EProblemSource::Lifecycle, { MakeWarning("/Project/T/Rock.png", "no meta", Meta001) } });
 	Original.Commit(std::move(delta));
 	ASSERT_TRUE(WriteSnapshot(Original.Live(), {}, Path, ProjectId, 0u));

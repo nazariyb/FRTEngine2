@@ -31,7 +31,10 @@ struct SStoredFile
 	EFileClass Class = EFileClass::Unclaimed;       // effective (Companion while a record names the file)
 	EFileClass BaseClass = EFileClass::Unclaimed;   // as the last SFileUpsert gave it
 	SKnownFile Stat;                                // what a scan's Unchanged test compares with (ClassifyKnown)
+	EMetaState MetaState = EMetaState::PendingMeta; // the row's meta columns (RegistryDelta.h SFileMetaState)
+	uint64 MetaHash = 0u;
 	SRecordId Record;                              // invalid without a record
+	SGuid Guid;                                     // the record's
 	reflect::TypeId Type = reflect::InvalidTypeId;
 	ERecordFlags Flags = ERecordFlags::None;        // the producer's flags (HasProblems left out)
 	FStringView Importer;                           // views the view's importer table
@@ -42,15 +45,16 @@ struct SStoredFile
 // The file of MountPath, matched byte-exact (what a scan compares against); nullopt when the view has none.
 [[nodiscard]] FRT_CORE_API std::optional<SStoredFile> FindStoredFile (const CRegistryView& View, FStringView MountPath);
 
-// Whether the record's stored rule outputs - cook rule, chunk, rule labels and the TypeExcluded flag - differ from
-// Settings and Flags.
+// Whether the record's stored rule outputs - cook rule, chunk, rule labels, authored labels (the meta's) and the
+// TypeExcluded flag - differ from Settings and Flags.
 [[nodiscard]] FRT_CORE_API bool RuleOutputsDiffer (const CRegistryView& View, SRecordId Record, const SEffectiveFileSettings& Settings,
 	ERecordFlags Flags);
 
 /**
  * The record again as an upsert - its type, importer, status, AnalyzeStamp, primary name, tags, sub-entries, edges
  * (as declared: by id or by path, with their field paths) and companions as the view holds them - with the rule
- * outputs of Settings (cook rule, chunk, rule labels) and Flags as its flags. Committing it changes nothing else.
+ * outputs of Settings (cook rule, chunk, rule labels, authored labels) and Flags as its flags. Committing it changes
+ * nothing else; the caller sets another Guid when the meta's changed.
  */
 [[nodiscard]] FRT_CORE_API SRecordUpsert MakeRecordUpsertFromView (const CRegistryView& View, SRecordId Record, const SEffectiveFileSettings& Settings,
 	ERecordFlags Flags);

@@ -67,7 +67,7 @@ inline SFileUpsert MakeStatFile (FStringView Path, uint64 Size, uint32 Seed, EFi
 	file.Identity.Bytes[0] = static_cast<uint8>(Seed);
 	file.Identity.Bytes[23] = static_cast<uint8>(Seed >> 8u);
 	file.ContentHash = hash::HashContent(FString::Format("content {}", Seed).AsBytes());
-	file.MetaHash = 0x1000u + Seed;
+	file.Meta = SFileMetaState { EMetaState::PendingMeta, 0x1000u + Seed };
 	return file;
 }
 

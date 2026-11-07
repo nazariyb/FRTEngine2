@@ -594,7 +594,8 @@ TEST(SharedTypesTest, RecordIdsAndTagValuesHaveUsefulDefaults)
 	delta.FileUpserts.push_back(SFileUpsert { "/Project/Rock.png" });
 	EXPECT_FALSE(delta.IsEmpty());
 	EXPECT_EQ(SMountUpsert().Id, InvalidMountId);
-	EXPECT_EQ(delta.FileUpserts[0].MetaState, EMetaState::PendingMeta);
+	EXPECT_FALSE(delta.FileUpserts[0].Meta.has_value()) << "keeps the stored meta columns; a new row starts PendingMeta";
+	EXPECT_EQ(SFileMetaState().State, EMetaState::PendingMeta);
 	EXPECT_EQ(delta.FileUpserts[0].Class, EFileClass::Unclaimed);
 	EXPECT_FALSE(delta.FileUpserts[0].ContentHash.has_value());
 

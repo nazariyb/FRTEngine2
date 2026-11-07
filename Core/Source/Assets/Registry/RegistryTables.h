@@ -665,6 +665,7 @@ struct SRegistryTables
 	SRegistryIndices Indices;
 
 	uint32 LiveFiles = 0u;
+	uint32 LiveMetaFiles = 0u;                                   // of LiveFiles, rows of class Meta (BaseClass): not in GetFileCount
 	uint32 LiveFolders = 0u;
 	uint32 LiveRuleFiles = 0u;
 	uint32 LiveRecords = 0u;
@@ -703,6 +704,16 @@ inline int32 CompareFileOrder (const SRegistryTables& Tables, uint32 A, uint32 B
 		compared = Tables.Paths.Get(Tables.Files.Path[A]).Compare(Tables.Paths.Get(Tables.Files.Path[B]));
 	}
 	return compared != 0 ? compared : (A < B ? -1 : (A > B ? 1 : 0));
+}
+
+/**
+ * Of two live asset rows with one GUID (a copy of a file and its meta, until the lifecycle gives the copy its own), the
+ * one every lookup by id answers (§4.8: the would-be winner, when committed facts are unknown): the one whose file
+ * comes first in CompareFileOrder, the smallest folded path. Current InvalidRow: none chosen yet.
+ */
+[[nodiscard]] inline bool IsPreferredGuidRow (const SRegistryTables& Tables, uint32 Candidate, uint32 Current) noexcept
+{
+	return Current == InvalidRow || CompareFileOrder(Tables, Tables.Assets.File[Candidate], Tables.Assets.File[Current]) < 0;
 }
 
 // The order SSubEntryTable::LabelRank keeps among one record's sub-entries: folded label bytes, label bytes, row.

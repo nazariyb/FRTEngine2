@@ -59,8 +59,13 @@
  *	- A FILES row named in any committed record's Companions has class Companion (and no record of its
  *	  own); it returns to Unclaimed when no record names it any more. Order-independent, like unresolved
  *	  edges.
- *	- There is no move operation in M3: a watcher Moved becomes removes plus a subtree rescan (ids are
- *	  path-derived, MakeProvisionalGuid).
+ *	- A FILES row of class Meta is a `.meta` (§3.2, M4): it has no record, is never a companion and never
+ *	  Unclaimed, and the view's file count leaves it out. A source row's SFileUpsert::Meta of nullopt keeps the
+ *	  stored state and hash, so a stat-only refresh never turns a Paired source back into PendingMeta.
+ *	- There is no move operation: a watcher Moved becomes removes plus a subtree rescan. Identity follows the meta
+ *	  (M4): the rescan's record carries the meta's GUID, so a remove and an add of one GUID is a move to listeners
+ *	  (SAssetChangeSet::Moved). Two records with one GUID (a copy, before the lifecycle resolves it) are kept; lookups
+ *	  by id answer the one whose file comes first in CompareFileOrder (the smallest folded path), never an assert.
  *	- No user callback runs inside Commit.
  *
  * Paths are mount paths (RegistryTypes.h) in on-disk spelling. Mount names are "Engine", "Project",
@@ -70,11 +75,22 @@ namespace frt::assets
 {
 struct SMountUpsert    { FString Name; bool bCaseSensitive = false; MountId Id = InvalidMountId; };   // "Engine", "Project", "Plugin.X"; idempotent; Id from CMountTable
 struct SFolderUpsert   { FString MountPath; };                           // a missing parent is created
+/**
+ * A FILES row's meta columns (§5.2): State, and Hash = Xxh3_64 of the meta's raw bytes (MetaFile.h HashMetaBytes; 0 for
+ * none). A source row holds its meta's (Paired, PendingMeta, Broken from a scan; the lifecycle's other states), a Meta
+ * row (EFileClass::Meta) its own pairing (Paired, Orphan or Broken).
+ */
+struct SFileMetaState
+{
+	EMetaState State = EMetaState::PendingMeta; uint64 Hash = 0;
+	bool operator== (const SFileMetaState&) const = default;
+};
 struct SFileUpsert
 {
 	FString MountPath; uint64 Size = 0; int64 MTime = 0; platform::SFileIdentity Identity;
 	std::optional<hash::SContentHash> ContentHash;   // nullopt: keep the stored hash (identity-only refresh); zero: changed, not hashed
-	EFileClass Class = EFileClass::Unclaimed; EMetaState MetaState = EMetaState::PendingMeta; uint64 MetaHash = 0;
+	EFileClass Class = EFileClass::Unclaimed;
+	std::optional<SFileMetaState> Meta;              // nullopt: keep the stored values (as ContentHash's nullopt); a new row starts PendingMeta
 };
 struct SRuleFileUpsert { FString MountName; FString FolderMountPath; uint64 RulesHash = 0; };  // empty folder = the mount's Config/Assets.yml
 struct STagDecl        { FString Key; STagValue Value; };                // a key of the record type's table; MultiValue keys repeat
@@ -88,9 +104,10 @@ struct SEdgeDecl
 };
 struct SRecordUpsert     // replaces the whole record of FileMountPath: tags, labels, sub-entries, edges, companions
 {
-	FString FileMountPath; SGuid Guid;               // M3: MakeProvisionalGuid(FileMountPath)
+	FString FileMountPath; SGuid Guid;               // the meta's; MakeProvisionalGuid(FileMountPath) only for a file with none yet
 	reflect::TypeId Type = 0; FString Importer;      // the store interns importer names into its own u16 table
 	ERecordFlags Flags{}; ECookRule CookRule = ECookRule::Auto; uint16 Chunk = 0; std::vector<FString> RuleLabels;
+	std::vector<FString> AuthoredLabels;             // the meta's Labels (LABELS without the rule flag), beside RuleLabels
 	FString PrimaryName;                             // empty unless ERecordFlags::Primary
 	EImportStatus ImportStatus = EImportStatus::NotAnalyzed; uint64 AnalyzeStamp = 0;
 	std::vector<STagDecl> Tags; std::vector<SSubEntryDecl> SubEntries; std::vector<SEdgeDecl> Edges;

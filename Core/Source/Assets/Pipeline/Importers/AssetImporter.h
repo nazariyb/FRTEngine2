@@ -49,6 +49,8 @@ class CDataTree;
 
 namespace frt::assets
 {
+struct SAssetMeta;
+
 /**
  * The file to analyze. FileMountPath is its mount path as spelled on disk ("/Project/Models/Duck/Duck.gltf");
  * Path the absolute path of the same file; SourceFile its path relative to its mount's owner root, '/' separated
@@ -135,17 +137,33 @@ FRT_CORE_API bool AnalyzeFile (const SAnalyzeInput& In, const SEffectiveFileSett
 FRT_CORE_API void RemoveSubEntries (SAnalyzeResult& Result, FStringView FileMountPath, TFunctionRef<bool (reflect::TypeId)> Keep);
 
 /**
- * Appends the record of FileMountPath to Delta: an SRecordUpsert (provisional GUID, Type, importer name, flags,
- * cook rule, chunk, rule labels from Settings; status, AnalyzeStamp, tags, sub-entries, edges and companions from
- * Result), then the file's Analyze problems - an SProblemsClear of the Analyze source at the file (its sub-entries'
+ * The file's meta `SubAssets` (§3.2, §4.3) over Analyze's sub-entries, after RemoveSubEntries and before
+ * AppendRecordUpsert:
+ * - Renamed (new label: old label): the sub-entry of the new label keeps the old label's id (MakeSubId of it), and
+ *   the edges it declares move with it; an id another sub-entry has is a warning and the rename is skipped;
+ * - Remap (label: external `$asset` reference): the sub-entry gains a Hard | Declared edge to that asset, FieldPath
+ *   "SubAssets.Remap.<label>" (an extracted material replacing an imported one is used where the model is);
+ * - Overrides (label: settings): settings of that sub-asset's build; no sub-entry tag of M4 is a setting, so they only
+ *   enter the AnalyzeStamp (Rules.h).
+ * A label the file has no sub-entry for, and a malformed entry, is a warning (code 0) naming the meta (MetaFile, as
+ * provenance names it) with its line: the rest applies. Safe on workers.
+ */
+FRT_CORE_API void ApplySubAssetOverrides (SAnalyzeResult& Result, const SAnalyzeInput& In, const SAssetMeta& Meta, FStringView MetaFile);
+
+/**
+ * Appends the record of FileMountPath to Delta: an SRecordUpsert (Guid - the meta's; invalid: MakeProvisionalGuid of
+ * the path, for a file with no meta yet -, Type, importer name, flags, cook rule, chunk, rule and authored labels from
+ * Settings; status, AnalyzeStamp, tags, sub-entries, edges and companions from Result), then the file's Analyze problems - an SProblemsClear of the Analyze source at the file (its sub-entries'
  * subjects included), and one SProblemsSet per subject Result's diagnostics name - so problems an earlier Analyze
  * reported do not survive. File rows are the caller's (Result.ContentHash can fill the SFileUpsert). The rvalue
  * form moves Result's vectors instead of copying them. Severities are stored as given: the caller applies a rule
  * file's Validation: overrides to Result.Diagnostics first (CRulesEngine::ApplyValidation with the file's folder
  * scope), as it does for the scan's and RULE002 diagnostics.
  */
-FRT_CORE_API void AppendRecordUpsert (const SAnalyzeResult& Result, const SEffectiveFileSettings& Settings, FStringView FileMountPath, SRegistryDelta& Delta);
-FRT_CORE_API void AppendRecordUpsert (SAnalyzeResult&& Result, const SEffectiveFileSettings& Settings, FStringView FileMountPath, SRegistryDelta& Delta);
+FRT_CORE_API void AppendRecordUpsert (const SAnalyzeResult& Result, const SEffectiveFileSettings& Settings, FStringView FileMountPath, SRegistryDelta& Delta,
+	const SGuid& Guid = SGuid {});
+FRT_CORE_API void AppendRecordUpsert (SAnalyzeResult&& Result, const SEffectiveFileSettings& Settings, FStringView FileMountPath, SRegistryDelta& Delta,
+	const SGuid& Guid = SGuid {});
 
 /**
  * The schema-free scan of §5.5 step 4 over a parsed document, run on every CDataTree an importer produces (the

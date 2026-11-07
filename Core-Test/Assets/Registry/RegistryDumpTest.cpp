@@ -155,7 +155,7 @@ TEST(RegistryDumpTest, MachineSpecificColumnsNeverReachTheDump)
 		file.MTime = MTime;
 		file.Identity.Bytes[0] = IdentityByte;
 		file.ContentHash = hash::HashContent(std::span<const uint8>(&IdentityByte, 1u));
-		file.MetaHash = IdentityByte;
+		file.Meta = SFileMetaState { EMetaState::PendingMeta, IdentityByte };
 		delta.FileUpserts.push_back(file);
 		delta.RecordUpserts.push_back(MakeRecord("/Project/a.png"));
 		store.Commit(std::move(delta));

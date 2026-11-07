@@ -76,7 +76,7 @@
 namespace frt::assets
 {
 inline constexpr uint8 JournalMagic[8] = { 'F', 'R', 'T', 'A', 'J', 'R', 'N', '1' };
-inline constexpr uint32 JournalFormatVersion = 2u;   // 2: types by stable name
+inline constexpr uint32 JournalFormatVersion = 3u;   // 2: types by stable name; 3: a file's meta columns optional, authored labels
 inline constexpr uint32 JournalHeaderBytes = 40u;
 
 // The delta encoding (the journal's commit payload): every member of SRegistryDelta, Sequence included.

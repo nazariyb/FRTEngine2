@@ -18,6 +18,8 @@ std::optional<SStoredFile> FindStoredFile (const CRegistryView& View, FStringVie
 	stored.Class = tables.Files.Class[row];
 	stored.BaseClass = tables.Files.BaseClass[row];
 	stored.Stat = SKnownFile { tables.Files.Size[row], tables.Files.MTime[row], tables.Files.Identity[row] };
+	stored.MetaState = tables.Files.MetaState[row];
+	stored.MetaHash = tables.Files.MetaHash[row];
 	const uint32 record = tables.Files.Record[row];
 	if (record == InvalidRow)
 	{
@@ -25,6 +27,7 @@ std::optional<SStoredFile> FindStoredFile (const CRegistryView& View, FStringVie
 	}
 	const SAssetsTable& assets = tables.Assets;
 	stored.Record = SRecordId { record, static_cast<uint32>(tables.Revision) };
+	stored.Guid = assets.Guid[record];
 	stored.Type = assets.Type[record];
 	stored.Flags = assets.Flags[record] & ~ERecordFlags::HasProblems;
 	const uint16 importer = assets.Importer[record];
@@ -47,18 +50,17 @@ bool RuleOutputsDiffer (const CRegistryView& View, SRecordId Record, const SEffe
 	{
 		return true;
 	}
-	uint32 index = 0u;
+	uint32 ruleIndex = 0u;
+	uint32 authoredIndex = 0u;
 	bool bChanged = false;
 	View.ForEachLabel(Record, [&] (FStringView Label, bool bRule)
 	{
-		if (!bRule)
-		{
-			return;   // authored labels (.meta, M4) are not rule outputs
-		}
-		bChanged = bChanged || index >= Settings.RuleLabels.size() || Settings.RuleLabels[index].View() != Label;
+		const std::vector<FString>& expected = bRule ? Settings.RuleLabels : Settings.AuthoredLabels;
+		uint32& index = bRule ? ruleIndex : authoredIndex;
+		bChanged = bChanged || index >= expected.size() || expected[index].View() != Label;
 		++index;
 	});
-	return bChanged || index != Settings.RuleLabels.size();
+	return bChanged || ruleIndex != Settings.RuleLabels.size() || authoredIndex != Settings.AuthoredLabels.size();
 }
 
 SRecordUpsert MakeRecordUpsertFromView (const CRegistryView& View, SRecordId Record, const SEffectiveFileSettings& Settings, ERecordFlags Flags)
@@ -79,6 +81,7 @@ SRecordUpsert MakeRecordUpsertFromView (const CRegistryView& View, SRecordId Rec
 	upsert.CookRule = Settings.CookRule;
 	upsert.Chunk = Settings.Chunk;
 	upsert.RuleLabels = Settings.RuleLabels;
+	upsert.AuthoredLabels = Settings.AuthoredLabels;
 	if (const uint32 primary = tables.Assets.PrimaryName[row]; primary != InvalidRow)
 	{
 		upsert.PrimaryName = FString(tables.Names.Get(primary));

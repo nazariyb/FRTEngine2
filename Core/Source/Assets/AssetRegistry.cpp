@@ -11,6 +11,9 @@
 #include "Assets/AssetDiagnosticCodes.h"
 #include "Assets/Discovery/MountScanner.h"
 #include "Assets/FileWatcherService.h"
+#include "Assets/Meta/MetaFile.h"
+#include "Assets/Meta/MetaPaths.h"
+#include "Assets/Meta/MetaTypes.h"
 #include "Assets/MountPaths.h"
 #include "Assets/Pipeline/ImporterTable.h"
 #include "Assets/Pipeline/Importers/AssetImporter.h"
@@ -171,6 +174,89 @@ void MergeDelta (SRegistryDelta& To, SRegistryDelta&& From)
 
 // ---------------- The work of one pass (on workers) ----------------
 
+/**
+ * A meta as a conversion read it (design §5.4 step 5, M4): its raw bytes' parse and hash (FILES' MetaHash). Read on a
+ * worker only when the meta changed, or when its file is analyzed or re-evaluated and needs its values (until E4b keeps
+ * the bytes in METAS); shared by the requests that use it.
+ */
+struct SReadMeta
+{
+	SMetaParseResult Parse;
+	uint64 Hash = 0u;
+
+	[[nodiscard]] bool IsOk () const noexcept { return Parse.State == EMetaParseState::Ok; }
+	// The values the rules engine applies (SFileFacts::Meta): an Ok parse's; a Broken meta's are meaningless.
+	[[nodiscard]] const SAssetMeta* GetValues () const noexcept { return IsOk() ? &Parse.Meta : nullptr; }
+	// The FILES columns of the meta's source, and of the meta's own row.
+	[[nodiscard]] SFileMetaState GetColumns () const noexcept { return SFileMetaState { IsOk() ? EMetaState::Paired : EMetaState::Broken, Hash }; }
+};
+
+// The meta at MountPath of Mount, read race-free (platform::ReadFileChunksStable); null when it changed while read or
+// cannot be read: the caller then commits nothing of it, so the next scan reads it again.
+std::shared_ptr<const SReadMeta> ReadMetaFile (const SMount& Mount, FStringView MountPath)
+{
+	FStringView mountName;
+	FStringView relative;
+	if (!SplitMountPath(MountPath, mountName, relative))
+	{
+		return nullptr;
+	}
+	const std::optional<std::filesystem::path> path = Mount.ToAbsolute(relative);
+	if (!path.has_value())
+	{
+		return nullptr;
+	}
+	FString bytes;
+	const platform::EStableRead read = platform::ReadFileChunksStable(*path, [&bytes] (std::span<const uint8> Chunk)
+	{
+		bytes += FStringView(reinterpret_cast<const char*>(Chunk.data()), Chunk.size());
+	});
+	if (read != platform::EStableRead::Stable)
+	{
+		return nullptr;
+	}
+	auto meta = std::make_shared<SReadMeta>();
+	ParseMeta(bytes, meta->Parse);
+	meta->Hash = HashMetaBytes(bytes);
+	return meta;
+}
+
+/**
+ * A record's GUID (§4.1, M4), in order: the meta's (a Broken meta's first salvaged one); else the stored record's when
+ * its file had a meta, because a lost meta never changes identity; else the provisional id of a file with no meta yet
+ * (PendingMeta), which never reaches a written meta.
+ */
+SGuid ChooseRecordGuid (const SReadMeta* Meta, const std::optional<SStoredFile>& Stored, FStringView MountPath)
+{
+	if (Meta != nullptr && Meta->IsOk())
+	{
+		return Meta->Parse.Meta.Guid;
+	}
+	if (Meta != nullptr && !Meta->Parse.SalvagedGuids.empty())
+	{
+		return Meta->Parse.SalvagedGuids.front();
+	}
+	if (Stored.has_value() && Stored->Record.IsValid() && Stored->MetaState != EMetaState::PendingMeta)
+	{
+		return Stored->Guid;
+	}
+	return MakeProvisionalGuid(MountPath);
+}
+
+// A meta's own FILES row (EFileClass::Meta): its stat, and its pairing when Columns says (nullopt: keep it). Its content
+// is in its MetaHash, so ContentHash stays as it was (zero for a new row).
+SFileUpsert MakeMetaRow (FStringView MountPath, const SScanMeta& Meta, std::optional<SFileMetaState> Columns)
+{
+	SFileUpsert row;
+	row.MountPath = FString(MountPath);
+	row.Size = Meta.Size;
+	row.MTime = Meta.MTime;
+	row.Identity = Meta.Identity;
+	row.Class = EFileClass::Meta;
+	row.Meta = Columns;
+	return row;
+}
+
 // One file to analyze: what the scan saw, the settings and the folder's scope the conversion resolved.
 struct SAnalyzeRequest
 {
@@ -185,6 +271,10 @@ struct SAnalyzeRequest
 	bool bContentChanged = false;                       // new or changed: a hash Analyze does not compute is zeroed
 	uint32 Retries = 0u;
 	uint64 Sequence = 0u;                               // the registry's request sequence of this file
+	SGuid Guid;                                         // the record's (ChooseRecordGuid)
+	std::shared_ptr<const SReadMeta> Meta;              // the file's meta as read for it; null: none (or unreadable)
+	std::optional<SFileMetaState> MetaColumns;          // the file row's meta columns to write; nullopt: keep the stored ones
+	std::optional<SFileUpsert> MetaRow;                 // the meta's own row, committed with the record its values went into
 };
 
 // One analyzed file's delta: its file row (the stat the scan saw, the hash when Analyze computed one), record and
@@ -251,7 +341,8 @@ SAnalyzeOutcome RunAnalyze (std::vector<SAnalyzeRequest>& Requests, const CRules
 		// Type and Label selectors see the record's type now (their rules may set cook rule, chunk and labels, never
 		// the importer or an Analyze-relevant setting, so the stamp stays the request's).
 		const SScanScope& scope = *request.Scope;
-		SEffectiveFileSettings settings = Rules.ResolveFile(scope, request.Path, SFileFacts { result.Type, {} }, false);
+		const SAssetMeta* meta = request.Meta != nullptr ? request.Meta->GetValues() : nullptr;
+		SEffectiveFileSettings settings = Rules.ResolveFile(scope, request.Path, SFileFacts { result.Type, meta }, false);
 		if (settings.Importer != request.Settings.Importer)
 		{
 			settings = request.Settings;
@@ -259,6 +350,10 @@ SAnalyzeOutcome RunAnalyze (std::vector<SAnalyzeRequest>& Requests, const CRules
 		settings.Settings.AnalyzeHash = request.Settings.Settings.AnalyzeHash;   // with the filter hash ConvertBatch folded in
 		const bool bTypeIncluded = Rules.IsTypeIncluded(scope, result.Type);
 		RemoveSubEntries(result, request.Path, [&] (reflect::TypeId Type) { return Rules.IsTypeIncluded(scope, Type); });
+		if (meta != nullptr)
+		{
+			ApplySubAssetOverrides(result, *input, *meta, Rules.GetMetaProvenance(scope, request.Path));
+		}
 		for (SDiagnostic& diagnostic : result.Diagnostics)
 		{
 			Rules.ApplyValidation(scope, diagnostic);
@@ -284,8 +379,13 @@ SAnalyzeOutcome RunAnalyze (std::vector<SAnalyzeRequest>& Requests, const CRules
 			row.ContentHash = hash::SContentHash {};   // changed, not hashed (hashes are lazy, §5.4 step 5)
 		}
 		row.Class = bTypeIncluded ? request.Class : EFileClass::Excluded;
+		row.Meta = request.MetaColumns;
 		file.Delta.FileUpserts.push_back(std::move(row));
-		AppendRecordUpsert(std::move(result), settings, request.Path, file.Delta);
+		if (request.MetaRow.has_value())
+		{
+			file.Delta.FileUpserts.push_back(std::move(*request.MetaRow));
+		}
+		AppendRecordUpsert(std::move(result), settings, request.Path, file.Delta, request.Guid);
 		if (!bTypeIncluded)
 		{
 			file.Delta.RecordUpserts.back().Flags |= ERecordFlags::TypeExcluded;
@@ -372,6 +472,7 @@ struct SConversion
 	std::vector<FString> RemovedFolders;
 	std::vector<FString> RemovedFiles;
 	uint32 ReEvaluated = 0u;
+	uint32 MetasRead = 0u;
 	bool bRuleFilesChanged = false;
 	double Milliseconds = 0.0;
 };
@@ -491,9 +592,31 @@ SConversion ConvertBatch (SConvertInput& In)
 		std::vector<SAnalyzeRequest> Analyze;
 		std::vector<std::pair<uint32, uint32>> Unclaimed;   // (index in out.Folders, file index)
 		uint32 ReEvaluated = 0u;
-		uint32 Known = 0u;                                  // files the view holds (byte-exact)
+		uint32 MetasRead = 0u;
+		uint32 Known = 0u;                                  // files and metas the view holds (byte-exact)
 	};
 	std::vector<FString> paths(batch.Files.size());
+	// Each file's meta (SScanMeta::SourceFile): the one spelled byte-exact wins when a case-sensitive folder holds two that
+	// fold to its name; a meta no file takes is converted on its own below (an orphan, or one whose source is excluded).
+	std::vector<uint32> metaOfFile(batch.Files.size(), ~0u);
+	std::vector<FString> metaPaths(batch.Metas.size());
+	for (const bool bExact : { true, false })
+	{
+		for (uint32 m = 0u; m < batch.Metas.size(); ++m)
+		{
+			const SScanMeta& meta = batch.Metas[m];
+			if (meta.SourceFile == ~0u || metaOfFile[meta.SourceFile] != ~0u)
+			{
+				continue;
+			}
+			const bool bSpelledExactly = GetMetaSource(meta.Name) == batch.Files[meta.SourceFile].Name.View()
+				&& meta.Name.View().EndsWith(FStringView(MetaFileSuffix));
+			if (bSpelledExactly == bExact)
+			{
+				metaOfFile[meta.SourceFile] = m;
+			}
+		}
+	}
 	const std::vector<SChunkRange> chunks = SplitIntoChunks(In.Pool, static_cast<uint32>(batch.Files.size()), 256u);
 	std::vector<SChunkOut> chunkOuts(chunks.size());
 	RunChunks(In.Pool, chunks, [&] (uint32 Chunk, uint32 Begin, uint32 End)
@@ -523,16 +646,63 @@ SConversion ConvertBatch (SConvertInput& In)
 			const bool bStatChanged = state != EScanFileState::Unchanged;
 			const bool bStale = bHasRecord && HasAnyFlags(stored->Flags, ERecordFlags::StaleTags);
 			const bool bTypeExcluded = bHasRecord && HasAnyFlags(stored->Flags, ERecordFlags::TypeExcluded);
-			const bool bClassDiffers = stored.has_value() && stored->BaseClass != file.Verdict.Class
+			// The scan's verdict knows no meta: a meta's Importer pin can make the stored class differ from it, which the
+			// meta read below decides.
+			const bool bVerdictDiffers = stored.has_value() && stored->BaseClass != file.Verdict.Class
 				&& !(bTypeExcluded && stored->BaseClass == EFileClass::Excluded);
 			const bool bMissingRecord = stored.has_value() && !bHasRecord && file.Verdict.Class != EFileClass::Unclaimed;
-			if (!bStatChanged && stored.has_value() && !bDirty && !bStale && !bClassDiffers && !bMissingRecord)
+
+			// Its meta: a FILES row of its own, compared like the file; its bytes are read only when it changed or when
+			// the file is worked on and needs its values (§5.4: an unchanged meta of an unchanged file is never opened).
+			const uint32 metaIndex = metaOfFile[index];
+			const SScanMeta* meta = metaIndex != ~0u ? &batch.Metas[metaIndex] : nullptr;
+			std::optional<SStoredFile> storedMeta;
+			EScanFileState metaState = EScanFileState::Unchanged;
+			if (meta != nullptr)
 			{
-				continue;   // unchanged file, unchanged rule chain: nothing to do (the warm start's path)
+				metaPaths[metaIndex] = MakeChildMountPath(folder.MountPath, meta->Name);
+				storedMeta = FindStoredFile(view, metaPaths[metaIndex]);
+				chunkOut.Known += storedMeta.has_value() ? 1u : 0u;
+				metaState = ClassifyKnown(storedMeta.has_value() ? std::optional<SKnownFile>(storedMeta->Stat) : std::nullopt, meta->Size, meta->MTime,
+					meta->Identity);
+			}
+			const bool bMetaBytesChanged = meta != nullptr && (metaState == EScanFileState::New || metaState == EScanFileState::Changed);
+			if (!bStatChanged && stored.has_value() && !bDirty && !bStale && !bVerdictDiffers && !bMissingRecord && !bMetaBytesChanged)
+			{
+				if (meta != nullptr && metaState == EScanFileState::IdentityChanged)
+				{
+					part.FileUpserts.push_back(MakeMetaRow(metaPaths[metaIndex], *meta, std::nullopt));
+				}
+				continue;   // unchanged file, unchanged meta, unchanged rule chain: nothing to do (the warm start's path)
 			}
 
+			std::shared_ptr<const SReadMeta> read;
+			if (meta != nullptr)
+			{
+				read = ReadMetaFile(mount, metaPaths[metaIndex]);
+				++chunkOut.MetasRead;
+			}
+			const SAssetMeta* metaValues = read != nullptr ? read->GetValues() : nullptr;
+			const std::optional<SFileMetaState> metaColumns = read != nullptr ? std::optional<SFileMetaState>(read->GetColumns()) : std::nullopt;
+			const SGuid guid = ChooseRecordGuid(read.get(), stored, path);
+			// The meta's row goes with what used its values: an unreadable meta commits nothing, so it is read again.
+			std::optional<SFileUpsert> metaRow;
+			if (read != nullptr && (metaState != EScanFileState::Unchanged || storedMeta->MetaState != metaColumns->State
+				|| storedMeta->MetaHash != metaColumns->Hash || storedMeta->BaseClass != EFileClass::Meta))
+			{
+				metaRow = MakeMetaRow(metaPaths[metaIndex], *meta, metaColumns);
+			}
+			const auto addMetaRow = [&]
+			{
+				if (metaRow.has_value())
+				{
+					part.FileUpserts.push_back(std::move(*metaRow));
+					metaRow.reset();
+				}
+			};
+
 			const SScanScope& scope = *folder.Scope;
-			const SFileFacts facts { bHasRecord ? stored->Type : reflect::InvalidTypeId, {} };
+			const SFileFacts facts { bHasRecord ? stored->Type : reflect::InvalidTypeId, metaValues };
 			SEffectiveFileSettings settings = rules.ResolveFile(scope, path, facts, false);
 			// The stamp covers what filters Analyze's result too (the Types filter of its sub-entries, Validation of its
 			// problems: GetAnalyzeFilterHash), so an edit of either analyzes the scope's files again rather than leaving
@@ -540,7 +710,10 @@ SConversion ConvertBatch (SConvertInput& In)
 			settings.Settings.AnalyzeHash ^= rules.GetAnalyzeFilterHash(scope);
 			const bool bTypeIncluded = !bHasRecord || rules.IsTypeIncluded(scope, stored->Type);
 			const EFileClass fileClass = bTypeIncluded ? settings.Class : EFileClass::Excluded;
-			const bool bRowChanged = !stored.has_value() || bStatChanged || stored->BaseClass != fileClass;
+			const bool bClassDiffers = stored.has_value() && stored->BaseClass != fileClass;
+			const bool bMetaColumnsDiffer = metaColumns.has_value()
+				&& (!stored.has_value() || stored->MetaState != metaColumns->State || stored->MetaHash != metaColumns->Hash);
+			const bool bRowChanged = !stored.has_value() || bStatChanged || bClassDiffers || bMetaColumnsDiffer;
 			const auto addRow = [&]
 			{
 				SFileUpsert& row = part.FileUpserts.emplace_back();
@@ -553,6 +726,7 @@ SConversion ConvertBatch (SConvertInput& In)
 					row.ContentHash = hash::SContentHash {};   // changed, not hashed (hashes are lazy, §5.4 step 5)
 				}
 				row.Class = fileClass;
+				row.Meta = metaColumns;
 			};
 
 			const SImporterDesc* importer = settings.Importer;
@@ -562,6 +736,7 @@ SConversion ConvertBatch (SConvertInput& In)
 				{
 					addRow();
 				}
+				addMetaRow();
 				if (bHasRecord)
 				{
 					part.RecordRemoves.push_back(path);   // its importer went away (Importers.Exclude, a rule)
@@ -582,26 +757,34 @@ SConversion ConvertBatch (SConvertInput& In)
 				SAnalyzeRequest& request = chunkOut.Analyze.emplace_back();
 				request.Path = path;
 				request.Mount = In.MountIndex;
+				request.Class = settings.Class;
 				request.Settings = std::move(settings);
 				request.Scope = folder.Scope;
 				request.Size = file.Size;
 				request.MTime = file.MTime;
 				request.Identity = file.Identity;
-				request.Class = file.Verdict.Class;
 				request.bContentChanged = !stored.has_value() || bContentChanged;
+				request.Guid = guid;
+				request.Meta = std::move(read);
+				request.MetaColumns = metaColumns;
+				request.MetaRow = std::move(metaRow);
 				continue;
 			}
 			if (bRowChanged)
 			{
 				addRow();
 			}
-			if (bDirty || bClassDiffers)
+			addMetaRow();
+			if (bDirty || bClassDiffers || bMetaBytesChanged)
 			{
+				// Re-evaluated in memory: the rules' and the meta's outputs, and the meta's GUID, against the record.
 				++chunkOut.ReEvaluated;
 				const ERecordFlags flags = (stored->Flags & ~ERecordFlags::TypeExcluded) | (bTypeIncluded ? ERecordFlags::None : ERecordFlags::TypeExcluded);
-				if (RuleOutputsDiffer(view, stored->Record, settings, flags))
+				if (RuleOutputsDiffer(view, stored->Record, settings, flags) || stored->Guid != guid)
 				{
-					part.RecordUpserts.push_back(MakeRecordUpsertFromView(view, stored->Record, settings, flags));
+					SRecordUpsert upsert = MakeRecordUpsertFromView(view, stored->Record, settings, flags);
+					upsert.Guid = guid;
+					part.RecordUpserts.push_back(std::move(upsert));
 				}
 			}
 		}
@@ -620,7 +803,32 @@ SConversion ConvertBatch (SConvertInput& In)
 			out.Folders[folder].Candidates.emplace_back(paths[file], batch.Files[file].Verdict.bQuiet);
 		}
 		out.ReEvaluated += chunkOut.ReEvaluated;
+		out.MetasRead += chunkOut.MetasRead;
 		knownFiles += chunkOut.Known;
+	}
+
+	// The metas no file of the batch took: orphans, and metas of files the rules exclude. Their rows keep their stat and
+	// say Orphan; their bytes are not read (the lifecycle reads the few it needs).
+	SRegistryDelta orphanMetas;
+	for (uint32 m = 0u; m < batch.Metas.size(); ++m)
+	{
+		const SScanMeta& meta = batch.Metas[m];
+		if (meta.SourceFile != ~0u && metaOfFile[meta.SourceFile] == m)
+		{
+			continue;
+		}
+		metaPaths[m] = MakeChildMountPath(batch.Folders[meta.Folder].MountPath, meta.Name);
+		const std::optional<SStoredFile> stored = FindStoredFile(view, metaPaths[m]);
+		knownFiles += stored.has_value() ? 1u : 0u;
+		const EScanFileState state = ClassifyKnown(stored.has_value() ? std::optional<SKnownFile>(stored->Stat) : std::nullopt, meta.Size, meta.MTime,
+			meta.Identity);
+		const bool bBytesChanged = state == EScanFileState::New || state == EScanFileState::Changed;
+		const SFileMetaState columns { EMetaState::Orphan, bBytesChanged || !stored.has_value() ? 0u : stored->MetaHash };
+		if (state != EScanFileState::Unchanged || stored->BaseClass != EFileClass::Meta || stored->MetaState != columns.State
+			|| stored->MetaHash != columns.Hash)
+		{
+			orphanMetas.FileUpserts.push_back(MakeMetaRow(metaPaths[m], meta, columns));
+		}
 	}
 
 	// Removals: what the view knows at or below the root that the batch does not hold, outside failed folders. Every
@@ -644,7 +852,8 @@ SConversion ConvertBatch (SConvertInput& In)
 		view.ForEachFileUnder(*rootRow, [&] (uint32) { ++viewFiles; });
 		if (!failed.empty() || folderRows.size() != knownFolders || viewFiles != knownFiles)
 		{
-			const FStringSet batchFiles(paths.begin(), paths.end());
+			FStringSet batchFiles(paths.begin(), paths.end());
+			batchFiles.insert(metaPaths.begin(), metaPaths.end());
 			std::vector<FString> goneFolders;
 			for (const uint32 row : folderRows)
 			{
@@ -699,6 +908,13 @@ SConversion ConvertBatch (SConvertInput& In)
 		{
 			out.Deltas.push_back(std::move(files));
 		}
+	}
+	for (size_t i = 0u; i < orphanMetas.FileUpserts.size(); i += ConversionDeltaFiles)
+	{
+		const size_t end = std::min(orphanMetas.FileUpserts.size(), i + ConversionDeltaFiles);
+		SRegistryDelta& metas = out.Deltas.emplace_back();
+		metas.FileUpserts.assign(std::make_move_iterator(orphanMetas.FileUpserts.begin() + static_cast<ptrdiff_t>(i)),
+			std::make_move_iterator(orphanMetas.FileUpserts.begin() + static_cast<ptrdiff_t>(end)));
 	}
 
 	// Problems of the subtree: the scan's own (with Validation: severities) and the rule files'.
@@ -1311,6 +1527,7 @@ struct CAssetRegistry::SImpl
 		pass.Folders = std::move(Conversion.Folders);
 		pass.RuleFiles = std::move(Conversion.RuleFiles);
 		Counters.ReEvaluated += Conversion.ReEvaluated;
+		Counters.MetasRead += Conversion.MetasRead;
 		if (!Initial.bComplete)
 		{
 			Initial.ConvertMs += Conversion.Milliseconds;
@@ -1754,6 +1971,38 @@ struct CAssetRegistry::SImpl
 		}
 	}
 
+	/**
+	 * A record removed and one added with the same id since the last broadcast is one asset that moved (M4: identity is
+	 * the meta's GUID, so a file renamed with its meta keeps it): the addition goes to Moved, with its new path, and the
+	 * removal is dropped. A copy (an addition whose id another record still has) stays an addition.
+	 */
+	static void PairMoves (SAssetChangeSet& Changes)
+	{
+		if (Changes.Added.empty() || Changes.Removed.empty())
+		{
+			return;
+		}
+		std::map<SAssetId, size_t> removed;
+		for (size_t i = 0u; i < Changes.Removed.size(); ++i)
+		{
+			removed.try_emplace(Changes.Removed[i].Id, i);
+		}
+		std::vector<uint8> moved(Changes.Removed.size(), 0u);
+		std::erase_if(Changes.Added, [&] (SAssetChange& Added)
+		{
+			const auto it = removed.find(Added.Id);
+			if (it == removed.end() || moved[it->second] != 0u)
+			{
+				return false;
+			}
+			moved[it->second] = 1u;
+			Changes.Moved.push_back(std::move(Added));
+			return true;
+		});
+		size_t index = 0u;
+		std::erase_if(Changes.Removed, [&] (const SAssetChange&) { return moved[index++] != 0u; });
+	}
+
 	void Broadcast ()
 	{
 		const uint64 revision = Store->GetRevision();
@@ -1792,6 +2041,7 @@ struct CAssetRegistry::SImpl
 					changes.Modified.clear();
 				}
 			}
+			PairMoves(changes);
 		}
 		BroadcastRevision = revision;
 		if (!changes.IsEmpty())
