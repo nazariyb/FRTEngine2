@@ -238,7 +238,7 @@ private:
 			return;
 		}
 		std::optional<SFileData> sourceFile;
-		if (const std::optional<uint32> row = View.FindFile(*source); row.has_value())
+		if (const std::optional<uint32> row = View.FindSourceOfMeta(Meta.MountPath); row.has_value())
 		{
 			SFileData data;
 			if (View.GetFile(*row, data) && data.Class != EFileClass::Meta)
@@ -408,7 +408,7 @@ private:
 			return;
 		}
 		FString meta = GetMetaPath(Source.MountPath);
-		if (const std::optional<uint32> row = View.FindFile(meta); row.has_value())
+		if (const std::optional<uint32> row = View.FindMetaOfSource(Source.MountPath); row.has_value())
 		{
 			SFileData data;
 			if (View.GetFile(*row, data))

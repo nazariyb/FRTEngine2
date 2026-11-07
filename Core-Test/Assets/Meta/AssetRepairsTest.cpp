@@ -23,7 +23,8 @@
 // meta that lands between a repair's plan and its write, or after a crash and before the roll-forward, is kept; a dedupe
 // set left half written keeps its full remap when the next run plans the rest narrower. F4: a dedupe loser gives its
 // Aliases and FormerPaths up to the winner, and a copied referrer of an alias references the copy. F5: a file whose content
-// cannot be read is named with META001 and stops no other file's meta.
+// cannot be read is named with META001 and stops no other file's meta. F20: on a case-sensitive mount the lifecycle pairs a
+// meta with its source as the scan does, so a meta in another case gets its case fixed, never a restore beside it.
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -1145,6 +1146,40 @@ TEST(AssetRepairs, AMetaSpelledInAnotherCaseIsRenamedToItsSourcesCaseAfterTheGra
 	ASSERT_EQ(writes.size(), 1u);
 	EXPECT_EQ(writes[0].Name, "Move");
 	EXPECT_TRUE(rig.Problems().empty()) << rig.DescribeProblems().CStr();
+}
+
+// The scan pairs "Rock.png.META" with "Rock.png" under the portable fold on every mount; the lifecycle must see the same
+// pair on a case-sensitive one, or it takes the meta for lost (MissingMeta, a restore PlanCreateMeta then refuses) and
+// never offers the case fix.
+TEST(AssetRepairs, ACaseSensitiveMountsMetaInAnotherCaseIsPairedAsTheScanPairsItAndGetsItsCaseFixed)
+{
+	CRepairTree tree("Чутливий регістр");
+	if (!test::discovery::MakeCaseSensitive(tree.Tree.ProjectContent()))
+	{
+		GTEST_SKIP() << "cannot make a directory case-sensitive here";
+	}
+	tree.WritePng("Rock.png");
+	tree.WriteProjectContent("Rock.png.META", MetaText(GuidA));
+	CRig rig(tree);
+	rig.Open();
+	ASSERT_TRUE(rig.Desc.Mounts->Find("Project")->Volume.bCaseSensitive);
+	EXPECT_EQ(rig.GuidAt(P("Rock.png")), MakeGuid(GuidA)) << "the scan paired them";
+	rig.Settle();
+	EXPECT_EQ(rig.StateOf(P("Rock.png")), EMetaState::Paired);
+	rig.Settle(1100u);
+	rig.Settle(100u);
+	bool bExact = false;
+	bool bOther = false;
+	platform::EnumerateDirectory(tree.Tree.ProjectContent(), [&] (const platform::SDirectoryEntry& Entry)
+	{
+		bExact = bExact || Entry.Name == FStringView("Rock.png.meta");
+		bOther = bOther || Entry.Name == FStringView("Rock.png.META");
+	});
+	EXPECT_TRUE(bExact) << "renamed to its source's case";
+	EXPECT_FALSE(bOther) << "never a second meta beside it";
+	EXPECT_EQ(rig.GuidAt(P("Rock.png")), MakeGuid(GuidA));
+	EXPECT_EQ(rig.StateOf(P("Rock.png")), EMetaState::Paired);
+	EXPECT_TRUE(rig.Problems(Meta008).empty()) << rig.DescribeProblems().CStr();
 }
 
 TEST(AssetRepairs, ABrokenMetaWithTwoGuidsOffersKeepAAliasBAndTheFixRewritesItCanonically)

@@ -44,7 +44,8 @@ class CWorkerPool;
  * Where each fact comes from (Lifecycle.h's contract, edit [28]): stat, class and content hash from the source's FILES
  * row (a hash the lifecycle asks for is computed on the worker, kept in memory per stat and committed into the row);
  * RecordGuid from the record, unless the row is PendingMeta (a provisional id); bMetaOnDisk and the meta's spelling from
- * the Meta row in the same folder whose name folds to the source's + ".meta"; the GUID of an orphan or broken meta read
+ * the Meta row the scan paired with the source (CRegistryView::FindMetaOfSource: under the portable fold on every mount,
+ * a case-sensitive one too), and a second fold-equal meta beside it as an orphan; the GUID of an orphan or broken meta read
  * from its file on the worker (few, and nothing of them is stored); LiveGuids from every meta but one beside a file the
  * rules exclude (not an asset, so no member of a duplicate group); VerifiedCopies from METAS whose hash is the source's
  * MetaHash; tombstones from the view; bWritable from the mounts this process writes and the read-only attribute of the

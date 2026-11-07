@@ -252,6 +252,15 @@ public:
 	[[nodiscard]] std::optional<uint32> FindFileExact (FStringView MountPath) const noexcept;
 	// The file the OS means: exact, else the single row equal under the mount's file-system rule.
 	[[nodiscard]] std::optional<uint32> FindFile (FStringView MountPath) const noexcept;
+	/**
+	 * The pairing a scan makes (MountScanner's PairMetas, ConvertBatch), under the portable fold on every mount, so that the
+	 * lifecycle and validate see the pair the record was made from even on a case-sensitive mount ("Rock.png.META" beside
+	 * "Rock.png"). FindMetaOfSource: the Meta row of the source at SourceMountPath, its meta path byte-exact, else the
+	 * first row in byte order equal to it under the fold whose own source spelling names no other file. FindSourceOfMeta:
+	 * the file row (any class but Meta) a Meta row's source path names, byte-exact, else the first equal under the fold.
+	 */
+	[[nodiscard]] std::optional<uint32> FindMetaOfSource (FStringView SourceMountPath) const;
+	[[nodiscard]] std::optional<uint32> FindSourceOfMeta (FStringView MetaMountPath) const;
 	bool GetFile (uint32 FileRow, SFileData& Out) const noexcept;
 	[[nodiscard]] std::optional<uint32> FindFolder (FStringView MountPath) const noexcept;
 	bool GetFolder (uint32 FolderRow, SFolderData& Out) const noexcept;

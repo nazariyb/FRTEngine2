@@ -441,18 +441,26 @@ private:
 		{
 			return;
 		}
-		if (const std::optional<uint32> sourceRow = View.FindFile(*source); sourceRow.has_value())
+		// The scan's pairing (CRegistryView::FindSourceOfMeta, FindMetaOfSource): a meta its source took is seen from the
+		// source's side; one beside a file that gets no meta is validate's (META007). A second meta beside a source, equal
+		// under the fold to the one it took (both spellings in a case-sensitive folder), is an orphan: its GUID is live.
+		bool bBesideSource = false;
+		if (const std::optional<uint32> sourceRow = View.FindSourceOfMeta(Meta.MountPath); sourceRow.has_value())
 		{
 			SFileData data;
-			if (View.GetFile(*sourceRow, data) && data.Class != EFileClass::Meta)
+			if (View.GetFile(*sourceRow, data))
 			{
-				return;   // paired: seen from its source's side; or beside a file that gets no meta (META007 is validate's)
+				if (!GetsMeta(data.Class) || View.FindMetaOfSource(data.MountPath) == std::optional<uint32>(Row))
+				{
+					return;
+				}
+				bBesideSource = true;
 			}
 		}
 		// No source row: an orphan, or the meta of a file the rules exclude. The latter's file is not an asset, so its GUID
 		// is no member of a duplicate group: were it one, a copy at a smaller path would win and re-GUID the asset.
 		const std::optional<std::filesystem::path> sourcePath = ToAbsolute(*source);
-		const std::optional<platform::SFileStat> sourceStat = sourcePath.has_value() ? platform::Stat(*sourcePath) : std::nullopt;
+		const std::optional<platform::SFileStat> sourceStat = bBesideSource || !sourcePath.has_value() ? std::nullopt : platform::Stat(*sourcePath);
 		const bool bExcluded = sourceStat.has_value() && !sourceStat->bDirectory;
 		if (const SMetaRead* read = ReadMeta(Meta); read != nullptr)
 		{
@@ -476,7 +484,8 @@ private:
 	{
 		SSourceRow source;
 		source.Row = Row;
-		if (const std::optional<uint32> metaRow = View.FindFile(GetMetaPath(Source.MountPath)); metaRow.has_value())
+		// The meta the scan paired it with, whatever the mount's case rule (AssetRepairs.h, F4's facts).
+		if (const std::optional<uint32> metaRow = View.FindMetaOfSource(Source.MountPath); metaRow.has_value())
 		{
 			SFileData meta;
 			if (View.GetFile(*metaRow, meta) && meta.Class == EFileClass::Meta)

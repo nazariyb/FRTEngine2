@@ -6,6 +6,7 @@
 
 #include "Assets/AssetDiagnosticCodes.h"
 #include "Assets/AssetTypes.h"
+#include "Assets/Meta/MetaPaths.h"
 #include "Assets/Pipeline/ImporterTable.h"
 
 
@@ -1425,6 +1426,69 @@ std::optional<uint32> CRegistryView::FindFileExact (FStringView MountPath) const
 std::optional<uint32> CRegistryView::FindFile (FStringView MountPath) const noexcept
 {
 	const uint32 row = FindFileRow(Tables, MountPath);
+	return row != InvalidRow ? std::optional<uint32>(row) : std::nullopt;
+}
+
+namespace
+{
+// The live file rows equal to MountPath under the portable fold whose class is (bMeta) or is not Meta: the exact
+// spelling if one is, else the first in byte order.
+[[nodiscard]] uint32 FindPortableFileRow (const SRegistryTables& Tables, FStringView MountPath, bool bMeta, TFunctionRef<bool (FStringView)> Accept)
+{
+	uint32 found = InvalidRow;
+	FStringView foundPath;
+	bool bExact = false;
+	Tables.Indices.FilesByPortablePath.ForEach(HashPortable(MountPath), [&] (uint32 Row)
+	{
+		if (Tables.Files.Folder[Row] == InvalidRow || (Tables.Files.BaseClass[Row] == EFileClass::Meta) != bMeta)
+		{
+			return true;
+		}
+		const FStringView path = Tables.Paths.Get(Tables.Files.Path[Row]);
+		if (!EqualPortable(path, MountPath) || !Accept(path))
+		{
+			return true;
+		}
+		const bool bThisExact = path == MountPath;
+		if (found == InvalidRow || (bThisExact && !bExact)
+			|| (bThisExact == bExact && std::ranges::lexicographical_compare(path.AsBytes(), foundPath.AsBytes())))
+		{
+			found = Row;
+			foundPath = path;
+			bExact = bThisExact;
+		}
+		return true;
+	});
+	return found;
+}
+}
+
+std::optional<uint32> CRegistryView::FindMetaOfSource (FStringView SourceMountPath) const
+{
+	const FString metaPath = GetMetaPath(SourceMountPath);
+	// A fold-equal meta whose own source spelling is another file is that file's ("rock.png.meta" beside "rock.png" and
+	// "Rock.png", in a case-sensitive folder).
+	const uint32 row = FindPortableFileRow(Tables, metaPath, true, [&] (FStringView Path)
+	{
+		const std::optional<FStringView> source = GetMetaSource(Path);
+		if (!source.has_value() || *source == SourceMountPath)
+		{
+			return source.has_value();
+		}
+		const uint32 owner = FindFileRowExact(Tables, *source);
+		return owner == InvalidRow || Tables.Files.BaseClass[owner] == EFileClass::Meta;
+	});
+	return row != InvalidRow ? std::optional<uint32>(row) : std::nullopt;
+}
+
+std::optional<uint32> CRegistryView::FindSourceOfMeta (FStringView MetaMountPath) const
+{
+	const std::optional<FStringView> source = GetMetaSource(MetaMountPath);
+	if (!source.has_value())
+	{
+		return std::nullopt;
+	}
+	const uint32 row = FindPortableFileRow(Tables, *source, false, [] (FStringView) { return true; });
 	return row != InvalidRow ? std::optional<uint32>(row) : std::nullopt;
 }
 
