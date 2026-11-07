@@ -185,10 +185,13 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 			request.EngineRoot = engine->OwnerRoot;
 		}
 		// The MIG001 gate (design §14.8; assets::IsMigrationGateOn, off until H4b): a project behind the engine's content
-		// migrations opens read-only, as with [Assets] ReadOnly=1 - no meta, snapshot or Content/ write - until `FRT.bat
-		// assets migrate --all` brings it up to date. Every host logs it; the editor alone asks, in a dialog that offers the
-		// project manager's migration (GetMigrationNotice, EditorMain.cpp), and never in a scripted run. An engine behind
-		// keeps engine-owner mode from writing /Engine (`migrate --all --engine` is its migration).
+		// migrations opens read-only, as with [Assets] ReadOnly=1 - no meta or registry file is written - until
+		// `FRT.bat assets migrate --all` brings it up to date. Content/ is not covered yet: the material library still
+		// writes a model's missing _mat<N>.frtmat.yml and upgrades an old material until its asset-manager façade
+		// (M7 or later). Every host logs it, and an asset writer's window title says it; the editor alone asks, in a
+		// dialog that offers the project manager's migration (GetMigrationNotice, EditorMain.cpp), and never in a
+		// scripted run. An engine behind keeps engine-owner mode from writing /Engine (`migrate --all --engine` is its
+		// migration).
 		if (assets::IsMigrationGateOn(Config))
 		{
 			if (const std::optional<SDiagnostic> gap = assets::FindMigrationGap(request.Root, "/Project", false))
@@ -197,6 +200,10 @@ bool CEngine::StartUp (const SEngineDesc& InDesc)
 				log::Error(log::Assets, "MIG001 {}: this {} opens it read-only", gap->Message, Desc.bAssetWriter ? "editor" : "host");
 				Config.SetOverride("Assets", "ReadOnly", "1");
 				request.bReadOnly = true;
+				if (Desc.bAssetWriter)
+				{
+					Desc.WindowTitle += " (read-only: content behind the engine, MIG001)";
+				}
 			}
 			else if (!request.EngineRoot.empty())
 			{

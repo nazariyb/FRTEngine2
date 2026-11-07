@@ -32,7 +32,7 @@ namespace
 bool AskToMigrate (FStringView Title, FStringView ProjectName, FStringView Notice)
 {
 	const FString text = FString::Format("{}'s content is behind this engine (MIG001):\n\n{}\n\nIt opens read-only: nothing writes "
-		"its metas, registry files or Content/ until it is migrated.\n\nYes: migrate it now in the project manager "
+		"its metas or registry files until it is migrated.\n\nYes: migrate it now in the project manager "
 		"(FRT.bat assets migrate --all), then open it.\nNo: open it read-only.", ProjectName, Notice);
 	return MessageBoxW(nullptr, ToWide(text).CStr(), ToWide(Title).CStr(), MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON1 | MB_SETFOREGROUND) == IDYES;
 }
@@ -138,7 +138,7 @@ int RunEditor ()
 	if (bOpenProject && !engine.GetMigrationNotice().IsEmpty() && !CAutomation::IsScriptedRun(engine.GetConfig())
 		&& AskToMigrate(desc.WindowTitle, gameProject.Name, engine.GetMigrationNotice()))
 	{
-		manager.Message = gameProject.Name + "'s content is behind this engine: " + engine.GetMigrationNotice();
+		manager.Message = gameProject.Name + " (MIG001): " + engine.GetMigrationNotice();
 		manager.Project = gameProject.File;
 		manager.bOfferMigrate = true;
 		bRunManager = true;

@@ -127,17 +127,11 @@ SProblemCounts CountProblems (const assets::CRegistryView& View)
 
 // The run's root behind the engine's migrations (CCommandletContext::MigrationGap: the gate is on, and the host let this
 // run go on because it writes nothing): one error-severity problem beside the registry's, so the exit code says it.
-void ReportMigrationGap (const CCommandletContext& Context, SProblemCounts& Counts)
+// Each verb reports it inside its own output (scan in its one object, status as one of its problems by code), never
+// as a line of its own.
+FStringView MigrationGapMessage (const CCommandletContext& Context)
 {
-	if (!Context.MigrationGap.has_value())
-	{
-		return;
-	}
-	const SDiagnostic& gap = *Context.MigrationGap;
-	++Counts.Errors;
-	Context.Print(FString::Format("  MIG001   error    {} ({}): {}", gap.Subject, gap.File, gap.Message));
-	Context.PrintJson(CJsonObject().AddString("kind", "problem").AddString("code", "MIG001").AddString("severity", "error")
-		.AddString("subject", gap.Subject).AddString("file", gap.File).AddString("message", gap.Message));
+	return Context.MigrationGap.has_value() ? Context.MigrationGap->Message.View() : FStringView();
 }
 
 // A record's mount path ("#label" for a sub-entry), "" for an invalid one.
@@ -321,7 +315,7 @@ int32 RunScan (CCommandletContext& Context)
 	const assets::SInitialScanReport& report = registry.GetInitialScanReport();
 	const assets::SAssetRegistryCounters& counters = registry.GetCounters();
 	SProblemCounts problems = CountProblems(view);
-	ReportMigrationGap(Context, problems);
+	problems.Errors += Context.MigrationGap.has_value() ? 1u : 0u;
 	const FString snapshot = FString::FromPath(registry.GetSnapshotPath());
 
 	Context.Print(FString::Format("Scanned {}: {} file(s), {} record(s), {} sub-entr{}, {} folder(s) in {:.1f} ms", DescribeMounts(*run.Mounts),
@@ -337,6 +331,10 @@ int32 RunScan (CCommandletContext& Context)
 			file.Message.IsEmpty() ? FString() : FString(" (") + file.Message + ")"));
 	}
 	Context.Print(FString::Format("  problems: {} error(s), {} warning(s), {} info", problems.Errors, problems.Warnings, problems.Infos));
+	if (Context.MigrationGap.has_value())
+	{
+		Context.Print(FString::Format("  MIG001 {}", Context.MigrationGap->Message));
+	}
 	Context.Print(bWriter ? FString::Format("  wrote {}", snapshot) : FString("  read-only: wrote nothing"));
 
 	const std::vector<FString> mounts = MountNames(*run.Mounts);
@@ -347,7 +345,7 @@ int32 RunScan (CCommandletContext& Context)
 		.AddUInt("reEvaluated", counters.ReEvaluated).AddUInt("scanned", counters.Scanned).AddUInt("committed", counters.Committed)
 		.AddUInt("loadMs", static_cast<uint64>(report.LoadMs + 0.5)).AddUInt("totalMs", static_cast<uint64>(report.TotalMs + 0.5))
 		.AddUInt("errors", problems.Errors).AddUInt("warnings", problems.Warnings).AddUInt("infos", problems.Infos)
-		.AddString("snapshot", bWritten ? snapshot.View() : FStringView()));
+		.AddString("snapshot", bWritten ? snapshot.View() : FStringView()).AddString("migration", MigrationGapMessage(Context)));
 	return problems.Errors > 0u ? ExitProblems : ExitSuccess;
 }
 
@@ -414,7 +412,13 @@ int32 RunStatus (CCommandletContext& Context)
 		case ESeverity::Info: ++counts.Infos; break;
 		}
 	});
-	ReportMigrationGap(Context, counts);
+	// MIG001 (the gate on, the root behind) is the lifecycle's: one more problem by code, so it is counted, listed and
+	// sent as every other is.
+	if (Context.MigrationGap.has_value())
+	{
+		++byCode[SProblemKey(FString("MIG001"), static_cast<uint8>(ESeverity::Error), static_cast<uint8>(assets::EProblemSource::Lifecycle))];
+		++counts.Errors;
+	}
 	Context.Print(byCode.empty() ? FString("Problems: none") : FString("Problems by code, severity and source:"));
 	for (const auto& [key, count] : byCode)
 	{
@@ -423,6 +427,10 @@ int32 RunStatus (CCommandletContext& Context)
 		Context.Print(FString::Format("  {:<8} {:<8} {:<10} {}", std::get<0>(key), severity, source, count));
 		Context.PrintJson(CJsonObject().AddString("kind", "problems").AddString("code", std::get<0>(key) == "-" ? FStringView() : std::get<0>(key).View())
 			.AddString("severity", severity).AddString("source", source).AddUInt("count", count));
+	}
+	if (Context.MigrationGap.has_value())
+	{
+		Context.Print(FString::Format("  MIG001: {}", Context.MigrationGap->Message));
 	}
 
 	// Unclaimed files (no importer claimed them, and no record names them as a companion), by folder and extension.

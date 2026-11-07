@@ -108,8 +108,9 @@ private:
 	// Opens a project: builds it first when its editor or its game is not built, or bBuild.
 	void Open (const std::filesystem::path& ProjectFile, bool bBuild);
 	// Builds the project in a console once this process has exited, then opens it: for when the
-	// engine itself needs building, which its running editor prevents.
-	void BuildAfterExit (const std::filesystem::path& ProjectFile);
+	// engine itself needs building, which its running editor prevents. bMigrate: the task that failed
+	// was a migration, so its content is migrated between the build and the open.
+	void BuildAfterExit (const std::filesystem::path& ProjectFile, bool bMigrate);
 	void StartCreate ();
 	// Brings the project's content up to date with its engine's migrations, then opens it.
 	void StartMigrate (const std::filesystem::path& ProjectFile);
@@ -143,6 +144,7 @@ private:
 	FString TaskTitle;
 	std::filesystem::path TaskProject;   // opened when the task succeeds
 	std::filesystem::path FailedProject; // its build failed on a file this process holds
+	ETask FailedTask = ETask::None;      // the task that failed so (a migration rebuilds AssetTool first)
 	CToolProcess Tool;
 	size_t ShownOutputSize = 0u;
 

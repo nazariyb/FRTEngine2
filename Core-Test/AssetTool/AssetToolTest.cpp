@@ -1343,20 +1343,13 @@ TEST_F(AssetToolRegistryTest, TheMetaVerbsCreateValidateRestoreAndExplainMetasTh
 // The MIG001 gate (design §14.8), on for these runs with -Assets:MigrationGate=1 (it is off until H4b): in a project
 // behind the engine every run that would write ends with exit code 1 and MIG001 before it takes the lock, validate
 // --fix as well (its WriteOption), and writes nothing; a run that writes nothing goes on and reports MIG001 as an
-// error (scan --ci); migrate runs and brings the project up to date, and then the same scan writes. Five launches.
+// error inside the output its verb documents: scan --ci in its one --json object ("migration"), status as one more
+// {"kind":"problems"} line; migrate runs and brings the project up to date, and then the same scan writes. Six
+// launches.
 TEST_F(AssetToolRegistryTest, AProjectBehindTheEngineIsWrittenOnlyByItsMigrationWhileTheGateIsOn)
 {
 	const FString gate = "-Assets:MigrationGate=1";
 	const std::filesystem::path stone = ProjectDir / FStringView("Content/Textures/Камінь.png.meta").ToPath();
-	const auto problems = [] (FStringView Output, FStringView Code)
-	{
-		uint32 found = 0u;
-		for (const reflect::CDataTree& line : ParseJsonLines(Output))
-		{
-			found += JsonText(line, "kind") == "problem" && JsonText(line, "code") == Code ? 1u : 0u;
-		}
-		return found;
-	};
 
 	const test::SProcessResult refused = RunOnProject({ "scan", gate, "--json" });
 	EXPECT_EQ(refused.ExitCode, 1) << refused.Output.CStr() << refused.Errors.CStr();
@@ -1372,8 +1365,36 @@ TEST_F(AssetToolRegistryTest, AProjectBehindTheEngineIsWrittenOnlyByItsMigration
 
 	const test::SProcessResult readOnly = RunOnProject({ "scan", "--ci", gate, "--json" });
 	EXPECT_EQ(readOnly.ExitCode, 1) << readOnly.Output.CStr() << readOnly.Errors.CStr();
-	EXPECT_EQ(problems(readOnly.Output, "MIG001"), 1u) << readOnly.Output.CStr();
+	const std::vector<reflect::CDataTree> scanLines = ParseJsonLines(readOnly.Output);
+	ASSERT_EQ(scanLines.size(), 1u) << "scan --json is one line, MIG001 or not: " << readOnly.Output.CStr();
+	EXPECT_EQ(JsonText(scanLines[0], "verb"), "scan");
+	EXPECT_TRUE(JsonText(scanLines[0], "migration").StartsWith("/Project is behind this engine")) << readOnly.Output.CStr();
+	EXPECT_GE(JsonInt(scanLines[0], "errors"), 1) << readOnly.Output.CStr();
 	EXPECT_FALSE(WroteLocalAssets()) << "a read-only scan writes nothing";
+
+	// status: MIG001 is one of its problems by code (the lifecycle's), counted in its summary's errors.
+	const test::SProcessResult status = RunOnProject({ "status", gate, "--json" });
+	EXPECT_EQ(status.ExitCode, 1) << status.Output.CStr() << status.Errors.CStr();
+	uint32 mig001 = 0u;
+	for (const reflect::CDataTree& line : ParseJsonLines(status.Output))
+	{
+		const FString kind = JsonText(line, "kind");
+		EXPECT_TRUE(kind == "scan" || kind == "mount" || kind == "problems" || kind == "unclaimed" || kind == "ddc" || kind == "summary")
+			<< "status sends only the kinds it documents: " << kind.CStr();
+		if (kind == "problems" && JsonText(line, "code") == "MIG001")
+		{
+			++mig001;
+			EXPECT_EQ(JsonText(line, "severity"), "error");
+			EXPECT_EQ(JsonText(line, "source"), "Lifecycle");
+			EXPECT_EQ(JsonInt(line, "count"), 1);
+		}
+		if (kind == "summary")
+		{
+			EXPECT_GE(JsonInt(line, "errors"), 1);
+		}
+	}
+	EXPECT_EQ(mig001, 1u) << status.Output.CStr();
+	EXPECT_FALSE(WroteLocalAssets()) << "status writes nothing";
 
 	const test::SProcessResult migrated = RunOnProject({ "migrate", "--all", gate });
 	ASSERT_EQ(migrated.ExitCode, 0) << migrated.Output.CStr() << migrated.Errors.CStr();
@@ -1382,7 +1403,9 @@ TEST_F(AssetToolRegistryTest, AProjectBehindTheEngineIsWrittenOnlyByItsMigration
 
 	const test::SProcessResult scanned = RunOnProject({ "scan", gate, "--json" });
 	EXPECT_EQ(scanned.ExitCode, 0) << scanned.Output.CStr() << scanned.Errors.CStr();
-	EXPECT_EQ(problems(scanned.Output, "MIG001"), 0u) << scanned.Output.CStr();
+	const std::vector<reflect::CDataTree> scannedLines = ParseJsonLines(scanned.Output);
+	ASSERT_EQ(scannedLines.size(), 1u) << scanned.Output.CStr();
+	EXPECT_EQ(JsonText(scannedLines[0], "migration"), "") << scanned.Output.CStr();
 	EXPECT_TRUE(std::filesystem::exists(assets::GetRegistrySnapshotPath(ProjectDir)));
 }
 

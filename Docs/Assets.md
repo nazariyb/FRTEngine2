@@ -432,15 +432,19 @@ writes no meta.
   `validate` reports a root whose file lacks a required step as `MIG001`, and so do the hosts' gate below.
 - **The `MIG001` gate** (design §14.8; `FindMigrationGap`, `IsMigrationGateOn` in `Migrations.h`). A root behind the
   engine (its file missing, malformed, or without a step this engine has) is written by nothing but its migration.
-  `CEngine::StartUp` opens a project behind read-only, as `[Assets] ReadOnly=1` does (no lock, no registry file, no meta),
-  logs `MIG001`, and keeps engine-owner mode out of an engine behind. Only the interactive editor asks, in a blocking
+  `CEngine::StartUp` opens a project behind read-only, as `[Assets] ReadOnly=1` does (no lock, no registry file, no
+  meta; `Content/` is not covered yet: the material library still creates a model's missing
+  `<model>_mat<N>.frtmat.yml` and upgrades an old-format material until its façade over the asset manager replaces it,
+  M7 or later), says so in an asset writer's window title, logs `MIG001`, and keeps engine-owner mode out of an engine
+  behind. Only the interactive editor asks, in a blocking
   dialog: Yes opens the project manager with Migrate and Open (`FRT.bat assets migrate --all`, then the editor), No
   opens the project read-only; a scripted run, a headless host and the launcher only log. The project manager marks
   each project of this engine that is behind and offers Migrate and Open for it. AssetTool, for the run's own root
   (the project's, the engine's with `--engine`): a run that would write ends before the lock with exit code 1 and
   `MIG001` (`{"error":...,"exitCode":1,"code":"MIG001",...}` with `--json`); `migrate` runs, and so does `lock`, which
   writes nothing; a run that writes nothing (`--ci`, `-Assets:ReadOnly=1`, `migrate --dry-run`, `validate` without
-  `--fix`) runs, and `scan` and `status` count `MIG001` as an error among their problems (exit 1). A project that
+  `--fix`) runs, and `scan` and `status` count `MIG001` as an error among their problems (exit 1): `scan` in its one
+  object (`migration`), `status` as one more problem by code. A project that
   `FRT.bat new` makes has its template's `Schemas/Migrations.yml`, so it is not behind. The gate is `[Assets]
   MigrationGate`, default `MigrationGateDefault`, which is **off until H4b** commits the engine's and both templates'
   files and turns it on; `-Assets:MigrationGate=1` turns it on for one run (AssetTool's gate test does).
@@ -560,8 +564,8 @@ not parse or compile, and an `<asset>` that names no record or several, exit wit
 
 | Verb | Lines and fields |
 |---|---|
-| `scan` | one: `verb`, `mounts`, `owner` (`Project`/`Engine`), `writer`, `files`, `records`, `subEntries`, `folders`, `analyzed`, `hashed`, `reEvaluated`, `scanned`, `committed`, `loadMs`, `totalMs`, `errors`, `warnings`, `infos`, `snapshot` (the file written, else "") |
-| `status` | `{"kind":"scan"}` (`mounts`, `state`, `files`, `records`, `subEntries`, `folders`, `totalMs`, `analyzed`, `hashed`), one `{"kind":"mount"}` per mount (`mount`, `provider`: `Git` or `None`, `pendingMetas`), one `{"kind":"problems"}` per (`code`, `severity`, `source`) with `count`, one `{"kind":"unclaimed"}` per (`folder`, `extension`) with `count`, `{"kind":"ddc"}` (`ddc`, `exists`, `error`, `contentBytes`, `totalBytes`, `files`), `{"kind":"summary"}` (`errors`, `warnings`, `infos`) |
+| `scan` | one: `verb`, `mounts`, `owner` (`Project`/`Engine`), `writer`, `files`, `records`, `subEntries`, `folders`, `analyzed`, `hashed`, `reEvaluated`, `scanned`, `committed`, `loadMs`, `totalMs`, `errors`, `warnings`, `infos` (`errors` counts `MIG001`), `snapshot` (the file written, else ""), `migration` (while the `MIG001` gate is on and the root is behind the engine: its message, else "") |
+| `status` | `{"kind":"scan"}` (`mounts`, `state`, `files`, `records`, `subEntries`, `folders`, `totalMs`, `analyzed`, `hashed`), one `{"kind":"mount"}` per mount (`mount`, `provider`: `Git` or `None`, `pendingMetas`), one `{"kind":"problems"}` per (`code`, `severity`, `source`) with `count` (a root behind the engine while the `MIG001` gate is on: `MIG001`, `error`, `Lifecycle`, 1), one `{"kind":"unclaimed"}` per (`folder`, `extension`) with `count`, `{"kind":"ddc"}` (`ddc`, `exists`, `error`, `contentBytes`, `totalBytes`, `files`), `{"kind":"summary"}` (`errors`, `warnings`, `infos`) |
 | `query` | one per record: a field per column (`$Size` -> `size`, `$ImportStatus` -> `importStatus`, a tag key as named; counts as numbers, `$Labels` and multi-value tags as arrays), then `{"matched","shown"}` |
 | `refs`, `referencers` | one per edge: `from`, `target` (as written), `resolved` (the record reached, else ""), `flags` (array), `field`, `state` (`Resolved`, `Unresolved`, `Ambiguous`, `Companion`); `referencers --transitive`: one per record, `path`, `type` |
 | `explain` | one: `path`, `excluded`, `excludedBy`, `importer`, `class`, `quiet`, `cook`, `chunk`, each source as `{"file","line","rule"}` (`importerSource`, `cookSource`, `chunkSource`), `labels` (with `source` and `authored`) and `settings` (with `source`), `settingsTable`, `typeIncluded`, `chain`, `notes`, `record`, `recordType`, `meta` (`state`; with a meta also `file`, `path`, `guid`, `parses`), `aliases`, `formerPaths` |

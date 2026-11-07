@@ -977,6 +977,14 @@ class Gate:
             errors = tail(log, lines=3, pattern=r'error|failed|cannot|new:')
             raise StepFailed('FRT.bat new: ' + ('timed out' if code is None else
                                                 '; '.join(errors) if errors else f'exit code {code}'))
+        # The template's Schemas/Migrations.yml comes along byte for byte (edit [65]): without it the copy would be
+        # behind the engine (MIG001) the moment it is made. Trivially true until H4b commits the template's file.
+        migrations = ROOT / 'Templates' / SCRATCH_TEMPLATE / 'Schemas' / 'Migrations.yml'
+        if migrations.exists():
+            copied = project_dir / 'Schemas' / 'Migrations.yml'
+            if not copied.exists() or copied.read_bytes() != migrations.read_bytes():
+                raise StepFailed(f'FRT.bat new did not carry {SCRATCH_TEMPLATE}\'s Schemas/Migrations.yml over unchanged '
+                                 f'(the copy is kept: {root})')
         retries = self.build(log, f'--project={project}', f'--config={config}', env=env)
 
         shaders = root / 'Shaders'
