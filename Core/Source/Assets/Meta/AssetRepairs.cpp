@@ -1143,11 +1143,17 @@ struct SOpsOutput
 	std::vector<FString> Touched;         // mount paths whose folders a rescan must read again
 };
 
-// Each op's actions into Report's AppliedActions or RefusedActions, before ApplyOps moves the refused ones away.
+// Each op's actions into Report's AppliedActions or RefusedActions, before ApplyOps moves the refused ones away. A
+// stale op (the disk moved on since its plan) is in neither: ApplyOps counts it as neither, and the run that follows
+// plans it again from what is there now, so it was not run.
 void RecordOutcomes (const SOpsOutput& Output, SRepairReport& Report)
 {
 	for (const SOpResult& result : Output.Results)
 	{
+		if (result.Result.Report.bStale)
+		{
+			continue;
+		}
 		const bool bApplied = result.Result.Vcs.Error == EVcsError::None;
 		std::vector<SLifecycleAction>& into = bApplied ? Report.AppliedActions : Report.RefusedActions;
 		into.insert(into.end(), result.Actions.begin(), result.Actions.end());

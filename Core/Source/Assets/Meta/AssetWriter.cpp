@@ -456,8 +456,15 @@ SVcsResult CAssetWriter::Prepare (const SAssetOp& Op, bool bReplay, SPlan& Out, 
 					}
 				}
 				std::filesystem::path target;
-				const FString reason = Resolve(GetNameBefore(earlier, earlier.size(), step.Path), target, provider)
-					? GetStaleReason(step, target, source) : FString("it names no file");
+				const bool bResolved = Resolve(GetNameBefore(earlier, earlier.size(), step.Path), target, provider);
+				// A folder where the file goes is no file that arrived since the plan: the next plan would read the
+				// same and plan the same, so it is refused, as a write over it was before preconditions.
+				if (const std::optional<platform::SFileStat> held = bResolved ? platform::Stat(target) : std::nullopt;
+					held.has_value() && held->bDirectory)
+				{
+					return Failure(FString::Format("cannot write '{}': a folder is there", ToDisplayText(step.Path)));
+				}
+				const FString reason = bResolved ? GetStaleReason(step, target, source) : FString("it names no file");
 				if (!reason.IsEmpty())
 				{
 					log::Info(log::Assets, "The operation '{}' does not write '{}': {}.", Op.Verb, ToDisplayText(step.Path), reason);

@@ -496,6 +496,24 @@ TEST(AssetWriterTest, AMetaThatArrivesBetweenThePlanAndTheRunIsKept)
 	EXPECT_FALSE(tree.JournalExists());
 }
 
+// A folder where a create's meta goes did not arrive since the plan, and the next plan would read the same: the op is
+// refused, never given back stale to be planned again and again.
+TEST(AssetWriterTest, AFolderWhereACreatesFileGoesIsRefusedAndNotGivenBackStale)
+{
+	CWriterTree tree("Тека на місці мета");
+	tree.Write("/Project/a.png", "png");
+	std::error_code ec;
+	ASSERT_TRUE(std::filesystem::create_directory(tree.Abs("/Project/a.png.meta"), ec));
+	SAssetWriteReport report;
+	const SAssetOp op = MakeOp({ WriteStep("/Project/a.png.meta", MakeMetaText(SGuid::NewRandom())) });
+	EXPECT_NE(tree.Writer->Run(op, report).Error, EVcsError::None);
+	EXPECT_FALSE(report.bStale);
+	EXPECT_FALSE(report.bChangedDisk);
+	EXPECT_TRUE(std::filesystem::is_directory(tree.Abs("/Project/a.png.meta")));
+	EXPECT_TRUE(tree.Vcs.GetCalls().empty());
+	EXPECT_FALSE(tree.JournalExists());
+}
+
 TEST(AssetWriterTest, AnOpWithoutAPreconditionIsRefusedOnItsFirstRun)
 {
 	CWriterTree tree("Без умови");

@@ -1106,6 +1106,27 @@ TEST(AssetRepairs, RunNowsReportSaysWhetherEachPlannedRepairWasAppliedRefusedOrN
 	EXPECT_EQ(tree.MetaGuid("a.png"), DerivedGuid(P("a.png"), 6u));
 }
 
+// A repair the writer gives back stale (the meta arrived between its plan and its write) was neither applied nor
+// refused: RunNow plans again from what is there, and the report says it was not run.
+TEST(AssetRepairs, RunNowsReportSaysARepairGivenBackStaleWasNotRun)
+{
+	CRepairTree tree("Застарілий підсумок");
+	tree.WritePng("a.png");
+	CRig rig(tree);
+	rig.Open();
+	rig.Settle();
+	rig.Repairs().GetWriter()->SetBeforeRunForTest([&] (const SAssetOp&)
+	{
+		tree.WriteMeta("a.png", MetaText(GuidA));
+	});
+	const SRepairReport report = rig.Repairs().RunNow(SRepairOptions {});
+	ASSERT_EQ(report.Planned.size(), 1u);
+	EXPECT_EQ(report.Applied, 0u);
+	EXPECT_EQ(report.Refused, 0u);
+	EXPECT_EQ(GetRepairOutcome(report, report.Planned[0]), ERepairOutcome::NotRun);
+	EXPECT_EQ(tree.MetaGuid("a.png"), MakeGuid(GuidA));
+}
+
 TEST(AssetRepairs, ARefusalGoesWithTheFolderItWasIn)
 {
 	CRepairTree tree("Відмова в теці");
