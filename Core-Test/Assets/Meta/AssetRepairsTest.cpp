@@ -24,7 +24,8 @@
 // set left half written keeps its full remap when the next run plans the rest narrower. F4: a dedupe loser gives its
 // Aliases and FormerPaths up to the winner, and a copied referrer of an alias references the copy. F5: a file whose content
 // cannot be read is named with META001 and stops no other file's meta. F20: on a case-sensitive mount the lifecycle pairs a
-// meta with its source as the scan does, so a meta in another case gets its case fixed, never a restore beside it.
+// meta with its source as the scan does, so a meta in another case gets its case fixed, never a restore beside it. F21: a
+// refused dedupe shows VCS002 on every loser, and its fix-it, or an event on any one loser, retries the whole set.
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -850,6 +851,81 @@ TEST(AssetRepairs, ARefusedCheckOutStaysAProposalWithVcs002UntilAnEventOnThePath
 	rig.Settle(1600u);
 	EXPECT_EQ(tree.MetaGuid("a.png"), DerivedGuid(P("a.png"), 6u));
 	EXPECT_TRUE(rig.Problems().empty()) << rig.DescribeProblems().CStr();
+}
+
+namespace
+{
+// A copied pack whose dedupe the VCS refused, with DerivedAutoGuids off: the losers' maps hold stand-ins only the whole set
+// replaces.
+void RefuseThePackCopysDedupe (CRepairTree& Tree, CRig& Rig)
+{
+	Rig.Vcs.Refuse("CheckOut", EVcsError::LockedByOther, "held by a colleague");
+	CopyPack(Tree);
+	Rig.Scan("/Project/Pack2");
+	Rig.Settle();
+	Rig.Settle(1600u);
+	Rig.Vcs.Refuse("CheckOut", EVcsError::None);
+}
+
+void ExpectPackRemappedToItsCopies (const CRepairTree& Tree, FStringView Context)
+{
+	const std::optional<SAssetMeta> rock = Tree.ReadMeta("Pack2/Rock.png");
+	ASSERT_TRUE(rock.has_value()) << FString(Context).CStr();
+	const SGuid skin = Tree.MetaGuid("Pack2/Skin.png");
+	EXPECT_NE(rock->Guid, MakeGuid(GuidA)) << FString(Context).CStr();
+	EXPECT_NE(skin, MakeGuid(GuidB)) << FString(Context).CStr();
+	EXPECT_EQ(RemapTarget(*rock), skin.ToString()) << FString(Context).CStr() << ": the GUID Skin's meta holds, never a stand-in";
+}
+}
+
+TEST(AssetRepairs, ARefusedDedupeShowsVcs002OnEveryLoserAndItsFixItRetriesTheWholeSet)
+{
+	CRepairTree tree("Відмова набору");
+	WriteSafety(tree, "DerivedAutoGuids");
+	WritePack(tree);
+	CRig rig(tree);
+	rig.Open();
+	rig.Settle();
+	RefuseThePackCopysDedupe(tree, rig);
+	EXPECT_EQ(tree.MetaGuid("Pack2/Rock.png"), MakeGuid(GuidA));
+	const std::vector<SDiagnostic> vcs002 = rig.Problems(Vcs002);
+	ASSERT_EQ(vcs002.size(), 2u) << rig.DescribeProblems().CStr();
+	for (const FStringView subject : { "Pack2/Rock.png", "Pack2/Skin.png" })
+	{
+		const auto found = std::find_if(vcs002.begin(), vcs002.end(), [&] (const SDiagnostic& Problem) { return Problem.Subject == P(subject); });
+		ASSERT_NE(found, vcs002.end()) << FString(subject).CStr();
+		EXPECT_FALSE(found->File.IsEmpty());
+		EXPECT_FALSE(rig.Repairs().GetFixIts(*found).empty()) << FString(subject).CStr();
+	}
+
+	const auto skinProblem = std::find_if(vcs002.begin(), vcs002.end(), [] (const SDiagnostic& Problem) { return Problem.Subject == P("Pack2/Skin.png"); });
+	const std::vector<SLifecycleAction> fixIts = rig.Repairs().GetFixIts(*skinProblem);
+	ASSERT_EQ(fixIts.size(), 1u);
+	const SRepairReport fixed = rig.Repairs().ApplyFix(fixIts.front());
+	EXPECT_EQ(fixed.Applied, 2u) << "both losers, as one op";
+	ExpectPackRemappedToItsCopies(tree, "fixed");
+	EXPECT_TRUE(rig.Problems().empty()) << rig.DescribeProblems().CStr();
+}
+
+// An event on one loser ends the refusal of its whole set: proposed alone, it would be re-GUIDed with a map naming a
+// stand-in for the other loser that no meta will ever hold.
+TEST(AssetRepairs, AnEventOnOneLoserOfARefusedDedupeProposesTheWholeSetAgain)
+{
+	CRepairTree tree("Подія набору");
+	WriteSafety(tree, "DerivedAutoGuids");
+	WritePack(tree);
+	CRig rig(tree);
+	rig.Open();
+	rig.Settle();
+	RefuseThePackCopysDedupe(tree, rig);
+	ASSERT_EQ(rig.Problems(Vcs002).size(), 2u) << rig.DescribeProblems().CStr();
+
+	tree.WritePng("Pack2/Rock.png", 4u);   // an event on Rock's copy only
+	rig.Scan("/Project/Pack2");
+	rig.Settle();
+	rig.Settle(1600u);
+	ExpectPackRemappedToItsCopies(tree, "after the event");
+	EXPECT_TRUE(rig.Problems(Vcs002).empty()) << rig.DescribeProblems().CStr();
 }
 
 TEST(AssetRepairs, ARefusalGoesWithTheFolderItWasIn)

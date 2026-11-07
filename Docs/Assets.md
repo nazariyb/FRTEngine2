@@ -427,7 +427,9 @@ it, means none at all. With one:
   watcher's own hold (`SetVcsBusyQuery`) is the narrower `IsRewritingTree` of every mount, so an open merge holds repairs
   but never hot reload; with `WaitForVcs=0` it is left unset.
 - **What it remembers.** A repair the VCS refused stays a proposal with `VCS002` and is not tried again until an event on
-  its path or an explicit fix, so a read-only file cannot spin. A meta created beside a source `StatusOf` calls tracked,
+  its path or an explicit fix, so a read-only file cannot spin. Every repair of a refused op shows its own `VCS002` (the
+  losers of a dedupe set alike), and they are retried together: an event on any one of them, or the fix-it of any one,
+  proposes the whole set again. A meta created beside a source `StatusOf` calls tracked,
   when the meta itself is untracked, is `VCS003` ("generated locally: commit it", with the provider's add command), asked
   in one `StatusOf` per provider for all the metas of a round; adding or committing it changes no file here, so the kept
   pairs are asked again after 30 s, then twice as long each time (up to 16 min), until the VCS tracks them alike or the

@@ -1469,17 +1469,42 @@ struct CAssetRepairs::SImpl
 			// An event on a path ends a refusal there: the repair is proposed again. A folder's (its removal) ends every
 			// refusal below it.
 			const FStringView asset = GetAssetOf(path);
-			std::erase_if(RefusedActions, [&] (const SLifecycleAction& Action)
+			std::set<uint64> ended;
+			for (const SRefusedAction& refused : RefusedActions)
 			{
-				return Concerns(Action, path) || IsMountPathAtOrBelow(Action.Path.View(), path.View())
-					|| (!Action.ToPath.IsEmpty() && IsMountPathAtOrBelow(Action.ToPath.View(), path.View()));
-			});
+				const SLifecycleAction& action = refused.Action;
+				if (Concerns(action, path) || IsMountPathAtOrBelow(action.Path.View(), path.View())
+					|| (!action.ToPath.IsEmpty() && IsMountPathAtOrBelow(action.ToPath.View(), path.View())))
+				{
+					ended.insert(refused.Group);
+				}
+			}
+			EndRefusals(ended);
 			std::erase_if(Refusals, [&] (const auto& Entry)
 			{
 				return Entry.first.View() == path.View() || Entry.first.View() == asset || IsMountPathAtOrBelow(Entry.first.View(), path.View());
 			});
 		}
 		PendingEvents.clear();
+	}
+
+	// A refused op's actions end together, with their VCS002s: one loser of a dedupe set proposed again alone would be
+	// re-GUIDed with a map whose other new GUIDs no meta ever holds (the stand-ins of DerivedAutoGuids off).
+	void EndRefusals (const std::set<uint64>& Groups)
+	{
+		if (Groups.empty())
+		{
+			return;
+		}
+		for (const SRefusedAction& refused : RefusedActions)
+		{
+			if (Groups.contains(refused.Group))
+			{
+				Refusals.erase(FString(GetAssetOf(refused.Action.Path)));
+				Refusals.erase(refused.Action.Path);
+			}
+		}
+		std::erase_if(RefusedActions, [&] (const SRefusedAction& Refused) { return Groups.contains(Refused.Group); });
 	}
 
 	// The GUID of a settled pair at Path (its source or its meta: a Paired source whose meta is spelled exactly), else
@@ -1593,9 +1618,9 @@ struct CAssetRepairs::SImpl
 			}
 		}
 		input->CrLfMetas = CrLfMetas;
-		for (const SLifecycleAction& action : RefusedActions)
+		for (const SRefusedAction& refused : RefusedActions)
 		{
-			input->Refused.insert(MakeActionKey(action));
+			input->Refused.insert(MakeActionKey(refused.Action));
 		}
 		if (bPlan)
 		{
@@ -1705,9 +1730,39 @@ struct CAssetRepairs::SImpl
 			{
 				*OutRefusal = !result.Result.Problems.empty() ? result.Result.Problems.front().Message : FString("refused");
 			}
+			// Every action of the op is refused, so each one's asset shows the refusal (and GetFixIts finds each): the op's
+			// problem names its first asset only.
+			const SDiagnostic* first = nullptr;
+			for (const SDiagnostic& problem : result.Result.Problems)
+			{
+				first = first == nullptr && !problem.Subject.IsEmpty() && problem.Severity == ESeverity::Error ? &problem : first;
+			}
+			if (first != nullptr)
+			{
+				for (const SLifecycleAction& action : result.Actions)
+				{
+					const FStringView asset = GetAssetOf(action.Path);
+					if (asset == first->Subject.View() || Refusals.contains(FString(asset)))
+					{
+						continue;
+					}
+					SDiagnostic together = *first;
+					together.Subject = FString(asset);
+					together.File.Clear();
+					FStringView mountName;
+					FStringView relative;
+					if (const SMount* mount = SplitMountPath(asset, mountName, relative) ? Desc.Mounts->Find(mountName) : nullptr; mount != nullptr)
+					{
+						together.File = mount->GetSourceFile(relative);
+					}
+					together.Message += FString::Format(" (refused together with '{}')", first->Subject);
+					Refusals.insert_or_assign(together.Subject, std::move(together));
+				}
+			}
+			const uint64 group = ++LastRefusedGroup;
 			for (SLifecycleAction& action : result.Actions)
 			{
-				RefusedActions.push_back(std::move(action));
+				RefusedActions.push_back(SRefusedAction { std::move(action), group });
 			}
 			for (SDiagnostic& problem : result.Result.Problems)
 			{
@@ -1915,26 +1970,58 @@ struct CAssetRepairs::SImpl
 	[[nodiscard]] std::vector<SLifecycleAction> ExpandFix (const SLifecycleAction& FixIt) const
 	{
 		std::vector<SLifecycleAction> actions = { FixIt };
+		const auto add = [&actions] (const SLifecycleAction& Action)
+		{
+			const FString key = MakeActionKey(Action);
+			if (std::none_of(actions.begin(), actions.end(), [&key] (const SLifecycleAction& Known) { return MakeActionKey(Known) == key; }))
+			{
+				actions.push_back(Action);
+			}
+		};
+		// A refused repair is retried with the op it was refused in (EndRefusals says why).
+		const FString fixKey = MakeActionKey(FixIt);
+		for (const SRefusedAction& refused : RefusedActions)
+		{
+			if (MakeActionKey(refused.Action) != fixKey)
+			{
+				continue;
+			}
+			for (const SRefusedAction& member : RefusedActions)
+			{
+				if (member.Group == refused.Group)
+				{
+					add(member.Action);
+				}
+			}
+		}
 		if (FixIt.Kind != ELifecycleAction::ReGuid)
 		{
 			return actions;
 		}
-		// The losers of one batch are rewritten as a set (LifecycleTypes.h): every ReGuid fix-it that shares an old GUID.
+		// The losers of one batch are rewritten as a set (LifecycleTypes.h): every ReGuid fix-it, or refused ReGuid, that
+		// shares an old GUID.
 		std::set<SGuid> olds;
 		for (const auto& [from, to] : FixIt.Remap)
 		{
 			olds.insert(from);
 		}
+		const auto shares = [&olds] (const SLifecycleAction& Other)
+		{
+			return Other.Kind == ELifecycleAction::ReGuid
+				&& std::any_of(Other.Remap.begin(), Other.Remap.end(), [&] (const auto& Pair) { return olds.contains(Pair.first); });
+		};
 		for (const SLifecycleAction& other : FixIts)
 		{
-			if (other.Kind != ELifecycleAction::ReGuid || MakeActionKey(other) == MakeActionKey(FixIt))
+			if (shares(other))
 			{
-				continue;
+				add(other);
 			}
-			const bool bShares = std::any_of(other.Remap.begin(), other.Remap.end(), [&] (const auto& Pair) { return olds.contains(Pair.first); });
-			if (bShares)
+		}
+		for (const SRefusedAction& other : RefusedActions)
+		{
+			if (shares(other.Action))
 			{
-				actions.push_back(other);
+				add(other.Action);
 			}
 		}
 		return actions;
@@ -1978,8 +2065,14 @@ struct CAssetRepairs::SImpl
 	std::vector<FString> PendingEvents;
 	TStringMap<uint64> Events;
 	std::vector<SLifecycleAction> FixIts;
-	std::vector<SLifecycleAction> RefusedActions;
-	TStringMap<SDiagnostic> Refusals;      // VCS002 by subject
+	struct SRefusedAction
+	{
+		SLifecycleAction Action;
+		uint64 Group = 0u;                 // the refused op it was in: its actions end and are retried together
+	};
+	std::vector<SRefusedAction> RefusedActions;
+	uint64 LastRefusedGroup = 0u;
+	TStringMap<SDiagnostic> Refusals;      // VCS002 (or a failure's code 0) by subject, one per action of a refused op
 	TStringMap<SDiagnostic> Untracked;     // VCS003 by subject
 	uint64 UntrackedCheckAtMs = 0u;        // when StatusOf is asked about them again
 	uint64 UntrackedRecheckIntervalMs = UntrackedRecheckMs;
@@ -2240,7 +2333,16 @@ std::vector<SLifecycleAction> CAssetRepairs::GetFixIts (const SDiagnostic& Probl
 	case Meta006: take(impl.FixIts, { FixMetaCase }); break;
 	case Meta008: take(impl.FixIts, { RestoreMeta, CreateMeta, MoveMeta }); break;
 	case Meta009: take(impl.FixIts, { MoveMeta }); break;
-	case Vcs002: take(impl.RefusedActions, { CreateMeta, RestoreMeta, MoveMeta, FixMetaCase, ReGuid, KeepAliasB }); break;
+	case Vcs002:
+	{
+		std::vector<SLifecycleAction> refused;
+		for (const SImpl::SRefusedAction& entry : impl.RefusedActions)
+		{
+			refused.push_back(entry.Action);
+		}
+		take(refused, { CreateMeta, RestoreMeta, MoveMeta, FixMetaCase, ReGuid, KeepAliasB });
+		break;
+	}
 	default: break;
 	}
 	return found;
@@ -2253,7 +2355,7 @@ SRepairReport CAssetRepairs::ApplyFix (const SLifecycleAction& FixIt)
 	std::vector<SLifecycleAction> actions = impl.ExpandFix(FixIt);
 	for (const SLifecycleAction& action : actions)
 	{
-		std::erase_if(impl.RefusedActions, [&] (const SLifecycleAction& Refused) { return MakeActionKey(Refused) == MakeActionKey(action); });
+		std::erase_if(impl.RefusedActions, [&] (const SImpl::SRefusedAction& Refused) { return MakeActionKey(Refused.Action) == MakeActionKey(action); });
 		impl.Refusals.erase(FString(GetAssetOf(action.Path)));
 		impl.Refusals.erase(action.Path);
 	}
