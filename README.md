@@ -222,6 +222,8 @@ Setup.bat
 
 The editor shows the world twice, as Unity does: the **Scene** view through the editor's own camera, the **Game** view through the game's. Both are panels like any other - dock, tab, float and resize them freely; **View → Reset Layout** brings back the default arrangement.
 
+Along the bottom, **Assets** searches the asset registry and **Asset problems** lists what `FRT.bat assets validate` would (every mount, grouped by asset, filterable by severity, code, type and folder), with **Go to**, **Open** and the fix-its the meta lifecycle offers; commands for other tools (`git checkout -- ...`, `FRT.bat assets fix --engine`) are shown and copied, never run. `Docs/Assets.md` has the details.
+
 The Scene view's camera navigates exactly like Unreal Engine's level viewport (same controls, speeds and sensitivities):
 
 | Scene view | Action |

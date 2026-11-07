@@ -278,6 +278,31 @@ compile, and a table of the matches (Name, Type, Path, Size, Problems) with a de
 visible; its rows are copied text, never record ids. Read-only in M3. The default layout docks it beside Stats; View >
 Assets toggles it. The smoke test checks it against the registry's own answer for `type:Texture`.
 
+### The editor's Asset problems panel (M4)
+
+`Editor/Source/AssetProblemsPanel.h` draws, and `Assets/Meta/ProblemList.h` (Core, so Core-Test checks it) makes, one list
+(design §12.8): `RunValidation`'s, the function `validate` prints, over every mount of the editor's registry (`validate` and
+`validate --engine` together), on a worker over a view the registry handed out - when the panel first draws, when the
+revision moved while it shows (at most once a second), and while a fix waits for its outcome. Each problem gets its asset
+(a meta's problem goes with its source, a sub-entry's with its file) and that asset's type; the list is grouped by asset
+in the registry's order and filtered by severity, code (its start, any case), type and folder (under the fold). Each
+entry has **Go to** (the Assets panel lists the asset by `$Path=`, a folder or mount root by `dir:`, a file without a record
+by its folder; the inspector target is M6's), **Open** (the file the problem names, relative to its mount's owner root,
+else the asset) and **Copy line** when it has a line. Fix-its are not stored on diagnostics: `GetProblemFixIts` asks
+`CAssetRepairs::GetFixIts`, so a button applies the lifecycle's own action through `ApplyFix` - create a meta, restore the
+verified copy, relink an orphan, rename a meta to its source's case, re-GUID a copy (with its whole set), keep A alias B,
+retry what the VCS refused (VCS002), and for a lost meta "create it again" (its GUID) or, after a meta swap, "a new GUID".
+An action is disabled, with the reason, in a mount the process does not write (read-only, a guest, `/Engine` outside
+engine-owner mode). Shown and copied, never run: the provider's restore command for a lost meta (Git: `git checkout --
+<meta>`), its add command for the untracked half of a `VCS003` (`File` names that half; absent under None, since FRT never
+stages), and `"<engine>\FRT.bat" assets fix --engine` for a `META001` on `/Engine` in a process that does not own it.
+`VCS004` is a message (`git lfs pull`). In the live editor `ApplyFix` only queues, so the panel follows the fix in the
+lists that come after it: fixed (the problem is gone), refused (a new `VCS002` about the asset), or no change after 30 s.
+Without a meta lifecycle (until the hosts switch it on) the panel lists and offers commands, and applies nothing. PATH
+renames, reference relinks, hints and aliases are M11's. The smoke test checks that the panel lists exactly what
+`RunValidation` returns with the same options (`[smoke] ok the Asset problems panel lists ...`, which `FRT.bat verify`
+requires), that a read-only editor can apply none of its fix-its, the code filter, and Go to; it captures the panel.
+
 ## Version control (M4, `Assets/Vcs/`)
 
 FRT is not a version-control client: it never commits, syncs or reverts. `IVcsProvider` (`Assets/Vcs/VcsProvider.h`) is what
@@ -403,12 +428,13 @@ writes no meta.
   `-Assets:ReadOnly=1` they are a usage error. `migrate --dry-run` is read-only by request itself: no lock, so it runs
   beside an owner. `validate --fix --quick` is one too: a
   meta's GUID needs its content's hash.
-- **`RunValidation`** is the one list `validate` prints and the problems panel will show (H4): every problem the
+- **`RunValidation`** is the one list `validate` prints and the Asset problems panel shows: every problem the
   registry holds in scope (Scan, Rules, Unclaimed, Analyze, Registry, and the Lifecycle's as the verb's report-only or
   repairing run committed them), plus the rules only it runs: `META005`; `META007`; a meta's unknown keys, a newer
   `FormatVersion`, settings its effective importer has no field for or no value of, and an `Importer:` pin this build
   does not know (warnings with no code, which `ResolveFile` ignores: the rules' value stands); `VCS001` for rule files and
-  text sources (`--quick` reads none but the paths asked for); `VCS003` over every pair, one `StatusOf` per provider;
+  text sources (`--quick` reads none but the paths asked for); `VCS003` over every pair, one `StatusOf` per provider (its
+  `File` the half the VCS does not track);
   `MIG001` per repository root. The rule files' `Validation:` severities apply to these too. `--ci` is clean with no error
   and no warning, so the code-0 warnings of a meta fail it as well; infos pass (`REF007` until M7).
 - **`--staged`** takes the paths from `IVcsProvider::GetStaged` (Git: what the pre-commit hook is committing, through
@@ -727,7 +753,8 @@ folders only. Invalid patterns are reported, never guessed at.
   directory in a package.
 - `FRT.bat verify` is the merge gate: builds, Core-Test, lints, the registry verbs with `--json`, the registry's golden
   dumps, a check that this file names every `FRT.bat assets` verb and every diagnostic code, the editor's smoke tests
-  (in place, read-only, with the registry and Assets panel check, and with file edits on a scratch copy), automation
+  (in place, read-only, with the registry, Assets panel and Asset problems panel checks, and with file edits on a
+  scratch copy), automation
   captures against baselines (raster byte for byte, path tracing within a tolerance), the Release package's captures,
   and a clean `git status` at the end; the summary lists each host's initial scan and BuildWorld wait. `--quick` runs
   the pre-commit subset; `--record-baselines` records new baselines in `Local/Verify/Baselines`, which belong to the

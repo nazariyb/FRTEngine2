@@ -30,7 +30,8 @@
  *	  `Importer:` pin this build does not know (ResolveFile ignores them, so the rules' value stands): warnings, no code;
  *	  VCS001   CRLF in a hashed FRT text file the lifecycle does not read: a rule file, a `.yml`, `.frt`, `.csv`, `.ini`,
  *	           `.frtinputmap` or `.frtinputaction` source (metas are the lifecycle's). Not with bQuick, except for Paths;
- *	  VCS003   a pair the VCS tracks differently, one StatusOf per provider over every pair in scope ("commit it");
+ *	  VCS003   a pair the VCS tracks differently, one StatusOf per provider over every pair in scope ("commit it"), its
+ *	           File the half the VCS does not track (what the problems panel's add command names);
  *	  MIG001   a repository root of the scope whose Schemas/Migrations.yml lacks a step this engine requires (with Paths, a
  *	           root that one of them lies in).
  *	MIG002 has no data in M4: the legacy patterns it names go with steps that arrive in M7 and M9a.

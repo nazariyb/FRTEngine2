@@ -23,7 +23,8 @@ script, behind FRT.bat verify (Premake/tools.lua). A milestone branch merges onl
      Core/Source/Assets/AssetDiagnosticCodes.h is named in Docs/Assets.md;
   5. the editor's smoke test (-Editor:SmokeTest=1) over Templates/Demo and Templates/Blank, in place, in
      Debug and Development, which also checks the asset registry's initial scan and the editor's Assets panel
-     (its "[smoke] ok registry:" line; in Demo the panel lists textures); then its steps that edit files, on a
+     (its "[smoke] ok registry:" line; in Demo the panel lists textures) and that its Asset problems panel lists
+     what validate does ("[smoke] ok the Asset problems panel lists"); then its steps that edit files, on a
      scratch copy of Templates/Demo made with
      FRT.bat new and a copy of the shaders (Gate.smoke_scratch): a material rewritten must reload and a
      shader include edited must rebuild exactly the programs that include it, through the file watcher;
@@ -929,10 +930,13 @@ class Gate:
 
     SMOKE_REGISTRY_LINE = re.compile(r'^\[smoke\]\s+ok\s+registry: (\d+) records, initial scan (\d+) ms', re.MULTILINE)
     SMOKE_PANEL_LINE = re.compile(r'^\[smoke\]\s+ok\s+the Assets panel shows (\d+) of (\d+) record\(s\) of type:Texture', re.MULTILINE)
+    SMOKE_PROBLEMS_LINE = re.compile(r'^\[smoke\]\s+ok\s+the Asset problems panel lists (\d+) problem\(s\) in (\d+) asset\(s\), '
+                                     r'as validate does', re.MULTILINE)
 
     def check_smoke_registry(self, name, config, text, log):
-        """The smoke test's registry check: the initial scan completed (its "[smoke] ok registry:" line) and the
-        editor's Assets panel shows what the registry holds; in SMOKE_TEXTURES templates it lists textures. Records
+        """The smoke test's registry check: the initial scan completed (its "[smoke] ok registry:" line), the
+        editor's Assets panel shows what the registry holds (in SMOKE_TEXTURES templates it lists textures), and its
+        Asset problems panel lists what validate does over the same mounts (design 12.8, edit [18]). Records
         the host's "[assets] initial scan:" line, which must come before its first BuildWorld, for the summary. Returns
         a detail text, or raises StepFailed."""
         self.read_initial_scan(f'editor, {name} ({config})', log, required=True)
@@ -944,7 +948,12 @@ class Gate:
             raise StepFailed('no "[smoke] ok the Assets panel shows" line: the Assets panel check did not pass')
         if name in SMOKE_TEXTURES and int(panel.group(1)) == 0:
             raise StepFailed(f'the Assets panel of {name} lists no texture (type:Texture)')
-        return f'registry: {registry.group(1)} records, {panel.group(2)} textures, initial scan {registry.group(2)} ms'
+        problems = self.SMOKE_PROBLEMS_LINE.search(text)
+        if not problems:
+            raise StepFailed('no "[smoke] ok the Asset problems panel lists" line: the problems panel did not list what '
+                             'validate does')
+        return (f'registry: {registry.group(1)} records, {panel.group(2)} textures, {problems.group(1)} problems, '
+                f'initial scan {registry.group(2)} ms')
 
     # Lines of the smoke test's file edits that must have passed: without them the step tested nothing.
     SCRATCH_EDIT_CHECKS = (

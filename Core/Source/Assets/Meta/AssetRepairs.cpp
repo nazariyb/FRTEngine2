@@ -1135,6 +1135,7 @@ struct SOpsOutput
 	struct SCreated
 	{
 		std::vector<FString> Subjects;   // the sources, as mount paths
+		std::vector<FString> MetaFiles;  // each subject's meta as a diagnostic's File (relative to its owner root)
 		std::vector<FString> Files;      // source and meta, absolute, two per subject
 	};
 	std::map<IVcsProvider*, SCreated> created;
@@ -1174,6 +1175,10 @@ struct SOpsOutput
 				}
 				SCreated& batch = created[provider];
 				batch.Subjects.emplace_back(*source);
+				FStringView mountName;
+				FStringView relative;
+				const SMount* mount = SplitMountPath(step.Path, mountName, relative) ? writer.GetMounts()->Find(mountName) : nullptr;
+				batch.MetaFiles.push_back(mount != nullptr ? mount->GetSourceFile(relative) : FString());
 				batch.Files.push_back(FString::FromPath(*sourcePath));
 				batch.Files.push_back(FString::FromPath(*metaPath));
 			}
@@ -1197,6 +1202,7 @@ struct SOpsOutput
 			problem.Severity = ESeverity::Warning;
 			problem.Code = Vcs003;
 			problem.Subject = batch.Subjects[i];
+			problem.File = batch.MetaFiles[i];   // the half to add, as validate's VCS003 names it (Validation.h)
 			const FString command = provider->GetAddCommand(batch.Files[2u * i + 1u]);
 			problem.Message = command.IsEmpty() ? FString("generated locally: commit it. Its source is tracked and its new meta is not")
 				: FString::Format("generated locally: commit it. Its source is tracked and its new meta is not ({})", command);

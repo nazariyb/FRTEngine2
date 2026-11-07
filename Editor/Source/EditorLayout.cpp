@@ -2,6 +2,7 @@
 
 #include "imgui_internal.h"
 
+#include "AssetProblemsPanel.h"
 #include "AssetsPanel.h"
 
 
@@ -13,7 +14,8 @@ namespace
 const char* const DockSpaceName = "FRT.Editor.DockSpace";
 
 // Panels the default layout places, by window name: the viewports (CViewportPanel), the
-// debug tools' panels (CDebugTools) and the Assets panel (CAssetsPanel::Name).
+// debug tools' panels (CDebugTools), the Assets panel (CAssetsPanel::Name) and the Asset problems panel
+// (CAssetProblemsPanel::Name).
 const char* const ScenePanel = "Scene";
 const char* const GamePanel = "Game";
 const char* const RendererPanel = "Renderer";
@@ -60,8 +62,9 @@ void CEditorLayout::BuildDefault (ImGuiID DockSpace)
 	ImGui::DockBuilderDockWindow(RendererPanel, right);
 	ImGui::DockBuilderDockWindow(SkyPanel, rightBottom);
 	ImGui::DockBuilderDockWindow(EditorPanel, rightBottom);
-	// The Assets panel shares the bottom with Stats, so the viewports keep their size.
+	// The Assets and Asset problems panels share the bottom with Stats, so the viewports keep their size.
 	ImGui::DockBuilderDockWindow(CAssetsPanel::Name, bottom);
+	ImGui::DockBuilderDockWindow(CAssetProblemsPanel::Name, bottom);
 	ImGui::DockBuilderDockWindow(StatsPanel, bottom);
 	ImGui::DockBuilderFinish(DockSpace);
 }

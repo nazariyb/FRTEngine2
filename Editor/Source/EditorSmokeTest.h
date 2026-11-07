@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "CoreTypes.h"
+#include "Containers/String.h"
 #include "Containers/StringView.h"
 #include "Math/Math.h"
 
@@ -52,7 +53,10 @@ class CEditor;
  *
  * It also checks the asset registry (read-only, as every scripted run is): its initial scan was
  * complete before the first world was built ("[smoke] ok registry: <n> records, initial scan <ms> ms"),
- * and the editor's Assets panel shows what the registry answers for type:Texture.
+ * the editor's Assets panel shows what the registry answers for type:Texture, and the Asset problems
+ * panel lists exactly what `validate` does over the same mounts ("[smoke] ok the Asset problems panel
+ * lists <n> problem(s) ..."), offers no fix-it it could apply in a read-only process, filters by code,
+ * and its "Go to" lists an entry's asset in the Assets panel.
  */
 class CEditorSmokeTest
 {
@@ -74,6 +78,11 @@ private:
 	void CheckAssetRegistry (CEditor& Editor, CEngine& Engine);
 	// The panel shows what the registry answers for that query.
 	void CheckAssetsPanel (CEditor& Editor, CEngine& Engine);
+	// The Asset problems panel lists what RunValidation does with the same options; "Go to" on one entry.
+	void CheckProblemsPanel (CEditor& Editor, CEngine& Engine);
+	// "Go to" on the entry CheckProblemsPanel picked; then the Assets panel ran its query and lists something.
+	void GoToProblem (CEditor& Editor);
+	void CheckProblemsGoTo (CEditor& Editor, CEngine& Engine);
 	void CheckCameraController ();
 	void TouchGameBuild (CEditor& Editor);
 	void WriteInputOverrides (FStringView Text);
@@ -109,6 +118,9 @@ private:
 	float ReleaseSpeed = 0.0f;
 	uint32 GameReloads = 0u;
 	uint32 EditEntities = 0u;
+	FString GoToQuery;                         // the Asset problems panel's "Go to", for CheckProblemsGoTo
+	uint32 GoToTarget = 0u;                    // its entry
+	bool bGoToListsSomething = false;          // its entry has a record, or is a folder
 	std::vector<int32> NamedEntities;          // edit world indices, for SelectNamedEntity
 	bool bCanReload = false;
 	bool bFinished = false;

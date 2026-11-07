@@ -841,6 +841,7 @@ TEST(AssetRepairs, AMetaCreatedBesideATrackedSourceThatTheVcsDoesNotTrackIsVcs00
 	ASSERT_EQ(vcs003.size(), 1u) << rig.DescribeProblems().CStr();
 	EXPECT_EQ(vcs003[0].Severity, ESeverity::Warning);
 	EXPECT_EQ(vcs003[0].Subject, P("a.png"));
+	EXPECT_EQ(vcs003[0].File, "Content/a.png.meta") << "File names the half to add, as validate's VCS003 does";
 	EXPECT_TRUE(vcs003[0].Message.Contains("commit it"));
 	rig.Settle(5000u);
 	EXPECT_EQ(rig.Problems(Vcs003).size(), 1u) << "kept while the pair stands";

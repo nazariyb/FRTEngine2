@@ -359,7 +359,10 @@ TEST(MetaVerbs, Vcs003IsAPairTheVcsTracksDifferentlyAskedInOneStatusCall)
 	ASSERT_NE(local, nullptr) << Describe(problems).CStr();
 	EXPECT_EQ(local->Severity, ESeverity::Warning);
 	EXPECT_TRUE(local->Message.Contains("commit it")) << local->Message.CStr();
-	EXPECT_NE(Find(problems, Vcs003, P("Both.png")), nullptr) << "a meta added without its source: " << Describe(problems).CStr();
+	EXPECT_EQ(local->File, "Content/Local.png.meta") << "File names the half to add";
+	const SDiagnostic* both = Find(problems, Vcs003, P("Both.png"));
+	ASSERT_NE(both, nullptr) << "a meta added without its source: " << Describe(problems).CStr();
+	EXPECT_EQ(both->File, "Content/Both.png");
 	EXPECT_EQ(Find(problems, Vcs003, P("Tracked.png")), nullptr) << Describe(problems).CStr();
 	EXPECT_FALSE(IsValidationClean(CountValidation(problems), true)) << "a warning fails --ci";
 	EXPECT_TRUE(IsValidationClean(CountValidation(problems), false));

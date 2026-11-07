@@ -132,6 +132,8 @@ void CEditor::ShutDown ()
 	{
 		viewport.Destroy(renderer);
 	}
+	// Its validation job reads the registry's mounts, rules and providers: done before the registry goes.
+	ProblemsPanel.ShutDown();
 	// Before the game module unloads: the world's component pools were instantiated in its code.
 	EditWorld.reset();
 	SmokeTest.reset();
@@ -221,6 +223,7 @@ int CEditor::Run ()
 		// dock node, and the layout would come back rearranged.
 		Tools.Draw(tools);
 		AssetsPanel.Draw(Engine.GetAssetRegistry());
+		ProblemsPanel.Draw(Engine, AssetsPanel);
 
 		// ---- input: routed from what the panels reported ----
 		HandleShortcuts();
@@ -668,6 +671,7 @@ void CEditor::DrawMainMenu ()
 			}
 		}
 		ImGui::MenuItem(CAssetsPanel::Name, nullptr, &AssetsPanel.bOpen);
+		ImGui::MenuItem(CAssetProblemsPanel::Name, nullptr, &ProblemsPanel.bOpen);
 		ImGui::Separator();
 		if (ImGui::MenuItem("Maximize Viewport", shortcut(EEditorCommand::ToggleMaximize), MaximizedViewport >= 0))
 		{

@@ -463,9 +463,17 @@ private:
 				}
 				const FString command = provider->GetAddCommand(files[2u * i + (bSource ? 1u : 0u)]);
 				const FString hint = command.IsEmpty() ? FString() : FString::Format(" ({})", command);
-				Add(ESeverity::Warning, Vcs003, asked[i]->Source, bSource
+				SDiagnostic& problem = Add(ESeverity::Warning, Vcs003, asked[i]->Source, bSource
 					? FString::Format("generated locally: commit it. '{}' is tracked and its meta is not{}", ToDisplayText(asked[i]->Source), hint)
 					: FString::Format("'{}' is not tracked and its meta is: add it{}", ToDisplayText(asked[i]->Source), hint));
+				// File names the half the VCS does not track, the one to add (the problems panel's fix-it).
+				FStringView mountName;
+				FStringView relative;
+				const FStringView untracked = bSource ? asked[i]->Meta.View() : asked[i]->Source.View();
+				if (const SMount* mount = MountOf(untracked); mount != nullptr && SplitMountPath(untracked, mountName, relative))
+				{
+					problem.File = mount->GetSourceFile(relative);
+				}
 			}
 		}
 	}

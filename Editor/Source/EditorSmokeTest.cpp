@@ -12,6 +12,7 @@
 #include "Window.h"
 #include "Assets/AssetRegistry.h"
 #include "Assets/FileWatcherService.h"
+#include "Assets/Meta/ProblemList.h"
 #include "Assets/Registry/RegistryView.h"
 #include "Config/Config.h"
 #include "Containers/String.h"
@@ -473,6 +474,12 @@ void CEditorSmokeTest::Update (CEditor& Editor, CEngine& Engine)
 		// query of it matches (read-only, nothing here writes).
 		{ 3u, "asset registry", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G) { T.CheckAssetRegistry(E, G); } },
 		{ 6u, "Assets panel", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G) { T.CheckAssetsPanel(E, G); } },
+		// The Asset problems panel lists what `validate` does (and comes to the front for a capture); its "Go to" queries
+		// the Assets panel, checked two frames later.
+		{ 8u, "Asset problems panel", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G) { T.CheckProblemsPanel(E, G); } },
+		{ 12u, "Asset problems capture", [] (CEditorSmokeTest& T, CEditor&, CEngine& G) { T.Capture(G, "00_asset_problems"); } },
+		{ 13u, "Asset problems Go to", [] (CEditorSmokeTest& T, CEditor& E, CEngine&) { T.GoToProblem(E); } },
+		{ 15u, "Asset problems Go to listed", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G) { T.CheckProblemsGoTo(E, G); } },
 		{ 30u, "docked", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G)
 		{
 			T.Check(E.GetViewport(EViewportTarget::Scene).GetFrame().bVisible, "the Scene view is visible");
@@ -822,6 +829,116 @@ void CEditorSmokeTest::CheckAssetsPanel (CEditor& Editor, CEngine& Engine)
 	Check(panel.GetError().IsEmpty() && panel.GetShownRevision() == registry->GetRevision(), "the Assets panel ran its query on the current revision");
 	Check(matched.has_value() && panel.GetResultCount() == *matched && panel.GetShownCount() == std::min(*matched, CAssetsPanel::DefaultLimit),
 		FString::Format("the Assets panel shows {} of {} record(s) of {}", panel.GetShownCount(), panel.GetResultCount(), AssetsPanelQuery));
+}
+
+void CEditorSmokeTest::CheckProblemsPanel (CEditor& Editor, CEngine& Engine)
+{
+	assets::CAssetRegistry* registry = Engine.GetAssetRegistry();
+	if (registry == nullptr)
+	{
+		return;
+	}
+	// A list made now, on a worker as the panel always makes it, against what validate's function returns for the same
+	// options over the same revision.
+	CAssetProblemsPanel& panel = Editor.GetProblemsPanel();
+	panel.RefreshNow(Engine);
+	const std::shared_ptr<const assets::CRegistryView> view = registry->Acquire();
+	std::vector<SDiagnostic> expected;
+	assets::RunValidation(*view, assets::MakeProblemListOptions(*registry), expected);
+	const std::vector<assets::SProblemEntry>& entries = panel.GetEntries();
+	bool bSame = panel.GetShownRevision() == view->GetRevision() && entries.size() == expected.size();
+	for (size_t i = 0u; bSame && i < entries.size(); ++i)
+	{
+		bSame = entries[i].Problem == expected[i];
+	}
+	const assets::SValidationCounts counts = assets::CountValidation(expected);
+	panel.SetFilter(assets::SProblemFilter {});
+	Check(bSame, FString::Format("the Asset problems panel lists {} problem(s) in {} asset(s), as validate does ({} error(s), {} warning(s), {} info)",
+		entries.size(), panel.GetGroups().size(), counts.Errors, counts.Warnings, counts.Infos));
+	if (!bSame)
+	{
+		for (const SDiagnostic& problem : expected)
+		{
+			Log(FString::Format("  validate: {} {} {}", FormatDiagnosticCode(problem.Code), problem.Subject, problem.Message));
+		}
+		for (const assets::SProblemEntry& entry : entries)
+		{
+			Log(FString::Format("  panel:    {} {} {}", FormatDiagnosticCode(entry.Problem.Code), entry.Problem.Subject, entry.Problem.Message));
+		}
+	}
+
+	// Every entry's fix-its; a process that writes nothing can apply none.
+	const assets::SProblemFixContext context { &registry->GetMounts(), registry->GetRepairs(), &registry->Live() };
+	uint32 offered = 0u;
+	uint32 enabled = 0u;
+	for (const assets::SProblemEntry& entry : entries)
+	{
+		for (const assets::SProblemFixIt& fix : assets::GetProblemFixIts(entry.Problem, context))
+		{
+			++offered;
+			enabled += fix.Kind == assets::EProblemFixKind::Apply && fix.Disabled.IsEmpty() ? 1u : 0u;
+		}
+	}
+	if (!registry->IsWriter())
+	{
+		Check(enabled == 0u, FString::Format("the read-only editor offers {} fix-it(s) and none it could apply", offered));
+	}
+
+	ImGui::SetWindowFocus(CAssetProblemsPanel::Name);
+	if (entries.empty())
+	{
+		Log("  skip  no asset problem to filter or go to");
+		return;
+	}
+	// Filtered by the first entry's code: exactly the entries of that code are left.
+	assets::SProblemFilter filter;
+	filter.Code = FormatDiagnosticCode(entries.front().Problem.Code);
+	panel.SetFilter(filter);
+	size_t shown = 0u;
+	for (const assets::SProblemGroup& group : panel.GetGroups())
+	{
+		shown += group.Entries.size();
+	}
+	const size_t ofCode = static_cast<size_t>(std::count_if(entries.begin(), entries.end(),
+		[&] (const assets::SProblemEntry& Entry) { return Entry.Problem.Code == entries.front().Problem.Code; }));
+	Check(shown == ofCode, FString::Format("the Asset problems panel filtered by code {} shows its {} problem(s)", filter.Code.IsEmpty() ? "(none)" : filter.Code, ofCode));
+	panel.SetFilter(assets::SProblemFilter {});
+
+	// "Go to" an entry with a record if there is one, else the first.
+	uint32 target = 0u;
+	for (uint32 i = 0u; i < entries.size(); ++i)
+	{
+		if (!entries[i].Type.IsEmpty())
+		{
+			target = i;
+			break;
+		}
+	}
+	GoToTarget = target;
+	GoToQuery = assets::MakeGoToQuery(entries[target]);
+	bGoToListsSomething = !entries[target].Type.IsEmpty() || entries[target].bFolder;   // an orphan meta's folder may hold none
+}
+
+void CEditorSmokeTest::GoToProblem (CEditor& Editor)
+{
+	if (!GoToQuery.IsEmpty())
+	{
+		Editor.GetProblemsPanel().GoTo(Editor.GetAssetsPanel(), GoToTarget);
+	}
+}
+
+void CEditorSmokeTest::CheckProblemsGoTo (CEditor& Editor, CEngine& Engine)
+{
+	assets::CAssetRegistry* registry = Engine.GetAssetRegistry();
+	if (registry == nullptr || GoToQuery.IsEmpty())
+	{
+		return;
+	}
+	const CAssetsPanel& assets = Editor.GetAssetsPanel();
+	Check(assets.GetQuery() == GoToQuery && assets.GetError().IsEmpty() && (assets.GetResultCount() > 0u || !bGoToListsSomething),
+		FString::Format("the Asset problems panel's Go to lists {} record(s) in the Assets panel ({})", assets.GetResultCount(), GoToQuery));
+	// Back to what the Assets panel showed.
+	Editor.GetAssetsPanel().SetQuery(AssetsPanelQuery);
 }
 
 void CEditorSmokeTest::SelectNamedEntity (CEditor& Editor, uint32 Which)
