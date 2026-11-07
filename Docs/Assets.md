@@ -384,8 +384,10 @@ new` only prints the hint, and `git commit --no-verify` skips it once. It parses
 6. `validate --staged --quick --ci` through `AssetTool-Development-Default.exe` when it is built, never `FRT.bat assets`,
    which may start a build. Skipped with a message when the tool is not built, or was built before it knew the verb; any
    other refusal of the tool, a usage error included (a project it cannot use), refuses the commit. It validates
-   the `.frtproject` at the top of the work tree, else the engine in an engine checkout, else each `.frtproject` in the
-   index (a project in a folder of its repository), one run each. The tool inherits git's `GIT_INDEX_FILE`, so it sees
+   the `.frtproject` at the top of the work tree, else the engine in an engine checkout together with each `.frtproject`
+   in the index that has a staged path below its folder (a template: its content is committed there, and `--engine`
+   validates the engine's mounts alone), else each `.frtproject` in the index (a project in a folder of its repository),
+   one run each. The tool inherits git's `GIT_INDEX_FILE`, so it sees
    what `git commit -a` is about to commit; the hook names the committing repository in `FRT_HOOK_TOPLEVEL`, and the Git
    provider of any other repository (an `Engine/` submodule, a shared engine) runs its git without that variable, which
    would otherwise read as an empty index there, and lists nothing staged (`GetStaged`): what is staged in a plugin's

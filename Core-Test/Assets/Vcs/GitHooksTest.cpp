@@ -404,11 +404,26 @@ TEST_F(GitHooksTest, TheToolIsToldWhatToValidateAndWhichRepositoryIsCommitting)
 	EXPECT_FALSE(all.Contains("arg=--project=Other")) << all.CStr();
 	std::filesystem::remove(gRepo / "Game.frtproject");
 
-	// An engine checkout validates its content, and the templates it holds are not projects of this repository.
+	// An engine checkout validates its content, and each project it holds (a template) that has a staged path below its
+	// folder: its content is committed here too. A commit that stages nothing below a template starts no tool for it.
+	ASSERT_EQ(RunGit({ "reset", "-q" }).ExitCode, 0);
 	Write("Engine.frtengine", "[Engine]\nName=Scratch\n");
+	Write("Templates/Demo/Demo.frtproject", "[Project]\nName=Demo\n");
+	Write("Templates/Blank/Blank.frtproject", "[Project]\nName=Blank\n");
+	Stage({ "Templates/Demo/Demo.frtproject", "Templates/Blank/Blank.frtproject" });
+	ASSERT_EQ(RunGit({ "commit", "-q", "--no-verify", "-m", "Templates" }).ExitCode, 0);
+	Write("Docs/Page.md");
+	Stage({ "Docs/Page.md" });
 	all = commit();
 	EXPECT_TRUE(all.Contains("arg=--engine\n")) << all.CStr();
 	EXPECT_FALSE(all.Contains("arg=--project")) << all.CStr();
+
+	Write("Templates/Demo/Content/New.png");
+	Stage({ "Templates/Demo/Content/New.png" });
+	all = commit();
+	EXPECT_TRUE(all.Contains("arg=--engine\n")) << all.CStr();
+	EXPECT_TRUE(all.Contains("arg=--project=Templates/Demo/Demo.frtproject\n")) << all.CStr();
+	EXPECT_FALSE(all.Contains("arg=--project=Templates/Blank")) << all.CStr();
 }
 
 // The engine's own hook with the engine's own AssetTool: check 6 refuses a meta that checks 1-5 let through, one whose Guid

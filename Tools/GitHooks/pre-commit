@@ -21,7 +21,8 @@
 #      premake process;
 #   6. validate --staged --quick --ci through AssetTool when it is built: never FRT.bat assets, which may
 #      start a build. --ci is read-only by request, so it runs beside an open editor. The project is the
-#      .frtproject at the top of the work tree, else the engine in an engine checkout, else each
+#      .frtproject at the top of the work tree, else the engine in an engine checkout together with each
+#      .frtproject in the index with a staged path below its folder (its templates), else each
 #      .frtproject in the index (a project in a folder of its repository), one run each.
 
 # A UTF-8 locale, so that awk folds non-ASCII names (the content of a game is rarely all ASCII).
@@ -223,8 +224,10 @@ if [ -f Engine.frtengine ] && [ -f FRT.bat ] && tr '\0' '\n' < "$staged" | grep 
 fi
 
 # 6. In this checkout's engine, where this hook is. A project names its file, an engine checkout its own
-# content (the templates it holds are not projects of it); anything else is not FRT's to validate. The
-# tool's git runs from the mount, where a GIT_DIR git set for the hook would not hold. GIT_INDEX_FILE
+# content and each project it holds (its templates) with a staged path below its folder: their content is
+# committed here, and this is its only check per commit, while --engine's run validates the engine's mounts
+# alone. A commit that stages nothing below a template starts no tool for it. Anything else is not FRT's
+# to validate. The tool's git runs from the mount, where a GIT_DIR git set for the hook would not hold. GIT_INDEX_FILE
 # stays, so it sees what git commit -a is about to commit, but it is this repository's index alone:
 # FRT_HOOK_TOPLEVEL names this repository, and the tool's git in any other (an Engine/ submodule, a
 # shared engine) runs without it.
@@ -237,6 +240,18 @@ for file in ./*.frtproject; do
 done
 if [ ${#targets[@]} -eq 0 ] && [ -f Engine.frtengine ]; then
 	targets=(--engine)
+	while IFS= read -r -d '' file; do
+		targets+=("--project=$file")
+	done < <(git ls-files --cached -z -- '*.frtproject' | awk '
+		part == "projects" { folder = $0; sub(/[^\/]*$/, "", folder); if (folder != "") folders[$0] = folder; next }
+		part == "staged" {
+			if (!bHaveStatus) { bHaveStatus = 1; next }
+			bHaveStatus = 0
+			for (file in folders) if (substr($0, 1, length(folders[file])) == folders[file]) hit[file] = 1
+			next
+		}
+		END { for (file in hit) printf "%s%c", file, 0 }
+	' part=projects RS='\0' - part=staged RS='\0' "$staged")
 fi
 if [ ${#targets[@]} -eq 0 ]; then
 	while IFS= read -r -d '' file; do
