@@ -528,12 +528,6 @@ private:
 
 	void EvaluateNewFiles (const std::vector<uint32>& NewFiles)
 	{
-		bool bAnyHashCandidate = false;
-		for (const SOrphan& orphan : Orphans)
-		{
-			bAnyHashCandidate = bAnyHashCandidate || (orphan.Tombstone != nullptr && orphan.Tombstone->Hash.IsValid());
-		}
-
 		std::vector<SNewFile> ready;
 		for (const uint32 index : NewFiles)
 		{
@@ -603,39 +597,64 @@ private:
 				++claims[k];
 			}
 		}
-		// Content decides wherever no FileId does, and a claim not yet known could make any content pairing ambiguous: until
-		// every such hash is in, no new file is decided by content. Under a hold nothing is decided by content anyway, so
-		// nothing is hashed: the VCS may still be writing those files, and would make F4 hash them twice (edit [27]).
-		bool bHashPending = false;
+		// A file without its content hash and without a FileId match waits for it itself: its derived GUID, or its content
+		// match, needs it (under a hold nothing is decided by content anyway, so nothing is hashed: the VCS may still be
+		// writing those files, and would make F4 hash them twice, edit [27]). It holds back only the files that match an
+		// orphan by content, and only while an orphan that no FileId claims has a tombstone hash: its claim, not yet known,
+		// could make their pairing ambiguous. Any other file is decided whatever it hashes to (MakeCreateMetaGuid is of a
+		// file's own path and content). A hash that could not be read (bHashFailed) holds nothing back: it cannot match.
+		bool bAnyHashCandidate = false;
+		for (uint32 k = 0u; k < Orphans.size(); ++k)
+		{
+			bAnyHashCandidate = bAnyHashCandidate || (Orphans[k].Tombstone != nullptr && Orphans[k].Tombstone->Hash.IsValid() && !claimedByFileId[k]);
+		}
+		bool bClaimPending = false;
 		for (const SNewFile& file : ready)
 		{
 			const SLifecycleSource& source = Facts.Sources[file.Source];
-			if (!source.Content.has_value() && file.FileIdMatches.empty() && (bAnyHashCandidate || Facts.Safety.bDerivedAutoGuids))
+			if (NeedsOwnHash(source, file, bAnyHashCandidate) && !source.bHashFailed)
 			{
 				if (!bHeld)
 				{
 					RequestHash(source.MountPath);
 				}
-				bHashPending = true;
+				bClaimPending = bClaimPending || bAnyHashCandidate;
 			}
 		}
 		for (SNewFile& file : ready)
 		{
-			DecideNewFile(file, claims, bHashPending);
+			DecideNewFile(file, claims, bAnyHashCandidate, bClaimPending);
 		}
 	}
 
-	void DecideNewFile (const SNewFile& File, const std::vector<uint32>& Claims, bool bHashPending)
+	// Whether a ready new file waits for its own content hash.
+	[[nodiscard]] bool NeedsOwnHash (const SLifecycleSource& Source, const SNewFile& File, bool bAnyHashCandidate) const noexcept
+	{
+		return !Source.Content.has_value() && File.FileIdMatches.empty() && (bAnyHashCandidate || Facts.Safety.bDerivedAutoGuids);
+	}
+
+	void DecideNewFile (const SNewFile& File, const std::vector<uint32>& Claims, bool bAnyHashCandidate, bool bClaimPending)
 	{
 		const SLifecycleSource& source = Facts.Sources[File.Source];
-		if (bHashPending && File.FileIdMatches.empty())
+		if (NeedsOwnHash(source, File, bAnyHashCandidate))
 		{
 			AddState(source.MountPath, EMetaState::PendingMeta);
-			if (!source.bWritable)
+			if (source.bHashFailed)
+			{
+				// Never a guess: the file might have matched an orphan, so it waits for a read, and says why it waits.
+				AddProblem(ESeverity::Error, Meta001, source.MountPath, FString("no meta: its content cannot be read (in use by another "
+					"program, or access denied), so its GUID cannot be derived; it gets its meta once it can be read"));
+			}
+			else if (!source.bWritable)
 			{
 				// Every outcome is an error here (META001, or META008 for a match): say so even to a caller that never hashes.
 				AddProblem(ESeverity::Error, Meta001, source.MountPath, FString::Format("no meta: {}", NotWritableReason));
 			}
+			return;
+		}
+		if (bClaimPending && File.FileIdMatches.empty() && !File.ContentInWindow.empty())
+		{
+			AddState(source.MountPath, EMetaState::PendingMeta);   // another file's hash, still to come, may claim its orphan too
 			return;
 		}
 
@@ -682,7 +701,7 @@ private:
 		{
 			if (!source.Content.has_value())
 			{
-				return;   // unreachable: such a file set bHashPending
+				return;   // unreachable: such a file waits for its hash (NeedsOwnHash)
 			}
 			guid = MakeCreateMetaGuid(Facts.Salt, source.MountPath, *source.Content, IsTaken());
 		}

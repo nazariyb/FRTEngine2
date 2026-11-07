@@ -159,7 +159,7 @@ and `Registry`, whose severities are fixed.
 | `RULE002` | an unclaimed file not in `Scan.Quiet`, once per folder and extension | warning | Unclaimed |
 | `REF006` | a reference that resolved through an alias (a meta's `Aliases`, a renamed sub-asset's new label), a former path (`FormerPaths`), or a path spelled differently from the file on disk | info | Registry |
 | `REF007` | a legacy path reference in data (a material's texture path), until `migrate material-refs` | info | Analyze |
-| `META001` | an included file without a `.meta` after the creation delay | error with `--ci`, guests or `Safety.AutoRepairMetas: false`; otherwise the owner creates the meta | Lifecycle |
+| `META001` | an included file without a `.meta` after the creation delay | error with `--ci`, guests or `Safety.AutoRepairMetas: false`, or when its content cannot be read to derive its GUID (in use, access denied: only that file waits); otherwise the owner creates the meta | Lifecycle |
 | `META002` | an orphan `.meta`: its source is gone | warning | Lifecycle |
 | `META003` | a duplicate GUID | error; with `Safety.AutoResolveDuplicates` the owner re-GUIDs the losers | Lifecycle |
 | `META004` | a broken meta: a parse error, conflict markers, two `Guid:` lines | error | Lifecycle |

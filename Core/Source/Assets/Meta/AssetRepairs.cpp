@@ -751,8 +751,9 @@ private:
 		}
 	}
 
-	// Hashes what the lifecycle asked for; true when anything new was learned (a file that keeps changing is left for the
-	// event that follows).
+	// Hashes what the lifecycle asked for; true when anything new was learned. A file whose hash cannot be read (in use,
+	// denied, changing while read) is marked bHashFailed for the rest of the run, which is news too: it then waits alone,
+	// with its META001, rather than holding back every other new file of the mount; the event that follows tries again.
 	bool FetchHashes (std::span<const FString> Paths, std::vector<SLifecycleSource>& Sources)
 	{
 		bool bLearned = false;
@@ -767,6 +768,8 @@ private:
 			SHashed hashed = HashSource(*absolute);
 			if (!hashed.Hash.has_value() && !hashed.bLfsPointer)
 			{
+				bLearned = bLearned || !source->bHashFailed;
+				source->bHashFailed = true;
 				continue;
 			}
 			source->Content = hashed.Hash;

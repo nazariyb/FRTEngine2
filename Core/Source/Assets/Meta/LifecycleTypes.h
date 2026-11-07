@@ -68,6 +68,7 @@ struct SLifecycleSource
 	EFileClass Class = EFileClass::Asset;
 	platform::SFileIdentity Identity;
 	std::optional<hash::SContentHash> Content;   // nullopt: not hashed
+	bool bHashFailed = false;                    // this run asked for its hash and it could not be read (in use, denied)
 	SGuid RecordGuid;                            // invalid: no record yet, or a provisional id
 	EMetaState Stored = EMetaState::PendingMeta;
 	bool bMetaOnDisk = false;

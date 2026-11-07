@@ -4,7 +4,8 @@
 // known asset; commands ignore AutoRepairMetas only; the facts' order changes nothing; applying a result's
 // repairs yields no further repair, which is the guard against a repair loop; derived GUIDs are the frozen derivations
 // and re-roll over live ones; a run asks for hashes and committed facts instead of guessing; a slow checkout never gets a
-// meta created; a folder copied twice references its own copies. Pure: no files, no clock.
+// meta created; a folder copied twice references its own copies; a file whose hash is unknown, or cannot be read, holds
+// back only itself and the files that match an orphan by content (F5). Pure: no files, no clock.
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -1171,6 +1172,58 @@ TEST(LifecycleTest, ARunThatNeedsAHashProposesNothingUntilItHasIt)
 	const SLifecycleResult second = RunLifecycle(world.GetFacts());
 	EXPECT_TRUE(second.NeedContentHash.empty());
 	EXPECT_EQ(Describe(second.Repairs), Sorted({ "CreateMeta /Project/A.png" }));
+}
+
+// F5: one file whose hash is not in yet must not stop CreateMeta for the whole mount. Its own derived GUID needs it; another
+// file's decision needs it only when that file matches an orphan by content, which the unknown hash might also match.
+TEST(LifecycleTest, AFileWhoseHashIsNotInYetHoldsBackOnlyItselfAndTheFilesThatMatchAnOrphanByContent)
+{
+	SWorld world;
+	world.AddNewFile("/Project/A.png", "a").Content = MakeContent("a");
+	world.AddNewFile("/Project/B.png", "b");
+	SLifecycleResult result = RunLifecycle(world.GetFacts());
+	EXPECT_EQ(result.NeedContentHash, std::vector<FString> { "/Project/B.png" });
+	EXPECT_EQ(Describe(result.Repairs), Sorted({ "CreateMeta /Project/A.png" })) << "no orphan: B's hash decides nothing of A's";
+	EXPECT_TRUE(result.Problems.empty());
+
+	// An orphan A matches by content: B's hash, not in yet, could claim it too, so A waits.
+	world.AddTombstone(G1, "/Project/Old/A.png", "a", MakeIdentity(970u), Settled);
+	world.AddMeta("/Project/Old/A.png.meta", G1);
+	result = RunLifecycle(world.GetFacts());
+	EXPECT_EQ(result.NeedContentHash, std::vector<FString> { "/Project/B.png" });
+	EXPECT_TRUE(result.Repairs.empty()) << Describe(result.Repairs).front().CStr();
+	world.Answer(result);
+	result = RunLifecycle(world.GetFacts());
+	EXPECT_EQ(Describe(result.Repairs), Sorted({ "CreateMeta /Project/B.png", "MoveMeta /Project/Old/A.png.meta -> /Project/A.png.meta" }));
+
+	// An orphan A does not match holds A back no more than none does.
+	SWorld other;
+	other.AddTombstone(G1, "/Project/Old/C.png", "c", MakeIdentity(971u), Settled);
+	other.AddMeta("/Project/Old/C.png.meta", G1);
+	other.AddNewFile("/Project/A.png", "a").Content = MakeContent("a");
+	other.AddNewFile("/Project/B.png", "b");
+	result = RunLifecycle(other.GetFacts());
+	EXPECT_EQ(result.NeedContentHash, std::vector<FString> { "/Project/B.png" });
+	EXPECT_EQ(Describe(result.Repairs), Sorted({ "CreateMeta /Project/A.png" }));
+}
+
+// A hash that cannot be read (held open without share-read, an ACL deny) never arrives: the file waits alone with META001
+// naming why, and holds back nobody's pairing, since it cannot match this run.
+TEST(LifecycleTest, AFileWhoseHashCannotBeReadIsMeta001AndHoldsNothingBack)
+{
+	SWorld world;
+	world.bCommand = true;
+	world.AddTombstone(G1, "/Project/Old/A.png", "a", MakeIdentity(972u), Settled);
+	world.AddMeta("/Project/Old/A.png.meta", G1);
+	world.AddNewFile("/Project/A.png", "a").Content = MakeContent("a");
+	world.AddNewFile("/Project/B.png", "b").bHashFailed = true;
+	const SLifecycleResult result = RunLifecycle(world.GetFacts());
+	EXPECT_TRUE(result.NeedContentHash.empty()) << "not asked again in this run";
+	EXPECT_EQ(Describe(result.Repairs), Sorted({ "MoveMeta /Project/Old/A.png.meta -> /Project/A.png.meta" }));
+	EXPECT_EQ(Describe(result.Problems), Sorted({ "META001 /Project/B.png" }));
+	ASSERT_EQ(result.Problems.size(), 1u);
+	EXPECT_TRUE(result.Problems[0].Message.Contains("cannot be read")) << result.Problems[0].Message.CStr();
+	EXPECT_TRUE(result.FixIts.empty()) << "the fix-it's GUID needs the hash";
 }
 
 TEST(LifecycleTest, AFileIdMatchNeedsNoHash)

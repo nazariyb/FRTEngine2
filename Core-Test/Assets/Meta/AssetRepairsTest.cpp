@@ -22,7 +22,8 @@
 // with small delays. The dedupe op's crash points are rolled forward in-process, and one real child is killed. F1: a
 // meta that lands between a repair's plan and its write, or after a crash and before the roll-forward, is kept; a dedupe
 // set left half written keeps its full remap when the next run plans the rest narrower. F4: a dedupe loser gives its
-// Aliases and FormerPaths up to the winner, and a copied referrer of an alias references the copy.
+// Aliases and FormerPaths up to the winner, and a copied referrer of an alias references the copy. F5: a file whose content
+// cannot be read is named with META001 and stops no other file's meta.
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -60,6 +61,8 @@
 #include "Jobs/WorkerPool.h"
 #include "Platform/FileSystem.h"
 #include "Platform/Platform.h"
+
+#include <Windows.h>
 
 using namespace frt;
 using namespace frt::assets;
@@ -1065,6 +1068,33 @@ TEST(AssetRepairs, RunNowHasNoDelaysAndHonoursItsKindsAndItsDryRun)
 	EXPECT_EQ(tree.MetaGuid("b.png"), MakeGuid(GuidB));
 	EXPECT_TRUE(all.Problems.empty());
 	EXPECT_TRUE(rig.Problems().empty()) << rig.DescribeProblems().CStr();
+}
+
+// A file a program holds open without share-read: its hash never arrives in this run. Before F5 every new file of the
+// mount stayed metaless with no word of why; now only that file waits, and its META001 says why.
+TEST(AssetRepairs, OneFileWhoseContentCannotBeReadIsNamedAndStopsNoOtherFilesMeta)
+{
+	CRepairTree tree("Не читається");
+	tree.WritePng("a.png");
+	tree.WritePng("b.png", 5u);
+	CRig rig(tree);
+	rig.Open();
+	const HANDLE holder = CreateFileW(tree.Abs("b.png").c_str(), GENERIC_READ, 0u, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+	ASSERT_NE(holder, INVALID_HANDLE_VALUE);
+	const SRepairReport report = rig.Repairs().RunNow(SRepairOptions {});
+	CloseHandle(holder);
+
+	EXPECT_EQ(tree.MetaGuid("a.png"), DerivedGuid(P("a.png")));
+	EXPECT_FALSE(tree.Exists("b.png.meta"));
+	const auto unreadable = std::find_if(report.Problems.begin(), report.Problems.end(), [] (const SDiagnostic& Problem)
+	{
+		return Problem.Code == Meta001 && Problem.Subject == P("b.png") && Problem.Message.Contains("cannot be read");
+	});
+	EXPECT_NE(unreadable, report.Problems.end()) << rig.DescribeProblems().CStr();
+
+	// Readable again, the next run gives it its meta.
+	(void)rig.Repairs().RunNow(SRepairOptions {});
+	EXPECT_EQ(tree.MetaGuid("b.png"), DerivedGuid(P("b.png"), 5u));
 }
 
 TEST(AssetRepairs, AnEngineOwnerRunRepairsEngineFilesWithTheEngineSalt)
