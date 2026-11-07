@@ -949,6 +949,9 @@ class Gate:
     SMOKE_PANEL_LINE = re.compile(r'^\[smoke\]\s+ok\s+the Assets panel shows (\d+) of (\d+) record\(s\) of type:Texture', re.MULTILINE)
     SMOKE_PROBLEMS_LINE = re.compile(r'^\[smoke\]\s+ok\s+the Asset problems panel lists (\d+) problem\(s\) in (\d+) asset\(s\), '
                                      r'as RunValidation does with its options', re.MULTILINE)
+    # A read-only editor's registry runs the meta lifecycle too, reporting only (edit [55]): the in-place run is one.
+    SMOKE_READER_LIFECYCLE_LINE = re.compile(r'^\[smoke\]\s+ok\s+the read-only registry runs the meta lifecycle, reporting only',
+                                             re.MULTILINE)
 
     def check_smoke_registry(self, name, config, text, log):
         """The smoke test's registry check: the initial scan completed (its "[smoke] ok registry:" line), the
@@ -969,6 +972,9 @@ class Gate:
         if not problems:
             raise StepFailed('no "[smoke] ok the Asset problems panel lists" line: the problems panel did not list what '
                              'RunValidation does with its options')
+        if not self.SMOKE_READER_LIFECYCLE_LINE.search(text):
+            raise StepFailed('no "[smoke] ok the read-only registry runs the meta lifecycle, reporting only" line: the '
+                             'read-only editor runs no meta lifecycle')
         return (f'registry: {registry.group(1)} records, {panel.group(2)} textures, {problems.group(1)} problems, '
                 f'initial scan {registry.group(2)} ms')
 
@@ -1043,28 +1049,31 @@ class Gate:
         # The copy is a git repository (FRT.bat new: git init, everything staged, nothing committed), so the editor, its
         # writer here (Engine/Automation.h), creates the added PNG's meta through Git, which stages nothing: both files
         # stay untracked (edit [4]).
+        # Both legs always run: verify needs git anyway, so a copy without a repository means FRT.bat new regressed.
         output = self.run_dir / 'Smoke' / f'{SCRATCH_NAME}-{config}'
-        repository = (project_dir / '.git').exists()
-        first = 'Git' if repository else 'None'
-        text, added = self.scratch_smoke_run(log, env, config, project, project_dir, shaders, output, first, root)
+        if not (project_dir / '.git').exists():
+            raise StepFailed(f'FRT.bat new made no git repository in the copy, so the Git provider cannot be proven '
+                             f'(the copy is kept: {root})')
+        text, added = self.scratch_smoke_run(log, env, config, project, project_dir, shaders, output, 'Git', root)
         checks = len(re.findall(r'^\[smoke\]\s+ok\s', text, re.MULTILINE))
         skips = len(re.findall(r'^\[smoke\]\s+skip\s', text, re.MULTILINE))
         detail = f'{checks} checks passed' + (f', {skips} skipped' if skips else '')
-        if repository:
-            status = output_of(['git', '-C', str(project_dir), 'status', '--porcelain', '--untracked-files=all', '--', 'Content'])
-            lines = (status or b'').decode('utf-8', errors='replace').splitlines()
-            for path in (f'Content/{added}', f'Content/{added}.meta'):
-                if f'?? {path}' not in lines:
-                    raise StepFailed(f'git status does not list {path} as untracked: {"; ".join(lines[:4]) or "nothing"} '
-                                     f'(the copy is kept: {root})')
-            # The same copy without its repository: None, with nothing generated or built again.
-            remove_tree(project_dir / '.git')
-            text, _ = self.scratch_smoke_run(log, env, config, project, project_dir, shaders, self.run_dir / 'Smoke' / f'{SCRATCH_NAME}-{config}-None',
-                                             'None', root)
-            detail += '; then without .git, through None'
+        status = output_of(['git', '-C', str(project_dir), 'status', '--porcelain', '--untracked-files=all', '--', 'Content'])
+        lines = (status or b'').decode('utf-8', errors='replace').splitlines()
+        for path in (f'Content/{added}', f'Content/{added}.meta'):
+            if f'?? {path}' not in lines:
+                raise StepFailed(f'git status does not list {path} as untracked: {"; ".join(lines[:4]) or "nothing"} '
+                                 f'(the copy is kept: {root})')
+        # The same copy without its repository: None, with nothing generated or built again. remove_tree swallows what it
+        # cannot delete, and a .git left in part would make the run detect Git again.
+        remove_tree(project_dir / '.git')
+        if (project_dir / '.git').exists():
+            raise StepFailed(f'{project_dir / ".git"} could not be deleted for the None run (the copy is kept: {root})')
+        self.scratch_smoke_run(log, env, config, project, project_dir, shaders, self.run_dir / 'Smoke' / f'{SCRATCH_NAME}-{config}-None',
+                               'None', root)
         remove_tree(root)
-        return (detail + f', the material reloaded, the shader programs rebuilt and {added}\'s meta created through {first}' +
-                (f'; build {retries}' if retries else '') + f'; output in {output}')
+        return (detail + f', the material reloaded, the shader programs rebuilt and {added}\'s meta created through Git, '
+                f'then without .git through None' + (f'; build {retries}' if retries else '') + f'; output in {output}')
 
     # ---- captures ----
 

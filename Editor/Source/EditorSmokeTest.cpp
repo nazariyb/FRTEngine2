@@ -1037,9 +1037,19 @@ void CEditorSmokeTest::CheckProblemsPanel (CEditor& Editor, CEngine& Engine)
 			[] (const assets::SProblemFixIt& Fix) { return Fix.Kind == assets::EProblemFixKind::Copy; }) == 1,
 			FString::Format("a META001 on /{} offers {}", engine->Name, copy != fixIts.end() ? copy->Text : FString("no command")));
 	}
+	// Every host's registry runs the meta lifecycle (CEngine::StartUp): the writer's repairs /Project, a reader's only
+	// reports (its META001 and the rest), so a metaless file is a problem in a read-only editor too.
+	assets::CAssetRepairs* repairs = registry->GetRepairs();
 	if (!registry->IsWriter())
 	{
 		Check(offered > 0u && enabled == 0u, FString::Format("the read-only editor offers {} fix-it(s) and none it could apply", offered));
+		Check(repairs != nullptr && repairs->GetWriter() == nullptr && repairs->GetWriterOf(assets::ProjectMountId) == nullptr,
+			"the read-only registry runs the meta lifecycle, reporting only");
+	}
+	else
+	{
+		Check(repairs != nullptr && repairs->GetWriterOf(assets::ProjectMountId) != nullptr,
+			"the writer's registry runs the meta lifecycle, repairing /Project");
 	}
 
 	ImGui::SetWindowFocus(CAssetProblemsPanel::Name);
