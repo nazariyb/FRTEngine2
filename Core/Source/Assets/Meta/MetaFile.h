@@ -25,7 +25,9 @@
  * - **META005** (warning) with State Ok and bCanonical false: the file reads, and the next write would change its bytes.
  * - An unknown key: a warning with Code 0 (§13.4 names none) and FieldPath set; the key stays in UnknownKeys and is written
  *   back after the known ones. `$note`, which §3.7 tells authors to annotate with, is kept the same way and not reported.
- *   A FormatVersion newer than this build's is a warning too: the file is kept, nothing is migrated.
+ *   A FormatVersion newer than this build's (SupportedMetaFormatVersion) is a warning too, and bNewerFormat: the file is
+ *   read for its identity and kept as it is. It raises no META005, since its canonical form is its own format's, and
+ *   EmitMeta refuses it, so no writer of this build (resave, a dedupe, keep-alias, a move's FormerPaths) rewrites it.
  * Callers keep what their context raises: gathering takes META004 and VCS001, `validate` adds META005 (§13.4 "Runs").
  *
  * EmitMeta writes the §3.2 layout through the canonical emitter (Reflect/CanonicalEmitter.h): the fixed top-level order
@@ -41,12 +43,15 @@
  */
 namespace frt::assets
 {
+// The meta layout this build reads in full and writes. A newer one is read, never written (bNewerFormat).
+inline constexpr uint32 SupportedMetaFormatVersion = 1u;
+
 // Replaces Out with what Bytes hold. Never fails as a call: a bad file is State Broken and says why.
 FRT_CORE_API void ParseMeta (FStringView Bytes, SMetaParseResult& Out);
 
 /**
  * Meta's canonical bytes into Out (replacing it). False with Out empty, and the reason in OutError, when it cannot be
- * written: an invalid Guid, Alias or RebuildNonce, a FormatVersion of 0, a Settings, Targets or SubAssets that is not a
+ * written: an invalid Guid, Alias or RebuildNonce, a FormatVersion of 0 or past SupportedMetaFormatVersion, a Settings, Targets or SubAssets that is not a
  * map, an unknown key that repeats a known one, or anything the emitter refuses (invalid UTF-8).
  */
 [[nodiscard]] FRT_CORE_API bool EmitMeta (const SAssetMeta& Meta, FString& Out, SDiagnostic* OutError = nullptr);

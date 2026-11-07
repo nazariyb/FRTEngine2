@@ -409,13 +409,19 @@ int32 RunResave (CCommandletContext& Context)
 		Context.Print(FString::Format("  broken     {} (left as it is: META004)", ToDisplayText(meta)));
 		Context.PrintJson(CJsonObject().AddString("kind", "meta").AddString("path", meta).AddBool("rewritten", false).AddBool("broken", true));
 	}
+	for (const FString& meta : result.Newer)
+	{
+		Context.Print(FString::Format("  newer      {} (left as it is: written by a newer engine)", ToDisplayText(meta)));
+		Context.PrintJson(CJsonObject().AddString("kind", "meta").AddString("path", meta).AddBool("rewritten", false).AddBool("newer", true));
+	}
 	for (const SDiagnostic& problem : result.Problems)
 	{
 		PrintProblem(Context, problem);
 	}
-	Context.Print(FString::Format("resave --metas: {} rewritten, {} already canonical, {} broken", result.Rewritten.size(), result.Canonical, result.Broken.size()));
+	Context.Print(FString::Format("resave --metas: {} rewritten, {} already canonical, {} broken, {} newer", result.Rewritten.size(), result.Canonical,
+		result.Broken.size(), result.Newer.size()));
 	Context.PrintJson(CJsonObject().AddString("kind", "summary").AddString("verb", "resave").AddUInt("rewritten", result.Rewritten.size())
-		.AddUInt("canonical", result.Canonical).AddUInt("broken", result.Broken.size()));
+		.AddUInt("canonical", result.Canonical).AddUInt("broken", result.Broken.size()).AddUInt("newer", result.Newer.size()));
 	return result.Problems.empty() ? ExitSuccess : ExitProblems;
 }
 }

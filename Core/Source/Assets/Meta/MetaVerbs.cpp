@@ -309,6 +309,11 @@ std::vector<SAssetOp> PlanResaveMetas (const CAssetWriter& Writer, const CRegist
 			Out.Broken.emplace_back(file.MountPath);
 			return;
 		}
+		if (parsed.bNewerFormat)
+		{
+			Out.Newer.emplace_back(file.MountPath);   // a newer engine's layout: this build would rewrite it in its own
+			return;
+		}
 		FString text;
 		if (parsed.bCanonical || !EmitMeta(parsed.Meta, text) || text == *bytes)
 		{
@@ -319,6 +324,7 @@ std::vector<SAssetOp> PlanResaveMetas (const CAssetWriter& Writer, const CRegist
 	});
 	std::sort(rewrites.begin(), rewrites.end(), [] (const SRewrite& A, const SRewrite& B) { return LessPortableThenBytes(A.Path, B.Path); });
 	std::sort(Out.Broken.begin(), Out.Broken.end(), [] (const FString& A, const FString& B) { return LessPortableThenBytes(A, B); });
+	std::sort(Out.Newer.begin(), Out.Newer.end(), [] (const FString& A, const FString& B) { return LessPortableThenBytes(A, B); });
 
 	std::vector<SAssetOp> ops;
 	for (SRewrite& rewrite : rewrites)
@@ -365,6 +371,7 @@ SResaveMetasResult ResaveMetas (CAssetRegistry& Registry, std::span<const MountI
 		const std::vector<SAssetOp> ops = PlanResaveMetas(*writer, Registry.Live(), mounts, planned);
 		out.Canonical += planned.Canonical;
 		out.Broken.insert(out.Broken.end(), planned.Broken.begin(), planned.Broken.end());
+		out.Newer.insert(out.Newer.end(), planned.Newer.begin(), planned.Newer.end());
 		if (bDryRun)
 		{
 			out.Rewritten.insert(out.Rewritten.end(), planned.Rewritten.begin(), planned.Rewritten.end());

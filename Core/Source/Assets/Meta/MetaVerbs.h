@@ -81,6 +81,7 @@ struct SResaveMetasResult
 {
 	std::vector<FString> Rewritten;      // the metas' mount paths
 	std::vector<FString> Broken;         // left as they are
+	std::vector<FString> Newer;          // written by a newer engine (FormatVersion past this build's): left as they are
 	uint32 Canonical = 0u;               // already canonical
 	std::vector<SDiagnostic> Problems;   // refusals of the writer or the VCS (VCS002)
 };

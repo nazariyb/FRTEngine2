@@ -4,6 +4,7 @@
 // read in full is Broken rather than half-read: Broken still names the GUIDs it holds, because identity outlives a bad edit.
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <vector>
 
 #include "Assets/AssetDiagnosticCodes.h"
@@ -524,16 +525,29 @@ TEST (MetaFileTest, ALeadingZeroSurvivesARepairThatTouchesAnotherKey)
 	EXPECT_EQ(repaired.Meta.UnknownKeys[0].Value.GetRoot().AsText().value_or(FStringView()), "007");
 }
 
-TEST (MetaFileTest, ANewerFormatVersionIsKeptAndReportedNotRefused)
+// A newer engine's meta is read for its identity and never written by this build: its layout (here a key its format orders
+// before Cook, which this build would move after it) is its own format's, so it is no META005 and EmitMeta refuses it.
+TEST (MetaFileTest, ANewerFormatVersionIsReadForItsIdentityAndNeverRewritten)
 {
-	const FStringView bytes = "FormatVersion: 9\nGuid: 5d1e7a3b9c0f42d68e1a2b3c4d5e6f70\nCook: Auto\n";
+	const FStringView bytes = "FormatVersion: 9\nGuid: 5d1e7a3b9c0f42d68e1a2b3c4d5e6f70\nZone: north\nCook: Auto\n";
 	const SMetaParseResult result = Parse(bytes);
 	EXPECT_EQ(result.State, EMetaParseState::Ok);
 	EXPECT_EQ(result.Meta.FormatVersion, 9u);
-	EXPECT_TRUE(result.bCanonical);
-	ASSERT_EQ(result.Diagnostics.size(), 1u);
-	EXPECT_EQ(result.Diagnostics[0].Severity, ESeverity::Warning);
-	EXPECT_EQ(Emit(result.Meta).View(), bytes);
+	EXPECT_EQ(result.Meta.Guid.ToString(), "5d1e7a3b9c0f42d68e1a2b3c4d5e6f70");
+	EXPECT_TRUE(result.bNewerFormat);
+	EXPECT_TRUE(result.bCanonical) << "by its own format's rules";
+	for (const SDiagnostic& diagnostic : result.Diagnostics)
+	{
+		EXPECT_NE(diagnostic.Code, Meta005) << diagnostic.Message.CStr();
+	}
+	EXPECT_TRUE(std::any_of(result.Diagnostics.begin(), result.Diagnostics.end(), [] (const SDiagnostic& Diagnostic)
+	{
+		return Diagnostic.Severity == ESeverity::Warning && Diagnostic.Message.Contains("newer");
+	}));
+	FString text;
+	SDiagnostic error;
+	EXPECT_FALSE(EmitMeta(result.Meta, text, &error));
+	EXPECT_TRUE(error.Message.Contains("newer engine")) << error.Message.CStr();
 }
 
 

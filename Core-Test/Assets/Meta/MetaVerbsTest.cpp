@@ -585,6 +585,9 @@ TEST(MetaVerbs, ResaveMetasRewritesOnlyMetasThatAreNotCanonicalAndEveryCrashPoin
 	tree.WritePng("Crlf.png", 6u);
 	tree.WritePng("Broken.png", 7u);
 	tree.WriteMeta("Broken.png", "FormatVersion: 1\nGuid: 6a1e7a3b9c0f42d68e1a2b3c4d5e6f71\nLabels: [ unclosed\n");
+	tree.WritePng("Newer.png", 8u);
+	const FString newer = "FormatVersion: 2\nGuid: 8a1e7a3b9c0f42d68e1a2b3c4d5e6f73\nZone: north\nCook: Auto\n";
+	tree.WriteMeta("Newer.png", newer);
 	const FString messy = FString::Format("Labels: [ b, a ]\nGuid: {}\nFormatVersion: 1\n", GuidB);
 	const FString crlf = "FormatVersion: 1\r\nGuid: 7a1e7a3b9c0f42d68e1a2b3c4d5e6f72\r\n";
 	tree.WriteMeta("Messy.png", messy);
@@ -605,6 +608,7 @@ TEST(MetaVerbs, ResaveMetasRewritesOnlyMetasThatAreNotCanonicalAndEveryCrashPoin
 		ASSERT_EQ(ops[0].Steps.size(), 2u);
 		EXPECT_EQ(planned.Rewritten, (std::vector<FString> { P("Crlf.png.meta"), P("Messy.png.meta") }));
 		EXPECT_EQ(planned.Broken, std::vector<FString> { P("Broken.png.meta") });
+		EXPECT_EQ(planned.Newer, std::vector<FString> { P("Newer.png.meta") }) << "a newer engine's layout is not this build's to rewrite";
 		EXPECT_EQ(planned.Canonical, 1u);
 		writer.SetStopAfterStepForTest(stop);
 		(void)writer.Run(ops[0]);
@@ -622,6 +626,8 @@ TEST(MetaVerbs, ResaveMetasRewritesOnlyMetasThatAreNotCanonicalAndEveryCrashPoin
 	EXPECT_EQ(result.Rewritten, std::vector<FString> { P("Messy.png.meta") });
 	EXPECT_EQ(tree.Read("Canonical.png.meta"), canonical);
 	EXPECT_EQ(tree.Read("Broken.png.meta"), broken) << "a broken meta is never rewritten";
+	EXPECT_EQ(tree.Read("Newer.png.meta"), newer) << "nor is a newer engine's";
+	EXPECT_EQ(result.Newer, std::vector<FString> { P("Newer.png.meta") });
 	for (const CRecordingVcsProvider::SCall& call : rig.Vcs.GetWriteCalls())
 	{
 		EXPECT_EQ(std::count(call.Files.begin(), call.Files.end(), tree.Vcs("Canonical.png.meta")), 0) << "a canonical meta is not checked out";

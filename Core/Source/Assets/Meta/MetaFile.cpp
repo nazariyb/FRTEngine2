@@ -23,7 +23,6 @@ using reflect::EScalarStyle;
 using reflect::HDataNode;
 using reflect::SDataChild;
 
-constexpr uint32 SupportedFormatVersion = 1u;
 constexpr FStringLiteral Bom = "\xEF\xBB\xBF";
 
 // The one rule of a meta's document: its top-level order and nothing before it, so `$`-keys get no lead here. Unknown keys
@@ -330,7 +329,7 @@ private:
 		{
 			return Fail(Value, "0 is no format version");
 		}
-		if (Meta.FormatVersion > SupportedFormatVersion)
+		if (Meta.FormatVersion > SupportedMetaFormatVersion)
 		{
 			SDiagnostic diagnostic;
 			diagnostic.Severity = ESeverity::Warning;
@@ -338,7 +337,7 @@ private:
 			diagnostic.Column = Value.GetColumn();
 			diagnostic.FieldPath = FString(Key);
 			diagnostic.Message = FString::Format("format version {} is newer than this build's {}: an update may be due",
-				Meta.FormatVersion, SupportedFormatVersion);
+				Meta.FormatVersion, SupportedMetaFormatVersion);
 			Diagnostics.push_back(std::move(diagnostic));
 		}
 		return true;
@@ -546,6 +545,13 @@ private:
 	{
 		return RefuseMeta(OutError, "0 is no format version");
 	}
+	if (Meta.FormatVersion > SupportedMetaFormatVersion)
+	{
+		// This build knows only its own layout: written in it, a newer meta would lose or change what its format added,
+		// and the two engines would rewrite each other's metas back and forth.
+		return RefuseMeta(OutError, FString::Format("it was written by a newer engine (format version {}; this build writes {}), so it is left as "
+			"it is", Meta.FormatVersion, SupportedMetaFormatVersion).View());
+	}
 	if (!Meta.Guid.IsValid())
 	{
 		return RefuseMeta(OutError, "a meta needs a valid Guid");
@@ -695,6 +701,13 @@ void ParseMeta (FStringView Bytes, SMetaParseResult& Out)
 		return;
 	}
 	Out.State = EMetaParseState::Ok;
+	if (Out.Meta.FormatVersion > SupportedMetaFormatVersion)
+	{
+		// Canonical by its own format's rules, which this build does not know: no META005, and nothing here rewrites it.
+		Out.bNewerFormat = true;
+		Out.bCanonical = true;
+		return;
+	}
 
 	// Bytes that parsed into this meta: equal output needs no second parse to prove anything.
 	FString canonical;

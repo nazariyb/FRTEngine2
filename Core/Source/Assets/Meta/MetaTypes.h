@@ -74,7 +74,8 @@ struct SMetaParseResult
 	bool bHasBom = false;
 	bool bHasCrLf = false;
 	bool bInvalidUtf8 = false;
-	bool bCanonical = false;                     // re-emitting would reproduce these bytes exactly
+	bool bCanonical = false;                     // re-emitting would reproduce these bytes exactly (a newer format: its own rules)
+	bool bNewerFormat = false;                   // Ok, but its FormatVersion is past this build's: never rewritten here
 };
 }
 

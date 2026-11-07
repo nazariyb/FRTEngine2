@@ -391,6 +391,14 @@ bool PlanMoveAssets (const CAssetWriter& Writer, std::span<const SAssetMove> Mov
 					FString::Format("'{}' cannot be read, so it moves unchanged and does not record '{}' as a former path", ToDisplayText(*meta),
 						ToDisplayText(move.From))));
 			}
+			else if (parsed.bNewerFormat)
+			{
+				// Nor is a newer engine's meta: this build would write it in its own, older layout.
+				OutOp.PlannedGuids.push_back(parsed.Meta.Guid);
+				OutProblems.push_back(MakeProblem(Writer, ESeverity::Warning, 0u, *meta,
+					FString::Format("'{}' was written by a newer engine (format version {}), so it moves unchanged and does not record '{}' as a "
+						"former path", ToDisplayText(*meta), parsed.Meta.FormatVersion, ToDisplayText(move.From))));
+			}
 			else
 			{
 				OutOp.PlannedGuids.push_back(parsed.Meta.Guid);

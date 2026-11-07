@@ -2,7 +2,8 @@
 // writes one meta with its pre-allocated GUID and checks out and adds it with its source, and never remints an existing
 // meta in any spelling; a move carries the meta and declared companions in one provider call, records the old path in
 // FormerPaths (and drops the new one from it), records nothing for a case-only rename, renames a meta spelled in another
-// case to the asset's case, moves a broken meta unchanged, and refuses an occupied target, another file's meta, a
+// case to the asset's case, moves a broken meta and a newer engine's meta unchanged (nor does a dedupe rewrite the latter),
+// and refuses an occupied target, another file's meta, a
 // non-portable name and two files landing on one name before anything moves; a delete hands the source and its meta to one
 // Delete, and deletes a meta alone only when it is an orphan; a refusal is VCS002 on the asset with nothing written. Kill-mid-command: every crash point of each multi-file
 // command stops in-process and start-up roll-forward leaves a consistent pair with its planned GUID; then one real child
@@ -20,8 +21,10 @@
 
 #include "Assets/AssetDiagnosticCodes.h"
 #include "Assets/Meta/AssetCommands.h"
+#include "Assets/Meta/AssetRepairs.h"
 #include "Assets/Meta/AssetWriter.h"
 #include "Assets/Meta/MetaPaths.h"
+#include "Assets/Registry/RegistryStore.h"
 #include "Containers/String.h"
 #include "Platform/FileSystem.h"
 #include "Platform/Platform.h"
@@ -344,6 +347,36 @@ TEST(AssetCommandsTest, ABrokenMetaMovesUnchangedWithAWarning)
 	EXPECT_EQ(result.Problems[0].Severity, ESeverity::Warning);
 	EXPECT_EQ(tree.Read("/Project/b.png.meta"), broken);
 	EXPECT_EQ(result.Op.PlannedGuids.size(), 2u) << "the salvaged GUIDs are what the move keeps";
+}
+
+// This build would write a newer engine's meta in its own, older layout: a move carries it as it is, and a dedupe of it
+// is refused with a problem rather than rewriting it.
+TEST(AssetCommandsTest, ANewerEnginesMetaMovesUnchangedAndIsNeverRewrittenByADedupe)
+{
+	CWriterTree tree("Новіший");
+	const FStringView newer = "FormatVersion: 2\nGuid: 5d1e7a3b9c0f42d68e1a2b3c4d5e6f70\nZone: north\nCook: Auto\n";
+	tree.Write("/Project/a.png", "png");
+	tree.Write("/Project/a.png.meta", newer);
+	const std::vector<SAssetMove> move = { SAssetMove { "/Project/a.png", "/Project/b.png", {} } };
+	const SAssetCommandResult result = MoveAssets(*tree.Writer, move);
+	ASSERT_TRUE(result.IsOk()) << result.Vcs.Message.CStr();
+	ASSERT_EQ(result.Problems.size(), 1u);
+	EXPECT_EQ(result.Problems[0].Severity, ESeverity::Warning);
+	EXPECT_EQ(tree.Read("/Project/b.png.meta"), newer) << "no FormerPaths written in this build's layout";
+
+	SLifecycleAction dedupe;
+	dedupe.Kind = ELifecycleAction::ReGuid;
+	dedupe.Path = "/Project/b.png.meta";
+	dedupe.Guid = SGuid::NewRandom();
+	dedupe.Remap = { { SGuid::Parse("5d1e7a3b9c0f42d68e1a2b3c4d5e6f70").value_or(SGuid {}), dedupe.Guid } };
+	CRegistryStore store;
+	SAssetOp op;
+	std::vector<SDiagnostic> problems;
+	EXPECT_FALSE(PlanRepairOp(*tree.Writer, store.Live(), std::span(&dedupe, 1u), op, problems));
+	EXPECT_TRUE(op.Steps.empty());
+	ASSERT_EQ(problems.size(), 1u);
+	EXPECT_TRUE(problems[0].Message.Contains("newer engine")) << problems[0].Message.CStr();
+	EXPECT_EQ(tree.Read("/Project/b.png.meta"), newer);
 }
 
 TEST(AssetCommandsTest, AMoveThatCannotLandIsRefusedBeforeAnythingMoves)
