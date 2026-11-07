@@ -83,6 +83,14 @@ class CWorkerPool;
  * Snapshots are written from an acquired view on a worker after a batch of SnapshotBatchRecords records, after
  * SnapshotIdleSeconds without a commit, and at ShutDown (clean exit).
  *
+ * The meta lifecycle (M4, §4.7). With SAssetRegistryDesc::Lifecycle the registry owns a CAssetRepairs (GetRepairs):
+ * its Start rolls an unfinished operation of the owner root's OpJournal forward before the first scan; every finished
+ * pass hands it the paths it touched, and Pump ticks it (SLifecycleDesc::bLive), so the lifecycle runs on a worker
+ * against the committed view whenever the registry is quiet, commits its states and problems (EProblemSource::Lifecycle)
+ * and, for a writer with bRepairs, applies its repairs through a CAssetWriter on the owner root and rescans what they
+ * touched. Only the mounts the writer owns are repaired (Project: /Project and its plugins; Engine: /Engine); every
+ * mount is reported.
+ *
  * Change notification (§5.9). Panels poll GetRevision() once per frame and re-run their queries when it moved;
  * ForEachChangeSince walks the store's change ring. Engine systems may subscribe to OnAssetsChanged, which fires once
  * per Pump whenever the revision moved - commits, a snapshot adoption and table compaction alike - with the record
@@ -93,6 +101,7 @@ class CWorkerPool;
  */
 namespace frt::assets
 {
+class CAssetRepairs;
 class CFileWatcherService;
 class CRegistryJournal;
 struct SLifecycleDesc;
@@ -143,8 +152,9 @@ struct SAssetRegistryDesc
 	uint32 RetryDelayMs = 200u;
 	// Files per Analyze task (one delta each).
 	uint32 AnalyzeBatchFiles = 16u;
-	// The meta lifecycle (Assets/Meta/AssetRepairs.h); the registry keeps the pointer. Null: none, nothing is reported or
-	// written. No host sets it yet, and nothing reads it yet: M4's pieces wire it, and its last one switches the hosts on.
+	// The meta lifecycle (Assets/Meta/AssetRepairs.h); the registry keeps the pointer and owns a CAssetRepairs for it
+	// (GetRepairs). Null: none, nothing is reported or written. No host sets it yet: H4b switches the hosts on; tests and
+	// the verbs that need the lifecycle pass their own.
 	const SLifecycleDesc* Lifecycle = nullptr;
 };
 
@@ -160,6 +170,8 @@ struct SAssetRegistryCounters
 	uint64 Passes = 0u;         // scans completed (whole mounts and subtrees)
 	uint64 SnapshotsWritten = 0u;
 	uint64 Compactions = 0u;
+	uint64 RepairsApplied = 0u; // lifecycle repairs written (an action each: a meta created, restored, moved, re-GUIDed)
+	uint64 RepairsRefused = 0u; // lifecycle repairs the VCS or the writer refused (VCS002): kept as proposals
 	double CommitMs = 0.0;      // owner-thread time of the commits, journal appends included
 };
 
@@ -303,6 +315,8 @@ public:
 	[[nodiscard]] TMulticastDelegate<const SAssetChangeSet&>& OnAssetsChanged () noexcept;
 
 	[[nodiscard]] const SAssetRegistryCounters& GetCounters () const noexcept;
+	// The meta lifecycle's runtime (SAssetRegistryDesc::Lifecycle), null without one. Owner thread.
+	[[nodiscard]] CAssetRepairs* GetRepairs () noexcept;
 	[[nodiscard]] const CMountTable& GetMounts () const noexcept;
 	[[nodiscard]] const CRulesEngine& GetRules () const noexcept;
 	[[nodiscard]] bool IsWriter () const noexcept;

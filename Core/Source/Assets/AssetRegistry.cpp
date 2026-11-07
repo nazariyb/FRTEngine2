@@ -12,6 +12,7 @@
 #include "Assets/AssetDiagnosticCodes.h"
 #include "Assets/Discovery/MountScanner.h"
 #include "Assets/FileWatcherService.h"
+#include "Assets/Meta/AssetRepairs.h"
 #include "Assets/Meta/MetaFile.h"
 #include "Assets/Meta/MetaPaths.h"
 #include "Assets/Meta/MetaTypes.h"
@@ -1270,7 +1271,7 @@ void AddRecordChanges (std::span<const SRecordChange> Changes, SAssetChangeSet& 
 }
 
 
-struct CAssetRegistry::SImpl
+struct CAssetRegistry::SImpl final : IAssetRepairsHost
 {
 	struct SScanRequest
 	{
@@ -1308,6 +1309,7 @@ struct CAssetRegistry::SImpl
 		std::vector<SUnclaimedFolder> Folders;
 		SRegistryDelta RuleFiles;        // SConversion::RuleFiles
 		SRegistryDelta Unclaimed;        // RULE002's lists that changed
+		std::vector<FString> Dirty;      // the paths its deltas touched (the lifecycle's events), with a lifecycle only
 	};
 
 	struct SQueuedDelta
@@ -1383,6 +1385,80 @@ struct CAssetRegistry::SImpl
 			}
 			bWithEngineFallback = true;
 		}
+		if (Desc.Lifecycle != nullptr)
+		{
+			SAssetRepairsDesc repairs;
+			repairs.Lifecycle = Desc.Lifecycle;
+			repairs.Mounts = Mounts.get();
+			repairs.Rules = Rules.get();
+			repairs.Pool = &Pool;
+			repairs.Watcher = Desc.Watcher;
+			repairs.Host = this;
+			repairs.OwnerRoot = OwnerRoot;
+			repairs.bWriter = Desc.bWriter;
+			if (Desc.bWriter)
+			{
+				repairs.OwnedMounts = SnapshotMounts;   // the mounts this owner writes: /Project and its plugins, or /Engine
+			}
+			Repairs = std::make_unique<CAssetRepairs>(std::move(repairs));
+		}
+	}
+
+	~SImpl () override = default;
+
+	// ---- the lifecycle's host (IAssetRepairsHost) ----
+
+	[[nodiscard]] const CRegistryView& GetLiveView () const override
+	{
+		return Store->Live();
+	}
+
+	[[nodiscard]] std::shared_ptr<const CRegistryView> AcquireView () const override
+	{
+		return Store->Acquire();
+	}
+
+	[[nodiscard]] bool IsQuiet () const override
+	{
+		return State == EScanState::Ready && !bStopping && IsIdle();
+	}
+
+	void CommitNow (SRegistryDelta&& Delta) override
+	{
+		CommitDelta(std::move(Delta));
+	}
+
+	void RequestRescan (std::span<const FString> MountPaths) override
+	{
+		for (const FString& path : MountPaths)
+		{
+			FStringView mountName;
+			FStringView relative;
+			if (const SMount* mount = SplitMountPath(path, mountName, relative) ? Mounts->Find(mountName) : nullptr; mount != nullptr)
+			{
+				RequestScan(mount->Id, ScanRootOf(path), false);
+			}
+		}
+	}
+
+	bool ScanNow (std::span<const FString> MountPaths) override
+	{
+		for (const FString& path : MountPaths)
+		{
+			RequestRescan(std::span<const FString>(&path, 1u));
+		}
+		return WaitUntil([this] { return IsIdle(); }, -1.0);
+	}
+
+	bool WaitUntil (TFunctionRef<bool ()> Done, double TimeoutSeconds) override
+	{
+		return WaitUntilImpl(Done, TimeoutSeconds);
+	}
+
+	void CountRepairs (uint32 Applied, uint32 Refused) override
+	{
+		Counters.RepairsApplied += Applied;
+		Counters.RepairsRefused += Refused;
 	}
 
 	// ---- start-up ----
@@ -1392,6 +1468,10 @@ struct CAssetRegistry::SImpl
 		frt_assert(State == EScanState::NotStarted);
 		StartTimestamp = platform::ReadTimestamp();
 		Rules->LoadMountRules(&MountRuleDiagnostics);
+		if (Repairs != nullptr)
+		{
+			Repairs->Start();   // an unfinished operation is finished before anything is scanned
+		}
 		Subscribe();
 
 		// The ids the snapshot files are tied to: a writer creates its own, a reader only reads (a cold start
@@ -2078,7 +2158,12 @@ struct CAssetRegistry::SImpl
 		++Counters.Passes;
 		const bool bInitial = pass.bInitial;
 		const bool bRuleFilesChanged = pass.bRuleFilesChanged;
+		std::vector<FString> dirty = std::move(it->second.Dirty);
 		Passes.erase(it);
+		if (Repairs != nullptr)
+		{
+			Repairs->OnPassCommitted(dirty);
+		}
 		if (bRuleFilesChanged && State == EScanState::Ready)
 		{
 			WriteRulesCache();
@@ -2105,6 +2190,10 @@ struct CAssetRegistry::SImpl
 		Initial.Hashed = Counters.Hashed;
 		Initial.ReEvaluated = Counters.ReEvaluated;
 		bScanCompletedPending = true;
+		if (Repairs != nullptr)
+		{
+			Repairs->OnInitialScanComplete();
+		}
 		if (Desc.Owner == EAssetRegistryOwner::Project && Initial.EngineAnalyzed > 0u)
 		{
 			const bool bLoaded = std::any_of(SnapshotReports.begin(), SnapshotReports.end(), [&] (const SSnapshotFileReport& Report)
@@ -2160,6 +2249,16 @@ struct CAssetRegistry::SImpl
 		{
 			SQueuedDelta item = std::move(Queue.front());
 			Queue.pop_front();
+			if (Repairs != nullptr && item.Pass != 0u)
+			{
+				std::vector<FString>& dirty = Passes.at(item.Pass).Dirty;
+				for (const SFileUpsert& upsert : item.Delta.FileUpserts)
+				{
+					dirty.push_back(upsert.MountPath);
+				}
+				dirty.insert(dirty.end(), item.Delta.FileRemoves.begin(), item.Delta.FileRemoves.end());
+				dirty.insert(dirty.end(), item.Delta.FolderRemoves.begin(), item.Delta.FolderRemoves.end());
+			}
 			CommitDelta(std::move(item.Delta));
 			RequestCompanionFolderScans(item.Pass);
 			if (item.Pass != 0u)
@@ -2245,6 +2344,10 @@ struct CAssetRegistry::SImpl
 		StartPasses();
 		CommitQueued(bUnbounded);
 		StartPasses();
+		if (Repairs != nullptr && Desc.Lifecycle->bLive && State == EScanState::Ready && !bStopping)
+		{
+			Repairs->Tick(GetLifecycleNowMs());
+		}
 		if (IsIdle())
 		{
 			if (Store->NeedsCompaction())
@@ -2261,7 +2364,7 @@ struct CAssetRegistry::SImpl
 	}
 
 	// The pump loop of every wait: completions, unbounded commits, retry deadlines.
-	bool WaitUntil (TFunctionRef<bool ()> Done, double TimeoutSeconds)
+	bool WaitUntilImpl (TFunctionRef<bool ()> Done, double TimeoutSeconds)
 	{
 		const uint64 deadline = TimeoutSeconds >= 0.0 ? platform::MakeDeadline(TimeoutSeconds) : ~0ull;
 		for (;;)
@@ -2479,6 +2582,12 @@ struct CAssetRegistry::SImpl
 		{
 			return;
 		}
+		if (Repairs != nullptr)
+		{
+			// No new run or op starts; the one in flight finishes (an op is journalled either way).
+			Repairs->ShutDown();
+			WaitUntilImpl([this] { return !Repairs->IsWorking(); }, -1.0);
+		}
 		Unsubscribe();
 		const bool bWasComplete = State == EScanState::Ready && IsIdle();
 		bStopping = true;
@@ -2565,6 +2674,9 @@ struct CAssetRegistry::SImpl
 	uint64 BroadcastRevision = 0u;
 	bool bScanCompletedPending = false;
 	std::atomic<uint64> PublishedRevision = 0u;
+
+	// Last, so it goes first: it holds this registry as its host.
+	std::unique_ptr<CAssetRepairs> Repairs;
 };
 
 
@@ -2768,6 +2880,11 @@ EExists CAssetRegistry::Exists (const SAssetId& Id) const
 TMulticastDelegate<const SAssetChangeSet&>& CAssetRegistry::OnAssetsChanged () noexcept
 {
 	return Impl->AssetsChanged;
+}
+
+CAssetRepairs* CAssetRegistry::GetRepairs () noexcept
+{
+	return Impl->Repairs.get();
 }
 
 const SAssetRegistryCounters& CAssetRegistry::GetCounters () const noexcept
