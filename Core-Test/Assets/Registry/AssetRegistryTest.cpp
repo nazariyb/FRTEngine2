@@ -8,7 +8,8 @@
 // change notification; a pass cut short after its conversion (a clean exit while Analyze is pending, a crash) persists
 // nothing that claims work it did not do; a broken journal is mended by the full write its break triggers, and loses no
 // commit; a mount-rule edit over many files is committed in deltas of bounded size; a project writer's Flush fences only
-// its own mounts. A meta that changes while read is read again within the pass (an error once it kept changing), one
+// its own mounts. A meta that changes while read is read again within the pass (an error once it kept changing), once
+// the pass's analyses are in (each file is analyzed once) and even in a pass that re-evaluated everything else, one
 // held by another process during the initial scan is registered in that scan, and one that cannot be read is an error
 // on it. Every tree has non-ASCII names and lives in the temp directory.
 #include <gtest/gtest.h>
@@ -1063,6 +1064,85 @@ TEST(AssetRegistry, AMetaHeldWhileTheInitialScanReadsItIsRegisteredInThatScan)
 	EXPECT_EQ(stored->MetaState, EMetaState::Paired);
 	EXPECT_EQ(registry.GetCounters().MetasRead, 2u);
 	EXPECT_EQ(CountScanErrors(registry.Live(), FString(path) + ".meta", "meta"), 0u);
+	registry.ShutDown();
+}
+
+// The pass reads a changing meta again by converting its folder again, against what the pass committed so far: it waits
+// for every Analyze the pass asked for, or the files beside the meta whose results are still in flight (a cold scan's,
+// large ones here, with no settle window) would look new again and be analyzed twice, on every retry.
+TEST(AssetRegistry, AMetaReadAgainInItsScanWaitsForItsPassesAnalysesSoEachFileIsAnalyzedOnce)
+{
+	const CServiceTree tree("Meta Retry Waits");
+	const FString metaPath = "/Project/Textures/Трава.png.meta";
+	tree.WriteProjectContent("Textures/Трава.png.meta", "FormatVersion: 1\nGuid: 5d1e7a3b9c0f42d68e1a2b3c4d5e6f70\n");
+	for (uint32 index = 0u; index < 4u; ++index)
+	{
+		std::vector<uint8> png = MakePng(64u, 64u);
+		png.resize(png.size() + (32u << 20u), uint8(index));
+		ASSERT_TRUE(platform::WriteFileBytes(tree.ProjectContent(FString::Format("Textures/Великий_{}.png", index)), png));
+	}
+	jobs::CWorkerPool pool(MakePoolDesc(2u));
+	const auto analyzed = [&] (bool bHeld)
+	{
+		SAssetRegistryDesc desc;
+		desc.Mounts = tree.Project();
+		desc.Pool = &pool;
+		desc.bLoadSnapshots = false;
+		desc.bSnapshotAtShutDown = false;
+		desc.RetryDelayMs = 0u;
+		CAssetRegistry registry(std::move(desc));
+		if (bHeld)
+		{
+			SAssetRegistryTestAccess::SetSourceChanged(registry, metaPath);
+		}
+		registry.Start();
+		EXPECT_TRUE(registry.WaitForInitialScan(120.0));
+		const SAssetRegistryCounters counters = registry.GetCounters();
+		if (bHeld)
+		{
+			EXPECT_EQ(counters.MetasRead, SAssetRegistryDesc {}.SourceChangedRetries + 1u) << "every retry ran";
+			EXPECT_EQ(CountScanErrors(registry.Live(), metaPath, "kept changing"), 1u);
+		}
+		registry.ShutDown();
+		return counters.Analyzed;
+	};
+	const uint64 all = analyzed(false);
+	EXPECT_EQ(analyzed(true), all - 1u) << "each file once, and the one whose meta kept changing never";
+}
+
+// A pass that re-evaluates every record (the mount's rule file changed) skips nothing it re-reads: a record whose meta
+// is read from the file (Broken, so no copy) and changed while read goes again, and its re-read is a read, though
+// nothing else about it changed since the pass's first conversion.
+TEST(AssetRegistry, AMetaReadAgainInAPassThatReEvaluatesEverythingIsReadAgain)
+{
+	const CServiceTree tree("Meta Retry Re-evaluates");
+	const FString metaPath = "/Project/Textures/Трава.png.meta";
+	tree.WriteProjectContent("Textures/Трава.png.meta", "FormatVersion: 1\nGuid: 5d1e7a3b9c0f42d68e1a2b3c4d5e6f70\nLabels: [ unclosed\n");
+	jobs::CWorkerPool pool(MakePoolDesc(2u));
+	const auto makeDesc = [&]
+	{
+		SAssetRegistryDesc desc;
+		desc.Mounts = tree.Project();
+		desc.Pool = &pool;
+		desc.bWriter = true;
+		desc.bLoadSnapshots = true;
+		desc.RetryDelayMs = 50u;
+		return desc;
+	};
+	{
+		CAssetRegistry registry(makeDesc());
+		registry.Start();
+		ASSERT_TRUE(registry.WaitForInitialScan(60.0));
+		ASSERT_EQ(FindStoredFile(registry.Live(), "/Project/Textures/Трава.png").value_or(SStoredFile {}).MetaState, EMetaState::Broken);
+		registry.ShutDown();
+	}
+	tree.WriteProjectRules(FString(ProjectRulesText) + "Rules:\n  - { Match: \"Textures/**\", Labels: [ Герой ] }\n");
+	CAssetRegistry registry(makeDesc());
+	SAssetRegistryTestAccess::SetSourceChanged(registry, metaPath);
+	registry.Start();
+	ASSERT_TRUE(registry.WaitForInitialScan(60.0));
+	EXPECT_EQ(registry.GetCounters().MetasRead, SAssetRegistryDesc {}.SourceChangedRetries + 1u) << "read again on every retry";
+	EXPECT_EQ(CountScanErrors(registry.Live(), metaPath, "kept changing"), 1u) << "never dropped silently";
 	registry.ShutDown();
 }
 

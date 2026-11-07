@@ -678,6 +678,10 @@ struct SConvertInput
 	// error on the meta, "kept changing", rather than one more retry.
 	FStringSet MetaRetriesUsedUp;
 	uint32 MetaReadAttempts = 1u;                       // the reads that makes, for the error's text
+	// A re-conversion's files whose metas changed while read: worked on as a dirty rule chain's are, so their metas are
+	// read again though nothing else changed. The pass's first conversion skipped them, so they missed what it did (a
+	// bReEvaluateAll, which the re-conversion does not repeat for the rest of its subtree).
+	FStringSet ForceConvert;
 };
 
 /**
@@ -824,7 +828,7 @@ SConversion ConvertBatch (SConvertInput& In)
 			const SScanFolder& folder = batch.Folders[file.Folder];
 			paths[index] = MakeChildMountPath(folder.MountPath, file.Name);
 			const FString& path = paths[index];
-			const bool bDirty = dirty[file.Folder] != 0u;
+			const bool bDirty = dirty[file.Folder] != 0u || In.ForceConvert.contains(path);
 			if (file.Verdict.Class == EFileClass::Unclaimed && unclaimedFolderOf[file.Folder] != ~0u)
 			{
 				chunkOut.Unclaimed.emplace_back(unclaimedFolderOf[file.Folder], index);
@@ -960,8 +964,12 @@ SConversion ConvertBatch (SConvertInput& In)
 				 * as its last good meta made it - neither analyzed nor re-evaluated nor removed under the rules alone.
 				 * Only the meta's columns go in, beside the stored stat, so a content change made meanwhile is still a
 				 * change once the meta is fixed. A GUID the broken bytes name instead of the record's (edited by hand)
-				 * still replaces it, with the record's stored values, and tombstones the old one. A record no meta ever
-				 * gave anything (first sight, PendingMeta) has only the rules' values to lose: it is resolved as before.
+				 * still replaces it, with the record's stored values, and tombstones the old one. A PendingMeta
+				 * record holds a provisional id, which no meta gave, and is resolved under the rules as before. A file
+				 * first seen with a broken meta is registered once with the rules' values (it has no record yet); from
+				 * then on it is a Broken record with a GUID its meta gave and no copy, which MetaState cannot tell from
+				 * a once-Paired one, so it is blocked here like any other: a later rule edit reaches it only once the
+				 * meta is fixed.
 				 */
 				if (stored->MetaState != metaColumns->State || stored->MetaHash != metaColumns->Hash)
 				{
@@ -1454,6 +1462,7 @@ struct CAssetRegistry::SImpl final : IAssetRepairsHost
 		bool bFilesChanged = false;      // a delta of it changed files or records (RULE002 may differ)
 		uint32 PendingDeltas = 0u;       // queued, not committed
 		uint32 OutstandingAnalyze = 0u;  // tasks in the pool or waiting to be retried
+		uint32 RescanHolds = 0u;         // of OutstandingAnalyze, the re-conversions' (SRetry::RescanRoot) holds
 		std::vector<SUnclaimedFolder> Folders;
 		SRegistryDelta RuleFiles;        // SConversion::RuleFiles
 		SRegistryDelta Unclaimed;        // RULE002's lists that changed
@@ -1474,6 +1483,7 @@ struct CAssetRegistry::SImpl final : IAssetRepairsHost
 		uint64 Pass = 0u;
 		std::vector<SAnalyzeRequest> Requests;
 		FString RescanRoot;
+		std::vector<FString> Retried;    // RescanRoot's files whose metas changed while read: converted whatever else
 	};
 
 	struct SWatchEvent
@@ -2047,8 +2057,8 @@ struct CAssetRegistry::SImpl final : IAssetRepairsHost
 	}
 
 	// bRetry: the re-conversion of a subtree whose metas changed while read (OnConverted), inside the pass that found
-	// it; it runs under the pass's hold and releases it.
-	void SubmitConversion (uint64 PassId, SScanBatch&& Batch, bool bRetry = false)
+	// it; it runs under the pass's hold and releases it. Retried: those files, converted whatever else changed.
+	void SubmitConversion (uint64 PassId, SScanBatch&& Batch, bool bRetry = false, std::vector<FString> Retried = {})
 	{
 		SPass& pass = Passes.at(PassId);
 		auto job = std::make_shared<std::pair<SConvertInput, SConversion>>();
@@ -2058,7 +2068,12 @@ struct CAssetRegistry::SImpl final : IAssetRepairsHost
 		job->first.Mount = &Mounts->GetMounts()[pass.Mount];
 		job->first.MountIndex = pass.Mount;
 		job->first.Pool = &Pool;
-		job->first.bReEvaluateAll = pass.bReEvaluateAll && !bRetry;   // the pass's first conversion did that
+		// The pass's first conversion re-evaluated the rest of the subtree; the files it left out are ForceConvert.
+		job->first.bReEvaluateAll = pass.bReEvaluateAll && !bRetry;
+		for (FString& path : Retried)
+		{
+			job->first.ForceConvert.insert(std::move(path));
+		}
 		job->first.MountRulesHash = bRetry ? std::nullopt : pass.MountRulesHash;
 		job->first.MetaFaults = SMetaReadFaults { SourceChangedForTest, MetaUnreadableForTest };
 		const FStringView root = job->first.Batch.RootMountPath.View();
@@ -2091,6 +2106,7 @@ struct CAssetRegistry::SImpl final : IAssetRepairsHost
 		if (bRetry)
 		{
 			--pass.OutstandingAnalyze;   // the hold it ran under
+			--pass.RescanHolds;
 		}
 		CheckPassDone(PassId);
 	}
@@ -2162,12 +2178,14 @@ struct CAssetRegistry::SImpl final : IAssetRepairsHost
 		if (!rescanRoot.IsEmpty())
 		{
 			++pass.OutstandingAnalyze;   // held until the re-conversion is done
+			++pass.RescanHolds;
 			const uint64 deadline = platform::MakeDeadline(Desc.RetryDelayMs / 1000.0);
-			Retries.push_back(SRetry { deadline, PassId, {}, std::move(rescanRoot) });
+			Retries.push_back(SRetry { deadline, PassId, {}, std::move(rescanRoot), Conversion.MetaChanged });
 		}
 		if (bRetry)
 		{
 			--pass.OutstandingAnalyze;   // the hold it ran under
+			--pass.RescanHolds;
 		}
 		Counters.ReEvaluated += Conversion.ReEvaluated;
 		Counters.MetasRead += Conversion.MetasRead;
@@ -2280,10 +2298,15 @@ struct CAssetRegistry::SImpl final : IAssetRepairsHost
 		const uint64 now = platform::ReadTimestamp();
 		for (size_t i = 0u; i < Retries.size();)
 		{
-			// A re-conversion compares against what its pass committed so far: it waits for the pass's queued deltas.
+			// A re-conversion compares its subtree against what its pass committed so far, so it waits for the pass's
+			// queued deltas and for every Analyze the pass asked for: a file's new row commits with its result, and a
+			// move's old path goes with its new path's, so one still in flight would look changed again, be analyzed
+			// twice, or (the old path) be tombstoned on its own, splitting the move into a removal and an add.
 			const SRetry& due = Retries[i];
-			const bool bWaitsForDeltas = !due.RescanRoot.IsEmpty() && Passes.at(due.Pass).PendingDeltas != 0u;
-			if (!bStopping && (due.Deadline > now || bWaitsForDeltas))
+			const SPass& duePass = Passes.at(due.Pass);
+			const bool bWaitsForPass = !due.RescanRoot.IsEmpty()
+				&& (duePass.PendingDeltas != 0u || duePass.OutstandingAnalyze != duePass.RescanHolds);
+			if (!bStopping && (due.Deadline > now || bWaitsForPass))
 			{
 				++i;
 				continue;
@@ -2296,7 +2319,10 @@ struct CAssetRegistry::SImpl final : IAssetRepairsHost
 				// The pass stays held until the re-conversion is done (OnConverted).
 				++ScansInFlight;
 				CMountScanner::ScanAsync(Pool, Mounts->GetMounts()[pass.Mount], retry.RescanRoot, *Rules, nullptr,
-					[this, id = retry.Pass] (SScanBatch&& Batch) { OnRescanned(id, std::move(Batch)); });
+					[this, id = retry.Pass, retried = std::move(retry.Retried)] (SScanBatch&& Batch) mutable
+					{
+						OnRescanned(id, std::move(Batch), std::move(retried));
+					});
 				continue;
 			}
 			--pass.OutstandingAnalyze;   // SubmitAnalyze counts it again
@@ -2312,7 +2338,7 @@ struct CAssetRegistry::SImpl final : IAssetRepairsHost
 
 	// A subtree scanned again for the files whose metas changed while read: converted again in its pass, against the
 	// view that holds what the pass committed so far.
-	void OnRescanned (uint64 PassId, SScanBatch&& Batch)
+	void OnRescanned (uint64 PassId, SScanBatch&& Batch, std::vector<FString>&& Retried)
 	{
 		--ScansInFlight;
 		SPass& pass = Passes.at(PassId);
@@ -2321,11 +2347,12 @@ struct CAssetRegistry::SImpl final : IAssetRepairsHost
 		{
 			pass.bLost = true;
 			--pass.OutstandingAnalyze;   // the hold
+			--pass.RescanHolds;
 			CheckPassDone(PassId);
 			return;
 		}
 		pass.View = Store->Acquire();
-		SubmitConversion(PassId, std::move(Batch), true);
+		SubmitConversion(PassId, std::move(Batch), true, std::move(Retried));
 	}
 
 	[[nodiscard]] double SecondsToNextRetry () const

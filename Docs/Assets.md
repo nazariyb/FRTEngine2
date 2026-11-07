@@ -82,8 +82,9 @@ Development `CEngine` installs (nullopt in tool hosts, which resolve their own t
     sub-asset renames and remaps), and the copy is never replaced by broken bytes. A broken meta with no such copy
     blocks its record's import until it is fixed: the record is neither analyzed nor re-evaluated nor removed, and its
     file row keeps the stat the record was made from, so an edit made meanwhile is analyzed once the meta is fixed. A
-    file first seen with a broken meta has nothing better than the rules: it is registered under the salvaged GUID with
-    the rules' values, so references to that GUID resolve, and analyzed again once the meta is fixed.
+    file first seen with a broken meta has nothing better than the rules: it is registered once, under the salvaged GUID
+    with the rules' values, so references to that GUID resolve. From then on it is a broken meta with no copy like any
+    other, so its import is blocked: a later rule edit reaches it only once the meta is fixed, when it is analyzed again.
   - `TOMBSTONES`: a record with a meta-given GUID whose file is removed, or whose GUID is edited by hand, leaves
     `{GUID, last path, content hash, file identity, time}`; a record that registers the GUID again (a move, a restore)
     clears it, a provisional id never leaves one, and a snapshot written more than 30 days later drops it. While
