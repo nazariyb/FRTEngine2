@@ -315,14 +315,71 @@ TEST(RegistryIdentityTest, MetaCopiesAndTombstonesAreKeptOnePerGuidAndARegistere
 	store.Commit(std::move(move));
 	EXPECT_FALSE(store.Live().FindTombstone(Guid("rock")).has_value());
 
+	// The copy of a GUID a live record holds is not removed; once no record holds it, it is.
 	SRegistryDelta removes;
 	removes.MetaCopyRemoves = { Guid("rock"), Guid("never") };
 	removes.TombstoneRemoves = { Guid("gone") };
 	store.Commit(std::move(removes));
-	EXPECT_EQ(store.Live().GetMetaCopyCount(), 0u);
+	EXPECT_EQ(store.Live().GetMetaCopyCount(), 1u) << "/Project/U/Rock.png holds the GUID";
 	EXPECT_EQ(store.Live().GetTombstoneCount(), 0u);
 	EXPECT_TRUE(Dump(store.Live()).View().Contains(FStringView("/Project/U/Rock.png"))) << "tombstones and copies never reach a dump";
 	EXPECT_FALSE(Dump(store.Live()).View().Contains(FStringView("Gone"))) << Dump(store.Live()).CStr();
+	SRegistryDelta gone;
+	gone.FileRemoves = { "/Project/U/Rock.png" };
+	gone.MetaCopyRemoves = { Guid("rock") };
+	store.Commit(std::move(gone));
+	EXPECT_EQ(store.Live().GetMetaCopyCount(), 0u);
+}
+
+// An asset moved with its meta from /Project to a plugin while the editor was closed: the two mounts' passes commit in
+// either order (each from the view it began with), and a journal replays another file's part of the removal (its
+// GUID-only removes) last. Every order gives one dump, no tombstone and the plugin's copy, as an adoption of it does.
+TEST(RegistryIdentityTest, AMoveAcrossMountsKeepsOneIdentityStateInAnyCommitOrder)
+{
+	const auto base = []
+	{
+		SRegistryDelta delta = MakeMountsDelta();
+		delta.Mounts.push_back(MakeMount("Plugin.Trees", FirstPluginMountId, true));
+		delta.RecordUpserts.push_back(MakeTexture(delta, "/Project/T/Rock.png", "rock"));
+		delta.MetaCopies.push_back(MakeMetaCopy(Guid("rock"), "/Project/T/Rock.png"));
+		return delta;
+	};
+	std::vector<SRegistryDelta> content;
+	{
+		SRegistryDelta& added = content.emplace_back();
+		added.RecordUpserts.push_back(MakeTexture(added, "/Plugin.Trees/Rock.png", "rock"));
+		added.MetaCopies.push_back(MakeMetaCopy(Guid("rock"), "/Plugin.Trees/Rock.png"));
+	}
+	{
+		SRegistryDelta& removed = content.emplace_back();
+		removed.FileRemoves = { "/Project/T/Rock.png" };
+		removed.Tombstones.push_back(STombstone { Guid("rock"), "/Project/T/Rock.png", {}, {}, 500 });
+		removed.MetaCopyRemoves = { Guid("rock") };
+	}
+	{
+		SRegistryDelta& part = content.emplace_back();   // the removal's part in the plugin's journal
+		part.MetaCopyRemoves = { Guid("rock") };
+	}
+	std::vector<FString> dumps;
+	for (const std::vector<uint32>& order : std::vector<std::vector<uint32>> { { 0u, 1u, 2u }, { 1u, 0u, 2u }, { 1u, 2u, 0u }, { 2u, 1u, 0u }, { 0u, 2u, 1u } })
+	{
+		CRegistryStore store;
+		store.Commit(base());
+		for (const uint32 index : order)
+		{
+			store.Commit(SRegistryDelta(content[index]));
+		}
+		const CRegistryView& view = store.Live();
+		EXPECT_EQ(view.GetTombstoneCount(), 0u) << order[0] << order[1] << order[2];
+		ASSERT_TRUE(view.FindMetaCopy(Guid("rock")).has_value()) << order[0] << order[1] << order[2];
+		EXPECT_EQ(view.FindMetaCopy(Guid("rock"))->SourcePath, "/Plugin.Trees/Rock.png");
+		dumps.push_back(Dump(view));
+		EXPECT_EQ(dumps.back(), dumps.front());
+
+		CRegistryStore adopted;
+		adopted.AdoptImage(view.ExportImage({}), 9u);
+		ExpectSameContent(view, adopted.Live());
+	}
 }
 
 // ---------------- Images, snapshots, journals ----------------

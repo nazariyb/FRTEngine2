@@ -780,6 +780,59 @@ TEST(RegistryMeta, ARemovedCopyOfAGuidAnotherFileHoldsLeavesNoTombstoneAndKeepsT
 	EXPECT_EQ(PathOf(registry->Live(), GuidA), "/Project/Textures/Камінь.png");
 	EXPECT_EQ(registry->Live().GetTombstoneCount(), 0u) << "the GUID is not gone";
 	EXPECT_TRUE(registry->Live().FindMetaCopy(MakeGuid(GuidA)).has_value());
+
+	// An importer that goes away from the other copy (a folder's rule) leaves the copy to the record that kept it.
+	tree.WritePng("Textures/Excluded/Копія.png");
+	tree.WriteMeta("Textures/Excluded/Копія.png", MetaText(GuidA));
+	ASSERT_TRUE(registry->ScanPathsSynchronous(std::vector<FString> { "/Project/Textures" }, 30.0));
+	EXPECT_TRUE(registry->Live().FindByPath("/Project/Textures/Excluded/Копія.png").has_value());
+	tree.WriteProjectContent("Textures/Excluded/Assets.yml", "FormatVersion: 1\nImporters: { Exclude: [ Texture ] }\n");
+	ASSERT_TRUE(registry->ScanPathsSynchronous(std::vector<FString> { "/Project/Textures" }, 30.0));
+	EXPECT_FALSE(registry->Live().FindByPath("/Project/Textures/Excluded/Копія.png").has_value());
+	EXPECT_EQ(PathOf(registry->Live(), GuidA), "/Project/Textures/Камінь.png");
+	EXPECT_TRUE(registry->Live().FindMetaCopy(MakeGuid(GuidA)).has_value()) << "/Project/Textures/Камінь.png still holds the GUID";
+	EXPECT_EQ(registry->Live().GetTombstoneCount(), 0u);
+	registry->ShutDown();
+}
+
+// Both copies of one GUID removed in one pass (as files, or with their folder): each one's view still holds the other,
+// yet the GUID is gone, so it leaves one tombstone and no copy.
+TEST(RegistryMeta, BothCopiesOfAGuidRemovedInOnePassLeaveOneTombstoneAndNoCopy)
+{
+	CMetaTree tree("Двійники");
+	for (const FStringView name : { FStringView("Textures/Камінь.png"), FStringView("Textures/Копія.png"), FStringView("Textures/Пара/Камінь.png"),
+		FStringView("Textures/Пара/Копія.png") })
+	{
+		tree.WritePng(name);
+	}
+	tree.WriteMeta("Textures/Камінь.png", MetaText(GuidA));
+	tree.WriteMeta("Textures/Копія.png", MetaText(GuidA));
+	tree.WriteMeta("Textures/Пара/Камінь.png", MetaText(GuidB));
+	tree.WriteMeta("Textures/Пара/Копія.png", MetaText(GuidB));
+	jobs::CWorkerPool pool(MakePoolDesc());
+	std::unique_ptr<CAssetRegistry> registry = Open(pool, tree.Mounts());
+	ASSERT_TRUE(registry->Live().FindMetaCopy(MakeGuid(GuidA)).has_value());
+	ASSERT_TRUE(registry->Live().FindMetaCopy(MakeGuid(GuidB)).has_value());
+
+	for (const FStringView name : { FStringView("Textures/Камінь.png"), FStringView("Textures/Копія.png") })
+	{
+		tree.Remove(name);
+	}
+	std::error_code ec;
+	std::filesystem::remove_all(tree.Tree.ProjectContent() / FStringView("Textures/Пара").ToPath(), ec);
+	EXPECT_FALSE(ec) << ec.message();
+	ASSERT_TRUE(registry->ScanPathsSynchronous(std::vector<FString> { "/Project/Textures" }, 30.0));
+	const CRegistryView& view = registry->Live();
+	EXPECT_TRUE(PathOf(view, GuidA).IsEmpty());
+	EXPECT_TRUE(PathOf(view, GuidB).IsEmpty());
+	EXPECT_EQ(view.GetTombstoneCount(), 2u);
+	const std::optional<STombstoneView> files = view.FindTombstone(MakeGuid(GuidA));
+	EXPECT_TRUE(files.has_value()) << "two files removed";
+	EXPECT_TRUE(files.has_value() && files->LastPath.StartsWith(FStringView("/Project/Textures/К")));
+	const std::optional<STombstoneView> folder = view.FindTombstone(MakeGuid(GuidB));
+	EXPECT_TRUE(folder.has_value()) << "their folder removed";
+	EXPECT_TRUE(folder.has_value() && folder->LastPath.StartsWith(FStringView("/Project/Textures/Пара/")));
+	EXPECT_EQ(view.GetMetaCopyCount(), 0u);
 	registry->ShutDown();
 }
 

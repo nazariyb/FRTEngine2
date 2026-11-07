@@ -21,8 +21,8 @@
  *
  * Semantics (CRegistryStore implements and tests them):
  *	- Removes apply first (FolderRemoves, FileRemoves, RecordRemoves, RuleFileRemoves, ProblemClears,
- *	  MetaCopyRemoves, TombstoneRemoves), then upserts (Mounts, FolderUpserts, FileUpserts, RuleFileUpserts,
- *	  Tombstones, RecordUpserts, Problems, MetaCopies). A delta is atomic: one revision, one change-ring entry per record touched;
+ *	  TombstoneRemoves), then upserts (Mounts, FolderUpserts, FileUpserts, RuleFileUpserts, RecordUpserts),
+ *	  then MetaCopyRemoves and Tombstones, then Problems and MetaCopies. A delta is atomic: one revision, one change-ring entry per record touched;
  *	  readers see all of it or none of it. Every SRecordId, NameId and string offset is assigned at commit:
  *	  no delta carries one, so a worker never needs to know the store's state.
  *	- MountIds are not the store's to choose: every SMountUpsert carries the id CMountTable assigned (the
@@ -67,11 +67,15 @@
  *	  (M4): the rescan's record carries the meta's GUID, so a remove and an add of one GUID is a move to listeners
  *	  (SAssetChangeSet::Moved). Two records with one GUID (a copy, before the lifecycle resolves it) are kept; lookups
  *	  by id answer the one whose file comes first in CompareFileOrder (the smallest folded path), never an assert.
- *	- Identity state (§5.3, M4) is keyed by GUID and travels in the same deltas: MetaCopyRemoves and TombstoneRemoves
- *	  apply with the removes, Tombstones before RecordUpserts and MetaCopies last. METAS keeps one copy per GUID (a
+ *	- Identity state (§5.3, M4) is keyed by GUID and travels in the same deltas: TombstoneRemoves apply with the
+ *	  removes, MetaCopyRemoves and Tombstones after RecordUpserts and MetaCopies last. METAS keeps one copy per GUID (a
  *	  later copy replaces it), TOMBSTONES one tombstone per GUID (the latest), and a record upsert of a GUID drops that
- *	  GUID's tombstone, so a removal and an add of one GUID in one delta (a move) leaves none. The store itself never
- *	  writes either: the producer that removes a file or changes a record's GUID sends them, with its time.
+ *	  GUID's tombstone, so a removal and an add of one GUID in one delta (a move) leaves none. A Tombstone or a
+ *	  MetaCopyRemove of a GUID that a live record holds once the delta's records are in is ignored (another copy of
+ *	  the asset, a pass on another mount that committed first, a journal part replayed out of order): no live GUID
+ *	  has a tombstone and its copy stays, whatever order commits arrive in, as the bulk adoption builds it. The store
+ *	  itself never writes either: the producer that removes a file or changes a record's GUID sends them, with its
+ *	  time, without asking whether another record still holds the GUID.
  *	- A record's Aliases resolve to it (the alias index, §5.2): {B, 0} makes every {B, s} resolve to {this record, s}
  *	  (a consolidated GUID, the meta's Aliases), {own GUID, s} the one sub-entry whose label's MakeSubId is s (a
  *	  sub-asset renamed in the DCC: the sub-entry keeps the old label's id, SubAssets.Renamed). Its FormerPaths

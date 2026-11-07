@@ -5,6 +5,7 @@
 #include <deque>
 #include <map>
 #include <optional>
+#include <set>
 #include <system_error>
 #include <utility>
 
@@ -267,8 +268,9 @@ std::shared_ptr<const SReadMeta> ReadMetaCopy (const CRegistryView& View, const 
 /**
  * The identity state a conversion commits beside a file's record (§5.3, M4): the METAS copy of an Ok meta read from the
  * file, when the view's differs (another hash or source); for a record whose meta-given GUID goes away - its file
- * removed, its GUID changed in place - a tombstone {GUID, last path, hash, identity, time} and the copy's removal. A
- * provisional id (PendingMeta) is never tombstoned: no meta holds it.
+ * removed, its GUID changed in place - a tombstone {GUID, last path, hash, identity, time} and the copy's removal, which
+ * the store ignores while another live record holds the GUID. A provisional id (PendingMeta) is never tombstoned: no
+ * meta holds it.
  */
 void AppendMetaCopy (const CRegistryView& View, const SReadMeta* Meta, FStringView SourcePath, SRegistryDelta& Delta)
 {
@@ -291,19 +293,9 @@ std::optional<STombstone> MakeTombstone (const CRegistryView& View, const SStore
 	{
 		return std::nullopt;
 	}
-	// A GUID another live record holds (a copy, a dedupe loser re-GUIDed away from its winner) is not gone, and its
-	// copy is that record's too.
-	const SRegistryTables& tables = GetTables(View);
-	bool bHeldElsewhere = false;
-	tables.Indices.RecordsByGuid.ForEach(HashGuid(Stored.Guid), [&] (uint32 Row)
-	{
-		bHeldElsewhere = Row != Stored.Record.Value && tables.Assets.File[Row] != InvalidRow && tables.Assets.Guid[Row] == Stored.Guid;
-		return !bHeldElsewhere;
-	});
-	if (bHeldElsewhere)
-	{
-		return std::nullopt;
-	}
+	// Sent whether or not another record holds the GUID (a copy, a dedupe loser re-GUIDed away from its winner): this
+	// view may be older than the commit (another mount's pass, another record the same pass removes), so the store
+	// decides at commit, against what is live then (RegistryDelta.h).
 	SFileData file;
 	(void)View.GetFile(Stored.FileRow, file);
 	return STombstone { Stored.Guid, FString(Path), file.ContentHash, Stored.Stat.Identity, Now };
@@ -890,7 +882,7 @@ SConversion ConvertBatch (SConvertInput& In)
 					part.RecordRemoves.push_back(path);   // its importer went away (Importers.Exclude, a rule)
 					if (stored->MetaState != EMetaState::PendingMeta)
 					{
-						part.MetaCopyRemoves.push_back(stored->Guid);   // no record holds the GUID; the meta stays on disk
+						part.MetaCopyRemoves.push_back(stored->Guid);   // unless another record holds it; the meta stays on disk
 					}
 				}
 				continue;
@@ -1121,12 +1113,21 @@ SConversion ConvertBatch (SConvertInput& In)
 	{
 		SRegistryDelta& removals = out.Deltas.emplace_back();
 		// Every record that goes with a meta-given GUID leaves a tombstone (§4.6, §4.7: the lifecycle's grace, its
-		// orphan pairing); a GUID the pass registers again (a move) loses it in that commit.
+		// orphan pairing), one per GUID (two copies of one asset removed together leave the first's); a GUID the pass
+		// registers again (a move), or another live record holds, loses it in the store.
+		std::set<SGuid> tombstoned;
+		const auto appendLost = [&] (std::optional<STombstone>&& Tombstone)
+		{
+			if (Tombstone.has_value() && tombstoned.insert(Tombstone->Guid).second)
+			{
+				AppendLostIdentity(std::move(Tombstone), removals);
+			}
+		};
 		for (const FString& removed : fileRemoves)
 		{
 			if (const std::optional<SStoredFile> stored = FindStoredFile(view, removed); stored.has_value())
 			{
-				AppendLostIdentity(MakeTombstone(view, *stored, removed, now), removals);
+				appendLost(MakeTombstone(view, *stored, removed, now));
 			}
 		}
 		for (const FString& folder : out.RemovedFolders)
@@ -1144,7 +1145,7 @@ SConversion ConvertBatch (SConvertInput& In)
 				{
 					if (const std::optional<SStoredFile> stored = FindStoredFile(view, data.MountPath); stored.has_value())
 					{
-						AppendLostIdentity(MakeTombstone(view, *stored, data.MountPath, now), removals);
+						appendLost(MakeTombstone(view, *stored, data.MountPath, now));
 					}
 				}
 			});

@@ -219,10 +219,6 @@ public:
 		{
 			ClearProblems(clear.MountPath, 1u << SourceIndex(clear.Source), true);
 		}
-		for (const SGuid& guid : Delta.MetaCopyRemoves)
-		{
-			RemoveMetaCopy(guid);
-		}
 		for (const SGuid& guid : Delta.TombstoneRemoves)
 		{
 			RemoveTombstone(guid);
@@ -244,13 +240,27 @@ public:
 		{
 			UpsertRuleFile(ruleFile);
 		}
-		for (const STombstone& tombstone : Delta.Tombstones)
-		{
-			UpsertTombstone(tombstone);
-		}
 		for (SRecordUpsert& record : Delta.RecordUpserts)
 		{
 			UpsertRecord(record);
+		}
+		// A GUID's tombstone and the removal of its copy apply only when no live record holds the GUID once the
+		// records are in (a GUID changed in place has lost it by then): the identity state then depends on what is
+		// live, never on the order commits of two passes (or two journals' parts) arrive in, and is what the bulk
+		// adoption builds from the same records.
+		for (const SGuid& guid : Delta.MetaCopyRemoves)
+		{
+			if (!IsGuidLive(guid))
+			{
+				RemoveMetaCopy(guid);
+			}
+		}
+		for (const STombstone& tombstone : Delta.Tombstones)
+		{
+			if (!IsGuidLive(tombstone.Guid))
+			{
+				UpsertTombstone(tombstone);
+			}
 		}
 		for (SProblemsSet& problems : Delta.Problems)
 		{
@@ -1602,6 +1612,18 @@ private:
 		tombstones.Hash.Set(row, Tombstone.Hash, Epoch);
 		tombstones.Identity.Set(row, Tombstone.Identity, Epoch);
 		tombstones.RemovedFileTime.Set(row, Tombstone.RemovedFileTime, Epoch);
+	}
+
+	// A live record holds Guid (its own; an alias does not count).
+	bool IsGuidLive (const SGuid& Guid) const
+	{
+		bool bLive = false;
+		T.Indices.RecordsByGuid.ForEach(HashGuid(Guid), [&] (uint32 Row)
+		{
+			bLive = T.Assets.File[Row] != InvalidRow && T.Assets.Guid[Row] == Guid;
+			return !bLive;
+		});
+		return bLive;
 	}
 
 	void RemoveTombstone (const SGuid& Guid)
