@@ -1,6 +1,7 @@
 #include "Assets/Meta/AssetRepairs.h"
 
 #include <algorithm>
+#include <deque>
 #include <map>
 #include <set>
 #include <utility>
@@ -1632,10 +1633,12 @@ struct CAssetRepairs::SImpl
 			log::Info(log::Assets, "repair not planned: {}: {}", problem.Subject, problem.Message);
 		}
 		++Runs;
+		++Changes;   // the fix-its were replaced, though the delta may be empty
 	}
 
 	// Each op's outcome: counted, a refusal kept as a proposal (with its VCS002), VCS003 kept for its source.
-	void ApplyOps (SOpsOutput& Output, uint32& OutApplied, uint32& OutRefused)
+	// OutRefusal: the first refusal's message.
+	void ApplyOps (SOpsOutput& Output, uint32& OutApplied, uint32& OutRefused, FString* OutRefusal = nullptr)
 	{
 		OutApplied = 0u;
 		OutRefused = 0u;
@@ -1648,6 +1651,10 @@ struct CAssetRepairs::SImpl
 				continue;
 			}
 			OutRefused += count;
+			if (OutRefusal != nullptr && OutRefusal->IsEmpty())
+			{
+				*OutRefusal = !result.Result.Problems.empty() ? result.Result.Problems.front().Message : FString("refused");
+			}
 			for (SLifecycleAction& action : result.Actions)
 			{
 				RefusedActions.push_back(std::move(action));
@@ -1671,6 +1678,22 @@ struct CAssetRepairs::SImpl
 		}
 		Desc.Host->CountRepairs(OutApplied, OutRefused);
 		bDirty = true;
+		++Changes;
+	}
+
+	// A queued fix's outcome, for GetFixResult; the oldest are forgotten.
+	void RecordFix (uint64 Ticket, EFixResult Result, FString Message)
+	{
+		if (Ticket == 0u)
+		{
+			return;
+		}
+		FixResults.push_back({ Ticket, Result, std::move(Message) });
+		while (FixResults.size() > FixResultsKept)
+		{
+			FixResults.pop_front();
+		}
+		++Changes;
 	}
 
 	void ExpectWrites (std::span<const SPlannedOp> Ops) const
@@ -1694,14 +1717,15 @@ struct CAssetRepairs::SImpl
 	// ---- Jobs ----
 
 	// Live: a run on a worker; its result is applied when it arrives, if the tree is still the one it read.
-	void StartCycle (std::shared_ptr<SCycleInput> Input)
+	// FixTicket: the queued fix whose actions Input carries (0: a run of the lifecycle).
+	void StartCycle (std::shared_ptr<SCycleInput> Input, uint64 FixTicket = 0u)
 	{
 		bDirty = false;
 		bWorking = true;
 		auto output = std::make_shared<SCycleOutput>();
 		Desc.Pool->Submit(jobs::EWorkPriority::Normal, jobs::NoCancelGroup,
 			[Input, output] () { *output = CCycle(*Input).Run(); },
-			[this, output, bFix = !Input->FixActions.empty()] ()
+			[this, output, bFix = !Input->FixActions.empty(), FixTicket] ()
 			{
 				bWorking = false;
 				if (bStopping)
@@ -1715,7 +1739,13 @@ struct CAssetRepairs::SImpl
 					{
 						log::Warning(log::Assets, "fix not applied: {}: {}", problem.Subject, problem.Message);
 					}
-					StartOps(std::move(output->Ops), true);
+					if (output->Ops.empty())
+					{
+						RecordFix(FixTicket, EFixResult::NotApplied, !output->PlanProblems.empty() ? output->PlanProblems.front().Message
+							: FString("nothing to do: the tree no longer needs it"));
+						return;
+					}
+					StartOps(std::move(output->Ops), true, FixTicket);
 					return;
 				}
 				if (!Desc.Host->IsQuiet() || Desc.Host->GetLiveView().GetRevision() != output->Revision)
@@ -1732,7 +1762,8 @@ struct CAssetRepairs::SImpl
 	}
 
 	// bCommand: a person's fix, which the hold of automatic writes does not cover (§4.7), as RunNow's ops.
-	void StartOps (std::vector<SPlannedOp>&& Ops, bool bCommand)
+	// FixTicket: the queued fix these ops carry out (0: automatic repairs).
+	void StartOps (std::vector<SPlannedOp>&& Ops, bool bCommand, uint64 FixTicket = 0u)
 	{
 		if (Ops.empty() || bStopping)
 		{
@@ -1741,6 +1772,7 @@ struct CAssetRepairs::SImpl
 		MaybeRebuildWriter();   // ops are plain data: they run through the providers known now
 		if (!HasWriterObject())
 		{
+			RecordFix(FixTicket, EFixResult::NotApplied, "this process holds no writer");
 			return;
 		}
 		// Asked once more right before the writes start (edit [30]): the proposals wait, and are made again once it ends.
@@ -1758,12 +1790,14 @@ struct CAssetRepairs::SImpl
 		auto ops = std::make_shared<std::vector<SPlannedOp>>(std::move(Ops));
 		Desc.Pool->Submit(jobs::EWorkPriority::Normal, jobs::NoCancelGroup,
 			[ops, output, writers = GetWriters()] () { *output = RunOps(writers, std::move(*ops)); },
-			[this, output] ()
+			[this, output, FixTicket] ()
 			{
 				bWorking = false;
 				uint32 applied = 0u;
 				uint32 refused = 0u;
-				ApplyOps(*output, applied, refused);
+				FString refusal;
+				ApplyOps(*output, applied, refused, &refusal);
+				RecordFix(FixTicket, refused > 0u ? EFixResult::Refused : EFixResult::Applied, std::move(refusal));
 				if (!bStopping && !output->Touched.empty())
 				{
 					Desc.Host->RequestRescan(output->Touched);
@@ -1881,6 +1915,7 @@ struct CAssetRepairs::SImpl
 	uint64 LastBusyMs = 0u;
 	bool bLastBusy = false;
 	uint64 Runs = 0u;
+	uint64 Changes = 0u;
 
 	std::vector<FString> PendingEvents;
 	TStringMap<uint64> Events;
@@ -1891,7 +1926,20 @@ struct CAssetRepairs::SImpl
 	uint64 UntrackedCheckAtMs = 0u;        // when StatusOf is asked about them again
 	uint64 UntrackedRecheckIntervalMs = UntrackedRecheckMs;
 	FStringSet CrLfMetas;
-	std::vector<std::vector<SLifecycleAction>> PendingFixes;
+	struct SQueuedFix
+	{
+		uint64 Ticket = 0u;
+		std::vector<SLifecycleAction> Actions;
+	};
+	std::vector<SQueuedFix> PendingFixes;   // a live host's, run one at a time in this order
+	uint64 LastFixTicket = 0u;
+	struct SFixRecord
+	{
+		uint64 Ticket = 0u;
+		EFixResult Result = EFixResult::Queued;
+		FString Message;
+	};
+	std::deque<SFixRecord> FixResults;      // the last FixResultsKept outcomes, in ticket order
 };
 
 
@@ -1954,6 +2002,7 @@ void CAssetRepairs::SetProvider (MountId Mount, IVcsProvider* Provider)
 		impl.MaybeRebuildWriter();
 		impl.bDirty = true;
 	}
+	++impl.Changes;   // GetProvider answers differently, though no file changed
 }
 
 void CAssetRepairs::OnPassCommitted (std::span<const FString> Dirty, bool bInitial)
@@ -1998,9 +2047,10 @@ void CAssetRepairs::Tick (uint64 NowMs)
 		if (impl.Desc.Host->IsQuiet() && impl.HasWriterObject() && !impl.bProvidersPending)
 		{
 			std::shared_ptr<SCycleInput> input = impl.MakeInput(NowMs, true, false, true);
-			input->FixActions = std::move(impl.PendingFixes.front());
+			const uint64 ticket = impl.PendingFixes.front().Ticket;
+			input->FixActions = std::move(impl.PendingFixes.front().Actions);
 			impl.PendingFixes.erase(impl.PendingFixes.begin());
-			impl.StartCycle(std::move(input));
+			impl.StartCycle(std::move(input), ticket);
 		}
 		return;
 	}
@@ -2150,13 +2200,15 @@ SRepairReport CAssetRepairs::ApplyFix (const SLifecycleAction& FixIt)
 		impl.Refusals.erase(action.Path);
 	}
 	report.Planned = actions;
+	++impl.Changes;   // the refusals it retries are gone
 	if (!impl.HasWriterObject() || impl.bStopping)
 	{
 		return report;
 	}
 	if (impl.Lifecycle.bLive)
 	{
-		impl.PendingFixes.push_back(std::move(actions));
+		report.Ticket = ++impl.LastFixTicket;
+		impl.PendingFixes.push_back({ report.Ticket, std::move(actions) });
 		return report;
 	}
 	if (!impl.Desc.Host->WaitUntil([&impl] { return !impl.bWorking && impl.Desc.Host->IsQuiet(); }, -1.0))
@@ -2195,6 +2247,25 @@ SRepairReport CAssetRepairs::ApplyFix (const SLifecycleAction& FixIt)
 	return report;
 }
 
+EFixResult CAssetRepairs::GetFixResult (uint64 Ticket, FString* OutMessage) const
+{
+	const SImpl& impl = *Impl;
+	for (const SImpl::SFixRecord& record : impl.FixResults)
+	{
+		if (record.Ticket == Ticket)
+		{
+			if (OutMessage != nullptr)
+			{
+				*OutMessage = record.Message;
+			}
+			return record.Result;
+		}
+	}
+	// Outcomes arrive in ticket order: one newer than the last is still queued or in flight.
+	const uint64 lastDone = impl.FixResults.empty() ? 0u : impl.FixResults.back().Ticket;
+	return Ticket != 0u && Ticket <= impl.LastFixTicket && Ticket > lastDone ? EFixResult::Queued : EFixResult::Forgotten;
+}
+
 bool CAssetRepairs::IsWorking () const noexcept
 {
 	return Impl->bWorking;
@@ -2220,6 +2291,7 @@ SAssetRepairsStats CAssetRepairs::GetStats () const noexcept
 {
 	SAssetRepairsStats stats;
 	stats.Runs = Impl->Runs;
+	stats.Changes = Impl->Changes;
 	stats.TrackedEvents = static_cast<uint32>(Impl->Events.size() + Impl->PendingEvents.size());
 	return stats;
 }

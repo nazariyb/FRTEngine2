@@ -1,8 +1,9 @@
 #include "AssetProblemsPanel.h"
 
 #include <algorithm>
-#include <chrono>
-#include <thread>
+#include <cwctype>
+#include <string>
+#include <system_error>
 
 #include <Windows.h>
 #include <shellapi.h>
@@ -58,6 +59,49 @@ const ImVec4 InfoColor(0.65f, 0.65f, 0.65f, 1.0f);
 	return where;
 }
 
+// The shell would run it rather than open it (an executable, a script, a shortcut): PATHEXT's extensions and the other
+// kinds Windows runs on a double click.
+[[nodiscard]] bool IsShellRunnable (const std::filesystem::path& File)
+{
+	const auto upper = [] (std::wstring Text)
+	{
+		for (wchar_t& ch : Text)
+		{
+			ch = static_cast<wchar_t>(std::towupper(ch));
+		}
+		return Text;
+	};
+	const std::wstring extension = upper(File.extension().wstring());
+	if (extension.empty())
+	{
+		return false;
+	}
+	std::wstring runnable = L".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC;.PS1;.LNK;.URL;.SCR;.PIF;.MSI;.MSP;.CPL;.HTA;.REG;.JAR;.APPREF-MS;";
+	wchar_t pathExt[1024] = {};
+	const DWORD length = GetEnvironmentVariableW(L"PATHEXT", pathExt, static_cast<DWORD>(std::size(pathExt)));
+	if (length > 0u && length < std::size(pathExt))
+	{
+		runnable += pathExt;
+		runnable += L';';
+	}
+	runnable = upper(std::move(runnable));
+	size_t start = 0u;
+	while (start < runnable.size())
+	{
+		const size_t end = runnable.find(L';', start);
+		if (end == std::wstring::npos)
+		{
+			break;
+		}
+		if (runnable.compare(start, end - start, extension) == 0)
+		{
+			return true;
+		}
+		start = end + 1u;
+	}
+	return false;
+}
+
 void Tooltip (FStringView Text)
 {
 	if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && ImGui::BeginTooltip())
@@ -84,10 +128,10 @@ void CAssetProblemsPanel::SetFilter (const assets::SProblemFilter& NewFilter)
 
 void CAssetProblemsPanel::WaitForRefresh ()
 {
-	while (Job != nullptr && !Job->bFinished.load(std::memory_order_acquire))
+	if (Job != nullptr && Pool != nullptr)
 	{
-		// The work never waits for this thread (it reads a view and the disk), so a short sleep is the whole wait.
-		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		// A pump loop, as every wait on the pool: the work needs no completion, and the pump keeps the registry going.
+		(void)Pool->PumpUntil([this] { return Job->bFinished.load(std::memory_order_acquire); });
 	}
 	(void)TakeJob();
 }
@@ -96,28 +140,38 @@ void CAssetProblemsPanel::RefreshNow (CEngine& Engine)
 {
 	WaitForRefresh();
 	assets::CAssetRegistry* registry = Engine.GetAssetRegistry();
-	if (registry != nullptr && registry->IsInitialScanComplete())
-	{
-		StartRefresh(Engine);
-		WaitForRefresh();
-	}
-}
-
-void CAssetProblemsPanel::GoTo (CAssetsPanel& Assets, uint32 Index)
-{
-	if (Index >= Entries.size())
+	if (registry == nullptr || !registry->IsInitialScanComplete())
 	{
 		return;
 	}
+	// The pump may commit while the list is made: again until the list is of the revision it ends at.
+	for (uint32 attempt = 0u; attempt < 16u; ++attempt)
+	{
+		StartRefresh(Engine, true);
+		WaitForRefresh();
+		if (RanAt == registry->GetRevision())
+		{
+			return;
+		}
+	}
+}
+
+void CAssetProblemsPanel::GoTo (CAssetsPanel& Assets, const assets::SProblemEntry& Entry)
+{
 	// The inspector target arrives with M6.
 	Assets.bOpen = true;
-	Assets.SetQuery(assets::MakeGoToQuery(Entries[Index]));
+	Assets.SetQuery(assets::MakeGoToQuery(Entry));
 	ImGui::SetWindowFocus(CAssetsPanel::Name);
 }
 
 void CAssetProblemsPanel::ShutDown ()
 {
-	WaitForRefresh();
+	if (Job != nullptr && Pool != nullptr)
+	{
+		// One not started yet is dropped (its guard says finished); one running is waited for.
+		(void)Pool->Cancel(CancelGroup);
+		(void)Pool->PumpUntil([this] { return Job->bFinished.load(std::memory_order_acquire); });
+	}
 	Job.reset();
 }
 
@@ -135,6 +189,8 @@ bool CAssetProblemsPanel::TakeJob ()
 	}
 	Entries = std::move(job->Entries);
 	RanAt = job->Revision;
+	ListChanges = job->Changes;
+	ListMs = job->MadeMs;
 	Milliseconds = job->Milliseconds;
 	FixIts.assign(Entries.size(), std::nullopt);
 	Counts = {};
@@ -144,7 +200,6 @@ bool CAssetProblemsPanel::TakeJob ()
 	}
 	Types = assets::GetProblemTypes(Entries);
 	Rebuild();
-	ResolvePendingFixes();
 	return true;
 }
 
@@ -154,7 +209,7 @@ void CAssetProblemsPanel::Rebuild ()
 	bRowsDirty = true;
 }
 
-void CAssetProblemsPanel::StartRefresh (CEngine& Engine)
+void CAssetProblemsPanel::StartRefresh (CEngine& Engine, bool bUrgent)
 {
 	assets::CAssetRegistry& registry = *Engine.GetAssetRegistry();
 	std::shared_ptr<const assets::CRegistryView> view = registry.Acquire();
@@ -166,8 +221,16 @@ void CAssetProblemsPanel::StartRefresh (CEngine& Engine)
 	RefreshedAt = GetSeconds();
 	Job = std::make_shared<SJob>();
 	Job->Revision = view->GetRevision();
-	// The options point into the registry, which outlives the job: ShutDown waits for it before the registry goes.
-	Engine.GetWorkerPool().Submit(jobs::EWorkPriority::Low, jobs::NoCancelGroup,
+	Job->Changes = registry.GetRepairs() != nullptr ? registry.GetRepairs()->GetStats().Changes : 0u;
+	Job->MadeMs = assets::GetLifecycleNowMs();
+	Pool = &Engine.GetWorkerPool();
+	if (CancelGroup == 0u)
+	{
+		CancelGroup = Pool->CreateCancelGroup();
+	}
+	// The options point into the registry, which outlives the job: ShutDown cancels or waits for it before the registry goes.
+	// Background work, unless someone waits for it.
+	Pool->Submit(bUrgent ? jobs::EWorkPriority::High : jobs::EWorkPriority::Low, CancelGroup,
 		[guard = SFinishGuard(Job), view = std::move(view), options = assets::MakeProblemListOptions(registry)] ()
 		{
 			const uint64 start = platform::ReadTimestamp();
@@ -177,14 +240,18 @@ void CAssetProblemsPanel::StartRefresh (CEngine& Engine)
 		});
 }
 
-void CAssetProblemsPanel::ResolvePendingFixes ()
+void CAssetProblemsPanel::ResolvePendingFixes (CEngine& Engine)
 {
+	assets::CAssetRegistry* registry = Engine.GetAssetRegistry();
+	const assets::CAssetRepairs* repairs = registry != nullptr ? registry->GetRepairs() : nullptr;
 	const uint64 now = assets::GetLifecycleNowMs();
-	std::erase_if(Pending, [&] (const assets::SPendingFix& Fix)
+	std::erase_if(Pending, [&] (assets::SPendingFix& Fix)
 	{
+		FString resultMessage;
+		const assets::EFixResult result = repairs != nullptr ? repairs->GetFixResult(Fix.Ticket, &resultMessage) : assets::EFixResult::Forgotten;
 		FString message;
 		const FString what = FString::Format("{} - {}", Fix.Label, unicode::ToDisplayText(Fix.Subject));
-		switch (assets::ResolvePendingFix(Fix, Entries, now, &message))
+		switch (assets::ResolvePendingFix(Fix, result, resultMessage, Entries, ListMs, now, &message))
 		{
 		case assets::EFixOutcome::Pending:
 			return false;
@@ -192,14 +259,36 @@ void CAssetProblemsPanel::ResolvePendingFixes ()
 			Post("Fixed: " + what, false);
 			break;
 		case assets::EFixOutcome::Refused:
-			Post(FString::Format("Refused: {} ({})", what, message), true);
+			Post(FString::Format("Refused: {} ({})", what, unicode::ToDisplayText(message)), true);
+			break;
+		case assets::EFixOutcome::NotApplied:
+			Post(FString::Format("Not applied: {} ({})", what, unicode::ToDisplayText(message)), true);
 			break;
 		case assets::EFixOutcome::NoChange:
-			Post(FString::Format("No change after {} s: {}", assets::FixOutcomeTimeoutMs / 1000u, what), true);
+			Post(FString::Format("No change {} s after it was applied: {} ({})", assets::FixOutcomeTimeoutMs / 1000u, what,
+				unicode::ToDisplayText(message)), true);
 			break;
 		}
 		return true;
 	});
+}
+
+void CAssetProblemsPanel::MaybeRefresh (CEngine& Engine, bool bVisible)
+{
+	assets::CAssetRegistry* registry = Engine.GetAssetRegistry();
+	if (registry == nullptr || !registry->IsInitialScanComplete() || Job != nullptr)
+	{
+		return;
+	}
+	const assets::CAssetRepairs* repairs = registry->GetRepairs();
+	const bool bMoved = registry->GetRevision() != RanAt || (repairs != nullptr && repairs->GetStats().Changes != ListChanges);
+	const bool bDue = GetSeconds() - RefreshedAt >= MinRefreshSeconds;
+	// An applied fix waits for a list made after it, shown or not, moved or not (its problem may simply stay).
+	const bool bAwaitingList = std::any_of(Pending.begin(), Pending.end(), [] (const assets::SPendingFix& Fix) { return Fix.DoneMs != 0u; });
+	if (bRefreshRequested || RanAt == NeverRan || (bDue && ((bMoved && bVisible) || bAwaitingList)))
+	{
+		StartRefresh(Engine, false);
+	}
 }
 
 void CAssetProblemsPanel::Post (FString Text, bool bError)
@@ -214,24 +303,28 @@ void CAssetProblemsPanel::Draw (CEngine& Engine, CAssetsPanel& Assets)
 	(void)TakeJob();
 	if (!Pending.empty())
 	{
-		ResolvePendingFixes();   // a timeout needs no new list
+		ResolvePendingFixes(Engine);   // the lifecycle's outcome needs no new list
+	}
+	if (registry != nullptr && registry->GetRepairs() != nullptr)
+	{
+		// The lifecycle's fix-its and providers moved without a revision: what each entry offers is asked again.
+		if (const uint64 changes = registry->GetRepairs()->GetStats().Changes; changes != FixItsChanges)
+		{
+			FixItsChanges = changes;
+			FixIts.assign(Entries.size(), std::nullopt);
+		}
 	}
 
 	if (!bOpen)
 	{
+		MaybeRefresh(Engine, false);   // a fix applied before it was closed still gets its lists
 		return;
 	}
 	const bool bVisible = ImGui::Begin(Name, &bOpen);
-
-	// When asked, once to begin with, and when the revision moved while it shows or a fix waits for its outcome.
-	if (registry != nullptr && registry->IsInitialScanComplete() && Job == nullptr)
+	MaybeRefresh(Engine, bVisible);
+	if (bVisible)
 	{
-		const bool bMoved = registry->GetRevision() != RanAt;
-		const bool bDue = GetSeconds() - RefreshedAt >= MinRefreshSeconds;
-		if (bRefreshRequested || RanAt == NeverRan || (bMoved && bDue && (bVisible || !Pending.empty())))
-		{
-			StartRefresh(Engine);
-		}
+		RowsDrawn = 0u;
 	}
 
 	if (bVisible)
@@ -257,7 +350,7 @@ void CAssetProblemsPanel::Draw (CEngine& Engine, CAssetsPanel& Assets)
 			if (registry->GetRepairs() == nullptr)
 			{
 				ImGui::SameLine();
-				ImGui::TextDisabled("- no meta lifecycle runs here: nothing to apply");
+				ImGui::TextDisabled("- no meta lifecycle runs here: nothing to apply, and no VCS is asked (no VCS003)");
 			}
 			if (!Status.IsEmpty())
 			{
@@ -299,6 +392,7 @@ void CAssetProblemsPanel::Draw (CEngine& Engine, CAssetsPanel& Assets)
 				{
 					for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i)
 					{
+						++RowsDrawn;
 						const SRow row = Rows[static_cast<size_t>(i)];
 						ImGui::TableNextRow();
 						ImGui::TableNextColumn();
@@ -403,7 +497,7 @@ void CAssetProblemsPanel::DrawEntry (CEngine& Engine, CAssetsPanel& Assets, uint
 	ImGui::TableNextColumn();
 	if (ImGui::SmallButton("Go to"))
 	{
-		GoTo(Assets, Index);
+		GoTo(Assets, entry);
 	}
 	Tooltip("Lists it in the Assets panel");
 	if (registry != nullptr)
@@ -411,16 +505,27 @@ void CAssetProblemsPanel::DrawEntry (CEngine& Engine, CAssetsPanel& Assets, uint
 		if (const std::optional<std::filesystem::path> file = assets::GetProblemFilePath(problem, registry->GetMounts()); file.has_value())
 		{
 			ImGui::SameLine();
-			if (ImGui::SmallButton("Open"))
+			std::error_code ec;
+			const bool bExists = std::filesystem::is_regular_file(*file, ec);
+			const bool bRunnable = IsShellRunnable(*file);
+			const FString shown = unicode::ToDisplayText(FString::FromPath(*file));
+			ImGui::BeginDisabled(!bExists);
+			if (ImGui::SmallButton(bRunnable ? "Show" : "Open"))
 			{
-				// No verb: the file's default one, open.
-				const HINSTANCE result = ShellExecuteW(nullptr, nullptr, file->c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-				if (reinterpret_cast<INT_PTR>(result) <= 32)
+				// A document opens with its default verb; a file the shell would run is only shown in Explorer.
+				const std::wstring select = L"/select,\"" + file->wstring() + L"\"";
+				const HINSTANCE result = bRunnable ? ShellExecuteW(nullptr, L"open", L"explorer.exe", select.c_str(), nullptr, SW_SHOWNORMAL)
+					: ShellExecuteW(nullptr, L"open", file->c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+				const INT_PTR code = reinterpret_cast<INT_PTR>(result);
+				if (code <= 32)
 				{
-					Post(FString::Format("Cannot open {}: no program is set to open it", unicode::ToDisplayText(FString::FromPath(*file))), true);
+					Post(FString::Format("Cannot open {}: {}", shown, code == SE_ERR_FNF || code == SE_ERR_PNF ? "it does not exist"
+						: code == SE_ERR_NOASSOC || code == SE_ERR_ASSOCINCOMPLETE ? "no program is set to open it" : "the shell refused"), true);
 				}
 			}
-			Tooltip(FString::Format("Opens {}", unicode::ToDisplayText(FString::FromPath(*file))));
+			ImGui::EndDisabled();
+			Tooltip(!bExists ? FString::Format("{} does not exist (yet)", shown)
+				: bRunnable ? FString::Format("Shows {} in Explorer: opened, it would run", shown) : FString::Format("Opens {}", shown));
 			if (problem.Line > 0u)
 			{
 				ImGui::SameLine();
@@ -517,8 +622,8 @@ void CAssetProblemsPanel::ApplyFix (CEngine& Engine, uint32 Index, const assets:
 		Post(FString::Format("Not applied: {} ({})", what, unicode::ToDisplayText(report.Problems.front().Message)), true);
 		return;
 	}
-	// The live editor's ApplyFix queues the op: its outcome arrives as a later delta, read from the lists that follow.
-	Pending.push_back(assets::MakePendingFix(problem, Fix.Label, Entries, assets::GetLifecycleNowMs()));
+	// The live editor's ApplyFix queues the op: the lifecycle says when it ran, and the lists that follow whether it fixed.
+	Pending.push_back(assets::MakePendingFix(problem, Fix.Label, report.Ticket));
 	Post("Queued: " + what, false);
 }
 }

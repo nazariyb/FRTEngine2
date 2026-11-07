@@ -7,6 +7,7 @@
 
 #include "Core.h"
 #include "CoreTypes.h"
+#include "Assets/Meta/AssetRepairs.h"
 #include "Assets/Meta/LifecycleTypes.h"
 #include "Assets/Meta/Validation.h"
 #include "Containers/String.h"
@@ -29,16 +30,18 @@
  *   META003   give the copy a new GUID (ApplyFix re-GUIDs every copy of that GUID as one set)
  *   META004   keep A, alias B (one per GUID the broken meta held)
  *   META006   rename the meta to its source's case
- *   META008   restore the verified copy; restore from the VCS (its command, shown and copied, never run: FRT never changes
- *             the work tree through the VCS beyond §12.9's operations); relink an orphan that matches; create a meta again
+ *   META008   a lost meta: restore the verified copy, or create it again with its GUID, and restore from the VCS (its
+ *             command, shown and copied, never run: FRT never changes the work tree through the VCS beyond §12.9's
+ *             operations); a meta swap's old source: relink the orphan that matches, or give it a new GUID (no VCS
+ *             restore: it would bring back a second meta with a GUID another meta holds)
  *   META009   relink the orphan meta to the file it matches (a suggestion, never automatic)
  *   VCS002    retry the repair the VCS refused
  *   VCS003    the provider's add command, shown and copied (FRT never stages); absent under None
  *   VCS004    a message only: `git lfs pull` fetches the content
  *
  * An action is disabled, with the reason, in a mount this process does not write: a read-only editor, a guest, `/Engine`
- * outside engine-owner mode. In a live host ApplyFix only queues (AssetRepairs.h), so its outcome comes from a later list:
- * SPendingFix follows it there. PATH renames, reference relinks, hints and aliases are M11's.
+ * outside engine-owner mode. In a live host ApplyFix only queues (AssetRepairs.h), so its outcome comes from the lifecycle
+ * (GetFixResult) and a later list: SPendingFix follows it. PATH renames, reference relinks, hints and aliases are M11's.
  */
 namespace frt::assets
 {
@@ -132,26 +135,27 @@ struct SProblemFixContext
 [[nodiscard]] FRT_CORE_API std::vector<SProblemFixIt> GetProblemFixIts (const SDiagnostic& Problem, const SProblemFixContext& Context);
 
 /**
- * A fix-it applied in a live host: ApplyFix queued it, and the panel shows its outcome from the lists that follow. Fixed: the
- * problem (code and subject) is gone. Refused: a VCS002 about its asset that was not there when it was applied (the VCS or
- * the writer refused it; the problem stays). Pending until either, or NoChange after FixOutcomeTimeoutMs.
+ * A fix-it applied in a live host: ApplyFix queued it as Ticket, and the panel shows its outcome. The lifecycle says what
+ * became of it (CAssetRepairs::GetFixResult): queued however long it waits for a quiet registry, refused (the VCS or the
+ * writer; a VCS002 follows) or not applied, at once; once applied, Fixed from the first list made after that without the
+ * problem (code and subject), NoChange from a list made FixOutcomeTimeoutMs after it that still has it.
  */
 struct SPendingFix
 {
 	uint32 Code = 0u;
 	FString Subject;
 	FString Label;
-	uint64 AppliedMs = 0u;
-	bool bHadRefusal = false;
+	uint64 Ticket = 0u;   // SRepairReport::Ticket
+	uint64 DoneMs = 0u;   // when the lifecycle was first seen to have applied it (0: not yet)
 };
 
-enum class EFixOutcome : uint8 { Pending, Fixed, Refused, NoChange };
+enum class EFixOutcome : uint8 { Pending, Fixed, Refused, NotApplied, NoChange };
 
 inline constexpr uint64 FixOutcomeTimeoutMs = 30000u;
 
-[[nodiscard]] FRT_CORE_API SPendingFix MakePendingFix (const SDiagnostic& Problem, FStringView Label, std::span<const SProblemEntry> Entries,
-	uint64 NowMs);
-// The outcome in Entries (a list made after the fix was applied); OutMessage: a refusal's message.
-[[nodiscard]] FRT_CORE_API EFixOutcome ResolvePendingFix (const SPendingFix& Fix, std::span<const SProblemEntry> Entries, uint64 NowMs,
-	FString* OutMessage = nullptr);
+[[nodiscard]] FRT_CORE_API SPendingFix MakePendingFix (const SDiagnostic& Problem, FStringView Label, uint64 Ticket);
+// Result and ResultMessage: GetFixResult(Fix.Ticket) now. Entries: the latest list, made from a view acquired at ListMs (the
+// lifecycle's clock, GetLifecycleNowMs). OutMessage: a refusal's message, or why it was not applied. Sets Fix.DoneMs.
+[[nodiscard]] FRT_CORE_API EFixOutcome ResolvePendingFix (SPendingFix& Fix, EFixResult Result, FStringView ResultMessage,
+	std::span<const SProblemEntry> Entries, uint64 ListMs, uint64 NowMs, FString* OutMessage = nullptr);
 }

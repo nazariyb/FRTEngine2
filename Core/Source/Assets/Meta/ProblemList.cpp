@@ -86,6 +86,25 @@ struct SPortableThenBytes
 	return unicode::ToDisplayText(GetMountPathLeaf(MountPath));
 }
 
+// What a CreateMeta gives its file, from the identity the registry stored for it (not from the problem's code: a refused
+// create's VCS002 asks the same).
+enum class ECreateKind : uint8
+{
+	First,     // the file never had a meta (none stored, or PendingMeta): META001, or its refusal retried
+	Again,     // the identity it had: a lost meta (META008)
+	NewGuid,   // another identity: a meta swap's old source, whose GUID now lives in another meta (META008)
+};
+
+[[nodiscard]] ECreateKind ClassifyCreate (const SLifecycleAction& Action, const CRegistryView* View)
+{
+	const std::optional<SStoredFile> stored = View != nullptr ? FindStoredFile(*View, Action.Path) : std::nullopt;
+	if (!stored.has_value() || stored->MetaState == EMetaState::PendingMeta || !stored->Guid.IsValid())
+	{
+		return ECreateKind::First;
+	}
+	return Action.Guid.IsValid() && stored->Guid == Action.Guid ? ECreateKind::Again : ECreateKind::NewGuid;
+}
+
 // The button of a lifecycle action, and what it does.
 void DescribeAction (const SLifecycleAction& Action, const SDiagnostic& Problem, const CRegistryView* View, SProblemFixIt& Out)
 {
@@ -93,15 +112,14 @@ void DescribeAction (const SLifecycleAction& Action, const SDiagnostic& Problem,
 	{
 	case ELifecycleAction::CreateMeta:
 	{
-		const std::optional<SStoredFile> stored = View != nullptr ? FindStoredFile(*View, Action.Path) : std::nullopt;
-		const bool bSameGuid = Action.Guid.IsValid() && stored.has_value() && stored->MetaState != EMetaState::PendingMeta && stored->Guid == Action.Guid;
+		const ECreateKind kind = Problem.Code == Meta001 ? ECreateKind::First : ClassifyCreate(Action, View);
 		const FString guid = Action.Guid.IsValid() ? FString::Format("GUID {{{}}}", Action.Guid.ToString()) : FString("a random GUID");
-		if (Problem.Code == Meta001)
+		if (kind == ECreateKind::First)
 		{
 			Out.Label = "Create its meta";
 			Out.Text = FString::Format("writes {}.meta with {}", DisplayLeaf(Action.Path), guid);
 		}
-		else if (bSameGuid)
+		else if (kind == ECreateKind::Again)
 		{
 			Out.Label = "Create its meta again";
 			Out.Text = FString::Format("writes a new {}.meta with its own {}: the settings the lost meta held are gone", DisplayLeaf(Action.Path), guid);
@@ -153,12 +171,25 @@ void DescribeAction (const SLifecycleAction& Action, const SDiagnostic& Problem,
 	return FString::Format("\"{}\" assets fix --engine", FString::FromPath((Engine.OwnerRoot / "FRT.bat").make_preferred()));
 }
 
-[[nodiscard]] bool HasRefusalFor (std::span<const SProblemEntry> Entries, FStringView Asset) noexcept
+// A META008 whose meta was lost, as the lifecycle's own fix-its say: it brings the identity back (the verified copy, or a
+// meta created with the stored GUID). A meta swap (its GUID lives in another meta now) and a new file an orphan matches get
+// neither, and a VCS restore would duplicate a GUID or name a file the VCS never had.
+[[nodiscard]] bool IsLostMeta (std::span<const SProblemFixIt> FixIts, const CRegistryView* View)
 {
-	return std::any_of(Entries.begin(), Entries.end(), [&] (const SProblemEntry& Entry)
+	return std::any_of(FixIts.begin(), FixIts.end(), [&] (const SProblemFixIt& Fix)
+	{
+		return Fix.Kind == EProblemFixKind::Apply && (Fix.Action.Kind == ELifecycleAction::RestoreMeta
+			|| (Fix.Action.Kind == ELifecycleAction::CreateMeta && ClassifyCreate(Fix.Action, View) == ECreateKind::Again));
+	});
+}
+
+[[nodiscard]] const SProblemEntry* FindRefusalFor (std::span<const SProblemEntry> Entries, FStringView Asset) noexcept
+{
+	const auto found = std::find_if(Entries.begin(), Entries.end(), [&] (const SProblemEntry& Entry)
 	{
 		return Entry.Problem.Code == Vcs002 && FoldEqual(Entry.Asset, Asset);
 	});
+	return found != Entries.end() ? &*found : nullptr;
 }
 }
 
@@ -353,7 +384,7 @@ std::vector<SProblemFixIt> GetProblemFixIts (const SDiagnostic& Problem, const S
 		fix.Label = "Fix it from the engine";
 		fix.Text = MakeEngineFixCommand(*mount);
 	}
-	else if (Problem.Code == Meta008 && provider != nullptr)
+	else if (Problem.Code == Meta008 && provider != nullptr && IsLostMeta(fixIts, Context.View))
 	{
 		if (const std::optional<std::filesystem::path> meta = mounts.FromMountPath(GetMetaPath(asset)); meta.has_value())
 		{
@@ -389,34 +420,54 @@ std::vector<SProblemFixIt> GetProblemFixIts (const SDiagnostic& Problem, const S
 	return fixIts;
 }
 
-SPendingFix MakePendingFix (const SDiagnostic& Problem, FStringView Label, std::span<const SProblemEntry> Entries, uint64 NowMs)
+SPendingFix MakePendingFix (const SDiagnostic& Problem, FStringView Label, uint64 Ticket)
 {
 	SPendingFix fix;
 	fix.Code = Problem.Code;
 	fix.Subject = Problem.Subject;
 	fix.Label = FString(Label);
-	fix.AppliedMs = NowMs;
-	fix.bHadRefusal = HasRefusalFor(Entries, GetProblemAsset(Problem.Subject));
+	fix.Ticket = Ticket;
 	return fix;
 }
 
-EFixOutcome ResolvePendingFix (const SPendingFix& Fix, std::span<const SProblemEntry> Entries, uint64 NowMs, FString* OutMessage)
+EFixOutcome ResolvePendingFix (SPendingFix& Fix, EFixResult Result, FStringView ResultMessage, std::span<const SProblemEntry> Entries,
+	uint64 ListMs, uint64 NowMs, FString* OutMessage)
 {
-	// A refusal first: the lifecycle reports a refused repair as VCS002 alone, so the problem it fixed may be gone with it.
-	const FStringView asset = GetProblemAsset(Fix.Subject);
-	if (!Fix.bHadRefusal)
+	const auto say = [&] (FStringView Message)
 	{
-		for (const SProblemEntry& entry : Entries)
+		if (OutMessage != nullptr)
 		{
-			if (entry.Problem.Code == Vcs002 && FoldEqual(entry.Asset, asset))
-			{
-				if (OutMessage != nullptr)
-				{
-					*OutMessage = entry.Problem.Message;
-				}
-				return EFixOutcome::Refused;
-			}
+			*OutMessage = FString(Message);
 		}
+	};
+	switch (Result)
+	{
+	case EFixResult::Queued:
+		return EFixOutcome::Pending;   // however long: it waits for a quiet registry, and nothing has run yet
+	case EFixResult::Refused:
+	case EFixResult::NotApplied:
+		if (!ResultMessage.IsEmpty())
+		{
+			say(ResultMessage);
+		}
+		else if (const SProblemEntry* refusal = FindRefusalFor(Entries, GetProblemAsset(Fix.Subject)); refusal != nullptr)
+		{
+			say(refusal->Problem.Message);
+		}
+		return Result == EFixResult::Refused ? EFixOutcome::Refused : EFixOutcome::NotApplied;
+	case EFixResult::Forgotten:
+		say("its outcome is no longer known");
+		return EFixOutcome::NoChange;
+	case EFixResult::Applied:
+		break;
+	}
+	if (Fix.DoneMs == 0u)
+	{
+		Fix.DoneMs = std::max<uint64>(NowMs, 1u);
+	}
+	if (ListMs < Fix.DoneMs)
+	{
+		return EFixOutcome::Pending;   // a list made before the op ran says nothing about it
 	}
 	const bool bStill = std::any_of(Entries.begin(), Entries.end(), [&] (const SProblemEntry& Entry)
 	{
@@ -426,6 +477,11 @@ EFixOutcome ResolvePendingFix (const SPendingFix& Fix, std::span<const SProblemE
 	{
 		return EFixOutcome::Fixed;
 	}
-	return NowMs >= Fix.AppliedMs + FixOutcomeTimeoutMs ? EFixOutcome::NoChange : EFixOutcome::Pending;
+	if (ListMs >= Fix.DoneMs + FixOutcomeTimeoutMs)
+	{
+		say("applied, but the problem is still reported");
+		return EFixOutcome::NoChange;
+	}
+	return EFixOutcome::Pending;
 }
 }

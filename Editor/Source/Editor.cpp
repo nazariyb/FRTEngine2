@@ -124,6 +124,9 @@ void CEditor::ShutDown ()
 	{
 		return;
 	}
+	// Its validation job reads the registry's mounts, rules and providers: done before the registry goes, and first, since
+	// waiting for a running one pumps the pool's completions while everything they may touch still stands.
+	ProblemsPanel.ShutDown();
 	graphics::CRenderer& renderer = *Engine.GetRenderer();
 	Capture.Release(*Engine.GetWindow());
 	renderer.FlushCommandQueue();
@@ -132,8 +135,6 @@ void CEditor::ShutDown ()
 	{
 		viewport.Destroy(renderer);
 	}
-	// Its validation job reads the registry's mounts, rules and providers: done before the registry goes.
-	ProblemsPanel.ShutDown();
 	// Before the game module unloads: the world's component pools were instantiated in its code.
 	EditWorld.reset();
 	SmokeTest.reset();

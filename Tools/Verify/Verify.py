@@ -24,7 +24,7 @@ script, behind FRT.bat verify (Premake/tools.lua). A milestone branch merges onl
   5. the editor's smoke test (-Editor:SmokeTest=1) over Templates/Demo and Templates/Blank, in place, in
      Debug and Development, which also checks the asset registry's initial scan and the editor's Assets panel
      (its "[smoke] ok registry:" line; in Demo the panel lists textures) and that its Asset problems panel lists
-     what validate does ("[smoke] ok the Asset problems panel lists"); then its steps that edit files, on a
+     what validate does over every mount, with the lifecycle's providers ("[smoke] ok the Asset problems panel lists"); then its steps that edit files, on a
      scratch copy of Templates/Demo made with
      FRT.bat new and a copy of the shaders (Gate.smoke_scratch): a material rewritten must reload and a
      shader include edited must rebuild exactly the programs that include it, through the file watcher;
@@ -931,7 +931,7 @@ class Gate:
     SMOKE_REGISTRY_LINE = re.compile(r'^\[smoke\]\s+ok\s+registry: (\d+) records, initial scan (\d+) ms', re.MULTILINE)
     SMOKE_PANEL_LINE = re.compile(r'^\[smoke\]\s+ok\s+the Assets panel shows (\d+) of (\d+) record\(s\) of type:Texture', re.MULTILINE)
     SMOKE_PROBLEMS_LINE = re.compile(r'^\[smoke\]\s+ok\s+the Asset problems panel lists (\d+) problem\(s\) in (\d+) asset\(s\), '
-                                     r'as validate does', re.MULTILINE)
+                                     r'as RunValidation does with its options', re.MULTILINE)
 
     def check_smoke_registry(self, name, config, text, log):
         """The smoke test's registry check: the initial scan completed (its "[smoke] ok registry:" line), the
@@ -951,7 +951,7 @@ class Gate:
         problems = self.SMOKE_PROBLEMS_LINE.search(text)
         if not problems:
             raise StepFailed('no "[smoke] ok the Asset problems panel lists" line: the problems panel did not list what '
-                             'validate does')
+                             'RunValidation does with its options')
         return (f'registry: {registry.group(1)} records, {panel.group(2)} textures, {problems.group(1)} problems, '
                 f'initial scan {registry.group(2)} ms')
 

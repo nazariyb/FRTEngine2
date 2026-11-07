@@ -10,8 +10,11 @@
 #include "EnginePaths.h"
 #include "Timer.h"
 #include "Window.h"
+#include "Assets/AssetDiagnosticCodes.h"
 #include "Assets/AssetRegistry.h"
 #include "Assets/FileWatcherService.h"
+#include "Assets/Discovery/Mounts.h"
+#include "Assets/Meta/AssetRepairs.h"
 #include "Assets/Meta/ProblemList.h"
 #include "Assets/Registry/RegistryView.h"
 #include "Config/Config.h"
@@ -477,7 +480,11 @@ void CEditorSmokeTest::Update (CEditor& Editor, CEngine& Engine)
 		// The Asset problems panel lists what `validate` does (and comes to the front for a capture); its "Go to" queries
 		// the Assets panel, checked two frames later.
 		{ 8u, "Asset problems panel", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G) { T.CheckProblemsPanel(E, G); } },
-		{ 12u, "Asset problems capture", [] (CEditorSmokeTest& T, CEditor&, CEngine& G) { T.Capture(G, "00_asset_problems"); } },
+		{ 12u, "Asset problems capture", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G)
+		{
+			T.CheckProblemsDrawn(E);
+			T.Capture(G, "00_asset_problems");
+		} },
 		{ 13u, "Asset problems Go to", [] (CEditorSmokeTest& T, CEditor& E, CEngine&) { T.GoToProblem(E); } },
 		{ 15u, "Asset problems Go to listed", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G) { T.CheckProblemsGoTo(E, G); } },
 		{ 30u, "docked", [] (CEditorSmokeTest& T, CEditor& E, CEngine& G)
@@ -853,8 +860,11 @@ void CEditorSmokeTest::CheckProblemsPanel (CEditor& Editor, CEngine& Engine)
 	}
 	const assets::SValidationCounts counts = assets::CountValidation(expected);
 	panel.SetFilter(assets::SProblemFilter {});
-	Check(bSame, FString::Format("the Asset problems panel lists {} problem(s) in {} asset(s), as validate does ({} error(s), {} warning(s), {} info)",
-		entries.size(), panel.GetGroups().size(), counts.Errors, counts.Warnings, counts.Infos));
+	// The panel's options, which are validate's but for the providers: the lifecycle's, none where no lifecycle runs.
+	const size_t providers = assets::MakeProblemListOptions(*registry).Providers.size();
+	Check(bSame, FString::Format("the Asset problems panel lists {} problem(s) in {} asset(s), as RunValidation does with its options "
+		"({} error(s), {} warning(s), {} info; {} mount(s) ask a VCS)", entries.size(), panel.GetGroups().size(), counts.Errors, counts.Warnings,
+		counts.Infos, providers));
 	if (!bSame)
 	{
 		for (const SDiagnostic& problem : expected)
@@ -867,21 +877,44 @@ void CEditorSmokeTest::CheckProblemsPanel (CEditor& Editor, CEngine& Engine)
 		}
 	}
 
-	// Every entry's fix-its; a process that writes nothing can apply none.
+	// Every entry's fix-its through the editor's own context, and one a META001 on /Engine offers where this process does
+	// not write /Engine (edit [14]): the `assets fix --engine` command, shown and copied. A process that writes nothing can
+	// apply none of them.
 	const assets::SProblemFixContext context { &registry->GetMounts(), registry->GetRepairs(), &registry->Live() };
 	uint32 offered = 0u;
 	uint32 enabled = 0u;
-	for (const assets::SProblemEntry& entry : entries)
+	const auto count = [&] (const std::vector<assets::SProblemFixIt>& FixIts)
 	{
-		for (const assets::SProblemFixIt& fix : assets::GetProblemFixIts(entry.Problem, context))
+		for (const assets::SProblemFixIt& fix : FixIts)
 		{
 			++offered;
 			enabled += fix.Kind == assets::EProblemFixKind::Apply && fix.Disabled.IsEmpty() ? 1u : 0u;
 		}
+	};
+	for (const assets::SProblemEntry& entry : entries)
+	{
+		count(assets::GetProblemFixIts(entry.Problem, context));
+	}
+	const auto engine = std::find_if(registry->GetMounts().GetMounts().begin(), registry->GetMounts().GetMounts().end(),
+		[] (const assets::SMount& Mount) { return Mount.Kind == assets::EMountKind::Engine; });
+	if (engine != registry->GetMounts().GetMounts().end()
+		&& (registry->GetRepairs() == nullptr || registry->GetRepairs()->GetWriterOf(engine->Id) == nullptr))
+	{
+		SDiagnostic probe;
+		probe.Code = assets::Meta001;
+		probe.Severity = ESeverity::Error;
+		probe.Subject = FString::Format("/{}/SmokeProbe.png", engine->Name);
+		const std::vector<assets::SProblemFixIt> fixIts = assets::GetProblemFixIts(probe, context);
+		count(fixIts);
+		const FString command = FString::Format("\"{}\" assets fix --engine", FString::FromPath((engine->OwnerRoot / "FRT.bat").make_preferred()));
+		const auto copy = std::find_if(fixIts.begin(), fixIts.end(), [] (const assets::SProblemFixIt& Fix) { return Fix.Kind == assets::EProblemFixKind::Copy; });
+		Check(copy != fixIts.end() && copy->Text == command && std::count_if(fixIts.begin(), fixIts.end(),
+			[] (const assets::SProblemFixIt& Fix) { return Fix.Kind == assets::EProblemFixKind::Copy; }) == 1,
+			FString::Format("a META001 on /{} offers {}", engine->Name, copy != fixIts.end() ? copy->Text : FString("no command")));
 	}
 	if (!registry->IsWriter())
 	{
-		Check(enabled == 0u, FString::Format("the read-only editor offers {} fix-it(s) and none it could apply", offered));
+		Check(offered > 0u && enabled == 0u, FString::Format("the read-only editor offers {} fix-it(s) and none it could apply", offered));
 	}
 
 	ImGui::SetWindowFocus(CAssetProblemsPanel::Name);
@@ -914,7 +947,7 @@ void CEditorSmokeTest::CheckProblemsPanel (CEditor& Editor, CEngine& Engine)
 			break;
 		}
 	}
-	GoToTarget = target;
+	GoToEntry = entries[target];   // the entry itself: a later list may hold it at another index
 	GoToQuery = assets::MakeGoToQuery(entries[target]);
 	bGoToListsSomething = !entries[target].Type.IsEmpty() || entries[target].bFolder;   // an orphan meta's folder may hold none
 }
@@ -923,8 +956,19 @@ void CEditorSmokeTest::GoToProblem (CEditor& Editor)
 {
 	if (!GoToQuery.IsEmpty())
 	{
-		Editor.GetProblemsPanel().GoTo(Editor.GetAssetsPanel(), GoToTarget);
+		Editor.GetProblemsPanel().GoTo(Editor.GetAssetsPanel(), GoToEntry);
 	}
+}
+
+void CEditorSmokeTest::CheckProblemsDrawn (CEditor& Editor)
+{
+	const CAssetProblemsPanel& panel = Editor.GetProblemsPanel();
+	if (panel.GetEntries().empty())
+	{
+		return;
+	}
+	Check(panel.GetRowsDrawn() > 0u, FString::Format("the Asset problems panel drew {} row(s) of {} group(s) last frame", panel.GetRowsDrawn(),
+		panel.GetGroups().size()));
 }
 
 void CEditorSmokeTest::CheckProblemsGoTo (CEditor& Editor, CEngine& Engine)

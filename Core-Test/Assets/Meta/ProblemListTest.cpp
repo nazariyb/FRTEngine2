@@ -7,7 +7,10 @@
 // write, a META001 on /Engine outside engine-owner mode offers the `assets fix --engine` command, a lost meta the
 // provider's restore command, an untracked half its add command (absent without a provider) and an LFS pointer a message;
 // a fix applied in a live host only queues, and its outcome (fixed, refused with VCS002, no change) comes from a later
-// list. Each test holds at most four files and drives the lifecycle with its own clock (Settle), never with sleeps.
+// list; the lifecycle says whether a queued fix ran or was refused (GetFixResult), so a retried refusal shows as refused
+// and a fix still queued never times out. A meta swap's old source gets no VCS restore, and each fix-it's label says what
+// its action gives the file. The repairs' change counter moves when providers settle, which the revision does not show.
+// Each test holds at most four files and drives the lifecycle with its own clock (Settle), never with sleeps.
 #include <gtest/gtest.h>
 
 #include <algorithm>
@@ -44,6 +47,12 @@ namespace
 constexpr FStringLiteral Salt = "Проблеми";
 constexpr FStringLiteral GuidA = "5d1e7a3b9c0f42d68e1a2b3c4d5e6f70";
 constexpr FStringLiteral GuidB = "3f2a9c4e7b1d4e0f9a8b6c5d4e3f2a1b";
+constexpr FStringLiteral GuidC = "9a8b7c6d5e4f40312a1b0c9d8e7f6a5b";
+
+SGuid MakeGuid (FStringView Text)
+{
+	return SGuid::Parse(Text).value_or(SGuid {});
+}
 
 // A PNG's header as stb_image's info reads it; Size makes the bytes differ.
 std::vector<uint8> MakePng (uint32 Size)
@@ -99,6 +108,12 @@ public:
 	{
 		std::error_code ec;
 		std::filesystem::remove(Abs(Relative), ec);
+	}
+	void Rename (FStringView From, FStringView To) const
+	{
+		std::error_code ec;
+		std::filesystem::rename(Abs(From), Abs(To), ec);
+		ASSERT_FALSE(ec) << ec.message();
 	}
 	[[nodiscard]] bool Exists (FStringView Relative) const
 	{
@@ -420,7 +435,7 @@ TEST(ProblemList, FixItsAreTheLifecyclesActionsDisabledWhereThisProcessWritesNot
 	EXPECT_EQ(Find(rig.List(), Meta001, P("a.png")), nullptr);
 }
 
-TEST(ProblemList, AFixAppliedInALiveHostOnlyQueuesAndItsOutcomeComesFromALaterList)
+TEST(ProblemList, AFixAppliedInALiveHostOnlyQueuesAndItsOutcomeComesFromTheLifecycleAndALaterList)
 {
 	CProblemTree tree("Наживо");
 	tree.StopAutoRepairs();
@@ -431,6 +446,7 @@ TEST(ProblemList, AFixAppliedInALiveHostOnlyQueuesAndItsOutcomeComesFromALaterLi
 	ASSERT_TRUE(rig.bOpened);
 	rig.Settle();
 	rig.Settle(1600u);
+	CAssetRepairs& repairs = *rig.Registry->GetRepairs();
 	const std::vector<SProblemEntry> before = rig.List();
 	const SProblemEntry* a = Find(before, Meta001, P("a.png"));
 	const SProblemEntry* b = Find(before, Meta001, P("b.png"));
@@ -439,37 +455,75 @@ TEST(ProblemList, AFixAppliedInALiveHostOnlyQueuesAndItsOutcomeComesFromALaterLi
 
 	const std::vector<SProblemFixIt> fixA = GetProblemFixIts(a->Problem, rig.Context());
 	ASSERT_EQ(fixA.size(), 1u);
-	const SPendingFix pendingA = MakePendingFix(a->Problem, fixA[0].Label, before, rig.Now);
-	const SRepairReport queued = rig.Registry->GetRepairs()->ApplyFix(fixA[0].Action);
+	const SRepairReport queued = repairs.ApplyFix(fixA[0].Action);
 	EXPECT_EQ(queued.Planned.size(), 1u);
 	EXPECT_EQ(queued.Applied + queued.Refused, 0u) << "a live host only queues";
-	EXPECT_EQ(ResolvePendingFix(pendingA, before, rig.Now), EFixOutcome::Pending);
-	EXPECT_EQ(ResolvePendingFix(pendingA, before, rig.Now + FixOutcomeTimeoutMs), EFixOutcome::NoChange) << "nothing seen for too long";
+	ASSERT_NE(queued.Ticket, 0u);
+	SPendingFix pendingA = MakePendingFix(a->Problem, fixA[0].Label, queued.Ticket);
+	EXPECT_EQ(repairs.GetFixResult(queued.Ticket), EFixResult::Queued);
+	const uint64 late = rig.Now + 2u * FixOutcomeTimeoutMs;
+	EXPECT_EQ(ResolvePendingFix(pendingA, EFixResult::Queued, {}, before, late, late), EFixOutcome::Pending)
+		<< "queued however long: it waits for a quiet registry, and has not run";
+	EXPECT_EQ(pendingA.DoneMs, 0u);
 	rig.Settle();
 	EXPECT_TRUE(tree.Exists("a.png.meta"));
-	EXPECT_EQ(ResolvePendingFix(pendingA, rig.List(), rig.Now), EFixOutcome::Fixed);
+	EXPECT_EQ(repairs.GetFixResult(queued.Ticket), EFixResult::Applied);
+	// A list made before the op ran says nothing; one made after it without the problem says fixed.
+	EXPECT_EQ(ResolvePendingFix(pendingA, EFixResult::Applied, {}, before, rig.Now - 1u, rig.Now), EFixOutcome::Pending);
+	EXPECT_EQ(pendingA.DoneMs, rig.Now);
+	SPendingFix stuck = pendingA;
+	EXPECT_EQ(ResolvePendingFix(stuck, EFixResult::Applied, {}, before, rig.Now + 1u, rig.Now + 1u), EFixOutcome::Pending);
+	EXPECT_EQ(ResolvePendingFix(stuck, EFixResult::Applied, {}, before, rig.Now + FixOutcomeTimeoutMs, rig.Now + FixOutcomeTimeoutMs),
+		EFixOutcome::NoChange) << "applied, and still reported by a list made long after";
+	EXPECT_EQ(ResolvePendingFix(pendingA, EFixResult::Applied, {}, rig.List(), rig.Now, rig.Now), EFixOutcome::Fixed);
 
-	// Refused by the VCS: VCS002 about the asset, which was not there when it was applied.
+	// Refused by the VCS: the lifecycle says so, with the refusal's message.
 	vcs.Refuse("CheckOut", EVcsError::LockedByOther, "held by a colleague");
 	const std::vector<SProblemFixIt> fixB = GetProblemFixIts(b->Problem, rig.Context());
 	ASSERT_EQ(fixB.size(), 1u);
-	const SPendingFix pendingB = MakePendingFix(b->Problem, fixB[0].Label, rig.List(), rig.Now);
-	EXPECT_FALSE(pendingB.bHadRefusal);
-	(void)rig.Registry->GetRepairs()->ApplyFix(fixB[0].Action);
+	const SRepairReport queuedB = repairs.ApplyFix(fixB[0].Action);
+	SPendingFix pendingB = MakePendingFix(b->Problem, fixB[0].Label, queuedB.Ticket);
 	rig.Settle();
 	EXPECT_FALSE(tree.Exists("b.png.meta"));
 	const std::vector<SProblemEntry> after = rig.List();
+	FString resultMessage;
+	EXPECT_EQ(repairs.GetFixResult(queuedB.Ticket, &resultMessage), EFixResult::Refused);
 	FString message;
-	EXPECT_EQ(ResolvePendingFix(pendingB, after, rig.Now, &message), EFixOutcome::Refused) << Describe(after).CStr();
+	EXPECT_EQ(ResolvePendingFix(pendingB, EFixResult::Refused, resultMessage, after, rig.Now, rig.Now, &message), EFixOutcome::Refused)
+		<< Describe(after).CStr();
 	EXPECT_FALSE(message.IsEmpty());
 
-	// The refusal's own fix-it is the same action again, to retry.
+	// The refusal's own fix-it is the same action again, to retry: a create, since the file never had a meta.
 	const SProblemEntry* refusal = Find(after, Vcs002, P("b.png"));
 	ASSERT_NE(refusal, nullptr) << Describe(after).CStr();
 	const std::vector<SProblemFixIt> retry = GetProblemFixIts(refusal->Problem, rig.Context());
 	ASSERT_EQ(retry.size(), 1u);
-	EXPECT_TRUE(retry[0].Label.StartsWith("Retry: ")) << retry[0].Label.CStr();
+	EXPECT_EQ(retry[0].Label, "Retry: Create its meta");
+	EXPECT_EQ(retry[0].Action.Kind, ELifecycleAction::CreateMeta);
+
+	// Retried while the VCS still refuses: refused again, though the list alone shows the same VCS002 as before.
+	const SDiagnostic refused = refusal->Problem;
+	const SRepairReport queuedRetry = repairs.ApplyFix(retry[0].Action);
+	SPendingFix pendingRetry = MakePendingFix(refused, retry[0].Label, queuedRetry.Ticket);
+	rig.Settle();
+	const std::vector<SProblemEntry> again = rig.List();
+	EXPECT_NE(Find(again, Vcs002, P("b.png")), nullptr) << Describe(again).CStr();
+	EXPECT_EQ(repairs.GetFixResult(queuedRetry.Ticket, &resultMessage), EFixResult::Refused);
+	EXPECT_EQ(ResolvePendingFix(pendingRetry, EFixResult::Refused, resultMessage, again, rig.Now, rig.Now, &message), EFixOutcome::Refused);
+
+	// Let through: applied, and the VCS002 goes.
 	vcs.Refuse("CheckOut", EVcsError::None);
+	const SProblemEntry* still = Find(again, Vcs002, P("b.png"));
+	ASSERT_NE(still, nullptr);
+	const std::vector<SProblemFixIt> retryAgain = GetProblemFixIts(still->Problem, rig.Context());
+	ASSERT_EQ(retryAgain.size(), 1u);
+	const SRepairReport queuedLast = repairs.ApplyFix(retryAgain[0].Action);
+	SPendingFix pendingLast = MakePendingFix(still->Problem, retryAgain[0].Label, queuedLast.Ticket);
+	rig.Settle();
+	EXPECT_TRUE(tree.Exists("b.png.meta"));
+	EXPECT_EQ(repairs.GetFixResult(queuedLast.Ticket), EFixResult::Applied);
+	EXPECT_EQ(ResolvePendingFix(pendingLast, EFixResult::Applied, {}, rig.List(), rig.Now, rig.Now), EFixOutcome::Fixed) << Describe(rig.List()).CStr();
+	EXPECT_EQ(repairs.GetFixResult(queuedLast.Ticket + 1u), EFixResult::Forgotten) << "never queued";
 }
 
 TEST(ProblemList, TheProvidersCommandsAreShownForALostMetaAndAnUntrackedHalfAndAnLfsPointerIsAMessage)
@@ -523,4 +577,123 @@ TEST(ProblemList, TheProvidersCommandsAreShownForALostMetaAndAnUntrackedHalfAndA
 	EXPECT_EQ(rig.Registry->GetRepairs()->ApplyFix(restore[0].Action).Applied, 1u);
 	EXPECT_EQ(tree.Exists("a.png.meta"), true);
 	EXPECT_EQ(Find(rig.List(), Meta008, P("a.png")), nullptr);
+}
+
+TEST(ProblemList, AMetaSwapsOldSourceOffersRelinkAndANewGuidButNoVcsRestore)
+{
+	CProblemTree tree("Обмін");
+	tree.StopAutoRepairs();
+	tree.WritePng("a.png");
+	tree.WriteMeta("a.png", MetaText(GuidA));
+	CCommandProvider vcs;
+	CRig rig(tree, vcs);
+	ASSERT_TRUE(rig.bOpened);
+	rig.Settle();
+	// The meta moved on purpose, to a file that does not exist: GuidA lives on in an orphan meta.
+	tree.Rename("a.png.meta", "b.png.meta");
+	rig.Scan();
+	rig.Settle();
+	rig.Settle(1600u);
+	rig.Settle(1600u);   // the new GUID's derivation needs the content's hash
+	const std::vector<SProblemEntry> entries = rig.List();
+	const SProblemEntry* swapped = Find(entries, Meta008, P("a.png"));
+	ASSERT_NE(swapped, nullptr) << Describe(entries).CStr();
+	const std::vector<SProblemFixIt> fixIts = GetProblemFixIts(swapped->Problem, rig.Context());
+	FString labels;
+	for (const SProblemFixIt& fix : fixIts)
+	{
+		labels += fix.Label + "\n";
+	}
+	const auto has = [&] (FStringView Label, ELifecycleAction Kind)
+	{
+		return std::any_of(fixIts.begin(), fixIts.end(), [&] (const SProblemFixIt& Fix)
+		{
+			return Fix.Kind == EProblemFixKind::Apply && Fix.Label == Label && Fix.Action.Kind == Kind;
+		});
+	};
+	EXPECT_TRUE(has("Relink b.png.meta", ELifecycleAction::MoveMeta)) << labels.CStr();
+	EXPECT_TRUE(has("Give it a new GUID", ELifecycleAction::CreateMeta)) << labels.CStr();
+	EXPECT_TRUE(std::none_of(fixIts.begin(), fixIts.end(), [] (const SProblemFixIt& Fix) { return Fix.Kind == EProblemFixKind::Copy; }))
+		<< "a restore from the VCS would bring back a second meta with GuidA: " << labels.CStr();
+}
+
+TEST(ProblemList, EachFixItsLabelSaysWhatItsActionDoes)
+{
+	CProblemTree tree("Написи");
+	tree.WriteProjectRules("FormatVersion: 1\nSafety:\n  AutoRepairMetas: false\n  AutoResolveDuplicates: false\n");
+	tree.WritePng("a.png");
+	tree.WriteMeta("a.png", MetaText(GuidA));
+	tree.WritePng("b.png", 5u);
+	tree.WriteMeta("b.png", MetaText(GuidA));   // a copy: META003
+	tree.WritePng("c.png", 6u);
+	tree.WriteMeta("c.png", FString::Format("FormatVersion: 1\nGuid: {}\nGuid: {}\n", GuidB, GuidC));   // two GUIDs: META004
+	CRecordingVcsProvider vcs;
+	CRig rig(tree, vcs);
+	ASSERT_TRUE(rig.bOpened);
+	rig.Settle();
+	rig.Settle(1600u);
+	const std::vector<SProblemEntry> entries = rig.List();
+
+	const auto copy = std::find_if(entries.begin(), entries.end(), [] (const SProblemEntry& Entry) { return Entry.Problem.Code == Meta003; });
+	ASSERT_NE(copy, entries.end()) << Describe(entries).CStr();
+	const std::vector<SProblemFixIt> reGuid = GetProblemFixIts(copy->Problem, rig.Context());
+	ASSERT_FALSE(reGuid.empty()) << Describe(entries).CStr();
+	EXPECT_EQ(reGuid[0].Kind, EProblemFixKind::Apply);
+	EXPECT_EQ(reGuid[0].Action.Kind, ELifecycleAction::ReGuid);
+	EXPECT_EQ(reGuid[0].Label, "Give the copy a new GUID");
+	EXPECT_TRUE(reGuid[0].Text.Contains(MakeGuid(GuidA).ToString())) << reGuid[0].Text.CStr();
+
+	const SProblemEntry* broken = Find(entries, Meta004, P("c.png"));
+	ASSERT_NE(broken, nullptr) << Describe(entries).CStr();
+	const std::vector<SProblemFixIt> keep = GetProblemFixIts(broken->Problem, rig.Context());
+	ASSERT_EQ(keep.size(), 2u);
+	EXPECT_EQ(keep[0].Action.Kind, ELifecycleAction::KeepAliasB);
+	EXPECT_EQ(keep[0].Label, FString::Format("Keep {{{}}}", MakeGuid(GuidB).ToString()));
+	EXPECT_EQ(keep[1].Label, FString::Format("Keep {{{}}}", MakeGuid(GuidC).ToString()));
+	EXPECT_TRUE(keep[0].Text.Contains(MakeGuid(GuidC).ToString())) << "the other as its alias: " << keep[0].Text.CStr();
+}
+
+TEST(ProblemList, ProvidersSettlingMoveTheRepairsChangesThoughNotTheRevisionAndTheListThenHasValidatesVcs003)
+{
+	CProblemTree tree("Постачальники");
+	tree.StopAutoRepairs();
+	tree.WritePng("c.png");
+	tree.WriteMeta("c.png", MetaText(GuidB));
+	CCommandProvider vcs;
+	vcs.Inner.SetStatus(tree.Vcs("c.png"), SVcsStatus { EVcsState::Clean, {} });   // the source tracked, its meta not: VCS003
+	// A live host's detection: no provider yet (SetProvider settles each mount later).
+	CRig rig(tree, vcs, [] (SLifecycleDesc& Lifecycle, SAssetRegistryDesc&)
+	{
+		Lifecycle.Providers.clear();
+		Lifecycle.bProvidersPending = true;
+	});
+	ASSERT_TRUE(rig.bOpened);
+	rig.Settle();
+	CAssetRepairs& repairs = *rig.Registry->GetRepairs();
+	EXPECT_EQ(repairs.GetProvider(ProjectMountId), nullptr);
+	EXPECT_EQ(Find(rig.List(), Vcs003, P("c.png")), nullptr) << "no VCS is asked before detection settles";
+
+	const uint64 changes = repairs.GetStats().Changes;
+	const uint64 revision = rig.Registry->GetRevision();
+	for (const SMount& mount : rig.Registry->GetMounts().GetMounts())
+	{
+		repairs.SetProvider(mount.Id, mount.Id == ProjectMountId ? &vcs : nullptr);
+	}
+	EXPECT_GT(repairs.GetStats().Changes, changes) << "the panel lists again on this";
+	EXPECT_EQ(rig.Registry->GetRevision(), revision) << "which the revision alone would not show";
+
+	// Now the panel's list has what validate lists with the verb's own provider set.
+	const std::vector<SProblemEntry> entries = rig.List();
+	EXPECT_NE(Find(entries, Vcs003, P("c.png")), nullptr) << Describe(entries).CStr();
+	SValidateOptions verb;
+	verb.Mounts = &rig.Registry->GetMounts();
+	verb.Rules = &rig.Registry->GetRules();
+	verb.Providers = { { ProjectMountId, &vcs } };
+	std::vector<SDiagnostic> validate;
+	RunValidation(*rig.Registry->Acquire(), verb, validate);
+	ASSERT_EQ(entries.size(), validate.size()) << Describe(entries).CStr();
+	for (size_t i = 0u; i < entries.size(); ++i)
+	{
+		EXPECT_EQ(entries[i].Problem, validate[i]);
+	}
 }

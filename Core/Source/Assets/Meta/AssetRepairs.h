@@ -114,13 +114,30 @@ struct SRepairReport
 	uint32 Applied = 0u;
 	uint32 Refused = 0u;
 	std::vector<SDiagnostic> Problems;
+	// A live host's ApplyFix: the queued fix, whose outcome GetFixResult tells (0: nothing was queued).
+	uint64 Ticket = 0u;
 };
+
+// What became of a fix a live host queued (CAssetRepairs::GetFixResult).
+enum class EFixResult : uint8
+{
+	Queued,       // not run yet: it waits for a quiet registry, a writer and settled providers
+	Applied,      // its ops ran; the problem goes with the delta that follows
+	Refused,      // the VCS or the writer refused an op: a VCS002 says so
+	NotApplied,   // nothing could be planned (the tree moved on), or nothing writes here
+	Forgotten,    // too old: only the last FixResultsKept outcomes are kept
+};
+
+inline constexpr uint32 FixResultsKept = 64u;
 
 // What the runtime holds now (Core-Test; the Stats panel may show it).
 struct SAssetRepairsStats
 {
 	uint64 Runs = 0u;              // lifecycle runs whose result was committed
 	uint32 TrackedEvents = 0u;     // paths whose event time is kept (the delays' clocks)
+	// Moves whenever what GetFixIts or GetProvider answer may have changed, which the registry's revision does not show: a
+	// run's fix-its replaced, an op's outcome, a fix applied, a provider settled. The problems panel lists again then.
+	uint64 Changes = 0u;
 };
 
 /**
@@ -184,7 +201,8 @@ struct SAssetRepairsDesc
  *
  * RunNow is for tool hosts only and blocks until it has applied. ApplyFix blocks the same way in a tool host. In a live host
  * it registers the expected writes, submits the op and returns a report with only Planned filled; the outcome arrives as the
- * next delta's problems (VCS002 when refused, the fixed problem gone otherwise) and in the registry's counters.
+ * next delta's problems (VCS002 when refused, the fixed problem gone otherwise), in the registry's counters, and for that
+ * one fix in GetFixResult(report.Ticket).
  */
 class FRT_CORE_API CAssetRepairs
 {
@@ -221,6 +239,9 @@ public:
 	// Fix-its are not stored on a diagnostic: the panel and `validate --fix` ask here, and apply with ApplyFix.
 	[[nodiscard]] std::vector<SLifecycleAction> GetFixIts (const SDiagnostic& Problem) const;
 	[[nodiscard]] SRepairReport ApplyFix (const SLifecycleAction& FixIt);
+	// The outcome of the fix ApplyFix queued as Ticket (SRepairReport::Ticket); OutMessage: why it was refused or not applied.
+	// Queued fixes run one at a time, in the order they were applied.
+	[[nodiscard]] EFixResult GetFixResult (uint64 Ticket, FString* OutMessage = nullptr) const;
 
 	// A run or an op is in flight on a worker.
 	[[nodiscard]] bool IsWorking () const noexcept;

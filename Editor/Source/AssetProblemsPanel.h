@@ -16,6 +16,11 @@ namespace frt
 class CEngine;
 }
 
+namespace frt::jobs
+{
+class CWorkerPool;
+}
+
 
 namespace frt::editor
 {
@@ -30,10 +35,12 @@ class CAssetsPanel;
  * and copied, never run.
  *
  * The list is RunValidation's, the very function the verb prints (ListAssetProblems), run on a worker over a view the
- * registry handed out: when the panel first draws, again when the revision moved while it shows (at most once a second),
- * and whenever something asks (RequestRefresh, or a fix waiting for its outcome). A fix applied in the live editor only
- * queues (AssetRepairs.h), so its outcome (fixed, refused with VCS002, or no change) is read from the lists that follow.
- * It polls the revision as the Assets panel does: no subscription.
+ * registry handed out, with the panel's options (MakeProblemListOptions: the lifecycle's providers, so no VCS is asked where
+ * no lifecycle runs): when the panel first draws, again when the revision or the lifecycle's fix-its and providers
+ * (SAssetRepairsStats::Changes) moved while it shows (at most once a second), and whenever something asks (RequestRefresh,
+ * or an applied fix waiting for a list without its problem, shown or not). A fix applied in the live editor only queues
+ * (AssetRepairs.h): the lifecycle says when it ran and whether it was refused (GetFixResult), and the lists that follow
+ * whether its problem went. It polls the revision as the Assets panel does: no subscription.
  */
 class CAssetProblemsPanel
 {
@@ -48,13 +55,15 @@ public:
 	void Draw (CEngine& Engine, CAssetsPanel& Assets);
 	// The list again at the next Draw, shown or not (scripted runs).
 	void RequestRefresh () { bRefreshRequested = true; }
-	// Blocks until the list in flight, if any, has arrived and is taken (the smoke test; before the registry goes).
+	// Pumps the pool until the list in flight, if any, has arrived and is taken (the smoke test).
 	void WaitForRefresh ();
-	// A new list now, on a worker as always, waited for (the smoke test).
+	// A new list now, on a worker as always, waited for, and made again until it is of the registry's current revision (the
+	// smoke test: the pump may commit while it waits).
 	void RefreshNow (CEngine& Engine);
-	// "Go to": the Assets panel lists entry Index's asset (its record, or what its folder holds) and comes to the front.
-	void GoTo (CAssetsPanel& Assets, uint32 Index);
-	// Before the registry shuts down: waits for the job, which reads the registry's mounts, rules and providers.
+	// "Go to": the Assets panel lists Entry's asset (its record, or what its folder holds) and comes to the front.
+	void GoTo (CAssetsPanel& Assets, const assets::SProblemEntry& Entry);
+	// Before the registry shuts down: cancels a job not started yet and waits for a running one, which reads the registry's
+	// mounts, rules and providers.
 	void ShutDown ();
 
 	[[nodiscard]] const std::vector<assets::SProblemEntry>& GetEntries () const { return Entries; }
@@ -62,6 +71,8 @@ public:
 	// The revision of the view the list was made from (NeverRan before the first).
 	[[nodiscard]] uint64 GetShownRevision () const { return RanAt; }
 	[[nodiscard]] bool IsRefreshing () const { return Job != nullptr; }
+	// Rows (group headers and entries) the clipper drew in the last frame the panel showed (the smoke test).
+	[[nodiscard]] uint32 GetRowsDrawn () const { return RowsDrawn; }
 	[[nodiscard]] const assets::SProblemFilter& GetFilter () const { return Filter; }
 	void SetFilter (const assets::SProblemFilter& NewFilter);
 
@@ -74,6 +85,8 @@ private:
 		std::atomic<bool> bFinished = false;   // its callable is gone (run, or dropped by a drain)
 		std::vector<assets::SProblemEntry> Entries;
 		uint64 Revision = 0u;
+		uint64 Changes = 0u;       // SAssetRepairsStats::Changes when its view was taken
+		uint64 MadeMs = 0u;        // GetLifecycleNowMs then
 		double Milliseconds = 0.0;
 	};
 
@@ -93,11 +106,13 @@ private:
 		int32 Entry = -1;    // -1: the group's header
 	};
 
-	void StartRefresh (CEngine& Engine);
+	void StartRefresh (CEngine& Engine, bool bUrgent);
+	// Starts a list when one is due (see the class comment).
+	void MaybeRefresh (CEngine& Engine, bool bVisible);
 	// Takes a finished job's list; false while it runs.
 	bool TakeJob ();
 	void Rebuild ();
-	void ResolvePendingFixes ();
+	void ResolvePendingFixes (CEngine& Engine);
 	void DrawFilters ();
 	void DrawEntry (CEngine& Engine, CAssetsPanel& Assets, uint32 Index);
 	void ApplyFix (CEngine& Engine, uint32 Index, const assets::SProblemFixIt& Fix);
@@ -112,7 +127,13 @@ private:
 	assets::SProblemFilter Filter;
 	assets::SValidationCounts Counts;
 	std::shared_ptr<SJob> Job;
+	jobs::CWorkerPool* Pool = nullptr;       // the job's, for ShutDown
+	uint64 CancelGroup = 0u;                 // the panel's jobs, cancelled by ShutDown
 	uint64 RanAt = NeverRan;
+	uint64 ListChanges = 0u;                 // the list's SAssetRepairsStats::Changes
+	uint64 ListMs = 0u;                      // when the list's view was taken (GetLifecycleNowMs)
+	uint64 FixItsChanges = ~0ull;            // the Changes FixIts were asked at
+	uint32 RowsDrawn = 0u;
 	double RefreshedAt = -1.0e9;             // ImGui time of the last start
 	double Milliseconds = 0.0;
 	bool bRefreshRequested = false;

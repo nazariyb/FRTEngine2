@@ -283,25 +283,30 @@ Assets toggles it. The smoke test checks it against the registry's own answer fo
 `Editor/Source/AssetProblemsPanel.h` draws, and `Assets/Meta/ProblemList.h` (Core, so Core-Test checks it) makes, one list
 (design §12.8): `RunValidation`'s, the function `validate` prints, over every mount of the editor's registry (`validate` and
 `validate --engine` together), on a worker over a view the registry handed out - when the panel first draws, when the
-revision moved while it shows (at most once a second), and while a fix waits for its outcome. Each problem gets its asset
+revision or the lifecycle's fix-its and providers (`SAssetRepairsStats::Changes`) moved while it shows (at most once a
+second), and while an applied fix waits for a list, shown or not. Its options are `validate`'s but for the providers: the
+lifecycle's, so no VCS is asked (no `VCS003`) where no lifecycle runs or before detection settles. Each problem gets its asset
 (a meta's problem goes with its source, a sub-entry's with its file) and that asset's type; the list is grouped by asset
 in the registry's order and filtered by severity, code (its start, any case), type and folder (under the fold). Each
 entry has **Go to** (the Assets panel lists the asset by `$Path=`, a folder or mount root by `dir:`, a file without a record
 by its folder; the inspector target is M6's), **Open** (the file the problem names, relative to its mount's owner root,
-else the asset) and **Copy line** when it has a line. Fix-its are not stored on diagnostics: `GetProblemFixIts` asks
+else the asset; disabled while it does not exist, and **Show** in Explorer instead for a file the shell would run) and **Copy line** when it has a line. Fix-its are not stored on diagnostics: `GetProblemFixIts` asks
 `CAssetRepairs::GetFixIts`, so a button applies the lifecycle's own action through `ApplyFix` - create a meta, restore the
 verified copy, relink an orphan, rename a meta to its source's case, re-GUID a copy (with its whole set), keep A alias B,
 retry what the VCS refused (VCS002), and for a lost meta "create it again" (its GUID) or, after a meta swap, "a new GUID".
 An action is disabled, with the reason, in a mount the process does not write (read-only, a guest, `/Engine` outside
 engine-owner mode). Shown and copied, never run: the provider's restore command for a lost meta (Git: `git checkout --
-<meta>`), its add command for the untracked half of a `VCS003` (`File` names that half; absent under None, since FRT never
+<meta>`; never after a meta swap or for a new file an orphan matches, where it would duplicate a GUID or name a file the VCS
+never had), its add command for the untracked half of a `VCS003` (`File` names that half; absent under None, since FRT never
 stages), and `"<engine>\FRT.bat" assets fix --engine` for a `META001` on `/Engine` in a process that does not own it.
-`VCS004` is a message (`git lfs pull`). In the live editor `ApplyFix` only queues, so the panel follows the fix in the
-lists that come after it: fixed (the problem is gone), refused (a new `VCS002` about the asset), or no change after 30 s.
+`VCS004` is a message (`git lfs pull`). In the live editor `ApplyFix` only queues and returns a ticket: the lifecycle says
+when the fix ran and whether it was refused or not applied (`CAssetRepairs::GetFixResult`; a queued fix never times out),
+and once it ran the lists after it say fixed (the problem is gone) or no change (still there in a list made 30 s later).
 Without a meta lifecycle (until the hosts switch it on) the panel lists and offers commands, and applies nothing. PATH
 renames, reference relinks, hints and aliases are M11's. The smoke test checks that the panel lists exactly what
 `RunValidation` returns with the same options (`[smoke] ok the Asset problems panel lists ...`, which `FRT.bat verify`
-requires), that a read-only editor can apply none of its fix-its, the code filter, and Go to; it captures the panel.
+requires), that a `META001` on `/Engine` offers the `assets fix --engine` command, that a read-only editor can apply none
+of its fix-its, that it draws its rows, the code filter, and Go to; it captures the panel.
 
 ## Version control (M4, `Assets/Vcs/`)
 
